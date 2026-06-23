@@ -3,6 +3,8 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use winit::window::Window;
 
+use crate::text::TextRenderer;
+
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.36,
     g: 0.20,
@@ -10,14 +12,17 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Owns the wgpu surface, device queue, and per-frame rendering resources.
 pub(crate) struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    text: TextRenderer,
 }
 
 impl Renderer {
+    /// Creates the GPU surface, device, and text renderer for the window.
     pub(crate) async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         tracing::trace!(
@@ -45,6 +50,7 @@ impl Renderer {
             })
             .await
             .context("request device")?;
+        // Prefer an sRGB format so fragment shader colors display as expected.
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
             .formats
@@ -70,14 +76,18 @@ impl Renderer {
             "renderer configured"
         );
 
+        let text = TextRenderer::new(&device, &queue, config.format, config.width, config.height)?;
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
+            text,
         })
     }
 
+    /// Reconfigures the surface and size-dependent resources after a window resize.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             tracing::trace!("ignored zero-sized resize");
@@ -88,9 +98,12 @@ impl Renderer {
         self.config.height = height;
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
+        self.text.resize(&self.device, &self.queue, width, height);
     }
 
+    /// Acquires the current surface texture, clears it, draws text, and presents it.
     pub(crate) fn render(&mut self) {
+        // Surface state changes during minimize, resize, or driver events; draw only with a valid texture.
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
             wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
@@ -127,9 +140,10 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // End the render pass borrow before submitting the command buffer.
         {
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -144,6 +158,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            self.text.render(&mut render_pass);
         }
 
         self.queue.submit(Some(encoder.finish()));

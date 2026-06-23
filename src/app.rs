@@ -9,12 +9,14 @@ use winit::{
 
 use crate::renderer::Renderer;
 
+/// Application state holding the window and its renderer.
 #[derive(Default)]
 pub(crate) struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
 }
 
+/// Errors that can occur while starting the application.
 #[derive(Debug, thiserror::Error)]
 enum AppError {
     #[error("failed to create window")]
@@ -23,6 +25,7 @@ enum AppError {
     Renderer(#[source] anyhow::Error),
 }
 
+/// Handles the winit lifecycle and window events.
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(error) = self.try_resume(event_loop) {
@@ -68,6 +71,7 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Creates the main window and renderer; keeps existing state on repeated resumes.
     fn try_resume(&mut self, event_loop: &ActiveEventLoop) -> std::result::Result<(), AppError> {
         if self.window.is_some() {
             return Ok(());
