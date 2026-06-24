@@ -5,7 +5,9 @@
 
 mod app;
 mod font;
+mod render;
 mod renderer;
+mod terminal;
 mod text;
 
 use anyhow::{Context as _, Result};

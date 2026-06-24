@@ -7,7 +7,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::renderer::Renderer;
+use crate::{render::Render, renderer::Renderer};
 
 /// Application state holding the window and its renderer.
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     tracing::trace!("redraw requested");
-                    renderer.render();
+                    renderer.render(());
                 }
             }
             _ => {}

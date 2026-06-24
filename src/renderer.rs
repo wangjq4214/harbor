@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use winit::window::Window;
 
-use crate::text::TextRenderer;
+use crate::{render::Render, terminal::Terminal, text::TextRenderer};
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.36,
@@ -19,6 +19,7 @@ pub(crate) struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
+    terminal: Terminal,
 }
 
 impl Renderer {
@@ -76,7 +77,16 @@ impl Renderer {
             "renderer configured"
         );
 
-        let text = TextRenderer::new(&device, &queue, config.format, config.width, config.height)?;
+        let mut terminal = Terminal::new(12, 60);
+        terminal.put_str("Harbor terminal grid\nline 2: newline moved here\rLINE 2\nbackspace demo: abc\u{8}d\nscroll demo follows\nrow 5\nrow 6\nrow 7\nrow 8\nrow 9\nrow 10\nrow 11\nrow 12\nrow 13");
+        let text = TextRenderer::new(
+            &device,
+            &queue,
+            config.format,
+            &terminal,
+            config.width,
+            config.height,
+        )?;
 
         Ok(Self {
             surface,
@@ -84,6 +94,7 @@ impl Renderer {
             queue,
             config,
             text,
+            terminal,
         })
     }
 
@@ -98,11 +109,14 @@ impl Renderer {
         self.config.height = height;
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
-        self.text.resize(&self.device, &self.queue, width, height);
+        self.text
+            .update(&self.device, &self.queue, &self.terminal, width, height);
     }
+}
 
+impl Render for Renderer {
     /// Acquires the current surface texture, clears it, draws text, and presents it.
-    pub(crate) fn render(&mut self) {
+    fn render(&mut self, (): ()) {
         // Surface state changes during minimize, resize, or driver events; draw only with a valid texture.
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,

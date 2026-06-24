@@ -4,18 +4,18 @@ use anyhow::{Context as _, Result};
 use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
 use fontdue::Font;
 
-/// Loads the default sans-serif font from the system font database.
+/// Loads the default monospace font from the system font database.
 pub(crate) fn load_system_font() -> Result<Font> {
     let mut fonts = Database::new();
     fonts.load_system_fonts();
     let face_id = fonts
         .query(&Query {
-            families: &[Family::SansSerif],
+            families: &[Family::Monospace],
             weight: Weight::NORMAL,
             stretch: Stretch::Normal,
             style: Style::Normal,
         })
-        .context("find system sans-serif font")?;
+        .context("find system monospace font")?;
     let face = fonts.face(face_id).context("load system font face")?;
     // fontdb stores only the font source; normalize it to bytes for fontdue.
     let bytes = match &face.source {
