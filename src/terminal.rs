@@ -1,3 +1,12 @@
+/// Terminal dimensions in character cells.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TerminalSize {
+    /// Number of visible terminal rows.
+    pub(crate) rows: usize,
+    /// Number of visible terminal columns.
+    pub(crate) cols: usize,
+}
+
 /// One terminal grid cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Cell {
@@ -13,10 +22,13 @@ impl Default for Cell {
 /// A small in-memory terminal grid with cursor state.
 #[derive(Debug)]
 pub(crate) struct Terminal {
+    /// Visible row count; kept public inside the crate because renderers size buffers from it.
     pub(crate) rows: usize,
+    /// Visible column count; each row is stored contiguously in `cells`.
     pub(crate) cols: usize,
     pub(crate) cursor_x: usize,
     pub(crate) cursor_y: usize,
+    /// Row-major backing store indexed as `row * cols + col`.
     cells: Vec<Cell>,
 }
 
@@ -32,6 +44,32 @@ impl Terminal {
             cursor_y: 0,
             cells: vec![Cell::default(); rows * cols],
         }
+    }
+
+    pub(crate) fn resize(&mut self, rows: usize, cols: usize) {
+        assert!(rows > 0, "terminal rows must be non-zero");
+        assert!(cols > 0, "terminal cols must be non-zero");
+        if self.rows == rows && self.cols == cols {
+            return;
+        }
+
+        // Preserve the top-left visible rectangle and leave newly exposed cells blank.
+        // This keeps resize behavior deterministic without trying to emulate scrollback.
+        let mut cells = vec![Cell::default(); rows * cols];
+        let copied_rows = self.rows.min(rows);
+        let copied_cols = self.cols.min(cols);
+        for row in 0..copied_rows {
+            let old_start = row * self.cols;
+            let new_start = row * cols;
+            cells[new_start..new_start + copied_cols]
+                .copy_from_slice(&self.cells[old_start..old_start + copied_cols]);
+        }
+
+        self.rows = rows;
+        self.cols = cols;
+        self.cursor_y = self.cursor_y.min(rows - 1);
+        self.cursor_x = self.cursor_x.min(cols - 1);
+        self.cells = cells;
     }
 
     pub(crate) fn put_str(&mut self, text: &str) {
@@ -153,5 +191,17 @@ mod tests {
         assert_eq!(terminal.row_text(0), "two ");
         assert_eq!(terminal.row_text(1), "thr ");
         assert_eq!((terminal.cursor_x, terminal.cursor_y), (3, 1));
+    }
+
+    #[test]
+    fn resize_preserves_visible_cells_and_clamps_cursor() {
+        let mut terminal = Terminal::new(2, 4);
+        terminal.put_str("abcdef");
+
+        terminal.resize(1, 3);
+
+        assert_eq!(terminal.row_text(0), "abc");
+        assert_eq!((terminal.rows, terminal.cols), (1, 3));
+        assert_eq!((terminal.cursor_x, terminal.cursor_y), (2, 0));
     }
 }

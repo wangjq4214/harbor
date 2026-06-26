@@ -618,6 +618,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "windows",
  "winit",
 ]
 

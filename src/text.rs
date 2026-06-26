@@ -4,7 +4,11 @@ use anyhow::Result;
 use fontdue::Font;
 use wgpu::util::DeviceExt;
 
-use crate::{font::load_system_font, render::Render, terminal::Terminal};
+use crate::{
+    font::load_system_font,
+    render::Render,
+    terminal::{Terminal, TerminalSize},
+};
 
 const FONT_SIZE: f32 = 24.0;
 const TEXT_PADDING: f32 = 16.0;
@@ -188,6 +192,47 @@ impl TextDraw {
     }
 }
 
+/// Font-derived measurements used to map window pixels to terminal cells.
+#[derive(Clone, Copy)]
+struct TextMetrics {
+    /// Advance width of the representative monospace glyph used as a cell width.
+    cell_width: f32,
+    /// Full baseline-to-baseline distance including font line gap.
+    line_height: f32,
+    /// Baseline offset used when placing glyph rasters inside each cell.
+    ascent: f32,
+}
+
+impl TextMetrics {
+    fn new(font: &Font) -> Self {
+        let line_metrics = font
+            .horizontal_line_metrics(FONT_SIZE)
+            .expect("system font should have horizontal metrics");
+        let cell_width = font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
+        let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
+            .ceil()
+            .max(1.0);
+
+        Self {
+            cell_width,
+            line_height,
+            ascent: line_metrics.ascent,
+        }
+    }
+
+    // Keep at least one row and column even when padding exceeds the surface size;
+    // downstream terminal storage and wgpu buffers assume non-empty dimensions.
+    fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
+        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(self.cell_width);
+        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(self.line_height);
+
+        TerminalSize {
+            rows: (text_height / self.line_height).floor().max(1.0) as usize,
+            cols: (text_width / self.cell_width).floor().max(1.0) as usize,
+        }
+    }
+}
+
 /// Holds the text render pipeline and size-dependent draw resources.
 pub(crate) struct TextRenderer {
     font: Font,
@@ -225,6 +270,10 @@ impl TextRenderer {
             bind_group_layout,
             draw,
         })
+    }
+
+    pub(crate) fn terminal_size(&self, width: u32, height: u32) -> TerminalSize {
+        TextMetrics::new(&self.font).terminal_size(width, height)
     }
 
     /// Rebuilds text resources after terminal contents or surface size changes.
@@ -363,13 +412,7 @@ struct GlyphAtlas {
 impl GlyphAtlas {
     /// Rasterizes each distinct visible character once and packs glyphs into one atlas row.
     fn new(font: &Font, terminal: &Terminal) -> Self {
-        let line_metrics = font
-            .horizontal_line_metrics(FONT_SIZE)
-            .expect("system font should have horizontal metrics");
-        let cell_width = font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
-        let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
-            .ceil()
-            .max(1.0);
+        let text_metrics = TextMetrics::new(font);
         let mut chars = terminal
             .rows_text()
             .flat_map(|row| row.chars().collect::<Vec<_>>())
@@ -391,9 +434,9 @@ impl GlyphAtlas {
                 height: 1,
                 pixels: vec![0],
                 glyphs: HashMap::new(),
-                cell_width,
-                line_height,
-                ascent: line_metrics.ascent,
+                cell_width: text_metrics.cell_width,
+                line_height: text_metrics.line_height,
+                ascent: text_metrics.ascent,
             };
         }
 
@@ -446,9 +489,9 @@ impl GlyphAtlas {
             height,
             pixels,
             glyphs,
-            cell_width,
-            line_height,
-            ascent: line_metrics.ascent,
+            cell_width: text_metrics.cell_width,
+            line_height: text_metrics.line_height,
+            ascent: text_metrics.ascent,
         }
     }
 

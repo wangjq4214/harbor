@@ -3,7 +3,11 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use winit::window::Window;
 
-use crate::{render::Render, terminal::Terminal, text::TextRenderer};
+use crate::{
+    render::Render,
+    terminal::{Terminal, TerminalSize},
+    text::TextRenderer,
+};
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.36,
@@ -77,8 +81,9 @@ impl Renderer {
             "renderer configured"
         );
 
-        let mut terminal = Terminal::new(12, 60);
-        terminal.put_str("Harbor terminal grid\nline 2: newline moved here\rLINE 2\nbackspace demo: abc\u{8}d\nscroll demo follows\nrow 5\nrow 6\nrow 7\nrow 8\nrow 9\nrow 10\nrow 11\nrow 12\nrow 13");
+        // Text metrics are needed before the real terminal dimensions are known, so
+        // bootstrap with a one-cell grid and immediately resize from the measured font.
+        let mut terminal = Terminal::new(1, 1);
         let text = TextRenderer::new(
             &device,
             &queue,
@@ -87,30 +92,74 @@ impl Renderer {
             config.width,
             config.height,
         )?;
-
-        Ok(Self {
+        let terminal_size = text.terminal_size(config.width, config.height);
+        terminal.resize(terminal_size.rows, terminal_size.cols);
+        let mut renderer = Self {
             surface,
             device,
             queue,
             config,
             text,
             terminal,
-        })
+        };
+        renderer.refresh_text();
+        Ok(renderer)
     }
 
     /// Reconfigures the surface and size-dependent resources after a window resize.
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Option<TerminalSize> {
         if width == 0 || height == 0 {
             tracing::trace!("ignored zero-sized resize");
-            return;
+            return None;
         }
 
         self.config.width = width;
         self.config.height = height;
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
-        self.text
-            .update(&self.device, &self.queue, &self.terminal, width, height);
+        let terminal_size = self.resize_terminal_to_surface();
+        self.refresh_text();
+        terminal_size
+    }
+
+    pub(crate) fn terminal_size(&self) -> TerminalSize {
+        TerminalSize {
+            rows: self.terminal.rows,
+            cols: self.terminal.cols,
+        }
+    }
+
+    fn resize_terminal_to_surface(&mut self) -> Option<TerminalSize> {
+        let size = self
+            .text
+            .terminal_size(self.config.width, self.config.height);
+        if self.terminal.rows == size.rows && self.terminal.cols == size.cols {
+            return None;
+        }
+
+        self.terminal.resize(size.rows, size.cols);
+        Some(size)
+    }
+
+    fn refresh_text(&mut self) {
+        self.text.update(
+            &self.device,
+            &self.queue,
+            &self.terminal,
+            self.config.width,
+            self.config.height,
+        );
+    }
+
+    /// Appends pty output to the terminal grid and refreshes text draw resources.
+    pub(crate) fn write_terminal_output(&mut self, output: &[u8]) {
+        if output.is_empty() {
+            return;
+        }
+
+        let text = String::from_utf8_lossy(output);
+        self.terminal.put_str(&text);
+        self.refresh_text();
     }
 }
 

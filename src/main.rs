@@ -5,13 +5,14 @@
 
 mod app;
 mod font;
+mod pty;
 mod render;
 mod renderer;
 mod terminal;
 mod text;
 
 use anyhow::{Context as _, Result};
-use app::App;
+use app::{App, AppEvent};
 use tracing_subscriber::filter::LevelFilter;
 use winit::event_loop::EventLoop;
 
@@ -20,9 +21,11 @@ fn main() -> Result<()> {
     init_tracing();
 
     tracing::trace!("starting harbor");
-    let event_loop = EventLoop::new().context("create event loop")?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .context("create event loop")?;
 
-    let mut app = App::default();
+    let mut app = App::new(event_loop.create_proxy());
     event_loop.run_app(&mut app).context("run event loop")?;
 
     Ok(())
@@ -36,7 +39,7 @@ fn init_tracing() {
 #[cfg(debug_assertions)]
 /// Debug builds emit detailed logs for window and render events.
 fn log_level() -> LevelFilter {
-    LevelFilter::TRACE
+    LevelFilter::DEBUG
 }
 
 #[cfg(not(debug_assertions))]
