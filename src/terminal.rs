@@ -298,16 +298,16 @@ impl Terminal {
     }
 
     fn write_char(&mut self, ch: char) {
+        if self.cursor_x >= self.cols {
+            self.newline();
+        }
+
         let index = self.cursor_y * self.cols + self.cursor_x;
         self.cells[index] = Cell {
             ch,
             fg_color: self.active_fg,
         };
         self.cursor_x += 1;
-        if self.cursor_x == self.cols {
-            self.cursor_x = 0;
-            self.newline();
-        }
     }
 
     fn newline(&mut self) {

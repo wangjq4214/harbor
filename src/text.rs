@@ -4,7 +4,7 @@ use anyhow::Result;
 use fontdue::Font;
 use wgpu::util::DeviceExt;
 
-use crate::{font::load_system_font, render::Render, terminal::{Terminal, AnsiColor}};
+use crate::{font::load_system_fonts, render::Render, terminal::{Terminal, AnsiColor}};
 
 const FONT_SIZE: f32 = 24.0;
 const TEXT_PADDING: f32 = 16.0;
@@ -128,12 +128,12 @@ impl TextDraw {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
-        font: &Font,
+        fonts: &[Font],
         terminal: &Terminal,
         surface_width: u32,
         surface_height: u32,
     ) -> Self {
-        let atlas = GlyphAtlas::new(font, terminal);
+        let atlas = GlyphAtlas::new(fonts, terminal);
         let vertices = atlas.vertices(terminal, surface_width as f32, surface_height as f32);
         let texture = device.create_texture_with_data(
             queue,
@@ -202,7 +202,7 @@ impl TextDraw {
 
 /// Holds the text render pipeline and size-dependent draw resources.
 pub(crate) struct TextRenderer {
-    font: Font,
+    fonts: Vec<Font>,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     draw: TextDraw,
@@ -218,21 +218,21 @@ impl TextRenderer {
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let font = load_system_font()?;
+        let fonts = load_system_fonts()?;
         let bind_group_layout = Self::create_bind_group_layout(device);
         let pipeline = Self::create_pipeline(device, format, &bind_group_layout);
         let draw = TextDraw::new(
             device,
             queue,
             &bind_group_layout,
-            &font,
+            &fonts,
             terminal,
             width,
             height,
         );
 
         Ok(Self {
-            font,
+            fonts,
             pipeline,
             bind_group_layout,
             draw,
@@ -252,7 +252,7 @@ impl TextRenderer {
             device,
             queue,
             &self.bind_group_layout,
-            &self.font,
+            &self.fonts,
             terminal,
             width,
             height,
@@ -261,10 +261,10 @@ impl TextRenderer {
 
     /// Returns the character cell width and line height based on font metrics.
     pub(crate) fn cell_size(&self) -> (f32, f32) {
-        let line_metrics = self.font
+        let line_metrics = self.fonts[0]
             .horizontal_line_metrics(FONT_SIZE)
             .expect("system font should have horizontal metrics");
-        let cell_width = self.font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
+        let cell_width = self.fonts[0].metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
         let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
             .ceil()
             .max(1.0);
@@ -386,11 +386,12 @@ struct GlyphAtlas {
 
 impl GlyphAtlas {
     /// Rasterizes each distinct visible character once and packs glyphs into one atlas row.
-    fn new(font: &Font, terminal: &Terminal) -> Self {
-        let line_metrics = font
+    fn new(fonts: &[Font], terminal: &Terminal) -> Self {
+        let primary_font = &fonts[0];
+        let line_metrics = primary_font
             .horizontal_line_metrics(FONT_SIZE)
             .expect("system font should have horizontal metrics");
-        let cell_width = font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
+        let cell_width = primary_font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
         let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
             .ceil()
             .max(1.0);
@@ -407,7 +408,16 @@ impl GlyphAtlas {
         let rasterized = chars
             .into_iter()
             .map(|ch| {
-                let (metrics, bitmap) = font.rasterize(ch, FONT_SIZE);
+                let mut rasterized_glyph = None;
+                for font in fonts {
+                    if font.lookup_glyph_index(ch) != 0 {
+                        rasterized_glyph = Some(font.rasterize(ch, FONT_SIZE));
+                        break;
+                    }
+                }
+                let (metrics, bitmap) = rasterized_glyph.unwrap_or_else(|| {
+                    primary_font.rasterize(ch, FONT_SIZE)
+                });
                 (ch, metrics, bitmap)
             })
             .collect::<Vec<_>>();
@@ -579,16 +589,16 @@ impl GlyphAtlas {
 #[cfg(test)]
 mod tests {
     use super::GlyphAtlas;
-    use crate::{font::load_system_font, terminal::Terminal};
+    use crate::{font::load_system_fonts, terminal::Terminal};
 
     #[test]
     fn atlas_contains_each_visible_glyph_once() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = load_system_fonts().expect("load monospace test fonts");
         let mut terminal = Terminal::new(2, 5);
         terminal.cursor_visible = false;
 
         terminal.put_str("aa b\nc a");
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let atlas = GlyphAtlas::new(&fonts, &terminal);
 
         assert_eq!(atlas.glyphs.len(), 3);
         assert!(atlas.glyphs.contains_key(&'a'));
@@ -600,12 +610,12 @@ mod tests {
 
     #[test]
     fn vertices_emit_one_quad_per_visible_cell() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = load_system_fonts().expect("load monospace test fonts");
         let mut terminal = Terminal::new(2, 4);
         terminal.cursor_visible = false;
 
         terminal.put_str("a b\n c ");
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let atlas = GlyphAtlas::new(&fonts, &terminal);
         let vertices = atlas.vertices(&terminal, 800.0, 600.0);
 
         assert_eq!(vertices.len(), 18);
@@ -625,11 +635,11 @@ mod tests {
 
     #[test]
     fn empty_grid_builds_empty_draw_batch() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = load_system_fonts().expect("load monospace test fonts");
         let mut terminal = Terminal::new(2, 4);
         terminal.cursor_visible = false;
 
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let atlas = GlyphAtlas::new(&fonts, &terminal);
         let vertices = atlas.vertices(&terminal, 800.0, 600.0);
 
         assert!(atlas.glyphs.is_empty());
