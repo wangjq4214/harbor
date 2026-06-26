@@ -4,7 +4,7 @@ use anyhow::Result;
 use fontdue::Font;
 use wgpu::util::DeviceExt;
 
-use crate::{font::load_system_font, render::Render, terminal::Terminal};
+use crate::{font::load_system_font, render::Render, terminal::{Terminal, AnsiColor}};
 
 const FONT_SIZE: f32 = 24.0;
 const TEXT_PADDING: f32 = 16.0;
@@ -13,11 +13,13 @@ const SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) tex_coords: vec2<f32>,
+    @location(2) color: vec3<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
+    @location(1) color: vec3<f32>,
 };
 
 @group(0) @binding(0) var text_texture: texture_2d<f32>;
@@ -28,27 +30,29 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(input.position, 0.0, 1.0);
     out.tex_coords = input.tex_coords;
+    out.color = input.color;
     return out;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = textureSample(text_texture, text_sampler, input.tex_coords).r;
-    return vec4<f32>(0.95, 0.90, 0.80, alpha);
+    return vec4<f32>(input.color, alpha);
 }
 "#;
 
-/// A GPU vertex containing clip-space position and texture coordinates.
+/// A GPU vertex containing clip-space position, texture coordinates, and color.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
     tex_coords: [f32; 2],
+    color: [f32; 3],
 }
 
 impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x3];
 
     /// Returns the wgpu vertex buffer layout matching `Vertex` memory layout.
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -59,7 +63,7 @@ impl Vertex {
         }
     }
 
-    /// Builds one glyph quad from pixel-space bounds and atlas UV bounds.
+    /// Builds one glyph quad from pixel-space bounds, atlas UV bounds, and color.
     fn glyph_quad(
         surface_width: f32,
         surface_height: f32,
@@ -68,6 +72,7 @@ impl Vertex {
         right_px: f32,
         bottom_px: f32,
         uv: AtlasUv,
+        color: [f32; 3],
     ) -> [Self; 6] {
         let left = left_px / surface_width * 2.0 - 1.0;
         let right = right_px / surface_width * 2.0 - 1.0;
@@ -78,26 +83,32 @@ impl Vertex {
             Self {
                 position: [left, top],
                 tex_coords: [uv.left, uv.top],
+                color,
             },
             Self {
                 position: [left, bottom],
                 tex_coords: [uv.left, uv.bottom],
+                color,
             },
             Self {
                 position: [right, bottom],
                 tex_coords: [uv.right, uv.bottom],
+                color,
             },
             Self {
                 position: [left, top],
                 tex_coords: [uv.left, uv.top],
+                color,
             },
             Self {
                 position: [right, bottom],
                 tex_coords: [uv.right, uv.bottom],
+                color,
             },
             Self {
                 position: [right, top],
                 tex_coords: [uv.right, uv.top],
+                color,
             },
         ]
     }
@@ -169,6 +180,7 @@ impl TextDraw {
             vec![Vertex {
                 position: [0.0, 0.0],
                 tex_coords: [0.0, 0.0],
+                color: [0.0, 0.0, 0.0],
             }]
         } else {
             vertices
@@ -245,6 +257,18 @@ impl TextRenderer {
             width,
             height,
         );
+    }
+
+    /// Returns the character cell width and line height based on font metrics.
+    pub(crate) fn cell_size(&self) -> (f32, f32) {
+        let line_metrics = self.font
+            .horizontal_line_metrics(FONT_SIZE)
+            .expect("system font should have horizontal metrics");
+        let cell_width = self.font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
+        let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
+            .ceil()
+            .max(1.0);
+        (cell_width, line_height)
     }
 }
 
@@ -375,6 +399,9 @@ impl GlyphAtlas {
             .flat_map(|row| row.chars().collect::<Vec<_>>())
             .filter(|ch| *ch != ' ')
             .collect::<Vec<_>>();
+        if terminal.cursor_visible {
+            chars.push('█');
+        }
         chars.sort_unstable();
         chars.dedup();
         let rasterized = chars
@@ -451,7 +478,31 @@ impl GlyphAtlas {
             ascent: line_metrics.ascent,
         }
     }
+}
 
+fn ansi_to_rgb(color: AnsiColor) -> [f32; 3] {
+    match color {
+        AnsiColor::Default => [0.95, 0.90, 0.80],
+        AnsiColor::Black => [0.05, 0.05, 0.05],
+        AnsiColor::Red => [0.8, 0.1, 0.1],
+        AnsiColor::Green => [0.1, 0.8, 0.1],
+        AnsiColor::Yellow => [0.8, 0.8, 0.1],
+        AnsiColor::Blue => [0.1, 0.1, 0.8],
+        AnsiColor::Magenta => [0.8, 0.1, 0.8],
+        AnsiColor::Cyan => [0.1, 0.8, 0.8],
+        AnsiColor::White => [0.8, 0.8, 0.8],
+        AnsiColor::BrightBlack => [0.4, 0.4, 0.4],
+        AnsiColor::BrightRed => [1.0, 0.3, 0.3],
+        AnsiColor::BrightGreen => [0.3, 1.0, 0.3],
+        AnsiColor::BrightYellow => [1.0, 1.0, 0.3],
+        AnsiColor::BrightBlue => [0.3, 0.3, 1.0],
+        AnsiColor::BrightMagenta => [1.0, 0.3, 1.0],
+        AnsiColor::BrightCyan => [0.3, 1.0, 1.0],
+        AnsiColor::BrightWhite => [1.0, 1.0, 1.0],
+    }
+}
+
+impl GlyphAtlas {
     /// Converts non-empty terminal cells into one batched vertex list using atlas UVs.
     fn vertices(
         &self,
@@ -461,9 +512,13 @@ impl GlyphAtlas {
     ) -> Vec<Vertex> {
         let mut vertices = Vec::new();
 
-        for (row, text) in terminal.rows_text().enumerate() {
+        for row in 0..terminal.rows {
             let baseline = TEXT_PADDING + self.ascent.ceil() + row as f32 * self.line_height;
-            for (col, ch) in text.chars().enumerate() {
+            for (col, cell) in terminal.row_cells(row).iter().enumerate() {
+                let ch = cell.ch;
+                if ch == ' ' {
+                    continue;
+                }
                 let Some(glyph) = self.glyphs.get(&ch) else {
                     continue;
                 };
@@ -477,6 +532,8 @@ impl GlyphAtlas {
                 let glyph_top = glyph_bottom - glyph.height as f32;
                 let glyph_right = glyph_left + glyph.width as f32;
 
+                let color = ansi_to_rgb(cell.fg_color);
+
                 vertices.extend_from_slice(&Vertex::glyph_quad(
                     surface_width,
                     surface_height,
@@ -485,6 +542,32 @@ impl GlyphAtlas {
                     glyph_right,
                     glyph_bottom,
                     glyph.uv,
+                    color,
+                ));
+            }
+        }
+
+        // Draw cursor block if visible
+        if terminal.cursor_visible && terminal.cursor_x < terminal.cols && terminal.cursor_y < terminal.rows {
+            if let Some(glyph) = self.glyphs.get(&'█') {
+                let baseline = TEXT_PADDING + self.ascent.ceil() + terminal.cursor_y as f32 * self.line_height;
+                let cell_x = TEXT_PADDING + terminal.cursor_x as f32 * self.cell_width;
+                let glyph_left = cell_x;
+                let glyph_top = baseline - self.ascent.ceil();
+                let glyph_bottom = glyph_top + self.line_height;
+                let glyph_right = cell_x + self.cell_width;
+
+                let cursor_color = [0.95, 0.90, 0.80];
+
+                vertices.extend_from_slice(&Vertex::glyph_quad(
+                    surface_width,
+                    surface_height,
+                    glyph_left,
+                    glyph_top,
+                    glyph_right,
+                    glyph_bottom,
+                    glyph.uv,
+                    cursor_color,
                 ));
             }
         }
@@ -502,6 +585,7 @@ mod tests {
     fn atlas_contains_each_visible_glyph_once() {
         let font = load_system_font().expect("load monospace test font");
         let mut terminal = Terminal::new(2, 5);
+        terminal.cursor_visible = false;
 
         terminal.put_str("aa b\nc a");
         let atlas = GlyphAtlas::new(&font, &terminal);
@@ -518,6 +602,7 @@ mod tests {
     fn vertices_emit_one_quad_per_visible_cell() {
         let font = load_system_font().expect("load monospace test font");
         let mut terminal = Terminal::new(2, 4);
+        terminal.cursor_visible = false;
 
         terminal.put_str("a b\n c ");
         let atlas = GlyphAtlas::new(&font, &terminal);
@@ -541,7 +626,8 @@ mod tests {
     #[test]
     fn empty_grid_builds_empty_draw_batch() {
         let font = load_system_font().expect("load monospace test font");
-        let terminal = Terminal::new(2, 4);
+        let mut terminal = Terminal::new(2, 4);
+        terminal.cursor_visible = false;
 
         let atlas = GlyphAtlas::new(&font, &terminal);
         let vertices = atlas.vertices(&terminal, 800.0, 600.0);

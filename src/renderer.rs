@@ -3,7 +3,13 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use winit::window::Window;
 
-use crate::{render::Render, terminal::Terminal, text::TextRenderer};
+use crate::{
+    app::TerminalEvent,
+    render::Render,
+    terminal::{LockedTerminal, Terminal},
+    text::TextRenderer,
+    pty::Pty,
+};
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.36,
@@ -19,12 +25,16 @@ pub(crate) struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
-    terminal: Terminal,
+    pub(crate) terminal: LockedTerminal,
+    pty: Pty,
 }
 
 impl Renderer {
     /// Creates the GPU surface, device, and text renderer for the window.
-    pub(crate) async fn new(window: Arc<Window>) -> Result<Self> {
+    pub(crate) async fn new(
+        window: Arc<Window>,
+        proxy: winit::event_loop::EventLoopProxy<TerminalEvent>,
+    ) -> Result<Self> {
         let size = window.inner_size();
         tracing::trace!(
             width = size.width,
@@ -77,16 +87,104 @@ impl Renderer {
             "renderer configured"
         );
 
-        let mut terminal = Terminal::new(12, 60);
-        terminal.put_str("Harbor terminal grid\nline 2: newline moved here\rLINE 2\nbackspace demo: abc\u{8}d\nscroll demo follows\nrow 5\nrow 6\nrow 7\nrow 8\nrow 9\nrow 10\nrow 11\nrow 12\nrow 13");
-        let text = TextRenderer::new(
+        let temp_terminal = Terminal::new(24, 80);
+        let mut text = TextRenderer::new(
             &device,
             &queue,
             config.format,
-            &terminal,
+            &temp_terminal,
             config.width,
             config.height,
         )?;
+
+        let (cell_width, cell_height) = text.cell_size();
+        let padding_width = 32.0;
+        let padding_height = 32.0;
+        let cols = (((size.width as f32 - padding_width) / cell_width) as usize).max(1);
+        let rows = (((size.height as f32 - padding_height) / cell_height) as usize).max(1);
+
+        let terminal = Arc::new(parking_lot::Mutex::new(Terminal::new(rows, cols)));
+        text.update(&device, &queue, &terminal.lock(), config.width, config.height);
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let (pty, child) = Pty::spawn(&shell, rows as u16, cols as u16)
+            .context("spawn pty failed")?;
+
+        let mut reader = pty.try_clone_reader().context("clone pty reader failed")?;
+
+        let terminal_clone = terminal.clone();
+        let proxy_clone = proxy.clone();
+
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut buf = [0u8; 4096];
+            let mut leftover = Vec::new();
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut data = if leftover.is_empty() {
+                            buf[..n].to_vec()
+                        } else {
+                            let mut temp = std::mem::take(&mut leftover);
+                            temp.extend_from_slice(&buf[..n]);
+                            temp
+                        };
+
+                        let len = data.len();
+                        let mut truncate_at = len;
+
+                        for i in 1..=4 {
+                            if len >= i {
+                                let idx = len - i;
+                                let byte = data[idx];
+                                if (byte & 0xE0) == 0xC0 {
+                                    if i < 2 { truncate_at = idx; }
+                                    break;
+                                } else if (byte & 0xF0) == 0xE0 {
+                                    if i < 3 { truncate_at = idx; }
+                                    break;
+                                } else if (byte & 0xF8) == 0xF0 {
+                                    if i < 4 { truncate_at = idx; }
+                                    break;
+                                }
+                            }
+                        }
+
+                        if truncate_at < len {
+                            leftover = data.split_off(truncate_at);
+                        }
+
+                        let text = String::from_utf8_lossy(&data);
+                        {
+                            let mut term = terminal_clone.lock();
+                            term.put_str(&text);
+                        }
+                        let _ = proxy_clone.send_event(TerminalEvent::Redraw);
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let mut child = child;
+            let status_msg = match child.wait() {
+                Ok(status) => {
+                    if status.success() {
+                        "Process completed successfully".to_string()
+                    } else {
+                        format!("Process exited with status: {:?}", status)
+                    }
+                }
+                Err(e) => format!("Process exited (failed to retrieve status: {})", e),
+            };
+
+            {
+                let mut term = terminal_clone.lock();
+                term.put_str(&format!("\n\r[{}]\n\r", status_msg));
+                term.cursor_visible = false;
+            }
+            let _ = proxy_clone.send_event(TerminalEvent::Redraw);
+        });
 
         Ok(Self {
             surface,
@@ -95,6 +193,7 @@ impl Renderer {
             config,
             text,
             terminal,
+            pty,
         })
     }
 
@@ -109,14 +208,41 @@ impl Renderer {
         self.config.height = height;
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
-        self.text
-            .update(&self.device, &self.queue, &self.terminal, width, height);
+
+        let (cell_width, cell_height) = self.text.cell_size();
+        let cols = (((width as f32 - 32.0) / cell_width) as usize).max(1);
+        let rows = (((height as f32 - 32.0) / cell_height) as usize).max(1);
+
+        {
+            let mut terminal = self.terminal.lock();
+            terminal.resize(rows, cols);
+        }
+
+        let _ = self.pty.resize(rows as u16, cols as u16);
+
+        {
+            let terminal = self.terminal.lock();
+            self.text
+                .update(&self.device, &self.queue, &terminal, width, height);
+        }
+    }
+
+    pub(crate) fn write_to_pty(&mut self, data: &[u8]) -> Result<()> {
+        self.pty.write_all(data).context("write to pty")?;
+        self.pty.flush().context("flush pty")?;
+        Ok(())
     }
 }
 
 impl Render for Renderer {
     /// Acquires the current surface texture, clears it, draws text, and presents it.
     fn render(&mut self, (): ()) {
+        // Lock terminal and update text renderer vertices to show latest terminal state
+        {
+            let terminal = self.terminal.lock();
+            self.text.update(&self.device, &self.queue, &terminal, self.config.width, self.config.height);
+        }
+
         // Surface state changes during minimize, resize, or driver events; draw only with a valid texture.
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,

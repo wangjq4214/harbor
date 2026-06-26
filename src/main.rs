@@ -9,6 +9,7 @@ mod render;
 mod renderer;
 mod terminal;
 mod text;
+mod pty;
 
 use anyhow::{Context as _, Result};
 use app::App;
@@ -20,9 +21,12 @@ fn main() -> Result<()> {
     init_tracing();
 
     tracing::trace!("starting harbor");
-    let event_loop = EventLoop::new().context("create event loop")?;
+    let event_loop = EventLoop::<app::TerminalEvent>::with_user_event()
+        .build()
+        .context("create event loop")?;
+    let proxy = event_loop.create_proxy();
 
-    let mut app = App::default();
+    let mut app = App::new(proxy);
     event_loop.run_app(&mut app).context("run event loop")?;
 
     Ok(())
