@@ -3,7 +3,7 @@ use std::{ffi::OsString, mem::size_of, os::windows::ffi::OsStrExt};
 use ::windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE},
-        Storage::FileSystem::ReadFile,
+        Storage::FileSystem::{ReadFile, WriteFile},
         System::{
             Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
             Pipes::CreatePipe,
@@ -76,6 +76,11 @@ impl Pty {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
         self._pseudo_console.resize(size)
+    }
+
+    /// Writes keyboard input bytes into the ConPTY input pipe.
+    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
+        self._input_write.write(data)
     }
 }
 
@@ -155,6 +160,13 @@ impl OwnedHandle {
 
     fn handle(&self) -> HANDLE {
         self.0
+    }
+
+    /// Writes bytes to the Win32 pipe handle; returns the number written on success.
+    pub(crate) fn write(&self, data: &[u8]) -> anyhow::Result<usize> {
+        let mut written: u32 = 0;
+        unsafe { WriteFile(self.0, Some(data), Some(&mut written as *mut u32), None) }?;
+        Ok(written as usize)
     }
 }
 

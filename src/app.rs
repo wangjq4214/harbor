@@ -2,12 +2,18 @@ use std::sync::Arc;
 
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoopProxy},
+    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
-use crate::{pty::PtySession, render::Render, renderer::Renderer, terminal::{Terminal, TerminalSize}};
+use crate::{
+    pty::PtySession,
+    render::Render,
+    renderer::Renderer,
+    terminal::{Terminal, TerminalSize},
+};
 
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
@@ -80,11 +86,11 @@ impl ApplicationHandler<AppEvent> for App {
                     .as_mut()
                     .and_then(|renderer| renderer.resize(size.width, size.height));
 
-                if let (Some(new_size), Some(terminal)) =
-                    (new_size, self.terminal.as_mut())
-                {
-                    let current =
-                        TerminalSize { rows: terminal.screen().rows(), cols: terminal.screen().cols() };
+                if let (Some(new_size), Some(terminal)) = (new_size, self.terminal.as_mut()) {
+                    let current = TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    };
                     if new_size != current {
                         terminal.resize(new_size.rows, new_size.cols);
                         if let Some(renderer) = self.renderer.as_mut() {
@@ -104,6 +110,14 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.render(());
                 }
+            }
+            // Keyboard press -> forward to PTY stdin.
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event,
+                is_synthetic: _,
+            } if event.state == ElementState::Pressed => {
+                self.handle_keyboard_input(&event);
             }
             _ => {}
         }
@@ -180,13 +194,57 @@ impl App {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.put_bytes(output);
         }
-        if let (Some(renderer), Some(terminal)) =
-            (self.renderer.as_mut(), self.terminal.as_ref())
-        {
+        if let (Some(renderer), Some(terminal)) = (self.renderer.as_mut(), self.terminal.as_ref()) {
             renderer.refresh_text(terminal.screen());
         }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+
+    /// Converts a winit key-press event into bytes and writes them to the PTY.
+    ///
+    /// Printable characters use the UTF-8 text from `KeyEvent::text`. Named control
+    /// keys are translated to the terminal escape sequences that `cmd.exe` expects.
+    /// All other keys are silently ignored.
+    fn handle_keyboard_input(&mut self, event: &KeyEvent) {
+        let bytes: Vec<u8> = if let Some(text) = event.text.as_deref() {
+            // Printable character — send its UTF-8 encoding directly.
+            if !text.is_empty() {
+                text.as_bytes().to_vec()
+            } else {
+                return;
+            }
+        } else {
+            // Named control/navigation key — translate to terminal input sequences.
+            match &event.logical_key {
+                Key::Named(NamedKey::Enter) => b"\r".to_vec(),
+                Key::Named(NamedKey::Backspace) => b"\x08".to_vec(),
+                Key::Named(NamedKey::Tab) => b"\t".to_vec(),
+                Key::Named(NamedKey::Escape) => b"\x1b".to_vec(),
+                Key::Named(NamedKey::ArrowUp) => b"\x1b[A".to_vec(),
+                Key::Named(NamedKey::ArrowDown) => b"\x1b[B".to_vec(),
+                Key::Named(NamedKey::ArrowRight) => b"\x1b[C".to_vec(),
+                Key::Named(NamedKey::ArrowLeft) => b"\x1b[D".to_vec(),
+                _ => return,
+            }
+        };
+
+        // Safety guard: skip empty byte sequences.
+        if bytes.is_empty() {
+            return;
+        }
+
+        // Forward the byte sequence to the PTY's stdin pipe.
+        let Some(pty) = self.pty.as_mut() else {
+            tracing::warn!("no pty session to write keyboard input to");
+            return;
+        };
+        if let Err(error) = pty.write(&bytes) {
+            tracing::warn!(
+                error = %format_args!("{error:#}"),
+                "failed to write keyboard input to pty"
+            );
         }
     }
 }

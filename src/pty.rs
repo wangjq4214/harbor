@@ -74,6 +74,11 @@ impl PtySession {
 
         self.pty.resize(PtySize::from_terminal(size)?)
     }
+
+    /// Forwards keyboard input bytes to the underlying PTY.
+    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
+        self.pty.write(data)
+    }
 }
 
 fn pump_pty_output<F>(mut reader: PtyReader, output_handler: F)
