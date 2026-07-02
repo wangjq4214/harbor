@@ -5,7 +5,7 @@ use winit::window::Window;
 
 use crate::{
     render::Render,
-    terminal::{Terminal, TerminalSize},
+    terminal::{Screen, TerminalSize},
     text::TextRenderer,
 };
 
@@ -23,14 +23,17 @@ pub(crate) struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
-    terminal: Terminal,
 }
 
 impl Renderer {
     /// Creates the GPU surface, device, and text renderer for the window.
-    pub(crate) async fn new(window: Arc<Window>) -> Result<Self> {
+    ///
+    /// `screen` provides the initial terminal grid for the first glyph-atlas build.  The caller
+    /// typically bootstraps with a one-cell `Terminal`, calls `terminal_size()` to compute the
+    /// real grid dimensions, resizes the terminal, then calls `refresh_text(screen)`.
+    pub(crate) async fn new(window: Arc<Window>, screen: &Screen) -> Result<Self> {
         let size = window.inner_size();
-        tracing::trace!(
+        tracing::info!(
             width = size.width,
             height = size.height,
             "creating renderer"
@@ -55,6 +58,7 @@ impl Renderer {
             })
             .await
             .context("request device")?;
+
         // Prefer an sRGB format so fragment shader colors display as expected.
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
@@ -66,6 +70,7 @@ impl Renderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
@@ -81,32 +86,32 @@ impl Renderer {
             "renderer configured"
         );
 
-        // Text metrics are needed before the real terminal dimensions are known, so
-        // bootstrap with a one-cell grid and immediately resize from the measured font.
-        let mut terminal = Terminal::new(1, 1);
         let text = TextRenderer::new(
             &device,
             &queue,
             config.format,
-            &terminal,
+            screen,
             config.width,
             config.height,
         )?;
-        let terminal_size = text.terminal_size(config.width, config.height);
-        terminal.resize(terminal_size.rows, terminal_size.cols);
-        let mut renderer = Self {
+        tracing::info!(
+            rows = text.terminal_size(config.width, config.height).rows,
+            cols = text.terminal_size(config.width, config.height).cols,
+            "renderer ready"
+        );
+
+        Ok(Self {
             surface,
             device,
             queue,
             config,
             text,
-            terminal,
-        };
-        renderer.refresh_text();
-        Ok(renderer)
+        })
     }
 
-    /// Reconfigures the surface and size-dependent resources after a window resize.
+    /// Reconfigures the surface after a window resize and returns the terminal-grid size that
+    /// fits the new surface.  Callers compare against the current terminal dimensions and
+    /// resize the terminal / pty themselves.
     pub(crate) fn resize(&mut self, width: u32, height: u32) -> Option<TerminalSize> {
         if width == 0 || height == 0 {
             tracing::trace!("ignored zero-sized resize");
@@ -117,49 +122,34 @@ impl Renderer {
         self.config.height = height;
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
-        let terminal_size = self.resize_terminal_to_surface();
-        self.refresh_text();
-        terminal_size
-    }
-
-    pub(crate) fn terminal_size(&self) -> TerminalSize {
-        TerminalSize {
-            rows: self.terminal.rows,
-            cols: self.terminal.cols,
-        }
-    }
-
-    fn resize_terminal_to_surface(&mut self) -> Option<TerminalSize> {
         let size = self
             .text
             .terminal_size(self.config.width, self.config.height);
-        if self.terminal.rows == size.rows && self.terminal.cols == size.cols {
-            return None;
-        }
-
-        self.terminal.resize(size.rows, size.cols);
+        tracing::debug!(rows = size.rows, cols = size.cols, "computed terminal size from surface");
         Some(size)
     }
 
-    fn refresh_text(&mut self) {
+    /// Terminal-grid dimensions that fit the current surface given the loaded font metrics.
+    pub(crate) fn terminal_size(&self) -> TerminalSize {
+        self.text.terminal_size(self.config.width, self.config.height)
+    }
+
+    /// Rebuilds the text draw batch from `screen`, uploading a new glyph atlas when needed.
+    pub(crate) fn refresh_text(&mut self, screen: &Screen) {
+        tracing::trace!(
+            width = self.config.width,
+            height = self.config.height,
+            rows = screen.rows(),
+            cols = screen.cols(),
+            "refreshing text resources"
+        );
         self.text.update(
             &self.device,
             &self.queue,
-            &self.terminal,
+            screen,
             self.config.width,
             self.config.height,
         );
-    }
-
-    /// Appends pty output to the terminal grid and refreshes text draw resources.
-    pub(crate) fn write_terminal_output(&mut self, output: &[u8]) {
-        if output.is_empty() {
-            return;
-        }
-
-        let text = String::from_utf8_lossy(output);
-        self.terminal.put_str(&text);
-        self.refresh_text();
     }
 }
 
@@ -196,6 +186,7 @@ impl Render for Renderer {
                 return;
             }
         };
+
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -221,10 +212,11 @@ impl Render for Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+
             self.text.render(&mut render_pass);
         }
 
         self.queue.submit(Some(encoder.finish()));
-        output.present();
+        self.queue.present(output);
     }
 }

@@ -53,8 +53,16 @@ impl PtySession {
         F: Fn(Vec<u8>) -> bool + Send + 'static,
     {
         // Convert once at the boundary so platform modules only deal with API-sized values.
+        tracing::info!(
+            rows = size.rows,
+            cols = size.cols,
+            "spawning pty shell reader"
+        );
+
         let (pty, reader) = Pty::spawn_shell(PtySize::from_terminal(size)?)?;
+        tracing::info!("pty shell spawned");
         let reader = std::thread::spawn(|| pump_pty_output(reader, output_handler));
+
         Ok(Self {
             pty,
             _reader: reader,
@@ -62,6 +70,8 @@ impl PtySession {
     }
 
     pub(crate) fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
+        tracing::info!(rows = size.rows, cols = size.cols, "resizing pty");
+
         self.pty.resize(PtySize::from_terminal(size)?)
     }
 }
@@ -71,13 +81,18 @@ where
     F: Fn(Vec<u8>) -> bool,
 {
     let mut buffer = [0_u8; 4096];
+    tracing::info!("pty output pump started");
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => {
+                tracing::info!("pty output stream reached eof");
+                break;
+            }
             Ok(bytes) => {
                 // A false return means the UI event loop rejected the message, so the
                 // shell output pump should terminate instead of buffering unreachable data.
                 if !output_handler(buffer[..bytes].to_vec()) {
+                    tracing::info!("pty output pump stopped after handler rejection");
                     break;
                 }
             }
@@ -87,4 +102,5 @@ where
             }
         }
     }
+    tracing::info!("pty output pump stopped");
 }

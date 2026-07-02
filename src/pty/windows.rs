@@ -42,16 +42,20 @@ pub(crate) struct PtyReader {
 impl Pty {
     pub(crate) fn spawn_shell(size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
+        tracing::info!(rows = size.rows, cols = size.cols, "creating windows pty");
 
         let (input_read, input_write) =
             OwnedHandle::pipe().context("failed to create pty input pipe")?;
         let (output_read, output_write) =
             OwnedHandle::pipe().context("failed to create pty output pipe")?;
+        tracing::info!("created pty pipes");
 
         let pseudo_console =
             PseudoConsole::create(size, input_read.handle(), output_write.handle())?;
+        tracing::info!("created pseudo console");
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
         let process_info = create_shell_process(&attribute_list)?;
+        tracing::info!("created shell process");
         // The pseudo console owns the child-side pipe handles after process creation.
         // Dropping our duplicates makes EOF observable when the shell exits.
         drop(input_read);
@@ -70,6 +74,7 @@ impl Pty {
 
     pub(crate) fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
+        tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
         self._pseudo_console.resize(size)
     }
 }
@@ -82,6 +87,7 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
 
     let mut process_info = PROCESS_INFORMATION::default();
     let mut command_line = shell_command_line();
+    tracing::info!("creating shell process");
 
     unsafe {
         CreateProcessW(
@@ -105,6 +111,7 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
 fn shell_command_line() -> Vec<u16> {
     let command = std::env::var_os("COMSPEC")
         .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"));
+    tracing::info!(command = ?command, "selected shell command");
     command.encode_wide().chain(std::iter::once(0)).collect()
 }
 
@@ -178,6 +185,7 @@ impl PseudoConsole {
             )
         }
         .context("failed to create pseudo console")?;
+        tracing::info!(rows = size.rows, cols = size.cols, "pseudo console ready");
 
         Ok(Self(pseudo_console))
     }
@@ -187,6 +195,11 @@ impl PseudoConsole {
     }
 
     fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
+        tracing::trace!(
+            rows = size.rows,
+            cols = size.cols,
+            "resizing pseudo console"
+        );
         unsafe {
             ResizePseudoConsole(
                 self.0,

@@ -7,14 +7,15 @@ edition = "2024"
 # error handle
 anyhow = "1.0"
 thiserror = "2.0"
+unicode-width = "0.2"
 
 # sync
 parking_lot = "0.12"
 
-# windows deps
-wgpu = "29.0"
-winit = "0.30"
 pollster = "0.4"
+# windows deps
+wgpu = "30.0"
+winit = "0.30"
 
 # logger
 tracing = "0.1"
@@ -24,11 +25,13 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 bytemuck = { version = "1.21", features = ["derive"] }
 
 # system font rasterization
-fontdb = "0.23"
 fontdue = "0.9"
+fontdb = "0.23.0"
 
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = [
+[target."cfg(windows)".dependencies]
+windows = {
+  version = "0.62.2",
+  features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -36,4 +39,5 @@ windows = { version = "0.62.2", features = [
     "Win32_System_IO",
     "Win32_System_Pipes",
     "Win32_System_Threading",
-] }
+  ]
+}

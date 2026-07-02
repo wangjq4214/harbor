@@ -16,15 +16,14 @@ use app::{App, AppEvent};
 use tracing_subscriber::filter::LevelFilter;
 use winit::event_loop::EventLoop;
 
-/// Initializes logging, creates the event loop, and starts the application.
+/// Creates the event loop and starts the application.
 fn main() -> Result<()> {
     init_tracing();
-
     tracing::trace!("starting harbor");
+
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .context("create event loop")?;
-
     let mut app = App::new(event_loop.create_proxy());
     event_loop.run_app(&mut app).context("run event loop")?;
 
@@ -37,9 +36,9 @@ fn init_tracing() {
 }
 
 #[cfg(debug_assertions)]
-/// Debug builds emit detailed logs for window and render events.
+/// Debug builds keep dependency startup logs quiet; wgpu/naga DEBUG output makes launch visibly slow.
 fn log_level() -> LevelFilter {
-    LevelFilter::DEBUG
+    LevelFilter::INFO
 }
 
 #[cfg(not(debug_assertions))]

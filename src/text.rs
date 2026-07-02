@@ -1,13 +1,13 @@
 use std::{collections::HashMap, mem};
 
 use anyhow::Result;
-use fontdue::Font;
+use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    font::load_system_font,
+    font::{FontBook, load_system_fonts},
     render::Render,
-    terminal::{Terminal, TerminalSize},
+    terminal::{Screen, TerminalSize},
 };
 
 const FONT_SIZE: f32 = 24.0;
@@ -111,23 +111,44 @@ impl Vertex {
 struct TextDraw {
     vertices: wgpu::Buffer,
     vertex_count: u32,
+}
+
+impl TextDraw {
+    fn new(device: &wgpu::Device, vertices: Vec<Vertex>) -> Self {
+        let vertex_count = vertices.len() as u32;
+        let vertices = if vertices.is_empty() {
+            vec![Vertex {
+                position: [0.0, 0.0],
+                tex_coords: [0.0, 0.0],
+            }]
+        } else {
+            vertices
+        };
+        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terminal cell vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        Self {
+            vertices,
+            vertex_count,
+        }
+    }
+}
+
+struct GpuGlyphAtlas {
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
 }
 
-impl TextDraw {
-    /// Builds a glyph atlas texture and batched cell quads for the terminal grid.
+impl GpuGlyphAtlas {
     fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
-        font: &Font,
-        terminal: &Terminal,
-        surface_width: u32,
-        surface_height: u32,
+        atlas: &GlyphAtlas,
     ) -> Self {
-        let atlas = GlyphAtlas::new(font, terminal);
-        let vertices = atlas.vertices(terminal, surface_width as f32, surface_height as f32);
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
@@ -168,55 +189,32 @@ impl TextDraw {
                 },
             ],
         });
-        let vertex_count = vertices.len() as u32;
-        let vertices = if vertices.is_empty() {
-            vec![Vertex {
-                position: [0.0, 0.0],
-                tex_coords: [0.0, 0.0],
-            }]
-        } else {
-            vertices
-        };
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terminal cell vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
 
         Self {
-            vertices,
-            vertex_count,
             _texture: texture,
             bind_group,
         }
     }
 }
 
-/// Font-derived measurements used to map window pixels to terminal cells.
+/// Fixed measurements used to map window pixels to terminal cells.
 #[derive(Clone, Copy)]
 struct TextMetrics {
-    /// Advance width of the representative monospace glyph used as a cell width.
+    /// Advance width of one terminal cell.
     cell_width: f32,
-    /// Full baseline-to-baseline distance including font line gap.
+    /// Full baseline-to-baseline distance.
     line_height: f32,
     /// Baseline offset used when placing glyph rasters inside each cell.
     ascent: f32,
 }
 
 impl TextMetrics {
-    fn new(font: &Font) -> Self {
-        let line_metrics = font
-            .horizontal_line_metrics(FONT_SIZE)
-            .expect("system font should have horizontal metrics");
-        let cell_width = font.metrics('M', FONT_SIZE).advance_width.ceil().max(1.0);
-        let line_height = (line_metrics.ascent - line_metrics.descent + line_metrics.line_gap)
-            .ceil()
-            .max(1.0);
-
+    fn new(fonts: &FontBook) -> Self {
+        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
         Self {
             cell_width,
             line_height,
-            ascent: line_metrics.ascent,
+            ascent,
         }
     }
 
@@ -235,9 +233,12 @@ impl TextMetrics {
 
 /// Holds the text render pipeline and size-dependent draw resources.
 pub(crate) struct TextRenderer {
-    font: Font,
+    fonts: FontBook,
+    metrics: TextMetrics,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    atlas: GlyphAtlas,
+    gpu_atlas: GpuGlyphAtlas,
     draw: TextDraw,
 }
 
@@ -247,33 +248,45 @@ impl TextRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        terminal: &Terminal,
+        screen: &Screen,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let font = load_system_font()?;
-        let bind_group_layout = Self::create_bind_group_layout(device);
-        let pipeline = Self::create_pipeline(device, format, &bind_group_layout);
-        let draw = TextDraw::new(
-            device,
-            queue,
-            &bind_group_layout,
-            &font,
-            terminal,
+        tracing::info!(
             width,
             height,
+            rows = screen.rows(),
+            cols = screen.cols(),
+            "creating text renderer"
         );
+        let fonts = load_system_fonts()?;
+        let metrics = TextMetrics::new(&fonts);
+        let bind_group_layout = Self::create_bind_group_layout(device);
+        let pipeline = Self::create_pipeline(device, format, &bind_group_layout);
+        let mut atlas = GlyphAtlas::new(metrics);
+        atlas.update(&fonts, screen);
+        tracing::info!(
+            glyphs = atlas.glyphs.len(),
+            atlas_width = atlas.width,
+            atlas_height = atlas.height,
+            "glyph atlas initialized"
+        );
+        let gpu_atlas = GpuGlyphAtlas::new(device, queue, &bind_group_layout, &atlas);
+        let draw = TextDraw::new(device, atlas.vertices(screen, width as f32, height as f32));
 
         Ok(Self {
-            font,
+            fonts,
+            metrics,
             pipeline,
             bind_group_layout,
+            atlas,
+            gpu_atlas,
             draw,
         })
     }
 
     pub(crate) fn terminal_size(&self, width: u32, height: u32) -> TerminalSize {
-        TextMetrics::new(&self.font).terminal_size(width, height)
+        self.metrics.terminal_size(width, height)
     }
 
     /// Rebuilds text resources after terminal contents or surface size changes.
@@ -281,18 +294,31 @@ impl TextRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        terminal: &Terminal,
+        screen: &Screen,
         width: u32,
         height: u32,
     ) {
-        self.draw = TextDraw::new(
-            device,
-            queue,
-            &self.bind_group_layout,
-            &self.font,
-            terminal,
+        let atlas_changed = self.atlas.update(&self.fonts, screen);
+        if atlas_changed {
+            tracing::debug!(
+                glyphs = self.atlas.glyphs.len(),
+                atlas_width = self.atlas.width,
+                atlas_height = self.atlas.height,
+                "glyph atlas changed; uploading texture"
+            );
+            self.gpu_atlas =
+                GpuGlyphAtlas::new(device, queue, &self.bind_group_layout, &self.atlas);
+        }
+        tracing::trace!(
             width,
             height,
+            rows = screen.rows(),
+            cols = screen.cols(),
+            "rebuilding text draw batch"
+        );
+        self.draw = TextDraw::new(
+            device,
+            self.atlas.vertices(screen, width as f32, height as f32),
         );
     }
 }
@@ -301,7 +327,7 @@ impl<'pass> Render<&mut wgpu::RenderPass<'pass>> for TextRenderer {
     /// Binds the glyph atlas and issues the batched cell draw call.
     fn render(&mut self, render_pass: &mut wgpu::RenderPass<'pass>) {
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.draw.bind_group, &[]);
+        render_pass.set_bind_group(0, &self.gpu_atlas.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.draw.vertices.slice(..));
         render_pass.draw(0..self.draw.vertex_count, 0..1);
     }
@@ -356,7 +382,7 @@ impl TextRenderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Vertex::layout()],
+                buffers: &[Some(Vertex::layout())],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -398,82 +424,125 @@ struct AtlasUv {
     bottom: f32,
 }
 
+struct RasterizedGlyph {
+    ch: char,
+    metrics: Metrics,
+    bitmap: Vec<u8>,
+}
+
 /// CPU-built glyph atlas plus enough metrics to build cell quads.
 struct GlyphAtlas {
     width: u32,
     height: u32,
     pixels: Vec<u8>,
     glyphs: HashMap<char, AtlasGlyph>,
+    rasterized: Vec<RasterizedGlyph>,
     cell_width: f32,
     line_height: f32,
     ascent: f32,
 }
 
 impl GlyphAtlas {
-    /// Rasterizes each distinct visible character once and packs glyphs into one atlas row.
-    fn new(font: &Font, terminal: &Terminal) -> Self {
-        let text_metrics = TextMetrics::new(font);
-        let mut chars = terminal
-            .rows_text()
-            .flat_map(|row| row.chars().collect::<Vec<_>>())
-            .filter(|ch| *ch != ' ')
-            .collect::<Vec<_>>();
+    fn new(text_metrics: TextMetrics) -> Self {
+        Self {
+            width: 1,
+            height: 1,
+            pixels: vec![0],
+            glyphs: HashMap::new(),
+            rasterized: Vec::new(),
+            cell_width: text_metrics.cell_width,
+            line_height: text_metrics.line_height,
+            ascent: text_metrics.ascent,
+        }
+    }
+
+    /// Rebuilds the atlas from all non-space characters currently on screen.
+    ///
+    /// Stale glyphs that are no longer visible are evicted so the atlas never grows past the
+    /// current screen's glyph set.  This avoids unbounded single-row width growth at the cost of
+    /// re-rasterizing after scroll or content replacement.
+    fn update(&mut self, fonts: &FontBook, screen: &Screen) -> bool {
+        let mut chars: Vec<char> = screen
+            .cells()
+            .filter_map(|(_, _, ch)| if ch != ' ' { Some(ch) } else { None })
+            .collect();
         chars.sort_unstable();
         chars.dedup();
-        let rasterized = chars
-            .into_iter()
-            .map(|ch| {
-                let (metrics, bitmap) = font.rasterize(ch, FONT_SIZE);
-                (ch, metrics, bitmap)
-            })
-            .collect::<Vec<_>>();
 
-        if rasterized.is_empty() {
-            return Self {
-                width: 1,
-                height: 1,
-                pixels: vec![0],
-                glyphs: HashMap::new(),
-                cell_width: text_metrics.cell_width,
-                line_height: text_metrics.line_height,
-                ascent: text_metrics.ascent,
-            };
+        // Nothing to add and nothing to evict.
+        if chars.iter().all(|ch| self.glyphs.contains_key(ch))
+            && self.rasterized.len() == chars.len()
+        {
+            return false;
         }
 
-        let width = rasterized
+        tracing::debug!(glyphs = chars.len(), "rebuilding glyph atlas from current screen");
+        self.rasterized.clear();
+        for ch in chars {
+            let (metrics, bitmap) = fonts.rasterize(ch, FONT_SIZE);
+            self.rasterized.push(RasterizedGlyph {
+                ch,
+                metrics,
+                bitmap,
+            });
+        }
+        // `chars` was already sorted; repack consumes `rasterized` in its current order.
+        self.repack();
+        tracing::debug!(
+            atlas_width = self.width,
+            atlas_height = self.height,
+            "glyph atlas repacked"
+        );
+        true
+    }
+
+    fn repack(&mut self) {
+        if self.rasterized.is_empty() {
+            self.width = 1;
+            self.height = 1;
+            self.pixels = vec![0];
+            self.glyphs.clear();
+            return;
+        }
+
+        self.width = self
+            .rasterized
             .iter()
-            .map(|(_, metrics, _)| metrics.width as u32 + ATLAS_PADDING)
+            .map(|glyph| glyph.metrics.width as u32 + ATLAS_PADDING)
             .sum::<u32>()
             .max(1);
-        let height = rasterized
+        self.height = self
+            .rasterized
             .iter()
-            .map(|(_, metrics, _)| metrics.height as u32)
+            .map(|glyph| glyph.metrics.height as u32)
             .max()
             .unwrap_or(1)
             .max(1);
-        let mut pixels = vec![0; (width * height) as usize];
-        let mut glyphs = HashMap::with_capacity(rasterized.len());
-        let mut atlas_x = 0;
+        self.pixels = vec![0; (self.width * self.height) as usize];
+        self.glyphs.clear();
+        self.glyphs.reserve(self.rasterized.len());
 
-        for (ch, metrics, bitmap) in rasterized {
+        let mut atlas_x = 0;
+        for glyph in &self.rasterized {
+            let metrics = &glyph.metrics;
             for row in 0..metrics.height {
-                let dst_start = row * width as usize + atlas_x as usize;
+                let dst_start = row * self.width as usize + atlas_x as usize;
                 let src_start = row * metrics.width;
                 let src_end = src_start + metrics.width;
-                pixels[dst_start..dst_start + metrics.width]
-                    .copy_from_slice(&bitmap[src_start..src_end]);
+                self.pixels[dst_start..dst_start + metrics.width]
+                    .copy_from_slice(&glyph.bitmap[src_start..src_end]);
             }
 
-            let left = atlas_x as f32 / width as f32;
-            let right = (atlas_x + metrics.width as u32) as f32 / width as f32;
-            glyphs.insert(
-                ch,
+            let left = atlas_x as f32 / self.width as f32;
+            let right = (atlas_x + metrics.width as u32) as f32 / self.width as f32;
+            self.glyphs.insert(
+                glyph.ch,
                 AtlasGlyph {
                     uv: AtlasUv {
                         left,
                         top: 0.0,
                         right,
-                        bottom: metrics.height as f32 / height as f32,
+                        bottom: metrics.height as f32 / self.height as f32,
                     },
                     width: metrics.width as u32,
                     height: metrics.height as u32,
@@ -483,71 +552,65 @@ impl GlyphAtlas {
             );
             atlas_x += metrics.width as u32 + ATLAS_PADDING;
         }
-
-        Self {
-            width,
-            height,
-            pixels,
-            glyphs,
-            cell_width: text_metrics.cell_width,
-            line_height: text_metrics.line_height,
-            ascent: text_metrics.ascent,
-        }
     }
 
     /// Converts non-empty terminal cells into one batched vertex list using atlas UVs.
-    fn vertices(
-        &self,
-        terminal: &Terminal,
-        surface_width: f32,
-        surface_height: f32,
-    ) -> Vec<Vertex> {
+    fn vertices(&self, screen: &Screen, surface_width: f32, surface_height: f32) -> Vec<Vertex> {
         let mut vertices = Vec::new();
 
-        for (row, text) in terminal.rows_text().enumerate() {
-            let baseline = TEXT_PADDING + self.ascent.ceil() + row as f32 * self.line_height;
-            for (col, ch) in text.chars().enumerate() {
-                let Some(glyph) = self.glyphs.get(&ch) else {
-                    continue;
-                };
-                if glyph.width == 0 || glyph.height == 0 {
-                    continue;
-                }
-
-                let cell_x = TEXT_PADDING + col as f32 * self.cell_width;
-                let glyph_left = cell_x + glyph.xmin as f32;
-                let glyph_bottom = baseline - glyph.ymin as f32;
-                let glyph_top = glyph_bottom - glyph.height as f32;
-                let glyph_right = glyph_left + glyph.width as f32;
-
-                vertices.extend_from_slice(&Vertex::glyph_quad(
-                    surface_width,
-                    surface_height,
-                    glyph_left,
-                    glyph_top,
-                    glyph_right,
-                    glyph_bottom,
-                    glyph.uv,
-                ));
+        for (row, col, ch) in screen.cells() {
+            if ch == ' ' {
+                continue;
             }
+            let Some(glyph) = self.glyphs.get(&ch) else {
+                continue;
+            };
+            if glyph.width == 0 || glyph.height == 0 {
+                continue;
+            }
+
+            let cell_x = TEXT_PADDING + col as f32 * self.cell_width;
+            let baseline = TEXT_PADDING + self.ascent.ceil() + row as f32 * self.line_height;
+            let glyph_left = cell_x + glyph.xmin as f32;
+            let glyph_bottom = baseline - glyph.ymin as f32;
+            let glyph_top = glyph_bottom - glyph.height as f32;
+            let glyph_right = glyph_left + glyph.width as f32;
+
+            vertices.extend_from_slice(&Vertex::glyph_quad(
+                surface_width,
+                surface_height,
+                glyph_left,
+                glyph_top,
+                glyph_right,
+                glyph_bottom,
+                glyph.uv,
+            ));
         }
 
         vertices
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use super::GlyphAtlas;
-    use crate::{font::load_system_font, terminal::Terminal};
+    use super::{GlyphAtlas, TextMetrics};
+    use crate::{font::load_system_fonts, terminal::Terminal};
+
+    fn test_font_book() -> crate::font::FontBook {
+        load_system_fonts().expect("load test font")
+    }
+
+    fn test_atlas(fonts: &crate::font::FontBook) -> GlyphAtlas {
+        GlyphAtlas::new(TextMetrics::new(fonts))
+    }
 
     #[test]
     fn atlas_contains_each_visible_glyph_once() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = test_font_book();
         let mut terminal = Terminal::new(2, 5);
 
         terminal.put_str("aa b\nc a");
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let mut atlas = test_atlas(&fonts);
+        atlas.update(&fonts, terminal.screen());
 
         assert_eq!(atlas.glyphs.len(), 3);
         assert!(atlas.glyphs.contains_key(&'a'));
@@ -559,12 +622,13 @@ mod tests {
 
     #[test]
     fn vertices_emit_one_quad_per_visible_cell() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = test_font_book();
         let mut terminal = Terminal::new(2, 4);
 
         terminal.put_str("a b\n c ");
-        let atlas = GlyphAtlas::new(&font, &terminal);
-        let vertices = atlas.vertices(&terminal, 800.0, 600.0);
+        let mut atlas = test_atlas(&fonts);
+        atlas.update(&fonts, terminal.screen());
+        let vertices = atlas.vertices(terminal.screen(), 800.0, 600.0);
 
         assert_eq!(vertices.len(), 18);
         assert!(vertices.iter().all(|vertex| {
@@ -582,16 +646,50 @@ mod tests {
     }
 
     #[test]
+    fn atlas_rasterizes_cjk_glyph_from_fallback_font() {
+        let fonts = test_font_book();
+        let mut terminal = Terminal::new(1, 4);
+
+        terminal.put_str("中");
+        let mut atlas = test_atlas(&fonts);
+        atlas.update(&fonts, terminal.screen());
+
+        let glyph = atlas.glyphs.get(&'中').expect("CJK glyph in atlas");
+        assert!(glyph.width > 0);
+        assert!(glyph.height > 0);
+    }
+
+    #[test]
     fn empty_grid_builds_empty_draw_batch() {
-        let font = load_system_font().expect("load monospace test font");
+        let fonts = test_font_book();
         let terminal = Terminal::new(2, 4);
 
-        let atlas = GlyphAtlas::new(&font, &terminal);
-        let vertices = atlas.vertices(&terminal, 800.0, 600.0);
+        let mut atlas = test_atlas(&fonts);
+        atlas.update(&fonts, terminal.screen());
+        let vertices = atlas.vertices(terminal.screen(), 800.0, 600.0);
 
         assert!(atlas.glyphs.is_empty());
         assert_eq!((atlas.width, atlas.height), (1, 1));
         assert_eq!(atlas.pixels, vec![0]);
         assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn cached_atlas_reuses_existing_glyphs() {
+        let fonts = test_font_book();
+        let mut terminal = Terminal::new(1, 4);
+        let mut atlas = test_atlas(&fonts);
+
+        terminal.put_str("aa");
+        atlas.update(&fonts, terminal.screen());
+        assert_eq!(atlas.glyphs.len(), 1);
+
+        terminal.put_str("\x1b[1;1Ha ");
+        atlas.update(&fonts, terminal.screen());
+        assert_eq!(atlas.glyphs.len(), 1);
+
+        terminal.put_str("\x1b[1;1Hab");
+        atlas.update(&fonts, terminal.screen());
+        assert_eq!(atlas.glyphs.len(), 2);
     }
 }
