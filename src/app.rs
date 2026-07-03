@@ -11,7 +11,6 @@ use winit::{
 use crate::{
     cursor::CursorBlink,
     pty::PtySession,
-    render::Render,
     renderer::Renderer,
     terminal::{Terminal, TerminalSize},
 };
@@ -49,8 +48,13 @@ enum AppError {
     Pty(#[source] anyhow::Error),
 }
 
+// ── ApplicationHandler (winit lifecycle) ──────────────────────────────────
+
 /// Handles the winit lifecycle and window events.
 impl ApplicationHandler<AppEvent> for App {
+    /// Called on start or wake from suspend.  Bootstraps the window, renderer,
+    /// terminal, and PTY on first call; no-ops on repeated resumes to keep
+    /// existing state intact.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(error) = self.try_resume(event_loop) {
             tracing::error!(error = %format_args!("{error:#}"), "application error");
@@ -58,17 +62,23 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+    /// Handles custom events posted from background workers.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            // PTY reader thread sent decoded bytes — feed them to the terminal parser.
             AppEvent::PtyOutput(output) => self.write_pty_output(&output),
         }
     }
 
+    /// Called when the event loop is about to block.  Drives cursor blink:
+    /// requests a redraw on visibility toggle, returns the next blink
+    /// deadline for `ControlFlow::WaitUntil`.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let next = self.cursor_blink.check_blink(self.window.as_deref());
         event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
+    /// Dispatches window-level events: resize, redraw, close, keyboard input.
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -87,6 +97,9 @@ impl ApplicationHandler<AppEvent> for App {
                 tracing::info!("close requested");
                 event_loop.exit();
             }
+
+            // Resize: update surface config, compare terminal dimensions,
+            // resize the terminal/pty if needed, then request redraw.
             WindowEvent::Resized(size) => {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
                 let new_size = self
@@ -101,8 +114,9 @@ impl ApplicationHandler<AppEvent> for App {
                     };
                     if new_size != current {
                         terminal.resize(new_size.rows, new_size.cols);
+                        // Upload text + cursor vertices for the new surface size.
                         if let Some(renderer) = self.renderer.as_mut() {
-                            renderer.refresh_text(terminal.screen());
+                            renderer.prepare_layers(terminal.screen());
                         }
                     }
                     if let Some(pty) = self.pty.as_mut()
@@ -113,19 +127,24 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 window.request_redraw();
             }
+
+            // Redraw: sync cursor blink visibility, upload cursor vertices,
+            // commit the blink state, then draw a frame and present it.
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
                 if let (Some(renderer), Some(terminal)) =
                     (self.renderer.as_mut(), self.terminal.as_ref())
                 {
                     renderer.set_cursor_visible(self.cursor_blink.visible(), terminal.screen());
+                    renderer.prepare_cursor(terminal.screen());
                 }
                 self.cursor_blink.commit_frame();
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.render(());
+                    renderer.render();
                 }
             }
-            // Keyboard press -> forward to PTY stdin.
+
+            // Keyboard press → forward the key event to the PTY stdin pipe.
             WindowEvent::KeyboardInput {
                 device_id: _,
                 event,
@@ -138,7 +157,11 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
+// ── App (own methods) ─────────────────────────────────────────────────────
+
 impl App {
+    /// Creates the application shell with no initial window, renderer, or PTY.
+    /// These are lazily initialised on the first `resumed` call.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             event_proxy,
@@ -150,7 +173,8 @@ impl App {
         }
     }
 
-    /// Creates the main window and renderer; keeps existing state on repeated resumes.
+    /// Creates the main window and renderer; keeps existing state on
+    /// repeated resumes (e.g. after suspend/resume on mobile platforms).
     fn try_resume(&mut self, event_loop: &ActiveEventLoop) -> std::result::Result<(), AppError> {
         if self.window.is_some() {
             return Ok(());
@@ -160,8 +184,9 @@ impl App {
         let window =
             Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
 
-        // Bootstrap with a one-cell terminal so the glyph atlas has a screen to build from.
-        // The renderer computes the real grid size from font metrics and surface dimensions.
+        // Bootstrap with a 1×1 terminal so the glyph atlas has a screen to
+        // build from.  The renderer computes the real grid size from font
+        // metrics and surface dimensions.
         let mut terminal = Terminal::new(1, 1);
         let renderer = pollster::block_on(Renderer::new(window.clone(), terminal.screen()))
             .map_err(AppError::Renderer)?;
@@ -177,12 +202,13 @@ impl App {
         Ok(())
     }
 
+    /// Starts the PTY session with a shell reader thread.  The reader posts
+    /// `AppEvent::PtyOutput` back to the event loop; if the event loop has
+    /// shut down, the reader returns false and stops.
     fn start_pty(
         &mut self,
         size: crate::terminal::TerminalSize,
     ) -> std::result::Result<(), AppError> {
-        // The reader thread returns false when the event loop has gone away, which lets
-        // the pump stop instead of keeping a detached background loop alive.
         let event_proxy = self.event_proxy.clone();
 
         tracing::info!(rows = size.rows, cols = size.cols, "starting pty");
@@ -200,18 +226,23 @@ impl App {
         Ok(())
     }
 
+    /// Feeds raw PTY bytes into the terminal parser and refreshes the
+    /// renderer's text/cursor GPU resources for the new screen content.
     fn write_pty_output(&mut self, output: &[u8]) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
         }
 
+        // Feed bytes into the terminal parser (updates screen cells and cursor).
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.put_bytes(output);
         }
+        // Upload new text atlas and cursor vertices for the changed screen.
         if let (Some(renderer), Some(terminal)) = (self.renderer.as_mut(), self.terminal.as_ref()) {
-            renderer.refresh_text(terminal.screen());
+            renderer.prepare_layers(terminal.screen());
         }
+        // Request a redraw to display the updated screen.
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -219,9 +250,9 @@ impl App {
 
     /// Converts a winit key-press event into bytes and writes them to the PTY.
     ///
-    /// Printable characters use the UTF-8 text from `KeyEvent::text`. Named control
-    /// keys are translated to the terminal escape sequences that `cmd.exe` expects.
-    /// All other keys are silently ignored.
+    /// Printable characters use the UTF-8 text from `KeyEvent::text`. Named
+    /// control keys are translated to the terminal escape sequences that
+    /// `cmd.exe` expects.  All other keys are silently ignored.
     fn handle_keyboard_input(&mut self, event: &KeyEvent) {
         let Some(bytes) = keyboard_input_bytes(&event.logical_key, event.text.as_deref()) else {
             return;
@@ -241,20 +272,23 @@ impl App {
     }
 }
 
-/// Maps a logical key + optional text to the byte sequence to write to the PTY.
-///
-/// Named control/navigation keys are dispatched by `logical_key` first so they
-/// are never intercepted by whatever winit places in `text`.
+// ── Key mapping ───────────────────────────────────────────────────────────
+
+/// Maps a logical key + optional text to the byte sequence to write to the
+/// PTY.  Named control/navigation keys are dispatched by `logical_key` first
+/// so they are never intercepted by whatever winit places in `text`.
 fn keyboard_input_bytes(logical_key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
     match logical_key {
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),
         Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
         Key::Named(NamedKey::Escape) => Some(b"\x1b".to_vec()),
+        // Arrow keys → standard VT100 escape sequences.
         Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
         Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
         Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
         Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
+        // For everything else, send the UTF-8 text if present.
         _ => {
             let t = text?;
             if t.is_empty() {
@@ -265,6 +299,8 @@ fn keyboard_input_bytes(logical_key: &Key, text: Option<&str>) -> Option<Vec<u8>
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

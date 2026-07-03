@@ -1,210 +1,107 @@
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use winit::window::Window;
 
 use crate::{
-    cursor::CursorRenderer,
+    cursor::{self, CursorLayer},
     font::load_system_fonts,
+    gpu::{self, GpuContext},
     metrics::TextMetrics,
-    render::Render,
-    terminal::{Screen, TerminalSize},
-    text,
-    text::TextRenderer,
+    terminal::{Screen, TerminalSize, TextLayer, FONT_SIZE},
 };
 
-const BACKGROUND: wgpu::Color = wgpu::Color {
-    r: 0.36,
-    g: 0.20,
-    b: 0.08,
-    a: 1.0,
-};
-
-/// Owns the wgpu surface, device queue, and per-frame rendering resources.
+/// Owns the GPU context and layer stack; orchestrates frame rendering.
 pub(crate) struct Renderer {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    text: TextRenderer,
-    cursor: CursorRenderer,
+    /// Shared GPU handles (surface / device / queue / config).
+    gpu: GpuContext,
+    /// Text rendering layer (glyph atlas + pipeline).
+    text_layer: TextLayer,
+    /// Cursor rendering layer (blinking block cursor).
+    cursor_layer: CursorLayer,
 }
 
 impl Renderer {
-    /// Creates the GPU surface, device, and text renderer for the window.
+    /// Creates the GPU context, loads fonts, and initialises text and cursor layers.
     ///
-    /// `screen` provides the initial terminal grid for the first glyph-atlas build.  The caller
-    /// typically bootstraps with a one-cell `Terminal`, calls `terminal_size()` to compute the
-    /// real grid dimensions, resizes the terminal, then calls `refresh_text(screen)`.
+    /// `screen` provides the initial terminal grid for the first glyph-atlas build.
+    /// The caller bootstraps with a 1×1 `Terminal`, calls `terminal_size()` to
+    /// compute the real grid dimensions, resizes the terminal, then calls
+    /// `prepare_layers(screen)`.
     pub(crate) async fn new(window: Arc<Window>, screen: &Screen) -> Result<Self> {
-        let size = window.inner_size();
-        tracing::info!(
-            width = size.width,
-            height = size.height,
-            "creating renderer"
-        );
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window).context("create surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .context("request adapter")?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .context("request device")?;
-
-        // Prefer an sRGB format so fragment shader colors display as expected.
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(capabilities.formats[0]);
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-        tracing::info!(
-            width = config.width,
-            height = config.height,
-            ?format,
-            "renderer configured"
-        );
+        let gpu = GpuContext::new(window).await?;
         let fonts = load_system_fonts()?;
         let metrics = TextMetrics::new(&fonts);
-        let cursor_size = text::FONT_SIZE;
-
-        fn rasterize_cursor(fonts: &crate::font::FontBook, size: f32) -> anyhow::Result<(fontdue::Metrics, Vec<u8>)> {
-            for ch in ['\u{2502}', '|'] {
-                let (metrics, bitmap) = fonts.rasterize(ch, size);
-                if metrics.width > 0 && metrics.height > 0 && bitmap.iter().any(|&b| b != 0) {
-                    return Ok((metrics, bitmap));
-                }
-            }
-            anyhow::bail!("primary font lacks both '│' (U+2502) and '|' (U+007C); unsuitable for a terminal cursor")
-        }
-
-        let (cursor_metrics, cursor_bitmap) = rasterize_cursor(&fonts, cursor_size)?;
-
-        let text = TextRenderer::new(
-            &device,
-            &queue,
-            config.format,
-            fonts,
-            metrics,
-            screen,
-            config.width,
-            config.height,
-        )?;
-        let cursor = CursorRenderer::new(
-            &device,
-            &queue,
-            config.format,
-            metrics.cell_width,
-            metrics.line_height,
-            metrics.ascent,
-            &cursor_bitmap,
-            cursor_metrics,
-        );
+        let (cursor_metrics, cursor_bitmap) =
+            cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
+        let text_layer = TextLayer::new(&gpu, fonts, metrics, screen)?;
+        let cursor_layer = CursorLayer::new(&gpu, metrics, &cursor_bitmap, cursor_metrics);
 
         tracing::info!(
-            rows = text.terminal_size(config.width, config.height).rows,
-            cols = text.terminal_size(config.width, config.height).cols,
+            rows = text_layer.terminal_size(&gpu).rows,
+            cols = text_layer.terminal_size(&gpu).cols,
             "renderer ready"
         );
 
         Ok(Self {
-            surface,
-            device,
-            queue,
-            config,
-            text,
-            cursor,
+            gpu,
+            text_layer,
+            cursor_layer,
         })
     }
 
-    /// Reconfigures the surface after a window resize and returns the terminal-grid size that
-    /// fits the new surface.  Callers compare against the current terminal dimensions and
-    /// resize the terminal / pty themselves.
+    /// Reconfigures the surface on window resize, marks cursor layer dirty,
+    /// and returns the new terminal grid size.
+    /// Callers compare against the current terminal dimensions and resize
+    /// terminal/pty as needed.
     pub(crate) fn resize(&mut self, width: u32, height: u32) -> Option<TerminalSize> {
         if width == 0 || height == 0 {
             tracing::trace!("ignored zero-sized resize");
             return None;
         }
-
-        self.config.width = width;
-        self.config.height = height;
-        tracing::trace!(width, height, "renderer resized");
-        self.surface.configure(&self.device, &self.config);
-        let size = self
-            .text
-            .terminal_size(self.config.width, self.config.height);
-        tracing::debug!(
-            rows = size.rows,
-            cols = size.cols,
-            "computed terminal size from surface"
-        );
-        Some(size)
+        self.gpu.resize(width, height);
+        self.cursor_layer.mark_dirty();
+        Some(self.text_layer.terminal_size(&self.gpu))
     }
 
-    /// Terminal-grid dimensions that fit the current surface given the loaded font metrics.
+    /// Terminal grid dimensions for the current surface size.
     pub(crate) fn terminal_size(&self) -> TerminalSize {
-        self.text
-            .terminal_size(self.config.width, self.config.height)
+        self.text_layer.terminal_size(&self.gpu)
     }
 
-    /// Rebuilds the text draw batch from `screen`, uploading a new glyph atlas when needed.
-    pub(crate) fn refresh_text(&mut self, screen: &Screen) {
+    /// Refreshes GPU resources for text and cursor layers (called after
+    /// terminal content changes).
+    pub(crate) fn prepare_layers(&mut self, screen: &Screen) {
+        use crate::render::Layer;
         tracing::trace!(
-            width = self.config.width,
-            height = self.config.height,
+            width = self.gpu.surface_size().0,
+            height = self.gpu.surface_size().1,
             rows = screen.rows(),
             cols = screen.cols(),
-            "refreshing text resources"
+            "preparing layers"
         );
-        self.text.update(
-            &self.device,
-            &self.queue,
-            screen,
-            self.config.width,
-            self.config.height,
-        );
-        self.cursor
-            .update(screen, &self.queue, self.config.width, self.config.height);
+        self.text_layer.prepare(&self.gpu, Some(screen));
+        self.cursor_layer.prepare(&self.gpu, Some(screen));
     }
 
-    /// Sets the cursor visibility for the current blink phase and redraw cycle.
+    /// Sets cursor visibility.  Only updates the flag, does not trigger GPU upload.
     pub(crate) fn set_cursor_visible(&mut self, visible: bool, screen: &Screen) {
-        self.cursor
-            .set_visible(visible, screen, &self.queue, self.config.width, self.config.height);
+        self.cursor_layer.set_visible(visible, screen);
     }
-}
 
-impl Render for Renderer {
-    /// Acquires the current surface texture, clears it, draws text, and presents it.
-    fn render(&mut self, (): ()) {
-        // Surface state changes during minimize, resize, or driver events; draw only with a valid texture.
-        let output = match self.surface.get_current_texture() {
+    /// Uploads cursor vertices when position/visibility changed.
+    /// Called before `render()` when only the cursor blink toggles (no terminal output).
+    pub(crate) fn prepare_cursor(&mut self, screen: &Screen) {
+        use crate::render::Layer;
+        self.cursor_layer.prepare(&self.gpu, Some(screen));
+    }
+
+    /// Acquires the surface texture, clears it, draws text and cursor layers,
+    /// submits commands, and presents the frame.
+    pub(crate) fn render(&mut self) {
+        use crate::render::Layer;
+
+        let output = match self.gpu.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
             wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
                 tracing::warn!("surface texture suboptimal");
@@ -212,12 +109,14 @@ impl Render for Renderer {
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 tracing::warn!("surface lost; reconfiguring");
-                self.surface.configure(&self.device, &self.config);
+                let (w, h) = self.gpu.surface_size();
+                self.gpu.resize(w, h);
                 return;
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 tracing::warn!("surface outdated; reconfiguring");
-                self.surface.configure(&self.device, &self.config);
+                let (w, h) = self.gpu.surface_size();
+                self.gpu.resize(w, h);
                 return;
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
@@ -238,10 +137,10 @@ impl Render for Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
-            .device
+            .gpu
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // End the render pass borrow before submitting the command buffer.
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
@@ -250,7 +149,7 @@ impl Render for Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(BACKGROUND),
+                        load: wgpu::LoadOp::Clear(gpu::BACKGROUND),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -260,11 +159,11 @@ impl Render for Renderer {
                 multiview_mask: None,
             });
 
-            self.text.render(&mut render_pass);
-            self.cursor.render(&mut render_pass);
+            self.text_layer.draw(&mut render_pass);
+            self.cursor_layer.draw(&mut render_pass);
         }
 
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(output);
+        self.gpu.queue().submit(Some(encoder.finish()));
+        self.gpu.present(output);
     }
 }

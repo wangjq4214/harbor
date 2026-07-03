@@ -6,12 +6,12 @@
 mod app;
 mod cursor;
 mod font;
+mod gpu;
 mod metrics;
 mod pty;
 mod render;
 mod renderer;
 mod terminal;
-mod text;
 
 use anyhow::{Context as _, Result};
 use app::{App, AppEvent};
