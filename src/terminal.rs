@@ -51,15 +51,20 @@ impl Terminal {
         self.parser.put_bytes(&mut self.screen, bytes);
     }
 
-    #[cfg(test)]
-    pub(crate) fn put_char(&mut self, ch: char) {
-        let mut bytes = [0; 4];
-        self.put_bytes(ch.encode_utf8(&mut bytes).as_bytes());
-    }
-
     /// Returns the renderable screen snapshot owned by this terminal.
     pub(crate) fn screen(&self) -> &Screen {
         &self.screen
+    }
+
+    /// Mutable screen access for tests.
+    #[cfg(test)]
+    pub(crate) fn screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen
+    }
+
+    /// Resets the screen's dirty-row tracking (called after layers consume the dirt).
+    pub(crate) fn clear_screen_dirty(&mut self) {
+        self.screen.clear_dirty();
     }
 
     #[cfg(test)]

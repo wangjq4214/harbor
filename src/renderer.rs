@@ -8,7 +8,7 @@ use crate::{
     font::load_system_fonts,
     gpu::{self, GpuContext},
     metrics::TextMetrics,
-    terminal::{Screen, TerminalSize, TextLayer, FONT_SIZE},
+    terminal::{FONT_SIZE, Screen, TerminalSize, TextLayer},
 };
 
 /// Owns the GPU context and layer stack; orchestrates frame rendering.
@@ -32,8 +32,7 @@ impl Renderer {
         let gpu = GpuContext::new(window).await?;
         let fonts = load_system_fonts()?;
         let metrics = TextMetrics::new(&fonts);
-        let (cursor_metrics, cursor_bitmap) =
-            cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
+        let (cursor_metrics, cursor_bitmap) = cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
         let text_layer = TextLayer::new(&gpu, fonts, metrics, screen)?;
         let cursor_layer = CursorLayer::new(&gpu, metrics, &cursor_bitmap, cursor_metrics);
 
@@ -60,6 +59,7 @@ impl Renderer {
             return None;
         }
         self.gpu.resize(width, height);
+        self.text_layer.mark_dirty();
         self.cursor_layer.mark_dirty();
         Some(self.text_layer.terminal_size(&self.gpu))
     }

@@ -208,14 +208,12 @@ impl CursorLayer {
     /// GPU vertex upload is deferred to `Layer::prepare`.
     pub(crate) fn set_visible(&mut self, visible: bool, screen: &Screen) {
         self.visible = visible;
-        let current = if visible
-            && screen.cursor_y() < screen.rows()
-            && screen.cursor_x() < screen.cols()
-        {
-            (visible, screen.cursor_x(), screen.cursor_y())
-        } else {
-            (false, 0, 0)
-        };
+        let current =
+            if visible && screen.cursor_y() < screen.rows() && screen.cursor_x() < screen.cols() {
+                (visible, screen.cursor_x(), screen.cursor_y())
+            } else {
+                (false, 0, 0)
+            };
         if self.last_cursor != Some(current) {
             self.dirty = true;
         }

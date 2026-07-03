@@ -155,6 +155,15 @@ pub(crate) struct TexturedVertex {
     pub(crate) tex_coords: [f32; 2],
 }
 
+impl Default for TexturedVertex {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 2],
+            tex_coords: [0.0; 2],
+        }
+    }
+}
+
 impl TexturedVertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];

@@ -117,6 +117,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // Upload text + cursor vertices for the new surface size.
                         if let Some(renderer) = self.renderer.as_mut() {
                             renderer.prepare_layers(terminal.screen());
+                            terminal.clear_screen_dirty();
                         }
                     }
                     if let Some(pty) = self.pty.as_mut()
@@ -241,6 +242,10 @@ impl App {
         // Upload new text atlas and cursor vertices for the changed screen.
         if let (Some(renderer), Some(terminal)) = (self.renderer.as_mut(), self.terminal.as_ref()) {
             renderer.prepare_layers(terminal.screen());
+        }
+        // Clear dirty tracking after layers consume it.
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.clear_screen_dirty();
         }
         // Request a redraw to display the updated screen.
         if let Some(window) = self.window.as_ref() {

@@ -24,25 +24,31 @@ impl Default for Cell {
 /// parse byte streams; `TerminalParser` calls these methods after recognizing control sequences.
 #[derive(Debug)]
 pub(crate) struct Screen {
+    /// Number of visible rows in the terminal grid.
     rows: usize,
+    /// Number of visible columns in the terminal grid.
     cols: usize,
+    /// 0-based column within the current row.
     cursor_x: usize,
+    /// 0-based row index.
     cursor_y: usize,
     /// Row-major backing store indexed as `row * cols + col`.
     cells: Vec<Cell>,
+    /// Tracks which rows were modified since last clear.
+    dirty_rows: Vec<bool>,
 }
 
 impl Screen {
     pub(crate) fn new(rows: usize, cols: usize) -> Self {
         assert!(rows > 0, "terminal rows must be non-zero");
         assert!(cols > 0, "terminal cols must be non-zero");
-
         Self {
             rows,
             cols,
             cursor_x: 0,
             cursor_y: 0,
             cells: vec![Cell::default(); rows * cols],
+            dirty_rows: vec![true; rows],
         }
     }
 
@@ -70,6 +76,11 @@ impl Screen {
             .iter()
             .enumerate()
             .map(|(i, cell)| (i / self.cols, i % self.cols, cell.ch))
+    }
+
+    /// Returns the character at the given `(row, col)` grid position.
+    pub(crate) fn cell_char(&self, row: usize, col: usize) -> char {
+        self.cells[row * self.cols + col].ch
     }
 
     /// Resizes the visible grid while preserving the top-left rectangle of existing cells.
@@ -100,6 +111,28 @@ impl Screen {
         self.cursor_y = self.cursor_y.min(rows - 1);
         self.cursor_x = self.cursor_x.min(cols - 1);
         self.cells = cells;
+        self.dirty_rows = vec![true; rows];
+    }
+
+    /// Yields indices of rows modified since last `clear_dirty()`.
+    pub(crate) fn dirty_rows(&self) -> impl Iterator<Item = usize> + '_ {
+        self.dirty_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| d.then_some(i))
+    }
+
+    /// Resets all dirty flags to false.
+    pub(crate) fn clear_dirty(&mut self) {
+        self.dirty_rows.fill(false);
+    }
+
+    fn mark_row_dirty(&mut self, row: usize) {
+        self.dirty_rows[row] = true;
+    }
+
+    fn mark_all_dirty(&mut self) {
+        self.dirty_rows.fill(true);
     }
 
     #[cfg(test)]
@@ -152,9 +185,12 @@ impl Screen {
             return;
         }
 
+
         if width == 2 && self.cursor_x + 1 >= self.cols {
             self.newline();
         }
+        self.mark_row_dirty(self.cursor_y);
+
 
         let index = self.cursor_y * self.cols + self.cursor_x;
         self.clear_cell_for_write(index);
@@ -178,8 +214,16 @@ impl Screen {
         }
     }
 
-    /// Clears a target cell and any joined cell from an existing double-width glyph.
+    /// Clears the target cell *and* any joined cell from a double-width glyph that overlaps it.
+    ///
+    /// Three cases are handled:
+    /// 1. The target is a wide-continuation cell → clear both halves (the base at `index - 1`
+    ///    and this continuation cell).
+    /// 2. The target itself is the start of a double-width glyph that extends into the next
+    ///    column → clear both cells.
+    /// 3. Otherwise → clear only the target cell.
     fn clear_cell_for_write(&mut self, index: usize) {
+        debug_assert!(index > 0 || !self.cells[index].wide_continuation, "wide_continuation at column 0 is invalid");
         if self.cells[index].wide_continuation {
             self.cells[index - 1] = Cell::default();
             self.cells[index] = Cell::default();
@@ -226,18 +270,26 @@ impl Screen {
     }
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
-    ///
-    /// Mode 0 clears from the cursor through the end, mode 1 clears through the cursor, and mode 2
-    /// clears the whole screen and homes the cursor.
     pub(crate) fn erase_display(&mut self, mode: usize) {
         let cursor = self.cursor_y * self.cols + self.cursor_x;
         match mode {
-            0 => self.cells[cursor..].fill(Cell::default()),
-            1 => self.cells[..=cursor].fill(Cell::default()),
+            0 => {
+                self.cells[cursor..].fill(Cell::default());
+                for row in self.cursor_y..self.rows {
+                    self.mark_row_dirty(row);
+                }
+            }
+            1 => {
+                self.cells[..=cursor].fill(Cell::default());
+                for row in 0..=self.cursor_y {
+                    self.mark_row_dirty(row);
+                }
+            }
             2 => {
                 self.cells.fill(Cell::default());
                 self.cursor_x = 0;
                 self.cursor_y = 0;
+                self.mark_all_dirty();
             }
             _ => {}
         }
@@ -248,6 +300,7 @@ impl Screen {
         let start = self.cursor_y * self.cols;
         let cursor = start + self.cursor_x;
         let end = start + self.cols;
+        self.mark_row_dirty(self.cursor_y);
         match mode {
             0 => self.cells[cursor..end].fill(Cell::default()),
             1 => self.cells[start..=cursor].fill(Cell::default()),
@@ -261,11 +314,14 @@ impl Screen {
         self.cells.fill(Cell::default());
         self.cursor_x = 0;
         self.cursor_y = 0;
+        self.mark_all_dirty();
     }
 
     /// Implements reverse index (`ESC M`): move up, or scroll the visible grid down at row 0.
     pub(crate) fn reverse_index(&mut self) {
         if self.cursor_y == 0 {
+            self.mark_all_dirty();
+            // Shift rows 0..rows-1 down by one row, then blank the top row.
             let len = (self.rows - 1) * self.cols;
             self.cells.copy_within(0..len, self.cols);
             self.cells[..self.cols].fill(Cell::default());
@@ -274,11 +330,174 @@ impl Screen {
         }
     }
 
-    /// Scrolls the visible grid up by one row and blanks the last row.
+    /// Scrolls the visible grid up by one row: shifts every row upward (row N → N-1) and
+    /// fills the newly exposed bottom row with blank cells. The cursor stays on the bottom row.
     fn scroll_up(&mut self) {
+        self.mark_all_dirty();
         self.cells.copy_within(self.cols.., 0);
         let first_blank = (self.rows - 1) * self.cols;
         self.cells[first_blank..].fill(Cell::default());
         self.cursor_y = self.rows - 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_char_marks_its_row() {
+        let mut screen = Screen::new(3, 4);
+        // After new, all rows are dirty.
+        screen.clear_dirty();
+        screen.write_char('x');
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(dirty, vec![0], "write_char at row 0 should mark row 0");
+    }
+
+    #[test]
+    fn clear_dirty_resets_all() {
+        let mut screen = Screen::new(2, 4);
+        // All rows initially dirty.
+        assert_eq!(screen.dirty_rows().count(), 2);
+        screen.clear_dirty();
+        assert_eq!(screen.dirty_rows().count(), 0);
+    }
+
+    #[test]
+    fn scroll_up_marks_all_rows() {
+        let mut screen = Screen::new(3, 4);
+        // Fill all rows, then scroll up via newline on bottom row.
+        screen.clear_dirty();
+        screen.cursor_y = 2; // bottom row
+        screen.newline(); // triggers scroll_up
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(dirty.len(), 3, "scroll_up should mark all rows");
+    }
+
+    #[test]
+    fn erase_line_marks_cursor_row() {
+        let mut screen = Screen::new(4, 4);
+        screen.cursor_y = 2;
+        screen.clear_dirty();
+        screen.erase_line(2);
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(dirty, vec![2], "erase_line should mark only cursor row");
+    }
+
+    #[test]
+    fn cursor_movement_does_not_mark_dirty() {
+        let mut screen = Screen::new(3, 4);
+        screen.clear_dirty();
+        screen.cursor_up(1);
+        screen.cursor_down(1);
+        screen.cursor_left(1);
+        screen.cursor_right(1);
+        screen.carriage_return();
+        screen.set_cursor(2, 2);
+        assert_eq!(
+            screen.dirty_rows().count(),
+            0,
+            "cursor-only ops should not mark rows dirty"
+        );
+    }
+
+    #[test]
+    fn erase_display_mode_0_marks_from_cursor_to_end() {
+        let mut screen = Screen::new(5, 4);
+        screen.cursor_y = 2;
+        screen.clear_dirty();
+        screen.erase_display(0);
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(
+            dirty,
+            vec![2, 3, 4],
+            "erase_display(0) should mark rows cursor..end"
+        );
+    }
+
+    #[test]
+    fn erase_display_mode_1_marks_from_start_to_cursor() {
+        let mut screen = Screen::new(5, 4);
+        screen.cursor_y = 2;
+        screen.clear_dirty();
+        screen.erase_display(1);
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(
+            dirty,
+            vec![0, 1, 2],
+            "erase_display(1) should mark rows 0..=cursor"
+        );
+    }
+
+    #[test]
+    fn erase_display_mode_2_marks_all() {
+        let mut screen = Screen::new(5, 4);
+        screen.clear_dirty();
+        screen.erase_display(2);
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(dirty.len(), 5, "erase_display(2) should mark all rows");
+    }
+
+    #[test]
+    fn reset_display_marks_all_rows() {
+        let mut screen = Screen::new(3, 4);
+        screen.clear_dirty();
+        screen.reset_display();
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(dirty.len(), 3, "reset_display should mark all rows");
+    }
+
+    #[test]
+    fn reverse_index_scroll_marks_all_rows() {
+        let mut screen = Screen::new(3, 4);
+        screen.clear_dirty();
+        screen.cursor_y = 0;
+        screen.reverse_index(); // triggers scroll
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(
+            dirty.len(),
+            3,
+            "reverse_index with scroll should mark all rows"
+        );
+    }
+
+    #[test]
+    fn backspace_does_not_mark_dirty() {
+        let mut screen = Screen::new(1, 4);
+        screen.cursor_x = 2;
+        screen.clear_dirty();
+        screen.backspace();
+        assert_eq!(
+            screen.dirty_rows().count(),
+            0,
+            "backspace should not mark rows dirty"
+        );
+    }
+
+    #[test]
+    fn newline_no_scroll_does_not_mark_dirty() {
+        let mut screen = Screen::new(3, 4);
+        screen.cursor_y = 1;
+        screen.clear_dirty();
+        screen.newline();
+        assert_eq!(
+            screen.dirty_rows().count(),
+            0,
+            "newline without scroll should not mark dirty"
+        );
+    }
+
+    #[test]
+    fn resize_rebuilds_dirty_all_true() {
+        let mut screen = Screen::new(2, 4);
+        screen.clear_dirty();
+        screen.resize(4, 4);
+        let dirty: Vec<usize> = screen.dirty_rows().collect();
+        assert_eq!(
+            dirty.len(),
+            4,
+            "resize should rebuild dirty_rows with all true"
+        );
     }
 }
