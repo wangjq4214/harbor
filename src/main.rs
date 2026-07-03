@@ -4,7 +4,9 @@
 )]
 
 mod app;
+mod cursor;
 mod font;
+mod metrics;
 mod pty;
 mod render;
 mod renderer;

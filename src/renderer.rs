@@ -4,8 +4,12 @@ use anyhow::{Context as _, Result};
 use winit::window::Window;
 
 use crate::{
+    cursor::CursorRenderer,
+    font::load_system_fonts,
+    metrics::TextMetrics,
     render::Render,
     terminal::{Screen, TerminalSize},
+    text,
     text::TextRenderer,
 };
 
@@ -23,6 +27,7 @@ pub(crate) struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
+    cursor: CursorRenderer,
 }
 
 impl Renderer {
@@ -85,15 +90,43 @@ impl Renderer {
             ?format,
             "renderer configured"
         );
+        let fonts = load_system_fonts()?;
+        let metrics = TextMetrics::new(&fonts);
+        let cursor_size = text::FONT_SIZE;
+
+        fn rasterize_cursor(fonts: &crate::font::FontBook, size: f32) -> anyhow::Result<(fontdue::Metrics, Vec<u8>)> {
+            for ch in ['\u{2502}', '|'] {
+                let (metrics, bitmap) = fonts.rasterize(ch, size);
+                if metrics.width > 0 && metrics.height > 0 && bitmap.iter().any(|&b| b != 0) {
+                    return Ok((metrics, bitmap));
+                }
+            }
+            anyhow::bail!("primary font lacks both '│' (U+2502) and '|' (U+007C); unsuitable for a terminal cursor")
+        }
+
+        let (cursor_metrics, cursor_bitmap) = rasterize_cursor(&fonts, cursor_size)?;
 
         let text = TextRenderer::new(
             &device,
             &queue,
             config.format,
+            fonts,
+            metrics,
             screen,
             config.width,
             config.height,
         )?;
+        let cursor = CursorRenderer::new(
+            &device,
+            &queue,
+            config.format,
+            metrics.cell_width,
+            metrics.line_height,
+            metrics.ascent,
+            &cursor_bitmap,
+            cursor_metrics,
+        );
+
         tracing::info!(
             rows = text.terminal_size(config.width, config.height).rows,
             cols = text.terminal_size(config.width, config.height).cols,
@@ -106,6 +139,7 @@ impl Renderer {
             queue,
             config,
             text,
+            cursor,
         })
     }
 
@@ -125,13 +159,18 @@ impl Renderer {
         let size = self
             .text
             .terminal_size(self.config.width, self.config.height);
-        tracing::debug!(rows = size.rows, cols = size.cols, "computed terminal size from surface");
+        tracing::debug!(
+            rows = size.rows,
+            cols = size.cols,
+            "computed terminal size from surface"
+        );
         Some(size)
     }
 
     /// Terminal-grid dimensions that fit the current surface given the loaded font metrics.
     pub(crate) fn terminal_size(&self) -> TerminalSize {
-        self.text.terminal_size(self.config.width, self.config.height)
+        self.text
+            .terminal_size(self.config.width, self.config.height)
     }
 
     /// Rebuilds the text draw batch from `screen`, uploading a new glyph atlas when needed.
@@ -150,6 +189,14 @@ impl Renderer {
             self.config.width,
             self.config.height,
         );
+        self.cursor
+            .update(screen, &self.queue, self.config.width, self.config.height);
+    }
+
+    /// Sets the cursor visibility for the current blink phase and redraw cycle.
+    pub(crate) fn set_cursor_visible(&mut self, visible: bool, screen: &Screen) {
+        self.cursor
+            .set_visible(visible, screen, &self.queue, self.config.width, self.config.height);
     }
 }
 
@@ -214,6 +261,7 @@ impl Render for Renderer {
             });
 
             self.text.render(&mut render_pass);
+            self.cursor.render(&mut render_pass);
         }
 
         self.queue.submit(Some(encoder.finish()));

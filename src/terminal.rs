@@ -64,7 +64,6 @@ impl Terminal {
     pub(crate) fn row_text(&self, row: usize) -> String {
         self.screen.row_text(row)
     }
-
 }
 
 #[cfg(test)]
@@ -106,6 +105,19 @@ mod tests {
         terminal.put_str("ab\rc");
 
         assert_eq!(terminal.row_text(0), "cb  ");
+        assert_eq!(
+            (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+            (1, 0)
+        );
+    }
+
+    #[test]
+    fn backspace_is_non_destructive() {
+        let mut terminal = Terminal::new(1, 4);
+
+        terminal.put_str("ab\u{8}");
+
+        assert_eq!(terminal.row_text(0), "ab  ");
         assert_eq!(
             (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
             (1, 0)
@@ -268,12 +280,12 @@ mod tests {
     }
 
     #[test]
-    fn backspace_erases_double_width_character() {
+    fn backspace_on_double_width_character_is_non_destructive() {
         let mut terminal = Terminal::new(1, 4);
 
         terminal.put_str("中\u{8}");
 
-        assert_eq!(terminal.row_text(0), "    ");
+        assert_eq!(terminal.row_text(0), "中   ");
         assert_eq!(
             (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
             (0, 0)

@@ -3,12 +3,13 @@ use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoopProxy},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
 use crate::{
+    cursor::CursorBlink,
     pty::PtySession,
     render::Render,
     renderer::Renderer,
@@ -33,6 +34,8 @@ pub(crate) struct App {
     terminal: Option<Terminal>,
     /// Owns the shell process and keeps its reader thread alive while the app runs.
     pty: Option<PtySession>,
+    /// Cursor blink state machine — drives redraw on toggle.
+    cursor_blink: CursorBlink,
 }
 
 /// Errors that can occur while starting the application.
@@ -59,6 +62,11 @@ impl ApplicationHandler<AppEvent> for App {
         match event {
             AppEvent::PtyOutput(output) => self.write_pty_output(&output),
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let next = self.cursor_blink.check_blink(self.window.as_deref());
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
     fn window_event(
@@ -107,6 +115,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
+                if let (Some(renderer), Some(terminal)) =
+                    (self.renderer.as_mut(), self.terminal.as_ref())
+                {
+                    renderer.set_cursor_visible(self.cursor_blink.visible(), terminal.screen());
+                }
+                self.cursor_blink.commit_frame();
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.render(());
                 }
@@ -132,6 +146,7 @@ impl App {
             renderer: None,
             terminal: None,
             pty: None,
+            cursor_blink: CursorBlink::new(),
         }
     }
 
@@ -208,32 +223,9 @@ impl App {
     /// keys are translated to the terminal escape sequences that `cmd.exe` expects.
     /// All other keys are silently ignored.
     fn handle_keyboard_input(&mut self, event: &KeyEvent) {
-        let bytes: Vec<u8> = if let Some(text) = event.text.as_deref() {
-            // Printable character — send its UTF-8 encoding directly.
-            if !text.is_empty() {
-                text.as_bytes().to_vec()
-            } else {
-                return;
-            }
-        } else {
-            // Named control/navigation key — translate to terminal input sequences.
-            match &event.logical_key {
-                Key::Named(NamedKey::Enter) => b"\r".to_vec(),
-                Key::Named(NamedKey::Backspace) => b"\x08".to_vec(),
-                Key::Named(NamedKey::Tab) => b"\t".to_vec(),
-                Key::Named(NamedKey::Escape) => b"\x1b".to_vec(),
-                Key::Named(NamedKey::ArrowUp) => b"\x1b[A".to_vec(),
-                Key::Named(NamedKey::ArrowDown) => b"\x1b[B".to_vec(),
-                Key::Named(NamedKey::ArrowRight) => b"\x1b[C".to_vec(),
-                Key::Named(NamedKey::ArrowLeft) => b"\x1b[D".to_vec(),
-                _ => return,
-            }
-        };
-
-        // Safety guard: skip empty byte sequences.
-        if bytes.is_empty() {
+        let Some(bytes) = keyboard_input_bytes(&event.logical_key, event.text.as_deref()) else {
             return;
-        }
+        };
 
         // Forward the byte sequence to the PTY's stdin pipe.
         let Some(pty) = self.pty.as_mut() else {
@@ -246,5 +238,111 @@ impl App {
                 "failed to write keyboard input to pty"
             );
         }
+    }
+}
+
+/// Maps a logical key + optional text to the byte sequence to write to the PTY.
+///
+/// Named control/navigation keys are dispatched by `logical_key` first so they
+/// are never intercepted by whatever winit places in `text`.
+fn keyboard_input_bytes(logical_key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
+    match logical_key {
+        Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
+        Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),
+        Key::Named(NamedKey::Tab) => Some(b"\t".to_vec()),
+        Key::Named(NamedKey::Escape) => Some(b"\x1b".to_vec()),
+        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
+        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
+        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
+        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
+        _ => {
+            let t = text?;
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.as_bytes().to_vec())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::{Key, NamedKey};
+
+    fn k(name: NamedKey) -> Key {
+        Key::Named(name)
+    }
+
+    #[test]
+    fn backspace_with_unexpected_text_still_sends_del() {
+        // If winit ever puts "\x17" (Ctrl+W = kill-word) in `text` for
+        // Backspace, the logical_key match must still win.
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::Backspace), Some("\x17")),
+            Some(b"\x7f".to_vec())
+        );
+    }
+
+    #[test]
+    fn backspace_with_no_text_sends_del() {
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::Backspace), None),
+            Some(b"\x7f".to_vec())
+        );
+    }
+
+    #[test]
+    fn backspace_with_empty_text_sends_del() {
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::Backspace), Some("")),
+            Some(b"\x7f".to_vec())
+        );
+    }
+
+    #[test]
+    fn enter_sends_cr() {
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::Enter), None),
+            Some(b"\r".to_vec())
+        );
+    }
+
+    #[test]
+    fn escape_sends_esc() {
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::Escape), None),
+            Some(b"\x1b".to_vec())
+        );
+    }
+
+    #[test]
+    fn arrow_up() {
+        assert_eq!(
+            keyboard_input_bytes(&k(NamedKey::ArrowUp), None),
+            Some(b"\x1b[A".to_vec())
+        );
+    }
+
+    #[test]
+    fn printable_character() {
+        assert_eq!(
+            keyboard_input_bytes(&Key::Character("a".into()), Some("a")),
+            Some(b"a".to_vec())
+        );
+    }
+
+    #[test]
+    fn unrecognized_named_key_no_text_ignored() {
+        assert_eq!(keyboard_input_bytes(&k(NamedKey::F1), None), None);
+    }
+
+    #[test]
+    fn empty_text_ignored() {
+        assert_eq!(
+            keyboard_input_bytes(&Key::Character("".into()), Some("")),
+            None
+        );
     }
 }

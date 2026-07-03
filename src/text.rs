@@ -5,13 +5,13 @@ use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    font::{FontBook, load_system_fonts},
+    font::FontBook,
+    metrics::{TEXT_PADDING, TextMetrics},
     render::Render,
     terminal::{Screen, TerminalSize},
 };
 
-const FONT_SIZE: f32 = 24.0;
-const TEXT_PADDING: f32 = 16.0;
+pub(crate) const FONT_SIZE: f32 = 24.0;
 const ATLAS_PADDING: u32 = 1;
 const SHADER: &str = r#"
 struct VertexInput {
@@ -197,40 +197,6 @@ impl GpuGlyphAtlas {
     }
 }
 
-/// Fixed measurements used to map window pixels to terminal cells.
-#[derive(Clone, Copy)]
-struct TextMetrics {
-    /// Advance width of one terminal cell.
-    cell_width: f32,
-    /// Full baseline-to-baseline distance.
-    line_height: f32,
-    /// Baseline offset used when placing glyph rasters inside each cell.
-    ascent: f32,
-}
-
-impl TextMetrics {
-    fn new(fonts: &FontBook) -> Self {
-        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
-        Self {
-            cell_width,
-            line_height,
-            ascent,
-        }
-    }
-
-    // Keep at least one row and column even when padding exceeds the surface size;
-    // downstream terminal storage and wgpu buffers assume non-empty dimensions.
-    fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
-        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(self.cell_width);
-        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(self.line_height);
-
-        TerminalSize {
-            rows: (text_height / self.line_height).floor().max(1.0) as usize,
-            cols: (text_width / self.cell_width).floor().max(1.0) as usize,
-        }
-    }
-}
-
 /// Holds the text render pipeline and size-dependent draw resources.
 pub(crate) struct TextRenderer {
     fonts: FontBook,
@@ -243,11 +209,14 @@ pub(crate) struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// Loads the font, creates the pipeline, and prepares terminal draw data.
+    /// Creates the text render pipeline using pre-loaded fonts and metrics.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
+        fonts: FontBook,
+        metrics: TextMetrics,
         screen: &Screen,
         width: u32,
         height: u32,
@@ -259,8 +228,6 @@ impl TextRenderer {
             cols = screen.cols(),
             "creating text renderer"
         );
-        let fonts = load_system_fonts()?;
-        let metrics = TextMetrics::new(&fonts);
         let bind_group_layout = Self::create_bind_group_layout(device);
         let pipeline = Self::create_pipeline(device, format, &bind_group_layout);
         let mut atlas = GlyphAtlas::new(metrics);
@@ -476,7 +443,10 @@ impl GlyphAtlas {
             return false;
         }
 
-        tracing::debug!(glyphs = chars.len(), "rebuilding glyph atlas from current screen");
+        tracing::debug!(
+            glyphs = chars.len(),
+            "rebuilding glyph atlas from current screen"
+        );
         self.rasterized.clear();
         for ch in chars {
             let (metrics, bitmap) = fonts.rasterize(ch, FONT_SIZE);

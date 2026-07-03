@@ -102,6 +102,7 @@ impl Screen {
         self.cells = cells;
     }
 
+    #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
         assert!(row < self.rows, "terminal row out of bounds");
         let start = row * self.cols;
@@ -180,10 +181,8 @@ impl Screen {
     /// Clears a target cell and any joined cell from an existing double-width glyph.
     fn clear_cell_for_write(&mut self, index: usize) {
         if self.cells[index].wide_continuation {
+            self.cells[index - 1] = Cell::default();
             self.cells[index] = Cell::default();
-            if index.is_multiple_of(self.cols) {
-                self.cells[index - 1] = Cell::default();
-            }
             return;
         }
 
@@ -205,25 +204,19 @@ impl Screen {
         }
     }
 
-    /// Moves one cell left and clears that cell, matching the existing terminal editing model.
-    ///
-    /// When the target cell is the continuation of a double-width character the cursor steps back
-    /// to the leading cell first so the write position lands where the erased glyph began.
+    /// VT non-destructive backspace: move cursor left, skipping wide-continuation cells.
     pub(crate) fn backspace(&mut self) {
         if self.cursor_x == 0 {
             return;
         }
         self.cursor_x -= 1;
-        let index = self.cursor_y * self.cols + self.cursor_x;
 
-        // Erasing the continuation half of a wide glyph should leave the cursor at the glyph's
-        // start column rather than sitting mid-glyph.
+        // Step past the continuation half of a wide glyph so the cursor
+        // lands at the start column rather than sitting mid-glyph.
+        let index = self.cursor_y * self.cols + self.cursor_x;
         if self.cells[index].wide_continuation && self.cursor_x > 0 {
             self.cursor_x -= 1;
         }
-
-        let leading = self.cursor_y * self.cols + self.cursor_x;
-        self.clear_cell_for_write(leading);
     }
 
     /// Positions the cursor from 1-based ANSI coordinates, clamped to the visible grid.
