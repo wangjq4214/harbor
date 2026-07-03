@@ -5,14 +5,13 @@ use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
+    config::{FONT_SIZE, TEXT_PADDING},
     font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::{TEXT_PADDING, TextMetrics},
+    metrics::TextMetrics,
     render::Layer,
     terminal::{Screen, TerminalSize},
 };
-
-pub(crate) const FONT_SIZE: f32 = 24.0;
 const ATLAS_PADDING: u32 = 1;
 const MAX_ATLAS_SIZE: u32 = 2048;
 const SHADER: &str = r#"

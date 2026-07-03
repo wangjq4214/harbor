@@ -4,7 +4,7 @@ mod text;
 
 use parser::TerminalParser;
 pub(crate) use screen::Screen;
-pub(crate) use text::{FONT_SIZE, TextLayer};
+pub(crate) use text::TextLayer;
 
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

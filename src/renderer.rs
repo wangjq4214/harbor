@@ -4,11 +4,12 @@ use anyhow::Result;
 use winit::window::Window;
 
 use crate::{
+    config::{BACKGROUND, FONT_SIZE},
     cursor::{self, CursorLayer},
     font::load_system_fonts,
-    gpu::{self, GpuContext},
+    gpu::GpuContext,
     metrics::TextMetrics,
-    terminal::{FONT_SIZE, Screen, TerminalSize, TextLayer},
+    terminal::{Screen, TerminalSize, TextLayer},
 };
 
 /// Owns the GPU context and layer stack; orchestrates frame rendering.
@@ -149,7 +150,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(gpu::BACKGROUND),
+                        load: wgpu::LoadOp::Clear(BACKGROUND),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

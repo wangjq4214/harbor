@@ -1,6 +1,4 @@
-use crate::{font::FontBook, terminal::TerminalSize};
-
-pub(crate) const TEXT_PADDING: f32 = 16.0;
+use crate::{config::TEXT_PADDING, font::FontBook, terminal::TerminalSize};
 
 /// Fixed measurements used to map window pixels to terminal cells.
 #[derive(Clone, Copy)]

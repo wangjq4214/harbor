@@ -4,8 +4,9 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::{
+    config::{BLINK_INTERVAL_MS, TEXT_PADDING},
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::{TEXT_PADDING, TextMetrics},
+    metrics::TextMetrics,
     render::Layer,
     terminal::Screen,
 };
@@ -288,7 +289,7 @@ impl Layer for CursorLayer {
 
 // ── CursorBlink ───────────────────────────────────────────────────────────
 
-/// Cursor blink phase state machine.  Decides visibility based on a 530ms
+/// Cursor blink phase state machine.  Decides visibility based on a configured
 /// on/off cycle and requests redraws when the phase toggles.
 pub(crate) struct CursorBlink {
     /// Blink timer start (set to `Instant::now` on creation).
@@ -297,7 +298,6 @@ pub(crate) struct CursorBlink {
     last_rendered_visible: bool,
 }
 
-const BLINK_INTERVAL_MS: u64 = 530;
 
 impl CursorBlink {
     pub(crate) fn new() -> Self {

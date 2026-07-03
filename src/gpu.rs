@@ -4,12 +4,6 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-pub(crate) const BACKGROUND: wgpu::Color = wgpu::Color {
-    r: 0.36,
-    g: 0.20,
-    b: 0.08,
-    a: 1.0,
-};
 
 // ── GpuContext ────────────────────────────────────────────────────────────
 

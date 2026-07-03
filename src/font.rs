@@ -30,9 +30,9 @@ impl FontBook {
     /// cells are handled by the terminal grid, not by doubling font metrics.
     pub(crate) fn terminal_metrics(&self) -> (f32, f32, f32) {
         let font = &self.fonts[0].font;
-        let metrics = font.metrics('M', 24.0);
+        let metrics = font.metrics('M', crate::config::FONT_SIZE);
         let cell_width = metrics.advance_width.ceil();
-        if let Some(line) = font.horizontal_line_metrics(24.0) {
+        if let Some(line) = font.horizontal_line_metrics(crate::config::FONT_SIZE) {
             (cell_width, line.new_line_size.ceil(), line.ascent.ceil())
         } else {
             // Fallback: approximate from a representative glyph.
