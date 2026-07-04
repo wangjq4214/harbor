@@ -6,6 +6,9 @@ use parser::TerminalParser;
 pub(crate) use screen::Screen;
 pub(crate) use text::TextLayer;
 
+use winit::window::Window;
+
+use crate::renderer::Renderer;
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalSize {
@@ -70,6 +73,47 @@ impl Terminal {
     #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
         self.screen.row_text(row)
+    }
+
+    /// Feeds raw PTY bytes into the terminal parser and refreshes the
+    /// renderer's text/cursor GPU resources for the new screen content.
+    pub(crate) fn process_output(
+        &mut self,
+        renderer: &mut Renderer,
+        window: &Window,
+        output: &[u8],
+    ) {
+        if output.is_empty() {
+            tracing::trace!("ignored empty pty output chunk");
+            return;
+        }
+
+        // Feed bytes into the terminal parser (updates screen cells and cursor).
+        self.put_bytes(output);
+        // Upload new text atlas and cursor vertices for the changed screen.
+        renderer.prepare_layers(self.screen());
+        // Clear dirty tracking after layers consume it.
+        self.clear_screen_dirty();
+        // Request a redraw to display the updated screen.
+        window.request_redraw();
+    }
+
+    /// Resizes the terminal grid when the window surface changes.
+    ///
+    /// Compares `new_size` against the current terminal dimensions.  If
+    /// different, resizes the terminal, re-uploads layers, and clears dirty
+    /// tracking.
+    pub(crate) fn resize_with_renderer(&mut self, renderer: &mut Renderer, new_size: TerminalSize) {
+        let current = TerminalSize {
+            rows: self.screen().rows(),
+            cols: self.screen().cols(),
+        };
+
+        if new_size != current {
+            self.resize(new_size.rows, new_size.cols);
+            renderer.prepare_layers(self.screen());
+            self.clear_screen_dirty();
+        }
     }
 }
 
