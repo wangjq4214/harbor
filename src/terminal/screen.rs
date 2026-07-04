@@ -1,12 +1,62 @@
 use unicode_width::UnicodeWidthChar;
 
+/// Terminal color value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Color {
+    /// Use the terminal's default foreground/background.
+    Default,
+    /// Standard ANSI colors 0-7.
+    Named(u8),
+    /// Bright ANSI colors 0-7 (rendered as palette entries 8-15).
+    Bright(u8),
+    /// 256-color palette index 0-255.
+    Indexed(u8),
+    /// Truecolor RGB.
+    Rgb(u8, u8, u8),
+}
+
+/// Text style attributes, stored as a compact bitset.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CellAttrs(u8);
+
+impl CellAttrs {
+    pub(crate) const BOLD: u8 = 1 << 0;
+    pub(crate) const DIM: u8 = 1 << 1;
+    pub(crate) const ITALIC: u8 = 1 << 2;
+    pub(crate) const UNDERLINE: u8 = 1 << 3;
+    pub(crate) const BLINK: u8 = 1 << 4;
+    pub(crate) const INVERSE: u8 = 1 << 5;
+    pub(crate) const STRIKETHROUGH: u8 = 1 << 6;
+
+    #[allow(dead_code)]
+    pub(crate) fn contains(self, bits: u8) -> bool {
+        self.0 & bits != 0
+    }
+    pub(crate) fn set(&mut self, bits: u8) {
+        self.0 |= bits;
+    }
+    pub(crate) fn clear(&mut self, bits: u8) {
+        self.0 &= !bits;
+    }
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// One visible terminal grid cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Cell {
-    /// Character currently displayed in this cell. Styling is intentionally not stored yet.
+    /// Character currently displayed in this cell.
     pub(crate) ch: char,
     /// True when this cell is the hidden trailing half of a double-width character.
     wide_continuation: bool,
+    /// Foreground color.
+    pub(crate) fg: Color,
+    /// Background color.
+    pub(crate) bg: Color,
+    /// Text style attributes.
+    pub(crate) attrs: CellAttrs,
 }
 
 impl Default for Cell {
@@ -14,6 +64,9 @@ impl Default for Cell {
         Self {
             ch: ' ',
             wide_continuation: false,
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: CellAttrs::default(),
         }
     }
 }
@@ -36,6 +89,12 @@ pub(crate) struct Screen {
     cells: Vec<Cell>,
     /// Tracks which rows were modified since last clear.
     dirty_rows: Vec<bool>,
+    /// Current SGR foreground applied to each character written.
+    current_fg: Color,
+    /// Current SGR background applied to each character written.
+    current_bg: Color,
+    /// Current SGR attributes applied to each character written.
+    current_attrs: CellAttrs,
 }
 
 impl Screen {
@@ -49,6 +108,9 @@ impl Screen {
             cursor_y: 0,
             cells: vec![Cell::default(); rows * cols],
             dirty_rows: vec![true; rows],
+            current_fg: Color::Default,
+            current_bg: Color::Default,
+            current_attrs: CellAttrs::default(),
         }
     }
 
@@ -81,6 +143,100 @@ impl Screen {
     /// Returns the character at the given `(row, col)` grid position.
     pub(crate) fn cell_char(&self, row: usize, col: usize) -> char {
         self.cells[row * self.cols + col].ch
+    }
+
+    /// Returns a reference to the cell at the given grid position.
+    #[allow(dead_code)]
+    pub(crate) fn cell(&self, row: usize, col: usize) -> &Cell {
+        &self.cells[row * self.cols + col]
+    }
+
+    /// Applies SGR (Select Graphic Rendition) parameters to the current pen state.
+    ///
+    /// `None` parameters are treated as reset (same as `0`). Multi-parameter sub-sequences
+    /// (`38`/`48`) are validated fully; on partial or out-of-range params the pen state is
+    /// left unchanged.
+    pub(crate) fn set_sgr(&mut self, params: &[Option<usize>]) {
+        let mut i = 0usize;
+        while i < params.len() {
+            let n = params[i].unwrap_or_default();
+            match n {
+                0 => {
+                    self.current_fg = Color::Default;
+                    self.current_bg = Color::Default;
+                    self.current_attrs = CellAttrs::default();
+                }
+                1 => self.current_attrs.set(CellAttrs::BOLD),
+                2 => self.current_attrs.set(CellAttrs::DIM),
+                3 => self.current_attrs.set(CellAttrs::ITALIC),
+                4 => self.current_attrs.set(CellAttrs::UNDERLINE),
+                5 => self.current_attrs.set(CellAttrs::BLINK),
+                7 => self.current_attrs.set(CellAttrs::INVERSE),
+                9 => self.current_attrs.set(CellAttrs::STRIKETHROUGH),
+                22 => self.current_attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
+                23 => self.current_attrs.clear(CellAttrs::ITALIC),
+                24 => self.current_attrs.clear(CellAttrs::UNDERLINE),
+                25 => self.current_attrs.clear(CellAttrs::BLINK),
+                27 => self.current_attrs.clear(CellAttrs::INVERSE),
+                29 => self.current_attrs.clear(CellAttrs::STRIKETHROUGH),
+                30..=37 => self.current_fg = Color::Named((n - 30) as u8),
+                40..=47 => self.current_bg = Color::Named((n - 40) as u8),
+                39 => self.current_fg = Color::Default,
+                49 => self.current_bg = Color::Default,
+                90..=97 => self.current_fg = Color::Bright((n - 90) as u8),
+                100..=107 => self.current_bg = Color::Bright((n - 100) as u8),
+                38 | 48 => {
+                    let is_fg = n == 38;
+                    if i + 1 >= params.len() {
+                        break;
+                    }
+                    let sub = params[i + 1].unwrap_or_default();
+                    match sub {
+                        5 => {
+                            // 256-color: 38;5;N  or  48;5;N
+                            if i + 2 >= params.len() {
+                                break;
+                            }
+                            if let Some(val) = params[i + 2]
+                                && val <= 255
+                            {
+                                if is_fg {
+                                    self.current_fg = Color::Indexed(val as u8);
+                                } else {
+                                    self.current_bg = Color::Indexed(val as u8);
+                                }
+                            }
+                            i += 2;
+                        }
+                        2 => {
+                            // Truecolor: 38;2;R;G;B  or  48;2;R;G;B
+                            if i + 4 >= params.len() {
+                                break;
+                            }
+                            if let (Some(r), Some(g), Some(b)) =
+                                (params[i + 2], params[i + 3], params[i + 4])
+                                && r <= 255
+                                && g <= 255
+                                && b <= 255
+                            {
+                                if is_fg {
+                                    self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
+                                } else {
+                                    self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                                }
+                            }
+                            i += 4;
+                        }
+                        _ => {
+                            // Unknown sub-type; consume sub only (i+1).
+                            i += 1;
+                        }
+                    }
+                }
+                _ => { /* unknown SGR code — silently ignore */ }
+            }
+            i += 1;
+        }
     }
 
     /// Resizes the visible grid while preserving the top-left rectangle of existing cells.
@@ -185,12 +341,10 @@ impl Screen {
             return;
         }
 
-
         if width == 2 && self.cursor_x + 1 >= self.cols {
             self.newline();
         }
         self.mark_row_dirty(self.cursor_y);
-
 
         let index = self.cursor_y * self.cols + self.cursor_x;
         self.clear_cell_for_write(index);
@@ -200,10 +354,16 @@ impl Screen {
 
         self.cells[index].ch = ch;
         self.cells[index].wide_continuation = false;
+        self.cells[index].fg = self.current_fg;
+        self.cells[index].bg = self.current_bg;
+        self.cells[index].attrs = self.current_attrs;
         if width == 2 && self.cursor_x + 1 < self.cols {
             self.cells[index + 1] = Cell {
                 ch: ' ',
                 wide_continuation: true,
+                fg: self.current_fg,
+                bg: self.current_bg,
+                attrs: self.current_attrs,
             };
         }
 
@@ -223,7 +383,10 @@ impl Screen {
     ///    column → clear both cells.
     /// 3. Otherwise → clear only the target cell.
     fn clear_cell_for_write(&mut self, index: usize) {
-        debug_assert!(index > 0 || !self.cells[index].wide_continuation, "wide_continuation at column 0 is invalid");
+        debug_assert!(
+            index > 0 || !self.cells[index].wide_continuation,
+            "wide_continuation at column 0 is invalid"
+        );
         if self.cells[index].wide_continuation {
             self.cells[index - 1] = Cell::default();
             self.cells[index] = Cell::default();

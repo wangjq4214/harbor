@@ -273,9 +273,6 @@ impl TerminalParser {
     }
 
     /// Applies supported CSI final bytes to the screen.
-    ///
-    /// Styling and private mode changes are intentionally consumed but not represented because
-    /// cells currently store only characters.
     fn dispatch_csi(&mut self, screen: &mut Screen, final_byte: u8) {
         if self.csi.private {
             return;
@@ -289,7 +286,7 @@ impl TerminalParser {
             b'H' | b'f' => screen.set_cursor(self.csi_param(0, 1), self.csi_param(1, 1)),
             b'J' => screen.erase_display(self.csi_param(0, 0)),
             b'K' => screen.erase_line(self.csi_param(0, 0)),
-            b'm' => {}
+            b'm' => screen.set_sgr(&self.csi.params[..self.csi.len]),
             _ => {}
         }
     }

@@ -120,7 +120,8 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::Terminal;
-
+    use super::screen::Color;
+    use super::screen::CellAttrs;
     #[test]
     fn writes_plain_characters_and_tracks_cursor() {
         let mut terminal = Terminal::new(2, 4);
@@ -218,18 +219,266 @@ mod tests {
     }
 
     #[test]
-    fn parses_sgr_without_rendering_escape_bytes() {
+    fn sgr_sets_fg_color_on_written_cells() {
         let mut terminal = Terminal::new(1, 8);
 
         terminal.put_bytes(b"a\x1b[31mb\x1b[0mc");
 
+        // 'a' is default, 'b' is red (31), 'c' is reset to default
         assert_eq!(terminal.row_text(0), "abc     ");
-        assert_eq!(
-            (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-            (3, 0)
-        );
+        assert_eq!(terminal.screen().cell(0, 0).fg, Color::Default);
+        assert_eq!(terminal.screen().cell(0, 1).fg, Color::Named(1)); // 31 = red = Named(1)
+        assert_eq!(terminal.screen().cell(0, 2).fg, Color::Default);
     }
 
+    // ── SGR attribute tests ─────────────────────────────────────────
+
+    #[test]
+    fn sgr_bold_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::BOLD));
+    }
+
+    #[test]
+    fn sgr_dim_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[2ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::DIM));
+    }
+
+    #[test]
+    fn sgr_italic_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[3ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::ITALIC));
+    }
+
+    #[test]
+    fn sgr_underline_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[4ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::UNDERLINE));
+    }
+
+    #[test]
+    fn sgr_blink_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[5ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::BLINK));
+    }
+
+    #[test]
+    fn sgr_inverse_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[7ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::INVERSE));
+    }
+
+    #[test]
+    fn sgr_strikethrough_sets_attr() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[9ma");
+        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::STRIKETHROUGH));
+    }
+
+    #[test]
+    fn sgr_reset_clears_all() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1;31;42ma");
+        terminal.put_bytes(b"\x1b[0mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+        assert!(cell.attrs.is_empty());
+    }
+
+    // ── SGR 8-color tests ───────────────────────────────────────────
+
+    #[test]
+    fn sgr_8color_fg_sets_named() {
+        for code in 30u8..=37u8 {
+            let mut terminal = Terminal::new(1, 2);
+            let seq = format!("\x1b[{}mX", code);
+            terminal.put_bytes(seq.as_bytes());
+            assert_eq!(terminal.screen().cell(0, 0).fg, Color::Named((code - 30) as u8),
+                "SGR {} should set fg Named({})", code, code - 30);
+        }
+    }
+
+    #[test]
+    fn sgr_8color_bg_sets_named() {
+        for code in 40u8..=47u8 {
+            let mut terminal = Terminal::new(1, 2);
+            let seq = format!("\x1b[{}mX", code);
+            terminal.put_bytes(seq.as_bytes());
+            assert_eq!(terminal.screen().cell(0, 0).bg, Color::Named((code - 40) as u8),
+                "SGR {} should set bg Named({})", code, code - 40);
+        }
+    }
+
+    #[test]
+    fn sgr_bright_fg_sets_bright() {
+        for code in 90u8..=97u8 {
+            let mut terminal = Terminal::new(1, 2);
+            let seq = format!("\x1b[{}mX", code);
+            terminal.put_bytes(seq.as_bytes());
+            assert_eq!(terminal.screen().cell(0, 0).fg, Color::Bright((code - 90) as u8),
+                "SGR {} should set fg Bright({})", code, code - 90);
+        }
+    }
+
+    #[test]
+    fn sgr_bright_bg_sets_bright() {
+        for code in 100u8..=107u8 {
+            let mut terminal = Terminal::new(1, 2);
+            let seq = format!("\x1b[{}mX", code);
+            terminal.put_bytes(seq.as_bytes());
+            assert_eq!(terminal.screen().cell(0, 0).bg, Color::Bright((code - 100) as u8),
+                "SGR {} should set bg Bright({})", code, code - 100);
+        }
+    }
+
+    #[test]
+    fn sgr_256color_fg_sets_indexed() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[38;5;200mb");
+        assert_eq!(terminal.screen().cell(0, 0).fg, Color::Indexed(200));
+    }
+
+    #[test]
+    fn sgr_256color_bg_sets_indexed() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[48;5;100mb");
+        assert_eq!(terminal.screen().cell(0, 0).bg, Color::Indexed(100));
+    }
+
+    #[test]
+    fn sgr_truecolor_fg_sets_rgb() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[38;2;10;20;30mb");
+        assert_eq!(terminal.screen().cell(0, 0).fg, Color::Rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn sgr_truecolor_bg_sets_rgb() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[48;2;100;150;200mb");
+        assert_eq!(terminal.screen().cell(0, 0).bg, Color::Rgb(100, 150, 200));
+    }
+
+    #[test]
+    fn sgr_multi_param_sets_all() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1;31;44ma");
+        let cell = terminal.screen().cell(0, 0);
+        assert!(cell.attrs.contains(CellAttrs::BOLD));
+        assert_eq!(cell.fg, Color::Named(1));
+        assert_eq!(cell.bg, Color::Named(4));
+    }
+
+    #[test]
+    fn sgr_default_fg_bg_resets_colors() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[31;42m\x1b[39;49mb");
+        let cell = terminal.screen().cell(0, 0);
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+    }
+
+    #[test]
+    fn sgr_compound_clear_removes_attrs() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1;3ma");
+        let cell = terminal.screen().cell(0, 0);
+        assert!(cell.attrs.contains(CellAttrs::BOLD));
+        assert!(cell.attrs.contains(CellAttrs::ITALIC));
+        terminal.put_bytes(b"\x1b[23mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::ITALIC));
+        assert!(cell.attrs.contains(CellAttrs::BOLD));
+    }
+
+    #[test]
+    fn sgr_22_clears_bold_and_dim() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1;2ma\x1b[22mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::BOLD));
+        assert!(!cell.attrs.contains(CellAttrs::DIM));
+    }
+
+    #[test]
+    fn sgr_24_clears_underline() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[4ma\x1b[24mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::UNDERLINE));
+    }
+
+    #[test]
+    fn sgr_25_clears_blink() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[5ma\x1b[25mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::BLINK));
+    }
+
+    #[test]
+    fn sgr_27_clears_inverse() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[7ma\x1b[27mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::INVERSE));
+    }
+
+    #[test]
+    fn sgr_29_clears_strikethrough() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[9ma\x1b[29mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert!(!cell.attrs.contains(CellAttrs::STRIKETHROUGH));
+    }
+
+    #[test]
+    fn sgr_bare_csi_m_is_reset() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[1;31;42ma\x1b[mb");
+        let cell = terminal.screen().cell(0, 1);
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+        assert!(cell.attrs.is_empty());
+    }
+
+    // ── SGR error handling / robustness ─────────────────────────────
+
+    #[test]
+    fn sgr_indexed_out_of_range_ignored() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[31ma");
+        terminal.put_bytes(b"\x1b[38;5;300mb");
+        // 300 > 255 so fg should still be Named(1) from the 31 sequence
+        assert_eq!(terminal.screen().cell(0, 1).fg, Color::Named(1));
+    }
+
+    #[test]
+    fn sgr_truecolor_missing_params_ignored() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[31ma");
+        terminal.put_bytes(b"\x1b[38;2;128;64mx");
+        // Incomplete truecolor seq — fg stays red, 'x' still renders
+        assert_eq!(terminal.row_text(0), "ax  ");
+        assert_eq!(terminal.screen().cell(0, 1).fg, Color::Named(1));
+    }
+
+    #[test]
+    fn sgr_truecolor_component_out_of_range_ignored() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[31ma");
+        terminal.put_bytes(b"\x1b[38;2;300;0;0mb");
+        // 300 > 255 — fg stays red
+        assert_eq!(terminal.screen().cell(0, 1).fg, Color::Named(1));
+    }
     #[test]
     fn csi_cursor_position_overwrites_target_cell() {
         let mut terminal = Terminal::new(2, 4);

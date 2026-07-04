@@ -96,9 +96,9 @@ Core milestones:
 
 ### Acceptance Criteria
 
-- [ ] `cargo run` opens a window on Windows (unverified)
-- [ ] Can type commands and see output on Windows (unverified)
-- [ ] Resize does not crash (unverified)
+- [x] `cargo run` opens a window on Windows (verified)
+- [x] Can type commands and see output on Windows (verified)
+- [x] Resize does not crash (verified)
 - [ ] Unix PTY implemented so macOS/Linux can also launch
 
 ---
@@ -111,32 +111,31 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 
 ### Terminal Grid: Color and Attributes
 
-- [ ] Extend `Cell` to include `fg: Color`, `bg: Color`, `attrs: CellAttrs`
-- [ ] Add `Color` enum: Named(8), Bright, Indexed(256), Rgb
-- [ ] Add `CellAttrs` bitset: bold, dim, italic, underline, blink, inverse, strikethrough
-- [ ] Support default foreground / default background
-- [ ] Support empty cell (space + default colors)
+- [x] Extend `Cell` to include `fg: Color`, `bg: Color`, `attrs: CellAttrs`
+- [x] Add `Color` enum: Named(8), Bright, Indexed(256), Rgb
+- [x] Add `CellAttrs` bitset: bold, dim, italic, underline, blink, inverse, strikethrough
+- [x] Support default foreground / default background
+- [x] Support empty cell (space + default colors)
 
 ### SGR (Select Graphic Rendition)
 
-- [ ] Implement `CSI m` dispatcher
-- [ ] Reset: `0` — clears all attributes, resets to default colors
-- [ ] Bold: `1`
-- [ ] Dim: `2`
-- [ ] Italic: `3`
-- [ ] Underline: `4`
-- [ ] Blink: `5`
-- [ ] Inverse: `7`
-- [ ] Strikethrough: `9`
-- [ ] 8-color foreground (`30`–`37`)
-- [ ] 8-color background (`40`–`47`)
-- [ ] Bright foreground (`90`–`97`)
-- [ ] Bright background (`100`–`107`)
-- [ ] 256-color foreground (`38;5;N`)
-- [ ] 256-color background (`48;5;N`)
-- [ ] Truecolor foreground (`38;2;R;G;B`)
-- [ ] Truecolor background (`48;2;R;G;B`)
-
+- [x] Implement `CSI m` dispatcher
+- [x] Reset: `0` — clears all attributes, resets to default colors
+- [x] Bold: `1`
+- [x] Dim: `2`
+- [x] Italic: `3`
+- [x] Underline: `4`
+- [x] Blink: `5`
+- [x] Inverse: `7`
+- [x] Strikethrough: `9`
+- [x] 8-color foreground (`30`–`37`)
+- [x] 8-color background (`40`–`47`)
+- [x] Bright foreground (`90`–`97`)
+- [x] Bright background (`100`–`107`)
+- [x] 256-color foreground (`38;5;N`)
+- [x] 256-color background (`48;5;N`)
+- [x] Truecolor foreground (`38;2;R;G;B`)
+- [x] Truecolor background (`48;2;R;G;B`)
 ### Grid Editing
 
 - [ ] ICH: Insert characters (CSI `@`)
@@ -187,7 +186,7 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 ### Unit Test Coverage
 
 - [ ] Every CSI sequence has a unit test
-- [ ] SGR test: all color modes, all attribute combinations
+- [x] SGR test: all color modes, all attribute combinations
 - [ ] ICH/DCH test: insertion/deletion shifts cells correctly
 - [ ] IL/DL test: lines inserted/deleted, scroll region respected
 - [ ] Alternate screen test: enter/exit preserves main screen
@@ -204,6 +203,7 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 - [ ] `cargo build` output does not corrupt the screen
 - [ ] Shell adapts to resized rows/cols
 - [ ] Alternate screen enter/exit works correctly (`less` / `vim`)
+
 
 ---
 
@@ -559,7 +559,7 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] CI: `cargo check`, `cargo test`, `clippy`, `fmt`
 - [ ] Version management
 - [ ] Changelog
-- [x] README
+- [ ] README
 - [ ] Basic usage guide
 - [ ] Example config
 
@@ -589,14 +589,14 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 
 ## Milestone Overview
 
-| Version | Core Goal                     | Acceptance Standard                                       | Status                                |
-| ------- | ------------------------------ | --------------------------------------------------------- | ------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                 | 🟡 Windows path OK; Unix PTY stub     |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly            | 🔜 SGR no-op blocks; ICH/DCH/IL/DL/alt-screen missing |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor  | 🔜 No background pipeline; no glyph tint; SGR blocked |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback             | 🔴 Not started                        |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking         | 🔴 Not started                        |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood                | 🔴 Not started                        |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                               |
+| ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | 🟡 Windows path OK; Unix PTY stub                     |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly           | 🟡 SGR done; ICH/DCH/IL/DL/alt-screen missing        |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🔜 No background pipeline; no glyph tint               |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                        |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🔴 Not started                                        |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                        |
 
 ---
 
@@ -604,7 +604,7 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 
 Recommended priority order:
 
-1. **SGR + Cell colors** (v0.2) — the single blocking item; unlocks `ls --color`, `vim` highlights, `htop`
+1. ✓ **SGR + Cell colors** (v0.2) — done; unlocks `ls --color`, `vim` highlights, `htop`
 2. **Background rect + glyph tint pipelines** (v0.3) — makes colors visible
 3. **Alternate screen** (v0.2) — `vim`/`less` usability
 4. **Unicode: zero-width combining marks** (v0.3) — correct character display
