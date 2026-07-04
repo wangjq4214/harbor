@@ -146,6 +146,9 @@ pub(crate) struct TexturedVertex {
     pub(crate) position: [f32; 2],
     /// Texture coordinates (u, v), range [0, 1].
     pub(crate) tex_coords: [f32; 2],
+    /// Per-vertex RGBA tint, normalized [0, 1]. Glyph shader multiplies
+    /// `glyph_alpha * color.a`, using `color.rgb` as the literal color.
+    pub(crate) color: [f32; 4],
 }
 
 impl Default for TexturedVertex {
@@ -153,13 +156,14 @@ impl Default for TexturedVertex {
         Self {
             position: [0.0; 2],
             tex_coords: [0.0; 2],
+            color: [1.0; 4],
         }
     }
 }
 
 impl TexturedVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
 
     /// Returns the vertex buffer layout matching `TexturedVertex` memory layout.
     pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -170,12 +174,13 @@ impl TexturedVertex {
         }
     }
 
-    /// Builds 6 vertices (two triangles) from a pixel-space rect and atlas UV
-    /// rect, transformed to clip space.
+    /// Builds 6 vertices (two triangles) from a pixel-space rect, atlas UV
+    /// rect, and tint color, transformed to clip space.
     ///
     /// # Parameters
     /// - `left/top/right/bottom`: pixel-space rectangle
     /// - `uv_l/uv_t/uv_r/uv_b`: atlas sub-region UV rectangle
+    /// - `color`: RGBA tint to apply (shader multiplies alpha, uses rgb as literal)
     /// - `surf_w/surf_h`: surface dimensions (for pixel→NDC transform)
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_pixel_rect(
@@ -187,6 +192,7 @@ impl TexturedVertex {
         uv_t: f32,
         uv_r: f32,
         uv_b: f32,
+        color: [f32; 4],
         surf_w: f32,
         surf_h: f32,
     ) -> [Self; 6] {
@@ -201,29 +207,135 @@ impl TexturedVertex {
             Self {
                 position: [ndc_left, ndc_top],
                 tex_coords: [uv_l, uv_t],
+                color,
             },
             Self {
                 position: [ndc_left, ndc_bottom],
                 tex_coords: [uv_l, uv_b],
+                color,
             },
             Self {
                 position: [ndc_right, ndc_bottom],
                 tex_coords: [uv_r, uv_b],
+                color,
             },
             Self {
                 position: [ndc_left, ndc_top],
                 tex_coords: [uv_l, uv_t],
+                color,
             },
             Self {
                 position: [ndc_right, ndc_bottom],
                 tex_coords: [uv_r, uv_b],
+                color,
             },
             Self {
                 position: [ndc_right, ndc_top],
                 tex_coords: [uv_r, uv_t],
+                color,
             },
         ]
     }
+}
+
+// ── ColoredVertex ──────────────────────────────────────────────────────────
+
+/// GPU vertex for solid-color quads (background rects, decoration rects).
+/// No texture coordinates — color is per-vertex.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ColoredVertex {
+    /// NDC position (x, y), range [-1, 1].
+    pub(crate) position: [f32; 2],
+    /// Per-vertex RGBA color, normalized [0, 1].
+    pub(crate) color: [f32; 4],
+}
+
+impl Default for ColoredVertex {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 2],
+            color: [0.0; 4],
+        }
+    }
+}
+
+impl ColoredVertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+
+    /// Returns the vertex buffer layout matching `ColoredVertex` memory layout.
+    pub(crate) fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+
+    /// Builds 6 vertices (two triangles) from a pixel-space rect and a single
+    /// color, transformed to clip space.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_pixel_rect(
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        color: [f32; 4],
+        surf_w: f32,
+        surf_h: f32,
+    ) -> [Self; 6] {
+        let ndc_left = left / surf_w * 2.0 - 1.0;
+        let ndc_right = right / surf_w * 2.0 - 1.0;
+        let ndc_top = 1.0 - top / surf_h * 2.0;
+        let ndc_bottom = 1.0 - bottom / surf_h * 2.0;
+
+        [
+            Self {
+                position: [ndc_left, ndc_top],
+                color,
+            },
+            Self {
+                position: [ndc_left, ndc_bottom],
+                color,
+            },
+            Self {
+                position: [ndc_right, ndc_bottom],
+                color,
+            },
+            Self {
+                position: [ndc_left, ndc_top],
+                color,
+            },
+            Self {
+                position: [ndc_right, ndc_bottom],
+                color,
+            },
+            Self {
+                position: [ndc_right, ndc_top],
+                color,
+            },
+        ]
+    }
+}
+
+/// Creates a vertex buffer from a slice of `ColoredVertex`. Uploads one
+/// zero vertex when the slice is empty (wgpu requires non-zero buffers);
+/// the caller must set `vertex_count` to 0 to skip drawing.
+pub(crate) fn create_colored_vertex_buffer(
+    device: &wgpu::Device,
+    vertices: &[ColoredVertex],
+) -> wgpu::Buffer {
+    let vertices = if vertices.is_empty() {
+        &[ColoredVertex::default()]
+    } else {
+        vertices
+    };
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("colored vertex buffer"),
+        contents: bytemuck::cast_slice(vertices),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 // ── Shared GPU helpers ────────────────────────────────────────────────────
@@ -264,6 +376,7 @@ pub(crate) fn create_vertex_buffer(
         &[TexturedVertex {
             position: [0.0, 0.0],
             tex_coords: [0.0, 0.0],
+            color: [1.0; 4],
         }]
     } else {
         vertices

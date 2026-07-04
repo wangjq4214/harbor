@@ -3,9 +3,9 @@ mod screen;
 mod text;
 
 use parser::TerminalParser;
+pub(crate) use screen::Color;
 pub(crate) use screen::Screen;
 pub(crate) use text::TextLayer;
-
 use winit::window::Window;
 
 use crate::renderer::Renderer;

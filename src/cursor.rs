@@ -129,13 +129,8 @@ impl CursorLayer {
             (pipeline, bind_group, texture)
         };
 
-        let vertex_buffer = gpu::create_vertex_buffer(
-            gpu.device(),
-            &[TexturedVertex {
-                position: [0.0; 2],
-                tex_coords: [0.0; 2],
-            }; 6],
-        );
+        let vertex_buffer =
+            gpu::create_vertex_buffer(gpu.device(), &[TexturedVertex::default(); 6]);
 
         let glyph_width = cursor_metrics.width as f32;
         let glyph_height = cursor_metrics.height as f32;
@@ -260,6 +255,7 @@ impl Layer for CursorLayer {
                 0.0,
                 1.0,
                 1.0,
+                [1.0; 4],
                 surf_w as f32,
                 surf_h as f32,
             );

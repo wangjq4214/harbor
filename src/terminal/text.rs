@@ -18,10 +18,12 @@ const SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) tex_coords: vec2<f32>,
+    @location(2) color: vec4<f32>,
 }
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
+    @location(1) color: vec4<f32>,
 }
 @group(0) @binding(0) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(1) var glyph_sampler: sampler;
@@ -30,12 +32,13 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(in.position, 0.0, 1.0);
     out.tex_coords = in.tex_coords;
+    out.color = in.color;
     return out;
 }
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = textureSample(glyph_atlas, glyph_sampler, in.tex_coords).r;
-    return vec4<f32>(1.0, 1.0, 1.0, alpha);
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 "#;
 
@@ -428,6 +431,7 @@ impl GlyphAtlas {
                 glyph.uv.top,
                 glyph.uv.right,
                 glyph.uv.bottom,
+                [1.0; 4],
                 surface_width,
                 surface_height,
             ));
@@ -648,9 +652,9 @@ impl TextLayer {
     ) -> Vec<TexturedVertex> {
         let mut verts = Vec::with_capacity(screen.cols() * 6);
         for col in 0..screen.cols() {
-            let ch = screen.cell_char(row, col);
-            if ch != ' '
-                && let Some(glyph) = self.atlas.glyph(ch)
+            let cell = screen.cell(row, col);
+            if cell.ch != ' '
+                && let Some(glyph) = self.atlas.glyph(cell.ch)
                 && glyph.width > 0
                 && glyph.height > 0
             {
@@ -661,6 +665,7 @@ impl TextLayer {
                 let glyph_bottom = baseline - glyph.ymin as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
                 let glyph_right = glyph_left + glyph.width as f32;
+                let color = cell.fg.to_rgba();
                 verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
                     glyph_left,
                     glyph_top,
@@ -670,13 +675,20 @@ impl TextLayer {
                     glyph.uv.top,
                     glyph.uv.right,
                     glyph.uv.bottom,
+                    color,
                     surf_w,
                     surf_h,
                 ));
                 continue;
             }
             // Blank cell → 6 degenerate vertices (zero-area quad, rasterizer drops it).
-            verts.extend(std::iter::repeat_n(TexturedVertex::default(), 6));
+            verts.extend(std::iter::repeat_n(
+                TexturedVertex {
+                    color: [0.0; 4],
+                    ..Default::default()
+                },
+                6,
+            ));
         }
         verts
     }

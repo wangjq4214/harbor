@@ -4,6 +4,7 @@ use anyhow::Result;
 use winit::window::Window;
 
 use crate::{
+    background::BackgroundLayer,
     config::{BACKGROUND, FONT_SIZE},
     cursor::{self, CursorLayer},
     font::load_system_fonts,
@@ -12,10 +13,11 @@ use crate::{
     terminal::{Screen, TerminalSize, TextLayer},
 };
 
-/// Owns the GPU context and layer stack; orchestrates frame rendering.
 pub(crate) struct Renderer {
     /// Shared GPU handles (surface / device / queue / config).
     gpu: GpuContext,
+    /// Solid-color background rectangles behind each non-default cell.
+    background_layer: BackgroundLayer,
     /// Text rendering layer (glyph atlas + pipeline).
     text_layer: TextLayer,
     /// Cursor rendering layer (blinking block cursor).
@@ -36,6 +38,8 @@ impl Renderer {
         let (cursor_metrics, cursor_bitmap) = cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
         let text_layer = TextLayer::new(&gpu, fonts, metrics, screen)?;
         let cursor_layer = CursorLayer::new(&gpu, metrics, &cursor_bitmap, cursor_metrics);
+        let background_layer =
+            BackgroundLayer::new(&gpu, screen, metrics.cell_width, metrics.line_height);
 
         tracing::info!(
             rows = text_layer.terminal_size(&gpu).rows,
@@ -45,6 +49,7 @@ impl Renderer {
 
         Ok(Self {
             gpu,
+            background_layer,
             text_layer,
             cursor_layer,
         })
@@ -60,6 +65,7 @@ impl Renderer {
             return None;
         }
         self.gpu.resize(width, height);
+        self.background_layer.mark_dirty();
         self.text_layer.mark_dirty();
         self.cursor_layer.mark_dirty();
         Some(self.text_layer.terminal_size(&self.gpu))
@@ -81,6 +87,7 @@ impl Renderer {
             cols = screen.cols(),
             "preparing layers"
         );
+        self.background_layer.prepare(&self.gpu, Some(screen));
         self.text_layer.prepare(&self.gpu, Some(screen));
         self.cursor_layer.prepare(&self.gpu, Some(screen));
     }
@@ -160,6 +167,7 @@ impl Renderer {
                 multiview_mask: None,
             });
 
+            self.background_layer.draw(&mut render_pass);
             self.text_layer.draw(&mut render_pass);
             self.cursor_layer.draw(&mut render_pass);
         }

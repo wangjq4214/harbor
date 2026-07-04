@@ -218,25 +218,25 @@ Upgrade the existing glyph+cursor renderer to display full-color cells: backgrou
 - [x] Add glyph pipeline (single-texture glyph atlas pipeline)
 - [x] Add cursor pipeline or cursor rectangle rendering (CursorLayer)
 - [x] Render flow includes clear background (solid color per frame)
-- [ ] **Add background rectangle pipeline** — one rect per non-default-bg cell
-- [ ] **Pass cell color to glyph shader** — tint glyph white by Cell fg color
+- [x] **Add background rectangle pipeline** — one rect per non-default-bg cell
+- [x] **Pass cell color to glyph shader** — tint glyph white by Cell fg color
 - [ ] Add underline / strikethrough rendering rect pipeline
 - [ ] Render flow: clear → cell backgrounds → glyphs → cursor → decorations
-- [ ] Separate background rendering from glyph rendering into distinct passes
+- [x] Separate background rendering from glyph rendering into distinct passes
 
 ### Background Pipeline
 
-- [ ] Background shader (solid color quad)
-- [ ] Background instance buffer (one instance per non-default-bg cell)
-- [ ] Batch background drawing (single draw call)
-- [ ] Support default background (skip when cell bg matches terminal bg)
+- [x] Background shader (solid color quad)
+- [x] Pre-allocated vertex buffer (one rect per cell, degenerate quads for default bg)
+- [x] Batch background drawing (single draw call)
+- [x] Support default background (skip when cell bg matches terminal bg)
 
 ### Glyph Color
 
 - [x] Glyph atlas pipeline (existing)
-- [ ] Modify fragment shader to multiply white glyph alpha by uniform/vertex color
-- [ ] Generate colored glyph vertices per cell (position + UV + fg color)
-- [ ] Default-foreground cells use white (current behavior preserved)
+- [x] Modify fragment shader to multiply white glyph alpha by vertex color
+- [x] Generate colored glyph vertices per cell (position + UV + fg color)
+- [x] Default-foreground cells use white (current behavior preserved)
 
 ### Glyph Atlas
 
@@ -306,8 +306,6 @@ Upgrade the existing glyph+cursor renderer to display full-color cells: backgrou
 - [ ] Text layout remains correct after resize
 - [ ] Chinese characters do not severely corrupt the grid
 - [ ] Large output does not noticeably freeze
-
----
 
 ## v0.4: Interactive Features
 
@@ -593,7 +591,7 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 | ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------- |
 | v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | 🟡 Windows path OK; Unix PTY stub                     |
 | v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly           | 🟡 SGR done; ICH/DCH/IL/DL/alt-screen missing        |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🔜 No background pipeline; no glyph tint               |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint done; decorations pending  |
 | v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                        |
 | v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🔴 Not started                                        |
 | v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                        |
@@ -605,7 +603,7 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 Recommended priority order:
 
 1. ✓ **SGR + Cell colors** (v0.2) — done; unlocks `ls --color`, `vim` highlights, `htop`
-2. **Background rect + glyph tint pipelines** (v0.3) — makes colors visible
+2. ✓ **Background rect + glyph tint pipelines** (v0.3) — done; colors visible
 3. **Alternate screen** (v0.2) — `vim`/`less` usability
 4. **Unicode: zero-width combining marks** (v0.3) — correct character display
 5. **Scrollback** (v0.4) — daily usability

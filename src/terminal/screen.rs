@@ -15,6 +15,82 @@ pub(crate) enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// Standard ANSI color palette (indices 0-7).
+const ANSI_COLORS: [[f32; 3]; 8] = [
+    [0.0, 0.0, 0.0],          // Black
+    [0.8039, 0.0, 0.0],       // Red
+    [0.0, 0.8039, 0.0],       // Green
+    [0.8039, 0.8039, 0.0],    // Yellow
+    [0.0, 0.0, 0.8039],       // Blue
+    [0.8039, 0.0, 0.8039],    // Magenta
+    [0.0, 0.8039, 0.8039],    // Cyan
+    [0.8980, 0.8980, 0.8980], // White
+];
+
+/// Bright ANSI color palette (indices 0-7) — lighter variants.
+const BRIGHT_COLORS: [[f32; 3]; 8] = [
+    [0.4980, 0.4980, 0.4980], // Bright Black (Gray)
+    [1.0, 0.0, 0.0],          // Bright Red
+    [0.0, 1.0, 0.0],          // Bright Green
+    [1.0, 1.0, 0.0],          // Bright Yellow
+    [0.3608, 0.3608, 1.0],    // Bright Blue
+    [1.0, 0.0, 1.0],          // Bright Magenta
+    [0.0, 1.0, 1.0],          // Bright Cyan
+    [1.0, 1.0, 1.0],          // Bright White
+];
+
+impl Color {
+    /// Converts to normalized [r, g, b, a] at full opacity.
+    /// `Default` returns white; background layers skip `Default` cells.
+    pub(crate) fn to_rgba(self) -> [f32; 4] {
+        match self {
+            Color::Default => [1.0, 1.0, 1.0, 1.0],
+            Color::Named(n) => {
+                let &[r, g, b] = ANSI_COLORS.get(n as usize).unwrap_or(&[0.0, 0.0, 0.0]);
+                [r, g, b, 1.0]
+            }
+            Color::Bright(n) => {
+                let &[r, g, b] = BRIGHT_COLORS.get(n as usize).unwrap_or(&[0.0, 0.0, 0.0]);
+                [r, g, b, 1.0]
+            }
+            Color::Indexed(n) => match n {
+                0..=7 => {
+                    let [r, g, b] = ANSI_COLORS[n as usize];
+                    [r, g, b, 1.0]
+                }
+                8..=15 => {
+                    let [r, g, b] = BRIGHT_COLORS[(n - 8) as usize];
+                    [r, g, b, 1.0]
+                }
+                16..=231 => {
+                    let idx = n - 16;
+                    let r = idx / 36;
+                    let g = (idx % 36) / 6;
+                    let b = idx % 6;
+                    let expand = |v: u8| -> f32 {
+                        match v {
+                            0 => 0.0,
+                            1 => 95.0 / 255.0,
+                            2 => 135.0 / 255.0,
+                            3 => 175.0 / 255.0,
+                            4 => 215.0 / 255.0,
+                            _ => 1.0,
+                        }
+                    };
+                    [expand(r), expand(g), expand(b), 1.0]
+                }
+                _ => {
+                    // 232-255: greyscale ramp from (8,8,8) to (238,238,238)
+                    let step = n - 232;
+                    let v = (8 + step * 10) as f32 / 255.0;
+                    [v, v, v, 1.0]
+                }
+            },
+            Color::Rgb(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
+        }
+    }
+}
+
 /// Text style attributes, stored as a compact bitset.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CellAttrs(u8);
