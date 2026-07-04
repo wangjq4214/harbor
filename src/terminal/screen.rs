@@ -1,5 +1,12 @@
 use unicode_width::UnicodeWidthChar;
 
+/// Pending alternate-screen action set by the parser and consumed by Terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AltScreenAction {
+    Enter,
+    Exit,
+}
+
 /// Terminal color value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Color {
@@ -171,6 +178,8 @@ pub(crate) struct Screen {
     current_bg: Color,
     /// Current SGR attributes applied to each character written.
     current_attrs: CellAttrs,
+    /// Pending alternate-screen request set by the parser, consumed by Terminal.
+    alt_request: Option<AltScreenAction>,
 }
 
 impl Screen {
@@ -187,6 +196,7 @@ impl Screen {
             current_fg: Color::Default,
             current_bg: Color::Default,
             current_attrs: CellAttrs::default(),
+            alt_request: None,
         }
     }
 
@@ -363,8 +373,28 @@ impl Screen {
         self.dirty_rows[row] = true;
     }
 
-    fn mark_all_dirty(&mut self) {
+    pub(crate) fn mark_all_dirty(&mut self) {
         self.dirty_rows.fill(true);
+    }
+
+    pub(crate) fn request_alt_enter(&mut self) {
+        self.alt_request = Some(AltScreenAction::Enter);
+    }
+
+    pub(crate) fn request_alt_exit(&mut self) {
+        self.alt_request = Some(AltScreenAction::Exit);
+    }
+
+    /// Peeks at the pending alt-screen request, if any, without consuming it.
+    /// The parser uses this to decide whether to stop processing mid-batch;
+    /// the Terminal consumes it later via `take_alt_request`.
+    pub(crate) fn alt_request(&self) -> Option<AltScreenAction> {
+        self.alt_request
+    }
+
+    /// Takes the pending alt-screen request, resetting the field to `None`.
+    pub(crate) fn take_alt_request(&mut self) -> Option<AltScreenAction> {
+        self.alt_request.take()
     }
 
     #[cfg(test)]

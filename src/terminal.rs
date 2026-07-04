@@ -3,6 +3,7 @@ mod screen;
 mod text;
 
 use parser::TerminalParser;
+pub(crate) use screen::AltScreenAction;
 pub(crate) use screen::Color;
 pub(crate) use screen::Screen;
 pub(crate) use text::TextLayer;
@@ -24,20 +25,47 @@ pub(crate) struct Terminal {
     /// Incremental ANSI/VT parser. It keeps partial escape sequences and split UTF-8 bytes
     /// across PTY read chunks.
     parser: TerminalParser,
-    /// Current visible cell grid and cursor position consumed by the renderer.
-    screen: Screen,
+    /// Primary screen buffer (shell prompt, command output).
+    normal: Screen,
+    /// Alternate screen buffer (vim, less, htop). `Some` means alt screen is active.
+    alt: Option<Screen>,
 }
 
 impl Terminal {
     pub(crate) fn new(rows: usize, cols: usize) -> Self {
         Self {
             parser: TerminalParser::default(),
-            screen: Screen::new(rows, cols),
+            normal: Screen::new(rows, cols),
+            alt: None,
+        }
+    }
+
+    fn active_screen_mut(&mut self) -> &mut Screen {
+        self.alt.as_mut().unwrap_or(&mut self.normal)
+    }
+
+    fn handle_alt_request(&mut self, action: AltScreenAction) {
+        match action {
+            AltScreenAction::Enter => {
+                if self.alt.is_some() {
+                    return; // already in alt screen — idempotent
+                }
+                self.alt = Some(Screen::new(self.normal.rows(), self.normal.cols()));
+            }
+            AltScreenAction::Exit => {
+                if let Some(_alt) = self.alt.take() {
+                    // Mark normal screen dirty so renderer rebuilds on next frame.
+                    self.normal.mark_all_dirty();
+                }
+            }
         }
     }
 
     pub(crate) fn resize(&mut self, rows: usize, cols: usize) {
-        self.screen.resize(rows, cols);
+        self.normal.resize(rows, cols);
+        if let Some(alt) = self.alt.as_mut() {
+            alt.resize(rows, cols);
+        }
     }
 
     #[cfg(test)]
@@ -51,28 +79,44 @@ impl Terminal {
     /// `String::from_utf8_lossy` first: doing so would lose split UTF-8 state and could render
     /// replacement characters before the next PTY chunk arrives.
     pub(crate) fn put_bytes(&mut self, bytes: &[u8]) {
-        self.parser.put_bytes(&mut self.screen, bytes);
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let result = {
+                let parser = &mut self.parser;
+                let screen = match self.alt.as_mut() {
+                    Some(s) => s,
+                    None => &mut self.normal,
+                };
+                parser.put_bytes(screen, remaining)
+            };
+            remaining = &remaining[result.consumed..];
+            if let Some(action) = result.alt_request {
+                // Consume the flag from the screen for hygiene.
+                self.active_screen_mut().take_alt_request();
+                self.handle_alt_request(action);
+            }
+        }
     }
 
     /// Returns the renderable screen snapshot owned by this terminal.
     pub(crate) fn screen(&self) -> &Screen {
-        &self.screen
+        self.alt.as_ref().unwrap_or(&self.normal)
     }
 
     /// Mutable screen access for tests.
     #[cfg(test)]
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
-        &mut self.screen
+        &mut self.normal
     }
 
     /// Resets the screen's dirty-row tracking (called after layers consume the dirt).
     pub(crate) fn clear_screen_dirty(&mut self) {
-        self.screen.clear_dirty();
+        self.active_screen_mut().clear_dirty();
     }
 
     #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
-        self.screen.row_text(row)
+        self.screen().row_text(row)
     }
 
     /// Feeds raw PTY bytes into the terminal parser and refreshes the
@@ -752,5 +796,70 @@ mod tests {
             "hello world",
             "CSI 6 X should erase 6 exclamation marks"
         );
+    }
+
+    #[test]
+    fn alt_screen_enter_exit_preserves_normal_screen() {
+        let mut terminal = Terminal::new(3, 20);
+        terminal.put_str("normal");
+        assert_eq!(terminal.row_text(0).trim(), "normal");
+
+        // Enter alt screen
+        terminal.put_str("\x1b[?1049h");
+        // Alt screen starts blank
+        assert!(terminal.row_text(0).trim().is_empty());
+
+        // Write to alt screen
+        terminal.put_str("alt");
+        assert_eq!(terminal.row_text(0).trim(), "alt");
+
+        // Exit alt screen
+        terminal.put_str("\x1b[?1049l");
+        // Normal screen restored
+        assert_eq!(terminal.row_text(0).trim(), "normal");
+    }
+
+    #[test]
+    fn alt_screen_enter_twice_is_idempotent() {
+        let mut terminal = Terminal::new(3, 20);
+        terminal.put_str("\x1b[?1049h");
+        terminal.put_str("first");
+        terminal.put_str("\x1b[?1049h"); // second enter — no-op
+        assert_eq!(terminal.row_text(0).trim(), "first");
+    }
+
+    #[test]
+    fn alt_screen_exit_when_not_in_alt_is_noop() {
+        let mut terminal = Terminal::new(3, 20);
+        terminal.put_str("normal");
+        terminal.put_str("\x1b[?1049l"); // exit without enter — no panic
+        assert_eq!(terminal.row_text(0).trim(), "normal");
+    }
+
+    #[test]
+    fn alt_screen_switch_mid_batch_splits_correctly() {
+        // Simulates PTY sending CSI ?1049h followed by content in one read.
+        let mut terminal = Terminal::new(3, 20);
+        terminal.put_str("before");
+        terminal.put_bytes(b"\x1b[?1049hafter");
+        // "before" stayed on normal screen, "after" landed on alt screen.
+        assert_eq!(terminal.row_text(0).trim(), "after");
+
+        terminal.put_str("\x1b[?1049l");
+        assert_eq!(terminal.row_text(0).trim(), "before");
+    }
+
+    #[test]
+    fn alt_screen_resize_preserves_both_screens() {
+        let mut terminal = Terminal::new(3, 20);
+        terminal.put_str("normal");
+        terminal.put_str("\x1b[?1049h");
+        terminal.put_str("alt");
+        // Resize: both screens resize without panic.
+        terminal.resize(5, 30);
+        assert_eq!(terminal.screen().rows(), 5);
+        assert_eq!(terminal.screen().cols(), 30);
+        terminal.put_str("\x1b[?1049l");
+        assert_eq!(terminal.screen().rows(), 5);
     }
 }

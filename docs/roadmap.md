@@ -60,8 +60,8 @@ Core milestones:
 
 ### PTY
 
-- [ ] Integrate a custom ConPTY wrapper (Windows only; Unix is a `bail!()` stub)
-- [ ] Start the default shell (Windows ConPTY works; Unix PTY not implemented)
+- [x] Integrate a custom ConPTY wrapper (Windows only; Unix is a `bail!()` stub)
+- [x] Start the default shell (Windows ConPTY works; Unix PTY not implemented)
 - [x] Use `cmd` / `powershell` / `pwsh` on Windows
 - [ ] Use `$SHELL` on macOS/Linux, fallback to `/bin/sh` (Unix PTY is a stub)
 - [x] Read PTY output on a separate thread
@@ -163,10 +163,10 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 
 ### Alternate Screen
 
-- [ ] Support normal screen and alternate screen
-- [ ] Enter alternate screen (`CSI ?1049h`)
-- [ ] Exit alternate screen (`CSI ?1049l`)
-- [ ] Save normal screen state on enter, restore on exit
+- [x] Support normal screen and alternate screen
+- [x] Enter alternate screen (`CSI ?1049h`)
+- [x] Exit alternate screen (`CSI ?1049l`)
+- [x] Save normal screen state on enter, restore on exit
 - [ ] `vim` / `less` / `top` do not pollute the main screen
 
 ### Parser Hardening
@@ -190,7 +190,7 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 - [x] SGR test: all color modes, all attribute combinations
 - [ ] ICH/DCH test: insertion/deletion shifts cells correctly
 - [ ] IL/DL test: lines inserted/deleted, scroll region respected
-- [ ] Alternate screen test: enter/exit preserves main screen
+- [x] Alternate screen test: enter/exit preserves main screen
 - [ ] Save/restore cursor test
 - [ ] Cursor show/hide test
 - [ ] SU/SD test
@@ -588,14 +588,14 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 
 ## Milestone Overview
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                               |
-| ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | 🟡 Windows path OK; Unix PTY stub                     |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly           | 🟡 SGR done; ICH/DCH/IL/DL/alt-screen missing        |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint done; decorations pending  |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                        |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🔴 Not started                                        |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                        |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                              |
+| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | 🟡 Windows path OK; Unix PTY stub                    |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly           | 🟡 SGR + alt screen done; ICH/DCH/IL/DL missing      |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint done; decorations pending |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                       |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🔴 Not started                                       |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                       |
 
 ---
 
@@ -605,7 +605,7 @@ Recommended priority order:
 
 1. ✓ **SGR + Cell colors** (v0.2) — done; unlocks `ls --color`, `vim` highlights, `htop`
 2. ✓ **Background rect + glyph tint pipelines** (v0.3) — done; colors visible
-3. **Alternate screen** (v0.2) — `vim`/`less` usability
+3. ✓ **Alternate screen** (v0.2) — `vim`/`less` usability
 4. **Unicode: zero-width combining marks** (v0.3) — correct character display
 5. **Scrollback** (v0.4) — daily usability
 6. **Selection + clipboard** (v0.4) — daily usability

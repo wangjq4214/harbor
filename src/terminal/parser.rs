@@ -1,4 +1,5 @@
 use super::Screen;
+use super::screen::AltScreenAction;
 
 /// High-level ANSI/VT parser state.
 ///
@@ -94,11 +95,34 @@ impl Default for TerminalParser {
     }
 }
 
+/// Result of feeding bytes through the parser.
+pub(super) struct PutResult {
+    /// Number of bytes consumed. Less than input length when a screen switch
+    /// was triggered mid-batch; caller should re-feed remaining bytes after
+    /// handling the switch.
+    pub consumed: usize,
+    /// Non-None when the parser dispatched a screen-switch sequence.
+    pub alt_request: Option<AltScreenAction>,
+}
+
 impl TerminalParser {
     /// Consumes a PTY byte slice incrementally, preserving parser state for the next call.
-    pub(super) fn put_bytes(&mut self, screen: &mut Screen, bytes: &[u8]) {
-        for &byte in bytes {
+    /// Returns a `PutResult` indicating how many bytes were consumed and whether an
+    /// alternate-screen switch was triggered.
+    pub(super) fn put_bytes(&mut self, screen: &mut Screen, bytes: &[u8]) -> PutResult {
+        for (consumed, &byte) in bytes.iter().enumerate() {
             self.put_byte(screen, byte);
+            let request = screen.alt_request();
+            if request.is_some() {
+                return PutResult {
+                    consumed: consumed + 1,
+                    alt_request: screen.take_alt_request(),
+                };
+            }
+        }
+        PutResult {
+            consumed: bytes.len(),
+            alt_request: None,
         }
     }
 
@@ -275,6 +299,15 @@ impl TerminalParser {
     /// Applies supported CSI final bytes to the screen.
     fn dispatch_csi(&mut self, screen: &mut Screen, final_byte: u8) {
         if self.csi.private {
+            match final_byte {
+                b'h' if self.csi.params[..self.csi.len] == [Some(1049)] => {
+                    screen.request_alt_enter();
+                }
+                b'l' if self.csi.params[..self.csi.len] == [Some(1049)] => {
+                    screen.request_alt_exit();
+                }
+                _ => {}
+            }
             return;
         }
 
