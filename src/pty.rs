@@ -150,6 +150,11 @@ impl Pty {
                 error = %format_args!("{error:#}"),
                 "failed to write keyboard input to pty"
             );
+        } else {
+            tracing::debug!(
+                bytes = %String::from_utf8_lossy(data).escape_debug(),
+                "pty write"
+            );
         }
     }
 }
@@ -167,6 +172,10 @@ where
                 break;
             }
             Ok(bytes) => {
+                tracing::debug!(
+                    bytes = %String::from_utf8_lossy(&buffer[..bytes]).escape_debug(),
+                    "pty output"
+                );
                 // A false return means the UI event loop rejected the message, so the
                 // shell output pump should terminate instead of buffering unreachable data.
                 if !output_handler(buffer[..bytes].to_vec()) {
