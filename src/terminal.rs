@@ -679,4 +679,78 @@ mod tests {
 
         assert_eq!(terminal.row_text(0), "ab      ");
     }
+
+    #[test]
+    fn cargo_update_output_spans_multiple_rows() {
+        // Replay the PTY output chunks logged during `cargo update`.
+        let mut terminal = Terminal::new(5, 80);
+
+        // Chunk 0: "    Updating crates.io index\r\n"
+        terminal.put_bytes(b"\x1b[92m\x1b[1m    Updating\x1b[m crates.io index\r\n");
+        assert_eq!(
+            terminal.row_text(0).trim_end(),
+            "    Updating crates.io index"
+        );
+        assert_eq!(
+            (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+            (0, 1)
+        );
+
+        // Chunks 1-6: progress-bar updates that rewrite the same row via \r.
+        terminal.put_bytes(b"\x1b[96m\x1b[1m       Fetch\x1b[m ");
+        terminal.put_bytes(b"\x1b]9;4;3;0\x1b\\");
+        terminal.put_bytes(b"[=====>                           ] 0 complete; 1 pending\x1b[144X\r");
+        terminal.put_bytes(b"\x1b[96m\x1b[1m       Fetch\x1b[m ");
+        terminal.put_bytes(b"\x1b]9;4;3;0\x1b\\");
+        terminal.put_bytes(b"[=====>                           ] 1 complete; 0 pending\x1b[144X\r");
+        // Confirm row 0 is untouched by progress bars.
+        assert_eq!(
+            terminal.row_text(0).trim_end(),
+            "    Updating crates.io index"
+        );
+
+        // Chunk 7: "     Locking 0 packages ...\r\n"
+        terminal.put_bytes(
+            b"\x1b[92m\x1b[1m     Locking\x1b[m 0 packages to latest Rust 1.95.0 compatible versions\x1b[151X\r\n",
+        );
+        let row1 = terminal.row_text(1);
+        assert!(
+            row1.contains("Locking 0 packages to latest Rust 1.95.0 compatible versions"),
+            "expected locking line on row 1, got: {row1:?}"
+        );
+        // CSI 151 X should have erased the stale progress-bar tail ("0 pending").
+        assert!(
+            !row1.contains("pending"),
+            "ECH should have erased stale 'pending' text from progress bar, got: {row1:?}"
+        );
+        assert_eq!(
+            (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+            (0, 2)
+        );
+
+        // Chunk 8: "\r\nd:\workspaces\harbor>"
+        // Chunk 8: "\r\nd:\workspaces\harbor>" — the leading \r\n advances
+        // to the next row, so the prompt lands on row 3, not row 2.
+        terminal.put_bytes(b"\r\nd:\\workspaces\\harbor>");
+        let row3 = terminal.row_text(3);
+        assert!(
+            row3.contains("d:\\workspaces\\harbor>"),
+            "expected prompt on row 3, got: {row3:?}"
+        );
+    }
+
+    #[test]
+    fn erase_chars_via_csi_x_clears_specified_count() {
+        let mut terminal = Terminal::new(1, 20);
+        terminal.put_bytes(b"hello world!!!!!!");
+        assert_eq!(terminal.row_text(0).trim_end(), "hello world!!!!!!");
+
+        // Move cursor to col 11 (at '!') and ECH 6 chars.
+        terminal.put_bytes(b"\r\x1b[11C\x1b[6X");
+        assert_eq!(
+            terminal.row_text(0).trim_end(),
+            "hello world",
+            "CSI 6 X should erase 6 exclamation marks"
+        );
+    }
 }

@@ -287,6 +287,7 @@ impl TerminalParser {
             b'J' => screen.erase_display(self.csi_param(0, 0)),
             b'K' => screen.erase_line(self.csi_param(0, 0)),
             b'm' => screen.set_sgr(&self.csi.params[..self.csi.len]),
+            b'X' => screen.erase_chars(self.csi_param(0, 1)),
             _ => {}
         }
     }

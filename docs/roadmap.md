@@ -138,6 +138,7 @@ Move from "can display shell output" to "parses ANSI correctly and stores all ce
 - [x] Truecolor background (`48;2;R;G;B`)
 ### Grid Editing
 
+- [x] ECH: Erase characters (CSI `X`)
 - [ ] ICH: Insert characters (CSI `@`)
 - [ ] DCH: Delete characters (CSI `P`)
 - [ ] IL: Insert lines (CSI `L`)

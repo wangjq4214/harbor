@@ -548,6 +548,18 @@ impl Screen {
         }
     }
 
+    /// Implements CSI `X` (ECH): erase `n` characters from the cursor rightward.
+    ///
+    /// Replaces cells with default (space) characters without moving the cursor.
+    /// The default parameter (0) acts as 1.
+    pub(crate) fn erase_chars(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        self.mark_row_dirty(self.cursor_y);
+        let start = self.cursor_y * self.cols + self.cursor_x;
+        let end = (start + n).min(self.cursor_y * self.cols + self.cols);
+        self.cells[start..end].fill(Cell::default());
+    }
+
     /// Clears all visible cells and homes the cursor.
     pub(crate) fn reset_display(&mut self) {
         self.cells.fill(Cell::default());
@@ -738,5 +750,54 @@ mod tests {
             4,
             "resize should rebuild dirty_rows with all true"
         );
+    }
+    #[test]
+    fn erase_chars_clears_from_cursor_to_right() {
+        let mut screen = Screen::new(1, 14);
+        // Write "hello world!" without wrapping.
+        screen.write_char('h');
+        screen.write_char('e');
+        screen.write_char('l');
+        screen.write_char('l');
+        screen.write_char('o');
+        screen.write_char(' ');
+        screen.write_char('w');
+        screen.write_char('o');
+        screen.write_char('r');
+        screen.write_char('l');
+        screen.write_char('d');
+        screen.write_char('!');
+        assert_eq!(screen.row_text(0).trim_end(), "hello world!");
+
+        // Move cursor back to column 5 (at ' ') and erase 7 chars.
+        screen.cursor_x = 5;
+        screen.clear_dirty();
+        screen.erase_chars(7);
+        assert_eq!(screen.row_text(0).trim_end(), "hello");
+        assert_eq!(screen.dirty_rows().collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn erase_chars_clamps_to_row_end() {
+        let mut screen = Screen::new(1, 4);
+        screen.write_char('a');
+        screen.write_char('b');
+        assert_eq!(screen.row_text(0), "ab  ");
+
+        screen.cursor_x = 2;
+        screen.erase_chars(10); // more than remaining cols
+        assert_eq!(screen.row_text(0), "ab  ");
+    }
+
+    #[test]
+    fn erase_chars_zero_acts_as_one() {
+        let mut screen = Screen::new(1, 4);
+        screen.write_char('a');
+        screen.write_char('b');
+        assert_eq!(screen.row_text(0), "ab  ");
+
+        screen.cursor_x = 1;
+        screen.erase_chars(0);
+        assert_eq!(screen.row_text(0), "a   ");
     }
 }
