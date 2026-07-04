@@ -14,8 +14,8 @@ The project follows an Alacritty-like product boundary:
 
 Core milestones:
 
-- v0.1: Minimal end-to-end terminal loop
-- v0.2: Terminal core (parser + state + SGR) 🔜
+- v0.1: Minimal end-to-end terminal loop ✅
+- v0.2: Terminal core (parser + state + SGR)
 - v0.3: Cell-based wgpu renderer (color + decorations)
 - v0.4: Interactive features
 - v0.5: Performance and stability
@@ -25,280 +25,124 @@ Core milestones:
 
 ## v0.1: Minimal End-to-End Terminal Loop
 
-> **Status: Windows path mostly complete; Unix PTY not implemented, runtime acceptance unverified.**
-> The Windows shell loop (ConPTY → parser → screen → wgpu renderer) is wired, but cannot launch
-> on macOS/Linux until the Unix PTY is implemented.
+> **Status: ✅ Windows complete. Unix PTY is a `bail!()` stub — macOS/Linux cannot launch.**
 
-### Window and Rendering Basics
+### Done
 
-- [x] Create a window with `winit`
-- [x] Initialize `wgpu` instance / adapter / device / queue / surface
-- [x] Support window resize
-- [x] Reconfigure surface after resize
-- [x] Custom text renderer can draw a fixed string
-- [x] Custom text renderer can draw multiple lines
-- [x] Use a fixed font
-- [x] Use a fixed font size
-- [x] Use fixed foreground and background colors
-- [x] Use full-screen redraw for now
+**Window & Rendering.** winit window, wgpu surface/device/queue, resize + surface reconfigure, custom text renderer with fixed font/size/colors, full-screen redraw.
 
-### Terminal Grid
+**Terminal Grid.** `Terminal` + `Cell`, rows/cols tracking, cursor position, character write with automatic wrap, `\n`/`\r`/`\x08` handling, `scroll_up` on overflow, `clear`, `resize`, renderer reads grid row-by-row.
 
-- [x] Add `Terminal`
-- [x] Add `Cell`
-- [x] Support `rows` / `cols`
-- [x] Support `cursor_x` / `cursor_y`
-- [x] Write normal characters into the current cell
-- [x] Handle `\n` as line feed
-- [x] Handle `\r` as carriage return
-- [x] Handle `\x08` as backspace
-- [x] Wrap automatically at the end of a line
-- [x] Trigger `scroll_up` when writing past the last row
-- [x] Support `clear`
-- [x] Support `resize`
-- [x] Renderer can draw text from `Terminal Grid` row by row
+**PTY (Windows).** Custom ConPTY wrapper, default shell (`cmd`/`powershell`/`pwsh`), background reader thread, MPSC channel to main thread, keyboard input forwarded to PTY.
 
-### PTY
+**Input.** Normal text, Enter→`\r`, Backspace→`0x7f`, Tab→`\t`, Escape→`0x1b`, Ctrl+letter→control char, arrow keys→CSI sequences.
 
-- [x] Integrate a custom ConPTY wrapper (Windows only; Unix is a `bail!()` stub)
-- [x] Start the default shell (Windows ConPTY works; Unix PTY not implemented)
-- [x] Use `cmd` / `powershell` / `pwsh` on Windows
-- [ ] Use `$SHELL` on macOS/Linux, fallback to `/bin/sh` (Unix PTY is a stub)
-- [x] Read PTY output on a separate thread
-- [x] Send PTY output to the main thread through a channel
-- [x] Receive PTY bytes on the main thread
-- [x] Update `Terminal` on the main thread
-- [x] Write keyboard input to PTY
+**Minimal Parser.** Custom parser (not vte), printable chars, `\n`/`\r`/`\b`, basic clear screen, unknown escapes silently ignored.
 
-### Input
+**Acceptance.** `cargo run` opens a window, commands + output work, resize does not crash — all verified on Windows.
 
-- [x] Send normal text input to PTY
-- [x] Map Enter to `\r`
-- [x] Map Backspace to `0x7f`
-- [x] Map Tab to `\t`
-- [x] Map Escape to `0x1b`
-- [x] Map Ctrl+C to `0x03` (Ctrl+letter → control character in `keyboard_input_bytes`)
-- [x] Map Ctrl+D to `0x04` (Ctrl+letter → control character in `keyboard_input_bytes`)
-- [x] Map Up to `ESC [ A`
-- [x] Map Down to `ESC [ B`
-- [x] Map Right to `ESC [ C`
-- [x] Map Left to `ESC [ D`
+### To Do
 
-### Minimal Parser
-
-- [x] Directly handle basic control characters (custom parser, not vte)
-- [x] Support normal printable characters
-- [x] Support `\n`
-- [x] Support `\r`
-- [x] Support `\b`
-- [x] Support basic clear screen
-- [x] Ignore unknown escape sequences without panicking
-
-### Acceptance Criteria
-
-- [x] `cargo run` opens a window on Windows (verified)
-- [x] Can type commands and see output on Windows (verified)
-- [x] Resize does not crash (verified)
-- [ ] Unix PTY implemented so macOS/Linux can also launch
+- [ ] Unix PTY implementation (macOS/Linux support)
+- [ ] macOS/Linux runtime acceptance verification
 
 ---
 
 ## v0.2: Terminal Core (Parser + State + SGR)
 
-### Goal
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, and cursor state all done (133 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
-Move from "can display shell output" to "parses ANSI correctly and stores all cell state" — **pixel-perfect color rendering is not required** in this milestone; colors are stored in cells and verified via unit tests.
+### Done
 
-### Terminal Grid: Color and Attributes
+**Cell Model.** `Cell` extended with `fg: Color`, `bg: Color`, `attrs: CellAttrs`. `Color` enum: Named(8), Bright, Indexed(256), Rgb. `CellAttrs` bitset: bold, dim, italic, underline, blink, inverse, strikethrough. Default fg/bg support, empty cell (space + defaults).
 
-- [x] Extend `Cell` to include `fg: Color`, `bg: Color`, `attrs: CellAttrs`
-- [x] Add `Color` enum: Named(8), Bright, Indexed(256), Rgb
-- [x] Add `CellAttrs` bitset: bold, dim, italic, underline, blink, inverse, strikethrough
-- [x] Support default foreground / default background
-- [x] Support empty cell (space + default colors)
+**SGR.** Full `CSI m` dispatcher: reset (0), bold (1), dim (2), italic (3), underline (4), blink (5), inverse (7), strikethrough (9), 8-color fg (30–37) / bg (40–47), bright fg (90–97) / bg (100–107), 256-color fg (`38;5;N`) / bg (`48;5;N`), truecolor fg (`38;2;R;G;B`) / bg (`48;2;R;G;B`). All tested.
 
-### SGR (Select Graphic Rendition)
+**Grid Editing.** ECH (CSI X), ICH (CSI @), DCH (CSI P), IL (CSI L), DL (CSI M), SU (CSI S), SD (CSI T). All respect scrolling region.
 
-- [x] Implement `CSI m` dispatcher
-- [x] Reset: `0` — clears all attributes, resets to default colors
-- [x] Bold: `1`
-- [x] Dim: `2`
-- [x] Italic: `3`
-- [x] Underline: `4`
-- [x] Blink: `5`
-- [x] Inverse: `7`
-- [x] Strikethrough: `9`
-- [x] 8-color foreground (`30`–`37`)
-- [x] 8-color background (`40`–`47`)
-- [x] Bright foreground (`90`–`97`)
-- [x] Bright background (`100`–`107`)
-- [x] 256-color foreground (`38;5;N`)
-- [x] 256-color background (`48;5;N`)
-- [x] Truecolor foreground (`38;2;R;G;B`)
-- [x] Truecolor background (`48;2;R;G;B`)
-### Grid Editing
+**Scrolling Region.** DECSTBM (`CSI r`), scroll/insert/delete operations respect top/bottom margins. Unit-tested with vim-like scenarios.
 
-- [x] ECH: Erase characters (CSI `X`)
-- [ ] ICH: Insert characters (CSI `@`)
-- [ ] DCH: Delete characters (CSI `P`)
-- [ ] IL: Insert lines (CSI `L`)
-- [ ] DL: Delete lines (CSI `M`)
-- [ ] SU: Scroll up (CSI `S`)
-- [ ] SD: Scroll down (CSI `T`)
+**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test).
 
-### Scrolling Region (DECSTBM)
+**Alternate Screen.** Enter/exit (`CSI ?1049h/l`), main screen state preserved on enter and restored on exit. Isolation unit-tested, idempotent re-entry handled.
 
-- [ ] Support `CSI r` to set top/bottom margins
-- [ ] Scroll/insert/delete operations respect the region
-- [ ] Full-screen applications like `vim` / `less` scroll correctly
+**Resize.** Content preserved, rows/cols updated, PTY synced, cell metrics recalculated, redraw requested, cursor clamped. Tested.
 
-### Cursor
+**Tests.** 133 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking.
 
-- [x] Move cursor up / down / left / right
-- [x] Move cursor to specific row and column
-- [x] Clamp cursor within terminal bounds
-- [ ] Save cursor position (ESC 7 / DECSC)
-- [ ] Restore cursor position (ESC 8 / DECRC)
-- [ ] Cursor show/hide via `CSI ?25h` / `CSI ?25l`
+### To Do
 
-### Alternate Screen
-
-- [x] Support normal screen and alternate screen
-- [x] Enter alternate screen (`CSI ?1049h`)
-- [x] Exit alternate screen (`CSI ?1049l`)
-- [x] Save normal screen state on enter, restore on exit
-- [ ] `vim` / `less` / `top` do not pollute the main screen
-
-### Parser Hardening
-
+**Parser Hardening**
 - [ ] Log unsupported sequences via `tracing::warn!` instead of silent ignore
 - [ ] Validate CSI parameter bounds (reject malformed sequences gracefully)
-- [ ] Parse private mode sequences (`CSI ? ...`) for cursor/dec modes
+- [ ] Parse private mode sequences (`CSI ? ...`) beyond `?1049h/l` for cursor and DEC modes
 
-### Resize
+**Unit Test Coverage**
+- [ ] CSI cursor-movement sequences (A/B/C/D) tested at parser level
 
-- [x] Preserve existing content during resize
-- [x] Update `Terminal rows/cols`
-- [x] Sync PTY size
-- [x] Recalculate cell metrics
-- [x] Request redraw after resize
-- [x] Clamp cursor position after resize
-
-### Unit Test Coverage
-
-- [ ] Every CSI sequence has a unit test
-- [x] SGR test: all color modes, all attribute combinations
-- [ ] ICH/DCH test: insertion/deletion shifts cells correctly
-- [ ] IL/DL test: lines inserted/deleted, scroll region respected
-- [x] Alternate screen test: enter/exit preserves main screen
-- [ ] Save/restore cursor test
-- [ ] Cursor show/hide test
-- [ ] SU/SD test
-- [ ] Resize test: content preserved, cursor clamped
-
-### Acceptance Criteria
-
-- [ ] `cargo test` passes — all CSI sequence tests green
-- [ ] `vim` can open, move cursor, and exit (colors not required)
-- [ ] `clear` works correctly
+**Acceptance (runtime — needs Unix PTY for full verification)**
+- [ ] `vim` / `less` scroll correctly at runtime
+- [ ] `clear` works at runtime
 - [ ] `cargo build` output does not corrupt the screen
-- [ ] Shell adapts to resized rows/cols
-- [ ] Alternate screen enter/exit works correctly (`less` / `vim`)
-
+- [ ] Shell adapts to resized rows/cols at runtime
+- [ ] Alternate screen enter/exit works with `less` / `vim` at runtime
 
 ---
 
 ## v0.3: Cell-Based WGPU Renderer (Color + Decorations)
 
-### Goal
+> **Status: 🟡 Background rects, glyph tint, atlas eviction done. Decorations (underline/strikethrough), cursor styles (beam/underline), combining marks, and viewport offset pending.**
 
-Upgrade the existing glyph+cursor renderer to display full-color cells: background rectangles, glyph tinting, underlines, cursor styles, and viewport offset for scrollback.
+### Done
 
-### Rendering Architecture
+**Rendering Architecture.** Glyph atlas pipeline, CursorLayer, background clear + background rect pipeline + glyph pass + cursor pass drawn in order within single render pass.
 
-- [x] Add glyph pipeline (single-texture glyph atlas pipeline)
-- [x] Add cursor pipeline or cursor rectangle rendering (CursorLayer)
-- [x] Render flow includes clear background (solid color per frame)
-- [x] **Add background rectangle pipeline** — one rect per non-default-bg cell
-- [x] **Pass cell color to glyph shader** — tint glyph white by Cell fg color
-- [ ] Add underline / strikethrough rendering rect pipeline
-- [ ] Render flow: clear → cell backgrounds → glyphs → cursor → decorations
-- [x] Separate background rendering from glyph rendering into distinct passes
+**Background Pipeline.** Solid-color quad shader, pre-allocated vertex buffer (one rect per cell), single draw call, default-bg cells produce degenerate quads (skipped by rasterizer).
 
-### Background Pipeline
+**Glyph Color.** Fragment shader multiplies white glyph alpha by vertex color, colored vertices generated per cell (position + UV + fg RGBA), default-fg cells use white.
 
-- [x] Background shader (solid color quad)
-- [x] Pre-allocated vertex buffer (one rect per cell, degenerate quads for default bg)
-- [x] Batch background drawing (single draw call)
-- [x] Support default background (skip when cell bg matches terminal bg)
+**Glyph Atlas.** `HashMap<char, AtlasGlyph>` cache, atlas texture built once, lazy rasterization on first appearance, reuse across frames. Atlas-full handled via eviction + `full_update` (warn if still too large). Incremental tile uploads.
 
-### Glyph Color
+**Cell-Based Rendering.** Cell-by-cell read, glyph instance per visible cell, dynamic buffer upload via `write_buffer`, batched single draw call, pixel-coordinate conversion, `TEXT_PADDING = 16.0`.
 
-- [x] Glyph atlas pipeline (existing)
-- [x] Modify fragment shader to multiply white glyph alpha by vertex color
-- [x] Generate colored glyph vertices per cell (position + UV + fg color)
-- [x] Default-foreground cells use white (current behavior preserved)
+**Font Metrics.** Cell width/height/baseline/ascent calculated via fontdue, characters and cursor aligned to cell grid.
 
-### Glyph Atlas
+**Cursor.** Block cursor (rasterized glyph), 530ms blink cycle with `CursorBlink` state machine, hidden state driven by blink phase.
 
-- [x] Build glyph cache (`HashMap<char, AtlasGlyph>`)
-- [x] Build glyph atlas texture
-- [x] Rasterize glyph when it first appears
-- [x] Reuse glyph from atlas on later frames
-- [x] Support atlas texture upload
-- [ ] Handle atlas full condition (grow or evict)
-- [x] Allow simple atlas rebuild
-- [ ] Clear atlas when font size or DPI scale changes
+**Unicode.** `unicode-width` integrated, wide chars occupy 2 cells, second cell marked `wide_continuation`, spacer cleaned on delete, overwrite handled, unsupported chars → U+FFFD replacement glyph, CJK glyphs rasterized from fallback font.
 
-### Cell-Based Rendering
+**Rendering Correctness.** SGR fg rendered via `cell.fg.to_rgba()` in glyph shader, SGR bg rendered via background rect pipeline with `cell.bg.to_rgba()`.
 
-- [x] Renderer reads data cell by cell
-- [x] Generate glyph instance for each visible cell
-- [x] Support dynamic buffer upload
-- [x] Support batched drawing
-- [x] Convert cell coordinates to pixel coordinates
-- [ ] Support viewport offset (for scrollback rendering)
-- [x] Support padding (`TEXT_PADDING = 16.0`)
+### To Do
 
-### Font Metrics
+**Decorations**
+- [ ] Underline / strikethrough rendering rect pipeline
+- [ ] Full render flow: clear → cell backgrounds → glyphs → cursor → decorations
+- [ ] Bold: render brighter/thicker glyph (attrs stored, not rendered)
+- [ ] Italic: render oblique or different font (attrs stored, not rendered)
+- [ ] Underline: render underline decoration (attrs stored, not rendered)
+- [ ] Inverse: swap fg/bg of rendered cell (attrs stored, not rendered)
 
-- [x] Calculate cell width / cell height / baseline / ascent
-- [x] Align characters to cell grid
-- [ ] Keep box drawing characters (`│` `─` `┌` …) aligned for seamless joins
-- [x] Align cursor rectangle to cell grid
-- [ ] Keep underline position stable
-
-### Cursor Rendering
-
-- [x] Block cursor (rasterized `│` / `|`)
+**Cursor Styles**
 - [ ] Beam cursor (thin vertical bar)
 - [ ] Underline cursor
-- [x] Cursor blink state (530ms on/off cycle)
-- [x] Cursor hidden state (blink-driven)
 - [ ] Focused/unfocused cursor distinction
 - [ ] Inverse cursor rendering (swap fg/bg of cells under cursor)
 
-### Basic Unicode
+**Glyph Atlas**
+- [ ] Clear atlas when font size or DPI scale changes
 
-- [x] Integrate `unicode-width`
-- [x] Support wide characters occupying 2 cells
-- [ ] Support zero-width combining marks (render base char + combine, or at minimum preserve grid integrity)
-- [x] Mark the second cell of a wide character as spacer (`wide_continuation`)
-- [x] Clean spacer when deleting a wide character
-- [x] Handle overwriting spacer cells reasonably
-- [x] Render unsupported characters as fallback box or replacement glyph (U+FFFD)
+**Cell-Based Rendering**
+- [ ] Viewport offset (for scrollback rendering)
 
-### Rendering Correctness
+**Font Metrics**
+- [ ] Box drawing characters (`│` `─` `┌` …) aligned for seamless joins
+- [ ] Stable underline position
 
-- [ ] SGR foreground color renders correctly
-- [ ] SGR background color renders correctly
-- [ ] Bold state is visible (brighter or thicker glyph)
-- [ ] Italic state is visible (oblique or font select)
-- [ ] Underline renders correctly
-- [ ] Inverse renders correctly
+**Unicode**
+- [ ] Zero-width combining marks (render base char + combine, or preserve grid integrity)
 
-### Acceptance Criteria
-
+**Acceptance**
 - [ ] `ls --color` renders with correct colors
 - [ ] `vim` syntax highlighting colors are correct
 - [ ] `htop` / `top` displays colored output correctly
@@ -308,14 +152,13 @@ Upgrade the existing glyph+cursor renderer to display full-color cells: backgrou
 - [ ] Chinese characters do not severely corrupt the grid
 - [ ] Large output does not noticeably freeze
 
+---
+
 ## v0.4: Interactive Features
 
-### Goal
-
-Provide daily terminal interaction features: selection, copy/paste, mouse, IME, scrollback, and keyboard shortcuts.
+> **Status: 🔴 Not started.**
 
 ### Scrollback
-
 - [ ] Add scrollback buffer (ring buffer)
 - [ ] Normal screen output enters scrollback
 - [ ] Alternate screen does not enter scrollback by default
@@ -327,7 +170,6 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 - [ ] Copy text from scrollback
 
 ### Selection
-
 - [ ] Mouse drag selection
 - [ ] Click to set selection start, drag to update range
 - [ ] Keep selection after mouse release
@@ -339,7 +181,6 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 - [ ] Auto-scroll while selecting
 
 ### Clipboard
-
 - [ ] Integrate system clipboard
 - [ ] Ctrl+Shift+C copies selected text
 - [ ] Ctrl+Shift+V pastes
@@ -349,14 +190,12 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 - [ ] Filter dangerous control characters when necessary
 
 ### Mouse Protocol
-
 - [ ] Mouse wheel sent to application in alternate screen
 - [ ] Basic mouse reporting
 - [ ] SGR mouse mode
 - [ ] Mouse modifier encoding
 
 ### IME
-
 - [ ] Integrate winit IME events
 - [ ] Support preedit/composition
 - [ ] Support committed text
@@ -365,7 +204,6 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 - [ ] Write committed text to PTY
 
 ### Keyboard
-
 - [ ] Add keybinding data structure
 - [ ] Ctrl+C copies when selection exists, sends SIGINT otherwise
 - [ ] Ctrl+Shift+C always copies
@@ -376,14 +214,12 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 - [ ] F1-F12, Home/End/PageUp/PageDown mappings correct
 
 ### Hyperlink
-
 - [ ] Detect URLs
 - [ ] Highlight URL on hover
 - [ ] Ctrl+Click opens URL
 - [ ] Support OSC 8 hyperlink, optional
 
 ### Acceptance Criteria
-
 - [ ] Text selection works
 - [ ] Copy/paste works
 - [ ] Chinese IME works
@@ -396,52 +232,44 @@ Provide daily terminal interaction features: selection, copy/paste, mouse, IME, 
 
 ## v0.5: Performance and Stability
 
-### Goal
+> **Status: 🟡 Row-level damage tracking, incremental renderer updates, PTY batching, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
 
-Move from usable to fast, low-latency, and stable.
+### Done
 
-### Damage Tracking
+**Damage Tracking.** `Screen::dirty_rows` provides row-level dirty tracking — `mark_row_dirty()` called during write_char, erase, newline, scroll, insert/delete lines. Full damage on resize (`vec![true; rows]`). TextLayer and BackgroundLayer use dirty_rows for incremental row uploads instead of full rebuild.
 
-- [ ] Add `DamageTracker` (full / row / cell granularity)
-- [ ] Record damage during parser updates
-- [ ] Record scroll damage
-- [ ] Record cursor damage on cursor movement
-- [ ] Record selection damage
-- [ ] Use full damage on resize
-- [ ] Renderer updates instance buffer based on damage, not full rebuild
-- [ ] At least row-level damage in v0.5
+**Rendering Optimization.** Render only visible area; pre-allocated instance buffers in `new()` updated via `write_buffer`; incremental atlas update (only rasterize new chars); batch atlas uploads in single `prepare` call; pipeline and bind groups created once (rebuilt only on resize).
 
-### Rendering Optimization
+**PTY / Parser Performance.** 4096-byte reader buffer, PTY bytes processed in chunks, one redraw per chunk (not per-byte), reader thread failure detected and logged.
 
-- [x] Do not render outside visible area
-- [ ] Reuse glyph / background instance buffer (write_buffer instead of recreate)
-- [ ] Reduce temporary `Vec` allocations per frame
-- [ ] Reduce per-frame glyph lookup (incremental atlas update, not full rebuild)
+**Thread Safety.** Terminal state mutation on UI thread only; renderer does not hold mutable reference to Terminal.
+
+**Stability.** wgpu surface Lost/Outdated handled (logged + reconfigured); PTY child exit detected (reader exits on EOF); structured `tracing` logs in JSON format.
+
+**Memory.** `Cell` representation compact (fixed-size fields, no heap indirection).
+
+### To Do
+
+**Damage Tracking**
+- [ ] Formal `DamageTracker` struct (currently `dirty_rows: Vec<bool>`)
+- [ ] Cell-level damage granularity
+
+**Rendering Optimization**
+- [ ] Reduce temporary `Vec` allocations per frame (build_row_vertices allocates per-row)
 - [ ] Track atlas hit rate
-- [ ] Batch atlas uploads
-- [x] Avoid rebuilding pipeline every frame
-- [ ] Avoid rebuilding bind groups every frame
-- [ ] Support frame coalescing during heavy PTY output
+- [ ] Frame coalescing during heavy PTY output
 
-### PTY / Parser Performance
-
-- [x] Use suitable PTY reader buffer size (4096)
-- [x] Process PTY bytes in batches
-- [ ] Request redraw once after parser batch, not per-byte
+**PTY / Parser Performance**
 - [ ] Limit redraw frequency during heavy output
-- [ ] Add backpressure strategy
-- [x] Detect reader thread failure
+- [ ] Backpressure strategy
 
-### Latency
-
+**Latency**
 - [ ] Record key input → PTY write → output receive → render timestamps
 - [ ] Measure input-to-present latency
 - [ ] Request redraw immediately after input
 - [ ] Avoid lock contention
-- [x] Keep Terminal state mutation on UI thread only
 
-### Benchmark
-
+**Benchmark**
 - [ ] `yes` throughput
 - [ ] `cat large_file`
 - [ ] `git log --graph --color=always`
@@ -449,30 +277,22 @@ Move from usable to fast, low-latency, and stable.
 - [ ] `vim` redraw test
 - [ ] Record FPS, frame time, CPU, memory, atlas hit rate
 
-### Memory Optimization
-
-- [ ] Use ring buffer for scrollback
+**Memory Optimization**
+- [ ] Ring buffer for scrollback
 - [ ] Limit maximum scrollback lines
-- [x] Compact `Cell` representation
 - [ ] Compact `Color` / `Attrs` representation
 - [ ] Avoid frequent per-line `String` allocation
 - [ ] Avoid cloning the whole grid
-- [x] Renderer does not hold mutable reference to Terminal
-- [ ] Snapshot/diff mechanism is clear
+- [ ] Clear snapshot/diff mechanism
 
-### Stability
-
-- [x] Handle wgpu surface lost (Lost/Outdated logged + reconfigured)
+**Stability**
 - [ ] Handle wgpu out-of-memory
 - [ ] Handle device lost
-- [x] Handle PTY child process exit (reader exits on EOF)
 - [ ] Handle shell crash (reader restart logic)
-- [ ] Add panic hook logging
-- [x] Use structured `tracing` logs
+- [ ] Panic hook logging
 - [ ] Optional debug overlay (FPS, frame time, glyph count, atlas usage, PTY bytes/sec)
 
-### Acceptance Criteria
-
+**Acceptance**
 - [ ] UI does not visibly freeze during heavy output
 - [ ] Input latency is low
 - [ ] CPU usage is acceptable
@@ -485,12 +305,9 @@ Move from usable to fast, low-latency, and stable.
 
 ## v0.6: Daily Usable Release
 
-### Goal
-
-Reach a state suitable for long-term dogfooding. Config, themes, search, platform integration, packaging.
+> **Status: 🔴 Not started.** Target: dogfood-quality daily driver with config, themes, search, packaging.
 
 ### Config System
-
 - [ ] Add config file (TOML)
 - [ ] Support default config + user config path
 - [ ] Report config parse errors clearly
@@ -505,7 +322,6 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Window startup size / decorations config
 
 ### Themes
-
 - [ ] Built-in default theme
 - [ ] 16-color palette + bright colors
 - [ ] Foreground / background / cursor / selection / search colors
@@ -513,14 +329,12 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Theme hot reload
 
 ### Search
-
 - [ ] Search scrollback and current screen
 - [ ] Highlight search matches
 - [ ] Next / previous match
 - [ ] Case-sensitive option
 
 ### Window / Platform
-
 - [ ] Windows basic support (ConPTY + window + renderer)
 - [ ] macOS basic support (font loading OK; PTY stub)
 - [ ] Linux X11 basic support (font loading OK; PTY stub)
@@ -534,14 +348,12 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Close confirmation, optional
 
 ### Shell Integration
-
 - [ ] OSC title update
 - [ ] OSC 8 hyperlink
 - [ ] Working directory tracking, optional
 - [ ] Shell prompt marker, optional
 
 ### Logging and Diagnostics
-
 - [ ] `RUST_LOG` controls logging (EnvFilter, not fixed level)
 - [ ] Log file path
 - [ ] Print version, platform, wgpu backend, adapter on startup
@@ -550,7 +362,6 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Debug overlay: FPS, frame time, glyph count, atlas usage, damage rows, PTY bytes/sec
 
 ### Packaging and Release
-
 - [ ] Windows `.exe`
 - [ ] macOS `.app`
 - [ ] Linux tarball
@@ -563,7 +374,6 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Example config
 
 ### Dogfood
-
 - [ ] Use continuously for 1 day
 - [ ] Use continuously for 1 week
 - [ ] `nvim` / `tmux` / `git` / `cargo build` work
@@ -573,7 +383,6 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 - [ ] Crash frequency is acceptable
 
 ### Acceptance Criteria
-
 - [ ] Usable as personal daily terminal
 - [ ] Config file works
 - [ ] Themes work
@@ -588,31 +397,15 @@ Reach a state suitable for long-term dogfooding. Config, themes, search, platfor
 
 ## Milestone Overview
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                              |
-| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | 🟡 Windows path OK; Unix PTY stub                    |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass; vim/less exit cleanly           | 🟡 SGR + alt screen done; ICH/DCH/IL/DL missing      |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint done; decorations pending |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                       |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🔴 Not started                                       |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                       |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                   |
+| ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                      |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (133), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + cursor done; parser hardening + runtime verification pending                               |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction done; decorations, cursor styles, combining marks, viewport offset pending                    |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                                                                                                            |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + surface/process handling done; latency measurement, benchmarking, memory optimization pending |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                            |
 
 ---
-
-## Development Priority
-
-Recommended priority order:
-
-1. ✓ **SGR + Cell colors** (v0.2) — done; unlocks `ls --color`, `vim` highlights, `htop`
-2. ✓ **Background rect + glyph tint pipelines** (v0.3) — done; colors visible
-3. ✓ **Alternate screen** (v0.2) — `vim`/`less` usability
-4. **Unicode: zero-width combining marks** (v0.3) — correct character display
-5. **Scrollback** (v0.4) — daily usability
-6. **Selection + clipboard** (v0.4) — daily usability
-7. **IME** (v0.4) — CJK input
-8. **Performance** (v0.5)
-9. **Config / theme / packaging** (v0.6)
-
-Core principle:
 
 > Build a reliable terminal first. Turn it into a development environment later.

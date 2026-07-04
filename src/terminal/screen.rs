@@ -154,6 +154,17 @@ impl Default for Cell {
     }
 }
 
+/// Saved terminal state for cursor save/restore (DECSC/DECRC). Captures the cursor position
+/// and SGR attributes so the screen can be restored after a screen-altering operation.
+#[derive(Debug, Clone)]
+struct SavedCursor {
+    cursor_x: usize,
+    cursor_y: usize,
+    fg: Color,
+    bg: Color,
+    attrs: CellAttrs,
+}
+
 /// Visible terminal screen state rendered by the text pipeline.
 ///
 /// `Screen` owns only display state: cell contents, dimensions, and cursor position. It does not
@@ -180,6 +191,12 @@ pub(crate) struct Screen {
     current_attrs: CellAttrs,
     /// Pending alternate-screen request set by the parser, consumed by Terminal.
     alt_request: Option<AltScreenAction>,
+    /// Top boundary of the scrolling region (DECSTBM). 0-based, inclusive.
+    scroll_top: usize,
+    /// Bottom boundary of the scrolling region (DECSTBM). 0-based, inclusive.
+    scroll_bottom: usize,
+    /// Saved cursor state (DECSC/DECRC), or `None` before any save.
+    saved_cursor: Option<SavedCursor>,
 }
 
 impl Screen {
@@ -197,6 +214,9 @@ impl Screen {
             current_bg: Color::Default,
             current_attrs: CellAttrs::default(),
             alt_request: None,
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
+            saved_cursor: None,
         }
     }
 
@@ -354,6 +374,13 @@ impl Screen {
         self.cursor_x = self.cursor_x.min(cols - 1);
         self.cells = cells;
         self.dirty_rows = vec![true; rows];
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
+        // Clamp saved cursor position if the grid shrunk, rather than discarding it.
+        if let Some(ref mut saved) = self.saved_cursor {
+            saved.cursor_x = saved.cursor_x.min(cols - 1);
+            saved.cursor_y = saved.cursor_y.min(rows - 1);
+        }
     }
 
     /// Yields indices of rows modified since last `clear_dirty()`.
@@ -507,12 +534,18 @@ impl Screen {
         self.cells[index] = Cell::default();
     }
 
-    /// Moves to the start of the next row, scrolling up when already on the bottom row.
+    /// Moves to the start of the next row, scrolling the registered region when already
+    /// at the bottom of the scrolling region. When the cursor is outside the scroll
+    /// region, moves down without scrolling.
     pub(crate) fn newline(&mut self) {
         self.cursor_x = 0;
-        if self.cursor_y + 1 == self.rows {
-            self.scroll_up();
-        } else {
+        if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+            if self.cursor_y == self.scroll_bottom {
+                self.scroll_region_up_one();
+            } else {
+                self.cursor_y += 1;
+            }
+        } else if self.cursor_y + 1 < self.rows {
             self.cursor_y += 1;
         }
     }
@@ -598,27 +631,257 @@ impl Screen {
         self.mark_all_dirty();
     }
 
-    /// Implements reverse index (`ESC M`): move up, or scroll the visible grid down at row 0.
+    /// Implements reverse index (`ESC M`): move up, or scroll the scrolling region down
+    /// when already at the top of the region. When the cursor is above the region,
+    /// moves up if not already at the top of the full screen.
     pub(crate) fn reverse_index(&mut self) {
-        if self.cursor_y == 0 {
-            self.mark_all_dirty();
-            // Shift rows 0..rows-1 down by one row, then blank the top row.
-            let len = (self.rows - 1) * self.cols;
-            self.cells.copy_within(0..len, self.cols);
-            self.cells[..self.cols].fill(Cell::default());
-        } else {
+        if self.cursor_y == self.scroll_top && self.cursor_y <= self.scroll_bottom {
+            // Mark only region rows dirty.
+            for row in self.scroll_top..=self.scroll_bottom {
+                self.mark_row_dirty(row);
+            }
+            // Shift rows [scroll_top .. scroll_bottom-1] down by one row.
+            let src_start = self.scroll_top * self.cols;
+            let src_end = self.scroll_bottom * self.cols;
+            let dst = (self.scroll_top + 1) * self.cols;
+            self.cells.copy_within(src_start..src_end, dst);
+            // Blank the top row of the region.
+            self.cells[self.scroll_top * self.cols..(self.scroll_top + 1) * self.cols]
+                .fill(Cell::default());
+        } else if self.cursor_y > 0 {
             self.cursor_y -= 1;
         }
     }
 
-    /// Scrolls the visible grid up by one row: shifts every row upward (row N → N-1) and
-    /// fills the newly exposed bottom row with blank cells. The cursor stays on the bottom row.
-    fn scroll_up(&mut self) {
-        self.mark_all_dirty();
-        self.cells.copy_within(self.cols.., 0);
-        let first_blank = (self.rows - 1) * self.cols;
-        self.cells[first_blank..].fill(Cell::default());
-        self.cursor_y = self.rows - 1;
+    /// Scrolls the scrolling region up by one row: shifts rows within `[scroll_top, scroll_bottom]`
+    /// upward (row N → N-1) and fills the newly exposed bottom row of the region with blank
+    /// cells. The cursor moves to column 0 of the bottom region row.
+    fn scroll_region_up_one(&mut self) {
+        // Mark only region rows dirty.
+        for row in self.scroll_top..=self.scroll_bottom {
+            self.mark_row_dirty(row);
+        }
+        // Shift rows [scroll_top+1 ..= scroll_bottom] up by one row.
+        let src_start = (self.scroll_top + 1) * self.cols;
+        let src_end = (self.scroll_bottom + 1) * self.cols;
+        let dst = self.scroll_top * self.cols;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Blank the newly exposed bottom row of the region.
+        let first_blank = self.scroll_bottom * self.cols;
+        self.cells[first_blank..first_blank + self.cols].fill(Cell::default());
+        self.cursor_y = self.scroll_bottom;
+        self.cursor_x = 0;
+    }
+
+    /// Implements DECSTBM (`CSI r`): set scrolling region.
+    ///
+    /// `top` and `bottom` are 1-based ANSI coordinates. A value of 0 means "use default"
+    /// (top=1, bottom=rows). If `top >= bottom` after clamping, the request is ignored.
+    /// Cursor is moved to home (0, 0) on success.
+    pub(crate) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        let top = if top == 0 { 1 } else { top };
+        let bottom = if bottom == 0 { self.rows } else { bottom };
+        let top = top.max(1).min(self.rows);
+        let bottom = bottom.min(self.rows);
+        if top >= bottom {
+            return;
+        }
+        self.scroll_top = top - 1;
+        self.scroll_bottom = bottom - 1;
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+    }
+
+    /// Implements CSI `@` (ICH): insert `n` blank characters at the cursor, shifting
+    /// existing characters right. Characters past the right margin are lost.
+    /// The cursor position does not change.
+    pub(crate) fn insert_chars(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        self.mark_row_dirty(self.cursor_y);
+        let col = self.cursor_x;
+        if col >= self.cols {
+            return;
+        }
+        let n = n.min(self.cols - col);
+        if n == 0 {
+            return;
+        }
+        let row_start = self.cursor_y * self.cols;
+        // Shift cells in [col, cols - n) right by n.
+        let src_start = row_start + col;
+        let src_end = row_start + self.cols - n;
+        let dst = row_start + col + n;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill vacated cells with blanks.
+        self.cells[row_start + col..row_start + col + n].fill(Cell::default());
+    }
+
+    /// Implements CSI `P` (DCH): delete `n` characters at the cursor, shifting remaining
+    /// characters left. Vacated cells at the right margin become blank.
+    /// The cursor position does not change.
+    pub(crate) fn delete_chars(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        self.mark_row_dirty(self.cursor_y);
+        let col = self.cursor_x;
+        if col >= self.cols {
+            return;
+        }
+        let n = n.min(self.cols - col);
+        if n == 0 {
+            return;
+        }
+        let row_start = self.cursor_y * self.cols;
+        // Shift cells from [col + n .. cols] left to [col .. cols - n].
+        let src_start = row_start + col + n;
+        let src_end = row_start + self.cols;
+        let dst = row_start + col;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill trailing vacated cells with blanks.
+        self.cells[row_start + self.cols - n..row_start + self.cols].fill(Cell::default());
+    }
+
+    /// Implements CSI `L` (IL): insert `n` blank lines at the cursor row within the
+    /// scrolling region. Lines below shift down; bottom lines of the region are lost.
+    pub(crate) fn insert_lines(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+            return;
+        }
+        let max_n = self.scroll_bottom - self.cursor_y + 1;
+        let n = n.min(max_n);
+        // Mark all affected rows dirty.
+        for row in self.cursor_y..=self.scroll_bottom {
+            self.mark_row_dirty(row);
+        }
+        // When n covers all remaining rows in the region, just blank them all.
+        if n == max_n {
+            let start = self.cursor_y * self.cols;
+            let end = (self.scroll_bottom + 1) * self.cols;
+            self.cells[start..end].fill(Cell::default());
+            self.cursor_x = 0;
+            return;
+        }
+        // Shift rows [cursor_y .. scroll_bottom - n + 1] down by n.
+        let src_start = self.cursor_y * self.cols;
+        let src_end = (self.scroll_bottom - n + 1) * self.cols;
+        let dst = (self.cursor_y + n) * self.cols;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill the n rows starting at cursor_y with blanks.
+        self.cells[self.cursor_y * self.cols..(self.cursor_y + n) * self.cols]
+            .fill(Cell::default());
+        self.cursor_x = 0;
+    }
+
+    pub(crate) fn delete_lines(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+            return;
+        }
+        let max_n = self.scroll_bottom - self.cursor_y + 1;
+        let n = n.min(max_n);
+        // Mark all affected rows dirty.
+        for row in self.cursor_y..=self.scroll_bottom {
+            self.mark_row_dirty(row);
+        }
+        // When n covers all remaining rows in the region, just blank them all.
+        if n == max_n {
+            let start = self.cursor_y * self.cols;
+            let end = (self.scroll_bottom + 1) * self.cols;
+            self.cells[start..end].fill(Cell::default());
+            self.cursor_x = 0;
+            return;
+        }
+        // Shift rows [cursor_y + n ..= scroll_bottom] up by n.
+        let src_start = (self.cursor_y + n) * self.cols;
+        let src_end = (self.scroll_bottom + 1) * self.cols;
+        let dst = self.cursor_y * self.cols;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill the n rows at the bottom of the region with blanks.
+        let fill_start = (self.scroll_bottom - n + 1) * self.cols;
+        let fill_end = (self.scroll_bottom + 1) * self.cols;
+        self.cells[fill_start..fill_end].fill(Cell::default());
+        self.cursor_x = 0;
+    }
+
+    /// Implements CSI `S` (SU): scroll the scrolling region up by `n` lines.
+    /// Top `n` lines of the region are lost; blank lines appear at the bottom.
+    /// The cursor does not move.
+    pub(crate) fn scroll_up_region(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        let region_height = self.scroll_bottom - self.scroll_top + 1;
+        let n = n.min(region_height);
+        // Mark only region rows dirty.
+        for row in self.scroll_top..=self.scroll_bottom {
+            self.mark_row_dirty(row);
+        }
+        // When n covers the entire region, just blank everything.
+        if n == region_height {
+            let region_start = self.scroll_top * self.cols;
+            let region_end = (self.scroll_bottom + 1) * self.cols;
+            self.cells[region_start..region_end].fill(Cell::default());
+            return;
+        }
+        // Shift rows [scroll_top + n ..= scroll_bottom] up by n.
+        let src_start = (self.scroll_top + n) * self.cols;
+        let src_end = (self.scroll_bottom + 1) * self.cols;
+        let dst = self.scroll_top * self.cols;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill the bottom n rows of the region with blanks.
+        let fill_start = (self.scroll_bottom - n + 1) * self.cols;
+        let fill_end = (self.scroll_bottom + 1) * self.cols;
+        self.cells[fill_start..fill_end].fill(Cell::default());
+    }
+
+    /// Implements CSI `T` (SD): scroll the scrolling region down by `n` lines.
+    /// Bottom `n` lines of the region are lost; blank lines appear at the top.
+    /// The cursor does not move.
+    pub(crate) fn scroll_down_region(&mut self, n: usize) {
+        let n = if n == 0 { 1 } else { n };
+        let region_height = self.scroll_bottom - self.scroll_top + 1;
+        let n = n.min(region_height);
+        // Mark only region rows dirty.
+        for row in self.scroll_top..=self.scroll_bottom {
+            self.mark_row_dirty(row);
+        }
+        // When n covers the entire region, just blank everything.
+        if n == region_height {
+            let region_start = self.scroll_top * self.cols;
+            let region_end = (self.scroll_bottom + 1) * self.cols;
+            self.cells[region_start..region_end].fill(Cell::default());
+            return;
+        }
+        // Shift rows [scroll_top ..= scroll_bottom - n] down by n.
+        let src_start = self.scroll_top * self.cols;
+        let src_end = (self.scroll_bottom - n + 1) * self.cols;
+        let dst = (self.scroll_top + n) * self.cols;
+        self.cells.copy_within(src_start..src_end, dst);
+        // Fill the top n rows of the region with blanks.
+        let fill_start = self.scroll_top * self.cols;
+        let fill_end = (self.scroll_top + n) * self.cols;
+        self.cells[fill_start..fill_end].fill(Cell::default());
+    }
+
+    /// Implements DECSC (`ESC 7`): save cursor position and SGR attributes.
+    pub(crate) fn save_cursor(&mut self) {
+        self.saved_cursor = Some(SavedCursor {
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            fg: self.current_fg,
+            bg: self.current_bg,
+            attrs: self.current_attrs,
+        });
+    }
+
+    /// Implements DECRC (`ESC 8`): restore cursor position and SGR attributes.
+    /// If no cursor was previously saved, this is a no-op.
+    pub(crate) fn restore_cursor(&mut self) {
+        if let Some(saved) = &self.saved_cursor {
+            self.cursor_x = saved.cursor_x;
+            self.cursor_y = saved.cursor_y;
+            self.current_fg = saved.fg;
+            self.current_bg = saved.bg;
+            self.current_attrs = saved.attrs;
+        }
     }
 }
 
@@ -829,5 +1092,420 @@ mod tests {
         screen.cursor_x = 1;
         screen.erase_chars(0);
         assert_eq!(screen.row_text(0), "a   ");
+    }
+
+    // ── ICH / DCH ──────────────────────────────────────────────
+
+    #[test]
+    fn insert_chars_shifts_right() {
+        let mut screen = Screen::new(1, 8);
+        for ch in "abcdef".chars() {
+            screen.write_char(ch);
+        }
+        assert_eq!(screen.row_text(0), "abcdef  ");
+
+        screen.cursor_x = 2;
+        screen.clear_dirty();
+        screen.insert_chars(2);
+        assert_eq!(screen.row_text(0), "ab  cdef");
+        assert!(screen.dirty_rows().any(|r| r == 0));
+    }
+
+    #[test]
+    fn insert_chars_zero_acts_as_one() {
+        let mut screen = Screen::new(1, 6);
+        for ch in "abcde".chars() {
+            screen.write_char(ch);
+        }
+        assert_eq!(screen.row_text(0), "abcde ");
+
+        screen.cursor_x = 1;
+        screen.insert_chars(0);
+        assert_eq!(screen.row_text(0), "a bcde");
+    }
+
+    #[test]
+    fn insert_chars_clamps_to_row_end() {
+        let mut screen = Screen::new(1, 4);
+        screen.write_char('a');
+        screen.write_char('b');
+        assert_eq!(screen.row_text(0), "ab  ");
+
+        screen.cursor_x = 2;
+        screen.insert_chars(10);
+        assert_eq!(screen.row_text(0), "ab  ");
+    }
+
+    #[test]
+    fn delete_chars_shifts_left() {
+        let mut screen = Screen::new(1, 8);
+        for ch in "abcdef".chars() {
+            screen.write_char(ch);
+        }
+        assert_eq!(screen.row_text(0), "abcdef  ");
+
+        screen.cursor_x = 2;
+        screen.clear_dirty();
+        screen.delete_chars(2);
+        assert_eq!(screen.row_text(0), "abef    ");
+        assert!(screen.dirty_rows().any(|r| r == 0));
+    }
+
+    #[test]
+    fn delete_chars_zero_acts_as_one() {
+        let mut screen = Screen::new(1, 5);
+        for ch in "abcd".chars() {
+            screen.write_char(ch);
+        }
+        screen.cursor_x = 1;
+        screen.delete_chars(0);
+        assert_eq!(screen.row_text(0), "acd  ");
+    }
+
+    #[test]
+    fn delete_chars_clamps_to_row_end() {
+        let mut screen = Screen::new(1, 4);
+        screen.write_char('a');
+        screen.write_char('b');
+        assert_eq!(screen.row_text(0), "ab  ");
+
+        screen.cursor_x = 2;
+        screen.delete_chars(10);
+        assert_eq!(screen.row_text(0), "ab  ");
+    }
+
+    // ── IL / DL ─────────────────────────────────────────────────
+
+    #[test]
+    fn insert_lines_within_region() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "bbbb");
+        assert_eq!(screen.row_text(2), "cccc");
+        assert_eq!(screen.row_text(3), "dddd");
+
+        screen.cursor_y = 1;
+        screen.insert_lines(1);
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "bbbb");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn insert_lines_outside_region_noop() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        screen.cursor_y = 0; // above scroll_top
+        screen.insert_lines(1);
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "bbbb");
+        assert_eq!(screen.row_text(2), "cccc");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn delete_lines_within_region() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        assert_eq!(screen.row_text(1), "bbbb");
+        assert_eq!(screen.row_text(2), "cccc");
+
+        screen.cursor_y = 1;
+        screen.delete_lines(1);
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "cccc");
+        assert_eq!(screen.row_text(2), "    ");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn delete_lines_outside_region_noop() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        screen.cursor_y = 3; // below scroll_bottom
+        screen.delete_lines(1);
+        assert_eq!(screen.row_text(1), "bbbb");
+        assert_eq!(screen.row_text(2), "cccc");
+    }
+
+    // ── SU / SD ─────────────────────────────────────────────────
+
+    #[test]
+    fn scroll_up_region_scrolls() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 0;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "bbbb");
+        assert_eq!(screen.row_text(2), "cccc");
+        assert_eq!(screen.row_text(3), "dddd");
+
+        screen.scroll_up_region(2);
+        assert_eq!(screen.row_text(0), "cccc");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "    ");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn scroll_down_region_scrolls() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 0;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+
+        screen.scroll_down_region(2);
+        assert_eq!(screen.row_text(0), "    ");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "aaaa");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn scroll_up_region_clamps_n() {
+        let mut screen = Screen::new(3, 4);
+        for row in 0..3 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        screen.scroll_up_region(100);
+        assert_eq!(screen.row_text(0), "    ");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "    ");
+    }
+
+    // ── DECSTBM ─────────────────────────────────────────────────
+
+    #[test]
+    fn set_scroll_region_default() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 2;
+        screen.scroll_bottom = 3;
+        screen.set_scroll_region(0, 0);
+        assert_eq!(screen.scroll_top, 0);
+        assert_eq!(screen.scroll_bottom, 3);
+        // Cursor homes on success.
+        assert_eq!(screen.cursor_x, 0);
+        assert_eq!(screen.cursor_y, 0);
+    }
+
+    #[test]
+    fn set_scroll_region_custom() {
+        let mut screen = Screen::new(4, 4);
+        screen.cursor_x = 3;
+        screen.cursor_y = 3;
+        screen.set_scroll_region(2, 3);
+        assert_eq!(screen.scroll_top, 1);
+        assert_eq!(screen.scroll_bottom, 2);
+        assert_eq!(screen.cursor_x, 0);
+        assert_eq!(screen.cursor_y, 0);
+    }
+
+    #[test]
+    fn set_scroll_region_invalid_ignored() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 0;
+        screen.scroll_bottom = 3;
+        screen.set_scroll_region(3, 2); // top >= bottom after clamping
+        assert_eq!(screen.scroll_top, 0);
+        assert_eq!(screen.scroll_bottom, 3);
+    }
+
+    // ── Cursor save/restore ──────────────────────────────────────
+
+    #[test]
+    fn save_restore_cursor_roundtrips() {
+        let mut screen = Screen::new(4, 4);
+        screen.save_cursor();
+        screen.cursor_x = 2;
+        screen.cursor_y = 3;
+        screen.current_fg = Color::Named(1);
+        screen.current_bg = Color::Named(2);
+        screen.current_attrs.set(CellAttrs::BOLD);
+        screen.restore_cursor();
+        assert_eq!(screen.cursor_x, 0);
+        assert_eq!(screen.cursor_y, 0);
+        assert_eq!(screen.current_fg, Color::Default);
+        assert_eq!(screen.current_bg, Color::Default);
+        assert_eq!(screen.current_attrs, CellAttrs::default());
+    }
+
+    #[test]
+    fn restore_cursor_none_is_noop() {
+        let mut screen = Screen::new(4, 4);
+        screen.cursor_x = 2;
+        screen.cursor_y = 3;
+        screen.restore_cursor();
+        assert_eq!(screen.cursor_x, 2);
+        assert_eq!(screen.cursor_y, 3);
+    }
+
+    // ── Region-aware newline / reverse_index ────────────────────
+
+    #[test]
+    fn newline_scrolls_region() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        // Cursor at scroll_bottom, call newline.
+        screen.cursor_y = 2;
+        screen.cursor_x = 0;
+        screen.clear_dirty();
+        screen.newline();
+        // Region [1,2] scrolled up: row 1 gets old row 2 ("cccc"), row 2 blanked.
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "cccc");
+        assert_eq!(screen.row_text(2), "    ");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn reverse_index_scrolls_region() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        for row in 0..4 {
+            for col in 0..4 {
+                screen.cells[row * 4 + col] = Cell {
+                    ch: (b'a' + row as u8) as char,
+                    ..Cell::default()
+                };
+            }
+        }
+        // Cursor at scroll_top, call reverse_index.
+        screen.cursor_y = 1;
+        screen.clear_dirty();
+        screen.reverse_index();
+        // Region [1,2] scrolled down: row 1 blank, row 2 gets old row 1 ("bbbb").
+        assert_eq!(screen.row_text(0), "aaaa");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "bbbb");
+        assert_eq!(screen.row_text(3), "dddd");
+    }
+
+    #[test]
+    fn reverse_index_above_region_no_panic() {
+        let mut screen = Screen::new(5, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 3;
+        // Cursor at (0, 0) — above the scroll region.
+        screen.reverse_index(); // must NOT panic
+        // No rows or cursor should have changed (no-op above region).
+        assert_eq!(screen.cursor_x, 0);
+        assert_eq!(screen.cursor_y, 0);
+        assert_eq!(screen.row_text(0), "    ");
+        assert_eq!(screen.row_text(1), "    ");
+        assert_eq!(screen.row_text(2), "    ");
+        assert_eq!(screen.row_text(3), "    ");
+        assert_eq!(screen.row_text(4), "    ");
+    }
+
+    #[test]
+    fn newline_below_region_no_panic() {
+        let mut screen = Screen::new(4, 4);
+        screen.scroll_top = 1;
+        screen.scroll_bottom = 2;
+        screen.cursor_y = 3; // below region at last row
+        screen.cursor_x = 0;
+        screen.newline(); // must NOT panic
+        // Cursor should not have wrapped past rows-1.
+        assert!(screen.cursor_y < screen.rows);
+        assert_eq!(screen.cursor_y, 3);
+        assert_eq!(screen.cursor_x, 0);
+    }
+
+    #[test]
+    fn resize_preserves_saved_cursor() {
+        // Save at home, resize smaller, restore → clamped to new bounds.
+        let mut screen = Screen::new(5, 10);
+        screen.save_cursor();
+        // Move cursor away and set SGR.
+        screen.cursor_y = 4;
+        screen.cursor_x = 7;
+        screen.current_fg = Color::Named(1);
+        screen.current_bg = Color::Named(2);
+        screen.current_attrs.set(CellAttrs::BOLD);
+        screen.resize(3, 5); // smaller — saved cursor must be clamped
+        screen.restore_cursor();
+        assert_eq!(screen.cursor_x, 0, "saved x clamped to 0.min(4)");
+        assert_eq!(screen.cursor_y, 0, "saved y clamped to 0.min(2)");
+        assert_eq!(screen.current_fg, Color::Default);
+        assert_eq!(screen.current_bg, Color::Default);
+        assert_eq!(screen.current_attrs, CellAttrs::default());
+
+        // Save at non-home, resize larger, restore → original position preserved.
+        let mut screen = Screen::new(2, 5);
+        screen.cursor_y = 1;
+        screen.cursor_x = 3;
+        screen.save_cursor();
+        screen.resize(10, 20); // larger — no clamping needed
+        screen.restore_cursor();
+        assert_eq!(screen.cursor_x, 3, "original x preserved");
+        assert_eq!(screen.cursor_y, 1, "original y preserved");
     }
 }

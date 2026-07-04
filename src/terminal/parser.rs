@@ -184,6 +184,14 @@ impl TerminalParser {
                 screen.reverse_index();
                 self.state = ParserState::Ground;
             }
+            b'7' => {
+                screen.save_cursor();
+                self.state = ParserState::Ground;
+            }
+            b'8' => {
+                screen.restore_cursor();
+                self.state = ParserState::Ground;
+            }
             0x18 | 0x1a => self.state = ParserState::Ground,
             0x1b => self.state = ParserState::Escape,
             0x00..=0x1f => self.execute_control(screen, byte),
@@ -321,6 +329,13 @@ impl TerminalParser {
             b'K' => screen.erase_line(self.csi_param(0, 0)),
             b'm' => screen.set_sgr(&self.csi.params[..self.csi.len]),
             b'X' => screen.erase_chars(self.csi_param(0, 1)),
+            b'r' => screen.set_scroll_region(self.csi_param(0, 0), self.csi_param(1, 0)),
+            b'@' => screen.insert_chars(self.csi_param(0, 1)),
+            b'P' => screen.delete_chars(self.csi_param(0, 1)),
+            b'L' => screen.insert_lines(self.csi_param(0, 1)),
+            b'M' => screen.delete_lines(self.csi_param(0, 1)),
+            b'S' => screen.scroll_up_region(self.csi_param(0, 1)),
+            b'T' => screen.scroll_down_region(self.csi_param(0, 1)),
             _ => {}
         }
     }
