@@ -77,8 +77,8 @@ Core milestones:
 - [x] Map Backspace to `0x7f`
 - [x] Map Tab to `\t`
 - [x] Map Escape to `0x1b`
-- [ ] Map Ctrl+C to `0x03` (no explicit handling; depends on winit `text` field)
-- [ ] Map Ctrl+D to `0x04` (no explicit handling; depends on winit `text` field)
+- [x] Map Ctrl+C to `0x03` (Ctrl+letter → control character in `keyboard_input_bytes`)
+- [x] Map Ctrl+D to `0x04` (Ctrl+letter → control character in `keyboard_input_bytes`)
 - [x] Map Up to `ESC [ A`
 - [x] Map Down to `ESC [ B`
 - [x] Map Right to `ESC [ C`
