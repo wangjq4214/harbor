@@ -4,8 +4,8 @@
 )]
 
 mod app;
-mod cursor;
 mod config;
+mod cursor;
 mod font;
 mod gpu;
 mod metrics;

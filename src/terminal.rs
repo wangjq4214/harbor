@@ -120,8 +120,8 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::Terminal;
-    use super::screen::Color;
     use super::screen::CellAttrs;
+    use super::screen::Color;
     #[test]
     fn writes_plain_characters_and_tracks_cursor() {
         let mut terminal = Terminal::new(2, 4);
@@ -251,35 +251,65 @@ mod tests {
     fn sgr_italic_sets_attr() {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_bytes(b"\x1b[3ma");
-        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::ITALIC));
+        assert!(
+            terminal
+                .screen()
+                .cell(0, 0)
+                .attrs
+                .contains(CellAttrs::ITALIC)
+        );
     }
 
     #[test]
     fn sgr_underline_sets_attr() {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_bytes(b"\x1b[4ma");
-        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::UNDERLINE));
+        assert!(
+            terminal
+                .screen()
+                .cell(0, 0)
+                .attrs
+                .contains(CellAttrs::UNDERLINE)
+        );
     }
 
     #[test]
     fn sgr_blink_sets_attr() {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_bytes(b"\x1b[5ma");
-        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::BLINK));
+        assert!(
+            terminal
+                .screen()
+                .cell(0, 0)
+                .attrs
+                .contains(CellAttrs::BLINK)
+        );
     }
 
     #[test]
     fn sgr_inverse_sets_attr() {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_bytes(b"\x1b[7ma");
-        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::INVERSE));
+        assert!(
+            terminal
+                .screen()
+                .cell(0, 0)
+                .attrs
+                .contains(CellAttrs::INVERSE)
+        );
     }
 
     #[test]
     fn sgr_strikethrough_sets_attr() {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_bytes(b"\x1b[9ma");
-        assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::STRIKETHROUGH));
+        assert!(
+            terminal
+                .screen()
+                .cell(0, 0)
+                .attrs
+                .contains(CellAttrs::STRIKETHROUGH)
+        );
     }
 
     #[test]
@@ -301,8 +331,13 @@ mod tests {
             let mut terminal = Terminal::new(1, 2);
             let seq = format!("\x1b[{}mX", code);
             terminal.put_bytes(seq.as_bytes());
-            assert_eq!(terminal.screen().cell(0, 0).fg, Color::Named((code - 30) as u8),
-                "SGR {} should set fg Named({})", code, code - 30);
+            assert_eq!(
+                terminal.screen().cell(0, 0).fg,
+                Color::Named(code - 30),
+                "SGR {} should set fg Named({})",
+                code,
+                code - 30
+            );
         }
     }
 
@@ -312,8 +347,13 @@ mod tests {
             let mut terminal = Terminal::new(1, 2);
             let seq = format!("\x1b[{}mX", code);
             terminal.put_bytes(seq.as_bytes());
-            assert_eq!(terminal.screen().cell(0, 0).bg, Color::Named((code - 40) as u8),
-                "SGR {} should set bg Named({})", code, code - 40);
+            assert_eq!(
+                terminal.screen().cell(0, 0).bg,
+                Color::Named(code - 40),
+                "SGR {} should set bg Named({})",
+                code,
+                code - 40
+            );
         }
     }
 
@@ -323,8 +363,13 @@ mod tests {
             let mut terminal = Terminal::new(1, 2);
             let seq = format!("\x1b[{}mX", code);
             terminal.put_bytes(seq.as_bytes());
-            assert_eq!(terminal.screen().cell(0, 0).fg, Color::Bright((code - 90) as u8),
-                "SGR {} should set fg Bright({})", code, code - 90);
+            assert_eq!(
+                terminal.screen().cell(0, 0).fg,
+                Color::Bright(code - 90),
+                "SGR {} should set fg Bright({})",
+                code,
+                code - 90
+            );
         }
     }
 
@@ -334,8 +379,13 @@ mod tests {
             let mut terminal = Terminal::new(1, 2);
             let seq = format!("\x1b[{}mX", code);
             terminal.put_bytes(seq.as_bytes());
-            assert_eq!(terminal.screen().cell(0, 0).bg, Color::Bright((code - 100) as u8),
-                "SGR {} should set bg Bright({})", code, code - 100);
+            assert_eq!(
+                terminal.screen().cell(0, 0).bg,
+                Color::Bright(code - 100),
+                "SGR {} should set bg Bright({})",
+                code,
+                code - 100
+            );
         }
     }
 

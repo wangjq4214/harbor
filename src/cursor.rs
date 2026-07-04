@@ -298,7 +298,6 @@ pub(crate) struct CursorBlink {
     last_rendered_visible: bool,
 }
 
-
 impl CursorBlink {
     pub(crate) fn new() -> Self {
         Self {

@@ -4,7 +4,6 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-
 // ── GpuContext ────────────────────────────────────────────────────────────
 
 /// Shared GPU handles for layers to create and upload resources.
