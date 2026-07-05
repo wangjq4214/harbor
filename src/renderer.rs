@@ -5,8 +5,8 @@ use winit::window::Window;
 
 use crate::{
     background::BackgroundLayer,
-    config::{BACKGROUND, FONT_SIZE},
-    cursor::{self, CursorLayer},
+    config::BACKGROUND,
+    cursor::CursorLayer,
     decoration::DecorationLayer,
     font::load_system_fonts,
     gpu::GpuContext,
@@ -37,10 +37,9 @@ impl Renderer {
         let gpu = GpuContext::new(window).await?;
         let fonts = load_system_fonts()?;
         let metrics = TextMetrics::new(&fonts);
-        let (cursor_metrics, cursor_bitmap) = cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
         let text_layer = TextLayer::new(&gpu, fonts, metrics, screen)?;
 
-        let cursor_layer = CursorLayer::new(&gpu, metrics, &cursor_bitmap, cursor_metrics);
+        let cursor_layer = CursorLayer::new(&gpu, metrics);
         let background_layer =
             BackgroundLayer::new(&gpu, screen, metrics.cell_width, metrics.line_height);
         let decoration_layer = DecorationLayer::new(&gpu, screen, metrics);

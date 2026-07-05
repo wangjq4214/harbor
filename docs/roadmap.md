@@ -49,8 +49,7 @@ Core milestones:
 ---
 
 ## v0.2: Terminal Core (Parser + State + SGR)
-
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, and cursor state all done (133 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (157 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
 ### Done
 
@@ -62,13 +61,13 @@ Core milestones:
 
 **Scrolling Region.** DECSTBM (`CSI r`), scroll/insert/delete operations respect top/bottom margins. Unit-tested with vim-like scenarios.
 
-**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test).
+**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test). DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar.
 
 **Alternate Screen.** Enter/exit (`CSI ?1049h/l`), main screen state preserved on enter and restored on exit. Isolation unit-tested, idempotent re-entry handled.
 
 **Resize.** Content preserved, rows/cols updated, PTY synced, cell metrics recalculated, redraw requested, cursor clamped. Tested.
 
-**Tests.** 133 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking.
+**Tests.** 157 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR.
 
 ### To Do
 
@@ -90,8 +89,7 @@ Core milestones:
 ---
 
 ## v0.3: Cell-Based WGPU Renderer (Color + Decorations)
-
-> **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse) done. Cursor styles (beam/underline), combining marks, and viewport offset pending.**
+> **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse), and cursor shapes (block/underline/bar) with DECSCUSR integration done. Combining marks and viewport offset pending.**
 
 ### Done
 
@@ -107,7 +105,7 @@ Core milestones:
 
 **Font Metrics.** Cell width/height/baseline/ascent calculated via fontdue, characters and cursor aligned to cell grid.
 
-**Cursor.** Block cursor (rasterized glyph), 530ms blink cycle with `CursorBlink` state machine, hidden state driven by blink phase.
+**Cursor.** Shape-driven solid-color cursor layer supporting block, underline, and bar shapes. DECSCUSR (`CSI Ps SP q`) controls shape and blink mode. Blink gated by cursor_blink flag — steady cursor when blink is off. Default shape is blinking bar.
 
 **Unicode.** `unicode-width` integrated, wide chars occupy 2 cells, second cell marked `wide_continuation`, spacer cleaned on delete, overwrite handled, unsupported chars → U+FFFD replacement glyph, CJK glyphs rasterized from fallback font.
 
@@ -126,8 +124,9 @@ Core milestones:
 - [x] Inverse: swap fg/bg of rendered cell (attrs stored, now rendered)
 
 **Cursor Styles**
-- [ ] Beam cursor (thin vertical bar)
-- [ ] Underline cursor
+- [x] Beam cursor (thin vertical bar) — via DECSCUSR `CSI 5/6 SP q`
+- [x] Underline cursor — via DECSCUSR `CSI 3/4 SP q`
+- [x] Blink gating — steady cursor when DECSCUSR sets blink off
 - [ ] Focused/unfocused cursor distinction
 - [ ] Inverse cursor rendering (swap fg/bg of cells under cursor)
 
@@ -399,14 +398,14 @@ Core milestones:
 
 ## Milestone Overview
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                   |
-| ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                       |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (133), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + cursor done; parser hardening + runtime verification pending                               |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations done; cursor styles, combining marks, viewport offset pending                   |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                                                                                                            |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + surface/process handling done; latency measurement, benchmarking, memory optimization pending |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                            |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                        |
+| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                            |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (157), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; parser hardening + runtime verification pending                         |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) done; combining marks, viewport offset pending |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                                                                                                                 |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + surface/process handling done; latency measurement, benchmarking, memory optimization pending      |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                 |
 ---
 
 > Build a reliable terminal first. Turn it into a development environment later.

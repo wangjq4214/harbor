@@ -340,7 +340,7 @@ pub(crate) fn create_colored_vertex_buffer(
 
 // ── Shared GPU helpers ────────────────────────────────────────────────────
 
-/// Bind group layout shared by text and cursor layers (texture + sampler).
+/// Bind group layout used by the text layer (texture + sampler).
 pub(crate) fn create_texture_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("texture bind group layout"),

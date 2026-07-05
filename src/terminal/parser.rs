@@ -43,6 +43,8 @@ struct CsiState {
     /// Set when a parameter or intermediate byte violates expected CSI syntax.
     /// When set, the final byte logs a warning and skips dispatch.
     malformed: bool,
+    /// SP (0x20) intermediate byte for sequences like CSI Ps SP q (DECSCUSR).
+    intermediate: Option<u8>,
 }
 
 impl CsiState {
@@ -234,9 +236,12 @@ impl TerminalParser {
                 self.csi.current = Some(value);
             }
             // Intermediate bytes (0x20-0x2f: space through `/`) and unhandled
-            // parameter bytes (0x3a `:`, 0x3c `<`, 0x3d `=`, 0x3e `>`) mark
-            // the sequence as malformed so dispatch is skipped on final byte.
-            0x20..=0x2f | 0x3a | 0x3c..=0x3e => {
+            // parameter bytes (0x3a `:`, 0x3c `<`, 0x3d `=`, 0x3e `>`). SP (0x20)
+            // is a valid intermediate for sequences like CSI Ps SP q (DECSCUSR).
+            0x20 => {
+                self.csi.intermediate = Some(byte);
+            }
+            0x21..=0x2f | 0x3a | 0x3c..=0x3e => {
                 self.csi.malformed = true;
             }
             b';' => self.csi.push_current(),
@@ -371,6 +376,20 @@ impl TerminalParser {
             return;
         }
 
+        // Handle SP intermediate: currently only CSI Ps SP q (DECSCUSR) is recognized.
+        if self.csi.intermediate == Some(b' ') {
+            if final_byte == b'q' {
+                screen.set_cursor_style(self.csi_param(0, 1));
+            } else {
+                tracing::warn!(
+                    "unrecognized CSI sequence with SP intermediate: params={:?} final=0x{:02x}",
+                    &self.csi.params[..self.csi.len],
+                    final_byte,
+                );
+            }
+            return;
+        }
+
         match final_byte {
             b'A' => screen.cursor_up(self.csi_param(0, 1)),
             b'B' => screen.cursor_down(self.csi_param(0, 1)),
@@ -401,7 +420,7 @@ impl TerminalParser {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Screen;
+    use super::super::{CursorShape, Screen};
     use super::*;
 
     fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
@@ -502,5 +521,48 @@ mod tests {
         feed(&mut parser, &mut screen, b"\x1b[;;;;H");
         assert_eq!(screen.cursor_y(), 0, "empty params should use defaults");
         assert_eq!(screen.cursor_x(), 0);
+    }
+
+    #[test]
+    fn decscusr_ps5_is_blinking_bar() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[5 q");
+        assert_eq!(screen.cursor_shape(), CursorShape::Bar);
+        assert!(screen.cursor_blink());
+    }
+
+    #[test]
+    fn decscusr_ps2_is_steady_block() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[2 q");
+        assert_eq!(screen.cursor_shape(), CursorShape::Block);
+        assert!(!screen.cursor_blink());
+    }
+
+    #[test]
+    fn decscusr_ps0_is_blinking_bar() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[0 q");
+        assert_eq!(screen.cursor_shape(), CursorShape::Bar);
+        assert!(screen.cursor_blink());
+    }
+
+    #[test]
+    fn decscusr_ps1_is_blinking_block() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[1 q");
+        assert_eq!(screen.cursor_shape(), CursorShape::Block);
+        assert!(screen.cursor_blink());
+    }
+
+    #[test]
+    fn initial_cursor_shape_is_bar() {
+        let screen = Screen::new(10, 10);
+        assert_eq!(screen.cursor_shape(), CursorShape::Bar);
+        assert!(screen.cursor_blink());
     }
 }

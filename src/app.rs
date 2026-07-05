@@ -73,11 +73,20 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     /// Called when the event loop is about to block.  Drives cursor blink:
-    /// requests a redraw on visibility toggle, returns the next blink
-    /// deadline for `ControlFlow::WaitUntil`.
+    /// gated by the screen's `cursor_blink` flag.  When blinking is off,
+    /// uses `ControlFlow::Wait` to conserve CPU.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let next = self.cursor_blink.check_blink(self.window.as_deref());
-        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        let should_blink = self
+            .terminal
+            .as_ref()
+            .is_some_and(|t| t.screen().cursor_blink());
+
+        if should_blink {
+            let next = self.cursor_blink.check_blink(self.window.as_deref());
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
     }
 
     /// Dispatches window-level events: resize, redraw, close, keyboard input.
@@ -126,8 +135,12 @@ impl ApplicationHandler<AppEvent> for App {
                     (self.renderer.as_mut(), self.terminal.as_ref())
                 {
                     let screen = terminal.screen();
-
-                    renderer.set_cursor_visible(self.cursor_blink.visible(), screen);
+                    let visible = if screen.cursor_blink() {
+                        self.cursor_blink.visible()
+                    } else {
+                        true // steady cursor: always visible
+                    };
+                    renderer.set_cursor_visible(visible, screen);
                     renderer.prepare_cursor(screen);
                 }
                 self.cursor_blink.commit_frame();

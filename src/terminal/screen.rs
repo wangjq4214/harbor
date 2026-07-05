@@ -165,6 +165,14 @@ struct SavedCursor {
     attrs: CellAttrs,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CursorShape {
+    Block,
+    Underline,
+    #[default]
+    Bar,
+}
+
 /// Visible terminal screen state rendered by the text pipeline.
 ///
 /// `Screen` owns only display state: cell contents, dimensions, and cursor position. It does not
@@ -195,6 +203,10 @@ pub(crate) struct Screen {
     scroll_top: usize,
     /// Bottom boundary of the scrolling region (DECSTBM). 0-based, inclusive.
     scroll_bottom: usize,
+    /// Current cursor shape from DECSCUSR.
+    cursor_shape: CursorShape,
+    /// Whether cursor should blink.
+    cursor_blink: bool,
     /// Saved cursor state (DECSC/DECRC), or `None` before any save.
     saved_cursor: Option<SavedCursor>,
 }
@@ -216,6 +228,8 @@ impl Screen {
             alt_request: None,
             scroll_top: 0,
             scroll_bottom: rows - 1,
+            cursor_shape: CursorShape::default(),
+            cursor_blink: true,
             saved_cursor: None,
         }
     }
@@ -236,6 +250,29 @@ impl Screen {
 
     pub(crate) fn cursor_y(&self) -> usize {
         self.cursor_y
+    }
+
+    pub(crate) fn cursor_shape(&self) -> CursorShape {
+        self.cursor_shape
+    }
+
+    pub(crate) fn cursor_blink(&self) -> bool {
+        self.cursor_blink
+    }
+
+    pub(crate) fn set_cursor_style(&mut self, ps: usize) {
+        let (shape, blink) = match ps {
+            0 => (CursorShape::Bar, true),
+            1 => (CursorShape::Block, true),
+            2 => (CursorShape::Block, false),
+            3 => (CursorShape::Underline, true),
+            4 => (CursorShape::Underline, false),
+            5 => (CursorShape::Bar, true),
+            6 => (CursorShape::Bar, false),
+            _ => return,
+        };
+        self.cursor_shape = shape;
+        self.cursor_blink = blink;
     }
 
     /// Iterates all visible cells as `(row, col, ch)` in row-major order.
