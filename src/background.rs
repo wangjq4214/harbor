@@ -278,9 +278,9 @@ mod tests {
         );
         assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
 
-        let verts = BackgroundLayer::build_background_row_vertices(
-            10.0, 20.0, 0, &screen, 800.0, 600.0,
-        );
+        let verts =
+            BackgroundLayer::build_background_row_vertices(10.0, 20.0, 0, screen, 800.0, 600.0);
+
         let expected = Color::Named(1).to_rgba();
         assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");
     }

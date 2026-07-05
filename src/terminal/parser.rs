@@ -158,6 +158,7 @@ impl TerminalParser {
         match byte {
             0x1b => self.state = ParserState::Escape,
             0x00..=0x1f => self.execute_control(screen, byte),
+            0x7f => {} // DEL: explicitly ignored (C1 control, zero-width no-op)
             0x20..=0x7e => {
                 if self.utf8.len > 0 {
                     self.write_replacement(screen);
@@ -395,12 +396,41 @@ impl TerminalParser {
             b'B' => screen.cursor_down(self.csi_param(0, 1)),
             b'C' => screen.cursor_right(self.csi_param(0, 1)),
             b'D' => screen.cursor_left(self.csi_param(0, 1)),
+            b'E' => {
+                let n = self.csi_param(0, 1);
+                screen.cursor_down(n);
+                screen.carriage_return();
+            }
+            b'F' => {
+                let n = self.csi_param(0, 1);
+                screen.cursor_up(n);
+                screen.carriage_return();
+            }
+            b'G' => {
+                // CHA: cursor horizontal absolute (1-based → 0-based).
+                let col = self
+                    .csi_param(0, 1)
+                    .saturating_sub(1)
+                    .min(screen.cols() - 1);
+                screen.set_cursor(screen.cursor_y() + 1, col + 1);
+            }
             b'H' | b'f' => screen.set_cursor(self.csi_param(0, 1), self.csi_param(1, 1)),
             b'J' => screen.erase_display(self.csi_param(0, 0)),
             b'K' => screen.erase_line(self.csi_param(0, 0)),
+            b'd' => {
+                // VPA: vertical position absolute (1-based → 0-based).
+                let row = self
+                    .csi_param(0, 1)
+                    .saturating_sub(1)
+                    .min(screen.rows() - 1);
+
+                screen.set_cursor(row + 1, screen.cursor_x() + 1);
+            }
             b'm' => screen.set_sgr(&self.csi.params[..self.csi.len]),
             b'X' => screen.erase_chars(self.csi_param(0, 1)),
             b'r' => screen.set_scroll_region(self.csi_param(0, 0), self.csi_param(1, 0)),
+            b's' => screen.save_cursor(),
+            b'u' => screen.restore_cursor(),
             b'@' => screen.insert_chars(self.csi_param(0, 1)),
             b'P' => screen.delete_chars(self.csi_param(0, 1)),
             b'L' => screen.insert_lines(self.csi_param(0, 1)),
@@ -564,5 +594,99 @@ mod tests {
         let screen = Screen::new(10, 10);
         assert_eq!(screen.cursor_shape(), CursorShape::Bar);
         assert!(screen.cursor_blink());
+    }
+
+    // ── CHA (CSI n G) ─────────────────────────────────────────────
+
+    #[test]
+    fn cha_sets_column_keeps_row() {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 3, 5);
+        feed(&mut parser, &mut screen, b"\x1b[12G");
+        assert_eq!(screen.cursor_y(), 2, "CHA should keep row unchanged");
+        assert_eq!(screen.cursor_x(), 11, "CHA should set column (0-based)");
+    }
+
+    #[test]
+    fn cha_default_param_is_one() {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 2, 8);
+        feed(&mut parser, &mut screen, b"\x1b[G");
+        assert_eq!(screen.cursor_x(), 0, "default CHA param = 1 → col 0");
+    }
+
+    #[test]
+    fn cha_clamps_to_cols() {
+        let mut screen = Screen::new(5, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[999G");
+        assert_eq!(screen.cursor_x(), 9, "CHA clamps to cols-1");
+    }
+
+    // ── VPA (CSI n d) ─────────────────────────────────────────────
+
+    #[test]
+    fn vpa_sets_row_keeps_col() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 5, 7);
+        feed(&mut parser, &mut screen, b"\x1b[3d");
+        assert_eq!(screen.cursor_y(), 2, "VPA should set row (0-based)");
+        assert_eq!(screen.cursor_x(), 6, "VPA should keep col unchanged");
+    }
+
+    #[test]
+    fn vpa_default_param_is_one() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 5, 5);
+        feed(&mut parser, &mut screen, b"\x1b[d");
+        assert_eq!(screen.cursor_y(), 0, "default VPA param = 1 → row 0");
+    }
+
+    #[test]
+    fn vpa_clamps_to_rows() {
+        let mut screen = Screen::new(5, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[999d");
+        assert_eq!(screen.cursor_y(), 4, "VPA clamps to rows-1");
+    }
+
+    // ── CNL (CSI n E) / CPL (CSI n F) ────────────────────────────
+
+    #[test]
+    fn cnl_moves_down_and_cr() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 3, 8);
+        feed(&mut parser, &mut screen, b"\x1b[2E");
+        assert_eq!(screen.cursor_y(), 4, "CNL 2 from row 3 → row 5 (0-based 4)");
+        assert_eq!(screen.cursor_x(), 0, "CNL resets column to 0");
+    }
+
+    #[test]
+    fn cpl_moves_up_and_cr() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 6, 5);
+        feed(&mut parser, &mut screen, b"\x1b[3F");
+        assert_eq!(screen.cursor_y(), 2, "CPL 3 from row 6 → row 3 (0-based 2)");
+        assert_eq!(screen.cursor_x(), 0, "CPL resets column to 0");
+    }
+
+    // ── SCP / RCP (CSI s / CSI u) ─────────────────────────────────
+
+    #[test]
+    fn csi_save_restore_cursor() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 6);
+        feed(&mut parser, &mut screen, b"\x1b[s");
+        move_to(&mut parser, &mut screen, 8, 12);
+        feed(&mut parser, &mut screen, b"\x1b[u");
+        assert_eq!(screen.cursor_y(), 3, "RCP should restore row");
+        assert_eq!(screen.cursor_x(), 5, "RCP should restore col");
     }
 }
