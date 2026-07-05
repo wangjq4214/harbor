@@ -195,7 +195,10 @@ impl TerminalParser {
             0x18 | 0x1a => self.state = ParserState::Ground,
             0x1b => self.state = ParserState::Escape,
             0x00..=0x1f => self.execute_control(screen, byte),
-            _ => self.state = ParserState::Ground,
+            _ => {
+                tracing::warn!("unsupported escape sequence: ESC 0x{byte:02x}");
+                self.state = ParserState::Ground;
+            }
         }
     }
 
@@ -238,7 +241,10 @@ impl TerminalParser {
     /// painted into the visible grid.
     fn put_osc_byte(&mut self, byte: u8) {
         match byte {
-            0x07 | 0x18 | 0x1a => self.state = ParserState::Ground,
+            0x07 | 0x18 | 0x1a => {
+                tracing::warn!("unsupported OSC sequence (terminated by 0x{byte:02x})");
+                self.state = ParserState::Ground;
+            }
             0x1b => self.state = ParserState::OscEscape,
             _ => {}
         }
@@ -247,7 +253,14 @@ impl TerminalParser {
     /// Handles `ESC` seen inside OSC. `ESC \` is the standard ST terminator.
     fn put_osc_escape_byte(&mut self, byte: u8) {
         match byte {
-            b'\\' | 0x18 | 0x1a => self.state = ParserState::Ground,
+            b'\\' => {
+                tracing::warn!("unsupported OSC sequence (terminated by ST)");
+                self.state = ParserState::Ground;
+            }
+            0x18 | 0x1a => {
+                tracing::warn!("unsupported OSC sequence (terminated by 0x{byte:02x})");
+                self.state = ParserState::Ground;
+            }
             0x1b => self.state = ParserState::OscEscape,
             _ => self.state = ParserState::Osc,
         }
@@ -314,7 +327,13 @@ impl TerminalParser {
                 b'l' if self.csi.params[..self.csi.len] == [Some(1049)] => {
                     screen.request_alt_exit();
                 }
-                _ => {}
+                _ => {
+                    tracing::warn!(
+                        "unsupported private CSI sequence: params={:?} final=0x{:02x}",
+                        &self.csi.params[..self.csi.len],
+                        final_byte,
+                    );
+                }
             }
             return;
         }
@@ -336,7 +355,13 @@ impl TerminalParser {
             b'M' => screen.delete_lines(self.csi_param(0, 1)),
             b'S' => screen.scroll_up_region(self.csi_param(0, 1)),
             b'T' => screen.scroll_down_region(self.csi_param(0, 1)),
-            _ => {}
+            _ => {
+                tracing::warn!(
+                    "unsupported CSI sequence: params={:?} final=0x{:02x}",
+                    &self.csi.params[..self.csi.len],
+                    final_byte,
+                );
+            }
         }
     }
 }
