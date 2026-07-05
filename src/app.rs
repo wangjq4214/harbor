@@ -218,14 +218,13 @@ fn keyboard_input_bytes(
     // Ctrl+letter → control character (0x01–0x1A).
     if modifiers.control_key()
         && let Key::Character(ch) = logical_key
+        && let Some(ctrl_byte) = ctrl_letter_to_byte(ch)
     {
-        if let Some(ctrl_byte) = ctrl_letter_to_byte(ch) {
-            return Some(vec![ctrl_byte]);
-        }
-        // If it's some other character with Ctrl held, fall through —
-        // winit may have placed a control character in `text` already.
+        return Some(vec![ctrl_byte]);
     }
 
+    // If it's some other character with Ctrl held, fall through —
+    // winit may have placed a control character in `text` already.
     match logical_key {
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),

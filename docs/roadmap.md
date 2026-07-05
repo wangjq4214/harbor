@@ -74,7 +74,7 @@ Core milestones:
 
 **Parser Hardening**
 - [x] Log unsupported sequences via `tracing::warn!` instead of silent ignore
-- [ ] Validate CSI parameter bounds (reject malformed sequences gracefully)
+- [x] Validate CSI parameter bounds (reject malformed sequences gracefully)
 - [ ] Parse private mode sequences (`CSI ? ...`) beyond `?1049h/l` for cursor and DEC modes
 
 **Unit Test Coverage**

@@ -1,6 +1,13 @@
 use super::Screen;
 use super::screen::AltScreenAction;
 
+/// Maximum allowed value for a single CSI numeric parameter.
+///
+/// Parameters exceeding this value are treated as malformed and the entire CSI
+/// sequence is ignored with a warning. This catches stray huge numbers or
+/// corrupted byte streams without silently executing unintended operations.
+const MAX_CSI_PARAM: usize = 65535;
+
 /// High-level ANSI/VT parser state.
 ///
 /// The parser advances one byte at a time so incomplete escape sequences can span multiple PTY
@@ -33,6 +40,9 @@ struct CsiState {
     current: Option<usize>,
     /// Whether this is a private CSI sequence such as `CSI ? 25 l`.
     private: bool,
+    /// Set when a parameter or intermediate byte violates expected CSI syntax.
+    /// When set, the final byte logs a warning and skips dispatch.
+    malformed: bool,
 }
 
 impl CsiState {
@@ -48,6 +58,11 @@ impl CsiState {
         if self.len < self.params.len() {
             self.params[self.len] = self.current;
             self.len += 1;
+        } else {
+            tracing::warn!(
+                "CSI parameter buffer full (max {}), dropping extra parameters",
+                self.params.len(),
+            );
         }
         self.current = None;
     }
@@ -212,14 +227,32 @@ impl TerminalParser {
             b'0'..=b'9' => {
                 let digit = usize::from(byte - b'0');
                 let current = self.csi.current.unwrap_or(0);
-                self.csi.current = Some(current.saturating_mul(10).saturating_add(digit));
+                let value = current.saturating_mul(10).saturating_add(digit);
+                if value > MAX_CSI_PARAM {
+                    self.csi.malformed = true;
+                }
+                self.csi.current = Some(value);
+            }
+            // Intermediate bytes (0x20-0x2f: space through `/`) and unhandled
+            // parameter bytes (0x3a `:`, 0x3c `<`, 0x3d `=`, 0x3e `>`) mark
+            // the sequence as malformed so dispatch is skipped on final byte.
+            0x20..=0x2f | 0x3a | 0x3c..=0x3e => {
+                self.csi.malformed = true;
             }
             b';' => self.csi.push_current(),
             0x40..=0x7e => {
                 if self.csi.current.is_some() || self.csi.len == 0 {
                     self.csi.push_current();
                 }
-                self.dispatch_csi(screen, byte);
+                if self.csi.malformed {
+                    tracing::warn!(
+                        "malformed CSI sequence: params={:?} final=0x{final_byte:02x} — ignored",
+                        &self.csi.params[..self.csi.len],
+                        final_byte = byte,
+                    );
+                } else {
+                    self.dispatch_csi(screen, byte);
+                }
                 self.csi.reset();
                 self.state = ParserState::Ground;
             }
@@ -363,5 +396,111 @@ impl TerminalParser {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Screen;
+    use super::*;
+
+    fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
+        parser.put_bytes(screen, seq);
+    }
+
+    /// Move cursor to (row, col) 1-based via `CSI row;col H`.
+    fn move_to(parser: &mut TerminalParser, screen: &mut Screen, row: usize, col: usize) {
+        feed(parser, screen, format!("\x1b[{row};{col}H").as_bytes());
+    }
+
+    #[test]
+    fn oversized_param_skips_dispatch() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        assert_eq!(screen.cursor_y(), 3);
+        feed(&mut parser, &mut screen, b"\x1b[999999A");
+        assert_eq!(screen.cursor_y(), 3, "oversized param should skip dispatch");
+    }
+
+    #[test]
+    fn normal_param_still_dispatches() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[5B");
+        assert_eq!(screen.cursor_y(), 5);
+    }
+
+    #[test]
+    fn max_valid_param_dispatches_and_clamps() {
+        let mut screen = Screen::new(100, 100);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b[65535B");
+        assert_eq!(
+            screen.cursor_y(),
+            screen.rows() - 1,
+            "valid param at MAX should dispatch and clamp"
+        );
+    }
+
+    #[test]
+    fn saturated_oversized_param_still_rejected() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        feed(&mut parser, &mut screen, b"\x1b[99999999999999999999A");
+        assert_eq!(
+            screen.cursor_y(),
+            3,
+            "saturated oversized param should skip"
+        );
+    }
+
+    #[test]
+    fn intermediate_byte_cancels_sequence() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        feed(&mut parser, &mut screen, b"\x1b[!A");
+        assert_eq!(screen.cursor_y(), 3, "intermediate byte should cancel CSI");
+    }
+
+    #[test]
+    fn unsupported_param_byte_cancels_sequence() {
+        for &byte in b":<>" {
+            let mut screen = Screen::new(10, 10);
+            let mut parser = TerminalParser::default();
+            move_to(&mut parser, &mut screen, 4, 4);
+            let seq = [b'\x1b', b'[', byte, b'A'];
+            feed(&mut parser, &mut screen, &seq);
+            assert_eq!(
+                screen.cursor_y(),
+                3,
+                "byte 0x{:02x} should cancel CSI",
+                byte
+            );
+        }
+    }
+
+    #[test]
+    fn many_empty_params_does_not_panic() {
+        // 17 semicolons → 17 push_current calls → 16 fit, 17th triggers warn.
+        let mut screen = Screen::new(5, 5);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 3, 3);
+        feed(&mut parser, &mut screen, b"\x1b[;;;;;;;;;;;;;;;;;H");
+        // Sequence still dispatches (empty params → defaults → cursor home).
+        assert_eq!(screen.cursor_y(), 0, "overflow should not panic");
+        assert_eq!(screen.cursor_x(), 0);
+    }
+
+    #[test]
+    fn empty_params_use_defaults() {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 5, 5);
+        feed(&mut parser, &mut screen, b"\x1b[;;;;H");
+        assert_eq!(screen.cursor_y(), 0, "empty params should use defaults");
+        assert_eq!(screen.cursor_x(), 0);
     }
 }
