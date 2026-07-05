@@ -5,6 +5,7 @@
 
 mod app;
 mod background;
+mod decoration;
 mod config;
 mod cursor;
 mod font;

@@ -6,6 +6,7 @@ use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;
 pub(crate) use screen::Color;
 pub(crate) use screen::Screen;
+pub(crate) use screen::CellAttrs;
 pub(crate) use text::TextLayer;
 use winit::window::Window;
 

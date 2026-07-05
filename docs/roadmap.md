@@ -91,7 +91,7 @@ Core milestones:
 
 ## v0.3: Cell-Based WGPU Renderer (Color + Decorations)
 
-> **Status: 🟡 Background rects, glyph tint, atlas eviction done. Decorations (underline/strikethrough), cursor styles (beam/underline), combining marks, and viewport offset pending.**
+> **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse) done. Cursor styles (beam/underline), combining marks, and viewport offset pending.**
 
 ### Done
 
@@ -113,15 +113,17 @@ Core milestones:
 
 **Rendering Correctness.** SGR fg rendered via `cell.fg.to_rgba()` in glyph shader, SGR bg rendered via background rect pipeline with `cell.bg.to_rgba()`.
 
+**Decorations.** `DecorationLayer` GPU pipeline (follows BackgroundLayer pattern), separate underline/strikethrough vertex buffers, degenerate-quad skipping for undecorated cells. `TextMetrics` extended with underline/strikethrough position/thickness from font descent. Bold→white glyph color, italic→rightward shift (15% cell width), inverse→fg↔bg swap (glyph and background). Full render order: clear → bg → glyphs → cursor → decorations.
+
 ### To Do
 
 **Decorations**
-- [ ] Underline / strikethrough rendering rect pipeline
-- [ ] Full render flow: clear → cell backgrounds → glyphs → cursor → decorations
-- [ ] Bold: render brighter/thicker glyph (attrs stored, not rendered)
-- [ ] Italic: render oblique or different font (attrs stored, not rendered)
-- [ ] Underline: render underline decoration (attrs stored, not rendered)
-- [ ] Inverse: swap fg/bg of rendered cell (attrs stored, not rendered)
+- [x] Underline / strikethrough rendering rect pipeline
+- [x] Full render flow: clear → cell backgrounds → glyphs → cursor → decorations
+- [x] Bold: render via white glyph color (attrs stored, now rendered)
+- [x] Italic: render via rightward shift (attrs stored, now rendered)
+- [x] Underline: render underline decoration (attrs stored, now rendered)
+- [x] Inverse: swap fg/bg of rendered cell (attrs stored, now rendered)
 
 **Cursor Styles**
 - [ ] Beam cursor (thin vertical bar)
@@ -399,13 +401,12 @@ Core milestones:
 
 | Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                   |
 | ------- | ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                      |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                       |
 | v0.2    | Terminal core (parser + state) | All CSI unit tests pass (133), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + cursor done; parser hardening + runtime verification pending                               |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction done; decorations, cursor styles, combining marks, viewport offset pending                    |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations done; cursor styles, combining marks, viewport offset pending                   |
 | v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                                                                                                            |
 | v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + surface/process handling done; latency measurement, benchmarking, memory optimization pending |
 | v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                            |
-
 ---
 
 > Build a reliable terminal first. Turn it into a development environment later.

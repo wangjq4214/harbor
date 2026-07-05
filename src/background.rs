@@ -2,7 +2,7 @@ use crate::{
     config::TEXT_PADDING,
     gpu::{self, ColoredVertex, GpuContext},
     render::Layer,
-    terminal::{Color, Screen},
+    terminal::{CellAttrs, Color, Screen},
 };
 
 // ── Background shader ─────────────────────────────────────────────────────────
@@ -129,10 +129,13 @@ impl BackgroundLayer {
         self.dirty = true;
     }
 
-    /// Builds the 6 * cols vertices for one row. Cells with
-    /// `bg == Color::Default` produce degenerate quads (skipped by rasterizer).
-    fn build_row_vertices(
-        &self,
+    /// Builds the 6 × cols vertices for one row, using `cell_width` and `line_height`
+    /// for positioning. Cells with `bg == Color::Default` (and not inverse) produce
+    /// degenerate quads skipped by the rasterizer. Inverse cells use `fg` for the
+    /// background rect color.
+    pub(crate) fn build_background_row_vertices(
+        cell_width: f32,
+        line_height: f32,
         row: usize,
         screen: &Screen,
         surf_w: f32,
@@ -141,12 +144,19 @@ impl BackgroundLayer {
         let mut verts = Vec::with_capacity(screen.cols() * 6);
         for col in 0..screen.cols() {
             let cell = screen.cell(row, col);
-            if cell.bg != Color::Default {
-                let left = TEXT_PADDING + col as f32 * self.cell_width;
-                let right = TEXT_PADDING + (col + 1) as f32 * self.cell_width;
-                let top = TEXT_PADDING + row as f32 * self.line_height;
-                let bottom = TEXT_PADDING + (row + 1) as f32 * self.line_height;
-                let color = cell.bg.to_rgba();
+            let inverse = cell.attrs.contains(CellAttrs::INVERSE);
+            if cell.bg != Color::Default || (inverse && cell.fg != Color::Default) {
+                let left = TEXT_PADDING + col as f32 * cell_width;
+                let right = TEXT_PADDING + (col + 1) as f32 * cell_width;
+                let top = TEXT_PADDING + row as f32 * line_height;
+                let bottom = TEXT_PADDING + (row + 1) as f32 * line_height;
+
+                let color = if inverse {
+                    cell.fg.to_rgba()
+                } else {
+                    cell.bg.to_rgba()
+                };
+
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
                     left, top, right, bottom, color, surf_w, surf_h,
                 ));
@@ -162,7 +172,14 @@ impl BackgroundLayer {
     fn build_all_vertices(&self, screen: &Screen, surf_w: f32, surf_h: f32) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity(screen.rows() * screen.cols() * 6);
         for row in 0..screen.rows() {
-            verts.extend(self.build_row_vertices(row, screen, surf_w, surf_h));
+            verts.extend(Self::build_background_row_vertices(
+                self.cell_width,
+                self.line_height,
+                row,
+                screen,
+                surf_w,
+                surf_h,
+            ));
         }
         verts
     }
@@ -213,7 +230,14 @@ impl Layer for BackgroundLayer {
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
             for row in screen.dirty_rows() {
-                let row_verts = self.build_row_vertices(row, screen, surf_w as f32, surf_h as f32);
+                let row_verts = Self::build_background_row_vertices(
+                    self.cell_width,
+                    self.line_height,
+                    row,
+                    screen,
+                    surf_w as f32,
+                    surf_h as f32,
+                );
                 let offset = row * screen.cols() * 6 * std::mem::size_of::<ColoredVertex>();
                 gpu.queue().write_buffer(
                     &self.vertex_buffer,
@@ -234,5 +258,52 @@ impl Layer for BackgroundLayer {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::Terminal;
+
+    #[test]
+    fn inverse_background_rect_uses_fg_color() {
+        let mut terminal = Terminal::new(2, 3);
+        terminal.put_str("\x1b[7;31mX\x1b[0m  ");
+        let screen = terminal.screen();
+        let cell = screen.cell(0, 0);
+        assert!(
+            cell.attrs.contains(CellAttrs::INVERSE),
+            "cell should have INVERSE attr"
+        );
+        assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
+
+        let verts = BackgroundLayer::build_background_row_vertices(
+            10.0, 20.0, 0, &screen, 800.0, 600.0,
+        );
+        let expected = Color::Named(1).to_rgba();
+        assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");
+    }
+
+    #[test]
+    fn sgr_strikethrough_stored() {
+        let mut terminal = Terminal::new(2, 6);
+        terminal.put_str("\x1b[9mstrike\x1b[0m");
+        let screen = terminal.screen();
+        assert!(
+            screen.cell(0, 0).attrs.contains(CellAttrs::STRIKETHROUGH),
+            "cell 0 should have STRIKETHROUGH attr"
+        );
+    }
+
+    #[test]
+    fn sgr_underline_stored() {
+        let mut terminal = Terminal::new(2, 6);
+        terminal.put_str("\x1b[4munder\x1b[0m");
+        let screen = terminal.screen();
+        assert!(
+            screen.cell(0, 0).attrs.contains(CellAttrs::UNDERLINE),
+            "cell 0 should have UNDERLINE attr"
+        );
     }
 }

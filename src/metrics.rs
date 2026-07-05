@@ -6,15 +6,33 @@ pub(crate) struct TextMetrics {
     pub(crate) cell_width: f32,
     pub(crate) line_height: f32,
     pub(crate) ascent: f32,
+    /// Distance from cell top to underline top edge (px).
+    pub(crate) underline_position: f32,
+    pub(crate) underline_thickness: f32,
+    /// Distance from cell top to strikethrough center (px).
+    pub(crate) strikethrough_position: f32,
+    pub(crate) strikethrough_thickness: f32,
 }
 
 impl TextMetrics {
     pub(crate) fn new(fonts: &FontBook) -> Self {
         let (cell_width, line_height, ascent) = fonts.terminal_metrics();
+        let (underline_position, strikethrough_position) = fonts
+            .primary_horizontal_line_metrics(crate::config::FONT_SIZE)
+            .map(|lm| {
+                let d = lm.descent.abs();
+                (line_height - d + 1.0, (line_height - d) * 0.45)
+            })
+            .unwrap_or((line_height * 0.8, line_height * 0.45));
+
         Self {
             cell_width,
             line_height,
             ascent,
+            underline_position,
+            underline_thickness: 1.5,
+            strikethrough_position,
+            strikethrough_thickness: 1.5,
         }
     }
 

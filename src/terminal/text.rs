@@ -10,7 +10,7 @@ use crate::{
     gpu::{self, GpuContext, TexturedVertex},
     metrics::TextMetrics,
     render::Layer,
-    terminal::{Screen, TerminalSize},
+    terminal::{CellAttrs, Color, Screen, TerminalSize},
 };
 const ATLAS_PADDING: u32 = 1;
 const MAX_ATLAS_SIZE: u32 = 2048;
@@ -552,6 +552,22 @@ impl GpuGlyphAtlas {
     }
 }
 
+/// Computes the glyph color for a terminal cell based on its attributes.
+/// Bold overrides to white; inverse swaps fg↔bg.
+pub(crate) fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
+    if attrs.contains(CellAttrs::BOLD) {
+        [1.0, 1.0, 1.0, 1.0]
+    } else if attrs.contains(CellAttrs::INVERSE) {
+        if bg == Color::Default {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            bg.to_rgba()
+        }
+    } else {
+        fg.to_rgba()
+    }
+}
+
 // ── TextLayer ─────────────────────────────────────────────────────────────
 
 /// Holds the text render pipeline, glyph atlas, bind group layout, and pre-allocated vertex buffer.
@@ -661,11 +677,20 @@ impl TextLayer {
                 let cell_x = TEXT_PADDING + col as f32 * self.atlas.cell_width;
                 let baseline =
                     TEXT_PADDING + self.atlas.ascent.ceil() + row as f32 * self.atlas.line_height;
-                let glyph_left = cell_x + glyph.xmin as f32;
+                let mut glyph_left = cell_x + glyph.xmin as f32;
                 let glyph_bottom = baseline - glyph.ymin as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
-                let glyph_right = glyph_left + glyph.width as f32;
-                let color = cell.fg.to_rgba();
+                let mut glyph_right = glyph_left + glyph.width as f32;
+
+                // Italic: shift glyph right for a subtle lean.
+                if cell.attrs.contains(CellAttrs::ITALIC) {
+                    let offset = self.atlas.cell_width * 0.15;
+                    glyph_left += offset;
+                    glyph_right += offset;
+                }
+
+                let color = glyph_color(cell.fg, cell.bg, cell.attrs);
+
                 verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
                     glyph_left,
                     glyph_top,
@@ -838,8 +863,11 @@ impl Layer for TextLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GlyphAtlas, MAX_ATLAS_SIZE, TextMetrics};
-    use crate::{font::load_system_fonts, terminal::Terminal};
+    use super::{GlyphAtlas, MAX_ATLAS_SIZE, TextMetrics, glyph_color};
+    use crate::{
+        font::load_system_fonts,
+        terminal::{CellAttrs, Color, Terminal},
+    };
 
     fn test_font_book() -> crate::font::FontBook {
         load_system_fonts().expect("load test font")
@@ -1106,5 +1134,60 @@ mod tests {
         let new_chars = atlas.update(&fonts, terminal.screen());
         assert_eq!(new_chars, vec!['e', 'f'], "only new chars from dirty row");
         assert_eq!(atlas.glyphs.len(), 6, "old glyphs still cached");
+    }
+
+    #[test]
+    fn glyph_color_bold_returns_white() {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            glyph_color(Color::Named(1), Color::Default, CellAttrs::default()),
+            Color::Named(1).to_rgba(),
+            "normal cell uses fg color"
+        );
+        let mut bold = CellAttrs::default();
+        bold.set(CellAttrs::BOLD);
+        assert_eq!(
+            glyph_color(Color::Default, Color::Default, bold),
+            white,
+            "bold cell returns white regardless of fg"
+        );
+    }
+
+    #[test]
+    fn glyph_color_inverse_swaps_to_bg() {
+        let fg = Color::Named(2);
+        let bg = Color::Named(4);
+        let mut inv = CellAttrs::default();
+        inv.set(CellAttrs::INVERSE);
+        assert_eq!(
+            glyph_color(fg, bg, inv),
+            bg.to_rgba(),
+            "inverse cell uses bg color"
+        );
+    }
+
+    #[test]
+    fn glyph_color_inverse_default_bg_returns_white() {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let mut inv = CellAttrs::default();
+        inv.set(CellAttrs::INVERSE);
+        assert_eq!(
+            glyph_color(Color::Named(1), Color::Default, inv),
+            white,
+            "inverse with default bg returns white"
+        );
+    }
+
+    #[test]
+    fn glyph_color_bold_overrides_inverse() {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let mut attrs = CellAttrs::default();
+        attrs.set(CellAttrs::BOLD);
+        attrs.set(CellAttrs::INVERSE);
+        assert_eq!(
+            glyph_color(Color::Named(1), Color::Named(4), attrs),
+            white,
+            "bold+inverse: bold wins"
+        );
     }
 }

@@ -41,6 +41,15 @@ impl FontBook {
         }
     }
 
+    /// Horizontal line metrics (ascent, descent, line_gap, new_line_size) for the primary
+    /// monospace font. Returns `None` only when the font lacks this metric table.
+    pub(crate) fn primary_horizontal_line_metrics(
+        &self,
+        size: f32,
+    ) -> Option<fontdue::LineMetrics> {
+        self.fonts[0].font.horizontal_line_metrics(size)
+    }
+
     fn font_for(&self, ch: char) -> &Font {
         let font = self
             .fonts

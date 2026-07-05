@@ -7,6 +7,7 @@ use crate::{
     background::BackgroundLayer,
     config::{BACKGROUND, FONT_SIZE},
     cursor::{self, CursorLayer},
+    decoration::DecorationLayer,
     font::load_system_fonts,
     gpu::GpuContext,
     metrics::TextMetrics,
@@ -22,8 +23,9 @@ pub(crate) struct Renderer {
     text_layer: TextLayer,
     /// Cursor rendering layer (blinking block cursor).
     cursor_layer: CursorLayer,
+    /// Decoration layer (underline, strikethrough).
+    decoration_layer: DecorationLayer,
 }
-
 impl Renderer {
     /// Creates the GPU context, loads fonts, and initialises text and cursor layers.
     ///
@@ -37,9 +39,11 @@ impl Renderer {
         let metrics = TextMetrics::new(&fonts);
         let (cursor_metrics, cursor_bitmap) = cursor::rasterize_cursor(&fonts, FONT_SIZE)?;
         let text_layer = TextLayer::new(&gpu, fonts, metrics, screen)?;
+
         let cursor_layer = CursorLayer::new(&gpu, metrics, &cursor_bitmap, cursor_metrics);
         let background_layer =
             BackgroundLayer::new(&gpu, screen, metrics.cell_width, metrics.line_height);
+        let decoration_layer = DecorationLayer::new(&gpu, screen, metrics);
 
         tracing::info!(
             rows = text_layer.terminal_size(&gpu).rows,
@@ -52,6 +56,7 @@ impl Renderer {
             background_layer,
             text_layer,
             cursor_layer,
+            decoration_layer,
         })
     }
 
@@ -68,6 +73,7 @@ impl Renderer {
         self.background_layer.mark_dirty();
         self.text_layer.mark_dirty();
         self.cursor_layer.mark_dirty();
+        self.decoration_layer.mark_dirty();
         Some(self.text_layer.terminal_size(&self.gpu))
     }
 
@@ -90,6 +96,7 @@ impl Renderer {
         self.background_layer.prepare(&self.gpu, Some(screen));
         self.text_layer.prepare(&self.gpu, Some(screen));
         self.cursor_layer.prepare(&self.gpu, Some(screen));
+        self.decoration_layer.prepare(&self.gpu, Some(screen));
     }
 
     /// Sets cursor visibility.  Only updates the flag, does not trigger GPU upload.
@@ -170,6 +177,7 @@ impl Renderer {
             self.background_layer.draw(&mut render_pass);
             self.text_layer.draw(&mut render_pass);
             self.cursor_layer.draw(&mut render_pass);
+            self.decoration_layer.draw(&mut render_pass);
         }
 
         self.gpu.queue().submit(Some(encoder.finish()));
