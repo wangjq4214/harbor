@@ -1,7 +1,8 @@
+mod normal_buf;
 mod parser;
 mod screen;
 mod text;
-
+pub(crate) use normal_buf::NormalBuf;
 use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;
 pub(crate) use screen::CellAttrs;
@@ -22,15 +23,11 @@ pub(crate) struct TerminalSize {
 }
 
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.
-#[derive(Debug)]
 pub(crate) struct Terminal {
-    /// Incremental ANSI/VT parser. It keeps partial escape sequences and split UTF-8 bytes
-    /// across PTY read chunks.
+    /// Incremental ANSI/VT parser.
     parser: TerminalParser,
-    /// Primary screen buffer (shell prompt, command output).
+    /// Screen (primary buffer; alt screen handled internally via in_alt).
     normal: Screen,
-    /// Alternate screen buffer (vim, less, htop). `Some` means alt screen is active.
-    alt: Option<Screen>,
 }
 
 impl Terminal {
@@ -38,36 +35,11 @@ impl Terminal {
         Self {
             parser: TerminalParser::default(),
             normal: Screen::new(rows, cols),
-            alt: None,
-        }
-    }
-
-    fn active_screen_mut(&mut self) -> &mut Screen {
-        self.alt.as_mut().unwrap_or(&mut self.normal)
-    }
-
-    fn handle_alt_request(&mut self, action: AltScreenAction) {
-        match action {
-            AltScreenAction::Enter => {
-                if self.alt.is_some() {
-                    return; // already in alt screen — idempotent
-                }
-                self.alt = Some(Screen::new(self.normal.rows(), self.normal.cols()));
-            }
-            AltScreenAction::Exit => {
-                if let Some(_alt) = self.alt.take() {
-                    // Mark normal screen dirty so renderer rebuilds on next frame.
-                    self.normal.mark_all_dirty();
-                }
-            }
         }
     }
 
     pub(crate) fn resize(&mut self, rows: usize, cols: usize) {
         self.normal.resize(rows, cols);
-        if let Some(alt) = self.alt.as_mut() {
-            alt.resize(rows, cols);
-        }
     }
 
     #[cfg(test)]
@@ -81,28 +53,31 @@ impl Terminal {
     /// `String::from_utf8_lossy` first: doing so would lose split UTF-8 state and could render
     /// replacement characters before the next PTY chunk arrives.
     pub(crate) fn put_bytes(&mut self, bytes: &[u8]) {
+        // Snap back to live view when new output arrives (only if not in alt screen).
+        if !self.normal.is_alt() {
+            self.normal.scroll_to_bottom();
+        }
         let mut remaining = bytes;
         while !remaining.is_empty() {
             let result = {
                 let parser = &mut self.parser;
-                let screen = match self.alt.as_mut() {
-                    Some(s) => s,
-                    None => &mut self.normal,
-                };
-                parser.put_bytes(screen, remaining)
+                parser.put_bytes(&mut self.normal, remaining)
             };
             remaining = &remaining[result.consumed..];
             if let Some(action) = result.alt_request {
-                // Consume the flag from the screen for hygiene.
-                self.active_screen_mut().take_alt_request();
-                self.handle_alt_request(action);
+                // Consume the alt request flag and handle it.
+                self.normal.take_alt_request();
+                match action {
+                    AltScreenAction::Enter => self.normal.enter_alt(),
+                    AltScreenAction::Exit => self.normal.exit_alt(),
+                }
             }
         }
     }
 
     /// Returns the renderable screen snapshot owned by this terminal.
     pub(crate) fn screen(&self) -> &Screen {
-        self.alt.as_ref().unwrap_or(&self.normal)
+        &self.normal
     }
 
     /// Mutable screen access for tests.
@@ -110,10 +85,9 @@ impl Terminal {
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
         &mut self.normal
     }
-
     /// Resets the screen's dirty-row tracking (called after layers consume the dirt).
     pub(crate) fn clear_screen_dirty(&mut self) {
-        self.active_screen_mut().clear_dirty();
+        self.normal.clear_dirty();
     }
 
     #[cfg(test)]
@@ -133,7 +107,10 @@ impl Terminal {
             tracing::trace!("ignored empty pty output chunk");
             return;
         }
-
+        // Snap back to live bottom on new output unless in alt screen.
+        if !self.normal.is_alt() {
+            self.normal.scroll_to_bottom();
+        }
         // Feed bytes into the terminal parser (updates screen cells and cursor).
         self.put_bytes(output);
         // Upload new text atlas and cursor vertices for the changed screen.
@@ -145,10 +122,6 @@ impl Terminal {
     }
 
     /// Resizes the terminal grid when the window surface changes.
-    ///
-    /// Compares `new_size` against the current terminal dimensions.  If
-    /// different, resizes the terminal, re-uploads layers, and clears dirty
-    /// tracking.
     pub(crate) fn resize_with_renderer(&mut self, renderer: &mut Renderer, new_size: TerminalSize) {
         let current = TerminalSize {
             rows: self.screen().rows(),
@@ -160,6 +133,26 @@ impl Terminal {
             renderer.prepare_layers(self.screen());
             self.clear_screen_dirty();
         }
+    }
+
+    /// Scroll the viewport up by `n` rows (toward history).
+    pub(crate) fn scroll_viewport_up(&mut self, n: usize) {
+        self.normal.scroll_up(n);
+    }
+
+    /// Scroll the viewport down by `n` rows (toward live content).
+    pub(crate) fn scroll_viewport_down(&mut self, n: usize) {
+        self.normal.scroll_down(n);
+    }
+
+    /// Snaps viewport to live bottom.
+    pub(crate) fn scroll_viewport_to_bottom(&mut self) {
+        self.normal.scroll_to_bottom();
+    }
+
+    /// Returns `true` when the alternate screen is active.
+    pub(crate) fn is_alt_screen(&self) -> bool {
+        self.normal.is_alt()
     }
 }
 

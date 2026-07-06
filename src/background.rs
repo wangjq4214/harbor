@@ -217,7 +217,7 @@ impl Layer for BackgroundLayer {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let any_dirty_rows = screen.dirty_rows().next().is_some();
+        let any_dirty_rows = !screen.dirty_rows().is_empty();
         if !self.dirty && !any_dirty_rows {
             return;
         }

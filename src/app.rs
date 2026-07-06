@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, WindowEvent},
+    event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
@@ -152,13 +152,46 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
+            // Mouse wheel → scroll viewport through history.
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some((terminal, renderer, window)) = self
+                    .terminal
+                    .as_mut()
+                    .zip(self.renderer.as_mut())
+                    .zip(self.window.as_ref())
+                    .map(|((t, r), w)| (t, r, w))
+                else {
+                    return;
+                };
 
+                if terminal.is_alt_screen() {
+                    return;
+                }
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
+                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
+                };
+                if lines > 0 {
+                    terminal.scroll_viewport_up(lines as usize);
+                } else if lines < 0 {
+                    terminal.scroll_viewport_down((-lines) as usize);
+                }
+
+                renderer.prepare_layers(terminal.screen());
+                terminal.clear_screen_dirty();
+                window.request_redraw();
+            }
             // Keyboard press → forward the key event to the PTY stdin pipe.
             WindowEvent::KeyboardInput {
                 device_id: _,
                 event,
                 is_synthetic: _,
             } if event.state == ElementState::Pressed => {
+                // Snap viewport back to live on any key press.
+                if let Some(terminal) = self.terminal.as_mut() {
+                    terminal.scroll_viewport_to_bottom();
+                }
+
                 let Some(bytes) =
                     keyboard_input_bytes(&event.logical_key, event.text.as_deref(), self.modifiers)
                 else {

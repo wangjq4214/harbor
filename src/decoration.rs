@@ -272,7 +272,7 @@ impl Layer for DecorationLayer {
             return;
         }
 
-        let any_dirty_rows = screen.dirty_rows().next().is_some();
+        let any_dirty_rows = !screen.dirty_rows().is_empty();
         if !self.dirty && !any_dirty_rows {
             return;
         }

@@ -136,6 +136,7 @@ impl GlyphAtlas {
         // Collect unique non-space chars from dirty rows only.
         let mut chars: Vec<char> = screen
             .dirty_rows()
+            .into_iter()
             .flat_map(|row| {
                 (0..screen.cols()).filter_map(move |col| {
                     let ch = screen.cell_char(row, col);
@@ -823,7 +824,7 @@ impl Layer for TextLayer {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let any_dirty_rows = screen.dirty_rows().next().is_some();
+        let any_dirty_rows = !screen.dirty_rows().is_empty();
         if !self.dirty && !any_dirty_rows {
             return;
         }
