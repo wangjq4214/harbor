@@ -11,6 +11,7 @@ use crate::{
     font::load_system_fonts,
     gpu::GpuContext,
     metrics::TextMetrics,
+    scrollbar::ScrollbarLayer,
     terminal::{Screen, TerminalSize, TextLayer},
 };
 
@@ -25,6 +26,8 @@ pub(crate) struct Renderer {
     cursor_layer: CursorLayer,
     /// Decoration layer (underline, strikethrough).
     decoration_layer: DecorationLayer,
+    /// Scrollbar overlay layer.
+    scrollbar_layer: ScrollbarLayer,
 }
 impl Renderer {
     /// Creates the GPU context, loads fonts, and initialises text and cursor layers.
@@ -42,6 +45,7 @@ impl Renderer {
         let cursor_layer = CursorLayer::new(&gpu, metrics);
         let background_layer =
             BackgroundLayer::new(&gpu, screen, metrics.cell_width, metrics.line_height);
+        let scrollbar_layer = ScrollbarLayer::new(&gpu, screen);
         let decoration_layer = DecorationLayer::new(&gpu, screen, metrics);
 
         tracing::info!(
@@ -56,6 +60,7 @@ impl Renderer {
             text_layer,
             cursor_layer,
             decoration_layer,
+            scrollbar_layer,
         })
     }
 
@@ -96,6 +101,7 @@ impl Renderer {
         self.text_layer.prepare(&self.gpu, Some(screen));
         self.cursor_layer.prepare(&self.gpu, Some(screen));
         self.decoration_layer.prepare(&self.gpu, Some(screen));
+        self.scrollbar_layer.prepare(&self.gpu, Some(screen));
     }
 
     /// Sets cursor visibility.  Only updates the flag, does not trigger GPU upload.
@@ -108,6 +114,20 @@ impl Renderer {
     pub(crate) fn prepare_cursor(&mut self, screen: &Screen) {
         use crate::render::Layer;
         self.cursor_layer.prepare(&self.gpu, Some(screen));
+    }
+
+    /// Sets scrollbar visibility.  Only updates the flag; the next `prepare_layers`
+    /// or `prepare_scrollbar` call uploads the updated geometry.
+    pub(crate) fn set_scrollbar_visible(&mut self, visible: bool) {
+        self.scrollbar_layer.set_visible(visible);
+    }
+
+    /// Uploads scrollbar vertices for the current screen state.
+    /// Called when scrollbar visibility or scroll position changed
+    /// without a full layer prepare.
+    pub(crate) fn prepare_scrollbar(&mut self, screen: &Screen) {
+        use crate::render::Layer;
+        self.scrollbar_layer.prepare(&self.gpu, Some(screen));
     }
 
     /// Acquires the surface texture, clears it, draws text and cursor layers,
@@ -177,6 +197,7 @@ impl Renderer {
             self.text_layer.draw(&mut render_pass);
             self.cursor_layer.draw(&mut render_pass);
             self.decoration_layer.draw(&mut render_pass);
+            self.scrollbar_layer.draw(&mut render_pass);
         }
 
         self.gpu.queue().submit(Some(encoder.finish()));

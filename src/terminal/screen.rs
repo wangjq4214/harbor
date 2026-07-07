@@ -183,7 +183,7 @@ pub(crate) enum CursorShape {
 #[derive(Debug)]
 pub(crate) struct Screen {
     /// Ring-buffer scrollback storage.
-    normal: NormalBuf,
+    pub(crate) normal: NormalBuf,
     /// Whether the alternate screen is active.
     in_alt: bool,
     /// 0-based column within the current row.

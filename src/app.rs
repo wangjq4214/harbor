@@ -1,5 +1,5 @@
 use std::sync::Arc;
-
+use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
@@ -9,6 +9,7 @@ use winit::{
 };
 
 use crate::{
+    config::SCROLLBAR_HIDE_DELAY_MS,
     cursor::CursorBlink, pty::Pty, renderer::Renderer, terminal::Terminal, terminal::TerminalSize,
 };
 
@@ -33,6 +34,12 @@ pub(crate) struct App {
     pending_resize: Option<TerminalSize>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
+    /// Mouse cursor currently inside the window.
+    cursor_in_window: bool,
+    /// Whether the scrollbar should be rendered this frame.
+    scrollbar_visible: bool,
+    /// Timestamp of the last mouse movement or scroll wheel activity.
+    last_mouse_activity: Instant,
 }
 
 /// Errors that can occur while starting the application.
@@ -76,9 +83,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Called when the event loop is about to block.  Drives cursor blink:
-    /// gated by the screen's `cursor_blink` flag.  When blinking is off,
-    /// uses `ControlFlow::Wait` to conserve CPU.
+    /// Called when the event loop is about to block.  Drives cursor blink and
+    /// scrollbar auto-hide: combines both timers into the next `WaitUntil` deadline.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Apply coalesced resize before blocking.
         if let Some(new_size) = self.pending_resize.take()
@@ -89,14 +95,48 @@ impl ApplicationHandler<AppEvent> for App {
             self.pty.resize(new_size);
         }
 
+        // Compute cursor blink deadline (if blinking is active).
         let should_blink = self
             .terminal
             .as_ref()
             .is_some_and(|t| t.screen().cursor_blink());
 
-        if should_blink {
+        let blink_deadline = if should_blink {
             let next = self.cursor_blink.check_blink(self.window.as_deref());
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            Some(next)
+        } else {
+            None
+        };
+
+        // Scrollbar auto-hide timer.
+        if self.scrollbar_visible {
+            let elapsed = self.last_mouse_activity.elapsed();
+            let hide_delay = std::time::Duration::from_millis(SCROLLBAR_HIDE_DELAY_MS);
+            if elapsed >= hide_delay {
+                self.scrollbar_visible = false;
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_scrollbar_visible(false);
+                    if let Some(terminal) = self.terminal.as_ref() {
+                        renderer.prepare_scrollbar(terminal.screen());
+                    }
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            } else {
+                let hide_at = self.last_mouse_activity + hide_delay;
+                let deadline = match blink_deadline {
+                    Some(blink) => hide_at.min(blink),
+                    None => hide_at,
+                };
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                return; // Early return: already set ControlFlow.
+            }
+        }
+
+        // Default ControlFlow: cursor blink timer or Wait.
+        if let Some(deadline) = blink_deadline {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
@@ -161,6 +201,28 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
+            // Cursor entered window → show scrollbar.
+            WindowEvent::CursorEntered { .. } => {
+                self.cursor_in_window = true;
+                self.show_scrollbar();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            // Cursor left window → don't hide immediately, let auto-hide timer handle it.
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_in_window = false;
+            }
+            // Cursor moved → reset activity timer, show scrollbar if hidden.
+            WindowEvent::CursorMoved { .. } => {
+                self.last_mouse_activity = Instant::now();
+                if !self.scrollbar_visible && self.cursor_in_window {
+                    self.show_scrollbar();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
             // Mouse wheel → scroll viewport through history.
             WindowEvent::MouseWheel { delta, .. } => {
                 let Some((terminal, renderer, window)) = self
@@ -185,6 +247,13 @@ impl ApplicationHandler<AppEvent> for App {
                 } else if lines < 0 {
                     terminal.scroll_viewport_down((-lines) as usize);
                 }
+
+                // Show scrollbar on wheel activity (inline to avoid re-borrowing `self`).
+                if !self.scrollbar_visible {
+                    self.scrollbar_visible = true;
+                    renderer.set_scrollbar_visible(true);
+                }
+                self.last_mouse_activity = Instant::now();
 
                 renderer.prepare_layers(terminal.screen());
                 terminal.clear_screen_dirty();
@@ -227,6 +296,9 @@ impl App {
             cursor_blink: CursorBlink::new(),
             pending_resize: None,
             modifiers: ModifiersState::default(),
+            cursor_in_window: false,
+            scrollbar_visible: false,
+            last_mouse_activity: Instant::now(),
         }
     }
 
@@ -257,6 +329,17 @@ impl App {
         self.window = Some(window.clone());
         window.request_redraw();
         Ok(())
+    }
+
+    /// Shows the scrollbar and resets the auto-hide timer.
+    fn show_scrollbar(&mut self) {
+        if !self.scrollbar_visible {
+            self.scrollbar_visible = true;
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_scrollbar_visible(true);
+            }
+        }
+        self.last_mouse_activity = Instant::now();
     }
 }
 // ── Key mapping ───────────────────────────────────────────────────────────

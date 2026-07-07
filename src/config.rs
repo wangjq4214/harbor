@@ -37,3 +37,18 @@ pub(crate) const BACKGROUND: wgpu::Color = wgpu::Color {
 
 /// Cursor blink interval in milliseconds (on/off each half-cycle).
 pub(crate) const BLINK_INTERVAL_MS: u64 = 530;
+
+// ── Scrollbar ──────────────────────────────────────────────────────────────────
+
+/// Scrollbar track/thumb width in pixels.
+pub(crate) const SCROLLBAR_WIDTH: f32 = 6.0;
+/// Spacing between scrollbar right edge and window right edge.
+pub(crate) const SCROLLBAR_MARGIN: f32 = 2.0;
+/// Scrollbar thumb color (semi-transparent white).
+pub(crate) const SCROLLBAR_COLOR: [f32; 4] = [0.8, 0.8, 0.8, 0.4];
+/// Mouse idle time in ms before auto-hiding the scrollbar.
+pub(crate) const SCROLLBAR_HIDE_DELAY_MS: u64 = 1500;
+/// Minimum thumb height in pixels; ensures the thumb is always visible and draggable.
+pub(crate) const SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 20.0;
+/// Thumb border radius in pixels. Capsule shape when equal to SCROLLBAR_WIDTH/2.
+pub(crate) const SCROLLBAR_BORDER_RADIUS: f32 = 3.0;
