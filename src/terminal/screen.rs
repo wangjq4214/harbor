@@ -512,6 +512,19 @@ impl Screen {
         self.mark_row_dirty(self.cursor_y);
 
         let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols + self.cursor_x;
+        let ring_row = index / self.normal.cols;
+        let old_ch = self.normal.cells[index].ch;
+
+        tracing::trace!(
+            ch = format_args!("{ch:?}"),
+            cursor_x = self.cursor_x,
+            cursor_y = self.cursor_y,
+            ring_row,
+            ring_cell = index,
+            old_char = format_args!("{old_ch:?}"),
+            "write_char"
+        );
+
         self.clear_cell_for_write(index);
         if width == 2 && self.cursor_x + 1 < self.normal.cols {
             self.clear_cell_for_write(index + 1);
@@ -552,6 +565,18 @@ impl Screen {
             index > 0 || !self.normal.cells[index].wide_continuation,
             "wide_continuation at column 0 is invalid"
         );
+        let old_ch = self.normal.cells[index].ch;
+        let row = index / self.normal.cols;
+        let col = index % self.normal.cols;
+
+        tracing::trace!(
+            index,
+            row,
+            col,
+            old_char = format_args!("{old_ch:?}"),
+            "clear_cell_for_write"
+        );
+
         if self.normal.cells[index].wide_continuation {
             self.normal.cells[index - 1] = Cell::default();
             self.normal.cells[index] = Cell::default();
@@ -679,6 +704,15 @@ impl Screen {
     /// when already at the top of the region. When the cursor is above the region,
     /// moves up if not already at the top of the full screen.
     pub(crate) fn reverse_index(&mut self) {
+        tracing::debug!(
+            cursor_y = self.cursor_y,
+            scroll_top = self.scroll_top,
+            scroll_bottom = self.scroll_bottom,
+            full_screen =
+                (self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1),
+            "reverse_index"
+        );
+
         if self.cursor_y == self.scroll_top && self.cursor_y <= self.scroll_bottom {
             // Mark only region rows dirty.
             for row in self.scroll_top..=self.scroll_bottom {
@@ -731,6 +765,15 @@ impl Screen {
     /// upward (row N → N-1) and fills the newly exposed bottom row of the region with blank
     /// cells. The cursor moves to column 0 of the bottom region row.
     fn scroll_region_up_one(&mut self) {
+        tracing::debug!(
+            scroll_top = self.scroll_top,
+            scroll_bottom = self.scroll_bottom,
+            visible_rows = self.normal.visible_rows,
+            full_screen =
+                (self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1),
+            "scroll_region_up_one"
+        );
+
         for row in self.scroll_top..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
@@ -748,7 +791,7 @@ impl Screen {
             if src_start <= src_end {
                 self.normal.cells.copy_within(src_start..src_end, dst);
             } else {
-                let first_len = tr * c - src_start ;
+                let first_len = tr * c - src_start;
                 let first_part = src_start..tr * c;
                 let second_part = 0..src_end;
                 self.normal.cells.copy_within(first_part, dst);
@@ -898,7 +941,7 @@ impl Screen {
         if src_start <= src_end {
             self.normal.cells.copy_within(src_start..src_end, dst);
         } else {
-            let first_len = tr * c - src_start ;
+            let first_len = tr * c - src_start;
             let first_part = src_start..tr * c;
             let second_part = 0..src_end;
             self.normal.cells.copy_within(first_part, dst);
@@ -979,7 +1022,7 @@ impl Screen {
         if src_start <= src_end {
             self.normal.cells.copy_within(src_start..src_end, dst);
         } else {
-            let first_len = tr * c - src_start ;
+            let first_len = tr * c - src_start;
             let first_part = src_start..tr * c;
             let second_part = 0..src_end;
             self.normal.cells.copy_within(first_part, dst);

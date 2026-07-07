@@ -8,7 +8,9 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{cursor::CursorBlink, pty::Pty, renderer::Renderer, terminal::Terminal};
+use crate::{
+    cursor::CursorBlink, pty::Pty, renderer::Renderer, terminal::Terminal, terminal::TerminalSize,
+};
 
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
@@ -27,6 +29,8 @@ pub(crate) struct App {
     /// Shell process with background output reader.
     pty: Pty,
     cursor_blink: CursorBlink,
+    /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
+    pending_resize: Option<TerminalSize>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
 }
@@ -76,6 +80,15 @@ impl ApplicationHandler<AppEvent> for App {
     /// gated by the screen's `cursor_blink` flag.  When blinking is off,
     /// uses `ControlFlow::Wait` to conserve CPU.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Apply coalesced resize before blocking.
+        if let Some(new_size) = self.pending_resize.take()
+            && let (Some(renderer), Some(terminal)) =
+                (self.renderer.as_mut(), self.terminal.as_mut())
+        {
+            terminal.resize_with_renderer(renderer, new_size);
+            self.pty.resize(new_size);
+        }
+
         let should_blink = self
             .terminal
             .as_ref()
@@ -109,20 +122,16 @@ impl ApplicationHandler<AppEvent> for App {
                 event_loop.exit();
             }
 
-            // Resize: update surface config, then resize terminal and pty if
-            // the terminal grid changed, then request redraw.
+            // Resize: update surface config immediately, but defer terminal
+            // grid + PTY resize to `about_to_wait` to coalesce bounce.
             WindowEvent::Resized(size) => {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
                 let new_size = self
                     .renderer
                     .as_mut()
                     .and_then(|renderer| renderer.resize(size.width, size.height));
-
-                if let (Some(new_size), Some(renderer), Some(terminal)) =
-                    (new_size, self.renderer.as_mut(), self.terminal.as_mut())
-                {
-                    terminal.resize_with_renderer(renderer, new_size);
-                    self.pty.resize(new_size);
+                if let Some(new_size) = new_size {
+                    self.pending_resize = Some(new_size);
                 }
                 window.request_redraw();
             }
@@ -216,6 +225,7 @@ impl App {
             terminal: None,
             pty: Pty::new(event_proxy),
             cursor_blink: CursorBlink::new(),
+            pending_resize: None,
             modifiers: ModifiersState::default(),
         }
     }

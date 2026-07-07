@@ -154,6 +154,15 @@ impl NormalBuf {
 
     /// Advance the ring by `n` rows when full-screen scrolling.
     pub(crate) fn scroll_up_full_screen(&mut self, n: usize) {
+        tracing::debug!(
+            n,
+            visible_start = self.visible_start,
+            total_rows = self.total_rows,
+            scroll_count = self.scroll_count,
+            view_offset = self.view_offset,
+            "scroll_up_full_screen: advancing ring"
+        );
+
         let n = n.min(self.visible_rows);
         self.scroll_count = (self.scroll_count + n).min(self.max_scrollback);
         self.visible_start = (self.visible_start + n) % self.total_rows;
@@ -166,6 +175,14 @@ impl NormalBuf {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
         }
         self.dirty_rows.fill(true);
+
+        tracing::debug!(
+            n,
+            visible_start = self.visible_start,
+            scroll_count = self.scroll_count,
+            view_offset = self.view_offset,
+            "scroll_up_full_screen: ring advanced"
+        );
     }
     // ── resize ──────────────────────────────────────────────────────
 
@@ -177,6 +194,18 @@ impl NormalBuf {
         if self.visible_rows == rows && self.cols == cols {
             return;
         }
+
+        tracing::debug!(
+            old_rows = self.visible_rows,
+            old_cols = self.cols,
+            new_rows = rows,
+            new_cols = cols,
+            visible_start = self.visible_start,
+            total_rows = self.total_rows,
+            scroll_count = self.scroll_count,
+            "resize: rebuilding ring buffer"
+        );
+
         let new_total = self.max_scrollback + rows;
         let mut new_cells = vec![Cell::default(); new_total * cols];
         // Copy the overlapping top-left rectangle from the current viewport.
@@ -197,20 +226,38 @@ impl NormalBuf {
         self.scroll_count = 0;
         self.view_offset = 0;
         self.dirty_rows = vec![true; rows];
+
+        tracing::debug!(
+            new_visible_start = self.visible_start,
+            new_total_rows = self.total_rows,
+            "resize: done"
+        );
     }
 
     // ── bulk helpers for Screen's mutation methods ─────────────────
 
-    /// Fill a single display row with default cells.
     #[inline]
     pub(crate) fn fill_row(&mut self, display_row: usize) {
         let ring_row = self.display_to_ring(display_row);
+
+        tracing::debug!(
+            display_row,
+            ring_row,
+            cols = self.cols,
+            "fill_row: clearing row"
+        );
+
         let start = ring_row * self.cols;
         self.cells[start..start + self.cols].fill(Cell::default());
     }
 
     /// Fill every visible row with default cells.
     pub(crate) fn fill_all(&mut self) {
+        tracing::debug!(
+            visible_rows = self.visible_rows,
+            "fill_all: clearing all visible rows"
+        );
+
         for d in 0..self.visible_rows {
             self.fill_row(d);
         }
