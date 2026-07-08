@@ -49,7 +49,8 @@ Core milestones:
 ---
 
 ## v0.2: Terminal Core (Parser + State + SGR)
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (157 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (177 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
 ### Done
 
@@ -61,13 +62,15 @@ Core milestones:
 
 **Scrolling Region.** DECSTBM (`CSI r`), scroll/insert/delete operations respect top/bottom margins. Unit-tested with vim-like scenarios.
 
-**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test). DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar.
+**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC / CSI s/u). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test). DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar. CHA (CSI G), VPA (CSI d), CNL (CSI E), CPL (CSI F) all implemented and parser-tested.
 
 **Alternate Screen.** Enter/exit (`CSI ?1049h/l`), main screen state preserved on enter and restored on exit. Isolation unit-tested, idempotent re-entry handled.
 
 **Resize.** Content preserved, rows/cols updated, PTY synced, cell metrics recalculated, redraw requested, cursor clamped. Tested.
 
-**Tests.** 157 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR.
+**Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled.
+
+**Tests.** 177 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
 
 ### To Do
 
@@ -77,7 +80,7 @@ Core milestones:
 - [ ] Parse private mode sequences (`CSI ? ...`) beyond `?1049h/l` for cursor and DEC modes
 
 **Unit Test Coverage**
-- [ ] CSI cursor-movement sequences (A/B/C/D) tested at parser level
+- [ ] CSI cursor-movement sequences (A/B/C/D) tested at parser level (covered implicitly via oversized-param tests; add dedicated parser-through tests)
 
 **Acceptance (runtime — needs Unix PTY for full verification)**
 - [ ] `vim` / `less` scroll correctly at runtime
@@ -89,35 +92,40 @@ Core milestones:
 ---
 
 ## v0.3: Cell-Based WGPU Renderer (Color + Decorations)
-> **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse), and cursor shapes (block/underline/bar) with DECSCUSR integration done. Combining marks and viewport offset pending.**
+
+> **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse), cursor shapes (block/underline/bar) with DECSCUSR integration, and viewport-offset scrollback rendering done. Combining marks and box drawing pending.**
 
 ### Done
 
-**Rendering Architecture.** Glyph atlas pipeline, CursorLayer, background clear + background rect pipeline + glyph pass + cursor pass drawn in order within single render pass.
+**Rendering Architecture.** Glyph atlas pipeline, `CursorComponent`, `BackgroundComponent`, `DecorationComponent`, `ScrollbarComponent` — each with own pipeline, bind group layout, vertex buffer. Full render order in a single pass: clear → cell backgrounds → glyphs → decorations → cursor → scrollbar.
 
 **Background Pipeline.** Solid-color quad shader, pre-allocated vertex buffer (one rect per cell), single draw call, default-bg cells produce degenerate quads (skipped by rasterizer).
 
 **Glyph Color.** Fragment shader multiplies white glyph alpha by vertex color, colored vertices generated per cell (position + UV + fg RGBA), default-fg cells use white.
 
-**Glyph Atlas.** `HashMap<char, AtlasGlyph>` cache, atlas texture built once, lazy rasterization on first appearance, reuse across frames. Atlas-full handled via eviction + `full_update` (warn if still too large). Incremental tile uploads.
+**Glyph Atlas.** `HashMap<char, AtlasGlyph>` cache, atlas texture built once, lazy rasterization on first appearance, reuse across frames. Atlas-full handled via eviction + `full_update` (warn if still too large). Incremental tile uploads via per-frame dirty glyph set.
 
 **Cell-Based Rendering.** Cell-by-cell read, glyph instance per visible cell, dynamic buffer upload via `write_buffer`, batched single draw call, pixel-coordinate conversion, `TEXT_PADDING = 16.0`.
 
+**Font Loading.** Font loading with fast-path candidates (env var → bundled candidates → fontdb system discovery). CJK detection via glyph probe; automatic fallback font loading when primary font lacks CJK coverage. Primary monospace font + optional CJK fallback.
+
 **Font Metrics.** Cell width/height/baseline/ascent calculated via fontdue, characters and cursor aligned to cell grid.
 
-**Cursor.** Shape-driven solid-color cursor layer supporting block, underline, and bar shapes. DECSCUSR (`CSI Ps SP q`) controls shape and blink mode. Blink gated by cursor_blink flag — steady cursor when blink is off. Default shape is blinking bar.
+**Cursor.** Shape-driven solid-color cursor component supporting block, underline, and bar shapes. DECSCUSR (`CSI Ps SP q`) controls shape and blink mode. Blink gated by `cursor_blink` flag — steady cursor when blink is off. Default shape is blinking bar. Blink timer via `on_about_to_wait` deadline.
 
-**Unicode.** `unicode-width` integrated, wide chars occupy 2 cells, second cell marked `wide_continuation`, spacer cleaned on delete, overwrite handled, unsupported chars → U+FFFD replacement glyph, CJK glyphs rasterized from fallback font.
+**Unicode.** `unicode-width` integrated, wide chars occupy 2 cells, second cell marked `wide_continuation`, spacer cleaned on delete, overwrite handled, unsupported chars → U+FFFD replacement glyph, CJK glyphs rasterized from fallback font. UTF-8 split across PTY reads preserved.
 
 **Rendering Correctness.** SGR fg rendered via `cell.fg.to_rgba()` in glyph shader, SGR bg rendered via background rect pipeline with `cell.bg.to_rgba()`.
 
-**Decorations.** `DecorationLayer` GPU pipeline (follows BackgroundLayer pattern), separate underline/strikethrough vertex buffers, degenerate-quad skipping for undecorated cells. `TextMetrics` extended with underline/strikethrough position/thickness from font descent. Bold→white glyph color, italic→rightward shift (15% cell width), inverse→fg↔bg swap (glyph and background). Full render order: clear → bg → glyphs → cursor → decorations.
+**Decorations.** Separate `DecorationComponent` GPU pipeline (follows `BackgroundComponent` pattern), separate underline/strikethrough vertex buffers, degenerate-quad skipping for undecorated cells. `TextMetrics` extended with underline/strikethrough position/thickness from font descent. Bold→white glyph color, italic→rightward shift (15% cell width), inverse→fg↔bg swap (glyph and background). Full render order: clear → bg → glyphs → decorations → cursor.
+
+**Viewport Scrollback Rendering.** `NormalBuf` ring buffer exposes `view_offset` — `cell(display_row, col)` reads from ring at scrolled position. When `view_offset > 0`, all visible rows return as dirty. Renderer reads from scrolled view via same `cell()` path, no special scrollback pass needed.
 
 ### To Do
 
 **Decorations**
 - [x] Underline / strikethrough rendering rect pipeline
-- [x] Full render flow: clear → cell backgrounds → glyphs → cursor → decorations
+- [x] Full render flow: clear → cell backgrounds → glyphs → decorations → cursor
 - [x] Bold: render via white glyph color (attrs stored, now rendered)
 - [x] Italic: render via rightward shift (attrs stored, now rendered)
 - [x] Underline: render underline decoration (attrs stored, now rendered)
@@ -132,9 +140,6 @@ Core milestones:
 
 **Glyph Atlas**
 - [ ] Clear atlas when font size or DPI scale changes
-
-**Cell-Based Rendering**
-- [ ] Viewport offset (for scrollback rendering)
 
 **Font Metrics**
 - [ ] Box drawing characters (`│` `─` `┌` …) aligned for seamless joins
@@ -157,20 +162,36 @@ Core milestones:
 
 ## v0.4: Interactive Features
 
-> **Status: 🔴 Not started.**
+> **Status: 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering done. Selection, clipboard, IME, mouse protocol, keybindings, hyperlinks pending.**
 
-### Scrollback
-- [ ] Add scrollback buffer (ring buffer)
-- [ ] Normal screen output enters scrollback
-- [ ] Alternate screen does not enter scrollback by default
-- [ ] Mouse wheel enters history view
+### Done
+
+**Scrollback Buffer.** `NormalBuf` ring buffer with 1000-line default max capacity. Ring head advances O(1) via pointer bump on full-screen scroll. Visible rows occupy consecutive ring slots starting at `visible_start`. Scrollback tracked via `scroll_count`.
+
+**Viewport Scroll Navigation.** `scroll_up` / `scroll_down` / `scroll_to_bottom` on viewport. `view_offset` controls which part of ring is displayed as the visible grid. New output auto-scrolls to bottom in normal screen. When viewing scrollback, all rows are marked dirty for full redraw.
+
+**Mouse Wheel.** Scroll wheel scrolls viewport through history in normal screen. PageUp/PageDown and Home/End keyboard scroll not yet mapped.
+
+**Scrollbar.** `ScrollbarComponent` with GPU-rendered rounded-rect thumb via SDF shader, thumb height proportional to visible ratio, auto-hide after 1500 ms inactivity, activity tracking (mouse move + mouse wheel), degenerate (hidden) state in alt screen or when no scrollback exists, and visibility state machine with blink-style deadline.
+
+**Alternate Screen Scrollback Isolation.** Scrollback does not accumulate in alternate screen (`less`, `vim`). On alt-screen exit, main screen scrollback is fully restored.
+
+**Resize Scrollback Handling.** Resize preserves top-left visible rectangle. Scrollback is discarded on column-count change (standard behavior). `view_offset` reset on resize.
+
+### To Do
+
+**Scrollback**
+- [x] Add scrollback buffer (ring buffer)
+- [x] Normal screen output enters scrollback
+- [x] Alternate screen does not enter scrollback by default
+- [x] Mouse wheel enters history view
 - [ ] PageUp / PageDown for scrollback navigation
 - [ ] Home / End to top/bottom of scrollback
-- [ ] Limit maximum scrollback lines
+- [x] Limit maximum scrollback lines (1000 hard-coded)
 - [ ] Configurable scrollback line count
 - [ ] Copy text from scrollback
 
-### Selection
+**Selection**
 - [ ] Mouse drag selection
 - [ ] Click to set selection start, drag to update range
 - [ ] Keep selection after mouse release
@@ -181,7 +202,7 @@ Core milestones:
 - [ ] Render selection highlight
 - [ ] Auto-scroll while selecting
 
-### Clipboard
+**Clipboard**
 - [ ] Integrate system clipboard
 - [ ] Ctrl+Shift+C copies selected text
 - [ ] Ctrl+Shift+V pastes
@@ -190,13 +211,13 @@ Core milestones:
 - [ ] Handle newlines during paste
 - [ ] Filter dangerous control characters when necessary
 
-### Mouse Protocol
+**Mouse Protocol**
 - [ ] Mouse wheel sent to application in alternate screen
 - [ ] Basic mouse reporting
 - [ ] SGR mouse mode
 - [ ] Mouse modifier encoding
 
-### IME
+**IME**
 - [ ] Integrate winit IME events
 - [ ] Support preedit/composition
 - [ ] Support committed text
@@ -204,7 +225,7 @@ Core milestones:
 - [ ] Do not write composition text directly to PTY
 - [ ] Write committed text to PTY
 
-### Keyboard
+**Keyboard**
 - [ ] Add keybinding data structure
 - [ ] Ctrl+C copies when selection exists, sends SIGINT otherwise
 - [ ] Ctrl+Shift+C always copies
@@ -214,13 +235,13 @@ Core milestones:
 - [ ] Escape behaves correctly (mapped to `0x1b`)
 - [ ] F1-F12, Home/End/PageUp/PageDown mappings correct
 
-### Hyperlink
+**Hyperlink**
 - [ ] Detect URLs
 - [ ] Highlight URL on hover
 - [ ] Ctrl+Click opens URL
 - [ ] Support OSC 8 hyperlink, optional
 
-### Acceptance Criteria
+**Acceptance Criteria**
 - [ ] Text selection works
 - [ ] Copy/paste works
 - [ ] Chinese IME works
@@ -233,7 +254,7 @@ Core milestones:
 
 ## v0.5: Performance and Stability
 
-> **Status: 🟡 Row-level damage tracking, incremental renderer updates, PTY batching, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
+> **Status: 🟡 Row-level damage tracking, incremental renderer updates, PTY batching, ring-buffer scrollback, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
 
 ### Done
 
@@ -247,7 +268,7 @@ Core milestones:
 
 **Stability.** wgpu surface Lost/Outdated handled (logged + reconfigured); PTY child exit detected (reader exits on EOF); structured `tracing` logs in JSON format.
 
-**Memory.** `Cell` representation compact (fixed-size fields, no heap indirection).
+**Memory.** `Cell` representation compact (fixed-size `char` + enum `Color` + `u8` bitset, no heap indirection). `NormalBuf` ring buffer provides O(1) scrollback at fixed memory cost.
 
 ### To Do
 
@@ -279,11 +300,11 @@ Core milestones:
 - [ ] Record FPS, frame time, CPU, memory, atlas hit rate
 
 **Memory Optimization**
-- [ ] Ring buffer for scrollback
-- [ ] Limit maximum scrollback lines
+- [x] Ring buffer for scrollback
+- [x] Limit maximum scrollback lines (1000 hard-coded)
 - [ ] Compact `Color` / `Attrs` representation
-- [ ] Avoid frequent per-line `String` allocation
-- [ ] Avoid cloning the whole grid
+- [ ] Avoid frequent per-line `String` allocation (cells use `char`, not `String`)
+- [ ] Avoid cloning the whole grid (ring buffer avoids this)
 - [ ] Clear snapshot/diff mechanism
 
 **Stability**
@@ -398,14 +419,14 @@ Core milestones:
 
 ## Milestone Overview
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                        |
-| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                            |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (157), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; parser hardening + runtime verification pending                         |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) done; combining marks, viewport offset pending |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🔴 Not started                                                                                                                                 |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + surface/process handling done; latency measurement, benchmarking, memory optimization pending      |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                 |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                                      |
+| ------- | ------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                                          |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (177), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; 177 tests pass; parser hardening + runtime verification pending                       |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) + viewport offset done; combining marks, box drawing pending |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering done; selection, clipboard, IME, mouse protocol pending                                |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + ring-buffer scrollback + surface/process handling done; latency measurement, benchmarking, memory opt pending    |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                               |
 ---
 
 > Build a reliable terminal first. Turn it into a development environment later.
