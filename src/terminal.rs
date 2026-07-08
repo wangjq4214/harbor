@@ -10,9 +10,6 @@ pub(crate) use screen::Color;
 pub(crate) use screen::CursorShape;
 pub(crate) use screen::Screen;
 pub(crate) use text::TextLayer;
-use winit::window::Window;
-
-use crate::renderer::Renderer;
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalSize {
@@ -95,14 +92,8 @@ impl Terminal {
         self.screen().row_text(row)
     }
 
-    /// Feeds raw PTY bytes into the terminal parser and refreshes the
-    /// renderer's text/cursor GPU resources for the new screen content.
-    pub(crate) fn process_output(
-        &mut self,
-        renderer: &mut Renderer,
-        window: &Window,
-        output: &[u8],
-    ) {
+    /// Feeds raw PTY bytes into the terminal parser (render refresh handled by caller).
+    pub(crate) fn process_output(&mut self, output: &[u8]) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
@@ -113,16 +104,11 @@ impl Terminal {
         }
         // Feed bytes into the terminal parser (updates screen cells and cursor).
         self.put_bytes(output);
-        // Upload new text atlas and cursor vertices for the changed screen.
-        renderer.prepare_layers(self.screen());
-        // Clear dirty tracking after layers consume it.
-        self.clear_screen_dirty();
-        // Request a redraw to display the updated screen.
-        window.request_redraw();
     }
 
     /// Resizes the terminal grid when the window surface changes.
-    pub(crate) fn resize_with_renderer(&mut self, renderer: &mut Renderer, new_size: TerminalSize) {
+    /// Returns `true` when dimensions actually changed.
+    pub(crate) fn resize_terminal_if_changed(&mut self, new_size: TerminalSize) -> bool {
         let current = TerminalSize {
             rows: self.screen().rows(),
             cols: self.screen().cols(),
@@ -130,12 +116,11 @@ impl Terminal {
 
         if new_size != current {
             self.resize(new_size.rows, new_size.cols);
-            renderer.prepare_layers(self.screen());
-            self.clear_screen_dirty();
+            true
+        } else {
+            false
         }
     }
-
-    /// Scroll the viewport up by `n` rows (toward history).
     pub(crate) fn scroll_viewport_up(&mut self, n: usize) {
         self.normal.scroll_up(n);
     }

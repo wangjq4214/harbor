@@ -1,12 +1,10 @@
 use std::time::Instant;
 
-use winit::window::Window;
-
 use crate::{
     config::{BLINK_INTERVAL_MS, TEXT_PADDING},
     gpu::{self, GpuContext, TexturedVertex},
     metrics::TextMetrics,
-    render::Layer,
+    render::Component,
     terminal::{CursorShape, Screen},
 };
 
@@ -31,34 +29,40 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-// ── CursorLayer ───────────────────────────────────────────────────────────
+// ── CursorComponent ──────────────────────────────────────────────────────
 
-/// Draws a solid-color cursor (block/underline/bar) over the terminal grid.
-/// Uses a `dirty` flag to defer GPU vertex uploads.
-pub(crate) struct CursorLayer {
-    /// wgpu render pipeline.
+/// Combined cursor rendering + blink state machine.
+/// Replaces CursorLayer and CursorBlink in the component tree.
+pub(crate) struct CursorComponent {
+    /// wgpu render pipeline for the solid-color cursor quad.
     pipeline: wgpu::RenderPipeline,
-    /// Vertex buffer with COPY_DST for partial write_buffer updates.
+    /// Pre-allocated 6-vertex quad buffer (rewritten when cursor position or
+    /// visibility changes).
     vertex_buffer: wgpu::Buffer,
-    /// Current vertex count (0 or 6).
+    /// Number of vertices to draw (0 when cursor is off-screen or hidden).
     vertex_count: u32,
-    /// Cursor visibility set by the client (controlled by CursorBlink).
+    /// Whether the cursor should be rendered this frame (controlled by blink
+    /// timer or steady-on when blinking is disabled).
     visible: bool,
     /// Whether vertices need to be re-uploaded to the GPU.
     dirty: bool,
-    /// Cell width derived from font metrics.
+    /// Cell width derived from font metrics, used to compute cursor quad position.
     cell_width: f32,
-    /// Line height.
+    /// Line height, used for cursor quad height and underline/bar thickness.
     line_height: f32,
-    /// Current cursor shape from DECSCUSR.
+    /// Current cursor shape (block / underline / bar), set by DECSCUSR.
     shape: CursorShape,
-    /// Snapshot from the last `prepare`: `(visible, cursor_x, cursor_y, shape)`.
+    /// Snapshot from the last upload: `(visible, cursor_x, cursor_y, shape)`.
     /// Used to skip uploads when nothing changed.
     last_cursor: Option<(bool, usize, usize, CursorShape)>,
+    /// Blink timer start (set to `Instant::now` on construction).
+    blink_start: Instant,
+    /// Visibility state from the last committed frame, used to detect blink toggles.
+    last_rendered_visible: bool,
 }
 
-impl CursorLayer {
-    /// Creates the cursor layer: initialises the render pipeline and vertex buffer.
+impl CursorComponent {
+    /// Creates the cursor: pipeline, vertex buffer, and blink timer at `Instant::now`.
     pub(crate) fn new(gpu: &GpuContext, metrics: TextMetrics) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let vertex_buffer =
@@ -73,10 +77,12 @@ impl CursorLayer {
             line_height: metrics.line_height,
             shape: CursorShape::Bar,
             last_cursor: None,
+            blink_start: Instant::now(),
+            last_rendered_visible: false,
         }
     }
 
-    /// Creates the cursor render pipeline using the shared `TexturedVertex` layout.
+    /// Compiles the solid-color cursor shader into a render pipeline.
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cursor shader"),
@@ -116,11 +122,21 @@ impl CursorLayer {
         })
     }
 
-    /// Updates the cursor visibility flag and reads the current shape from
-    /// the screen.  Compares the `(visible, cursor_x, cursor_y, shape)` tuple
-    /// against the snapshot recorded by the last `prepare`; sets `dirty =
-    /// true` only when something changed.
-    pub(crate) fn set_visible(&mut self, visible: bool, screen: &Screen) {
+    /// Whether the cursor should be visible right now (blink-phase check).
+    fn blink_visible(&self) -> bool {
+        let millis = self.blink_start.elapsed().as_millis() as u64;
+        (millis / BLINK_INTERVAL_MS).is_multiple_of(2)
+    }
+
+    /// Snapshots the current blink phase so the next `on_about_to_wait`
+    /// can detect a toggle.
+    fn commit_frame(&mut self) {
+        self.last_rendered_visible = self.blink_visible();
+    }
+
+    /// Updates cursor visibility + shape from the screen; sets `dirty` when
+    /// the position or shape changed.
+    fn set_visible(&mut self, visible: bool, screen: &Screen) {
         self.visible = visible;
         self.shape = screen.cursor_shape();
         let current =
@@ -133,17 +149,11 @@ impl CursorLayer {
             self.dirty = true;
         }
     }
-
-    /// Forces a vertex upload on the next `prepare` (called after resize).
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
 }
 
-impl Layer for CursorLayer {
-    /// If `dirty`, computes cell-aligned vertex rectangles for the current
-    /// shape (block/underline/bar) and uploads them via `write_buffer`.
-    /// Returns immediately when nothing changed.
+impl Component for CursorComponent {
+    /// If dirty, computes cell-aligned vertex quad for the current cursor
+    /// shape and uploads it.
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         if !self.dirty {
             return;
@@ -216,7 +226,7 @@ impl Layer for CursorLayer {
         }
     }
 
-    /// Sets the pipeline and issues the draw call.
+    /// Sets the pipeline and issues the draw call. No-op when vertex_count is 0.
     fn draw(&self, pass: &mut wgpu::RenderPass) {
         if self.vertex_count == 0 {
             return;
@@ -226,51 +236,49 @@ impl Layer for CursorLayer {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);
     }
-}
 
-// ── CursorBlink ───────────────────────────────────────────────────────────
-
-/// Cursor blink phase state machine.  Decides visibility based on a configured
-/// on/off cycle and requests redraws when the phase toggles.
-pub(crate) struct CursorBlink {
-    /// Blink timer start (set to `Instant::now` on creation).
-    blink_start: Instant,
-    /// Visibility state from the last rendered frame, used to detect toggles.
-    last_rendered_visible: bool,
-}
-
-impl CursorBlink {
-    pub(crate) fn new() -> Self {
-        Self {
-            blink_start: Instant::now(),
-            last_rendered_visible: false,
+    /// Handle RedrawRequested: sync blink visibility, upload cursor vertices, commit frame.
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::render::EventContext<'_>,
+    ) -> crate::render::EventResult {
+        match event {
+            winit::event::WindowEvent::RedrawRequested => {
+                let screen = ctx.terminal.screen();
+                let visible = if screen.cursor_blink() {
+                    self.blink_visible()
+                } else {
+                    true
+                };
+                self.set_visible(visible, screen);
+                self.prepare(ctx.gpu, Some(screen));
+                self.commit_frame();
+                crate::render::EventResult::Continue
+            }
+            _ => crate::render::EventResult::Continue,
         }
     }
 
-    /// Whether the cursor should be visible at this instant (time-based,
-    /// independent of render state).
-    pub(crate) fn visible(&self) -> bool {
-        let millis = self.blink_start.elapsed().as_millis() as u64;
-        (millis / BLINK_INTERVAL_MS).is_multiple_of(2)
-    }
-
-    /// Called from `about_to_wait`: requests a redraw if visibility just
-    /// toggled, returns the next toggle deadline for `ControlFlow::WaitUntil`.
-    pub(crate) fn check_blink(&mut self, window: Option<&Window>) -> Instant {
-        let visible = self.visible();
-        if visible != self.last_rendered_visible
-            && let Some(window) = window
-        {
-            window.request_redraw();
+    /// Returns the next blink toggle deadline, or `None` if blinking is off.
+    fn on_about_to_wait(
+        &mut self,
+        ctx: &mut crate::render::EventContext<'_>,
+    ) -> Option<std::time::Instant> {
+        if !ctx.terminal.screen().cursor_blink() {
+            return None;
+        }
+        let visible = self.blink_visible();
+        if visible != self.last_rendered_visible {
+            ctx.window.request_redraw();
         }
         let millis = self.blink_start.elapsed().as_millis() as u64;
         let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
-        self.blink_start + std::time::Duration::from_millis(next_toggle_ms)
+        Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms))
     }
 
-    /// Called after each frame is rendered: records the current blink state
-    /// so `check_blink` can detect the next toggle.
-    pub(crate) fn commit_frame(&mut self) {
-        self.last_rendered_visible = self.visible();
+    /// Marks dirty so the next `prepare` re-uploads vertices at the new surface size.
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+        self.dirty = true;
     }
 }

@@ -5,15 +5,14 @@
 
 mod app;
 mod background;
-mod decoration;
 mod config;
 mod cursor;
+mod decoration;
 mod font;
 mod gpu;
 mod metrics;
 mod pty;
 mod render;
-mod renderer;
 mod scrollbar;
 mod terminal;
 

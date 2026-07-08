@@ -9,9 +9,10 @@ use crate::{
     font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
     metrics::TextMetrics,
-    render::Layer,
+    render::Component,
     terminal::{CellAttrs, Color, Screen, TerminalSize},
 };
+
 const ATLAS_PADDING: u32 = 1;
 const MAX_ATLAS_SIZE: u32 = 2048;
 const SHADER: &str = r#"
@@ -654,11 +655,6 @@ impl TextLayer {
         self.metrics.terminal_size(w, h)
     }
 
-    /// Forces a full vertex upload on the next `prepare` (called after resize).
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
     fn build_row_vertices(
         &self,
@@ -774,7 +770,7 @@ impl TextLayer {
     }
 }
 
-impl Layer for TextLayer {
+impl Component for TextLayer {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let screen = screen.expect("text layer requires screen");
         let (surf_w, surf_h) = gpu.surface_size();
@@ -857,6 +853,9 @@ impl Layer for TextLayer {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
+    }
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+        self.dirty = true;
     }
 }
 

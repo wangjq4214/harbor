@@ -7,7 +7,7 @@ use crate::{
         SCROLLBAR_WIDTH, TEXT_PADDING,
     },
     gpu::{self, ColoredVertex, GpuContext},
-    render::Layer,
+    render::Component,
     terminal::Screen,
 };
 
@@ -72,29 +72,45 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 /// Returns degenerate (all-zero) vertices when scrollbar should be hidden
 /// (alt screen or no scrollback history).
 fn build_vertices(screen: &Screen, surf_w: f32, surf_h: f32) -> [ColoredVertex; 6] {
+    // No scrollback or alt screen → no thumb to show.
     if screen.is_alt() || screen.normal.scroll_count == 0 {
         return [ColoredVertex::default(); 6];
     }
 
+    // Thumb height = visible_rows / total_lines × visible_area_height,
+    // clamped to a minimum so it never disappears entirely.
     let visible_area_height = surf_h - 2.0 * TEXT_PADDING;
     let total_scrollable = screen.normal.scroll_count + screen.normal.visible_rows;
     let thumb_height =
         (screen.normal.visible_rows as f32 / total_scrollable as f32) * visible_area_height;
     let thumb_height = thumb_height.max(SCROLLBAR_MIN_THUMB_HEIGHT);
 
+    // Thumb vertical position: view_offset as a ratio of total scrollback,
+    // inverted (top of track = newest history).  `t` goes 0 (top) → 1 (bottom).
     let track_height = visible_area_height - thumb_height;
     let t = screen.normal.view_offset as f32 / screen.normal.scroll_count as f32;
     let thumb_top = TEXT_PADDING + (1.0 - t.clamp(0.0, 1.0)) * track_height;
     let thumb_bottom = thumb_top + thumb_height;
 
+    // Thumb horizontal: right-aligned within `SCROLLBAR_MARGIN` from the edge.
     let left = surf_w - SCROLLBAR_MARGIN - SCROLLBAR_WIDTH;
     let right = surf_w - SCROLLBAR_MARGIN;
 
-    ColoredVertex::from_pixel_rect(left, thumb_top, right, thumb_bottom, SCROLLBAR_COLOR, surf_w, surf_h)
+    ColoredVertex::from_pixel_rect(
+        left,
+        thumb_top,
+        right,
+        thumb_bottom,
+        SCROLLBAR_COLOR,
+        surf_w,
+        surf_h,
+    )
 }
 
 /// Computes the pixel-space rect and corner radius for the uniform buffer.
 fn compute_uniform(screen: &Screen, surf_w: f32, surf_h: f32) -> ScrollbarUniform {
+    // Same early-exit and geometry as `build_vertices` — returns zeroed uniform
+    // when the scrollbar should be hidden.
     if screen.is_alt() || screen.normal.scroll_count == 0 {
         return ScrollbarUniform::zeroed();
     }
@@ -119,21 +135,31 @@ fn compute_uniform(screen: &Screen, surf_w: f32, surf_h: f32) -> ScrollbarUnifor
         _padding: [0.0; 3],
     }
 }
+// ── ScrollbarComponent ─────────────────────────────────────────────────────
 
-// ── ScrollbarLayer ───────────────────────────────────────────────────────────
-
-/// Draws a vertical scrollbar thumb overlay on top of all other content.
-/// Uses a uniform buffer for rounded-rect SDF in the fragment shader.
-pub(crate) struct ScrollbarLayer {
+/// Combined scrollbar rendering + visibility state machine.
+/// Replaces ScrollbarLayer in the component tree.
+pub(crate) struct ScrollbarComponent {
+    /// wgpu render pipeline for the scrollbar thumb.
     pipeline: wgpu::RenderPipeline,
+    /// Pre-allocated 6-vertex quad buffer (rewritten every `prepare`).
     vertex_buffer: wgpu::Buffer,
+    /// Uniform buffer for the rounded-rect SDF shader (rect + corner radius).
     uniform_buffer: wgpu::Buffer,
+    /// Bind group connecting the uniform buffer to the fragment shader.
     bind_group: wgpu::BindGroup,
+    /// Whether the scrollbar is currently rendered (controlled by mouse activity).
     visible: bool,
+    /// Mouse cursor is currently inside the window.
+    cursor_inside: bool,
+    /// Timestamp of the last mouse move or scroll wheel activity (for auto-hide timeout).
+    last_activity: std::time::Instant,
 }
 
-impl ScrollbarLayer {
-    /// Creates the scrollbar render pipeline and allocates vertex + uniform buffers.
+impl ScrollbarComponent {
+    /// Creates the scrollbar: allocates pipeline, vertex buffer, uniform buffer,
+    /// and bind group. Uploads initial (degenerate) vertices — the scrollbar
+    /// starts hidden until mouse activity triggers `show()`.
     pub(crate) fn new(gpu: &GpuContext, screen: &Screen) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let empty = [ColoredVertex::default(); 6];
@@ -141,11 +167,13 @@ impl ScrollbarLayer {
 
         let (surf_w, surf_h) = gpu.surface_size();
         let uniform = compute_uniform(screen, surf_w as f32, surf_h as f32);
-        let uniform_buffer = gpu.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scrollbar uniform buffer"),
-            contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let uniform_buffer = gpu
+            .device()
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scrollbar uniform buffer"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let bind_group = Self::create_bind_group(gpu.device(), &pipeline, &uniform_buffer);
 
@@ -160,6 +188,8 @@ impl ScrollbarLayer {
             uniform_buffer,
             bind_group,
             visible: false,
+            cursor_inside: false,
+            last_activity: std::time::Instant::now(),
         }
     }
 
@@ -169,22 +199,21 @@ impl ScrollbarLayer {
             source: wgpu::ShaderSource::Wgsl(SCROLLBAR_SHADER.into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("scrollbar bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: std::num::NonZero::new(
-                            std::mem::size_of::<ScrollbarUniform>() as u64,
-                        ),
-                    },
-                    count: None,
-                }],
-            });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scrollbar bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZero::new(
+                        std::mem::size_of::<ScrollbarUniform>() as u64,
+                    ),
+                },
+                count: None,
+            }],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scrollbar pipeline layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
@@ -234,33 +263,31 @@ impl ScrollbarLayer {
         })
     }
 
-    /// Sets visibility flag.
-    pub(crate) fn set_visible(&mut self, visible: bool) {
-        self.visible = visible;
+    /// Show the scrollbar and reset the activity timer.
+    fn show(&mut self) {
+        self.visible = true;
+        self.last_activity = std::time::Instant::now();
     }
 }
 
-impl Layer for ScrollbarLayer {
+impl Component for ScrollbarComponent {
+    /// Upload scrollbar vertices and uniform data for the current screen state.
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {
             return;
         };
         let (surf_w, surf_h) = gpu.surface_size();
 
-        // Upload vertices (6 verts, cheap).
         let vertices = build_vertices(screen, surf_w as f32, surf_h as f32);
         gpu.queue()
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-        // Upload uniform data for rounded-rect SDF.
         let uniform = compute_uniform(screen, surf_w as f32, surf_h as f32);
-        gpu.queue().write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::bytes_of(&uniform),
-        );
+        gpu.queue()
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// Draw the scrollbar thumb (no-op when hidden).
     fn draw(&self, pass: &mut wgpu::RenderPass) {
         if !self.visible {
             return;
@@ -269,6 +296,63 @@ impl Layer for ScrollbarLayer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..6, 0..1);
+    }
+
+    /// Handle cursor and mouse-wheel events for visibility control.
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::render::EventContext<'_>,
+    ) -> crate::render::EventResult {
+        match event {
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                self.cursor_inside = true;
+                self.show();
+                self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
+                ctx.window.request_redraw();
+                crate::render::EventResult::Handled
+            }
+            winit::event::WindowEvent::CursorMoved { .. } => {
+                self.last_activity = std::time::Instant::now();
+                if !self.visible && self.cursor_inside {
+                    self.show();
+                    self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
+                    ctx.window.request_redraw();
+                }
+                crate::render::EventResult::Handled
+            }
+            winit::event::WindowEvent::CursorLeft { .. } => {
+                self.cursor_inside = false;
+                crate::render::EventResult::Continue
+            }
+            winit::event::WindowEvent::MouseWheel { .. } => {
+                if !self.visible {
+                    self.visible = true;
+                    ctx.window.request_redraw();
+                }
+                self.last_activity = std::time::Instant::now();
+                crate::render::EventResult::Continue
+            }
+            _ => crate::render::EventResult::Continue,
+        }
+    }
+
+    /// Auto-hide the scrollbar after the inactivity timeout.
+    fn on_about_to_wait(
+        &mut self,
+        ctx: &mut crate::render::EventContext<'_>,
+    ) -> Option<std::time::Instant> {
+        if !self.visible {
+            return None;
+        }
+        let elapsed = self.last_activity.elapsed();
+        let hide_delay = std::time::Duration::from_millis(crate::config::SCROLLBAR_HIDE_DELAY_MS);
+        if elapsed >= hide_delay {
+            self.visible = false;
+            ctx.window.request_redraw();
+            return None;
+        }
+        Some(self.last_activity + hide_delay)
     }
 }
 
@@ -301,6 +385,9 @@ mod tests {
         let vertices = build_vertices(term.screen(), 800.0, 600.0);
         // At least one vertex should have a non-zero position.
         let has_non_degenerate = vertices.iter().any(|v| v.position != [0.0, 0.0]);
-        assert!(has_non_degenerate, "expected non-degenerate vertices with scrollback");
+        assert!(
+            has_non_degenerate,
+            "expected non-degenerate vertices with scrollback"
+        );
     }
 }

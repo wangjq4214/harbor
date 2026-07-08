@@ -2,7 +2,7 @@ use crate::{
     config::TEXT_PADDING,
     gpu::{self, ColoredVertex, GpuContext},
     metrics::TextMetrics,
-    render::Layer,
+    render::Component,
     terminal::CellAttrs,
     terminal::Screen,
 };
@@ -10,7 +10,7 @@ use crate::{
 // ── Decoration shader ─────────────────────────────────────────────────────────
 
 /// Simple untextured shader that renders per-vertex color quads (identical to
-/// BackgroundLayer's shader, duplicated per "no shared GPU objects" convention).
+/// BackgroundComponent's shader, duplicated per "no shared GPU objects" convention).
 const DECORATION_SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -101,12 +101,12 @@ pub(crate) fn build_strikethrough_vertices(
     verts
 }
 
-// ── DecorationLayer ───────────────────────────────────────────────────────────
+// ── DecorationComponent ─────────────────────────────────────────────────────────
 
 /// Draws underline and strikethrough decorations on top of text and cursor.
 /// Uses two separate vertex buffers (one per decoration type) because they
 /// need separate draw calls.
-pub(crate) struct DecorationLayer {
+pub(crate) struct DecorationComponent {
     pipeline: wgpu::RenderPipeline,
     underline_buffer: wgpu::Buffer,
     strikethrough_buffer: wgpu::Buffer,
@@ -121,7 +121,7 @@ pub(crate) struct DecorationLayer {
     strikethrough_thickness: f32,
 }
 
-impl DecorationLayer {
+impl DecorationComponent {
     /// Creates the decoration render pipeline and pre-allocates vertex buffers
     /// for the full grid (rows × cols × 6 vertices each).
     pub(crate) fn new(gpu: &GpuContext, screen: &Screen, metrics: TextMetrics) -> Self {
@@ -216,14 +216,9 @@ impl DecorationLayer {
             cache: None,
         })
     }
-
-    /// Forces a full vertex rebuild on the next `prepare` (called after resize).
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
 }
 
-impl Layer for DecorationLayer {
+impl Component for DecorationComponent {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {
             return;
@@ -378,6 +373,10 @@ impl Layer for DecorationLayer {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
+    }
+
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+        self.dirty = true;
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     config::TEXT_PADDING,
     gpu::{self, ColoredVertex, GpuContext},
-    render::Layer,
+    render::Component,
     terminal::{CellAttrs, Color, Screen},
 };
 
@@ -34,7 +34,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Draws a solid-color rectangle behind each cell with a non-default background.
 /// Rendered before the text layer so glyphs appear on top.
-pub(crate) struct BackgroundLayer {
+pub(crate) struct BackgroundComponent {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     dirty: bool,
@@ -44,7 +44,7 @@ pub(crate) struct BackgroundLayer {
     line_height: f32,
 }
 
-impl BackgroundLayer {
+impl BackgroundComponent {
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices).
     pub(crate) fn new(
@@ -124,11 +124,6 @@ impl BackgroundLayer {
         })
     }
 
-    /// Forces a full vertex rebuild on the next `prepare` (called after resize).
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
     /// Builds the 6 × cols vertices for one row, using `cell_width` and `line_height`
     /// for positioning. Cells with `bg == Color::Default` (and not inverse) produce
     /// degenerate quads skipped by the rasterizer. Inverse cells use `fg` for the
@@ -185,7 +180,7 @@ impl BackgroundLayer {
     }
 }
 
-impl Layer for BackgroundLayer {
+impl Component for BackgroundComponent {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {
             return;
@@ -259,6 +254,10 @@ impl Layer for BackgroundLayer {
             pass.draw(0..vertex_count, 0..1);
         }
     }
+
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+        self.dirty = true;
+    }
 }
 
 #[cfg(test)]
@@ -279,7 +278,7 @@ mod tests {
         assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
 
         let verts =
-            BackgroundLayer::build_background_row_vertices(10.0, 20.0, 0, screen, 800.0, 600.0);
+            BackgroundComponent::build_background_row_vertices(10.0, 20.0, 0, screen, 800.0, 600.0);
 
         let expected = Color::Named(1).to_rgba();
         assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");
