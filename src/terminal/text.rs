@@ -555,11 +555,10 @@ impl GpuGlyphAtlas {
 }
 
 /// Computes the glyph color for a terminal cell based on its attributes.
-/// Bold overrides to white; inverse swaps fg↔bg.
+/// Inverse swaps fg↔bg. Bold is rendered via the glyph's rasterised weight;
+/// it does not change the foreground color.
 pub(crate) fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
-    if attrs.contains(CellAttrs::BOLD) {
-        [1.0, 1.0, 1.0, 1.0]
-    } else if attrs.contains(CellAttrs::INVERSE) {
+    if attrs.contains(CellAttrs::INVERSE) {
         if bg == Color::Default {
             [1.0, 1.0, 1.0, 1.0]
         } else {
@@ -1137,8 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_color_bold_returns_white() {
-        let white = [1.0, 1.0, 1.0, 1.0];
+    fn glyph_color_bold_uses_fg_color() {
         assert_eq!(
             glyph_color(Color::Named(1), Color::Default, CellAttrs::default()),
             Color::Named(1).to_rgba(),
@@ -1146,10 +1144,11 @@ mod tests {
         );
         let mut bold = CellAttrs::default();
         bold.set(CellAttrs::BOLD);
+        let fg = Color::Named(2);
         assert_eq!(
-            glyph_color(Color::Default, Color::Default, bold),
-            white,
-            "bold cell returns white regardless of fg"
+            glyph_color(fg, Color::Default, bold),
+            fg.to_rgba(),
+            "bold cell uses fg color, not white"
         );
     }
 
@@ -1179,15 +1178,17 @@ mod tests {
     }
 
     #[test]
-    fn glyph_color_bold_overrides_inverse() {
-        let white = [1.0, 1.0, 1.0, 1.0];
+    fn glyph_color_bold_with_inverse() {
+        let fg = Color::Named(2);
+        let bg = Color::Named(4);
         let mut attrs = CellAttrs::default();
         attrs.set(CellAttrs::BOLD);
         attrs.set(CellAttrs::INVERSE);
+        // Bold no longer overrides; inverse swaps fg↔bg.
         assert_eq!(
-            glyph_color(Color::Named(1), Color::Named(4), attrs),
-            white,
-            "bold+inverse: bold wins"
+            glyph_color(fg, bg, attrs),
+            bg.to_rgba(),
+            "bold+inverse: inverse applies (bg wins)"
         );
     }
 }
