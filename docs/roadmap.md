@@ -50,7 +50,7 @@ Core milestones:
 
 ## v0.2: Terminal Core (Parser + State + SGR)
 
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (177 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (184 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
 ### Done
 
@@ -70,7 +70,7 @@ Core milestones:
 
 **Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled.
 
-**Tests.** 177 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
+**Tests.** 184 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
 
 ### To Do
 
@@ -143,7 +143,7 @@ Core milestones:
 
 **Font Metrics**
 - [ ] Box drawing characters (`│` `─` `┌` …) aligned for seamless joins
-- [ ] Stable underline position
+- [x] Stable underline position (font-metric derived via `primary_horizontal_line_metrics`)
 
 **Unicode**
 - [ ] Zero-width combining marks (render base char + combine, or preserve grid integrity)
@@ -162,7 +162,7 @@ Core milestones:
 
 ## v0.4: Interactive Features
 
-> **Status: 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering done. Selection, clipboard, IME, mouse protocol, keybindings, hyperlinks pending.**
+> **Status: 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering + mouse-drag selection + Ctrl+C/V clipboard done. Double-click/triple-click, IME, mouse protocol, keybindings, hyperlinks pending.**
 
 ### Done
 
@@ -178,6 +178,10 @@ Core milestones:
 
 **Resize Scrollback Handling.** Resize preserves top-left visible rectangle. Scrollback is discarded on column-count change (standard behavior). `view_offset` reset on resize.
 
+**Selection.** Mouse-driven text selection: click to set anchor, drag to extend range, release to keep selection active. Selection highlight rendered as a semi-transparent blue overlay via dedicated GPU pipeline. Click without drag clears the selection. `selected_text()` extracts plain text across multiple rows, skipping wide-continuation cells and trimming trailing whitespace. Tests cover single-row, multi-row, wide-character, empty, and whitespace edge cases.
+
+**Clipboard.** System clipboard integration via `arboard` crate. `Ctrl+C` copies the current selection to the clipboard (returns `Continue` when no selection exists, so the control character reaches the shell). `Ctrl+V` pastes clipboard contents into the PTY input. Clipboard handle degrades gracefully when unavailable (e.g. headless environment) with a logged warning.
+
 ### To Do
 
 **Scrollback**
@@ -189,23 +193,23 @@ Core milestones:
 - [ ] Home / End to top/bottom of scrollback
 - [x] Limit maximum scrollback lines (1000 hard-coded)
 - [ ] Configurable scrollback line count
-- [ ] Copy text from scrollback
+- [x] Copy text from scrollback (via selection + clipboard)
 
 **Selection**
-- [ ] Mouse drag selection
-- [ ] Click to set selection start, drag to update range
-- [ ] Keep selection after mouse release
-- [ ] Select text across multiple lines
+- [x] Mouse drag selection
+- [x] Click to set selection start, drag to update range
+- [x] Keep selection after mouse release
+- [x] Select text across multiple lines
 - [ ] Double-click to select word
 - [ ] Triple-click to select line
-- [ ] Clear selection
-- [ ] Render selection highlight
+- [x] Clear selection (click without drag)
+- [x] Render selection highlight
 - [ ] Auto-scroll while selecting
 
 **Clipboard**
-- [ ] Integrate system clipboard
-- [ ] Ctrl+Shift+C copies selected text
-- [ ] Ctrl+Shift+V pastes
+- [x] Integrate system clipboard
+- [x] Ctrl+C copies selected text
+- [x] Ctrl+V pastes
 - [ ] Command+C / Command+V on macOS
 - [ ] Bracketed paste mode
 - [ ] Handle newlines during paste
@@ -227,12 +231,12 @@ Core milestones:
 
 **Keyboard**
 - [ ] Add keybinding data structure
-- [ ] Ctrl+C copies when selection exists, sends SIGINT otherwise
+- [x] Ctrl+C copies when selection exists, sends SIGINT otherwise
 - [ ] Ctrl+Shift+C always copies
-- [ ] Ctrl+Shift+V pastes
+- [x] Ctrl+V pastes
 - [ ] Ctrl+Plus / Ctrl+Minus / Ctrl+0 for font zoom
 - [ ] F11 toggles fullscreen
-- [ ] Escape behaves correctly (mapped to `0x1b`)
+- [x] Escape behaves correctly (mapped to `0x1b`)
 - [ ] F1-F12, Home/End/PageUp/PageDown mappings correct
 
 **Hyperlink**
@@ -242,8 +246,8 @@ Core milestones:
 - [ ] Support OSC 8 hyperlink, optional
 
 **Acceptance Criteria**
-- [ ] Text selection works
-- [ ] Copy/paste works
+- [x] Text selection works
+- [x] Copy/paste works
 - [ ] Chinese IME works
 - [ ] Mouse wheel scrolls scrollback
 - [ ] Mouse works basically in vim/tmux
@@ -419,14 +423,14 @@ Core milestones:
 
 ## Milestone Overview
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                                      |
-| ------- | ------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                                          |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (177), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; 177 tests pass; parser hardening + runtime verification pending                       |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) + viewport offset done; combining marks, box drawing pending |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering done; selection, clipboard, IME, mouse protocol pending                                |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + ring-buffer scrollback + surface/process handling done; latency measurement, benchmarking, memory opt pending    |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                               |
+| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                                          |
+| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                                              |
+| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (184), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; 184 tests pass; parser hardening + runtime verification pending                           |
+| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) + viewport offset done; combining marks, box drawing pending     |
+| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering + mouse-drag selection + Ctrl+C/V clipboard done; IME, mouse protocol, keybindings pending |
+| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + ring-buffer scrollback + surface/process handling done; latency measurement, benchmarking, memory opt pending        |
+| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                                   |
 ---
 
 > Build a reliable terminal first. Turn it into a development environment later.
