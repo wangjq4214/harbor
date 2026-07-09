@@ -326,11 +326,12 @@ impl Component for Scrollbar {
                 crate::render::EventResult::Continue
             }
             winit::event::WindowEvent::MouseWheel { .. } => {
+                self.last_activity = std::time::Instant::now();
                 if !self.visible {
-                    self.visible = true;
+                    self.show();
+                    self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
                     ctx.window.request_redraw();
                 }
-                self.last_activity = std::time::Instant::now();
                 crate::render::EventResult::Continue
             }
             _ => crate::render::EventResult::Continue,
