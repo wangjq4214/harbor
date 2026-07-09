@@ -47,14 +47,10 @@ impl Terminal {
 
     /// Feeds raw PTY bytes through the streaming parser.
     ///
-    /// This is the production ingestion path. Do not decode bytes with
-    /// `String::from_utf8_lossy` first: doing so would lose split UTF-8 state and could render
-    /// replacement characters before the next PTY chunk arrives.
+    /// This is the low-level parser ingestion path — no viewport side effects.
+    /// Callers that want "scroll to bottom on new output" should use
+    /// [`process_output`](Self::process_output) instead.
     pub(crate) fn put_bytes(&mut self, bytes: &[u8]) {
-        // Snap back to live view when new output arrives (only if not in alt screen).
-        if !self.normal.is_alt() {
-            self.normal.scroll_to_bottom();
-        }
         let mut remaining = bytes;
         while !remaining.is_empty() {
             let result = {
@@ -71,6 +67,20 @@ impl Terminal {
                 }
             }
         }
+    }
+
+    /// Feeds raw PTY bytes into the terminal parser (render refresh handled by caller).
+    pub(crate) fn process_output(&mut self, output: &[u8]) {
+        if output.is_empty() {
+            tracing::trace!("ignored empty pty output chunk");
+            return;
+        }
+        // Snap back to live bottom on new output unless in alt screen.
+        if !self.normal.is_alt() {
+            self.normal.scroll_to_bottom();
+        }
+        // Feed bytes into the terminal parser (updates screen cells and cursor).
+        self.put_bytes(output);
     }
 
     /// Returns the renderable screen snapshot owned by this terminal.
@@ -91,20 +101,6 @@ impl Terminal {
     #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
         self.screen().row_text(row)
-    }
-
-    /// Feeds raw PTY bytes into the terminal parser (render refresh handled by caller).
-    pub(crate) fn process_output(&mut self, output: &[u8]) {
-        if output.is_empty() {
-            tracing::trace!("ignored empty pty output chunk");
-            return;
-        }
-        // Snap back to live bottom on new output unless in alt screen.
-        if !self.normal.is_alt() {
-            self.normal.scroll_to_bottom();
-        }
-        // Feed bytes into the terminal parser (updates screen cells and cursor).
-        self.put_bytes(output);
     }
 
     /// Resizes the terminal grid when the window surface changes.
@@ -991,5 +987,54 @@ mod tests {
         let row1 = terminal.row_text(1);
         assert_eq!(&row1[..2], "  ");
         assert_eq!(&row1[2..4], "YY");
+    }
+
+    // ── viewport snap contract (step 5.4 from code review) ──────────
+    //
+    // `put_bytes` must NOT snap the viewport; `process_output` must.
+
+    #[test]
+    fn put_bytes_does_not_snap_viewport() {
+        let mut terminal = Terminal::new(5, 10);
+        // Write enough lines to create scrollback.
+        for _ in 0..6 {
+            terminal.process_output(b"line\n");
+        }
+        // Scroll up, confirming we're scrolled back.
+        terminal.scroll_viewport_up(2);
+        assert!(
+            terminal.screen().view_offset() > 0,
+            "expected scrollback before put_bytes"
+        );
+        let offset_before = terminal.screen().view_offset();
+
+        // `put_bytes` must NOT snap the viewport.
+        terminal.put_bytes(b"data");
+        assert_eq!(
+            terminal.screen().view_offset(),
+            offset_before,
+            "put_bytes must not snap viewport to bottom"
+        );
+    }
+
+    #[test]
+    fn process_output_snaps_viewport() {
+        let mut terminal = Terminal::new(5, 10);
+        // Write enough lines to create scrollback.
+        for _ in 0..6 {
+            terminal.process_output(b"line\n");
+        }
+        // Scroll up, then call process_output — must snap to bottom.
+        terminal.scroll_viewport_up(3);
+        assert!(
+            terminal.screen().view_offset() > 0,
+            "expected scrollback before process_output"
+        );
+        terminal.process_output(b"more data\n");
+        assert_eq!(
+            terminal.screen().view_offset(),
+            0,
+            "process_output must snap viewport to bottom"
+        );
     }
 }
