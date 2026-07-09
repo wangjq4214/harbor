@@ -236,10 +236,10 @@ impl Selection {
                 let Some(text) = self.selected_text(ctx.terminal.screen()) else {
                     return Some(EventResult::Continue);
                 };
-                if let Some(clipboard) = self.clipboard.as_mut() {
-                    if let Err(e) = clipboard.set_text(text) {
-                        tracing::warn!(error = %e, "failed to set clipboard text");
-                    }
+                if let Some(clipboard) = self.clipboard.as_mut()
+                    && let Err(e) = clipboard.set_text(text)
+                {
+                    tracing::warn!(error = %e, "failed to set clipboard text");
                 }
                 Some(EventResult::Handled)
             }
