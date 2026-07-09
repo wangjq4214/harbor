@@ -82,6 +82,21 @@ impl NormalBuf {
         self.max_scrollback
     }
 
+    // ── row/col accessors (for write_char, avoiding manual index math) ──
+
+    /// Returns a mutable reference to the cell at `(display_row, col)`
+    /// in the **live** view (no scrollback offset).
+    pub(crate) fn live_cell_mut(&mut self, display_row: usize, col: usize) -> &mut Cell {
+        self.cell_mut(display_row, col)
+    }
+
+    /// Returns a reference to the cell at `(display_row, col)`
+    /// in the **live** view (no scrollback offset).
+    pub(crate) fn live_cell(&self, display_row: usize, col: usize) -> &Cell {
+        let ring_row = self.display_to_ring(display_row);
+        &self.cells[ring_row * self.cols + col]
+    }
+
     // ── linear-index helpers (for Screen's ring-buffer operations) ──
 
     /// Returns a mutable reference to a cell by linear index.

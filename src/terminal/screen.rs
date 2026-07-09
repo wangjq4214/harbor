@@ -157,6 +157,17 @@ impl Default for Cell {
     }
 }
 
+impl Cell {
+    /// Sets all fields atomically (ensures no field is forgotten on add).
+    pub(crate) fn set(&mut self, ch: char, fg: Color, bg: Color, attrs: CellAttrs) {
+        self.ch = ch;
+        self.wide_continuation = false;
+        self.fg = fg;
+        self.bg = bg;
+        self.attrs = attrs;
+    }
+}
+
 /// Saved terminal state for cursor save/restore (DECSC/DECRC). Captures the cursor position
 /// and SGR attributes so the screen can be restored after a screen-altering operation.
 #[derive(Debug, Clone)]
@@ -574,7 +585,7 @@ impl Screen {
 
         let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
         let ring_row = index / self.normal.cols();
-        let old_ch = self.normal.cell_linear(index).ch;
+        let old_ch = self.normal.live_cell(self.cursor_y, self.cursor_x).ch;
 
         tracing::trace!(
             ch = format_args!("{ch:?}"),
@@ -590,12 +601,8 @@ impl Screen {
         if width == 2 && self.cursor_x + 1 < self.normal.cols() {
             self.clear_cell_for_write(index + 1);
         }
-        let cell = self.normal.cell_linear_mut(index);
-        cell.ch = ch;
-        cell.wide_continuation = false;
-        cell.fg = self.current_fg;
-        cell.bg = self.current_bg;
-        cell.attrs = self.current_attrs;
+        let cell = self.normal.live_cell_mut(self.cursor_y, self.cursor_x);
+        cell.set(ch, self.current_fg, self.current_bg, self.current_attrs);
         if width == 2 && self.cursor_x + 1 < self.normal.cols() {
             *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
