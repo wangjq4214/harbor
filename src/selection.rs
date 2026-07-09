@@ -2,8 +2,9 @@ use crate::{
     config::{SELECTION_COLOR, TEXT_PADDING},
     gpu::{self, ColoredVertex, GpuContext},
     render::{Component, EventContext, EventResult},
-    terminal::Screen,
+    terminal::{Screen, SelectionBounds},
 };
+use arboard::Clipboard;
 
 // ── Selection shader ────────────────────────────────────────────────────────
 
@@ -75,6 +76,8 @@ pub(crate) struct Selection {
     line_height: f32,
     /// Whether vertex buffer needs re-upload.
     dirty: bool,
+    /// System clipboard handle (None when clipboard is unavailable, e.g. headless).
+    clipboard: Option<Clipboard>,
 }
 
 impl Selection {
@@ -92,6 +95,13 @@ impl Selection {
             cell_width,
             line_height,
             dirty: false,
+            clipboard: {
+                let cb = Clipboard::new();
+                if cb.is_err() {
+                    tracing::warn!("clipboard unavailable; copy/paste will be disabled");
+                }
+                cb.ok()
+            },
         }
     }
 
@@ -193,6 +203,124 @@ impl Selection {
         }
         verts
     }
+
+    /// Returns the currently selected text, or `None` when there is no active selection.
+    fn selected_text(&self, screen: &Screen) -> Option<String> {
+        let sel = self.selection?;
+        let (start_row, start_col, end_row, end_col) = sel.normalized();
+        let text = screen.selected_text(SelectionBounds {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        });
+        if text.is_empty() { None } else { Some(text) }
+    }
+
+    /// Intercepts Ctrl+C (copy selection) and Ctrl+V (paste). Returns
+    /// `None` when the event is not a keyboard shortcut we handle.
+    fn try_handle_keyboard(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut EventContext<'_>,
+    ) -> Option<EventResult> {
+        let winit::event::WindowEvent::KeyboardInput { event: kbd, .. } = event else {
+            return None;
+        };
+        if kbd.state != winit::event::ElementState::Pressed || !ctx.modifiers.control_key() {
+            return None;
+        }
+
+        match &kbd.logical_key {
+            winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
+                let Some(text) = self.selected_text(ctx.terminal.screen()) else {
+                    return Some(EventResult::Continue);
+                };
+                if let Some(clipboard) = self.clipboard.as_mut() {
+                    if let Err(e) = clipboard.set_text(text) {
+                        tracing::warn!(error = %e, "failed to set clipboard text");
+                    }
+                }
+                Some(EventResult::Handled)
+            }
+            winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
+                if let Some(clipboard) = self.clipboard.as_mut() {
+                    match clipboard.get_text() {
+                        Ok(text) => ctx.pty.write(text.as_bytes()),
+                        Err(e) => tracing::warn!(error = %e, "failed to read clipboard text"),
+                    }
+                }
+                // Always Handled — never send \x16 to the PTY.
+                Some(EventResult::Handled)
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_cursor_moved(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<f64>,
+        ctx: &mut EventContext<'_>,
+    ) -> EventResult {
+        self.last_cursor_pos = Some((position.x, position.y));
+
+        if !self.dragging {
+            return EventResult::Continue;
+        }
+
+        let screen = ctx.terminal.screen();
+        let (row, col) = self.pixel_to_cell(position.x, position.y, screen.rows(), screen.cols());
+        if let Some(ref mut sel) = self.selection
+            && sel.cursor != (row, col)
+        {
+            sel.cursor = (row, col);
+            self.dirty = true;
+            ctx.window.request_redraw();
+        }
+        EventResult::Handled
+    }
+
+    fn handle_mouse_input(
+        &mut self,
+        state: winit::event::ElementState,
+        button: winit::event::MouseButton,
+        ctx: &mut EventContext<'_>,
+    ) -> EventResult {
+        if button != winit::event::MouseButton::Left {
+            return EventResult::Continue;
+        }
+
+        match state {
+            winit::event::ElementState::Pressed => {
+                if let Some((x, y)) = self.last_cursor_pos {
+                    let screen = ctx.terminal.screen();
+                    let (row, col) = self.pixel_to_cell(x, y, screen.rows(), screen.cols());
+                    self.selection = Some(SelectionRange {
+                        anchor: (row, col),
+                        cursor: (row, col),
+                    });
+                    self.dragging = true;
+                    self.dirty = true;
+                    ctx.window.request_redraw();
+                }
+                EventResult::Handled
+            }
+            winit::event::ElementState::Released => {
+                if self.dragging {
+                    self.dragging = false;
+                    // Click without drag → clear selection.
+                    if let Some(sel) = self.selection
+                        && sel.anchor == sel.cursor
+                    {
+                        self.selection = None;
+                        self.dirty = true;
+                        ctx.window.request_redraw();
+                    }
+                }
+                EventResult::Handled
+            }
+        }
+    }
 }
 
 impl Component for Selection {
@@ -236,73 +364,26 @@ impl Component for Selection {
         event: &winit::event::WindowEvent,
         ctx: &mut EventContext<'_>,
     ) -> EventResult {
-        // In alt-screen mode (vim, less, etc.), let the application handle all mouse events.
-        // Cancel any in-flight drag so state doesn't leak past the alt-screen boundary.
+        // Ctrl+C/V clipboard — before alt-screen check so paste works in
+        // vim/less and copy works from scrollback.
+        if let Some(result) = self.try_handle_keyboard(event, ctx) {
+            return result;
+        }
+
+        // In alt-screen mode, let the terminal application handle all mouse events.
+        // Cancel any in-flight drag so state doesn't leak past the boundary.
         if ctx.terminal.is_alt_screen() {
-            if self.dragging {
-                self.dragging = false;
-            }
+            self.dragging = false;
             return EventResult::Continue;
         }
 
         match event {
             winit::event::WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor_pos = Some((position.x, position.y));
-
-                if self.dragging {
-                    let screen = ctx.terminal.screen();
-                    let (row, col) =
-                        self.pixel_to_cell(position.x, position.y, screen.rows(), screen.cols());
-                    if let Some(ref mut sel) = self.selection
-                        && sel.cursor != (row, col)
-                    {
-                        sel.cursor = (row, col);
-                        self.dirty = true;
-                        ctx.window.request_redraw();
-                    }
-                    return EventResult::Handled;
-                }
-                EventResult::Continue
+                self.handle_cursor_moved(*position, ctx)
             }
-
             winit::event::WindowEvent::MouseInput { state, button, .. } => {
-                if *button != winit::event::MouseButton::Left {
-                    return EventResult::Continue;
-                }
-
-                match state {
-                    winit::event::ElementState::Pressed => {
-                        if let Some((x, y)) = self.last_cursor_pos {
-                            let screen = ctx.terminal.screen();
-                            let (row, col) = self.pixel_to_cell(x, y, screen.rows(), screen.cols());
-                            self.selection = Some(SelectionRange {
-                                anchor: (row, col),
-                                cursor: (row, col),
-                            });
-                            self.dragging = true;
-                            self.dirty = true;
-                            ctx.window.request_redraw();
-                        }
-                        EventResult::Handled
-                    }
-
-                    winit::event::ElementState::Released => {
-                        if self.dragging {
-                            self.dragging = false;
-                            // Click without drag → clear selection.
-                            if let Some(sel) = self.selection
-                                && sel.anchor == sel.cursor
-                            {
-                                self.selection = None;
-                                self.dirty = true;
-                                ctx.window.request_redraw();
-                            }
-                        }
-                        EventResult::Handled
-                    }
-                }
+                self.handle_mouse_input(*state, *button, ctx)
             }
-
             _ => EventResult::Continue,
         }
     }

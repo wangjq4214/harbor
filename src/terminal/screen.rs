@@ -176,6 +176,15 @@ pub(crate) enum CursorShape {
     Bar,
 }
 
+/// Display-coordinate bounds of a text selection, row-major, inclusive.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SelectionBounds {
+    pub(crate) start_row: usize,
+    pub(crate) start_col: usize,
+    pub(crate) end_row: usize,
+    pub(crate) end_col: usize,
+}
+
 /// Visible terminal screen state rendered by the text pipeline.
 ///
 /// `Screen` owns only display state: cell contents, dimensions, and cursor position. It does not
@@ -306,6 +315,46 @@ impl Screen {
 
     pub(crate) fn cell(&self, row: usize, col: usize) -> &Cell {
         self.normal.cell(row, col)
+    }
+
+    /// Extracts the selected text for the given display-coordinate bounds.
+    pub(crate) fn selected_text(&self, bounds: SelectionBounds) -> String {
+        let SelectionBounds {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        } = bounds;
+        let cols = self.cols();
+        let mut buf = String::new();
+
+        for row in start_row..=end_row {
+            let col_start = if row == start_row { start_col } else { 0 };
+            let col_end = if row == end_row {
+                end_col
+            } else {
+                cols.saturating_sub(1)
+            };
+
+            // Build this row's text separately so we can trim trailing
+            // whitespace without affecting previous rows or newline separators.
+            let row_len_before = buf.len();
+            for col in col_start..=col_end {
+                let cell = self.cell(row, col);
+                if cell.wide_continuation {
+                    continue;
+                }
+                buf.push(cell.ch);
+            }
+            // Trim trailing whitespace from this row only.
+            let row_text = &buf[row_len_before..];
+            let trim_len = row_text.trim_end().len();
+            buf.truncate(row_len_before + trim_len);
+            if row < end_row {
+                buf.push('\n');
+            }
+        }
+        buf
     }
 
     /// Applies SGR (Select Graphic Rendition) parameters to the current pen state.
@@ -1719,5 +1768,88 @@ mod tests {
         screen.restore_cursor();
         assert_eq!(screen.cursor_x, 3, "original x preserved");
         assert_eq!(screen.cursor_y, 1, "original y preserved");
+    }
+
+    // ── selected_text ──────────────────────────────────────────────
+
+    #[test]
+    fn selected_text_single_row() {
+        let mut screen = Screen::new(3, 11);
+        // Fill row 1 with "hello world" (some chars repeated to fill)
+        let text: Vec<char> = "hello world".chars().collect();
+        for (col, ch) in text.iter().enumerate() {
+            screen.normal.cell_mut(1, col).ch = *ch;
+        }
+        let result = screen.selected_text(SelectionBounds {
+            start_row: 1,
+            start_col: 0,
+            end_row: 1,
+            end_col: 10,
+        });
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn selected_text_multi_row() {
+        let mut screen = Screen::new(3, 4);
+        let rows = ["ab", "cd", "ef"];
+        for (r, line) in rows.iter().enumerate() {
+            for (c, ch) in line.chars().enumerate() {
+                screen.normal.cell_mut(r, c).ch = ch;
+            }
+        }
+        // Select rows 0-1, full row 0 and partial row 1 (only col 0)
+        let result = screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+        });
+        assert_eq!(result, "ab\nc");
+    }
+
+    #[test]
+    fn selected_text_skips_wide_continuation() {
+        let mut screen = Screen::new(1, 4);
+        // Simulate a double-width character at col 0: set ch at 0, continuation at 1.
+        screen.normal.cell_mut(0, 0).ch = 'A';
+        screen.normal.cell_mut(0, 1).wide_continuation = true;
+        screen.normal.cell_mut(0, 2).ch = 'B';
+        screen.normal.cell_mut(0, 3).ch = 'C';
+        let result = screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 3,
+        });
+        assert_eq!(result, "ABC");
+    }
+
+    #[test]
+    fn selected_text_trims_trailing_whitespace() {
+        let mut screen = Screen::new(2, 5);
+        screen.normal.cell_mut(0, 0).ch = 'a';
+        screen.normal.cell_mut(0, 1).ch = ' ';
+        screen.normal.cell_mut(0, 2).ch = ' ';
+        screen.normal.cell_mut(1, 0).ch = 'b';
+        let result = screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 1,
+        });
+        assert_eq!(result, "a\nb");
+    }
+
+    #[test]
+    fn selected_text_empty_selection() {
+        let screen = Screen::new(3, 10);
+        let result = screen.selected_text(SelectionBounds {
+            start_row: 1,
+            start_col: 2,
+            end_row: 1,
+            end_col: 1,
+        });
+        assert_eq!(result, "");
     }
 }

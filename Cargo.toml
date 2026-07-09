@@ -26,7 +26,10 @@ winit = "0.30"
 # logger
 tracing = "0.1"
 tracing-appender = "0.2"
- tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = {
+  version = "0.3",
+  features = ["env-filter", "fmt", "json"]
+}
 
 # vertex casting
 bytemuck = { version = "1.21", features = ["derive"] }
@@ -34,6 +37,9 @@ bytemuck = { version = "1.21", features = ["derive"] }
 # system font rasterization
 fontdb = "0.23.0"
 fontdue = "0.9"
+
+# clipboard
+arboard = "3.6"
 
 [target."cfg(windows)".dependencies]
 windows = {
