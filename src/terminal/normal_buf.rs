@@ -10,25 +10,24 @@ use crate::terminal::screen::Cell;
 /// exposed row(s).
 #[derive(Debug)]
 pub(crate) struct NormalBuf {
-    /// Ring buffer: `total_rows * cols` cells.  `pub(crate)` so sibling
-    /// Screen can do bulk copy_within/fill for partial scroll regions.
-    pub(crate) cells: Vec<Cell>,
+    /// Ring buffer: `total_rows * cols` cells — accessible via helper methods.
+    cells: Vec<Cell>,
     /// Ring capacity in rows = `max_scrollback + visible_rows`.
-    pub(crate) total_rows: usize,
+    total_rows: usize,
     /// Viewport height (visible row count).
-    pub(crate) visible_rows: usize,
+    visible_rows: usize,
     /// Number of columns.
-    pub(crate) cols: usize,
+    cols: usize,
     /// Ring index of the first visible display row.
-    pub(crate) visible_start: usize,
+    visible_start: usize,
     /// Number of saved scrollback rows (0 ..= max_scrollback).
-    pub(crate) scroll_count: usize,
+    scroll_count: usize,
     /// View offset from live bottom: 0 = bottom (live), >0 = scrolled back.
-    pub(crate) view_offset: usize,
+    view_offset: usize,
     /// Dirty flags indexed by *display* row.
-    pub(crate) dirty_rows: Vec<bool>,
+    dirty_rows: Vec<bool>,
     /// Maximum scrollback row count (hard-coded for now).
-    pub(crate) max_scrollback: usize,
+    max_scrollback: usize,
 }
 
 impl NormalBuf {
@@ -59,6 +58,116 @@ impl NormalBuf {
         self.cols
     }
 
+    pub(crate) fn view_offset(&self) -> usize {
+        self.view_offset
+    }
+
+    pub(crate) fn scroll_count(&self) -> usize {
+        self.scroll_count
+    }
+
+    pub(crate) fn is_scrolled_back(&self) -> bool {
+        self.view_offset > 0
+    }
+
+    pub(crate) fn total_rows(&self) -> usize {
+        self.total_rows
+    }
+
+    pub(crate) fn visible_start(&self) -> usize {
+        self.visible_start
+    }
+
+    pub(crate) fn max_scrollback(&self) -> usize {
+        self.max_scrollback
+    }
+
+    // ── linear-index helpers (for Screen's ring-buffer operations) ──
+
+    /// Returns a mutable reference to a cell by linear index.
+    ///
+    /// Screen uses this for direct per-cell writes after computing the
+    /// ring-buffer index itself.
+    pub(crate) fn cell_linear_mut(&mut self, index: usize) -> &mut Cell {
+        &mut self.cells[index]
+    }
+
+    /// Returns a reference to a cell by linear index.
+    pub(crate) fn cell_linear(&self, index: usize) -> &Cell {
+        &self.cells[index]
+    }
+
+    /// Fills a contiguous range of cells (linear indices) with defaults.
+    pub(crate) fn fill_linear_range(&mut self, start: usize, end: usize) {
+        self.cells[start..end].fill(Cell::default());
+    }
+
+    /// Copies cells within the ring buffer by linear index range.
+    pub(crate) fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
+        self.cells.copy_within(src_start..src_end, dst);
+    }
+
+    /// Copies cells within the ring buffer — delegates to `Vec::copy_within`.
+    ///
+    /// Accepts any `RangeBounds<usize>` so both inline ranges and Range variables work.
+    pub(crate) fn copy_cells_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        src: R,
+        dst: usize,
+    ) {
+        self.cells.copy_within(src, dst);
+    }
+
+    // ── alt-screen helpers ─────────────────────────────────────────
+
+    /// Take ownership of the cells buffer (used when entering alt screen).
+    pub(crate) fn take_cells(&mut self) -> Vec<Cell> {
+        std::mem::take(&mut self.cells)
+    }
+
+    /// Restore a previously saved cells buffer (used when exiting alt screen).
+    pub(crate) fn restore_cells(&mut self, cells: Vec<Cell>) {
+        self.cells = cells;
+    }
+
+    /// Take ownership of the dirty-rows buffer (used when entering alt screen).
+    pub(crate) fn take_dirty_rows(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.dirty_rows)
+    }
+
+    /// Restore a previously saved dirty-rows buffer (used when exiting alt screen).
+    pub(crate) fn restore_dirty_rows(&mut self, dirty_rows: Vec<bool>) {
+        self.dirty_rows = dirty_rows;
+    }
+
+    /// Reinitialize the buffer for an alternate screen session.
+    pub(crate) fn init_alt_buffer(&mut self) {
+        self.cells = vec![Cell::default(); self.total_rows * self.cols];
+        self.dirty_rows = vec![true; self.visible_rows];
+        self.visible_start = self.max_scrollback;
+        self.scroll_count = 0;
+        self.view_offset = 0;
+    }
+
+    /// Set the ring index of the first visible display row (used by alt-screen restore).
+    pub(crate) fn set_visible_start(&mut self, value: usize) {
+        self.visible_start = value;
+    }
+
+    /// Set the number of saved scrollback rows (used by alt-screen restore).
+    pub(crate) fn set_scroll_count(&mut self, value: usize) {
+        self.scroll_count = value;
+    }
+    /// Returns the text content of a display row as a string.
+    pub(crate) fn row_text(&self, row: usize) -> String {
+        assert!(row < self.visible_rows, "terminal row out of bounds");
+        let ring_row = self.display_to_ring(row);
+        let start = ring_row * self.cols;
+        self.cells[start..start + self.cols]
+            .iter()
+            .map(|cell| cell.ch)
+            .collect()
+    }
     /// Maps a display row (0-based visible row) to its ring-buffer index.
     ///
     /// Caller must ensure `view_offset == 0` (live view) when calling this

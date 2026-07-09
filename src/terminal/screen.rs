@@ -192,7 +192,7 @@ pub(crate) struct SelectionBounds {
 #[derive(Debug)]
 pub(crate) struct Screen {
     /// Ring-buffer scrollback storage.
-    pub(crate) normal: NormalBuf,
+    normal: NormalBuf,
     /// Whether the alternate screen is active.
     in_alt: bool,
     /// 0-based column within the current row.
@@ -269,12 +269,27 @@ impl Screen {
         self.normal.cols()
     }
 
+    /// Number of saved scrollback rows (for scrollbar rendering).
+    pub(crate) fn scroll_count(&self) -> usize {
+        self.normal.scroll_count()
+    }
+
+    /// View offset from live bottom (for scrollbar rendering).
+    pub(crate) fn view_offset(&self) -> usize {
+        self.normal.view_offset()
+    }
+
+    /// Visible row count (for scrollbar rendering).
+    pub(crate) fn visible_rows(&self) -> usize {
+        self.normal.rows()
+    }
+
     pub(crate) fn cursor_x(&self) -> usize {
         self.cursor_x
     }
 
     pub(crate) fn cursor_y(&self) -> usize {
-        if self.normal.view_offset > 0 {
+        if self.normal.view_offset() > 0 {
             // Force cursor off-screen when viewing scrollback.
             self.normal.rows()
         } else {
@@ -501,13 +516,13 @@ impl Screen {
 
     #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
-        assert!(row < self.normal.visible_rows, "terminal row out of bounds");
-        let ring_row = self.normal.display_to_ring(row);
-        let start = ring_row * self.normal.cols;
-        self.normal.cells[start..start + self.normal.cols]
-            .iter()
-            .map(|cell| cell.ch)
-            .collect()
+        self.normal.row_text(row)
+    }
+
+    /// Direct cell mutation for test setup.
+    #[cfg(test)]
+    pub(crate) fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
+        self.normal.cell_mut(row, col)
     }
 
     // ── semantic cursor / display operations ────────────────────────
@@ -522,10 +537,7 @@ impl Screen {
     }
 
     pub(crate) fn cursor_down(&mut self, n: usize) {
-        self.cursor_y = self
-            .cursor_y
-            .saturating_add(n)
-            .min(self.normal.visible_rows - 1);
+        self.cursor_y = self.cursor_y.saturating_add(n).min(self.normal.rows() - 1);
     }
 
     pub(crate) fn cursor_left(&mut self, n: usize) {
@@ -533,14 +545,14 @@ impl Screen {
     }
 
     pub(crate) fn cursor_right(&mut self, n: usize) {
-        self.cursor_x = self.cursor_x.saturating_add(n).min(self.normal.cols - 1);
+        self.cursor_x = self.cursor_x.saturating_add(n).min(self.normal.cols() - 1);
     }
 
     /// Expands horizontal tab into spaces up to the next 8-column tab stop or row end.
     pub(crate) fn horizontal_tab(&mut self) {
         let target = ((self.cursor_x / 8) + 1)
             .saturating_mul(8)
-            .min(self.normal.cols);
+            .min(self.normal.cols());
         let spaces = target.saturating_sub(self.cursor_x);
         for _ in 0..spaces {
             self.write_char(' ');
@@ -555,14 +567,14 @@ impl Screen {
             return;
         }
 
-        if width == 2 && self.cursor_x + 1 >= self.normal.cols {
+        if width == 2 && self.cursor_x + 1 >= self.normal.cols() {
             self.newline();
         }
         self.mark_row_dirty(self.cursor_y);
 
-        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols + self.cursor_x;
-        let ring_row = index / self.normal.cols;
-        let old_ch = self.normal.cells[index].ch;
+        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
+        let ring_row = index / self.normal.cols();
+        let old_ch = self.normal.cell_linear(index).ch;
 
         tracing::trace!(
             ch = format_args!("{ch:?}"),
@@ -575,17 +587,17 @@ impl Screen {
         );
 
         self.clear_cell_for_write(index);
-        if width == 2 && self.cursor_x + 1 < self.normal.cols {
+        if width == 2 && self.cursor_x + 1 < self.normal.cols() {
             self.clear_cell_for_write(index + 1);
         }
-
-        self.normal.cells[index].ch = ch;
-        self.normal.cells[index].wide_continuation = false;
-        self.normal.cells[index].fg = self.current_fg;
-        self.normal.cells[index].bg = self.current_bg;
-        self.normal.cells[index].attrs = self.current_attrs;
-        if width == 2 && self.cursor_x + 1 < self.normal.cols {
-            self.normal.cells[index + 1] = Cell {
+        let cell = self.normal.cell_linear_mut(index);
+        cell.ch = ch;
+        cell.wide_continuation = false;
+        cell.fg = self.current_fg;
+        cell.bg = self.current_bg;
+        cell.attrs = self.current_attrs;
+        if width == 2 && self.cursor_x + 1 < self.normal.cols() {
+            *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
                 wide_continuation: true,
                 fg: self.current_fg,
@@ -595,7 +607,7 @@ impl Screen {
         }
 
         self.cursor_x += width;
-        if self.cursor_x >= self.normal.cols {
+        if self.cursor_x >= self.normal.cols() {
             self.cursor_x = 0;
             self.newline();
         }
@@ -611,12 +623,12 @@ impl Screen {
     /// 3. Otherwise → clear only the target cell.
     fn clear_cell_for_write(&mut self, index: usize) {
         debug_assert!(
-            index > 0 || !self.normal.cells[index].wide_continuation,
+            index > 0 || !self.normal.cell_linear(index).wide_continuation,
             "wide_continuation at column 0 is invalid"
         );
-        let old_ch = self.normal.cells[index].ch;
-        let row = index / self.normal.cols;
-        let col = index % self.normal.cols;
+        let old_ch = self.normal.cell_linear(index).ch;
+        let row = index / self.normal.cols();
+        let col = index % self.normal.cols();
 
         tracing::trace!(
             index,
@@ -626,18 +638,18 @@ impl Screen {
             "clear_cell_for_write"
         );
 
-        if self.normal.cells[index].wide_continuation {
-            self.normal.cells[index - 1] = Cell::default();
-            self.normal.cells[index] = Cell::default();
+        if self.normal.cell_linear(index).wide_continuation {
+            *self.normal.cell_linear_mut(index - 1) = Cell::default();
+            *self.normal.cell_linear_mut(index) = Cell::default();
             return;
         }
 
-        if UnicodeWidthChar::width(self.normal.cells[index].ch).unwrap_or(0) == 2
-            && index % self.normal.cols + 1 < self.normal.cols
+        if UnicodeWidthChar::width(self.normal.cell_linear(index).ch).unwrap_or(0) == 2
+            && index % self.normal.cols() + 1 < self.normal.cols()
         {
-            self.normal.cells[index + 1] = Cell::default();
+            *self.normal.cell_linear_mut(index + 1) = Cell::default();
         }
-        self.normal.cells[index] = Cell::default();
+        *self.normal.cell_linear_mut(index) = Cell::default();
     }
 
     /// Moves to the start of the next row, scrolling the registered region when already
@@ -651,7 +663,7 @@ impl Screen {
             } else {
                 self.cursor_y += 1;
             }
-        } else if self.cursor_y + 1 < self.normal.visible_rows {
+        } else if self.cursor_y + 1 < self.normal.rows() {
             self.cursor_y += 1;
         }
     }
@@ -665,18 +677,16 @@ impl Screen {
 
         // Step past the continuation half of a wide glyph so the cursor
         // lands at the start column rather than sitting mid-glyph.
-        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols + self.cursor_x;
-        if self.normal.cells[index].wide_continuation && self.cursor_x > 0 {
+        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
+        if self.normal.cell_linear(index).wide_continuation && self.cursor_x > 0 {
             self.cursor_x -= 1;
         }
     }
 
     /// Positions the cursor from 1-based ANSI coordinates, clamped to the visible grid.
     pub(crate) fn set_cursor(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.cursor_y = row_1_based
-            .saturating_sub(1)
-            .min(self.normal.visible_rows - 1);
-        self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols - 1);
+        self.cursor_y = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
+        self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
     }
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
@@ -685,10 +695,10 @@ impl Screen {
             0 => {
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start = ring_row * self.normal.cols + self.cursor_x;
-                self.normal.cells[start..ring_row * self.normal.cols + self.normal.cols]
-                    .fill(Cell::default());
-                for row in self.cursor_y + 1..self.normal.visible_rows {
+                let start = ring_row * self.normal.cols() + self.cursor_x;
+                self.normal
+                    .fill_linear_range(start, ring_row * self.normal.cols() + self.normal.cols());
+                for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     self.normal.fill_row(row);
                 }
@@ -700,8 +710,9 @@ impl Screen {
                 }
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let end = ring_row * self.normal.cols + self.cursor_x + 1;
-                self.normal.cells[ring_row * self.normal.cols..end].fill(Cell::default());
+                let end = ring_row * self.normal.cols() + self.cursor_x + 1;
+                self.normal
+                    .fill_linear_range(ring_row * self.normal.cols(), end);
             }
             2 => {
                 self.normal.fill_all();
@@ -716,14 +727,14 @@ impl Screen {
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols;
+        let start = ring_row * self.normal.cols();
         let cursor = start + self.cursor_x;
-        let end = ring_row * self.normal.cols + self.normal.cols;
+        let end = ring_row * self.normal.cols() + self.normal.cols();
         self.mark_row_dirty(self.cursor_y);
         match mode {
-            0 => self.normal.cells[cursor..end].fill(Cell::default()),
-            1 => self.normal.cells[start..=cursor].fill(Cell::default()),
-            2 => self.normal.cells[start..end].fill(Cell::default()),
+            0 => self.normal.fill_linear_range(cursor, end),
+            1 => self.normal.fill_linear_range(start, cursor + 1),
+            2 => self.normal.fill_linear_range(start, end),
             _ => {}
         }
     }
@@ -736,9 +747,9 @@ impl Screen {
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols + self.cursor_x;
-        let end = (start + n).min(ring_row * self.normal.cols + self.normal.cols);
-        self.normal.cells[start..end].fill(Cell::default());
+        let start = ring_row * self.normal.cols() + self.cursor_x;
+        let end = (start + n).min(ring_row * self.normal.cols() + self.normal.cols());
+        self.normal.fill_linear_range(start, end);
     }
 
     /// Clears all visible cells and homes the cursor.
@@ -757,8 +768,7 @@ impl Screen {
             cursor_y = self.cursor_y,
             scroll_top = self.scroll_top,
             scroll_bottom = self.scroll_bottom,
-            full_screen =
-                (self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1),
+            full_screen = (self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1),
             "reverse_index"
         );
 
@@ -767,41 +777,41 @@ impl Screen {
             for row in self.scroll_top..=self.scroll_bottom {
                 self.mark_row_dirty(row);
             }
-            if self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1 {
+            if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
                 // Full-screen reverse: use scroll_up_full_screen in reverse direction.
                 // Shift down by 1: blank top, everything moves down.
-                let tr = self.normal.total_rows;
-                let vis = self.normal.visible_start;
-                let c = self.normal.cols;
+                let tr = self.normal.total_rows();
+                let vis = self.normal.visible_start();
+                let c = self.normal.cols();
                 let src_start = ((vis + self.scroll_top) % tr) * c;
                 let src_end = ((vis + self.scroll_bottom) % tr) * c;
                 let dst = ((vis + self.scroll_top + 1) % tr) * c;
                 if src_start <= src_end {
-                    self.normal.cells.copy_within(src_start..src_end, dst);
+                    self.normal.copy_linear_range(src_start, src_end, dst);
                 } else {
                     let first_part = src_start..tr * c;
                     let second_part = 0..src_end;
                     let first_len = first_part.len();
-                    self.normal.cells.copy_within(first_part, dst);
-                    self.normal.cells.copy_within(second_part, dst + first_len);
+                    self.normal.copy_cells_within(first_part, dst);
+                    self.normal.copy_cells_within(second_part, dst + first_len);
                 }
                 self.normal.fill_row(self.scroll_top);
             } else {
                 // Partial region: ring-aware copy_within down.
-                let tr = self.normal.total_rows;
-                let vis = self.normal.visible_start;
-                let c = self.normal.cols;
+                let tr = self.normal.total_rows();
+                let vis = self.normal.visible_start();
+                let c = self.normal.cols();
                 let src_start = ((vis + self.scroll_top) % tr) * c;
                 let src_end = ((vis + self.scroll_bottom) % tr) * c;
                 let dst = ((vis + self.scroll_top + 1) % tr) * c;
                 if src_start <= src_end {
-                    self.normal.cells.copy_within(src_start..src_end, dst);
+                    self.normal.copy_linear_range(src_start, src_end, dst);
                 } else {
                     let first_part = src_start..tr * c;
                     let second_part = 0..src_end;
                     let first_len = first_part.len();
-                    self.normal.cells.copy_within(first_part, dst);
-                    self.normal.cells.copy_within(second_part, dst + first_len);
+                    self.normal.copy_cells_within(first_part, dst);
+                    self.normal.copy_cells_within(second_part, dst + first_len);
                 }
                 self.normal.fill_row(self.scroll_top);
             }
@@ -817,34 +827,33 @@ impl Screen {
         tracing::debug!(
             scroll_top = self.scroll_top,
             scroll_bottom = self.scroll_bottom,
-            visible_rows = self.normal.visible_rows,
-            full_screen =
-                (self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1),
+            visible_rows = self.normal.rows(),
+            full_screen = (self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1),
             "scroll_region_up_one"
         );
 
         for row in self.scroll_top..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
-        if self.scroll_top == 0 && self.scroll_bottom == self.normal.visible_rows - 1 {
+        if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
             // Full-screen: O(1) ring-buffer advance.
             self.normal.scroll_up_full_screen(1);
         } else {
             // Partial scroll region: ring-aware copy_within.
-            let tr = self.normal.total_rows;
-            let vis = self.normal.visible_start;
-            let c = self.normal.cols;
+            let tr = self.normal.total_rows();
+            let vis = self.normal.visible_start();
+            let c = self.normal.cols();
             let src_start = ((vis + self.scroll_top + 1) % tr) * c;
             let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
             let dst = ((vis + self.scroll_top) % tr) * c;
             if src_start <= src_end {
-                self.normal.cells.copy_within(src_start..src_end, dst);
+                self.normal.copy_linear_range(src_start, src_end, dst);
             } else {
                 let first_len = tr * c - src_start;
                 let first_part = src_start..tr * c;
                 let second_part = 0..src_end;
-                self.normal.cells.copy_within(first_part, dst);
-                self.normal.cells.copy_within(second_part, dst + first_len);
+                self.normal.copy_cells_within(first_part, dst);
+                self.normal.copy_cells_within(second_part, dst + first_len);
             }
             self.normal.fill_row(self.scroll_bottom);
         }
@@ -860,12 +869,12 @@ impl Screen {
     pub(crate) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
         let top = if top == 0 { 1 } else { top };
         let bottom = if bottom == 0 {
-            self.normal.visible_rows
+            self.normal.rows()
         } else {
             bottom
         };
-        let top = top.max(1).min(self.normal.visible_rows);
-        let bottom = bottom.min(self.normal.visible_rows);
+        let top = top.max(1).min(self.normal.rows());
+        let bottom = bottom.min(self.normal.rows());
         if top >= bottom {
             return;
         }
@@ -882,22 +891,23 @@ impl Screen {
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let col = self.cursor_x;
-        if col >= self.normal.cols {
+        if col >= self.normal.cols() {
             return;
         }
-        let n = n.min(self.normal.cols - col);
+        let n = n.min(self.normal.cols() - col);
         if n == 0 {
             return;
         }
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let row_start = ring_row * self.normal.cols;
+        let row_start = ring_row * self.normal.cols();
         // Shift cells in [col, cols - n) right by n.
         let src_start = row_start + col;
-        let src_end = row_start + self.normal.cols - n;
+        let src_end = row_start + self.normal.cols() - n;
         let dst = row_start + col + n;
-        self.normal.cells.copy_within(src_start..src_end, dst);
+        self.normal.copy_linear_range(src_start, src_end, dst);
         // Fill vacated cells with blanks.
-        self.normal.cells[row_start + col..row_start + col + n].fill(Cell::default());
+        self.normal
+            .fill_linear_range(row_start + col, row_start + col + n);
     }
 
     /// Implements CSI `P` (DCH): delete `n` characters at the cursor, shifting remaining
@@ -907,20 +917,20 @@ impl Screen {
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let col = self.cursor_x;
-        if col >= self.normal.cols {
+        if col >= self.normal.cols() {
             return;
         }
-        let n = n.min(self.normal.cols - col);
+        let n = n.min(self.normal.cols() - col);
         if n == 0 {
             return;
         }
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols + col + n;
-        let end = ring_row * self.normal.cols + self.normal.cols;
-        let dst = ring_row * self.normal.cols + col;
-        self.normal.cells.copy_within(start..end, dst);
-        let blank_start = ring_row * self.normal.cols + self.normal.cols - n;
-        self.normal.cells[blank_start..blank_start + n].fill(Cell::default());
+        let start = ring_row * self.normal.cols() + col + n;
+        let end = ring_row * self.normal.cols() + self.normal.cols();
+        let dst = ring_row * self.normal.cols() + col;
+        self.normal.copy_linear_range(start, end, dst);
+        let blank_start = ring_row * self.normal.cols() + self.normal.cols() - n;
+        self.normal.fill_linear_range(blank_start, blank_start + n);
     }
     pub(crate) fn insert_lines(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
@@ -942,18 +952,18 @@ impl Screen {
             return;
         }
         // Shift rows [cursor_y .. scroll_bottom - n + 1] down by n (ring-aware).
-        let tr = self.normal.total_rows;
-        let vis = self.normal.visible_start;
-        let c = self.normal.cols;
+        let tr = self.normal.total_rows();
+        let vis = self.normal.visible_start();
+        let c = self.normal.cols();
         let src_start = ((vis + self.cursor_y) % tr) * c;
         let src_end = ((vis + self.scroll_bottom - n + 1) % tr) * c;
         let dst = ((vis + self.cursor_y + n) % tr) * c;
         if src_start <= src_end {
-            self.normal.cells.copy_within(src_start..src_end, dst);
+            self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
             let first_len = tr * c - src_start;
-            self.normal.cells.copy_within(src_start..tr * c, dst);
-            self.normal.cells.copy_within(0..src_end, dst + first_len);
+            self.normal.copy_linear_range(src_start, tr * c, dst);
+            self.normal.copy_linear_range(0, src_end, dst + first_len);
         }
         for i in 0..n {
             self.normal.fill_row(self.cursor_y + i);
@@ -981,20 +991,20 @@ impl Screen {
             return;
         }
         // Shift rows [cursor_y + n ..= scroll_bottom] up by n (ring-aware).
-        let tr = self.normal.total_rows;
-        let vis = self.normal.visible_start;
-        let c = self.normal.cols;
+        let tr = self.normal.total_rows();
+        let vis = self.normal.visible_start();
+        let c = self.normal.cols();
         let src_start = ((vis + self.cursor_y + n) % tr) * c;
         let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
         let dst = ((vis + self.cursor_y) % tr) * c;
         if src_start <= src_end {
-            self.normal.cells.copy_within(src_start..src_end, dst);
+            self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
             let first_len = tr * c - src_start;
             let first_part = src_start..tr * c;
             let second_part = 0..src_end;
-            self.normal.cells.copy_within(first_part, dst);
-            self.normal.cells.copy_within(second_part, dst + first_len);
+            self.normal.copy_cells_within(first_part, dst);
+            self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
             self.normal.fill_row(self.scroll_bottom - i);
@@ -1022,21 +1032,21 @@ impl Screen {
         }
         // Shift rows [scroll_top + n ..= scroll_bottom] up by n.
         // Full-screen case handled via scroll_up_full_screen; here handle partial.
-        let tr = self.normal.total_rows;
-        let vis = self.normal.visible_start;
-        let c = self.normal.cols;
+        let tr = self.normal.total_rows();
+        let vis = self.normal.visible_start();
+        let c = self.normal.cols();
         let src_start = ((vis + self.scroll_top + n) % tr) * c;
         let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
         let dst = ((vis + self.scroll_top) % tr) * c;
         // Handle wrap-around for copy_within.
         if src_start <= src_end {
-            self.normal.cells.copy_within(src_start..src_end, dst);
+            self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
             let first_part = ((vis + self.scroll_top + n) % tr) * c..tr * c;
             let second_part = 0..src_end;
             let first_len = first_part.len();
-            self.normal.cells.copy_within(first_part, dst);
-            self.normal.cells.copy_within(second_part, dst + first_len);
+            self.normal.copy_cells_within(first_part, dst);
+            self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
             self.normal.fill_row(self.scroll_bottom - i);
@@ -1062,20 +1072,20 @@ impl Screen {
             return;
         }
         // Shift rows [scroll_top ..= scroll_bottom - n] down by n.
-        let tr = self.normal.total_rows;
-        let vis = self.normal.visible_start;
-        let c = self.normal.cols;
+        let tr = self.normal.total_rows();
+        let vis = self.normal.visible_start();
+        let c = self.normal.cols();
         let src_start = ((vis + self.scroll_top) % tr) * c;
         let src_end = ((vis + self.scroll_bottom - n + 1) % tr) * c;
         let dst = ((vis + self.scroll_top + n) % tr) * c;
         if src_start <= src_end {
-            self.normal.cells.copy_within(src_start..src_end, dst);
+            self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
             let first_len = tr * c - src_start;
             let first_part = src_start..tr * c;
             let second_part = 0..src_end;
-            self.normal.cells.copy_within(first_part, dst);
-            self.normal.cells.copy_within(second_part, dst + first_len);
+            self.normal.copy_cells_within(first_part, dst);
+            self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
             self.normal.fill_row(self.scroll_top + i);
@@ -1128,8 +1138,8 @@ impl Screen {
             return;
         }
         let state = AltSavedState {
-            cells: std::mem::take(&mut self.normal.cells),
-            dirty_rows: std::mem::take(&mut self.normal.dirty_rows),
+            cells: self.normal.take_cells(),
+            dirty_rows: self.normal.take_dirty_rows(),
             cursor_x: self.cursor_x,
             cursor_y: self.cursor_y,
             current_fg: self.current_fg,
@@ -1140,24 +1150,20 @@ impl Screen {
             cursor_shape: self.cursor_shape,
             cursor_blink: self.cursor_blink,
             saved_cursor: self.saved_cursor.take(),
-            visible_start: self.normal.visible_start,
-            scroll_count: self.normal.scroll_count,
+            visible_start: self.normal.visible_start(),
+            scroll_count: self.normal.scroll_count(),
         };
-        self.normal.cells = vec![Cell::default(); self.normal.total_rows * self.normal.cols];
-        self.normal.dirty_rows = vec![true; self.normal.visible_rows];
-        self.normal.visible_start = self.normal.max_scrollback;
-        self.normal.scroll_count = 0;
-        self.normal.view_offset = 0;
+        self.normal.init_alt_buffer();
         self.alt_saved = Some(state);
         self.in_alt = true;
     }
 
     pub(crate) fn exit_alt(&mut self) {
         if let Some(state) = self.alt_saved.take() {
-            self.normal.cells = state.cells;
-            self.normal.dirty_rows = state.dirty_rows;
-            self.normal.visible_start = state.visible_start;
-            self.normal.scroll_count = state.scroll_count;
+            self.normal.restore_cells(state.cells);
+            self.normal.restore_dirty_rows(state.dirty_rows);
+            self.normal.set_visible_start(state.visible_start);
+            self.normal.set_scroll_count(state.scroll_count);
             self.cursor_x = state.cursor_x;
             self.cursor_y = state.cursor_y;
             self.current_fg = state.current_fg;
@@ -1471,7 +1477,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         assert_eq!(screen.row_text(0), "aaaa");
@@ -1494,7 +1500,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         screen.cursor_y = 0; // above scroll_top
@@ -1512,7 +1518,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         assert_eq!(screen.row_text(1), "bbbb");
@@ -1533,7 +1539,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         screen.cursor_y = 3; // below scroll_bottom
@@ -1551,7 +1557,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         assert_eq!(screen.row_text(0), "aaaa");
@@ -1573,7 +1579,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
 
@@ -1589,7 +1595,7 @@ mod tests {
         let mut screen = Screen::new(3, 4);
         for row in 0..3 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         screen.scroll_up_region(100);
@@ -1673,7 +1679,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         // Cursor at scroll_bottom, call newline.
@@ -1695,7 +1701,7 @@ mod tests {
         screen.scroll_bottom = 2;
         for row in 0..4 {
             for col in 0..4 {
-                screen.normal.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+                screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
             }
         }
         // Cursor at scroll_top, call reverse_index.
@@ -1778,7 +1784,7 @@ mod tests {
         // Fill row 1 with "hello world" (some chars repeated to fill)
         let text: Vec<char> = "hello world".chars().collect();
         for (col, ch) in text.iter().enumerate() {
-            screen.normal.cell_mut(1, col).ch = *ch;
+            screen.cell_mut(1, col).ch = *ch;
         }
         let result = screen.selected_text(SelectionBounds {
             start_row: 1,
@@ -1795,7 +1801,7 @@ mod tests {
         let rows = ["ab", "cd", "ef"];
         for (r, line) in rows.iter().enumerate() {
             for (c, ch) in line.chars().enumerate() {
-                screen.normal.cell_mut(r, c).ch = ch;
+                screen.cell_mut(r, c).ch = ch;
             }
         }
         // Select rows 0-1, full row 0 and partial row 1 (only col 0)
@@ -1812,10 +1818,10 @@ mod tests {
     fn selected_text_skips_wide_continuation() {
         let mut screen = Screen::new(1, 4);
         // Simulate a double-width character at col 0: set ch at 0, continuation at 1.
-        screen.normal.cell_mut(0, 0).ch = 'A';
-        screen.normal.cell_mut(0, 1).wide_continuation = true;
-        screen.normal.cell_mut(0, 2).ch = 'B';
-        screen.normal.cell_mut(0, 3).ch = 'C';
+        screen.cell_mut(0, 0).ch = 'A';
+        screen.cell_mut(0, 1).wide_continuation = true;
+        screen.cell_mut(0, 2).ch = 'B';
+        screen.cell_mut(0, 3).ch = 'C';
         let result = screen.selected_text(SelectionBounds {
             start_row: 0,
             start_col: 0,
@@ -1828,10 +1834,10 @@ mod tests {
     #[test]
     fn selected_text_trims_trailing_whitespace() {
         let mut screen = Screen::new(2, 5);
-        screen.normal.cell_mut(0, 0).ch = 'a';
-        screen.normal.cell_mut(0, 1).ch = ' ';
-        screen.normal.cell_mut(0, 2).ch = ' ';
-        screen.normal.cell_mut(1, 0).ch = 'b';
+        screen.cell_mut(0, 0).ch = 'a';
+        screen.cell_mut(0, 1).ch = ' ';
+        screen.cell_mut(0, 2).ch = ' ';
+        screen.cell_mut(1, 0).ch = 'b';
         let result = screen.selected_text(SelectionBounds {
             start_row: 0,
             start_col: 0,

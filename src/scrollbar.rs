@@ -73,22 +73,22 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 /// (alt screen or no scrollback history).
 fn build_vertices(screen: &Screen, surf_w: f32, surf_h: f32) -> [ColoredVertex; 6] {
     // No scrollback or alt screen → no thumb to show.
-    if screen.is_alt() || screen.normal.scroll_count == 0 {
+    if screen.is_alt() || screen.scroll_count() == 0 {
         return [ColoredVertex::default(); 6];
     }
 
     // Thumb height = visible_rows / total_lines × visible_area_height,
     // clamped to a minimum so it never disappears entirely.
     let visible_area_height = surf_h - 2.0 * TEXT_PADDING;
-    let total_scrollable = screen.normal.scroll_count + screen.normal.visible_rows;
+    let total_scrollable = screen.scroll_count() + screen.visible_rows();
     let thumb_height =
-        (screen.normal.visible_rows as f32 / total_scrollable as f32) * visible_area_height;
+        (screen.visible_rows() as f32 / total_scrollable as f32) * visible_area_height;
     let thumb_height = thumb_height.max(SCROLLBAR_MIN_THUMB_HEIGHT);
 
     // Thumb vertical position: view_offset as a ratio of total scrollback,
     // inverted (top of track = newest history).  `t` goes 0 (top) → 1 (bottom).
     let track_height = visible_area_height - thumb_height;
-    let t = screen.normal.view_offset as f32 / screen.normal.scroll_count as f32;
+    let t = screen.view_offset() as f32 / screen.scroll_count() as f32;
     let thumb_top = TEXT_PADDING + (1.0 - t.clamp(0.0, 1.0)) * track_height;
     let thumb_bottom = thumb_top + thumb_height;
 
@@ -111,18 +111,18 @@ fn build_vertices(screen: &Screen, surf_w: f32, surf_h: f32) -> [ColoredVertex; 
 fn compute_uniform(screen: &Screen, surf_w: f32, surf_h: f32) -> ScrollbarUniform {
     // Same early-exit and geometry as `build_vertices` — returns zeroed uniform
     // when the scrollbar should be hidden.
-    if screen.is_alt() || screen.normal.scroll_count == 0 {
+    if screen.is_alt() || screen.scroll_count() == 0 {
         return ScrollbarUniform::zeroed();
     }
 
     let visible_area_height = surf_h - 2.0 * TEXT_PADDING;
-    let total_scrollable = screen.normal.scroll_count + screen.normal.visible_rows;
+    let total_scrollable = screen.scroll_count() + screen.visible_rows();
     let thumb_height =
-        (screen.normal.visible_rows as f32 / total_scrollable as f32) * visible_area_height;
+        (screen.visible_rows() as f32 / total_scrollable as f32) * visible_area_height;
     let thumb_height = thumb_height.max(SCROLLBAR_MIN_THUMB_HEIGHT);
 
     let track_height = visible_area_height - thumb_height;
-    let t = screen.normal.view_offset as f32 / screen.normal.scroll_count as f32;
+    let t = screen.view_offset() as f32 / screen.scroll_count() as f32;
     let thumb_top = TEXT_PADDING + (1.0 - t.clamp(0.0, 1.0)) * track_height;
     let thumb_bottom = thumb_top + thumb_height;
 
