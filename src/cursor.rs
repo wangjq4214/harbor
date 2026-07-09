@@ -31,6 +31,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 // ── Cursor ──────────────────────────────────────────────────────
 
+/// Snapshot of cursor state used to detect position/shape changes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LastCursorState {
+    visible: bool,
+    x: usize,
+    y: usize,
+    shape: CursorShape,
+}
+
 /// Combined cursor rendering + blink state machine.
 /// Replaces CursorLayer and CursorBlink in the component tree.
 pub(crate) struct Cursor {
@@ -52,9 +61,8 @@ pub(crate) struct Cursor {
     line_height: f32,
     /// Current cursor shape (block / underline / bar), set by DECSCUSR.
     shape: CursorShape,
-    /// Snapshot from the last upload: `(visible, cursor_x, cursor_y, shape)`.
-    /// Used to skip uploads when nothing changed.
-    last_cursor: Option<(bool, usize, usize, CursorShape)>,
+    /// Snapshot from the last upload, used to skip uploads when nothing changed.
+    last_cursor: Option<LastCursorState>,
     /// Blink timer start (set to `Instant::now` on construction).
     blink_start: Instant,
     /// Visibility state from the last committed frame, used to detect blink toggles.
@@ -133,17 +141,24 @@ impl Cursor {
     fn commit_frame(&mut self) {
         self.last_rendered_visible = self.blink_visible();
     }
-
-    /// Updates cursor visibility + shape from the screen; sets `dirty` when
-    /// the position or shape changed.
     fn set_visible(&mut self, visible: bool, screen: &Screen) {
         self.visible = visible;
         self.shape = screen.cursor_shape();
         let current =
             if visible && screen.cursor_y() < screen.rows() && screen.cursor_x() < screen.cols() {
-                (visible, screen.cursor_x(), screen.cursor_y(), self.shape)
+                LastCursorState {
+                    visible,
+                    x: screen.cursor_x(),
+                    y: screen.cursor_y(),
+                    shape: self.shape,
+                }
             } else {
-                (false, 0, 0, self.shape)
+                LastCursorState {
+                    visible: false,
+                    x: 0,
+                    y: 0,
+                    shape: self.shape,
+                }
             };
         if self.last_cursor != Some(current) {
             self.dirty = true;
@@ -214,12 +229,12 @@ impl Component for Cursor {
             gpu.queue()
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;
-            self.last_cursor = Some((
-                self.visible,
-                screen.cursor_x(),
-                screen.cursor_y(),
-                self.shape,
-            ));
+            self.last_cursor = Some(LastCursorState {
+                visible: self.visible,
+                x: screen.cursor_x(),
+                y: screen.cursor_y(),
+                shape: self.shape,
+            });
         } else {
             self.vertex_count = 0;
             self.last_cursor = None;
