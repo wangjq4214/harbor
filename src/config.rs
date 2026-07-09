@@ -33,6 +33,9 @@ pub(crate) const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Selection highlight color (semi-transparent blue).
+pub(crate) const SELECTION_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.4];
+
 // ── Cursor ───────────────────────────────────────────────────────────────────
 
 /// Cursor blink interval in milliseconds (on/off each half-cycle).

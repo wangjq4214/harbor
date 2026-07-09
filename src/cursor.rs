@@ -29,11 +29,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-// ── CursorComponent ──────────────────────────────────────────────────────
+// ── Cursor ──────────────────────────────────────────────────────
 
 /// Combined cursor rendering + blink state machine.
 /// Replaces CursorLayer and CursorBlink in the component tree.
-pub(crate) struct CursorComponent {
+pub(crate) struct Cursor {
     /// wgpu render pipeline for the solid-color cursor quad.
     pipeline: wgpu::RenderPipeline,
     /// Pre-allocated 6-vertex quad buffer (rewritten when cursor position or
@@ -61,7 +61,7 @@ pub(crate) struct CursorComponent {
     last_rendered_visible: bool,
 }
 
-impl CursorComponent {
+impl Cursor {
     /// Creates the cursor: pipeline, vertex buffer, and blink timer at `Instant::now`.
     pub(crate) fn new(gpu: &GpuContext, metrics: TextMetrics) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
@@ -151,7 +151,7 @@ impl CursorComponent {
     }
 }
 
-impl Component for CursorComponent {
+impl Component for Cursor {
     /// If dirty, computes cell-aligned vertex quad for the current cursor
     /// shape and uploads it.
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {

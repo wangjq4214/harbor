@@ -8,15 +8,16 @@ use winit::{
 };
 
 use crate::{
-    background::BackgroundComponent,
-    cursor::CursorComponent,
-    decoration::DecorationComponent,
+    background::Background,
+    cursor::Cursor,
+    decoration::Decoration,
     font::{FontBook, load_system_fonts},
     gpu::GpuContext,
     metrics::TextMetrics,
     pty::Pty,
     render::{Component, EventContext, EventResult},
-    scrollbar::ScrollbarComponent,
+    scrollbar::Scrollbar,
+    selection::Selection,
     terminal::TextLayer,
     terminal::{Screen, Terminal, TerminalSize},
 };
@@ -56,20 +57,21 @@ enum AppError {
     Pty(#[source] anyhow::Error),
 }
 
-
 /// Container for all UI components. Owns GPU resources and delegates
 /// render / event calls to each component in z-order.
 pub(crate) struct UiRoot {
     /// Solid-color background behind each non-default cell.
-    background: BackgroundComponent,
+    background: Background,
     /// Text rendering: glyph atlas + vertex buffer for every grid cell.
     text: TextLayer,
     /// Underline / strikethrough decoration overlay.
-    decoration: DecorationComponent,
+    decoration: Decoration,
+    /// Text selection: mouse-drag highlight overlay.
+    selection: Selection,
     /// Cursor rendering + blink timer.
-    cursor: CursorComponent,
+    cursor: Cursor,
     /// Scrollbar: visibility state machine + GPU thumb.
-    scrollbar: ScrollbarComponent,
+    scrollbar: Scrollbar,
 }
 
 impl UiRoot {
@@ -83,11 +85,12 @@ impl UiRoot {
         metrics: TextMetrics,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            background: BackgroundComponent::new(gpu, screen, metrics.cell_width, metrics.line_height),
+            background: Background::new(gpu, screen, metrics.cell_width, metrics.line_height),
             text: TextLayer::new(gpu, _fonts, metrics, screen)?,
-            decoration: DecorationComponent::new(gpu, screen, metrics),
-            cursor: CursorComponent::new(gpu, metrics),
-            scrollbar: ScrollbarComponent::new(gpu, screen),
+            decoration: Decoration::new(gpu, screen, metrics),
+            selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
+            cursor: Cursor::new(gpu, metrics),
+            scrollbar: Scrollbar::new(gpu, screen),
         })
     }
 
@@ -102,6 +105,7 @@ impl UiRoot {
         self.background.prepare(gpu, Some(screen));
         self.text.prepare(gpu, Some(screen));
         self.decoration.prepare(gpu, Some(screen));
+        self.selection.prepare(gpu, Some(screen));
         self.cursor.prepare(gpu, Some(screen));
         self.scrollbar.prepare(gpu, Some(screen));
     }
@@ -112,6 +116,7 @@ impl UiRoot {
         self.background.draw(pass);
         self.text.draw(pass);
         self.decoration.draw(pass);
+        self.selection.draw(pass);
         self.cursor.draw(pass);
         self.scrollbar.draw(pass);
     }
@@ -122,6 +127,7 @@ impl UiRoot {
         Component::resize(&mut self.background, gpu, size);
         Component::resize(&mut self.text, gpu, size);
         Component::resize(&mut self.decoration, gpu, size);
+        Component::resize(&mut self.selection, gpu, size);
         Component::resize(&mut self.cursor, gpu, size);
         Component::resize(&mut self.scrollbar, gpu, size);
     }
@@ -134,6 +140,11 @@ impl UiRoot {
         event: &winit::event::WindowEvent,
         ctx: &mut EventContext<'_>,
     ) -> EventResult {
+        // Selection comes first — scrollbar always returns Handled on CursorMoved,
+        // which would block selection drag updates.
+        if self.selection.handle_event(event, ctx) == EventResult::Handled {
+            return EventResult::Handled;
+        }
         if self.scrollbar.handle_event(event, ctx) == EventResult::Handled {
             return EventResult::Handled;
         }
@@ -246,17 +257,27 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        // Let interactive components handle events first (scrollbar, cursor).
+        // Let interactive components handle events first.
+        // Scope ctx so borrows on gpu/terminal are released before the
+        // fallback prepare after a Handled result.
         let mut deadline: Option<std::time::Instant> = None;
-        let mut ctx = EventContext {
-            gpu,
-            terminal,
-            window,
-            pty,
-            modifiers: self.modifiers,
-            deadline: &mut deadline,
+
+        let handled = {
+            let mut ctx = EventContext {
+                gpu,
+                terminal,
+                window,
+                pty,
+                modifiers: self.modifiers,
+                deadline: &mut deadline,
+            };
+            ui.handle_event(&event, &mut ctx)
         };
-        if ui.handle_event(&event, &mut ctx) == EventResult::Handled {
+        if handled == EventResult::Handled {
+            ui.prepare(
+                self.gpu.as_mut().unwrap(),
+                self.terminal.as_ref().unwrap().screen(),
+            );
             return;
         }
 

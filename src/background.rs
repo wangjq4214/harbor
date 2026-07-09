@@ -34,7 +34,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Draws a solid-color rectangle behind each cell with a non-default background.
 /// Rendered before the text layer so glyphs appear on top.
-pub(crate) struct BackgroundComponent {
+pub(crate) struct Background {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     dirty: bool,
@@ -44,7 +44,7 @@ pub(crate) struct BackgroundComponent {
     line_height: f32,
 }
 
-impl BackgroundComponent {
+impl Background {
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices).
     pub(crate) fn new(
@@ -180,7 +180,7 @@ impl BackgroundComponent {
     }
 }
 
-impl Component for BackgroundComponent {
+impl Component for Background {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {
             return;
@@ -277,8 +277,7 @@ mod tests {
         );
         assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
 
-        let verts =
-            BackgroundComponent::build_background_row_vertices(10.0, 20.0, 0, screen, 800.0, 600.0);
+        let verts = Background::build_background_row_vertices(10.0, 20.0, 0, screen, 800.0, 600.0);
 
         let expected = Color::Named(1).to_rgba();
         assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");

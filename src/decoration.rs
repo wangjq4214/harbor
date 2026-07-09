@@ -10,7 +10,7 @@ use crate::{
 // ── Decoration shader ─────────────────────────────────────────────────────────
 
 /// Simple untextured shader that renders per-vertex color quads (identical to
-/// BackgroundComponent's shader, duplicated per "no shared GPU objects" convention).
+/// Background's shader, duplicated per "no shared GPU objects" convention).
 const DECORATION_SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -101,12 +101,12 @@ pub(crate) fn build_strikethrough_vertices(
     verts
 }
 
-// ── DecorationComponent ─────────────────────────────────────────────────────────
+// ── Decoration ─────────────────────────────────────────────────────────
 
 /// Draws underline and strikethrough decorations on top of text and cursor.
 /// Uses two separate vertex buffers (one per decoration type) because they
 /// need separate draw calls.
-pub(crate) struct DecorationComponent {
+pub(crate) struct Decoration {
     pipeline: wgpu::RenderPipeline,
     underline_buffer: wgpu::Buffer,
     strikethrough_buffer: wgpu::Buffer,
@@ -121,7 +121,7 @@ pub(crate) struct DecorationComponent {
     strikethrough_thickness: f32,
 }
 
-impl DecorationComponent {
+impl Decoration {
     /// Creates the decoration render pipeline and pre-allocates vertex buffers
     /// for the full grid (rows × cols × 6 vertices each).
     pub(crate) fn new(gpu: &GpuContext, screen: &Screen, metrics: TextMetrics) -> Self {
@@ -218,7 +218,7 @@ impl DecorationComponent {
     }
 }
 
-impl Component for DecorationComponent {
+impl Component for Decoration {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {
             return;

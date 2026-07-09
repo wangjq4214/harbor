@@ -135,11 +135,11 @@ fn compute_uniform(screen: &Screen, surf_w: f32, surf_h: f32) -> ScrollbarUnifor
         _padding: [0.0; 3],
     }
 }
-// ── ScrollbarComponent ─────────────────────────────────────────────────────
+// ── Scrollbar ─────────────────────────────────────────────────────
 
 /// Combined scrollbar rendering + visibility state machine.
 /// Replaces ScrollbarLayer in the component tree.
-pub(crate) struct ScrollbarComponent {
+pub(crate) struct Scrollbar {
     /// wgpu render pipeline for the scrollbar thumb.
     pipeline: wgpu::RenderPipeline,
     /// Pre-allocated 6-vertex quad buffer (rewritten every `prepare`).
@@ -156,7 +156,7 @@ pub(crate) struct ScrollbarComponent {
     last_activity: std::time::Instant,
 }
 
-impl ScrollbarComponent {
+impl Scrollbar {
     /// Creates the scrollbar: allocates pipeline, vertex buffer, uniform buffer,
     /// and bind group. Uploads initial (degenerate) vertices — the scrollbar
     /// starts hidden until mouse activity triggers `show()`.
@@ -270,7 +270,7 @@ impl ScrollbarComponent {
     }
 }
 
-impl Component for ScrollbarComponent {
+impl Component for Scrollbar {
     /// Upload scrollbar vertices and uniform data for the current screen state.
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let Some(screen) = screen else {

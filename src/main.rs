@@ -14,6 +14,7 @@ mod metrics;
 mod pty;
 mod render;
 mod scrollbar;
+mod selection;
 mod terminal;
 
 use anyhow::{Context as _, Result};
