@@ -696,33 +696,47 @@ impl Screen {
         self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
     }
 
+    /// Returns a cell with the current SGR attributes for erase operations (EL/ED/ECH).
+    fn erase_cell(&self) -> Cell {
+        Cell {
+            ch: ' ',
+            wide_continuation: false,
+            fg: self.current_fg,
+            bg: self.current_bg,
+            attrs: self.current_attrs,
+        }
+    }
+
     /// Implements CSI `J` erase-display modes that affect visible cells.
     pub(crate) fn erase_display(&mut self, mode: usize) {
+        let cell = self.erase_cell();
         match mode {
             0 => {
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
                 let start = ring_row * self.normal.cols() + self.cursor_x;
                 self.normal
-                    .fill_linear_range(start, ring_row * self.normal.cols() + self.normal.cols());
+                    .fill_linear_range_with(start, ring_row * self.normal.cols() + self.normal.cols(), cell);
                 for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
-                    self.normal.fill_row(row);
+                    self.normal.fill_row_with(row, cell);
                 }
             }
             1 => {
                 for row in 0..self.cursor_y {
                     self.mark_row_dirty(row);
-                    self.normal.fill_row(row);
+                    self.normal.fill_row_with(row, cell);
                 }
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
                 let end = ring_row * self.normal.cols() + self.cursor_x + 1;
                 self.normal
-                    .fill_linear_range(ring_row * self.normal.cols(), end);
+                    .fill_linear_range_with(ring_row * self.normal.cols(), end, cell);
             }
             2 => {
-                self.normal.fill_all();
+                for d in 0..self.normal.rows() {
+                    self.normal.fill_row_with(d, cell);
+                }
                 self.cursor_x = 0;
                 self.cursor_y = 0;
                 self.mark_all_dirty();
@@ -733,15 +747,16 @@ impl Screen {
 
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
+        let cell = self.erase_cell();
         let ring_row = self.normal.display_to_ring(self.cursor_y);
         let start = ring_row * self.normal.cols();
         let cursor = start + self.cursor_x;
         let end = ring_row * self.normal.cols() + self.normal.cols();
         self.mark_row_dirty(self.cursor_y);
         match mode {
-            0 => self.normal.fill_linear_range(cursor, end),
-            1 => self.normal.fill_linear_range(start, cursor + 1),
-            2 => self.normal.fill_linear_range(start, end),
+            0 => self.normal.fill_linear_range_with(cursor, end, cell),
+            1 => self.normal.fill_linear_range_with(start, cursor + 1, cell),
+            2 => self.normal.fill_linear_range_with(start, end, cell),
             _ => {}
         }
     }
@@ -751,12 +766,13 @@ impl Screen {
     /// Replaces cells with default (space) characters without moving the cursor.
     /// The default parameter (0) acts as 1.
     pub(crate) fn erase_chars(&mut self, n: usize) {
+        let cell = self.erase_cell();
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let ring_row = self.normal.display_to_ring(self.cursor_y);
         let start = ring_row * self.normal.cols() + self.cursor_x;
         let end = (start + n).min(ring_row * self.normal.cols() + self.normal.cols());
-        self.normal.fill_linear_range(start, end);
+        self.normal.fill_linear_range_with(start, end, cell);
     }
 
     /// Clears all visible cells and homes the cursor.
@@ -1864,5 +1880,107 @@ mod tests {
             end_col: 1,
         });
         assert_eq!(result, "");
+    }
+
+    // ── SGR-aware erase ──────────────────────────────────────────
+
+    #[test]
+    fn erase_line_preserves_current_bg() {
+        let mut screen = Screen::new(1, 4);
+        screen.current_bg = Color::Named(4); // blue
+        screen.write_char('a');
+        screen.cursor_x = 0;
+        screen.erase_line(0);
+        for col in 0..4 {
+            assert_eq!(screen.cell(0, col).bg, Color::Named(4),
+                "erase_line(0) should fill erased cells with current_bg");
+        }
+    }
+
+    #[test]
+    fn erase_display_mode_0_preserves_current_bg() {
+        let mut screen = Screen::new(2, 3);
+        screen.current_bg = Color::Named(2); // green
+        screen.cursor_y = 0;
+        screen.cursor_x = 1;
+        screen.erase_display(0);
+        // cursor row, from cursor_x onward
+        for col in 1..3 {
+            assert_eq!(screen.cell(0, col).bg, Color::Named(2));
+        }
+        // following rows entirely
+        for col in 0..3 {
+            assert_eq!(screen.cell(1, col).bg, Color::Named(2));
+        }
+    }
+
+    #[test]
+    fn erase_display_mode_1_preserves_current_bg() {
+        let mut screen = Screen::new(2, 3);
+        screen.current_bg = Color::Rgb(64, 128, 255);
+        screen.cursor_y = 1;
+        screen.cursor_x = 1;
+        screen.erase_display(1);
+        // rows before cursor entirely
+        for col in 0..3 {
+            assert_eq!(screen.cell(0, col).bg, Color::Rgb(64, 128, 255));
+        }
+        // cursor row from start to cursor_x inclusive
+        for col in 0..2 {
+            assert_eq!(screen.cell(1, col).bg, Color::Rgb(64, 128, 255));
+        }
+    }
+
+    #[test]
+    fn erase_display_mode_2_preserves_current_bg() {
+        let mut screen = Screen::new(2, 3);
+        screen.current_bg = Color::Bright(7);
+        screen.erase_display(2);
+        for row in 0..2 {
+            for col in 0..3 {
+                assert_eq!(screen.cell(row, col).bg, Color::Bright(7),
+                    "erase_display(2) should fill all cells with current_bg");
+            }
+        }
+    }
+
+    #[test]
+    fn erase_chars_preserves_current_bg() {
+        let mut screen = Screen::new(1, 4);
+        screen.current_bg = Color::Named(1); // red
+        screen.cursor_x = 1;
+        screen.erase_chars(2);
+        assert_eq!(screen.cell(0, 0).bg, Color::Default, "cell before cursor should be unchanged");
+        assert_eq!(screen.cell(0, 1).bg, Color::Named(1));
+        assert_eq!(screen.cell(0, 2).bg, Color::Named(1));
+        assert_eq!(screen.cell(0, 3).bg, Color::Default, "cell past erase range should be unchanged");
+    }
+
+    #[test]
+    fn erase_uses_current_fg_too() {
+        let mut screen = Screen::new(1, 3);
+        screen.current_fg = Color::Named(3); // yellow
+        screen.current_bg = Color::Named(4); // blue
+        screen.current_attrs.set(CellAttrs::BOLD);
+        screen.erase_line(2);
+        for col in 0..3 {
+            let cell = screen.cell(0, col);
+            assert_eq!(cell.fg, Color::Named(3), "erase should preserve current_fg");
+            assert_eq!(cell.bg, Color::Named(4), "erase should preserve current_bg");
+            assert!(cell.attrs.contains(CellAttrs::BOLD), "erase should preserve current_attrs");
+        }
+    }
+
+    #[test]
+    fn reset_display_uses_default_not_current_bg() {
+        let mut screen = Screen::new(2, 3);
+        screen.current_bg = Color::Named(4); // blue
+        screen.reset_display();
+        for row in 0..2 {
+            for col in 0..3 {
+                assert_eq!(screen.cell(row, col).bg, Color::Default,
+                    "reset_display (RIS) should use default bg, not current_bg");
+            }
+        }
     }
 }

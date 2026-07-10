@@ -114,7 +114,12 @@ impl NormalBuf {
 
     /// Fills a contiguous range of cells (linear indices) with defaults.
     pub(crate) fn fill_linear_range(&mut self, start: usize, end: usize) {
-        self.cells[start..end].fill(Cell::default());
+        self.fill_linear_range_with(start, end, Cell::default());
+    }
+
+    /// Fills a contiguous range of cells with a specific cell value.
+    pub(crate) fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
+        self.cells[start..end].fill(cell);
     }
 
     /// Copies cells within the ring buffer by linear index range.
@@ -358,21 +363,27 @@ impl NormalBuf {
         );
     }
 
-    // ── bulk helpers for Screen's mutation methods ─────────────────
+    // ── bulk helpers for Screen's mutation methods ──
 
     #[inline]
     pub(crate) fn fill_row(&mut self, display_row: usize) {
+        self.fill_row_with(display_row, Cell::default());
+    }
+
+    /// Fills one display row with a specific cell value.
+    #[inline]
+    pub(crate) fn fill_row_with(&mut self, display_row: usize, cell: Cell) {
         let ring_row = self.display_to_ring(display_row);
 
         tracing::debug!(
             display_row,
             ring_row,
             cols = self.cols,
-            "fill_row: clearing row"
+            "fill_row_with: clearing row"
         );
 
         let start = ring_row * self.cols;
-        self.cells[start..start + self.cols].fill(Cell::default());
+        self.cells[start..start + self.cols].fill(cell);
     }
 
     /// Fill every visible row with default cells.

@@ -1037,4 +1037,55 @@ mod tests {
             "process_output must snap viewport to bottom"
         );
     }
+
+    // ── SGR background + erase integration ────────────────────────
+
+    #[test]
+    fn sgr_bg_preserved_after_erase_line() {
+        // Vim's pattern: set bg → write text → CSI K (erase to end of line)
+        let mut terminal = Terminal::new(1, 6);
+        terminal.put_bytes(b"\x1b[44mHi\x1b[K");
+        // "Hi" should have blue bg; erased remainder should also have blue bg
+        let cell = terminal.screen();
+        assert_eq!(cell.cell(0, 0).ch, 'H');
+        assert_eq!(cell.cell(0, 0).bg, Color::Named(4));
+        assert_eq!(cell.cell(0, 1).ch, 'i');
+        assert_eq!(cell.cell(0, 1).bg, Color::Named(4));
+        // erased cells (cols 2-5) should have the same bg, not default
+        for col in 2..6 {
+            assert_eq!(cell.cell(0, col).bg, Color::Named(4));
+        }
+    }
+
+    #[test]
+    fn sgr_bg_preserved_after_erase_display() {
+        let mut terminal = Terminal::new(2, 4);
+        // Set bg green, write, erase entire display
+        terminal.put_bytes(b"\x1b[42mab\x1b[2J");
+        for row in 0..2 {
+            for col in 0..4 {
+                assert_eq!(
+                    terminal.screen().cell(row, col).bg,
+                    Color::Named(2),
+                    "erase_display(2) should preserve current_bg in all cells"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_bg_after_sgr_reset_and_erase() {
+        // After SGR reset (ESC [ m), erasing should produce default-bg cells
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_bytes(b"\x1b[44mHi\x1b[0m\x1b[K");
+        // "Hi" was written before reset, so still has blue bg
+        assert_eq!(terminal.screen().cell(0, 0).ch, 'H');
+        assert_eq!(terminal.screen().cell(0, 0).bg, Color::Named(4));
+        assert_eq!(terminal.screen().cell(0, 1).ch, 'i');
+        assert_eq!(terminal.screen().cell(0, 1).bg, Color::Named(4));
+        // erased cells (cols 2-3) were erased after SGR reset → default bg
+        for col in 2..4 {
+            assert_eq!(terminal.screen().cell(0, col).bg, Color::Default);
+        }
+    }
 }
