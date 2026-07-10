@@ -1,4 +1,8 @@
-use std::{ffi::OsString, mem::size_of, os::windows::ffi::OsStrExt};
+use std::{
+    ffi::{OsStr, OsString},
+    mem::size_of,
+    os::windows::ffi::OsStrExt,
+};
 
 use ::windows::{
     Win32::{
@@ -8,10 +12,11 @@ use ::windows::{
             Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
             Pipes::CreatePipe,
             Threading::{
-                CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-                InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-                STARTUPINFOEXW, UpdateProcThreadAttribute,
+                CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+                EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
+                LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+                UpdateProcThreadAttribute,
             },
         },
     },
@@ -92,6 +97,7 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
 
     let mut process_info = PROCESS_INFORMATION::default();
     let mut command_line = shell_command_line();
+    let environment_block = build_environment_block();
     tracing::info!("creating shell process");
 
     unsafe {
@@ -101,8 +107,8 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
             None,
             None,
             false,
-            EXTENDED_STARTUPINFO_PRESENT,
-            None,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            Some(environment_block.as_ptr().cast()),
             PCWSTR::null(),
             &startup_info as *const STARTUPINFOEXW as *const _,
             &mut process_info,
@@ -118,6 +124,50 @@ fn shell_command_line() -> Vec<u16> {
         .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"));
     tracing::info!(command = ?command, "selected shell command");
     command.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// Builds a case-insensitively sorted, double-null-terminated UTF-16LE environment block
+/// with `TERM=xterm-256color` added/overridden, without modifying the parent process.
+fn build_environment_block() -> Vec<u16> {
+    // `CreateProcessW` requires entries sorted case-insensitively by key (before `=`).
+    // We also need to avoid duplicate `TERM` regardless of casing.
+    const TERM_LOWER: [u16; 4] = [0x74, 0x65, 0x72, 0x6d]; // "term" in lowercase ASCII
+
+    fn key_lower(s: &OsStr) -> Vec<u16> {
+        s.encode_wide()
+            .take_while(|&c| c != 0x3D) // '='
+            .map(|c| {
+                if (0x41..=0x5A).contains(&c) {
+                    c + 0x20
+                } else {
+                    c
+                }
+            }) // A-Z → a-z
+            .collect()
+    }
+
+    let mut entries: Vec<OsString> = std::env::vars_os()
+        .filter(|(k, _)| key_lower(k.as_os_str()) != TERM_LOWER)
+        .map(|(k, v)| {
+            let mut entry = k;
+            entry.push("=");
+            entry.push(&v);
+            entry
+        })
+        .collect();
+
+    entries.push(OsString::from("TERM=xterm-256color"));
+
+    // Sort case-insensitively by key portion as required by CreateProcessW.
+    entries.sort_by_key(|a| key_lower(a));
+
+    let mut block = Vec::new();
+    for entry in &entries {
+        block.extend(entry.encode_wide());
+        block.push(0u16);
+    }
+    block.push(0u16); // double-null terminator
+    block
 }
 
 impl PtyReader {
