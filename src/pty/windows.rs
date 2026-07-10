@@ -11,7 +11,7 @@ use ::windows::{
                 CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-                STARTUPINFOEXW, UpdateProcThreadAttribute,
+                STARTUPINFOEXW, UpdateProcThreadAttribute, CREATE_UNICODE_ENVIRONMENT,
             },
         },
     },
@@ -19,7 +19,7 @@ use ::windows::{
 };
 use anyhow::{Context as _, ensure};
 
-use super::PtySize;
+use super::{PtySize, ShellExtraEnvs};
 
 /// Windows ConPTY session and the handles that must outlive the shell process.
 pub(crate) struct Pty {
@@ -40,7 +40,10 @@ pub(crate) struct PtyReader {
 }
 
 impl Pty {
-    pub(crate) fn spawn_shell(size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
+    pub(crate) fn spawn_shell(
+        size: PtySize,
+        extra_envs: ShellExtraEnvs,
+    ) -> anyhow::Result<(Self, PtyReader)> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "creating windows pty");
 
@@ -54,7 +57,7 @@ impl Pty {
             PseudoConsole::create(size, input_read.handle(), output_write.handle())?;
         tracing::info!("created pseudo console");
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
-        let process_info = create_shell_process(&attribute_list)?;
+        let process_info = create_shell_process(&attribute_list, extra_envs)?;
         tracing::info!("created shell process");
         // The pseudo console owns the child-side pipe handles after process creation.
         // Dropping our duplicates makes EOF observable when the shell exits.
@@ -84,7 +87,10 @@ impl Pty {
     }
 }
 
-fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCESS_INFORMATION> {
+fn create_shell_process(
+    attribute_list: &AttributeList,
+    extra_envs: ShellExtraEnvs,
+) -> anyhow::Result<PROCESS_INFORMATION> {
     let mut startup_info = STARTUPINFOEXW::default();
     startup_info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -92,6 +98,7 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
 
     let mut process_info = PROCESS_INFORMATION::default();
     let mut command_line = shell_command_line();
+    let env_block = create_environment_block(extra_envs);
     tracing::info!("creating shell process");
 
     unsafe {
@@ -101,8 +108,8 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
             None,
             None,
             false,
-            EXTENDED_STARTUPINFO_PRESENT,
-            None,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            Some(env_block.as_ptr() as *const _),
             PCWSTR::null(),
             &startup_info as *const STARTUPINFOEXW as *const _,
             &mut process_info,
@@ -119,7 +126,24 @@ fn shell_command_line() -> Vec<u16> {
     tracing::info!(command = ?command, "selected shell command");
     command.encode_wide().chain(std::iter::once(0)).collect()
 }
+fn create_environment_block(extra_envs: ShellExtraEnvs) -> Vec<u16> {
+    let mut env_vars: std::collections::HashMap<OsString, OsString> = std::env::vars_os().collect();
+    for (k, v) in extra_envs.envs {
+        env_vars.insert(k, v);
+    }
 
+    let mut block = Vec::new();
+    for (key, val) in env_vars {
+        let mut entry = OsString::new();
+        entry.push(&key);
+        entry.push("=");
+        entry.push(&val);
+        block.extend(entry.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
 impl PtyReader {
     pub(crate) fn read(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
         ensure!(!buffer.is_empty(), "pty read buffer must be non-empty");
@@ -311,7 +335,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_size() {
-        let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }) {
+        let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }, ShellExtraEnvs::default()) {
             Ok(_) => panic!("zero-row pty size unexpectedly spawned a shell"),
             Err(error) => error,
         };
@@ -323,7 +347,7 @@ mod tests {
 
     #[test]
     fn shell_prompt_output_is_readable() {
-        let (_pty, mut reader) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }).unwrap();
+        let (_pty, mut reader) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, ShellExtraEnvs::default()).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
 

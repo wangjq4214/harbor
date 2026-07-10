@@ -1,13 +1,16 @@
 use anyhow::bail;
 
-use super::PtySize;
+use super::{PtySize, ShellExtraEnvs};
 
 pub(crate) struct Pty;
 
 pub(crate) struct PtyReader;
 
 impl Pty {
-    pub(crate) fn spawn_shell(_size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
+    pub(crate) fn spawn_shell(
+        _size: PtySize,
+        _extra_envs: ShellExtraEnvs,
+    ) -> anyhow::Result<(Self, PtyReader)> {
         bail!("pty is not implemented on unix")
     }
 

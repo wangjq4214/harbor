@@ -1,3 +1,5 @@
+use std::{collections::HashMap, ffi::OsString};
+
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -24,6 +26,24 @@ pub(crate) struct PtySize {
     pub(crate) rows: i16,
     /// Columns in the pseudo terminal viewport.
     pub(crate) cols: i16,
+}
+
+/// Extra environment variables to inject into the spawned shell.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ShellExtraEnvs {
+    pub(crate) envs: HashMap<OsString, OsString>,
+}
+
+impl ShellExtraEnvs {
+    pub(crate) fn new() -> Self {
+        let mut envs = HashMap::new();
+        // Set TERM to xterm-256color for modern terminal compatibility across platforms
+        envs.insert(
+            OsString::from("TERM"),
+            OsString::from("xterm-256color"),
+        );
+        Self { envs }
+    }
 }
 
 /// Running shell session plus the background output reader.
@@ -62,7 +82,10 @@ impl PtySession {
             "spawning pty shell reader"
         );
 
-        let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?)?;
+        let (pty, reader) = RawPty::spawn_shell(
+            PtySize::from_terminal(size)?,
+            ShellExtraEnvs::new(),
+        )?;
         tracing::info!("pty shell spawned");
         let reader = std::thread::spawn(|| pump_pty_output(reader, output_handler));
 
