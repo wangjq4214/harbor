@@ -715,8 +715,11 @@ impl Screen {
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
                 let start = ring_row * self.normal.cols() + self.cursor_x;
-                self.normal
-                    .fill_linear_range_with(start, ring_row * self.normal.cols() + self.normal.cols(), cell);
+                self.normal.fill_linear_range_with(
+                    start,
+                    ring_row * self.normal.cols() + self.normal.cols(),
+                    cell,
+                );
                 for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     self.normal.fill_row_with(row, cell);
@@ -1892,8 +1895,11 @@ mod tests {
         screen.cursor_x = 0;
         screen.erase_line(0);
         for col in 0..4 {
-            assert_eq!(screen.cell(0, col).bg, Color::Named(4),
-                "erase_line(0) should fill erased cells with current_bg");
+            assert_eq!(
+                screen.cell(0, col).bg,
+                Color::Named(4),
+                "erase_line(0) should fill erased cells with current_bg"
+            );
         }
     }
 
@@ -1938,8 +1944,11 @@ mod tests {
         screen.erase_display(2);
         for row in 0..2 {
             for col in 0..3 {
-                assert_eq!(screen.cell(row, col).bg, Color::Bright(7),
-                    "erase_display(2) should fill all cells with current_bg");
+                assert_eq!(
+                    screen.cell(row, col).bg,
+                    Color::Bright(7),
+                    "erase_display(2) should fill all cells with current_bg"
+                );
             }
         }
     }
@@ -1950,10 +1959,18 @@ mod tests {
         screen.current_bg = Color::Named(1); // red
         screen.cursor_x = 1;
         screen.erase_chars(2);
-        assert_eq!(screen.cell(0, 0).bg, Color::Default, "cell before cursor should be unchanged");
+        assert_eq!(
+            screen.cell(0, 0).bg,
+            Color::Default,
+            "cell before cursor should be unchanged"
+        );
         assert_eq!(screen.cell(0, 1).bg, Color::Named(1));
         assert_eq!(screen.cell(0, 2).bg, Color::Named(1));
-        assert_eq!(screen.cell(0, 3).bg, Color::Default, "cell past erase range should be unchanged");
+        assert_eq!(
+            screen.cell(0, 3).bg,
+            Color::Default,
+            "cell past erase range should be unchanged"
+        );
     }
 
     #[test]
@@ -1967,7 +1984,10 @@ mod tests {
             let cell = screen.cell(0, col);
             assert_eq!(cell.fg, Color::Named(3), "erase should preserve current_fg");
             assert_eq!(cell.bg, Color::Named(4), "erase should preserve current_bg");
-            assert!(cell.attrs.contains(CellAttrs::BOLD), "erase should preserve current_attrs");
+            assert!(
+                cell.attrs.contains(CellAttrs::BOLD),
+                "erase should preserve current_attrs"
+            );
         }
     }
 
@@ -1978,8 +1998,11 @@ mod tests {
         screen.reset_display();
         for row in 0..2 {
             for col in 0..3 {
-                assert_eq!(screen.cell(row, col).bg, Color::Default,
-                    "reset_display (RIS) should use default bg, not current_bg");
+                assert_eq!(
+                    screen.cell(row, col).bg,
+                    Color::Default,
+                    "reset_display (RIS) should use default bg, not current_bg"
+                );
             }
         }
     }

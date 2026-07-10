@@ -24,8 +24,8 @@ use crate::{
 
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
-    /// Raw bytes read from the shell process and decoded by the renderer.
-    PtyOutput(Vec<u8>),
+    /// Lightweight wake: PTY reader has appended bytes to the shared buffer.
+    PtyOutputReady,
 }
 
 /// Application state holding the window and its renderer.
@@ -184,7 +184,7 @@ impl ApplicationHandler<AppEvent> for App {
 
     /// Handles PTY output events from the background reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
-        let AppEvent::PtyOutput(output) = event;
+        let AppEvent::PtyOutputReady = event;
         let (Some(gpu), Some(ui), Some(terminal), Some(window)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
@@ -193,6 +193,11 @@ impl ApplicationHandler<AppEvent> for App {
         ) else {
             return;
         };
+        let output = self.pty.drain_output();
+        // Spurious wake (reader sent event but main already drained) — skip.
+        if output.is_empty() {
+            return;
+        }
         terminal.process_output(&output);
         ui.prepare(gpu, terminal.screen());
         terminal.clear_screen_dirty();
@@ -395,8 +400,8 @@ impl App {
         self.gpu = Some(gpu);
         self.ui = Some(ui);
         self.terminal = Some(terminal);
-        self.pty.start(size).map_err(AppError::Pty)?;
         self.window = Some(window.clone());
+        self.pty.start(size).map_err(AppError::Pty)?;
         window.request_redraw();
         Ok(())
     }
