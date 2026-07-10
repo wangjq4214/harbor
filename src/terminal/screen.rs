@@ -226,6 +226,8 @@ pub(crate) struct Screen {
     cursor_shape: CursorShape,
     /// Whether cursor should blink.
     cursor_blink: bool,
+    /// Whether the cursor is currently visible (DECTCUSR).
+    cursor_visible: bool,
     /// Saved cursor state (DECSC/DECRC), or `None` before any save.
     saved_cursor: Option<SavedCursor>,
     /// Saved normal-screen state while the alternate screen is active.
@@ -246,6 +248,7 @@ struct AltSavedState {
     scroll_bottom: usize,
     cursor_shape: CursorShape,
     cursor_blink: bool,
+    cursor_visible: bool,
     saved_cursor: Option<SavedCursor>,
     visible_start: usize,
     scroll_count: usize,
@@ -268,6 +271,7 @@ impl Screen {
             scroll_bottom: rows - 1,
             cursor_shape: CursorShape::default(),
             cursor_blink: true,
+            cursor_visible: true,
             saved_cursor: None,
             alt_saved: None,
         }
@@ -314,6 +318,17 @@ impl Screen {
 
     pub(crate) fn cursor_blink(&self) -> bool {
         self.cursor_blink
+    }
+
+    pub(crate) fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
+    pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
+        if self.cursor_visible != visible {
+            self.cursor_visible = visible;
+            self.mark_row_dirty(self.cursor_y);
+        }
     }
 
     pub(crate) fn set_cursor_style(&mut self, ps: usize) {
@@ -1172,6 +1187,7 @@ impl Screen {
             scroll_bottom: self.scroll_bottom,
             cursor_shape: self.cursor_shape,
             cursor_blink: self.cursor_blink,
+            cursor_visible: self.cursor_visible,
             saved_cursor: self.saved_cursor.take(),
             visible_start: self.normal.visible_start(),
             scroll_count: self.normal.scroll_count(),
@@ -1196,6 +1212,7 @@ impl Screen {
             self.scroll_bottom = state.scroll_bottom;
             self.cursor_shape = state.cursor_shape;
             self.cursor_blink = state.cursor_blink;
+            self.cursor_visible = state.cursor_visible;
             self.saved_cursor = state.saved_cursor;
         }
         self.in_alt = false;

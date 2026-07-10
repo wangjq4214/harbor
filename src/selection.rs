@@ -105,6 +105,14 @@ impl Selection {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        if self.selection.is_some() {
+            self.selection = None;
+            self.dirty = true;
+        }
+    }
+
+
     /// Compiles the selection shader into a render pipeline.
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

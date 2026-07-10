@@ -99,6 +99,10 @@ impl UiRoot {
         self.text.terminal_size(gpu)
     }
 
+    pub(crate) fn clear_selection(&mut self) {
+        self.selection.clear();
+    }
+
     /// Uploads dirty GPU resources for all five components.
     /// Called after terminal content changes or resize.
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
@@ -185,17 +189,13 @@ impl ApplicationHandler<AppEvent> for App {
     /// Handles PTY output events from the background reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::PtyOutput(output) = event;
-        let (Some(gpu), Some(ui), Some(terminal), Some(window)) = (
-            self.gpu.as_mut(),
-            self.ui.as_mut(),
+        let (Some(terminal), Some(window)) = (
             self.terminal.as_mut(),
             self.window.as_ref(),
         ) else {
             return;
         };
         terminal.process_output(&output);
-        ui.prepare(gpu, terminal.screen());
-        terminal.clear_screen_dirty();
         window.request_redraw();
     }
 
@@ -337,6 +337,8 @@ impl ApplicationHandler<AppEvent> for App {
                 is_synthetic: _,
             } if event.state == ElementState::Pressed => {
                 terminal.scroll_viewport_to_bottom();
+                ui.clear_selection();
+                window.request_redraw();
 
                 let Some(bytes) =
                     keyboard_input_bytes(&event.logical_key, event.text.as_deref(), self.modifiers)
@@ -407,6 +409,14 @@ impl App {
         let Some((ui, gpu)) = self.ui.as_mut().zip(self.gpu.as_mut()) else {
             return;
         };
+        let Some(terminal) = self.terminal.as_mut() else {
+            return;
+        };
+
+        // Prepare UI elements with the latest screen state right before rendering
+        ui.prepare(gpu, terminal.screen());
+        terminal.clear_screen_dirty();
+
 
         // wgpu surface acquisition: handle transient failures by reconfiguring
         // or skipping the frame (the event loop will re-request a redraw).

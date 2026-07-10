@@ -366,6 +366,12 @@ impl TerminalParser {
                 b'l' if self.csi.params[..self.csi.len] == [Some(1049)] => {
                     screen.request_alt_exit();
                 }
+                b'h' if self.csi.params[..self.csi.len] == [Some(25)] => {
+                    screen.set_cursor_visible(true);
+                }
+                b'l' if self.csi.params[..self.csi.len] == [Some(25)] => {
+                    screen.set_cursor_visible(false);
+                }
                 _ => {
                     tracing::warn!(
                         "unsupported private CSI sequence: params={:?} final=0x{:02x}",

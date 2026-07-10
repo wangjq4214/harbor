@@ -261,7 +261,9 @@ impl Component for Cursor {
         match event {
             winit::event::WindowEvent::RedrawRequested => {
                 let screen = ctx.terminal.screen();
-                let visible = if screen.cursor_blink() {
+                let visible = if !screen.cursor_visible() {
+                    false
+                } else if screen.cursor_blink() {
                     self.blink_visible()
                 } else {
                     true
