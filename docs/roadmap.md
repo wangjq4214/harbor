@@ -1,33 +1,324 @@
 # WGPU Terminal Emulator Roadmap
 
-## Overall Goal
+> This roadmap has two coordinated tracks: the protocol track closes terminal correctness gaps, while the product track turns the core into a daily-usable application.
+> The protocol audit in [`check.md`](../check.md) is the source of truth for feature coverage. A roadmap checkbox is not evidence of implementation; update it only after tests or runtime acceptance pass.
 
-Build a high-performance terminal emulator with Rust + winit + wgpu + a custom text renderer.
+## Contents
 
-The project follows an Alacritty-like product boundary:
+- [1. Scope and Goals](#1-scope-and-goals)
+- [2. Current Baseline](#2-current-baseline)
+- [3. Roadmap at a Glance](#3-roadmap-at-a-glance)
+- [4. Execution Model](#4-execution-model)
+- [5. Protocol Track: Detailed Plan](#5-protocol-track-detailed-plan)
+- [6. Product Track: Detailed Milestones](#6-product-track-detailed-milestones)
+- [7. Release Gates and Definition of Done](#7-release-gates-and-definition-of-done)
+- [8. Final Working Agreement](#8-final-working-agreement)
+
+## 1. Scope and Goals
+
+Build a high-performance terminal emulator with Rust, winit, wgpu, and a custom text renderer.
+
+Product boundary:
 
 - fast terminal core
 - GPU-accelerated rendering
 - strong terminal correctness
 - minimal built-in UI features
-- extensible architecture for future dev-tool or agent integration
+- an extensible architecture for future developer-tool or agent integration
 
-Core milestones:
+The first compatibility target is the shell/Vim/tmux baseline. Optional protocols such as Sixel and Kitty graphics are explicitly deferred until safe string consumption and memory limits are complete.
 
-- v0.1: Minimal end-to-end terminal loop ✅
-- v0.2: Terminal core (parser + state + SGR)
-- v0.3: Cell-based wgpu renderer (color + decorations)
-- v0.4: Interactive features
-- v0.5: Performance and stability
-- v0.6: Daily usable release
+## 2. Current Baseline
 
----
+Snapshot date: **2026-07-11**.
 
-## v0.1: Minimal End-to-End Terminal Loop
+| Area           | Current state                                                                           | Immediate implication                                              |
+| -------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified         | Use `check.md` to select the next slice                            |
+| Tests          | Last observed `cargo test`: 199 passed                                                  | Add focused tests before changing protocol state                   |
+| Parser         | `Ground`, `Escape`, `Csi`, `Osc`, `OscEscape` only                                      | DCS/APC/PM/SOS and full C1 handling need a state-machine expansion |
+| Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR | Extend state before adding more dispatch cases                     |
+| PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                  | Unix PTY is a prerequisite for cross-platform runtime acceptance   |
+| Replies        | No parser-to-PTY reply channel                                                          | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet            |
+| Strings        | OSC framing is consumed and discarded; DCS/APC/PM/SOS are not separate states           | Build bounded consume-only string handling before side effects     |
+| Input          | Basic text, control bytes, and normal VT arrows                                         | Application modes, paste, focus, mouse, and IME are not wired      |
+
+## 3. Roadmap at a Glance
+
+### 3.1 Protocol Track
+
+| Phase | Deliverable                              | Status  | Main outcome                                            | Depends on   |
+| ----- | ---------------------------------------- | ------- | ------------------------------------------------------- | ------------ |
+| P0    | Testability and platform foundation      | Planned | Parser harness, Unix PTY, CI baseline                   | Start here   |
+| P1    | Streaming parser and safety contract     | Planned | Full states, C1, bounded strings, recovery              | P0           |
+| P2    | Terminal state and screen semantics      | Planned | Modes, wrap, margins, tabs, resets, protection          | P1           |
+| P3    | Core ESC/CSI/DEC compatibility           | Planned | Shell, Vim/Neovim, less, tmux sequence slice            | P1 + P2      |
+| P4    | Replies and device queries               | Planned | DSR, DA, DECRQM, DECRQSS, XTGETTCAP                     | P0 + P1 + P2 |
+| P5    | OSC/DCS and secure strings               | Planned | Titles, cwd, hyperlinks, clipboard, bounded consumption | P1 + P2 + P4 |
+| P6    | Interactive input protocols              | Planned | Application keys, paste, focus, mouse, IME              | P2 + P3 + P5 |
+| P7    | Rendering, performance, and release gate | Planned | Visual gaps, benchmarks, dogfood, release evidence      | P3 + P5 + P6 |
+
+### 3.2 Product Track
+
+| Milestone | Goal                      | Current state                                                                                         |
+| --------- | ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| v0.1      | End-to-end terminal loop  | Windows path done; Unix PTY remains the blocker                                                       |
+| v0.2      | Terminal core             | SGR, grid editing, scroll regions, alt screen, cursor state done; parser/runtime gaps remain          |
+| v0.3      | Cell-based renderer       | Color, decorations, cursor shapes, scrollback rendering done; combining marks and box drawing remain  |
+| v0.4      | Interactive features      | Selection, clipboard, scrollback, scrollbar done; IME, mouse protocol, keybindings, hyperlinks remain |
+| v0.5      | Performance and stability | Damage tracking and batching done; latency, benchmarks, backpressure, diagnostics remain              |
+| v0.6      | Daily usable release      | Config, themes, search, packaging, dogfood not started                                                |
+
+### 3.3 Recommended Critical Path
+
+1. **P0:** make parser and terminal behavior testable, then remove the Unix PTY blocker.
+2. **P1 + P2:** establish bounded parser states and a correct terminal state model before adding more command handlers.
+3. **P3 + P4:** complete the shell/Vim/tmux sequence slice and add a reply channel for queries.
+4. **P5:** implement useful OSC features and safe consumption of unsupported string protocols.
+5. **P6:** make input encoding depend on terminal modes, then add mouse, paste, focus, and IME.
+6. **P7:** close rendering gaps, measure performance, run application smoke tests, and gate release on evidence.
+
+## 4. Execution Model
+
+### 4.1 Design Rules
+
+1. **Stabilize the parser contract before adding features.** Every sequence must be incremental, bounded, cancellable, and recoverable before its side effect is implemented.
+2. **Separate parsing, terminal state, and host I/O.** The parser identifies a sequence, the terminal model applies state changes, and the application/PTY layer handles replies and external effects.
+3. **Prefer a complete small compatibility slice.** Do not scatter optional extensions across an incomplete core.
+4. **Centralize limits.** CSI parameters, strings, titles, URIs, clipboard data, replies, and images need named limits and boundary tests.
+5. **Advertise only real capabilities.** DA/DA2/XTGETTCAP replies must come from the actual enabled feature set.
+6. **Update `check.md` from evidence only.** Use a focused unit/integration test or reproducible runtime test for every new `[x]`.
+
+### 4.2 Phase Dependencies
+
+```mermaid
+graph LR
+    P0["P0 Testability + PTY"] --> P1["P1 Parser + Limits"]
+    P1 --> P2["P2 State + Screen Semantics"]
+    P1 --> P3["P3 Core ESC/CSI/DEC"]
+    P2 --> P3
+    P0 --> P4["P4 Replies + Queries"]
+    P2 --> P4
+    P1 --> P5["P5 OSC/DCS + Security"]
+    P2 --> P5
+    P4 --> P5
+    P3 --> P6["P6 Interactive Input"]
+    P5 --> P6
+    P3 --> P7["P7 Rendering + Release"]
+    P5 --> P7
+    P6 --> P7
+```
+
+### 4.3 Per-Phase Delivery Rules
+
+For each phase, use the same loop:
+
+1. Add focused tests for the intended behavior and the malformed/boundary cases.
+2. Implement the smallest state/API change that makes those tests pass.
+3. Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`.
+4. Run the relevant runtime smoke test when the phase affects PTY, replies, rendering, or input.
+5. Update `check.md` only for behaviors now backed by evidence; record exclusions next to the unchecked item when needed.
+6. Do not start the next dependent phase while the current phase still has unbounded input, parser desynchronization, or state-reset failures.
+
+## 5. Protocol Track: Detailed Plan
+
+### P0 — Testability and Platform Foundation
+
+**Goal:** make protocol work testable independently of a desktop session and remove the Unix runtime blocker.
+
+**Dependencies:** none.
+
+**Implementation path:**
+
+- [ ] Add a reusable parser feed harness that compares one-shot input with arbitrary chunk boundaries, including UTF-8, CSI, OSC, cancellation, and nested `ESC` cases.
+- [ ] Add screen snapshot helpers for cursor, modes, margins, cell attributes, scrollback, and alternate-screen state.
+- [ ] Add focused test modules that map directly to `check.md` sections instead of relying only on broad integration tests.
+- [ ] Implement Unix PTY using the existing `Pty`/`PtyReader` abstraction; keep Windows ConPTY unchanged. Prefer a small `cfg(unix)` dependency such as `rustix` for `openpty`, `setsid`, controlling-terminal setup, resize, read, and write.
+- [ ] Add a platform-neutral PTY reply/write interface so application-generated terminal responses use the same path as keyboard input.
+- [ ] Add CI commands for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test` on the supported host platforms.
+
+**Acceptance:**
+
+- [ ] The existing Windows shell loop still works.
+- [ ] Unix can start a shell, resize it, read output, and write input.
+- [ ] Chunk-equivalence tests pass for every parser state implemented so far.
+- [ ] A failing protocol test identifies its `check.md` section and sequence sample.
+
+### P1 — Streaming VT Parser and Safety Contract
+
+**Goal:** replace the current five-state partial parser with a bounded ECMA-48/DEC state machine without changing screen behavior unnecessarily.
+
+**Dependencies:** P0 test harness.
+
+**Implementation path:**
+
+- [ ] Split parser states into `Ground`, `Escape`, `EscapeIntermediate`, `CsiEntry`, `CsiParam`, `CsiIntermediate`, `CsiIgnore`, and string states for OSC/DCS/APC/PM/SOS.
+- [ ] Implement 7-bit C1 introducers and ST first; make 8-bit C1 recognition an explicit configuration option with a safe default.
+- [ ] Implement byte-class handling for C0, parameter, intermediate, final, CAN, SUB, and nested ESC transitions.
+- [ ] Preserve empty parameters, private markers, intermediate bytes, and colon subparameters without heap growth.
+- [ ] Add fixed limits for parameter count, subparameter count, parameter value, intermediate count, and each string family.
+- [ ] Add discard states for over-limit strings that continue scanning for BEL/ST/CAN/SUB without retaining payload bytes.
+- [ ] Ensure unknown but syntactically valid sequences are consumed and ignored; malformed sequences return to a known state without painting payload bytes.
+- [ ] Keep UTF-8 decoding incremental and independent from control-sequence state.
+
+**Acceptance:**
+
+- [ ] Sections 1–3, 27, 35, and 36 in `check.md` have focused coverage for every checked item.
+- [ ] Arbitrary chunking produces the same screen and parser result as one-shot input.
+- [ ] Fuzz/property tests show no panic, infinite loop, or unbounded allocation for arbitrary bytes.
+- [ ] DCS/APC/PM/SOS payloads never appear as visible text when the sequence is unsupported.
+
+### P2 — Terminal State Model and Core Screen Semantics
+
+**Goal:** make the screen model represent the state that VT applications actually query and mutate.
+
+**Dependencies:** P1 parser state contract.
+
+**Implementation path:**
+
+- [ ] Add explicit standard/private mode storage: DECAWM, DECOM, IRM, LNM, DECCKM, keypad, cursor visibility, DECLRMM, focus reporting, bracketed paste, and synchronized output.
+- [ ] Add `pending_wrap` and soft-wrap metadata. Writing the last column sets pending wrap; the next printable character performs the wrap.
+- [ ] Make cursor movement, CR, BS, HT, ED, EL, erase, resize, and reset consistently clear or preserve pending wrap according to the selected compatibility target.
+- [ ] Add independent horizontal margins and apply them to cursor placement, insertion, deletion, erase, and scrolling.
+- [ ] Replace hard-coded tabs with a tab-stop set supporting HTS, TBC, CHT, CBT, default stops, and RIS restoration.
+- [ ] Make ICH/DCH/IL/DL use the current erase attributes and preserve wide-cell invariants.
+- [ ] Add REP and correct zero/default parameter behavior per command.
+- [ ] Add protected-cell state and implement DECSCA, DECSED, and DECSEL.
+- [ ] Implement complete RIS and DECSTR reset tables without accidentally clearing scrollback for DECSTR.
+- [ ] Keep alternate-screen state isolated while preserving the primary cursor, modes, scrollback, and saved state.
+
+**Acceptance:**
+
+- [ ] Sections 7–16, 19–20, and 33 of `check.md` pass their focused model tests.
+- [ ] Wide characters cannot leave orphan continuation cells after write, erase, insert, delete, or rectangle operations.
+- [ ] Mode transitions are idempotent and restore the documented state after RIS, DECSTR, and alternate-screen exit.
+- [ ] Existing SGR, scroll, alternate-screen, and renderer tests remain green.
+
+### P3 — Core ESC/CSI/DEC Compatibility Slice
+
+**Goal:** complete the sequence families needed by shells, Vim/Neovim, less, and tmux before implementing optional extensions.
+
+**Dependencies:** P1 parser and P2 state model.
+
+**Implementation path:**
+
+- [ ] Complete ESC commands: HTS, SS2/SS3, DECID, DECKPAM/DECKPNM, DECALN, encoding selection, and required character-set designation/invocation.
+- [ ] Complete cursor commands: HPA, HPR, VPR, Origin Mode coordinates, horizontal-margin coordinates, and correct zero/default semantics.
+- [ ] Complete DEC private modes: `?1`, `?6`, `?7`, `?25`, `?45`, `?69`, `?1004`, `?2004`, `?2026`, and the `47/1047/1048/1049` alternate-screen variants.
+- [ ] Complete standard modes: SM/RM, IRM, and LNM, while keeping private and standard mode stores separate.
+- [ ] Complete rectangle operations: DECFRA, DECERA, DECSERA, DECCRA, DECCARA, and DECRARA with clipping and wide-cell rules.
+- [ ] Implement DEC Special Graphics and the minimum character-set mappings required by common shells and Vim.
+- [ ] Keep unsupported modes as safe no-ops that do not alter known mode state.
+
+**Acceptance:**
+
+- [ ] The Vim/Neovim minimum set in section 37.2 is implemented or explicitly excluded with a compatibility note.
+- [ ] `vim`, `less`, and `fzf` can redraw through mode changes without parser desynchronization.
+- [ ] All section 38 ESC/CSI/scroll/mode samples have deterministic model tests.
+
+### P4 — Reply Channel and Device Queries
+
+**Goal:** support applications that need terminal replies without coupling parser code to a concrete PTY implementation.
+
+**Dependencies:** P0 reply/write interface, P1 parser, P2 mode state.
+
+**Implementation path:**
+
+- [ ] Add a `TerminalReply`/`ReplySink` abstraction from the terminal model to the PTY writer.
+- [ ] Implement DSR status and CPR, including private CPR and 1-based coordinates.
+- [ ] Implement Primary DA, Secondary DA, optional Tertiary DA, and DECID from a single capability registry.
+- [ ] Implement DECRQM/DECRPM for standard and private modes, including unknown state replies.
+- [ ] Implement DECRQSS for SGR, DECSTBM, DECSLRM, DECSCUSR, and DECSCA.
+- [ ] Implement XTGETTCAP only for capabilities actually supported by Harbor; return explicit failure for unknown names.
+- [ ] Treat window operations as permission-controlled no-ops until a safe window-management API exists.
+- [ ] Add reply escaping, maximum reply lengths, and tests that feed every reply back through a second VT parser.
+
+**Acceptance:**
+
+- [ ] Sections 21–23 and 34 pass protocol-format tests.
+- [ ] `tmux` can query DA, DECRQM, DECRQSS, and XTGETTCAP without hanging.
+- [ ] No response advertises a feature that is still unchecked in `check.md`.
+
+### P5 — OSC, DCS, and Secure String Extensions
+
+**Goal:** turn string framing into useful, permission-controlled terminal features without introducing injection or memory risks.
+
+**Dependencies:** P1 bounded string states, P2 terminal state, P4 reply channel for queries.
+
+**Implementation path:**
+
+- [ ] Add a bounded string payload collector with per-family limits and a discard path.
+- [ ] Implement OSC 0/1/2 title updates through a window-title event, with control-character filtering and length limits.
+- [ ] Implement OSC 7 working-directory tracking as parsed URI state only; never perform file operations from the URI.
+- [ ] Implement OSC 8 hyperlink spans in cells, including explicit close, `id=`, URI limits, and reset/RIS behavior.
+- [ ] Implement OSC 10/11/12 default-color state and OSC 104/110/111/112 resets.
+- [ ] Implement OSC 52 only behind explicit permission, with strict Base64 and decoded-size limits; remote clipboard reads remain disabled by default.
+- [ ] Recognize OSC 133 shell markers and expose them as optional metadata without changing visible text.
+- [ ] Consume unsupported DCS/APC/PM/SOS safely through ST; do not implement Sixel or Kitty graphics until the bounded consume-only path is proven.
+- [ ] Add optional Sixel/Kitty graphics only as separate feature work with independent size, memory, and permission limits.
+
+**Acceptance:**
+
+- [ ] Sections 24–27 and 36 have boundary, limit, cancellation, and permission tests.
+- [ ] Unknown/unsupported string protocols cannot leak payload into the screen.
+- [ ] OSC 8, OSC 52, title, and working-directory behavior is verified through application-level tests.
+
+### P6 — Interactive Input Protocols
+
+**Goal:** make application modes affect bytes sent by the keyboard, mouse, focus, and paste paths.
+
+**Dependencies:** P2 mode state, P3 private modes, P5 string/security policy.
+
+**Implementation path:**
+
+- [ ] Move keyboard encoding behind an `InputEncoder` that reads terminal mode state instead of hard-coding normal arrows.
+- [ ] Implement application cursor keys, application keypad, Home/End/Page keys, function keys, modifier encoding, and terminfo-compatible defaults.
+- [ ] Implement bracketed paste with explicit start/end markers, empty/multiline paste tests, and ESC bytes treated as data.
+- [ ] Implement focus reporting (`CSI I`/`CSI O`) only when enabled.
+- [ ] Implement X10, normal, button, any-event, SGR, urxvt, and optional pixel mouse encodings with mode priority and modifier bits.
+- [ ] Add ModifyOtherKeys and Kitty keyboard protocol only after the traditional key paths are stable.
+- [ ] Integrate IME composition separately; preedit text must never be written directly to the PTY.
+
+**Acceptance:**
+
+- [ ] Sections 28–31 and the corresponding section 37 entries pass deterministic encoder tests.
+- [ ] Vim/tmux receive the expected bytes when switching application cursor/keypad modes.
+- [ ] Paste, focus, mouse, and IME paths cannot inject protocol markers into ordinary application data unexpectedly.
+
+### P7 — Rendering Completion, Performance, and Release Gate
+
+**Goal:** close visual correctness gaps and make the compatibility slice usable under real workloads.
+
+**Dependencies:** P2 state model, P3 character attributes, P5 OSC/graphics policy, P6 input behavior.
+
+**Implementation path:**
+
+- [ ] Add underline styles and underline color, overline, conceal/reveal, and any new cell attributes to the decoration/render pipelines.
+- [ ] Implement combining-mark composition without corrupting the cell grid.
+- [ ] Align DEC Special Graphics and box-drawing glyphs for continuous joins.
+- [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
+- [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
+- [ ] Add damage/backpressure instrumentation and limit redraw frequency during heavy PTY output.
+- [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
+- [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
+- [ ] Promote only evidence-backed items in `check.md` and update the release table.
+
+**Acceptance:**
+
+- [ ] Section 38 samples render correctly, including True Color, curly underline when implemented, and alternate screen.
+- [ ] Section 39 acceptance commands pass on the supported platforms.
+- [ ] No parser fuzz case panics, loops forever, or grows memory without a configured bound.
+- [ ] Benchmark results and known compatibility exclusions are recorded before a daily-use release.
+
+## 6. Product Track: Detailed Milestones
+
+The product milestones below retain the existing implementation notes, task lists, and acceptance criteria. Their heading depth is normalized so the protocol and product tracks are easy to scan independently.
+
+### v0.1: Minimal End-to-End Terminal Loop
 
 > **Status: ✅ Windows complete. Unix PTY is a `bail!()` stub — macOS/Linux cannot launch.**
 
-### Done
+#### Done
 
 **Window & Rendering.** winit window, wgpu surface/device/queue, resize + surface reconfigure, custom text renderer with fixed font/size/colors, full-screen redraw.
 
@@ -41,18 +332,18 @@ Core milestones:
 
 **Acceptance.** `cargo run` opens a window, commands + output work, resize does not crash — all verified on Windows.
 
-### To Do
+#### To Do
 
 - [ ] Unix PTY implementation (macOS/Linux support)
 - [ ] macOS/Linux runtime acceptance verification
 
 ---
 
-## v0.2: Terminal Core (Parser + State + SGR)
+### v0.2: Terminal Core (Parser + State + SGR)
 
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (184 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (199 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
-### Done
+#### Done
 
 **Cell Model.** `Cell` extended with `fg: Color`, `bg: Color`, `attrs: CellAttrs`. `Color` enum: Named(8), Bright, Indexed(256), Rgb. `CellAttrs` bitset: bold, dim, italic, underline, blink, inverse, strikethrough. Default fg/bg support, empty cell (space + defaults).
 
@@ -62,7 +353,7 @@ Core milestones:
 
 **Scrolling Region.** DECSTBM (`CSI r`), scroll/insert/delete operations respect top/bottom margins. Unit-tested with vim-like scenarios.
 
-**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC / CSI s/u). Cursor show/hide (`?25h/l`) intentionally no-op (verified by test). DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar. CHA (CSI G), VPA (CSI d), CNL (CSI E), CPL (CSI F) all implemented and parser-tested.
+**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC / CSI s/u). Cursor visibility (`?25h/l`) is not implemented yet; keep it out of the supported capability set until private-mode state exists. DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar. CHA (CSI G), VPA (CSI d), CNL (CSI E), CPL (CSI F) all implemented and parser-tested.
 
 **Alternate Screen.** Enter/exit (`CSI ?1049h/l`), main screen state preserved on enter and restored on exit. Isolation unit-tested, idempotent re-entry handled.
 
@@ -70,9 +361,9 @@ Core milestones:
 
 **Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled.
 
-**Tests.** 184 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, cursor show/hide (no-op verified), SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
+**Tests.** 199 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
 
-### To Do
+#### To Do
 
 **Parser Hardening**
 - [x] Log unsupported sequences via `tracing::warn!` instead of silent ignore
@@ -91,11 +382,11 @@ Core milestones:
 
 ---
 
-## v0.3: Cell-Based WGPU Renderer (Color + Decorations)
+### v0.3: Cell-Based WGPU Renderer (Color + Decorations)
 
 > **Status: 🟡 Background rects, glyph tint, atlas eviction, decorations (underline/strikethrough/bold/italic/inverse), cursor shapes (block/underline/bar) with DECSCUSR integration, and viewport-offset scrollback rendering done. Combining marks and box drawing pending.**
 
-### Done
+#### Done
 
 **Rendering Architecture.** Glyph atlas pipeline, `CursorComponent`, `BackgroundComponent`, `DecorationComponent`, `ScrollbarComponent` — each with own pipeline, bind group layout, vertex buffer. Full render order in a single pass: clear → cell backgrounds → glyphs → decorations → cursor → scrollbar.
 
@@ -121,7 +412,7 @@ Core milestones:
 
 **Viewport Scrollback Rendering.** `NormalBuf` ring buffer exposes `view_offset` — `cell(display_row, col)` reads from ring at scrolled position. When `view_offset > 0`, all visible rows return as dirty. Renderer reads from scrolled view via same `cell()` path, no special scrollback pass needed.
 
-### To Do
+#### To Do
 
 **Decorations**
 - [x] Underline / strikethrough rendering rect pipeline
@@ -160,11 +451,11 @@ Core milestones:
 
 ---
 
-## v0.4: Interactive Features
+### v0.4: Interactive Features
 
 > **Status: 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering + mouse-drag selection + Ctrl+C/V clipboard done. Double-click/triple-click, IME, mouse protocol, keybindings, hyperlinks pending.**
 
-### Done
+#### Done
 
 **Scrollback Buffer.** `NormalBuf` ring buffer with 1000-line default max capacity. Ring head advances O(1) via pointer bump on full-screen scroll. Visible rows occupy consecutive ring slots starting at `visible_start`. Scrollback tracked via `scroll_count`.
 
@@ -182,7 +473,7 @@ Core milestones:
 
 **Clipboard.** System clipboard integration via `arboard` crate. `Ctrl+C` copies the current selection to the clipboard (returns `Continue` when no selection exists, so the control character reaches the shell). `Ctrl+V` pastes clipboard contents into the PTY input. Clipboard handle degrades gracefully when unavailable (e.g. headless environment) with a logged warning.
 
-### To Do
+#### To Do
 
 **Scrollback**
 - [x] Add scrollback buffer (ring buffer)
@@ -256,11 +547,11 @@ Core milestones:
 
 ---
 
-## v0.5: Performance and Stability
+### v0.5: Performance and Stability
 
 > **Status: 🟡 Row-level damage tracking, incremental renderer updates, PTY batching, ring-buffer scrollback, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
 
-### Done
+#### Done
 
 **Damage Tracking.** `Screen::dirty_rows` provides row-level dirty tracking — `mark_row_dirty()` called during write_char, erase, newline, scroll, insert/delete lines. Full damage on resize (`vec![true; rows]`). TextLayer and BackgroundLayer use dirty_rows for incremental row uploads instead of full rebuild.
 
@@ -274,7 +565,7 @@ Core milestones:
 
 **Memory.** `Cell` representation compact (fixed-size `char` + enum `Color` + `u8` bitset, no heap indirection). `NormalBuf` ring buffer provides O(1) scrollback at fixed memory cost.
 
-### To Do
+#### To Do
 
 **Damage Tracking**
 - [ ] Formal `DamageTracker` struct (currently `dirty_rows: Vec<bool>`)
@@ -329,11 +620,11 @@ Core milestones:
 
 ---
 
-## v0.6: Daily Usable Release
+### v0.6: Daily Usable Release
 
 > **Status: 🔴 Not started.** Target: dogfood-quality daily driver with config, themes, search, packaging.
 
-### Config System
+#### Config System
 - [ ] Add config file (TOML)
 - [ ] Support default config + user config path
 - [ ] Report config parse errors clearly
@@ -347,20 +638,20 @@ Core milestones:
 - [ ] Keybindings config
 - [ ] Window startup size / decorations config
 
-### Themes
+#### Themes
 - [ ] Built-in default theme
 - [ ] 16-color palette + bright colors
 - [ ] Foreground / background / cursor / selection / search colors
 - [ ] Load external theme files
 - [ ] Theme hot reload
 
-### Search
+#### Search
 - [ ] Search scrollback and current screen
 - [ ] Highlight search matches
 - [ ] Next / previous match
 - [ ] Case-sensitive option
 
-### Window / Platform
+#### Window / Platform
 - [ ] Windows basic support (ConPTY + window + renderer)
 - [ ] macOS basic support (font loading OK; PTY stub)
 - [ ] Linux X11 basic support (font loading OK; PTY stub)
@@ -373,13 +664,13 @@ Core milestones:
 - [ ] Window icon
 - [ ] Close confirmation, optional
 
-### Shell Integration
+#### Shell Integration
 - [ ] OSC title update
 - [ ] OSC 8 hyperlink
 - [ ] Working directory tracking, optional
 - [ ] Shell prompt marker, optional
 
-### Logging and Diagnostics
+#### Logging and Diagnostics
 - [ ] `RUST_LOG` controls logging (EnvFilter, not fixed level)
 - [ ] Log file path
 - [ ] Print version, platform, wgpu backend, adapter on startup
@@ -387,7 +678,7 @@ Core milestones:
 - [ ] Toggle performance stats overlay
 - [ ] Debug overlay: FPS, frame time, glyph count, atlas usage, damage rows, PTY bytes/sec
 
-### Packaging and Release
+#### Packaging and Release
 - [ ] Windows `.exe`
 - [ ] macOS `.app`
 - [ ] Linux tarball
@@ -399,7 +690,7 @@ Core milestones:
 - [ ] Basic usage guide
 - [ ] Example config
 
-### Dogfood
+#### Dogfood
 - [ ] Use continuously for 1 day
 - [ ] Use continuously for 1 week
 - [ ] `nvim` / `tmux` / `git` / `cargo build` work
@@ -408,7 +699,7 @@ Core milestones:
 - [ ] Heavy output works
 - [ ] Crash frequency is acceptable
 
-### Acceptance Criteria
+#### Acceptance Criteria
 - [ ] Usable as personal daily terminal
 - [ ] Config file works
 - [ ] Themes work
@@ -421,16 +712,24 @@ Core milestones:
 
 ---
 
-## Milestone Overview
+## 7. Release Gates and Definition of Done
 
-| Version | Core Goal                      | Acceptance Standard                                      | Status                                                                                                                                                          |
-| ------- | ------------------------------ | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1    | End-to-end terminal loop       | Open shell, type commands, display output                | ✅ Windows path done; Unix PTY stub                                                                                                                              |
-| v0.2    | Terminal core (parser + state) | All CSI unit tests pass (184), model state complete      | 🟡 SGR + grid editing + alt screen + DECSTBM + DECSCUSR + cursor done; 184 tests pass; parser hardening + runtime verification pending                           |
-| v0.3    | Color cell renderer            | `ls --color`/`vim` syntax colors correct; atlas + cursor | 🟡 Background + glyph tint + atlas eviction + decorations + cursor shapes (block/underline/bar) + viewport offset done; combining marks, box drawing pending     |
-| v0.4    | Interaction                    | Selection, copy/paste, IME, mouse, scrollback            | 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering + mouse-drag selection + Ctrl+C/V clipboard done; IME, mouse protocol, keybindings pending |
-| v0.5    | Performance                    | Heavy output smooth, low latency, damage tracking        | 🟡 Row-level damage + incremental updates + ring-buffer scrollback + surface/process handling done; latency measurement, benchmarking, memory opt pending        |
-| v0.6    | Daily use                      | Config, themes, search, packaging, dogfood               | 🔴 Not started                                                                                                                                                   |
+- [ ] Every checked item in `check.md` has a focused test or reproducible runtime evidence.
+- [ ] Unknown sequences are consumed safely, and unsupported string payloads never become visible text.
+- [ ] Every string and reply path has explicit size, permission, and cancellation behavior.
+- [ ] DA/DA2/XTGETTCAP advertise only implemented capabilities.
+- [ ] Windows and Unix PTY paths pass the same terminal-model test suite.
+- [ ] The section 37 minimum sets for shell, Vim/Neovim, tmux, and shell integration are either passing or explicitly documented as unsupported.
+- [ ] Section 39 acceptance commands, fuzz checks, benchmarks, and known limitations are recorded before calling the release daily-usable.
+
 ---
+
+## 8. Final Working Agreement
+
+- Run the relevant focused tests before marking a roadmap item complete.
+- Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test` at each phase boundary.
+- Run application smoke tests whenever a change affects PTY, replies, rendering, or input.
+- Keep known compatibility exclusions documented in `check.md` and this roadmap.
+- Do not call the terminal daily-usable until the section 39 acceptance commands, fuzz checks, benchmarks, and known limitations are recorded.
 
 > Build a reliable terminal first. Turn it into a development environment later.
