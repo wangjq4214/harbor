@@ -125,7 +125,7 @@ impl Perform for ScreenHandler<'_> {
                     .min(self.screen.rows() - 1);
                 self.screen.set_cursor(row + 1, self.screen.cursor_x() + 1);
             }
-            b'm' => self.screen.set_sgr(params.as_slice()),
+            b'm' => self.screen.set_sgr(params),
             b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
             b'r' => self
                 .screen

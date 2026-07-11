@@ -41,6 +41,8 @@ pub(super) struct Parser {
     hooked: bool,
     /// When true, DcsEscape returns to DcsIgnore and never calls `put`.
     dcs_ignoring: bool,
+    /// Whether 8-bit C1 sequences are recognized in Ground and string states.
+    c1_enabled: bool,
 }
 
 impl Default for Parser {
@@ -55,6 +57,7 @@ impl Default for Parser {
             string_overflow: false,
             hooked: false,
             dcs_ignoring: false,
+            c1_enabled: false,
         }
     }
 }
@@ -80,6 +83,44 @@ impl Parser {
             State::DcsEscape => self.dcs_escape(performer, byte),
             State::SosPmApcString => self.sos_pm_apc_string(performer, byte),
             State::SosPmApcEscape => self.sos_pm_apc_escape(performer, byte),
+        }
+    }
+
+    /// Configure whether 8-bit C1 sequences are recognized.
+    pub fn set_c1_enabled(&mut self, enabled: bool) {
+        self.c1_enabled = enabled;
+    }
+
+    fn handle_c1<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+        match byte {
+            0x9b => { // CSI
+                self.clear_csi();
+                self.state = State::CsiEntry;
+            }
+            0x9d => { // OSC
+                self.utf8.reset();
+                self.clear_osc();
+                self.state = State::OscString;
+            }
+            0x90 => { // DCS
+                self.clear_csi();
+                self.clear_string();
+                self.state = State::DcsEntry;
+            }
+            0x98 | 0x9e | 0x9f => { // SOS / PM / APC
+                self.clear_string();
+                performer.start_string(byte - 0x40);
+                self.hooked = true;
+                self.state = State::SosPmApcString;
+            }
+            0x9c => { // ST
+                self.enter_ground();
+            }
+            _ => {
+                let final_char = byte - 0x40;
+                performer.esc_dispatch(&[], false, final_char);
+                self.enter_ground();
+            }
         }
     }
 
@@ -128,6 +169,9 @@ impl Parser {
                     self.write_replacement(performer);
                 }
                 performer.print(byte as char);
+            }
+            0x80..=0x9f if self.c1_enabled && self.utf8.len == 0 => {
+                self.handle_c1(performer, byte);
             }
             _ => self.put_utf8_byte(performer, byte),
         }
@@ -206,8 +250,8 @@ impl Parser {
 
     fn csi_entry<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'?' => {
-                self.csi.set_private();
+            0x3c..=0x3f => {
+                self.csi.set_private(byte);
                 self.state = State::CsiParam;
             }
             b'0'..=b'9' => {
@@ -218,20 +262,13 @@ impl Parser {
                 self.csi.push_current();
                 self.state = State::CsiParam;
             }
-            0x3a | 0x3c..=0x3e => {
-                // `:` and extra private markers `<>/=` → ignore path.
-                self.csi.set_malformed();
-                self.state = State::CsiIgnore;
+            0x3a => {
+                self.csi.push_colon();
+                self.state = State::CsiParam;
             }
             0x20..=0x2f => {
-                // Intermediate in entry: SP is valid (DECSCUSR); others mark ignore.
-                if byte == 0x20 {
-                    self.csi.push_intermediate(byte);
-                    self.state = State::CsiIntermediate;
-                } else {
-                    self.csi.set_malformed();
-                    self.state = State::CsiIgnore;
-                }
+                self.csi.push_intermediate(byte);
+                self.state = State::CsiIntermediate;
             }
             0x40..=0x7e => self.csi_dispatch_final(performer, byte),
             0x18 | 0x1a => {
@@ -241,6 +278,9 @@ impl Parser {
             0x1b => {
                 self.clear_csi();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -248,24 +288,13 @@ impl Parser {
 
     fn csi_param<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'?' => self.csi.set_private(),
+            0x3c..=0x3f => self.csi.set_private(byte),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
             b';' => self.csi.push_current(),
-            0x3a | 0x3c..=0x3e => {
-                self.csi.set_malformed();
-                self.state = State::CsiIgnore;
-            }
+            0x3a => self.csi.push_colon(),
             0x20..=0x2f => {
-                if byte == 0x20 {
-                    // Finalize pending param digits before intermediate.
-                    // (Today's single-state CSI collected intermediate without
-                    // forcing push; dispatch still push_current on final.)
-                    self.csi.push_intermediate(byte);
-                    self.state = State::CsiIntermediate;
-                } else {
-                    self.csi.set_malformed();
-                    self.state = State::CsiIgnore;
-                }
+                self.csi.push_intermediate(byte);
+                self.state = State::CsiIntermediate;
             }
             0x40..=0x7e => self.csi_dispatch_final(performer, byte),
             0x18 | 0x1a => {
@@ -275,6 +304,9 @@ impl Parser {
             0x1b => {
                 self.clear_csi();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -283,12 +315,7 @@ impl Parser {
     fn csi_intermediate<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
             0x20..=0x2f => {
-                if byte == 0x20 && self.csi.intermediates().is_empty() {
-                    // Only a single SP is accepted as a valid intermediate today.
-                    self.csi.push_intermediate(byte);
-                } else {
-                    self.csi.set_malformed();
-                }
+                self.csi.push_intermediate(byte);
             }
             0x30..=0x3f => {
                 // Param bytes after intermediate → ignore.
@@ -303,6 +330,9 @@ impl Parser {
             0x1b => {
                 self.clear_csi();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -327,10 +357,10 @@ impl Parser {
                 self.clear_csi();
                 self.state = State::Escape;
             }
-            _ => {
-                // Stay in ignore; swallow intermediates/params.
-                let _ = performer;
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
+            _ => {}
         }
     }
 
@@ -365,6 +395,9 @@ impl Parser {
                 self.enter_ground();
             }
             0x1b => self.state = State::OscStringEscape,
+            0x9c if self.c1_enabled => {
+                self.finish_osc(performer, false);
+            }
             _ => self.push_osc_byte(byte),
         }
     }
@@ -414,8 +447,8 @@ impl Parser {
 
     fn dcs_entry<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'?' => {
-                self.csi.set_private();
+            0x3c..=0x3f => {
+                self.csi.set_private(byte);
                 self.state = State::DcsParam;
             }
             b'0'..=b'9' => {
@@ -426,10 +459,9 @@ impl Parser {
                 self.csi.push_current();
                 self.state = State::DcsParam;
             }
-            0x3a | 0x3c..=0x3e => {
-                self.csi.set_malformed();
-                self.dcs_ignoring = true;
-                self.state = State::DcsIgnore;
+            0x3a => {
+                self.csi.push_colon();
+                self.state = State::DcsParam;
             }
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
@@ -445,6 +477,9 @@ impl Parser {
                 self.clear_csi();
                 self.clear_string();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -452,14 +487,10 @@ impl Parser {
 
     fn dcs_param<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'?' => self.csi.set_private(),
+            0x3c..=0x3f => self.csi.set_private(byte),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
             b';' => self.csi.push_current(),
-            0x3a | 0x3c..=0x3e => {
-                self.csi.set_malformed();
-                self.dcs_ignoring = true;
-                self.state = State::DcsIgnore;
-            }
+            0x3a => self.csi.push_colon(),
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
                 self.state = State::DcsIntermediate;
@@ -474,6 +505,9 @@ impl Parser {
                 self.clear_csi();
                 self.clear_string();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -499,6 +533,9 @@ impl Parser {
                 self.clear_csi();
                 self.clear_string();
                 self.state = State::Escape;
+            }
+            0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
+                performer.execute(byte);
             }
             _ => {}
         }
@@ -528,6 +565,10 @@ impl Parser {
                 self.enter_ground();
             }
             0x1b => self.state = State::DcsEscape,
+            0x9c if self.c1_enabled => {
+                self.end_hooked(performer);
+                self.enter_ground();
+            }
             _ => self.put_string_byte(performer, byte),
         }
     }
@@ -542,6 +583,10 @@ impl Parser {
             0x1b => {
                 self.dcs_ignoring = true;
                 self.state = State::DcsEscape;
+            }
+            0x9c if self.c1_enabled => {
+                self.end_hooked(performer);
+                self.enter_ground();
             }
             _ => {
                 // Swallow payload without put.
@@ -581,6 +626,10 @@ impl Parser {
                 self.enter_ground();
             }
             0x1b => self.state = State::SosPmApcEscape,
+            0x9c if self.c1_enabled => {
+                self.end_hooked(performer);
+                self.enter_ground();
+            }
             _ => self.put_string_byte(performer, byte),
         }
     }

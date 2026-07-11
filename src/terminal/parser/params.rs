@@ -1,50 +1,98 @@
 //! Fixed-capacity CSI/string accumulators and limits.
 
-/// Maximum number of CSI numeric parameters retained.
-pub(super) const MAX_PARAMS: usize = 16;
-/// Maximum number of CSI/ESC intermediate bytes retained.
-pub(super) const MAX_INTERMEDIATES: usize = 2;
-/// Maximum allowed value for a single CSI numeric parameter.
-///
-/// Parameters exceeding this value are treated as malformed and the entire CSI
-/// sequence is ignored with a warning.
-pub(super) const MAX_CSI_PARAM: usize = 65535;
-/// Cap for OSC payload retention. Past this, stop pushing but keep scanning for
-/// terminators.
-pub(super) const MAX_OSC_BYTES: usize = 4096;
-/// Cap for DCS/APC/PM/SOS payload bytes delivered via `put`.
-pub(super) const MAX_STRING_BYTES: usize = 4096;
+pub(crate) const MAX_PARAMS: usize = 16;
+pub(crate) const MAX_SUBPARAMS: usize = 8;
+pub(crate) const MAX_INTERMEDIATES: usize = 2;
+pub(crate) const MAX_CSI_PARAM: usize = 65535;
+pub(crate) const MAX_OSC_BYTES: usize = 4096;
+pub(crate) const MAX_STRING_BYTES: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Param {
+    pub values: [Option<usize>; MAX_SUBPARAMS],
+    pub len: usize,
+}
+
+impl Default for Param {
+    fn default() -> Self {
+        Self {
+            values: [None; MAX_SUBPARAMS],
+            len: 0,
+        }
+    }
+}
+
+impl Param {
+    pub fn get(&self, index: usize) -> Option<usize> {
+        self.values.get(index).and_then(|v| *v)
+    }
+}
 
 /// Fixed CSI parameter list. Empty slots are preserved as `None` (e.g. `CSI ;3 H`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct Params {
-    values: [Option<usize>; MAX_PARAMS],
-    len: usize,
+pub(crate) struct Params {
+    pub(crate) values: [Param; MAX_PARAMS],
+    pub(crate) flat_values: [Option<usize>; MAX_PARAMS],
+    pub(crate) len: usize,
 }
 
 impl Params {
     pub fn get(&self, index: usize) -> Option<usize> {
         if index < self.len {
-            self.values[index]
+            self.values[index].get(0)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_param(&self, index: usize) -> Option<&Param> {
+        if index < self.len {
+            Some(&self.values[index])
         } else {
             None
         }
     }
 
     pub fn as_slice(&self) -> &[Option<usize>] {
-        &self.values[..self.len]
+        &self.flat_values[..self.len]
+    }
+}
+
+impl From<&[Option<usize>]> for Params {
+    fn from(slice: &[Option<usize>]) -> Self {
+        let mut values = [Param::default(); MAX_PARAMS];
+        let mut flat_values = [None; MAX_PARAMS];
+        let len = slice.len().min(MAX_PARAMS);
+        for i in 0..len {
+            values[i] = Param {
+                values: {
+                    let mut vals = [None; MAX_SUBPARAMS];
+                    vals[0] = slice[i];
+                    vals
+                },
+                len: 1,
+            };
+            flat_values[i] = slice[i];
+        }
+        Params {
+            values,
+            flat_values,
+            len,
+        }
     }
 }
 
 /// Accumulator for CSI (and DCS introducer) parameters and intermediates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct CsiAccumulator {
-    values: [Option<usize>; MAX_PARAMS],
+    values: [Param; MAX_PARAMS],
     len: usize,
-    /// Digits being accumulated for the current parameter.
+    /// Digits being accumulated for the current sub-parameter.
     current: Option<usize>,
-    /// Whether this is a private CSI sequence such as `CSI ? 1049 h`.
-    private: bool,
+    /// Sub-parameter list for the current parameter slot.
+    current_param: Param,
+    /// Holds the private marker byte (e.g. b'?', b'>', b'<', b'=') or 0 if none.
+    private: u8,
     /// Set when a parameter or intermediate byte violates expected CSI syntax.
     malformed: bool,
     intermediates: [u8; MAX_INTERMEDIATES],
@@ -57,11 +105,19 @@ impl CsiAccumulator {
     }
 
     pub fn private(&self) -> bool {
-        self.private
+        self.private != 0
     }
 
-    pub fn set_private(&mut self) {
-        self.private = true;
+    pub fn private_marker(&self) -> Option<u8> {
+        if self.private == 0 {
+            None
+        } else {
+            Some(self.private)
+        }
+    }
+
+    pub fn set_private(&mut self, byte: u8) {
+        self.private = byte;
     }
 
     pub fn malformed(&self) -> bool {
@@ -73,8 +129,13 @@ impl CsiAccumulator {
     }
 
     pub fn params(&self) -> Params {
+        let mut flat_values = [None; MAX_PARAMS];
+        for i in 0..self.len {
+            flat_values[i] = self.values[i].get(0);
+        }
         Params {
             values: self.values,
+            flat_values,
             len: self.len,
         }
     }
@@ -83,20 +144,37 @@ impl CsiAccumulator {
         &self.intermediates[..self.intermediate_len]
     }
 
+    pub fn push_colon(&mut self) {
+        if self.current_param.len < MAX_SUBPARAMS {
+            self.current_param.values[self.current_param.len] = self.current;
+            self.current_param.len += 1;
+        } else {
+            self.malformed = true;
+        }
+        self.current = None;
+    }
+
     /// Finishes the current CSI parameter and stores it if there is capacity.
-    ///
-    /// Empty parameters are represented as `None` so dispatch can apply
-    /// sequence-specific defaults.
     pub fn push_current(&mut self) {
+        // Push the pending sub-parameter first
+        if self.current_param.len < MAX_SUBPARAMS {
+            self.current_param.values[self.current_param.len] = self.current;
+            self.current_param.len += 1;
+        } else {
+            self.malformed = true;
+        }
+        self.current = None;
+
+        // Now push the complete Param to self.values
         if self.len < MAX_PARAMS {
-            self.values[self.len] = self.current;
+            self.values[self.len] = self.current_param;
             self.len += 1;
         } else {
             tracing::warn!(
                 "CSI parameter buffer full (max {MAX_PARAMS}), dropping extra parameters",
             );
         }
-        self.current = None;
+        self.current_param = Param::default();
     }
 
     pub fn push_digit(&mut self, digit: u8) {
@@ -120,7 +198,7 @@ impl CsiAccumulator {
 
     /// Finalize params before dispatch: push trailing current if needed.
     pub fn finalize_params(&mut self) {
-        if self.current.is_some() || self.len == 0 {
+        if self.current.is_some() || self.current_param.len > 0 || self.len == 0 {
             self.push_current();
         }
     }

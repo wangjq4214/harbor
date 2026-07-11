@@ -2,7 +2,7 @@
 
 mod core;
 mod handlers;
-mod params;
+pub(crate) mod params;
 mod perform;
 
 #[cfg(test)]

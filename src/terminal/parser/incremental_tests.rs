@@ -229,3 +229,74 @@ fn alt_screen_mid_batch_still_splits_via_terminal() {
         "alt screen should be active after mid-batch switch"
     );
 }
+
+#[test]
+fn c1_8bit_recognition() {
+    // Disabled by default: 0x9B is treated as non-ASCII text, printed as replacement char.
+    {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        feed_all(&mut parser, &mut screen, b"\x9b3A");
+        let text = screen.row_text(0);
+        assert!(text.contains('3') && text.contains('A'));
+    }
+
+    // Enabled explicitly: 0x9B acts as CSI.
+    {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        parser.inner.set_c1_enabled(true);
+        feed_all(&mut parser, &mut screen, b"\x1b[3;3H");
+        assert_eq!(screen.cursor_y(), 2);
+        feed_all(&mut parser, &mut screen, b"\x9b1A"); // CSI 1 A -> cursor up to y=1
+        assert_eq!(screen.cursor_y(), 1);
+    }
+}
+
+#[test]
+fn c0_executable_in_csi() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    // Place cursor at (2,2), then send CSI 1; \x0d (CR) 2 H.
+    // CR executes immediately (cursor moves to col 0), then final H dispatches CUP with params [1, 2].
+    feed_all(&mut parser, &mut screen, b"\x1b[3;3H\x1b[1;\x0d2H");
+    assert_eq!(screen.cursor_y(), 0);
+    assert_eq!(screen.cursor_x(), 1);
+}
+
+#[test]
+fn string_overflow_safety() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    
+    // Send an oversized OSC sequence (> 4096 bytes) followed by terminator then visible text.
+    let mut seq = Vec::new();
+    seq.extend_from_slice(b"\x1b]");
+    for _ in 0..5000 {
+        seq.push(b'a');
+    }
+    seq.extend_from_slice(b"\x07visible");
+    feed_all(&mut parser, &mut screen, &seq);
+    
+    let row = screen.row_text(0);
+    assert!(row.contains("visible"), "row={row:?}");
+    assert!(!row.contains('a'));
+}
+
+#[test]
+fn string_cancellation() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    
+    // Send OSC, then CAN, then normal text.
+    feed_all(&mut parser, &mut screen, b"\x1b]title\x18visible");
+    let row = screen.row_text(0);
+    assert!(row.contains("visible"), "row={row:?}");
+    assert!(!row.contains("title"));
+    
+    // Send DCS, then SUB, then normal text.
+    feed_all(&mut parser, &mut screen, b"\x1bPpayload\x1avisible2");
+    let row = screen.row_text(0);
+    assert!(row.contains("visible2"), "row={row:?}");
+    assert!(!row.contains("payload"));
+}

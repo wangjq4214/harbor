@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   311 |
-| Incomplete or unverified            |   743 |
+| Clearly implemented in current code |   376 |
+| Incomplete or unverified            |   678 |
 
 ## Quick Navigation
 
@@ -44,51 +44,51 @@
 
 | Section                                                                                              | Implemented | Incomplete / Unverified | Total |
 | ---------------------------------------------------------------------------------------------------- | ----------: | ----------------------: | ----: |
-| [1. Basic Parsing Rules](#1-basic-parsing-rules)                                                     |          16 |                      21 |    37 |
-| [2. C0 Control Characters](#2-c0-control-characters)                                                 |          15 |                       8 |    23 |
-| [3. C1 Control Characters](#3-c1-control-characters)                                                 |           6 |                      11 |    17 |
-| [4. ESC Sequences](#4-esc-sequences)                                                                 |           6 |                      19 |    25 |
-| [5. Character Set Selection](#5-character-set-selection)                                             |           0 |                      44 |    44 |
-| [6. CSI Parameter Parsing](#6-csi-parameter-parsing)                                                 |          17 |                      19 |    36 |
-| [7. Cursor Movement](#7-cursor-movement)                                                             |          16 |                       7 |    23 |
-| [8. Save and Restore Cursor](#8-save-and-restore-cursor)                                             |           9 |                       5 |    14 |
-| [9. Erase Operations](#9-erase-operations)                                                           |          11 |                      12 |    23 |
-| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition)  |          13 |                      13 |    26 |
-| [11. Line Operations and Scrolling](#11-line-operations-and-scrolling)                               |          19 |                       4 |    23 |
-| [12. Scrolling Region](#12-scrolling-region)                                                         |          10 |                      10 |    20 |
-| [13. Horizontal Tabs](#13-horizontal-tabs)                                                           |           2 |                      14 |    16 |
-| [14. Autowrap](#14-autowrap)                                                                         |           2 |                      12 |    14 |
-| [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode)                             |           0 |                      10 |    10 |
-| [16. SGR Character Attributes](#16-sgr-character-attributes)                                         |          51 |                      20 |    71 |
-| [17. DEC Private Modes](#17-dec-private-modes)                                                       |           6 |                      35 |    41 |
-| [18. Standard Modes](#18-standard-modes)                                                             |           0 |                       7 |     7 |
-| [19. Cursor Style](#19-cursor-style)                                                                 |           9 |                       1 |    10 |
-| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset)                                       |           3 |                      24 |    27 |
-| [21. Device Status Reports](#21-device-status-reports)                                               |           0 |                      22 |    22 |
-| [22. Mode Queries](#22-mode-queries)                                                                 |           0 |                      12 |    12 |
-| [23. Window Operations](#23-window-operations)                                                       |           0 |                      19 |    19 |
-| [24. OSC Basic Parsing](#24-osc-basic-parsing)                                                       |           8 |                      70 |    78 |
-| [25. DCS Basic Parsing](#25-dcs-basic-parsing)                                                       |           0 |                      42 |    42 |
-| [26. APC, PM and SOS](#26-apc-pm-and-sos)                                                            |           0 |                      18 |    18 |
-| [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) |           6 |                       7 |    13 |
-| [28. Mouse Protocol Output](#28-mouse-protocol-output)                                               |           0 |                      34 |    34 |
-| [29. Bracketed Paste](#29-bracketed-paste)                                                           |           0 |                      10 |    10 |
-| [30. Synchronized Output](#30-synchronized-output)                                                   |           0 |                       9 |     9 |
-| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols)                           |           0 |                      66 |    66 |
-| [32. Rectangular Area Operations](#32-rectangular-area-operations)                                   |           0 |                      11 |    11 |
-| [33. Character Protection Attribute](#33-character-protection-attribute)                             |           0 |                       6 |     6 |
-| [34. Terminal Status Report Strings](#34-terminal-status-report-strings)                             |           0 |                       8 |     8 |
-| [35. Error Recovery](#35-error-recovery)                                                             |           9 |                       8 |    17 |
-| [36. Protocol Security Limits](#36-protocol-security-limits)                                         |           4 |                      18 |    22 |
-| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set)                         |          21 |                      35 |    56 |
-| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples)                                   |          46 |                      37 |    83 |
-| [39. Final Acceptance](#39-final-acceptance)                                                         |           6 |                      15 |    21 |
+| [1. Basic Parsing Rules](#1-basic-parsing-rules) | 37 | 0 | 37 |
+| [2. C0 Control Characters](#2-c0-control-characters) | 21 | 2 | 23 |
+| [3. C1 Control Characters](#3-c1-control-characters) | 16 | 1 | 17 |
+| [4. ESC Sequences](#4-esc-sequences) | 6 | 19 | 25 |
+| [5. Character Set Selection](#5-character-set-selection) | 0 | 44 | 44 |
+| [6. CSI Parameter Parsing](#6-csi-parameter-parsing) | 17 | 19 | 36 |
+| [7. Cursor Movement](#7-cursor-movement) | 16 | 7 | 23 |
+| [8. Save and Restore Cursor](#8-save-and-restore-cursor) | 9 | 5 | 14 |
+| [9. Erase Operations](#9-erase-operations) | 11 | 12 | 23 |
+| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition) | 13 | 13 | 26 |
+| [11. Line Operations and Scrolling](#11-line-operations-and-scrolling) | 19 | 4 | 23 |
+| [12. Scrolling Region](#12-scrolling-region) | 10 | 10 | 20 |
+| [13. Horizontal Tabs](#13-horizontal-tabs) | 2 | 14 | 16 |
+| [14. Autowrap](#14-autowrap) | 2 | 12 | 14 |
+| [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode) | 0 | 10 | 10 |
+| [16. SGR Character Attributes](#16-sgr-character-attributes) | 51 | 20 | 71 |
+| [17. DEC Private Modes](#17-dec-private-modes) | 6 | 35 | 41 |
+| [18. Standard Modes](#18-standard-modes) | 0 | 7 | 7 |
+| [19. Cursor Style](#19-cursor-style) | 9 | 1 | 10 |
+| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 3 | 24 | 27 |
+| [21. Device Status Reports](#21-device-status-reports) | 0 | 22 | 22 |
+| [22. Mode Queries](#22-mode-queries) | 0 | 12 | 12 |
+| [23. Window Operations](#23-window-operations) | 0 | 19 | 19 |
+| [24. OSC Basic Parsing](#24-osc-basic-parsing) | 8 | 70 | 78 |
+| [25. DCS Basic Parsing](#25-dcs-basic-parsing) | 0 | 42 | 42 |
+| [26. APC, PM and SOS](#26-apc-pm-and-sos) | 0 | 18 | 18 |
+| [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) | 13 | 0 | 13 |
+| [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
+| [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
+| [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
+| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 0 | 66 | 66 |
+| [32. Rectangular Area Operations](#32-rectangular-area-operations) | 0 | 11 | 11 |
+| [33. Character Protection Attribute](#33-character-protection-attribute) | 0 | 6 | 6 |
+| [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
+| [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
+| [36. Protocol Security Limits](#36-protocol-security-limits) | 17 | 5 | 22 |
+| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 21 | 35 | 56 |
+| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 46 | 37 | 83 |
+| [39. Final Acceptance](#39-final-acceptance) | 6 | 15 | 21 |
 
 ---
 
 ## 1. Basic Parsing Rules
 
-> Status: 27 / 37 items clearly implemented; 10 incomplete or unverified.
+> Status: 37 / 37 items clearly implemented; 0 incomplete or unverified.
 
 ### 1.1 Incremental Parsing
 
@@ -108,20 +108,20 @@
 * [x] C0 control characters: `0x00..0x1F`
 * [x] ESC: `0x1B`
 * [x] DEL: `0x7F`
-* [ ] CSI parameter bytes: `0x30..0x3F`
-* [ ] Intermediate bytes: `0x20..0x2F`
+* [x] CSI parameter bytes: `0x30..0x3F`
+* [x] Intermediate bytes: `0x20..0x2F`
 * [x] Final byte: `0x40..0x7E`
-* [ ] C1 control characters: `0x80..0x9F`
-* [ ] Supports 7-bit C1 representation
-* [ ] Optionally supports 8-bit C1 representation
-* [ ] Unknown but syntactically valid sequences are fully consumed then ignored
-* [ ] Illegal sequences do not corrupt subsequent normal text
+* [x] C1 control characters: `0x80..0x9F`
+* [x] Supports 7-bit C1 representation
+* [x] Optionally supports 8-bit C1 representation
+* [x] Unknown but syntactically valid sequences are fully consumed then ignored
+* [x] Illegal sequences do not corrupt subsequent normal text
 
 ### 1.3 Parser States
 
 * [x] Ground
 * [x] Escape
-* [ ] Escape Intermediate
+* [x] Escape Intermediate
 * [x] CSI Entry
 * [x] CSI Param
 * [x] CSI Intermediate
@@ -131,19 +131,19 @@
 * [x] DCS Param
 * [x] DCS Intermediate
 * [x] DCS Passthrough
-* [ ] DCS Ignore
+* [x] DCS Ignore
 * [x] SOS/PM/APC String
 * [x] Temporary ESC state before string termination
-* [ ] Discard state after string length exceeded
+* [x] Discard state after string length exceeded
 
 ---
 
 ## 2. C0 Control Characters
 
-> Status: 15 / 23 items clearly implemented; 8 incomplete or unverified.
+> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `NUL` — `0x00`
-* [ ] `ENQ` — `0x05`
+* [x] `ENQ` — `0x05`
 * [x] `BEL` — `0x07`
 * [x] `BS` — `0x08`
 * [x] `HT` — `0x09`
@@ -151,8 +151,8 @@
 * [x] `VT` — `0x0B`
 * [x] `FF` — `0x0C`
 * [x] `CR` — `0x0D`
-* [ ] `SO` — `0x0E`
-* [ ] `SI` — `0x0F`
+* [x] `SO` — `0x0E`
+* [x] `SI` — `0x0F`
 * [x] `CAN` — `0x18`
 * [x] `SUB` — `0x1A`
 * [x] `ESC` — `0x1B`
@@ -160,11 +160,11 @@
 
 ### 2.1 C0 Special Rules
 
-* [ ] `CAN` can abort the current ESC/CSI/OSC/DCS/APC sequence
-* [ ] `SUB` can abort the current ESC/CSI/OSC/DCS/APC sequence
+* [x] `CAN` can abort the current ESC/CSI/OSC/DCS/APC sequence
+* [x] `SUB` can abort the current ESC/CSI/OSC/DCS/APC sequence
 * [x] `ESC` can abort the current CSI and begin a new ESC sequence
 * [x] `BEL` inside an OSC is recognized as a terminator
-* [ ] Executable C0 characters appearing in the CSI parameter area behave correctly
+* [x] Executable C0 characters appearing in the CSI parameter area behave correctly
 * [x] NUL and DEL are not displayed as ordinary characters
 * [ ] LF is not unconditionally treated as CRLF
 * [ ] SO/SI can switch the currently invoked character set
@@ -173,28 +173,28 @@
 
 ## 3. C1 Control Characters
 
-> Status: 6 / 17 items clearly implemented; 11 incomplete or unverified.
+> Status: 16 / 17 items clearly implemented; 1 incomplete or unverified.
 
 ### 3.1 7-bit and 8-bit Forms
 
 * [x] `IND`: `ESC D` / `0x84`
 * [x] `NEL`: `ESC E` / `0x85`
-* [ ] `HTS`: `ESC H` / `0x88`
+* [x] `HTS`: `ESC H` / `0x88`
 * [x] `RI`: `ESC M` / `0x8D`
-* [ ] `SS2`: `ESC N` / `0x8E`
-* [ ] `SS3`: `ESC O` / `0x8F`
-* [ ] `DCS`: `ESC P` / `0x90`
-* [ ] `SOS`: `ESC X` / `0x98`
+* [x] `SS2`: `ESC N` / `0x8E`
+* [x] `SS3`: `ESC O` / `0x8F`
+* [x] `DCS`: `ESC P` / `0x90`
+* [x] `SOS`: `ESC X` / `0x98`
 * [x] `CSI`: `ESC [` / `0x9B`
-* [ ] `ST`: `ESC \` / `0x9C`
+* [x] `ST`: `ESC \` / `0x9C`
 * [x] `OSC`: `ESC ]` / `0x9D`
-* [ ] `PM`: `ESC ^` / `0x9E`
-* [ ] `APC`: `ESC _` / `0x9F`
+* [x] `PM`: `ESC ^` / `0x9E`
+* [x] `APC`: `ESC _` / `0x9F`
 
 ### 3.2 C1 Modes
 
-* [ ] Can distinguish UTF-8 continuation bytes from 8-bit C1
-* [ ] 8-bit C1 support is configurable
+* [x] Can distinguish UTF-8 continuation bytes from 8-bit C1
+* [x] 8-bit C1 support is configurable
 * [x] Does not mistakenly treat illegal UTF-8 bytes as C1 by default
 * [ ] Terminal responses can optionally be generated in 7-bit or 8-bit control form
 
@@ -1200,21 +1200,21 @@
 
 ## 27. String Sequence Interruption and Termination
 
-> Status: 6 / 13 items clearly implemented; 7 incomplete or unverified.
+> Status: 13 / 13 items clearly implemented; 0 incomplete or unverified.
 
 * [x] BEL terminates OSC normally
 * [x] ST terminates OSC normally
-* [ ] ST terminates DCS normally
-* [ ] ST terminates APC normally
-* [ ] ST terminates PM normally
-* [ ] ST terminates SOS normally
+* [x] ST terminates DCS normally
+* [x] ST terminates APC normally
+* [x] ST terminates PM normally
+* [x] ST terminates SOS normally
 * [x] The ESC and backslash of `ESC \` can be fragmented
-* [ ] CAN in a string cancels the current string
-* [ ] SUB in a string cancels the current string
+* [x] CAN in a string cancels the current string
+* [x] SUB in a string cancels the current string
 * [x] Non-ST ESC within a string is handled per target compatibility behavior
 * [x] The next sequence can be parsed immediately after string cancellation
 * [x] Oversized strings do not grow memory indefinitely
-* [ ] Terminators are still recognized while an oversized string is being discarded
+* [x] Terminators are still recognized while an oversized string is being discarded
 
 ---
 
@@ -1449,49 +1449,49 @@
 
 ## 35. Error Recovery
 
-> Status: 9 / 17 items clearly implemented; 8 incomplete or unverified.
+> Status: 17 / 17 items clearly implemented; 0 incomplete or unverified.
 
 * [x] Unknown ESC sequences do not crash
 * [x] Unknown CSI sequences do not crash
 * [x] Unknown OSC sequences do not crash
-* [ ] Unknown DCS sequences do not crash
-* [ ] Unknown APC sequences do not crash
+* [x] Unknown DCS sequences do not crash
+* [x] Unknown APC sequences do not crash
 * [x] CSI parameter overflow does not crash
 * [x] Excessive parameter count does not allocate indefinitely
 * [x] Excessive Intermediates do not allocate indefinitely
 * [x] Unterminated OSC does not allocate indefinitely
-* [ ] Unterminated DCS does not allocate indefinitely
-* [ ] Unterminated APC does not allocate indefinitely
+* [x] Unterminated DCS does not allocate indefinitely
+* [x] Unterminated APC does not allocate indefinitely
 * [x] Can recover when illegal characters enter CSI
-* [ ] CAN can recover from any sequence state
-* [ ] SUB can recover from any sequence state
+* [x] CAN can recover from any sequence state
+* [x] SUB can recover from any sequence state
 * [x] ESC can interrupt CSI and start a new ESC
-* [ ] Normal text displays correctly after a sequence is ignored
-* [ ] Consecutive illegal sequences do not permanently desynchronize the parser
+* [x] Normal text displays correctly after a sequence is ignored
+* [x] Consecutive illegal sequences do not permanently desynchronize the parser
 
 ---
 
 ## 36. Protocol Security Limits
 
-> Status: 4 / 22 items clearly implemented; 18 incomplete or unverified.
+> Status: 17 / 22 items clearly implemented; 5 incomplete or unverified.
 
 * [x] Maximum CSI parameter count
-* [ ] Maximum CSI sub-parameter count
+* [x] Maximum CSI sub-parameter count
 * [x] Maximum parameter value
 * [x] Maximum Intermediate count
-* [ ] Maximum OSC length
-* [ ] Maximum DCS length
-* [ ] Maximum APC length
-* [ ] Maximum PM length
-* [ ] Maximum SOS length
-* [ ] Maximum title length
-* [ ] Maximum hyperlink URI length
-* [ ] Maximum OSC 52 Base64 length
-* [ ] Maximum clipboard decoded length
-* [ ] Maximum image transfer length
-* [ ] Maximum image decoded size
+* [x] Maximum OSC length
+* [x] Maximum DCS length
+* [x] Maximum APC length
+* [x] Maximum PM length
+* [x] Maximum SOS length
+* [x] Maximum title length
+* [x] Maximum hyperlink URI length
+* [x] Maximum OSC 52 Base64 length
+* [x] Maximum clipboard decoded length
+* [x] Maximum image transfer length
+* [x] Maximum image decoded size
 * [x] No further memory allocation after exceeding the limit
-* [ ] Terminator can still be scanned after exceeding the limit
+* [x] Terminator can still be scanned after exceeding the limit
 * [ ] OSC 52 read is restricted by default
 * [ ] OSC 52 write is restricted by default
 * [ ] File transfer protocol is restricted by default
