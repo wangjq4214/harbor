@@ -18,11 +18,13 @@ pub(crate) struct GpuContext {
     queue: wgpu::Queue,
     /// Surface configuration (format, size, present mode).
     config: wgpu::SurfaceConfiguration,
+    /// Shared untextured colored-quad pipeline (background / decoration / selection).
+    colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
 }
 
 impl GpuContext {
-    /// Creates the GPU surface, device, queue, and surface configuration from
-    /// the window. Does not create any render pipelines or layer resources.
+    /// Creates the GPU surface, device, queue, surface configuration, and the
+    /// shared colored-quad pipeline from the window.
     pub(crate) async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         tracing::info!(
@@ -81,11 +83,18 @@ impl GpuContext {
             "gpu context configured"
         );
 
+        let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
+            &device,
+            config.format,
+            "colored-quad pipeline",
+        ));
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
+            colored_quad_pipeline,
         })
     }
 
@@ -119,6 +128,11 @@ impl GpuContext {
     /// Command queue reference.
     pub(crate) fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    /// Shared untextured colored-quad pipeline (background / decoration / selection).
+    pub(crate) fn colored_quad_pipeline(&self) -> Arc<wgpu::RenderPipeline> {
+        Arc::clone(&self.colored_quad_pipeline)
     }
 
     // ── surface-only operations (used exclusively by Renderer) ──────────
@@ -335,6 +349,74 @@ pub(crate) fn create_colored_vertex_buffer(
         label: Some("colored vertex buffer"),
         contents: bytemuck::cast_slice(vertices),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
+/// WGSL for untextured per-vertex color quads (`ColoredVertex` layout).
+const COLORED_QUAD_SHADER: &str = r#"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+}
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(in.position, 0.0, 1.0);
+    out.color = in.color;
+    return out;
+}
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
+
+/// Builds the untextured colored-quad pipeline once at `GpuContext` construction.
+/// Layers clone the `Arc` instead of creating their own GPU objects.
+fn create_colored_quad_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(COLORED_QUAD_SHADER.into()),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(ColoredVertex::layout())],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
     })
 }
 

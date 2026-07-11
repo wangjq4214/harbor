@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     config::{SELECTION_COLOR, TEXT_PADDING},
     render::{
@@ -8,32 +10,6 @@ use crate::{
     terminal::{Screen, SelectionBounds, Terminal},
 };
 use arboard::Clipboard;
-
-// ── Selection shader ────────────────────────────────────────────────────────
-
-/// Simple untextured shader that renders per-vertex color quads (identical to
-/// Decoration's shader, duplicated per "no shared GPU objects" convention).
-const SELECTION_SHADER: &str = r#"
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-}
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    out.position = vec4<f32>(in.position, 0.0, 1.0);
-    out.color = in.color;
-    return out;
-}
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
-}
-"#;
 
 // ── Selection model ─────────────────────────────────────────────────────────
 
@@ -62,7 +38,7 @@ impl SelectionRange {
 // ── Selection ────────────────────────────────────────────────
 
 pub(crate) struct Selection {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Arc<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     /// Number of vertices to draw (0 when no selection).
     vertex_count: u32,
@@ -85,7 +61,7 @@ pub(crate) struct Selection {
 
 impl Selection {
     pub(crate) fn new(gpu: &GpuContext, cell_width: f32, line_height: f32) -> Self {
-        let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
+        let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {
             pipeline,
@@ -106,46 +82,6 @@ impl Selection {
                 cb.ok()
             },
         }
-    }
-
-    /// Compiles the selection shader into a render pipeline.
-    fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("selection shader"),
-            source: wgpu::ShaderSource::Wgsl(SELECTION_SHADER.into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("selection pipeline layout"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        });
-
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("selection pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(ColoredVertex::layout())],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
     }
 
     /// Convert a physical-pixel cursor position to a grid cell (row, col).

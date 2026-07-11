@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     config::TEXT_PADDING,
     render::{
@@ -7,37 +9,12 @@ use crate::{
     terminal::{CellAttrs, Color, Screen},
 };
 
-// ── Background shader ─────────────────────────────────────────────────────────
-
-/// Simple untextured shader that renders per-vertex color quads.
-const BACKGROUND_SHADER: &str = r#"
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-}
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    out.position = vec4<f32>(in.position, 0.0, 1.0);
-    out.color = in.color;
-    return out;
-}
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
-}
-"#;
-
 // ── BackgroundLayer ───────────────────────────────────────────────────────────
 
 /// Draws a solid-color rectangle behind each cell with a non-default background.
 /// Rendered before the text layer so glyphs appear on top.
 pub(crate) struct Background {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Arc<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     dirty: bool,
     rows: usize,
@@ -55,7 +32,7 @@ impl Background {
         cell_width: f32,
         line_height: f32,
     ) -> Self {
-        let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
+        let pipeline = gpu.colored_quad_pipeline();
 
         let rows = screen.rows();
         let cols = screen.cols();
@@ -83,47 +60,6 @@ impl Background {
         layer.dirty = false;
 
         layer
-    }
-
-    /// Creates the render pipeline for untextured colored quads.
-    fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("background shader"),
-            source: wgpu::ShaderSource::Wgsl(BACKGROUND_SHADER.into()),
-        });
-
-        // No bind group layout needed — no textures or uniforms.
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("background pipeline layout"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        });
-
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("background pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(ColoredVertex::layout())],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
     }
 
     /// Builds the 6 × cols vertices for one row, using `cell_width` and `line_height`
