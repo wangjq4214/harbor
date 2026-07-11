@@ -11,9 +11,9 @@ use crate::{
     pty::Pty,
     render::{
         Background, Component, Cursor, Decoration, EventContext, EventResult, FontBook, GpuContext,
-        Scrollbar, Selection, TextMetrics, load_system_fonts,
+        Scrollbar, Selection, Text, TextMetrics, load_system_fonts,
     },
-    terminal::{Screen, Terminal, TerminalSize, TextLayer},
+    terminal::{Screen, Terminal, TerminalSize},
 };
 
 /// Events posted back to the winit event loop from background workers.
@@ -57,7 +57,7 @@ pub(crate) struct UiRoot {
     /// Solid-color background behind each non-default cell.
     background: Background,
     /// Text rendering: glyph atlas + vertex buffer for every grid cell.
-    text: TextLayer,
+    text: Text,
     /// Underline / strikethrough decoration overlay.
     decoration: Decoration,
     /// Text selection: mouse-drag highlight overlay.
@@ -80,7 +80,7 @@ impl UiRoot {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             background: Background::new(gpu, screen, metrics.cell_width, metrics.line_height),
-            text: TextLayer::new(gpu, _fonts, metrics, screen)?,
+            text: Text::new(gpu, _fonts, metrics, screen)?,
             decoration: Decoration::new(gpu, screen, metrics),
             selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),

@@ -576,7 +576,7 @@ pub(crate) fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
 // ── TextLayer ─────────────────────────────────────────────────────────────
 
 /// Holds the text render pipeline, glyph atlas, bind group layout, and pre-allocated vertex buffer.
-pub(crate) struct TextLayer {
+pub(crate) struct Text {
     /// Loaded font set (primary + fallback fonts).
     fonts: FontBook,
     /// Cell dimensions and baseline metrics.
@@ -598,7 +598,7 @@ pub(crate) struct TextLayer {
     cols: usize,
 }
 
-impl TextLayer {
+impl Text {
     /// Creates the text render pipeline, bind group layout, initial glyph atlas,
     /// and pre-allocated vertex buffer from the given GPU context and screen.
     pub(crate) fn new(
@@ -773,7 +773,7 @@ impl TextLayer {
     }
 }
 
-impl Component for TextLayer {
+impl Component for Text {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
         let screen = screen.expect("text layer requires screen");
         let (surf_w, surf_h) = gpu.surface_size();

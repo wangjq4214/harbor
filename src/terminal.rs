@@ -1,7 +1,6 @@
 mod normal_buf;
 mod parser;
 mod screen;
-mod text;
 pub(crate) use normal_buf::NormalBuf;
 use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;
@@ -10,7 +9,6 @@ pub(crate) use screen::Color;
 pub(crate) use screen::CursorShape;
 pub(crate) use screen::Screen;
 pub(crate) use screen::SelectionBounds;
-pub(crate) use text::TextLayer;
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalSize {
