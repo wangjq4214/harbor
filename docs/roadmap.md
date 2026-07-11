@@ -150,9 +150,11 @@ For each phase, use the same loop:
 
 **Dependencies:** P0 test harness.
 
+**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8. Remaining: 8-bit C1, colon subparams, discard-after-limit tests, fuzz.
+
 **Implementation path:**
 
-- [ ] Split parser states into `Ground`, `Escape`, `EscapeIntermediate`, `CsiEntry`, `CsiParam`, `CsiIntermediate`, `CsiIgnore`, and string states for OSC/DCS/APC/PM/SOS.
+- [x] Split parser states into `Ground`, `Escape`, `EscapeIntermediate`, `CsiEntry`, `CsiParam`, `CsiIntermediate`, `CsiIgnore`, and string states for OSC/DCS/APC/PM/SOS.
 - [ ] Implement 7-bit C1 introducers and ST first; make 8-bit C1 recognition an explicit configuration option with a safe default.
 - [ ] Implement byte-class handling for C0, parameter, intermediate, final, CAN, SUB, and nested ESC transitions.
 - [ ] Preserve empty parameters, private markers, intermediate bytes, and colon subparameters without heap growth.

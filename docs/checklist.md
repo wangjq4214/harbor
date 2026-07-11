@@ -88,14 +88,14 @@
 
 ## 1. Basic Parsing Rules
 
-> Status: 16 / 37 items clearly implemented; 21 incomplete or unverified.
+> Status: 27 / 37 items clearly implemented; 10 incomplete or unverified.
 
 ### 1.1 Incremental Parsing
 
-* [ ] Control sequences can be parsed across multiple input fragments
+* [x] Control sequences can be parsed across multiple input fragments
 * [x] A single `ESC` can independently appear at the end of input
 * [x] CSI parameters can span input fragments
-* [ ] OSC, DCS, APC, PM, SOS content can span input fragments
+* [x] OSC, DCS, APC, PM, SOS content can span input fragments
 * [x] The `ESC \` terminator can span input fragments
 * [x] A single input fragment can contain multiple consecutive control sequences
 * [x] Control sequences and plain text can be arbitrarily interleaved
@@ -122,18 +122,18 @@
 * [x] Ground
 * [x] Escape
 * [ ] Escape Intermediate
-* [ ] CSI Entry
+* [x] CSI Entry
 * [x] CSI Param
-* [ ] CSI Intermediate
-* [ ] CSI Ignore
+* [x] CSI Intermediate
+* [x] CSI Ignore
 * [x] OSC String
-* [ ] DCS Entry
-* [ ] DCS Param
-* [ ] DCS Intermediate
-* [ ] DCS Passthrough
+* [x] DCS Entry
+* [x] DCS Param
+* [x] DCS Intermediate
+* [x] DCS Passthrough
 * [ ] DCS Ignore
-* [ ] SOS/PM/APC String
-* [ ] Temporary ESC state before string termination
+* [x] SOS/PM/APC String
+* [x] Temporary ESC state before string termination
 * [ ] Discard state after string length exceeded
 
 ---
