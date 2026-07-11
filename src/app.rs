@@ -15,7 +15,7 @@ use winit::{
 use crate::{
     event::AppEvent,
     pty::Pty,
-    render::{EventContext, EventResult, GpuContext, TextMetrics, load_system_fonts},
+    render::{EventResult, GpuContext, TextMetrics, load_system_fonts},
     terminal::{Terminal, TerminalSize},
 };
 use input::keyboard_input_bytes;
@@ -106,16 +106,7 @@ impl ApplicationHandler<AppEvent> for App {
             pty.resize(new_size);
         }
 
-        let mut deadline: Option<std::time::Instant> = None;
-        let mut ctx = EventContext {
-            gpu,
-            terminal,
-            window,
-            pty,
-            modifiers: self.modifiers,
-            deadline: &mut deadline,
-        };
-        deadline = ui.compact_deadline(&mut ctx);
+        let deadline = ui.compact_deadline(terminal, window);
 
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
@@ -141,22 +132,9 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        // Let interactive components handle events first.
-        // Scope ctx so borrows on gpu/terminal are released before the
-        // fallback prepare after a Handled result.
-        let mut deadline: Option<std::time::Instant> = None;
-
-        let handled = {
-            let mut ctx = EventContext {
-                gpu,
-                terminal,
-                window,
-                pty,
-                modifiers: self.modifiers,
-                deadline: &mut deadline,
-            };
-            ui.handle_event(&event, &mut ctx)
-        };
+        // Interactive layers first — each gets only the rights it needs.
+        // Scope so gpu/terminal borrows are released before prepare-on-Handled.
+        let handled = ui.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
         if handled == EventResult::Handled {
             ui.prepare(
                 self.gpu.as_mut().unwrap(),

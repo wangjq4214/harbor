@@ -7,7 +7,8 @@ use crate::{
         SCROLLBAR_WIDTH, TEXT_PADDING,
     },
     render::{
-        Component,
+        Component, EventResult, ScrollbarInput,
+        caps::{GpuAccess, RedrawAccess, TerminalAccess},
         gpu::{self, ColoredVertex, GpuContext},
     },
     terminal::Screen,
@@ -299,52 +300,51 @@ impl Component for Scrollbar {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..6, 0..1);
     }
+}
 
-    /// Handle cursor and mouse-wheel events for visibility control.
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut crate::render::EventContext<'_>,
-    ) -> crate::render::EventResult {
+impl ScrollbarInput for Scrollbar {
+    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &C) -> EventResult
+    where
+        C: TerminalAccess + GpuAccess + RedrawAccess,
+    {
         match event {
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.cursor_inside = true;
                 self.show();
-                self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
-                ctx.window.request_redraw();
-                crate::render::EventResult::Handled
+                self.prepare(caps.gpu(), Some(caps.terminal().screen()));
+                caps.request_redraw();
+                EventResult::Handled
             }
             winit::event::WindowEvent::CursorMoved { .. } => {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible && self.cursor_inside {
                     self.show();
-                    self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
-                    ctx.window.request_redraw();
+                    self.prepare(caps.gpu(), Some(caps.terminal().screen()));
+                    caps.request_redraw();
                 }
-                crate::render::EventResult::Handled
+                EventResult::Handled
             }
             winit::event::WindowEvent::CursorLeft { .. } => {
                 self.cursor_inside = false;
-                crate::render::EventResult::Continue
+                EventResult::Continue
             }
             winit::event::WindowEvent::MouseWheel { .. } => {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible {
                     self.show();
-                    self.prepare(&*ctx.gpu, Some(ctx.terminal.screen()));
-                    ctx.window.request_redraw();
+                    self.prepare(caps.gpu(), Some(caps.terminal().screen()));
+                    caps.request_redraw();
                 }
-                crate::render::EventResult::Continue
+                EventResult::Continue
             }
-            _ => crate::render::EventResult::Continue,
+            _ => EventResult::Continue,
         }
     }
 
-    /// Auto-hide the scrollbar after the inactivity timeout.
-    fn on_about_to_wait(
-        &mut self,
-        ctx: &mut crate::render::EventContext<'_>,
-    ) -> Option<std::time::Instant> {
+    fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<std::time::Instant>
+    where
+        C: RedrawAccess,
+    {
         if !self.visible {
             return None;
         }
@@ -352,7 +352,7 @@ impl Component for Scrollbar {
         let hide_delay = std::time::Duration::from_millis(crate::config::SCROLLBAR_HIDE_DELAY_MS);
         if elapsed >= hide_delay {
             self.visible = false;
-            ctx.window.request_redraw();
+            caps.request_redraw();
             return None;
         }
         Some(self.last_activity + hide_delay)

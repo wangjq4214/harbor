@@ -3,7 +3,8 @@ use std::time::Instant;
 use crate::{
     config::{BLINK_INTERVAL_MS, TEXT_PADDING},
     render::{
-        Component,
+        Component, CursorInput, EventResult,
+        caps::{GpuAccess, RedrawAccess, TerminalAccess},
         gpu::{self, GpuContext, TexturedVertex},
         metrics::TextMetrics,
     },
@@ -254,48 +255,46 @@ impl Component for Cursor {
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    /// Handle RedrawRequested: sync blink visibility, upload cursor vertices, commit frame.
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut crate::render::EventContext<'_>,
-    ) -> crate::render::EventResult {
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+        self.dirty = true;
+    }
+}
+
+impl CursorInput for Cursor {
+    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &C) -> EventResult
+    where
+        C: TerminalAccess + GpuAccess,
+    {
         match event {
             winit::event::WindowEvent::RedrawRequested => {
-                let screen = ctx.terminal.screen();
+                let screen = caps.terminal().screen();
                 let visible = if screen.cursor_blink() {
                     self.blink_visible()
                 } else {
                     true
                 };
                 self.set_visible(visible, screen);
-                self.prepare(ctx.gpu, Some(screen));
+                self.prepare(caps.gpu(), Some(screen));
                 self.commit_frame();
-                crate::render::EventResult::Continue
+                EventResult::Continue
             }
-            _ => crate::render::EventResult::Continue,
+            _ => EventResult::Continue,
         }
     }
 
-    /// Returns the next blink toggle deadline, or `None` if blinking is off.
-    fn on_about_to_wait(
-        &mut self,
-        ctx: &mut crate::render::EventContext<'_>,
-    ) -> Option<std::time::Instant> {
-        if !ctx.terminal.screen().cursor_blink() {
+    fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<std::time::Instant>
+    where
+        C: TerminalAccess + RedrawAccess,
+    {
+        if !caps.terminal().screen().cursor_blink() {
             return None;
         }
         let visible = self.blink_visible();
         if visible != self.last_rendered_visible {
-            ctx.window.request_redraw();
+            caps.request_redraw();
         }
         let millis = self.blink_start.elapsed().as_millis() as u64;
         let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
         Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms))
-    }
-
-    /// Marks dirty so the next `prepare` re-uploads vertices at the new surface size.
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }

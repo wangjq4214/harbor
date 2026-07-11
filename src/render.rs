@@ -1,4 +1,5 @@
 mod background;
+mod caps;
 mod cursor;
 mod decoration;
 pub(crate) mod font;
@@ -9,6 +10,10 @@ mod selection;
 mod text;
 
 pub(crate) use background::Background;
+pub(crate) use caps::{
+    CursorContext, CursorInput, CursorWaitContext, ScrollbarContext, ScrollbarInput,
+    ScrollbarWaitContext, SelectionContext, SelectionInput,
+};
 pub(crate) use cursor::Cursor;
 pub(crate) use decoration::Decoration;
 pub(crate) use font::{FontBook, load_system_fonts};
@@ -18,11 +23,7 @@ pub(crate) use scrollbar::Scrollbar;
 pub(crate) use selection::Selection;
 pub(crate) use text::Text;
 
-use crate::{pty::Pty, terminal::Screen, terminal::Terminal};
-use std::time::Instant;
-use winit::event::WindowEvent;
-use winit::keyboard::ModifiersState;
-use winit::window::Window;
+use crate::terminal::Screen;
 
 /// Result of an event handler — controls whether propagation continues.
 #[must_use]
@@ -32,18 +33,10 @@ pub(crate) enum EventResult {
     Continue,
 }
 
-/// Shared mutable context passed to component event handlers.
-pub(crate) struct EventContext<'a> {
-    pub(crate) gpu: &'a mut GpuContext,
-    pub(crate) terminal: &'a mut Terminal,
-    pub(crate) window: &'a Window,
-    pub(crate) pty: &'a mut Pty,
-    pub(crate) modifiers: ModifiersState,
-    pub(crate) deadline: &'a mut Option<Instant>,
-}
-
-/// Every UI element: rendering + optional interaction.
-/// Pure-rendering components use the default no-op event handlers.
+/// Every UI element: prepare + draw (+ optional resize).
+///
+/// Interaction is not on this trait. Interactive layers implement the
+/// capability traits in [`caps`] and receive only the rights they need.
 pub(crate) trait Component {
     /// Uploads dirty GPU resources. No-op when nothing changed.
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>);
@@ -54,14 +47,4 @@ pub(crate) trait Component {
     /// dimension-dependent GPU data (e.g. vertex buffers sized to the grid)
     /// should mark themselves dirty here.
     fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {}
-
-    /// Handle a window event. Return `Handled` to stop propagation.
-    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventContext<'_>) -> EventResult {
-        EventResult::Continue
-    }
-
-    /// Called before the event loop blocks; returns the next wake deadline or `None`.
-    fn on_about_to_wait(&mut self, _ctx: &mut EventContext<'_>) -> Option<Instant> {
-        None
-    }
 }

@@ -1,12 +1,16 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
 use crate::{
+    pty::Pty,
     render::{
-        Background, Component, Cursor, Decoration, EventContext, EventResult, FontBook, GpuContext,
-        Scrollbar, Selection, Text, TextMetrics,
+        Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext, Decoration,
+        EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
+        ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, Text, TextMetrics,
     },
-    terminal::{Screen, TerminalSize},
+    terminal::{Screen, Terminal, TerminalSize},
 };
+use winit::keyboard::ModifiersState;
+use winit::window::Window;
 
 /// Container for all UI components. Owns GPU resources and delegates
 /// render / event calls to each component in z-order.
@@ -28,7 +32,7 @@ pub(crate) struct UiRoot {
 impl UiRoot {
     /// Creates all five UI components from the GPU context and font metrics.
     /// The `screen` provides the initial grid state for atlas construction.
-    /// `_fonts` is consumed by `TextLayer::new`.
+    /// `_fonts` is consumed by `Text::new`.
     pub(crate) fn new(
         gpu: &GpuContext,
         screen: &Screen,
@@ -83,42 +87,71 @@ impl UiRoot {
         Component::resize(&mut self.scrollbar, gpu, size);
     }
 
-    /// Bubble: last-declared component gets events first (top layer).
-    /// Pure-rendering components (background/text/decoration) use default
-    /// handle_event which returns Continue, so they don't block.
+    /// Dispatches to interactive layers only, each with the rights it needs.
+    /// Selection first — scrollbar always returns Handled on CursorMoved,
+    /// which would block selection drag updates.
     pub(crate) fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut EventContext<'_>,
+        terminal: &Terminal,
+        window: &Window,
+        gpu: &GpuContext,
+        pty: &mut Pty,
+        modifiers: ModifiersState,
     ) -> EventResult {
-        // Selection comes first — scrollbar always returns Handled on CursorMoved,
-        // which would block selection drag updates.
-        if self.selection.handle_event(event, ctx) == EventResult::Handled {
+        if self.selection.handle_event(
+            event,
+            &mut SelectionContext {
+                terminal,
+                window,
+                pty,
+                modifiers,
+            },
+        ) == EventResult::Handled
+        {
             return EventResult::Handled;
         }
-        if self.scrollbar.handle_event(event, ctx) == EventResult::Handled {
+        if self.scrollbar.handle_event(
+            event,
+            &ScrollbarContext {
+                terminal,
+                gpu,
+                window,
+            },
+        ) == EventResult::Handled
+        {
             return EventResult::Handled;
         }
-        if self.cursor.handle_event(event, ctx) == EventResult::Handled {
+        if self
+            .cursor
+            .handle_event(event, &CursorContext { terminal, gpu })
+            == EventResult::Handled
+        {
             return EventResult::Handled;
         }
         EventResult::Continue
     }
 
-    /// Collects the next wake deadline from all interactive components,
-    /// returning the earliest timeout (cursor blink or scrollbar auto-hide).
+    /// Collects the next wake deadline from interactive components
+    /// (cursor blink or scrollbar auto-hide).
     pub(crate) fn compact_deadline(
         &mut self,
-        ctx: &mut EventContext<'_>,
+        terminal: &Terminal,
+        window: &Window,
     ) -> Option<std::time::Instant> {
         let mut deadline: Option<std::time::Instant> = None;
-        if let Some(d) = self.cursor.on_about_to_wait(ctx) {
+        if let Some(d) = self
+            .cursor
+            .on_about_to_wait(&CursorWaitContext { terminal, window })
+        {
             deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
         }
-        if let Some(d) = self.scrollbar.on_about_to_wait(ctx) {
+        if let Some(d) = self
+            .scrollbar
+            .on_about_to_wait(&ScrollbarWaitContext { window })
+        {
             deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
         }
         deadline
     }
 }
-

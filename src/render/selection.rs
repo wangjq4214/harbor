@@ -1,10 +1,11 @@
 use crate::{
     config::{SELECTION_COLOR, TEXT_PADDING},
     render::{
-        Component, EventContext, EventResult,
+        Component, EventResult, SelectionInput,
+        caps::{ModifiersAccess, PtyAccess, RedrawAccess, TerminalAccess},
         gpu::{self, ColoredVertex, GpuContext},
     },
-    terminal::{Screen, SelectionBounds},
+    terminal::{Screen, SelectionBounds, Terminal},
 };
 use arboard::Clipboard;
 
@@ -221,21 +222,24 @@ impl Selection {
 
     /// Intercepts Ctrl+C (copy selection) and Ctrl+V (paste). Returns
     /// `None` when the event is not a keyboard shortcut we handle.
-    fn try_handle_keyboard(
+    fn try_handle_keyboard<C>(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut EventContext<'_>,
-    ) -> Option<EventResult> {
+        caps: &mut C,
+    ) -> Option<EventResult>
+    where
+        C: TerminalAccess + PtyAccess + ModifiersAccess,
+    {
         let winit::event::WindowEvent::KeyboardInput { event: kbd, .. } = event else {
             return None;
         };
-        if kbd.state != winit::event::ElementState::Pressed || !ctx.modifiers.control_key() {
+        if kbd.state != winit::event::ElementState::Pressed || !caps.modifiers().control_key() {
             return None;
         }
 
         match &kbd.logical_key {
             winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
-                let Some(text) = self.selected_text(ctx.terminal.screen()) else {
+                let Some(text) = self.selected_text(caps.terminal().screen()) else {
                     return Some(EventResult::Continue);
                 };
                 if let Some(clipboard) = self.clipboard.as_mut()
@@ -248,7 +252,7 @@ impl Selection {
             winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
                 if let Some(clipboard) = self.clipboard.as_mut() {
                     match clipboard.get_text() {
-                        Ok(text) => ctx.pty.write(text.as_bytes()),
+                        Ok(text) => caps.pty().write(text.as_bytes()),
                         Err(e) => tracing::warn!(error = %e, "failed to read clipboard text"),
                     }
                 }
@@ -262,7 +266,8 @@ impl Selection {
     fn handle_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
-        ctx: &mut EventContext<'_>,
+        terminal: &Terminal,
+        redraw: &impl RedrawAccess,
     ) -> EventResult {
         self.last_cursor_pos = Some((position.x, position.y));
 
@@ -270,14 +275,14 @@ impl Selection {
             return EventResult::Continue;
         }
 
-        let screen = ctx.terminal.screen();
+        let screen = terminal.screen();
         let (row, col) = self.pixel_to_cell(position.x, position.y, screen.rows(), screen.cols());
-        if let Some(ref mut sel) = self.selection
+        if let Some(sel) = &mut self.selection
             && sel.cursor != (row, col)
         {
             sel.cursor = (row, col);
             self.dirty = true;
-            ctx.window.request_redraw();
+            redraw.request_redraw();
         }
         EventResult::Handled
     }
@@ -286,7 +291,8 @@ impl Selection {
         &mut self,
         state: winit::event::ElementState,
         button: winit::event::MouseButton,
-        ctx: &mut EventContext<'_>,
+        terminal: &Terminal,
+        redraw: &impl RedrawAccess,
     ) -> EventResult {
         if button != winit::event::MouseButton::Left {
             return EventResult::Continue;
@@ -295,7 +301,7 @@ impl Selection {
         match state {
             winit::event::ElementState::Pressed => {
                 if let Some((x, y)) = self.last_cursor_pos {
-                    let screen = ctx.terminal.screen();
+                    let screen = terminal.screen();
                     let (row, col) = self.pixel_to_cell(x, y, screen.rows(), screen.cols());
                     self.selection = Some(SelectionRange {
                         anchor: (row, col),
@@ -303,7 +309,7 @@ impl Selection {
                     });
                     self.dragging = true;
                     self.dirty = true;
-                    ctx.window.request_redraw();
+                    redraw.request_redraw();
                 }
                 EventResult::Handled
             }
@@ -316,11 +322,41 @@ impl Selection {
                     {
                         self.selection = None;
                         self.dirty = true;
-                        ctx.window.request_redraw();
+                        redraw.request_redraw();
                     }
                 }
                 EventResult::Handled
             }
+        }
+    }
+}
+
+impl SelectionInput for Selection {
+    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &mut C) -> EventResult
+    where
+        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess,
+    {
+        // Ctrl+C/V clipboard — before alt-screen check so paste works in
+        // vim/less and copy works from scrollback.
+        if let Some(result) = self.try_handle_keyboard(event, caps) {
+            return result;
+        }
+
+        // In alt-screen mode, let the terminal application handle all mouse events.
+        // Cancel any in-flight drag so state doesn't leak past the boundary.
+        if caps.terminal().is_alt_screen() {
+            self.dragging = false;
+            return EventResult::Continue;
+        }
+
+        match event {
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(*position, caps.terminal(), caps)
+            }
+            winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                self.handle_mouse_input(*state, *button, caps.terminal(), caps)
+            }
+            _ => EventResult::Continue,
         }
     }
 }
@@ -361,42 +397,9 @@ impl Component for Selection {
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut EventContext<'_>,
-    ) -> EventResult {
-        // Ctrl+C/V clipboard — before alt-screen check so paste works in
-        // vim/less and copy works from scrollback.
-        if let Some(result) = self.try_handle_keyboard(event, ctx) {
-            return result;
-        }
-
-        // In alt-screen mode, let the terminal application handle all mouse events.
-        // Cancel any in-flight drag so state doesn't leak past the boundary.
-        if ctx.terminal.is_alt_screen() {
-            self.dragging = false;
-            return EventResult::Continue;
-        }
-
-        match event {
-            winit::event::WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, ctx)
-            }
-            winit::event::WindowEvent::MouseInput { state, button, .. } => {
-                self.handle_mouse_input(*state, *button, ctx)
-            }
-            _ => EventResult::Continue,
-        }
-    }
-
     fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         // Grid dimensions changed; old selection coordinates are stale.
         self.selection = None;
         self.dirty = true;
-    }
-
-    fn on_about_to_wait(&mut self, _ctx: &mut EventContext<'_>) -> Option<std::time::Instant> {
-        None // No timer-driven work.
     }
 }
