@@ -254,6 +254,21 @@ fn c1_8bit_recognition() {
 }
 
 #[test]
+fn c1_st_terminates_strings_after_escape() {
+    for sequence in [
+        b"\x1b]title\x1b\x9cvisible".as_slice(),
+        b"\x1bPqpayload\x1b\x9cvisible".as_slice(),
+        b"\x1bXpayload\x1b\x9cvisible".as_slice(),
+    ] {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        parser.inner.set_c1_enabled(true);
+        feed_all(&mut parser, &mut screen, sequence);
+        assert!(screen.row_text(0).contains("visible"));
+    }
+}
+
+#[test]
 fn c0_executable_in_csi() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();

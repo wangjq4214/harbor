@@ -372,12 +372,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an interactive Windows ConPTY shell"]
     fn shell_prompt_output_is_readable() {
-        if std::env::var("CI").is_ok() || std::env::var("PI_SESSION_FILE").is_ok() {
-            println!("Headless environment detected; skipping ConPTY shell verification.");
-            return;
-        }
-
         let (_pty, mut reader) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();

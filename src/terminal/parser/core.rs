@@ -405,6 +405,7 @@ impl Parser {
     fn osc_string_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
             b'\\' => self.finish_osc(performer, false),
+            0x9c if self.c1_enabled => self.finish_osc(performer, false),
             0x18 | 0x1a => {
                 self.clear_osc();
                 self.enter_ground();
@@ -596,7 +597,7 @@ impl Parser {
 
     fn dcs_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'\\' => {
+            b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
                 self.end_hooked(performer);
                 self.enter_ground();
             }
@@ -636,7 +637,7 @@ impl Parser {
 
     fn sos_pm_apc_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
         match byte {
-            b'\\' => {
+            b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
                 self.end_hooked(performer);
                 self.enter_ground();
             }

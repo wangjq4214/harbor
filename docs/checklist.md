@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   376 |
-| Incomplete or unverified            |   678 |
+| Clearly implemented in current code |   364 |
+| Incomplete or unverified            |   690 |
 
 ## Quick Navigation
 
@@ -45,8 +45,8 @@
 | Section                                                                                              | Implemented | Incomplete / Unverified | Total |
 | ---------------------------------------------------------------------------------------------------- | ----------: | ----------------------: | ----: |
 | [1. Basic Parsing Rules](#1-basic-parsing-rules) | 37 | 0 | 37 |
-| [2. C0 Control Characters](#2-c0-control-characters) | 21 | 2 | 23 |
-| [3. C1 Control Characters](#3-c1-control-characters) | 16 | 1 | 17 |
+| [2. C0 Control Characters](#2-c0-control-characters) | 18 | 5 | 23 |
+| [3. C1 Control Characters](#3-c1-control-characters) | 13 | 4 | 17 |
 | [4. ESC Sequences](#4-esc-sequences) | 6 | 19 | 25 |
 | [5. Character Set Selection](#5-character-set-selection) | 0 | 44 | 44 |
 | [6. CSI Parameter Parsing](#6-csi-parameter-parsing) | 17 | 19 | 36 |
@@ -79,7 +79,7 @@
 | [33. Character Protection Attribute](#33-character-protection-attribute) | 0 | 6 | 6 |
 | [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
 | [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
-| [36. Protocol Security Limits](#36-protocol-security-limits) | 17 | 5 | 22 |
+| [36. Protocol Security Limits](#36-protocol-security-limits) | 11 | 11 | 22 |
 | [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 21 | 35 | 56 |
 | [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 46 | 37 | 83 |
 | [39. Final Acceptance](#39-final-acceptance) | 6 | 15 | 21 |
@@ -140,10 +140,10 @@
 
 ## 2. C0 Control Characters
 
-> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
+> Status: 18 / 23 items clearly implemented; 5 incomplete or unverified.
 
 * [x] `NUL` — `0x00`
-* [x] `ENQ` — `0x05`
+* [ ] `ENQ` — `0x05`
 * [x] `BEL` — `0x07`
 * [x] `BS` — `0x08`
 * [x] `HT` — `0x09`
@@ -151,8 +151,8 @@
 * [x] `VT` — `0x0B`
 * [x] `FF` — `0x0C`
 * [x] `CR` — `0x0D`
-* [x] `SO` — `0x0E`
-* [x] `SI` — `0x0F`
+* [ ] `SO` — `0x0E`
+* [ ] `SI` — `0x0F`
 * [x] `CAN` — `0x18`
 * [x] `SUB` — `0x1A`
 * [x] `ESC` — `0x1B`
@@ -173,16 +173,16 @@
 
 ## 3. C1 Control Characters
 
-> Status: 16 / 17 items clearly implemented; 1 incomplete or unverified.
+> Status: 13 / 17 items clearly implemented; 4 incomplete or unverified.
 
 ### 3.1 7-bit and 8-bit Forms
 
 * [x] `IND`: `ESC D` / `0x84`
 * [x] `NEL`: `ESC E` / `0x85`
-* [x] `HTS`: `ESC H` / `0x88`
+* [ ] `HTS`: `ESC H` / `0x88`
 * [x] `RI`: `ESC M` / `0x8D`
-* [x] `SS2`: `ESC N` / `0x8E`
-* [x] `SS3`: `ESC O` / `0x8F`
+* [ ] `SS2`: `ESC N` / `0x8E`
+* [ ] `SS3`: `ESC O` / `0x8F`
 * [x] `DCS`: `ESC P` / `0x90`
 * [x] `SOS`: `ESC X` / `0x98`
 * [x] `CSI`: `ESC [` / `0x9B`
@@ -1473,7 +1473,7 @@
 
 ## 36. Protocol Security Limits
 
-> Status: 17 / 22 items clearly implemented; 5 incomplete or unverified.
+> Status: 11 / 22 items clearly implemented; 11 incomplete or unverified.
 
 * [x] Maximum CSI parameter count
 * [x] Maximum CSI sub-parameter count
@@ -1484,12 +1484,12 @@
 * [x] Maximum APC length
 * [x] Maximum PM length
 * [x] Maximum SOS length
-* [x] Maximum title length
-* [x] Maximum hyperlink URI length
-* [x] Maximum OSC 52 Base64 length
-* [x] Maximum clipboard decoded length
-* [x] Maximum image transfer length
-* [x] Maximum image decoded size
+* [ ] Maximum title length
+* [ ] Maximum hyperlink URI length
+* [ ] Maximum OSC 52 Base64 length
+* [ ] Maximum clipboard decoded length
+* [ ] Maximum image transfer length
+* [ ] Maximum image decoded size
 * [x] No further memory allocation after exceeding the limit
 * [x] Terminator can still be scanned after exceeding the limit
 * [ ] OSC 52 read is restricted by default
