@@ -63,8 +63,22 @@ fn intermediate_byte_cancels_sequence() {
 }
 
 #[test]
-fn unsupported_param_byte_cancels_sequence() {
-    for &byte in b":<>" {
+fn private_markers_and_colons_parsed() {
+    // Colons should not cancel: CSI : A dispatches and moves cursor up (y goes from 3 to 2)
+    {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        feed(&mut parser, &mut screen, b"\x1b[:A");
+        assert_eq!(
+            screen.cursor_y(),
+            2,
+            "colon sub-parameter separator should not cancel"
+        );
+    }
+
+    // Private markers < and > should set private flag and get ignored for CUU (y stays at 3)
+    for &byte in b"<>" {
         let mut screen = Screen::new(10, 10);
         let mut parser = TerminalParser::default();
         move_to(&mut parser, &mut screen, 4, 4);
@@ -73,12 +87,40 @@ fn unsupported_param_byte_cancels_sequence() {
         assert_eq!(
             screen.cursor_y(),
             3,
-            "byte 0x{:02x} should cancel CSI",
+            "private marker 0x{:02x} should route to private ignore path",
             byte
         );
     }
 }
 
+#[test]
+fn csi_overflow_limits_cancel_sequence() {
+    // Sub-parameter count overflow (> MAX_SUBPARAMS = 8) -> malformed -> cancel (y stays 3)
+    {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        feed(&mut parser, &mut screen, b"\x1b[1:2:3:4:5:6:7:8:9A");
+        assert_eq!(
+            screen.cursor_y(),
+            3,
+            "sub-parameter count overflow should cancel"
+        );
+    }
+
+    // Intermediate count overflow (> MAX_INTERMEDIATES = 2) -> malformed -> cancel (y stays 3)
+    {
+        let mut screen = Screen::new(10, 10);
+        let mut parser = TerminalParser::default();
+        move_to(&mut parser, &mut screen, 4, 4);
+        feed(&mut parser, &mut screen, b"\x1b[   A"); // 3 spaces -> 3 intermediates
+        assert_eq!(
+            screen.cursor_y(),
+            3,
+            "intermediate count overflow should cancel"
+        );
+    }
+}
 #[test]
 fn many_empty_params_does_not_panic() {
     // 17 semicolons → 17 push_current calls → 16 fit, 17th triggers warn.

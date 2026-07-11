@@ -15,7 +15,7 @@ pub(super) trait Perform {
         params: &Params,
         intermediates: &[u8],
         ignore: bool,
-        private: bool,
+        private_marker: Option<u8>,
         action: u8,
     );
 

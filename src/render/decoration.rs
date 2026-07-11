@@ -395,10 +395,10 @@ mod tests {
     fn underline_vertices_for_cell_with_attr() {
         let mut screen = test_screen(2, 3);
         // Set up extended RGB fg + underline.
-        screen.set_sgr(&[Some(38), Some(2), Some(200), Some(50), Some(0)]); // fg = RGB(200,50,0)
-        screen.set_sgr(&[Some(4)]); // underline on
+        screen.set_sgr_slice(&[Some(38), Some(2), Some(200), Some(50), Some(0)]); // fg = RGB(200,50,0)
+        screen.set_sgr_slice(&[Some(4)]); // underline on
         screen.write_char('a');
-        screen.set_sgr(&[Some(0)]); // reset
+        screen.set_sgr_slice(&[Some(0)]); // reset
         screen.write_char(' ');
         screen.write_char(' ');
 
@@ -422,10 +422,10 @@ mod tests {
     #[test]
     fn strikethrough_vertices_for_cell_with_attr() {
         let mut screen = test_screen(2, 2);
-        screen.set_sgr(&[Some(38), Some(2), Some(0), Some(200), Some(50)]); // fg = RGB(0,200,50)
-        screen.set_sgr(&[Some(9)]); // strikethrough on
+        screen.set_sgr_slice(&[Some(38), Some(2), Some(0), Some(200), Some(50)]); // fg = RGB(0,200,50)
+        screen.set_sgr_slice(&[Some(9)]); // strikethrough on
         screen.write_char('x');
-        screen.set_sgr(&[Some(0)]); // reset
+        screen.set_sgr_slice(&[Some(0)]); // reset
         screen.write_char(' ');
 
         let verts = build_strikethrough_vertices(10.0, 20.0, 9.0, 1.5, &screen, 800.0, 600.0);
@@ -468,11 +468,11 @@ mod tests {
     fn no_decoration_for_blank_cell() {
         let mut screen = test_screen(1, 2);
         // Cell 0: underline attr but blank char.
-        screen.set_sgr(&[Some(4)]);
+        screen.set_sgr_slice(&[Some(4)]);
         screen.write_char(' ');
         // Cell 1: strikethrough attr but blank char.
-        screen.set_sgr(&[Some(0)]);
-        screen.set_sgr(&[Some(9)]);
+        screen.set_sgr_slice(&[Some(0)]);
+        screen.set_sgr_slice(&[Some(9)]);
         screen.write_char(' ');
 
         let u = build_underline_vertices(10.0, 20.0, 18.0, 1.5, &screen, 800.0, 600.0);

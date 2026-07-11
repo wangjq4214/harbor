@@ -1,5 +1,6 @@
 use super::NormalBuf;
 use super::normal_buf::CellsIter;
+use super::parser::params::Params;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -388,10 +389,11 @@ impl Screen {
     /// `None` parameters are treated as reset (same as `0`). Multi-parameter sub-sequences
     /// (`38`/`48`) are validated fully; on partial or out-of-range params the pen state is
     /// left unchanged.
-    pub(crate) fn set_sgr(&mut self, params: &[Option<usize>]) {
+    pub(crate) fn set_sgr(&mut self, params: &Params) {
         let mut i = 0usize;
-        while i < params.len() {
-            let n = params[i].unwrap_or_default();
+        while i < params.len {
+            let p = params.get_param(i).expect("index is bounded by params.len");
+            let n = p.get(0).unwrap_or_default();
             match n {
                 0 => {
                     self.current_fg = Color::Default;
@@ -419,49 +421,85 @@ impl Screen {
                 100..=107 => self.current_bg = Color::Bright((n - 100) as u8),
                 38 | 48 => {
                     let is_fg = n == 38;
-                    if i + 1 >= params.len() {
-                        break;
-                    }
-                    let sub = params[i + 1].unwrap_or_default();
-                    match sub {
-                        5 => {
-                            // 256-color: 38;5;N  or  48;5;N
-                            if i + 2 >= params.len() {
-                                break;
-                            }
-                            if let Some(val) = params[i + 2]
-                                && val <= 255
-                            {
-                                if is_fg {
-                                    self.current_fg = Color::Indexed(val as u8);
-                                } else {
-                                    self.current_bg = Color::Indexed(val as u8);
+                    // Check if this parameter has colon sub-parameters
+                    if p.len > 1 {
+                        let sub = p.get(1).unwrap_or_default();
+                        match sub {
+                            5 => {
+                                if let Some(val) = p.get(2)
+                                    && val <= 255
+                                {
+                                    if is_fg {
+                                        self.current_fg = Color::Indexed(val as u8);
+                                    } else {
+                                        self.current_bg = Color::Indexed(val as u8);
+                                    }
                                 }
                             }
-                            i += 2;
-                        }
-                        2 => {
-                            // Truecolor: 38;2;R;G;B  or  48;2;R;G;B
-                            if i + 4 >= params.len() {
-                                break;
-                            }
-                            if let (Some(r), Some(g), Some(b)) =
-                                (params[i + 2], params[i + 3], params[i + 4])
-                                && r <= 255
-                                && g <= 255
-                                && b <= 255
-                            {
-                                if is_fg {
-                                    self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
-                                } else {
-                                    self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                            2 => {
+                                let (r_idx, g_idx, b_idx) =
+                                    if p.len >= 6 { (3, 4, 5) } else { (2, 3, 4) };
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (p.get(r_idx), p.get(g_idx), p.get(b_idx))
+                                    && r <= 255
+                                    && g <= 255
+                                    && b <= 255
+                                {
+                                    if is_fg {
+                                        self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
+                                    } else {
+                                        self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                                    }
                                 }
                             }
-                            i += 4;
+                            _ => {}
                         }
-                        _ => {
-                            // Unknown sub-type; consume sub only (i+1).
-                            i += 1;
+                    } else {
+                        // Semicolon fallback: read subsequent parameters
+                        if i + 1 >= params.len {
+                            break;
+                        }
+                        let next_p = &params.values[i + 1];
+                        let sub = next_p.get(0).unwrap_or_default();
+                        match sub {
+                            5 => {
+                                if i + 2 >= params.len {
+                                    break;
+                                }
+                                if let Some(val) = params.values[i + 2].get(0)
+                                    && val <= 255
+                                {
+                                    if is_fg {
+                                        self.current_fg = Color::Indexed(val as u8);
+                                    } else {
+                                        self.current_bg = Color::Indexed(val as u8);
+                                    }
+                                }
+                                i += 2;
+                            }
+                            2 => {
+                                if i + 4 >= params.len {
+                                    break;
+                                }
+                                if let (Some(r), Some(g), Some(b)) = (
+                                    params.values[i + 2].get(0),
+                                    params.values[i + 3].get(0),
+                                    params.values[i + 4].get(0),
+                                ) && r <= 255
+                                    && g <= 255
+                                    && b <= 255
+                                {
+                                    if is_fg {
+                                        self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
+                                    } else {
+                                        self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                                    }
+                                }
+                                i += 4;
+                            }
+                            _ => {
+                                i += 1;
+                            }
                         }
                     }
                 }
@@ -469,6 +507,11 @@ impl Screen {
             }
             i += 1;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_sgr_slice(&mut self, slice: &[Option<usize>]) {
+        self.set_sgr(&Params::from(slice));
     }
 
     /// Resizes the visible grid while preserving the top-left rectangle of existing cells.

@@ -37,7 +37,7 @@ impl Perform for ScreenHandler<'_> {
         params: &Params,
         intermediates: &[u8],
         ignore: bool,
-        private: bool,
+        private_marker: Option<u8>,
         action: u8,
     ) {
         if ignore {
@@ -48,19 +48,18 @@ impl Perform for ScreenHandler<'_> {
             return;
         }
 
-        if private {
-            match action {
-                b'h' if params.as_slice() == [Some(1049)] => {
+        if let Some(private_marker) = private_marker {
+            match (private_marker, action) {
+                (b'?', b'h') if params.as_slice() == [Some(1049)] => {
                     self.screen.request_alt_enter();
                 }
-                b'l' if params.as_slice() == [Some(1049)] => {
+                (b'?', b'l') if params.as_slice() == [Some(1049)] => {
                     self.screen.request_alt_exit();
                 }
                 _ => {
                     tracing::warn!(
-                        "unsupported private CSI sequence: params={:?} final=0x{:02x}",
+                        "unsupported private CSI sequence: marker=0x{private_marker:02x} params={:?} final=0x{action:02x}",
                         params.as_slice(),
-                        action,
                     );
                 }
             }
@@ -125,7 +124,7 @@ impl Perform for ScreenHandler<'_> {
                     .min(self.screen.rows() - 1);
                 self.screen.set_cursor(row + 1, self.screen.cursor_x() + 1);
             }
-            b'm' => self.screen.set_sgr(params.as_slice()),
+            b'm' => self.screen.set_sgr(params),
             b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
             b'r' => self
                 .screen
