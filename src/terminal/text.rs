@@ -6,10 +6,12 @@ use wgpu::util::DeviceExt;
 
 use crate::{
     config::{FONT_SIZE, TEXT_PADDING},
-    font::FontBook,
-    gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
-    render::Component,
+    render::{
+        Component,
+        font::FontBook,
+        gpu::{self, GpuContext, TexturedVertex},
+        metrics::TextMetrics,
+    },
     terminal::{CellAttrs, Color, Screen, TerminalSize},
 };
 
@@ -871,15 +873,15 @@ impl Component for TextLayer {
 mod tests {
     use super::{GlyphAtlas, MAX_ATLAS_SIZE, TextMetrics, glyph_color};
     use crate::{
-        font::load_system_fonts,
+        render::font::load_system_fonts,
         terminal::{CellAttrs, Color, Terminal},
     };
 
-    fn test_font_book() -> crate::font::FontBook {
+    fn test_font_book() -> crate::render::font::FontBook {
         load_system_fonts().expect("load test font")
     }
 
-    fn test_atlas(fonts: &crate::font::FontBook) -> GlyphAtlas {
+    fn test_atlas(fonts: &crate::render::font::FontBook) -> GlyphAtlas {
         GlyphAtlas::new(TextMetrics::new(fonts))
     }
 

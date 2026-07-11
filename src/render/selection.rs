@@ -1,7 +1,9 @@
 use crate::{
     config::{SELECTION_COLOR, TEXT_PADDING},
-    gpu::{self, ColoredVertex, GpuContext},
-    render::{Component, EventContext, EventResult},
+    render::{
+        Component, EventContext, EventResult,
+        gpu::{self, ColoredVertex, GpuContext},
+    },
     terminal::{Screen, SelectionBounds},
 };
 use arboard::Clipboard;

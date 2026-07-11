@@ -1,4 +1,22 @@
-use crate::{gpu::GpuContext, pty::Pty, terminal::Screen, terminal::Terminal};
+mod background;
+mod cursor;
+mod decoration;
+pub(crate) mod font;
+pub(crate) mod gpu;
+pub(crate) mod metrics;
+mod scrollbar;
+mod selection;
+
+pub(crate) use background::Background;
+pub(crate) use cursor::Cursor;
+pub(crate) use decoration::Decoration;
+pub(crate) use font::{FontBook, load_system_fonts};
+pub(crate) use gpu::GpuContext;
+pub(crate) use metrics::TextMetrics;
+pub(crate) use scrollbar::Scrollbar;
+pub(crate) use selection::Selection;
+
+use crate::{pty::Pty, terminal::Screen, terminal::Terminal};
 use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::keyboard::ModifiersState;

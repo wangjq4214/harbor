@@ -1,4 +1,4 @@
-use crate::{config::TEXT_PADDING, font::FontBook, terminal::TerminalSize};
+use crate::{config::TEXT_PADDING, render::font::FontBook, terminal::TerminalSize};
 
 /// Fixed measurements used to map window pixels to terminal cells.
 #[derive(Clone, Copy)]

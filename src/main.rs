@@ -4,17 +4,9 @@
 )]
 
 mod app;
-mod background;
 mod config;
-mod cursor;
-mod decoration;
-mod font;
-mod gpu;
-mod metrics;
 mod pty;
 mod render;
-mod scrollbar;
-mod selection;
 mod terminal;
 
 use anyhow::{Context as _, Result};

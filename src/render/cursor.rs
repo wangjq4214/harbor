@@ -2,9 +2,11 @@ use std::time::Instant;
 
 use crate::{
     config::{BLINK_INTERVAL_MS, TEXT_PADDING},
-    gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
-    render::Component,
+    render::{
+        Component,
+        gpu::{self, GpuContext, TexturedVertex},
+        metrics::TextMetrics,
+    },
     terminal::{CursorShape, Screen},
 };
 

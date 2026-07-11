@@ -6,8 +6,10 @@ use crate::{
         SCROLLBAR_BORDER_RADIUS, SCROLLBAR_COLOR, SCROLLBAR_MARGIN, SCROLLBAR_MIN_THUMB_HEIGHT,
         SCROLLBAR_WIDTH, TEXT_PADDING,
     },
-    gpu::{self, ColoredVertex, GpuContext},
-    render::Component,
+    render::{
+        Component,
+        gpu::{self, ColoredVertex, GpuContext},
+    },
     terminal::Screen,
 };
 

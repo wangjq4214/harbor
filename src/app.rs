@@ -8,18 +8,12 @@ use winit::{
 };
 
 use crate::{
-    background::Background,
-    cursor::Cursor,
-    decoration::Decoration,
-    font::{FontBook, load_system_fonts},
-    gpu::GpuContext,
-    metrics::TextMetrics,
     pty::Pty,
-    render::{Component, EventContext, EventResult},
-    scrollbar::Scrollbar,
-    selection::Selection,
-    terminal::TextLayer,
-    terminal::{Screen, Terminal, TerminalSize},
+    render::{
+        Background, Component, Cursor, Decoration, EventContext, EventResult, FontBook, GpuContext,
+        Scrollbar, Selection, TextMetrics, load_system_fonts,
+    },
+    terminal::{Screen, Terminal, TerminalSize, TextLayer},
 };
 
 /// Events posted back to the winit event loop from background workers.

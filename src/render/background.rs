@@ -1,7 +1,9 @@
 use crate::{
     config::TEXT_PADDING,
-    gpu::{self, ColoredVertex, GpuContext},
-    render::Component,
+    render::{
+        Component,
+        gpu::{self, ColoredVertex, GpuContext},
+    },
     terminal::{CellAttrs, Color, Screen},
 };
 
