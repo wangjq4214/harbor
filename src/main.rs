@@ -5,12 +5,14 @@
 
 mod app;
 mod config;
+mod event;
 mod pty;
 mod render;
 mod terminal;
 
 use anyhow::{Context as _, Result};
-use app::{App, AppEvent};
+use app::App;
+use event::AppEvent;
 use std::path::PathBuf;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};

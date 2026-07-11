@@ -13,18 +13,13 @@ use winit::{
 };
 
 use crate::{
+    event::AppEvent,
     pty::Pty,
     render::{EventContext, EventResult, GpuContext, TextMetrics, load_system_fonts},
     terminal::{Terminal, TerminalSize},
 };
 use input::keyboard_input_bytes;
 use ui::UiRoot;
-
-/// Events posted back to the winit event loop from background workers.
-pub(crate) enum AppEvent {
-    /// Lightweight wake: PTY reader has appended bytes to the shared buffer.
-    PtyOutputReady,
-}
 
 /// Application state holding the window and its renderer.
 pub(crate) struct App {

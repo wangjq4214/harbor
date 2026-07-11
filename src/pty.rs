@@ -17,7 +17,7 @@ use crate::terminal::TerminalSize;
 
 use winit::event_loop::EventLoopProxy;
 
-use crate::app::AppEvent;
+use crate::event::AppEvent;
 
 /// ConPTY-compatible terminal size; Windows APIs require signed 16-bit cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
