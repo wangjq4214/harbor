@@ -196,7 +196,10 @@ fn lone_esc_at_end_does_not_print() {
     // Resume with final ESC 7 (save cursor) then more text.
     feed_all(&mut parser, &mut screen, b"7more");
     let row = screen.row_text(0);
-    assert!(row.contains("himore") || row.starts_with("hi"), "row={row:?}");
+    assert!(
+        row.contains("himore") || row.starts_with("hi"),
+        "row={row:?}"
+    );
     assert!(!row.contains('\u{1b}'));
 }
 

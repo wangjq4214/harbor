@@ -60,7 +60,6 @@ fn ctrl_letter_to_byte(ch: &str) -> Option<u8> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
