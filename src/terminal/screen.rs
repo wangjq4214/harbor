@@ -772,13 +772,21 @@ impl Screen {
             self.pending_wrap = false;
         }
 
+
+
+        let right_limit = if self.margin_mode {
+            self.margin_right
+        } else {
+            self.normal.cols().saturating_sub(1)
+        };
+
         // 2. Clamp cursor if autowrap is off to prevent overflow
-        if !self.autowrap && self.cursor_x >= self.normal.cols() {
-            self.cursor_x = self.normal.cols().saturating_sub(1);
+        if !self.autowrap && self.cursor_x >= right_limit {
+            self.cursor_x = right_limit;
         }
 
         // 3. If a wide character cannot fit in the remaining columns, wrap immediately
-        if width == 2 && self.cursor_x + 1 >= self.normal.cols() {
+        if width == 2 && self.cursor_x + 1 > right_limit {
             self.newline();
             self.pending_wrap = false;
         }
@@ -787,7 +795,7 @@ impl Screen {
 
         let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
         self.clear_cell_for_write(index);
-        if width == 2 && self.cursor_x + 1 < self.normal.cols() {
+        if width == 2 && self.cursor_x + 1 <= right_limit {
             self.clear_cell_for_write(index + 1);
         }
 
@@ -800,7 +808,7 @@ impl Screen {
             self.current_protected,
         );
 
-        if width == 2 && self.cursor_x + 1 < self.normal.cols() {
+        if width == 2 && self.cursor_x + 1 <= right_limit {
             *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
                 wide_continuation: true,
@@ -813,8 +821,8 @@ impl Screen {
 
         // 4. Advance cursor and handle autowrap boundaries
         self.cursor_x += width;
-        if self.cursor_x >= self.normal.cols() {
-            self.cursor_x = self.normal.cols().saturating_sub(1);
+        if self.cursor_x > right_limit {
+            self.cursor_x = right_limit;
             if self.autowrap {
                 self.pending_wrap = true;
             }
@@ -970,40 +978,50 @@ impl Screen {
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
     pub(crate) fn erase_display(&mut self, mode: usize) {
+        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+            return;
+        }
         self.pending_wrap = false;
         let cell = self.erase_cell();
+        let cols = self.normal.cols();
+        let (left_col, right_col) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, cols - 1)
+        };
+
         match mode {
             0 => {
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start = ring_row * self.normal.cols() + self.cursor_x;
-                self.normal.fill_linear_range_with(
-                    start,
-                    ring_row * self.normal.cols() + self.normal.cols(),
-                    cell,
-                );
+                let start = ring_row * cols + self.cursor_x;
+                let end = ring_row * cols + right_col + 1;
+                self.normal.fill_linear_range_with(start, end, cell);
                 for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
-                    self.normal.fill_row_with(row, cell);
+                    let r_row = self.normal.display_to_ring(row);
+                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
                 }
             }
             1 => {
                 for row in 0..self.cursor_y {
                     self.mark_row_dirty(row);
-                    self.normal.fill_row_with(row, cell);
+                    let r_row = self.normal.display_to_ring(row);
+                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
                 }
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let end = ring_row * self.normal.cols() + self.cursor_x + 1;
-                self.normal
-                    .fill_linear_range_with(ring_row * self.normal.cols(), end, cell);
+                let start = ring_row * cols + left_col;
+                let end = ring_row * cols + self.cursor_x + 1;
+                self.normal.fill_linear_range_with(start, end, cell);
             }
             2 => {
-                for d in 0..self.normal.rows() {
-                    self.normal.fill_row_with(d, cell);
+                for row in 0..self.normal.rows() {
+                    self.mark_row_dirty(row);
+                    let r_row = self.normal.display_to_ring(row);
+                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
                 }
-                self.cursor_x = 0;
-                self.cursor_y = 0;
+                self.home_cursor();
                 self.mark_all_dirty();
             }
             _ => {}
@@ -1012,12 +1030,21 @@ impl Screen {
 
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
+        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+            return;
+        }
         self.pending_wrap = false;
         let cell = self.erase_cell();
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols();
-        let cursor = start + self.cursor_x;
-        let end = ring_row * self.normal.cols() + self.normal.cols();
+        let cols = self.normal.cols();
+        let (left_col, right_col) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, cols - 1)
+        };
+        let start = ring_row * cols + left_col;
+        let cursor = ring_row * cols + self.cursor_x;
+        let end = ring_row * cols + right_col + 1;
         self.mark_row_dirty(self.cursor_y);
         match mode {
             0 => self.normal.fill_linear_range_with(cursor, end, cell),
@@ -1032,24 +1059,43 @@ impl Screen {
     /// Replaces cells with default (space) characters without moving the cursor.
     /// The default parameter (0) acts as 1.
     pub(crate) fn erase_chars(&mut self, n: usize) {
+        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+            return;
+        }
         self.pending_wrap = false;
         let cell = self.erase_cell();
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols() + self.cursor_x;
-        let end = (start + n).min(ring_row * self.normal.cols() + self.normal.cols());
+        let cols = self.normal.cols();
+        let right_col = if self.margin_mode {
+            self.margin_right
+        } else {
+            cols - 1
+        };
+        let start = ring_row * cols + self.cursor_x;
+        let end = (start + n).min(ring_row * cols + right_col + 1);
         self.normal.fill_linear_range_with(start, end, cell);
     }
 
     pub(crate) fn selective_erase_display(&mut self, mode: usize) {
+        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+            return;
+        }
         let erase = self.erase_cell();
+        let cols = self.normal.cols();
+        let (left_col, right_col) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, cols - 1)
+        };
+
         match mode {
             0 => {
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start_idx = ring_row * self.normal.cols() + self.cursor_x;
-                let row_end = ring_row * self.normal.cols() + self.normal.cols();
+                let start_idx = ring_row * cols + self.cursor_x;
+                let row_end = ring_row * cols + right_col + 1;
                 for idx in start_idx..row_end {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1059,8 +1105,9 @@ impl Screen {
                 for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    let r_start = r_row * self.normal.cols();
-                    for idx in r_start..r_start + self.normal.cols() {
+                    let r_start = r_row * cols + left_col;
+                    let r_end = r_row * cols + right_col + 1;
+                    for idx in r_start..r_end {
                         let cell = self.normal.cell_linear_mut(idx);
                         if !cell.protected {
                             *cell = erase;
@@ -1072,8 +1119,9 @@ impl Screen {
                 for row in 0..self.cursor_y {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    let r_start = r_row * self.normal.cols();
-                    for idx in r_start..r_start + self.normal.cols() {
+                    let r_start = r_row * cols + left_col;
+                    let r_end = r_row * cols + right_col + 1;
+                    for idx in r_start..r_end {
                         let cell = self.normal.cell_linear_mut(idx);
                         if !cell.protected {
                             *cell = erase;
@@ -1082,8 +1130,8 @@ impl Screen {
                 }
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start_idx = ring_row * self.normal.cols();
-                let end_idx = start_idx + self.cursor_x + 1;
+                let start_idx = ring_row * cols + left_col;
+                let end_idx = ring_row * cols + self.cursor_x + 1;
                 for idx in start_idx..end_idx {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1095,8 +1143,9 @@ impl Screen {
                 for row in 0..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    let r_start = r_row * self.normal.cols();
-                    for idx in r_start..r_start + self.normal.cols() {
+                    let r_start = r_row * cols + left_col;
+                    let r_end = r_row * cols + right_col + 1;
+                    for idx in r_start..r_end {
                         let cell = self.normal.cell_linear_mut(idx);
                         if !cell.protected {
                             *cell = erase;
@@ -1109,11 +1158,20 @@ impl Screen {
     }
 
     pub(crate) fn selective_erase_line(&mut self, mode: usize) {
+        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+            return;
+        }
         let erase = self.erase_cell();
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start_idx = ring_row * self.normal.cols();
-        let cursor_idx = start_idx + self.cursor_x;
-        let end_idx = start_idx + self.normal.cols();
+        let cols = self.normal.cols();
+        let (left_col, right_col) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, cols - 1)
+        };
+        let start_idx = ring_row * cols + left_col;
+        let cursor_idx = ring_row * cols + self.cursor_x;
+        let end_idx = ring_row * cols + right_col + 1;
         self.mark_row_dirty(self.cursor_y);
         match mode {
             0 => {

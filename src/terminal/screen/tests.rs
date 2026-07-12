@@ -1261,3 +1261,154 @@ fn test_character_set_designation_and_mapping() {
     parser.put_bytes(&mut screen, b"\x0fq");
     assert_eq!(screen.row_text(0), "q─q  ");
 }
+
+#[test]
+fn test_margin_autowrap_and_wide_characters() {
+    let mut screen = Screen::new(5, 8);
+    screen.margin_mode = true;
+    screen.margin_left = 2;
+    screen.margin_right = 5;
+    screen.autowrap = true;
+
+    // Move cursor to (2, 0)
+    screen.cursor_x = 2;
+    screen.cursor_y = 0;
+
+    // Write 'a' -> cursor_x = 3
+    screen.write_char('a');
+    assert_eq!(screen.row_text(0), "  a     ");
+
+    // Write 'b', 'c' -> cursor_x = 5
+    screen.write_char('b');
+    screen.write_char('c');
+    assert_eq!(screen.row_text(0), "  abc   ");
+
+    // Write 'd' -> cursor_x = 5, pending_wrap = true
+    screen.write_char('d');
+    assert_eq!(screen.row_text(0), "  abcd  ");
+    assert!(screen.pending_wrap);
+
+    // Write 'e' -> wraps to row 1, col 2
+    screen.write_char('e');
+    assert_eq!(screen.row_text(0), "  abcd  ");
+    assert_eq!(screen.row_text(1), "  e     ");
+}
+
+#[test]
+fn test_margin_wide_character_wrapping() {
+    let mut screen = Screen::new(5, 8);
+    screen.margin_mode = true;
+    screen.margin_left = 2;
+    screen.margin_right = 5;
+    screen.autowrap = true;
+
+    // Case A: Wide character fits when written at margin_right - 1 (col 4)
+    screen.cursor_x = 4;
+    screen.cursor_y = 0;
+    screen.write_char('中'); // Width 2. Fits at col 4 and 5.
+    assert_eq!(screen.normal.cell(0, 4).ch, '中');
+    assert!(screen.normal.cell(0, 5).wide_continuation);
+    assert_eq!(screen.cursor_x, 5);
+    assert!(screen.pending_wrap);
+
+    // Next character 'x' should wrap to row 1, col 2
+    screen.write_char('x');
+    assert_eq!(screen.normal.cell(1, 2).ch, 'x');
+    assert_eq!(screen.cursor_x, 3);
+
+    // Case B: Wide character does not fit when written at margin_right (col 5)
+    let mut screen2 = Screen::new(5, 8);
+    screen2.margin_mode = true;
+    screen2.margin_left = 2;
+    screen2.margin_right = 5;
+    screen2.autowrap = true;
+    screen2.cursor_x = 5;
+    screen2.cursor_y = 0;
+    screen2.write_char('中'); // Width 2. Col 5 + 1 = 6 > 5. Wraps to row 1, col 2.
+    // Check that row 0, col 5 is unchanged (empty)
+    assert_eq!(screen2.normal.cell(0, 5).ch, ' ');
+    assert!(!screen2.normal.cell(0, 5).wide_continuation);
+    // Check that row 1, col 2 has '中'
+    assert_eq!(screen2.normal.cell(1, 2).ch, '中');
+    assert!(screen2.normal.cell(1, 3).wide_continuation);
+}
+
+#[test]
+fn test_margin_erase_operations() {
+    let mut screen = Screen::new(5, 8);
+    // Fill screen with 'x' directly
+    for r in 0..5 {
+        for c in 0..8 {
+            let cell = screen.normal.cell_mut(r, c);
+            cell.ch = 'x';
+            cell.protected = false;
+        }
+    }
+    assert_eq!(screen.row_text(0), "xxxxxxxx");
+
+    screen.margin_mode = true;
+    screen.margin_left = 2;
+    screen.margin_right = 5;
+
+    // 1. Test erase_chars (ECH) inside margins
+    screen.cursor_y = 2;
+    screen.cursor_x = 3;
+    screen.erase_chars(2); // Erase cols 3 and 4 on row 2
+    // Row 2 should be: "xxx  xxx" (since cols 3 and 4 are erased, others stay 'x')
+    assert_eq!(screen.row_text(2), "xxx  xxx");
+
+    // 2. Test erase_line (EL) mode 1: start of line (left margin) to cursor
+    screen.cursor_y = 3;
+    screen.cursor_x = 3;
+    screen.erase_line(1); // Erase cols 2..=3
+    assert_eq!(screen.row_text(3), "xx  xxxx");
+
+    // 3. Test erase_display (ED) mode 0: cursor to end of screen (within margins)
+    screen.cursor_y = 3;
+    screen.cursor_x = 3;
+    screen.erase_display(0);
+    // Row 3: cursor_x = 3. Erase cols 3..=5. Col 2 was already erased. So row 3 text: "xx    xx"
+    assert_eq!(screen.row_text(3), "xx    xx");
+    // Row 4: all cols 2..=5 erased. So row 4 text: "xx    xx"
+    assert_eq!(screen.row_text(4), "xx    xx");
+    // Row 1: untouched (above cursor) -> "xxxxxxxx"
+    assert_eq!(screen.row_text(1), "xxxxxxxx");
+}
+
+#[test]
+fn test_margin_selective_erase_operations() {
+    let mut screen = Screen::new(5, 8);
+    screen.margin_mode = true;
+    screen.margin_left = 2;
+    screen.margin_right = 5;
+
+    // Fill screen with 'x' and set protection directly
+    for r in 0..5 {
+        for c in 0..8 {
+            let cell = screen.normal.cell_mut(r, c);
+            cell.ch = 'x';
+            if r == 2 && (c == 4 || c == 6) {
+                cell.protected = true;
+            } else {
+                cell.protected = false;
+            }
+        }
+    }
+
+    // Verify fill and protection
+    assert_eq!(screen.row_text(2), "xxxxxxxx");
+    assert!(screen.normal.cell(2, 4).protected);
+    assert!(screen.normal.cell(2, 6).protected);
+
+    // Test selective_erase_line(2) (erase entire line within margins, except protected)
+    screen.cursor_y = 2;
+    screen.cursor_x = 3;
+    screen.selective_erase_line(2);
+    // Columns 2, 3, 5 are unprotected within margins, so they are erased.
+    // Col 4 is protected, so it remains 'x'.
+    // Col 6 is outside margins, so it remains 'x' regardless.
+    // Col 0, 1, 7 are outside margins, so they remain 'x'.
+    // Result: "xx  x xx"
+    assert_eq!(screen.row_text(2), "xx  x xx");
+}
+

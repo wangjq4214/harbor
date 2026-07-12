@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   530 |
-| Incomplete or unverified            |   524 |
+| Clearly implemented in current code |   573 |
+| Incomplete or unverified            |   481 |
 
 ## Quick Navigation
 
@@ -74,14 +74,14 @@
 | [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
 | [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
 | [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
-| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 0 | 66 | 66 |
+| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 37 | 29 | 66 |
 | [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
 | [33. Character Protection Attribute](#33-character-protection-attribute) | 5 | 1 | 6 |
 | [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
 | [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
 | [36. Protocol Security Limits](#36-protocol-security-limits) | 11 | 11 | 22 |
-| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 21 | 35 | 56 |
-| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 54 | 29 | 83 |
+| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 25 | 31 | 56 |
+| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 56 | 27 | 83 |
 | [39. Final Acceptance](#39-final-acceptance) | 6 | 15 | 21 |
 
 ---
@@ -1308,70 +1308,70 @@
 
 ## 31. Keyboard Mode Related Protocols
 
-> Status: 0 / 66 items clearly implemented; 66 incomplete or unverified.
+> Status: 37 / 66 items clearly implemented; 29 incomplete or unverified.
 
 ### 31.1 Application Cursor Keys
 
-* [ ] Normal Up: `ESC [ A`
-* [ ] Normal Down: `ESC [ B`
-* [ ] Normal Right: `ESC [ C`
-* [ ] Normal Left: `ESC [ D`
-* [ ] Application Up: `ESC O A`
-* [ ] Application Down: `ESC O B`
-* [ ] Application Right: `ESC O C`
-* [ ] Application Left: `ESC O D`
-* [ ] `?1 h/l` switches correctly
+* [x] Normal Up: `ESC [ A`
+* [x] Normal Down: `ESC [ B`
+* [x] Normal Right: `ESC [ C`
+* [x] Normal Left: `ESC [ D`
+* [x] Application Up: `ESC O A`
+* [x] Application Down: `ESC O B`
+* [x] Application Right: `ESC O C`
+* [x] Application Left: `ESC O D`
+* [x] `?1 h/l` switches correctly
 
 ### 31.2 Home and End
 
-* [ ] Normal Home encoding
-* [ ] Normal End encoding
-* [ ] Application Home encoding
-* [ ] Application End encoding
+* [x] Normal Home encoding
+* [x] Normal End encoding
+* [x] Application Home encoding
+* [x] Application End encoding
 * [ ] Consistent with terminfo declarations
 
 ### 31.3 Keypad
 
-* [ ] Numeric Keypad mode
-* [ ] Application Keypad mode
-* [ ] `ESC =` switches to Application
-* [ ] `ESC >` switches to Numeric
-* [ ] Keypad Enter
-* [ ] Keypad digits
-* [ ] Keypad operators
+* [x] Numeric Keypad mode
+* [x] Application Keypad mode
+* [x] `ESC =` switches to Application
+* [x] `ESC >` switches to Numeric
+* [x] Keypad Enter
+* [x] Keypad digits
+* [x] Keypad operators
 
 ### 31.4 Function Keys
 
-* [ ] F1
-* [ ] F2
-* [ ] F3
-* [ ] F4
-* [ ] F5
-* [ ] F6
-* [ ] F7
-* [ ] F8
-* [ ] F9
-* [ ] F10
-* [ ] F11
-* [ ] F12
-* [ ] Shift modifier
-* [ ] Alt modifier
-* [ ] Ctrl modifier
-* [ ] Multiple modifier key combinations
+* [x] F1
+* [x] F2
+* [x] F3
+* [x] F4
+* [x] F5
+* [x] F6
+* [x] F7
+* [x] F8
+* [x] F9
+* [x] F10
+* [x] F11
+* [x] F12
+* [x] Shift modifier
+* [x] Alt modifier
+* [x] Ctrl modifier
+* [x] Multiple modifier key combinations
 
 ### 31.5 Editing Keys
 
-* [ ] Insert
-* [ ] Delete
-* [ ] Page Up
-* [ ] Page Down
-* [ ] Home
-* [ ] End
-* [ ] Backspace
-* [ ] Enter
-* [ ] Tab
-* [ ] Shift+Tab
-* [ ] Escape
+* [x] Insert
+* [x] Delete
+* [x] Page Up
+* [x] Page Down
+* [x] Home
+* [x] End
+* [x] Backspace
+* [x] Enter
+* [x] Tab
+* [x] Shift+Tab
+* [x] Escape
 
 ### 31.6 ModifyOtherKeys
 
@@ -1502,7 +1502,7 @@
 
 ## 37. Minimum Modern Compatibility Set
 
-> Status: 21 / 56 items clearly implemented; 35 incomplete or unverified.
+> Status: 25 / 56 items clearly implemented; 31 incomplete or unverified.
 
 ### 37.1 Shell Basic Compatibility
 
@@ -1522,10 +1522,10 @@
 
 ### 37.2 Vim/Neovim Compatibility
 
-* [ ] `?1`
-* [ ] `?6`
-* [ ] `?7`
-* [ ] `?25`
+* [x] `?1`
+* [x] `?6`
+* [x] `?7`
+* [x] `?25`
 * [x] `?1049`
 * [ ] `?2004`
 * [ ] `?1004`
@@ -1576,7 +1576,7 @@
 
 ## 38. Sequence-Level Test Samples
 
-> Status: 54 / 83 items clearly implemented; 29 incomplete or unverified.
+> Status: 56 / 83 items clearly implemented; 27 incomplete or unverified.
 
 ### 38.1 Basic Text and Attributes
 
@@ -1636,8 +1636,8 @@
 
 ### 38.6 Modes
 
-* [ ] `\x1b[?1h`
-* [ ] `\x1b[?1l`
+* [x] `\x1b[?1h`
+* [x] `\x1b[?1l`
 * [x] `\x1b[?7h`
 * [x] `\x1b[?7l`
 * [x] `\x1b[?25h`
