@@ -90,13 +90,6 @@ impl NormalBuf {
         self.cell_mut(display_row, col)
     }
 
-    /// Returns a reference to the cell at `(display_row, col)`
-    /// in the **live** view (no scrollback offset).
-    pub(crate) fn live_cell(&self, display_row: usize, col: usize) -> &Cell {
-        let ring_row = self.display_to_ring(display_row);
-        &self.cells[ring_row * self.cols + col]
-    }
-
     // ── linear-index helpers (for Screen's ring-buffer operations) ──
 
     /// Returns a mutable reference to a cell by linear index.
@@ -110,11 +103,6 @@ impl NormalBuf {
     /// Returns a reference to a cell by linear index.
     pub(crate) fn cell_linear(&self, index: usize) -> &Cell {
         &self.cells[index]
-    }
-
-    /// Fills a contiguous range of cells (linear indices) with defaults.
-    pub(crate) fn fill_linear_range(&mut self, start: usize, end: usize) {
-        self.fill_linear_range_with(start, end, Cell::default());
     }
 
     /// Fills a contiguous range of cells with a specific cell value.
@@ -282,7 +270,7 @@ impl NormalBuf {
     // ── full-screen scroll (O(1) ring-buffer advance) ───────────────
 
     /// Advance the ring by `n` rows when full-screen scrolling.
-    pub(crate) fn scroll_up_full_screen(&mut self, n: usize) {
+    pub(crate) fn scroll_up_full_screen(&mut self, n: usize, cell: Cell) {
         tracing::debug!(
             n,
             visible_start = self.visible_start,
@@ -298,7 +286,7 @@ impl NormalBuf {
         // Blank the newly exposed rows at the bottom of the viewport.
         for i in 0..n {
             let row = (self.visible_start + self.visible_rows - 1 - i) % self.total_rows;
-            self.cells[row * self.cols..(row + 1) * self.cols].fill(Cell::default());
+            self.cells[row * self.cols..(row + 1) * self.cols].fill(cell);
         }
         if self.view_offset > 0 {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
@@ -495,7 +483,7 @@ mod tests {
     fn scroll_up_full_screen_advances_ring() {
         let mut buf = NormalBuf::new(2, 3);
         let old_start = buf.visible_start;
-        buf.scroll_up_full_screen(1);
+        buf.scroll_up_full_screen(1, Cell::default());
         assert_eq!(
             buf.visible_start,
             (old_start + 1) % buf.total_rows,

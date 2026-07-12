@@ -26,7 +26,7 @@ impl Perform for ScreenHandler<'_> {
             0x07 => {}
             0x08 => self.screen.backspace(),
             0x09 => self.screen.horizontal_tab(),
-            0x0a..=0x0c => self.screen.newline(),
+            0x0a..=0x0c => self.screen.line_feed(),
             0x0d => self.screen.carriage_return(),
             _ => {}
         }
@@ -50,11 +50,20 @@ impl Perform for ScreenHandler<'_> {
 
         if let Some(private_marker) = private_marker {
             match (private_marker, action) {
-                (b'?', b'h') if params.as_slice() == [Some(1049)] => {
-                    self.screen.request_alt_enter();
+                (b'?', b'h' | b'l') => {
+                    let enabled = action == b'h';
+                    for param_opt in params.as_slice() {
+                        if let Some(param) = *param_opt {
+                            self.screen.set_private_mode(param, enabled);
+                        }
+                    }
                 }
-                (b'?', b'l') if params.as_slice() == [Some(1049)] => {
-                    self.screen.request_alt_exit();
+                (b'?', b'J') => {
+                    self.screen
+                        .selective_erase_display(Self::param(params, 0, 0));
+                }
+                (b'?', b'K') => {
+                    self.screen.selective_erase_line(Self::param(params, 0, 0));
                 }
                 _ => {
                     tracing::warn!(
@@ -66,27 +75,22 @@ impl Perform for ScreenHandler<'_> {
             return;
         }
 
-        // Handle SP intermediate: currently only CSI Ps SP q (DECSCUSR).
-        if intermediates == [b' '] {
-            if action == b'q' {
+        if !intermediates.is_empty() {
+            if intermediates == [b' '] && action == b'q' {
                 self.screen.set_cursor_style(Self::param(params, 0, 1));
+            } else if intermediates == [b'!'] && action == b'p' {
+                self.screen.soft_reset();
+            } else if intermediates == [b'"'] && action == b'q' {
+                self.screen
+                    .set_character_protection(Self::param(params, 0, 0));
             } else {
                 tracing::warn!(
-                    "unrecognized CSI sequence with SP intermediate: params={:?} final=0x{:02x}",
+                    "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
+                    intermediates,
                     params.as_slice(),
                     action,
                 );
             }
-            return;
-        }
-
-        if !intermediates.is_empty() {
-            tracing::warn!(
-                "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
-                intermediates,
-                params.as_slice(),
-                action,
-            );
             return;
         }
 
@@ -106,30 +110,35 @@ impl Perform for ScreenHandler<'_> {
                 self.screen.carriage_return();
             }
             b'G' => {
-                // CHA: cursor horizontal absolute (1-based → 0-based).
-                let col = Self::param(params, 0, 1)
-                    .saturating_sub(1)
-                    .min(self.screen.cols() - 1);
-                self.screen.set_cursor(self.screen.cursor_y() + 1, col + 1);
+                self.screen.set_cursor_col(Self::param(params, 0, 1));
             }
-            b'H' | b'f' => self
-                .screen
-                .set_cursor(Self::param(params, 0, 1), Self::param(params, 1, 1)),
+            b'H' | b'f' => {
+                self.screen
+                    .set_cursor_position(Self::param(params, 0, 1), Self::param(params, 1, 1));
+            }
             b'J' => self.screen.erase_display(Self::param(params, 0, 0)),
             b'K' => self.screen.erase_line(Self::param(params, 0, 0)),
             b'd' => {
-                // VPA: vertical position absolute (1-based → 0-based).
-                let row = Self::param(params, 0, 1)
-                    .saturating_sub(1)
-                    .min(self.screen.rows() - 1);
-                self.screen.set_cursor(row + 1, self.screen.cursor_x() + 1);
+                self.screen.set_cursor_row(Self::param(params, 0, 1));
+            }
+            b'g' => {
+                self.screen.clear_tab_stops(Self::param(params, 0, 0));
             }
             b'm' => self.screen.set_sgr(params),
             b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
             b'r' => self
                 .screen
                 .set_scroll_region(Self::param(params, 0, 0), Self::param(params, 1, 0)),
-            b's' => self.screen.save_cursor(),
+            b's' => {
+                if self.screen.margin_mode {
+                    self.screen.set_left_right_margins(
+                        Self::param(params, 0, 0),
+                        Self::param(params, 1, 0),
+                    );
+                } else {
+                    self.screen.save_cursor();
+                }
+            }
             b'u' => self.screen.restore_cursor(),
             b'@' => self.screen.insert_chars(Self::param(params, 0, 1)),
             b'P' => self.screen.delete_chars(Self::param(params, 0, 1)),
@@ -137,6 +146,14 @@ impl Perform for ScreenHandler<'_> {
             b'M' => self.screen.delete_lines(Self::param(params, 0, 1)),
             b'S' => self.screen.scroll_up_region(Self::param(params, 0, 1)),
             b'T' => self.screen.scroll_down_region(Self::param(params, 0, 1)),
+            b'h' | b'l' => {
+                let enabled = action == b'h';
+                for param_opt in params.as_slice() {
+                    if let Some(param) = *param_opt {
+                        self.screen.set_standard_mode(param, enabled);
+                    }
+                }
+            }
             _ => {
                 tracing::warn!(
                     "unsupported CSI sequence: params={:?} final=0x{:02x}",
@@ -160,14 +177,16 @@ impl Perform for ScreenHandler<'_> {
                 self.screen.reset_display();
             }
             b'D' => {
-                self.screen.newline();
+                self.screen.line_feed();
             }
             b'E' => {
                 self.screen.newline();
-                self.screen.carriage_return();
             }
             b'M' => {
                 self.screen.reverse_index();
+            }
+            b'H' => {
+                self.screen.set_tab_stop();
             }
             b'7' => {
                 self.screen.save_cursor();

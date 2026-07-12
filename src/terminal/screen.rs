@@ -137,13 +137,15 @@ pub(crate) struct Cell {
     /// Character currently displayed in this cell.
     pub(crate) ch: char,
     /// True when this cell is the hidden trailing half of a double-width character.
-    wide_continuation: bool,
+    pub(crate) wide_continuation: bool,
     /// Foreground color.
     pub(crate) fg: Color,
     /// Background color.
     pub(crate) bg: Color,
     /// Text style attributes.
     pub(crate) attrs: CellAttrs,
+    /// True if this character is protected against selective erasure (DECSCA).
+    pub(crate) protected: bool,
 }
 
 impl Default for Cell {
@@ -154,18 +156,27 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             attrs: CellAttrs::default(),
+            protected: false,
         }
     }
 }
 
 impl Cell {
     /// Sets all fields atomically (ensures no field is forgotten on add).
-    pub(crate) fn set(&mut self, ch: char, fg: Color, bg: Color, attrs: CellAttrs) {
+    pub(crate) fn set(
+        &mut self,
+        ch: char,
+        fg: Color,
+        bg: Color,
+        attrs: CellAttrs,
+        protected: bool,
+    ) {
         self.ch = ch;
         self.wide_continuation = false;
         self.fg = fg;
         self.bg = bg;
         self.attrs = attrs;
+        self.protected = protected;
     }
 }
 
@@ -178,6 +189,9 @@ struct SavedCursor {
     fg: Color,
     bg: Color,
     attrs: CellAttrs,
+    origin_mode: bool,
+    autowrap: bool,
+    pending_wrap: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -208,9 +222,9 @@ pub(crate) struct Screen {
     /// Whether the alternate screen is active.
     in_alt: bool,
     /// 0-based column within the current row.
-    cursor_x: usize,
+    pub(crate) cursor_x: usize,
     /// 0-based row index.
-    cursor_y: usize,
+    pub(crate) cursor_y: usize,
     /// Current SGR foreground applied to each character written.
     current_fg: Color,
     /// Current SGR background applied to each character written.
@@ -231,6 +245,28 @@ pub(crate) struct Screen {
     saved_cursor: Option<SavedCursor>,
     /// Saved normal-screen state while the alternate screen is active.
     alt_saved: Option<AltSavedState>,
+    /// Standard autowrap mode (DECAWM).
+    pub(crate) autowrap: bool,
+    /// Pending wrap state: true if cursor_x reached cols but hasn't wrapped yet.
+    pub(crate) pending_wrap: bool,
+    /// Whether the cursor is visible (DECTCEM).
+    pub(crate) cursor_visible: bool,
+    /// Origin mode (DECOM).
+    pub(crate) origin_mode: bool,
+    /// Horizontal left/right margin mode (DECLRMM).
+    pub(crate) margin_mode: bool,
+    /// Left margin column (0-based, inclusive).
+    pub(crate) margin_left: usize,
+    /// Right margin column (0-based, inclusive).
+    pub(crate) margin_right: usize,
+    /// Tab stop indicators for each column.
+    pub(crate) tab_stops: Vec<bool>,
+    /// Current Select Character Protection Attribute (DECSCA).
+    pub(crate) current_protected: bool,
+    /// Standard insert/replace mode (IRM).
+    pub(crate) insert_mode: bool,
+    /// Standard line feed/new line mode (LNM).
+    pub(crate) line_feed_mode: bool,
 }
 
 /// State saved when entering the alternate screen and restored on exit.
@@ -250,6 +286,17 @@ struct AltSavedState {
     saved_cursor: Option<SavedCursor>,
     visible_start: usize,
     scroll_count: usize,
+    origin_mode: bool,
+    autowrap: bool,
+    pending_wrap: bool,
+    cursor_visible: bool,
+    margin_mode: bool,
+    margin_left: usize,
+    margin_right: usize,
+    tab_stops: Vec<bool>,
+    current_protected: bool,
+    insert_mode: bool,
+    line_feed_mode: bool,
 }
 
 impl Screen {
@@ -271,6 +318,25 @@ impl Screen {
             cursor_blink: true,
             saved_cursor: None,
             alt_saved: None,
+            autowrap: true,
+            pending_wrap: false,
+            cursor_visible: true,
+            origin_mode: false,
+            margin_mode: false,
+            margin_left: 0,
+            margin_right: cols - 1,
+            tab_stops: {
+                let mut stops = vec![false; cols];
+                for (col, stop) in stops.iter_mut().enumerate() {
+                    if col % 8 == 0 {
+                        *stop = true;
+                    }
+                }
+                stops
+            },
+            current_protected: false,
+            insert_mode: false,
+            line_feed_mode: false,
         }
     }
 
@@ -280,26 +346,18 @@ impl Screen {
     pub(crate) fn cols(&self) -> usize {
         self.normal.cols()
     }
-
-    /// Number of saved scrollback rows (for scrollbar rendering).
     pub(crate) fn scroll_count(&self) -> usize {
         self.normal.scroll_count()
     }
-
-    /// View offset from live bottom (for scrollbar rendering).
     pub(crate) fn view_offset(&self) -> usize {
         self.normal.view_offset()
     }
-
-    /// Visible row count (for scrollbar rendering).
     pub(crate) fn visible_rows(&self) -> usize {
         self.normal.rows()
     }
-
     pub(crate) fn cursor_x(&self) -> usize {
         self.cursor_x
     }
-
     pub(crate) fn cursor_y(&self) -> usize {
         if self.normal.view_offset() > 0 {
             // Force cursor off-screen when viewing scrollback.
@@ -308,15 +366,15 @@ impl Screen {
             self.cursor_y
         }
     }
-
     pub(crate) fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
     }
-
     pub(crate) fn cursor_blink(&self) -> bool {
         self.cursor_blink
     }
-
+    pub(crate) fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
     pub(crate) fn set_cursor_style(&mut self, ps: usize) {
         let (shape, blink) = match ps {
             0 => (CursorShape::Bar, true),
@@ -326,20 +384,17 @@ impl Screen {
             4 => (CursorShape::Underline, false),
             5 => (CursorShape::Bar, true),
             6 => (CursorShape::Bar, false),
-            _ => return,
+            _ => (CursorShape::default(), true),
         };
         self.cursor_shape = shape;
         self.cursor_blink = blink;
     }
-
     pub(crate) fn cells(&self) -> CellsIter<'_> {
         self.normal.cells()
     }
-
     pub(crate) fn cell_char(&self, row: usize, col: usize) -> char {
         self.normal.cell(row, col).ch
     }
-
     pub(crate) fn cell(&self, row: usize, col: usize) -> &Cell {
         self.normal.cell(row, col)
     }
@@ -583,33 +638,84 @@ impl Screen {
 
     /// Resets `cursor_x` to column 0, implementing the carriage-return (`\r`) semantics.
     pub(crate) fn carriage_return(&mut self) {
-        self.cursor_x = 0;
+        self.pending_wrap = false;
+        self.cursor_x = if self.margin_mode {
+            self.margin_left
+        } else {
+            0
+        };
     }
 
     pub(crate) fn cursor_up(&mut self, n: usize) {
-        self.cursor_y = self.cursor_y.saturating_sub(n);
+        self.pending_wrap = false;
+        let limit = if self.origin_mode
+            || (self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom)
+        {
+            self.scroll_top
+        } else {
+            0
+        };
+        self.cursor_y = self.cursor_y.saturating_sub(n).max(limit);
     }
 
     pub(crate) fn cursor_down(&mut self, n: usize) {
-        self.cursor_y = self.cursor_y.saturating_add(n).min(self.normal.rows() - 1);
+        self.pending_wrap = false;
+        let limit = if self.origin_mode
+            || (self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom)
+        {
+            self.scroll_bottom
+        } else {
+            self.normal.rows() - 1
+        };
+        self.cursor_y = self.cursor_y.saturating_add(n).min(limit);
     }
 
     pub(crate) fn cursor_left(&mut self, n: usize) {
-        self.cursor_x = self.cursor_x.saturating_sub(n);
+        self.pending_wrap = false;
+        let limit = if self.margin_mode
+            && self.cursor_x >= self.margin_left
+            && self.cursor_x <= self.margin_right
+        {
+            self.margin_left
+        } else {
+            0
+        };
+        self.cursor_x = self.cursor_x.saturating_sub(n).max(limit);
     }
 
     pub(crate) fn cursor_right(&mut self, n: usize) {
-        self.cursor_x = self.cursor_x.saturating_add(n).min(self.normal.cols() - 1);
+        self.pending_wrap = false;
+        let limit = if self.margin_mode
+            && self.cursor_x >= self.margin_left
+            && self.cursor_x <= self.margin_right
+        {
+            self.margin_right
+        } else {
+            self.normal.cols() - 1
+        };
+        self.cursor_x = self.cursor_x.saturating_add(n).min(limit);
     }
 
     /// Expands horizontal tab into spaces up to the next 8-column tab stop or row end.
     pub(crate) fn horizontal_tab(&mut self) {
-        let target = ((self.cursor_x / 8) + 1)
-            .saturating_mul(8)
-            .min(self.normal.cols());
-        let spaces = target.saturating_sub(self.cursor_x);
-        for _ in 0..spaces {
-            self.write_char(' ');
+        self.pending_wrap = false;
+        let right_limit = if self.margin_mode {
+            self.margin_right
+        } else {
+            self.normal.cols()
+        };
+        let mut target = right_limit;
+        for col in (self.cursor_x + 1)..=right_limit {
+            if col < self.tab_stops.len() && self.tab_stops[col] {
+                target = col;
+                break;
+            }
+        }
+        if target > self.cursor_x {
+            let spaces = target - self.cursor_x;
+            for _ in 0..spaces {
+                self.write_char(' ');
+            }
         }
     }
 
@@ -621,31 +727,40 @@ impl Screen {
             return;
         }
 
+        // 1. Handle pending wrap if autowrap is on
+        if self.autowrap && self.pending_wrap {
+            self.newline();
+            self.pending_wrap = false;
+        }
+
+        // 2. Clamp cursor if autowrap is off to prevent overflow
+        if !self.autowrap && self.cursor_x >= self.normal.cols() {
+            self.cursor_x = self.normal.cols().saturating_sub(1);
+        }
+
+        // 3. If a wide character cannot fit in the remaining columns, wrap immediately
         if width == 2 && self.cursor_x + 1 >= self.normal.cols() {
             self.newline();
+            self.pending_wrap = false;
         }
+
         self.mark_row_dirty(self.cursor_y);
 
         let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
-        let ring_row = index / self.normal.cols();
-        let old_ch = self.normal.live_cell(self.cursor_y, self.cursor_x).ch;
-
-        tracing::trace!(
-            ch = format_args!("{ch:?}"),
-            cursor_x = self.cursor_x,
-            cursor_y = self.cursor_y,
-            ring_row,
-            ring_cell = index,
-            old_char = format_args!("{old_ch:?}"),
-            "write_char"
-        );
-
         self.clear_cell_for_write(index);
         if width == 2 && self.cursor_x + 1 < self.normal.cols() {
             self.clear_cell_for_write(index + 1);
         }
+
         let cell = self.normal.live_cell_mut(self.cursor_y, self.cursor_x);
-        cell.set(ch, self.current_fg, self.current_bg, self.current_attrs);
+        cell.set(
+            ch,
+            self.current_fg,
+            self.current_bg,
+            self.current_attrs,
+            self.current_protected,
+        );
+
         if width == 2 && self.cursor_x + 1 < self.normal.cols() {
             *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
@@ -653,13 +768,17 @@ impl Screen {
                 fg: self.current_fg,
                 bg: self.current_bg,
                 attrs: self.current_attrs,
+                protected: self.current_protected,
             };
         }
 
+        // 4. Advance cursor and handle autowrap boundaries
         self.cursor_x += width;
         if self.cursor_x >= self.normal.cols() {
-            self.cursor_x = 0;
-            self.newline();
+            self.cursor_x = self.normal.cols().saturating_sub(1);
+            if self.autowrap {
+                self.pending_wrap = true;
+            }
         }
     }
 
@@ -706,7 +825,7 @@ impl Screen {
     /// at the bottom of the scrolling region. When the cursor is outside the scroll
     /// region, moves down without scrolling.
     pub(crate) fn newline(&mut self) {
-        self.cursor_x = 0;
+        self.carriage_return();
         if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
             if self.cursor_y == self.scroll_bottom {
                 self.scroll_region_up_one();
@@ -716,10 +835,28 @@ impl Screen {
         } else if self.cursor_y + 1 < self.normal.rows() {
             self.cursor_y += 1;
         }
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn line_feed(&mut self) {
+        if self.line_feed_mode {
+            self.carriage_return();
+        }
+        if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+            if self.cursor_y == self.scroll_bottom {
+                self.scroll_region_up_one();
+            } else {
+                self.cursor_y += 1;
+            }
+        } else if self.cursor_y + 1 < self.normal.rows() {
+            self.cursor_y += 1;
+        }
+        self.pending_wrap = false;
     }
 
     /// VT non-destructive backspace: move cursor left, skipping wide-continuation cells.
     pub(crate) fn backspace(&mut self) {
+        self.pending_wrap = false;
         if self.cursor_x == 0 {
             return;
         }
@@ -734,9 +871,49 @@ impl Screen {
     }
 
     /// Positions the cursor from 1-based ANSI coordinates, clamped to the visible grid.
+    pub(crate) fn set_cursor_position(&mut self, row_1_based: usize, col_1_based: usize) {
+        self.pending_wrap = false;
+        if self.origin_mode {
+            let relative_row = row_1_based.saturating_sub(1);
+            let absolute_row = self.scroll_top.saturating_add(relative_row);
+            self.cursor_y = absolute_row.clamp(self.scroll_top, self.scroll_bottom);
+
+            let relative_col = col_1_based.saturating_sub(1);
+            let absolute_col = self.margin_left.saturating_add(relative_col);
+            self.cursor_x = absolute_col.clamp(self.margin_left, self.margin_right);
+        } else {
+            let row = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
+            let col = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
+            self.cursor_y = row;
+            self.cursor_x = col;
+        }
+    }
+
+    pub(crate) fn set_cursor_col(&mut self, col_1_based: usize) {
+        self.pending_wrap = false;
+        if self.origin_mode {
+            let relative_col = col_1_based.saturating_sub(1);
+            let absolute_col = self.margin_left.saturating_add(relative_col);
+            self.cursor_x = absolute_col.clamp(self.margin_left, self.margin_right);
+        } else {
+            self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
+        }
+    }
+
+    pub(crate) fn set_cursor_row(&mut self, row_1_based: usize) {
+        self.pending_wrap = false;
+        if self.origin_mode {
+            let relative_row = row_1_based.saturating_sub(1);
+            let absolute_row = self.scroll_top.saturating_add(relative_row);
+            self.cursor_y = absolute_row.clamp(self.scroll_top, self.scroll_bottom);
+        } else {
+            self.cursor_y = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_cursor(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.cursor_y = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
-        self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
+        self.set_cursor_position(row_1_based, col_1_based);
     }
 
     /// Returns a cell with the current SGR attributes for erase operations (EL/ED/ECH).
@@ -747,11 +924,13 @@ impl Screen {
             fg: self.current_fg,
             bg: self.current_bg,
             attrs: self.current_attrs,
+            protected: false,
         }
     }
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
     pub(crate) fn erase_display(&mut self, mode: usize) {
+        self.pending_wrap = false;
         let cell = self.erase_cell();
         match mode {
             0 => {
@@ -793,6 +972,7 @@ impl Screen {
 
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
+        self.pending_wrap = false;
         let cell = self.erase_cell();
         let ring_row = self.normal.display_to_ring(self.cursor_y);
         let start = ring_row * self.normal.cols();
@@ -812,6 +992,7 @@ impl Screen {
     /// Replaces cells with default (space) characters without moving the cursor.
     /// The default parameter (0) acts as 1.
     pub(crate) fn erase_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
         let cell = self.erase_cell();
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
@@ -821,12 +1002,187 @@ impl Screen {
         self.normal.fill_linear_range_with(start, end, cell);
     }
 
+    pub(crate) fn selective_erase_display(&mut self, mode: usize) {
+        let erase = self.erase_cell();
+        match mode {
+            0 => {
+                self.mark_row_dirty(self.cursor_y);
+                let ring_row = self.normal.display_to_ring(self.cursor_y);
+                let start_idx = ring_row * self.normal.cols() + self.cursor_x;
+                let row_end = ring_row * self.normal.cols() + self.normal.cols();
+                for idx in start_idx..row_end {
+                    let cell = self.normal.cell_linear_mut(idx);
+                    if !cell.protected {
+                        *cell = erase;
+                    }
+                }
+                for row in self.cursor_y + 1..self.normal.rows() {
+                    self.mark_row_dirty(row);
+                    let r_row = self.normal.display_to_ring(row);
+                    let r_start = r_row * self.normal.cols();
+                    for idx in r_start..r_start + self.normal.cols() {
+                        let cell = self.normal.cell_linear_mut(idx);
+                        if !cell.protected {
+                            *cell = erase;
+                        }
+                    }
+                }
+            }
+            1 => {
+                for row in 0..self.cursor_y {
+                    self.mark_row_dirty(row);
+                    let r_row = self.normal.display_to_ring(row);
+                    let r_start = r_row * self.normal.cols();
+                    for idx in r_start..r_start + self.normal.cols() {
+                        let cell = self.normal.cell_linear_mut(idx);
+                        if !cell.protected {
+                            *cell = erase;
+                        }
+                    }
+                }
+                self.mark_row_dirty(self.cursor_y);
+                let ring_row = self.normal.display_to_ring(self.cursor_y);
+                let start_idx = ring_row * self.normal.cols();
+                let end_idx = start_idx + self.cursor_x + 1;
+                for idx in start_idx..end_idx {
+                    let cell = self.normal.cell_linear_mut(idx);
+                    if !cell.protected {
+                        *cell = erase;
+                    }
+                }
+            }
+            2 => {
+                for row in 0..self.normal.rows() {
+                    self.mark_row_dirty(row);
+                    let r_row = self.normal.display_to_ring(row);
+                    let r_start = r_row * self.normal.cols();
+                    for idx in r_start..r_start + self.normal.cols() {
+                        let cell = self.normal.cell_linear_mut(idx);
+                        if !cell.protected {
+                            *cell = erase;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn selective_erase_line(&mut self, mode: usize) {
+        let erase = self.erase_cell();
+        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        let start_idx = ring_row * self.normal.cols();
+        let cursor_idx = start_idx + self.cursor_x;
+        let end_idx = start_idx + self.normal.cols();
+        self.mark_row_dirty(self.cursor_y);
+        match mode {
+            0 => {
+                for idx in cursor_idx..end_idx {
+                    let cell = self.normal.cell_linear_mut(idx);
+                    if !cell.protected {
+                        *cell = erase;
+                    }
+                }
+            }
+            1 => {
+                for idx in start_idx..=cursor_idx {
+                    let cell = self.normal.cell_linear_mut(idx);
+                    if !cell.protected {
+                        *cell = erase;
+                    }
+                }
+            }
+            2 => {
+                for idx in start_idx..end_idx {
+                    let cell = self.normal.cell_linear_mut(idx);
+                    if !cell.protected {
+                        *cell = erase;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn set_character_protection(&mut self, ps: usize) {
+        match ps {
+            0 | 2 => {
+                self.current_protected = false;
+            }
+            1 => {
+                self.current_protected = true;
+            }
+            _ => {}
+        }
+    }
+
     /// Clears all visible cells and homes the cursor.
     pub(crate) fn reset_display(&mut self) {
+        // Exit alternate screen
+        self.in_alt = false;
+        self.alt_saved = None;
+
         self.normal.fill_all();
         self.cursor_x = 0;
         self.cursor_y = 0;
+        self.pending_wrap = false;
+        self.current_fg = Color::Default;
+        self.current_bg = Color::Default;
+        self.current_attrs = CellAttrs::default();
+        self.current_protected = false;
+
+        self.scroll_top = 0;
+        self.scroll_bottom = self.normal.rows().saturating_sub(1);
+
+        self.margin_mode = false;
+        self.margin_left = 0;
+        self.margin_right = self.normal.cols().saturating_sub(1);
+
+        self.autowrap = true;
+        self.cursor_visible = true;
+        self.origin_mode = false;
+        self.insert_mode = false;
+        self.line_feed_mode = false;
+
+        // Restore default tab stops every 8 columns
+        self.tab_stops = {
+            let mut stops = vec![false; self.normal.cols()];
+            for (col, stop) in stops.iter_mut().enumerate() {
+                if col % 8 == 0 {
+                    *stop = true;
+                }
+            }
+            stops
+        };
+
+        self.saved_cursor = None;
         self.mark_all_dirty();
+    }
+
+    pub(crate) fn soft_reset(&mut self) {
+        self.pending_wrap = false;
+        self.current_fg = Color::Default;
+        self.current_bg = Color::Default;
+        self.current_attrs = CellAttrs::default();
+        self.current_protected = false;
+
+        self.scroll_top = 0;
+        self.scroll_bottom = self.normal.rows().saturating_sub(1);
+
+        self.margin_mode = false;
+        self.margin_left = 0;
+        self.margin_right = self.normal.cols().saturating_sub(1);
+
+        self.autowrap = true;
+        self.cursor_visible = true;
+        self.origin_mode = false;
+        self.insert_mode = false;
+        self.line_feed_mode = false;
+
+        self.saved_cursor = None;
+        // Move cursor to Home (origin mode is false, so top-left of screen)
+        self.cursor_x = 0;
+        self.cursor_y = 0;
     }
 
     /// Implements reverse index (`ESC M`): move up, or scroll the scrolling region down
@@ -864,7 +1220,8 @@ impl Screen {
                     self.normal.copy_cells_within(first_part, dst);
                     self.normal.copy_cells_within(second_part, dst + first_len);
                 }
-                self.normal.fill_row(self.scroll_top);
+                self.normal
+                    .fill_row_with(self.scroll_top, self.erase_cell());
             } else {
                 // Partial region: ring-aware copy_within down.
                 let tr = self.normal.total_rows();
@@ -882,7 +1239,8 @@ impl Screen {
                     self.normal.copy_cells_within(first_part, dst);
                     self.normal.copy_cells_within(second_part, dst + first_len);
                 }
-                self.normal.fill_row(self.scroll_top);
+                self.normal
+                    .fill_row_with(self.scroll_top, self.erase_cell());
             }
         } else if self.cursor_y > 0 {
             self.cursor_y -= 1;
@@ -906,7 +1264,7 @@ impl Screen {
         }
         if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
             // Full-screen: O(1) ring-buffer advance.
-            self.normal.scroll_up_full_screen(1);
+            self.normal.scroll_up_full_screen(1, self.erase_cell());
         } else {
             // Partial scroll region: ring-aware copy_within.
             let tr = self.normal.total_rows();
@@ -924,7 +1282,8 @@ impl Screen {
                 self.normal.copy_cells_within(first_part, dst);
                 self.normal.copy_cells_within(second_part, dst + first_len);
             }
-            self.normal.fill_row(self.scroll_bottom);
+            self.normal
+                .fill_row_with(self.scroll_bottom, self.erase_cell());
         }
         self.cursor_y = self.scroll_bottom;
         self.cursor_x = 0;
@@ -953,53 +1312,93 @@ impl Screen {
         self.cursor_y = 0;
     }
 
+    pub(crate) fn set_left_right_margins(&mut self, left: usize, right: usize) {
+        let left = if left == 0 { 1 } else { left };
+        let right = if right == 0 {
+            self.normal.cols()
+        } else {
+            right
+        };
+        let left = left.max(1).min(self.normal.cols());
+        let right = right.min(self.normal.cols());
+        if left < right {
+            self.margin_left = left - 1;
+            self.margin_right = right - 1;
+        }
+        self.home_cursor();
+    }
+
     /// Implements CSI `@` (ICH): insert `n` blank characters at the cursor, shifting
     /// existing characters right. Characters past the right margin are lost.
     /// The cursor position does not change.
     pub(crate) fn insert_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let col = self.cursor_x;
-        if col >= self.normal.cols() {
+        let (left, right) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, self.normal.cols() - 1)
+        };
+        if col < left || col > right {
             return;
         }
-        let n = n.min(self.normal.cols() - col);
+        let n = n.min(right - col + 1);
         if n == 0 {
             return;
         }
         let ring_row = self.normal.display_to_ring(self.cursor_y);
         let row_start = ring_row * self.normal.cols();
-        // Shift cells in [col, cols - n) right by n.
+
+        // Shift cells in [col, right - n + 1] right by n
         let src_start = row_start + col;
-        let src_end = row_start + self.normal.cols() - n;
+        let src_end = row_start + right - n + 1;
         let dst = row_start + col + n;
-        self.normal.copy_linear_range(src_start, src_end, dst);
-        // Fill vacated cells with blanks.
+        if src_start < src_end {
+            self.normal.copy_linear_range(src_start, src_end, dst);
+        }
+
+        // Fill vacated cells with blanks
         self.normal
-            .fill_linear_range(row_start + col, row_start + col + n);
+            .fill_linear_range_with(row_start + col, row_start + col + n, self.erase_cell());
     }
 
     /// Implements CSI `P` (DCH): delete `n` characters at the cursor, shifting remaining
     /// characters left. Vacated cells at the right margin become blank.
     /// The cursor position does not change.
     pub(crate) fn delete_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
         self.mark_row_dirty(self.cursor_y);
         let col = self.cursor_x;
-        if col >= self.normal.cols() {
+        let (left, right) = if self.margin_mode {
+            (self.margin_left, self.margin_right)
+        } else {
+            (0, self.normal.cols() - 1)
+        };
+        if col < left || col > right {
             return;
         }
-        let n = n.min(self.normal.cols() - col);
+        let n = n.min(right - col + 1);
         if n == 0 {
             return;
         }
         let ring_row = self.normal.display_to_ring(self.cursor_y);
-        let start = ring_row * self.normal.cols() + col + n;
-        let end = ring_row * self.normal.cols() + self.normal.cols();
-        let dst = ring_row * self.normal.cols() + col;
-        self.normal.copy_linear_range(start, end, dst);
-        let blank_start = ring_row * self.normal.cols() + self.normal.cols() - n;
-        self.normal.fill_linear_range(blank_start, blank_start + n);
+        let row_start = ring_row * self.normal.cols();
+
+        // Shift cells in [col + n, right] left by n
+        let src_start = row_start + col + n;
+        let src_end = row_start + right + 1;
+        let dst = row_start + col;
+        if src_start < src_end {
+            self.normal.copy_linear_range(src_start, src_end, dst);
+        }
+
+        // Fill vacated cells at the right margin
+        let blank_start = row_start + right + 1 - n;
+        self.normal
+            .fill_linear_range_with(blank_start, blank_start + n, self.erase_cell());
     }
     pub(crate) fn insert_lines(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
@@ -1015,7 +1414,7 @@ impl Screen {
         // When n covers all remaining rows in the region, just blank them all.
         if n == max_n {
             for row in self.cursor_y..=self.scroll_bottom {
-                self.normal.fill_row(row);
+                self.normal.fill_row_with(row, self.erase_cell());
             }
             self.cursor_x = 0;
             return;
@@ -1035,7 +1434,8 @@ impl Screen {
             self.normal.copy_linear_range(0, src_end, dst + first_len);
         }
         for i in 0..n {
-            self.normal.fill_row(self.cursor_y + i);
+            self.normal
+                .fill_row_with(self.cursor_y + i, self.erase_cell());
         }
         self.cursor_x = 0;
     }
@@ -1051,10 +1451,9 @@ impl Screen {
         for row in self.cursor_y..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
-        // When n covers all remaining rows in the region, just blank them all.
         if n == max_n {
             for row in self.cursor_y..=self.scroll_bottom {
-                self.normal.fill_row(row);
+                self.normal.fill_row_with(row, self.erase_cell());
             }
             self.cursor_x = 0;
             return;
@@ -1076,7 +1475,8 @@ impl Screen {
             self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
-            self.normal.fill_row(self.scroll_bottom - i);
+            self.normal
+                .fill_row_with(self.scroll_bottom - i, self.erase_cell());
         }
         self.cursor_x = 0;
     }
@@ -1095,7 +1495,7 @@ impl Screen {
         // When n covers the entire region, just blank everything.
         if n == region_height {
             for row in self.scroll_top..=self.scroll_bottom {
-                self.normal.fill_row(row);
+                self.normal.fill_row_with(row, self.erase_cell());
             }
             return;
         }
@@ -1118,7 +1518,8 @@ impl Screen {
             self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
-            self.normal.fill_row(self.scroll_bottom - i);
+            self.normal
+                .fill_row_with(self.scroll_bottom - i, self.erase_cell());
         }
     }
 
@@ -1136,7 +1537,7 @@ impl Screen {
         // When n covers the entire region, just blank everything.
         if n == region_height {
             for row in self.scroll_top..=self.scroll_bottom {
-                self.normal.fill_row(row);
+                self.normal.fill_row_with(row, self.erase_cell());
             }
             return;
         }
@@ -1157,7 +1558,86 @@ impl Screen {
             self.normal.copy_cells_within(second_part, dst + first_len);
         }
         for i in 0..n {
-            self.normal.fill_row(self.scroll_top + i);
+            self.normal
+                .fill_row_with(self.scroll_top + i, self.erase_cell());
+        }
+    }
+
+    pub(crate) fn set_private_mode(&mut self, param: usize, enabled: bool) {
+        match param {
+            6 => {
+                self.origin_mode = enabled;
+                self.home_cursor();
+            }
+            7 => {
+                self.autowrap = enabled;
+            }
+            25 => {
+                self.cursor_visible = enabled;
+            }
+            69 => {
+                self.margin_mode = enabled;
+                if !enabled {
+                    self.margin_left = 0;
+                    self.margin_right = self.normal.cols().saturating_sub(1);
+                }
+                self.home_cursor();
+            }
+            1049 => {
+                if enabled {
+                    self.request_alt_enter();
+                } else {
+                    self.request_alt_exit();
+                }
+            }
+            _ => {
+                tracing::warn!("unsupported private mode: ?{}", param);
+            }
+        }
+    }
+
+    pub(crate) fn set_standard_mode(&mut self, param: usize, enabled: bool) {
+        match param {
+            4 => {
+                self.insert_mode = enabled;
+            }
+            20 => {
+                self.line_feed_mode = enabled;
+            }
+            _ => {
+                tracing::warn!("unsupported standard mode: {}", param);
+            }
+        }
+    }
+
+    pub(crate) fn home_cursor(&mut self) {
+        if self.origin_mode {
+            self.cursor_y = self.scroll_top;
+            self.cursor_x = self.margin_left;
+        } else {
+            self.cursor_y = 0;
+            self.cursor_x = 0;
+        }
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn set_tab_stop(&mut self) {
+        if self.cursor_x < self.tab_stops.len() {
+            self.tab_stops[self.cursor_x] = true;
+        }
+    }
+
+    pub(crate) fn clear_tab_stops(&mut self, mode: usize) {
+        match mode {
+            0 => {
+                if self.cursor_x < self.tab_stops.len() {
+                    self.tab_stops[self.cursor_x] = false;
+                }
+            }
+            3 => {
+                self.tab_stops.fill(false);
+            }
+            _ => {}
         }
     }
 
@@ -1169,6 +1649,9 @@ impl Screen {
             fg: self.current_fg,
             bg: self.current_bg,
             attrs: self.current_attrs,
+            origin_mode: self.origin_mode,
+            autowrap: self.autowrap,
+            pending_wrap: self.pending_wrap,
         });
     }
 
@@ -1181,6 +1664,9 @@ impl Screen {
             self.current_fg = saved.fg;
             self.current_bg = saved.bg;
             self.current_attrs = saved.attrs;
+            self.origin_mode = saved.origin_mode;
+            self.autowrap = saved.autowrap;
+            self.pending_wrap = saved.pending_wrap;
         }
     }
 
@@ -1221,6 +1707,17 @@ impl Screen {
             saved_cursor: self.saved_cursor.take(),
             visible_start: self.normal.visible_start(),
             scroll_count: self.normal.scroll_count(),
+            origin_mode: self.origin_mode,
+            autowrap: self.autowrap,
+            pending_wrap: self.pending_wrap,
+            cursor_visible: self.cursor_visible,
+            margin_mode: self.margin_mode,
+            margin_left: self.margin_left,
+            margin_right: self.margin_right,
+            tab_stops: self.tab_stops.clone(),
+            current_protected: self.current_protected,
+            insert_mode: self.insert_mode,
+            line_feed_mode: self.line_feed_mode,
         };
         self.normal.init_alt_buffer();
         self.alt_saved = Some(state);
@@ -1243,6 +1740,17 @@ impl Screen {
             self.cursor_shape = state.cursor_shape;
             self.cursor_blink = state.cursor_blink;
             self.saved_cursor = state.saved_cursor;
+            self.origin_mode = state.origin_mode;
+            self.autowrap = state.autowrap;
+            self.pending_wrap = state.pending_wrap;
+            self.cursor_visible = state.cursor_visible;
+            self.margin_mode = state.margin_mode;
+            self.margin_left = state.margin_left;
+            self.margin_right = state.margin_right;
+            self.tab_stops = state.tab_stops;
+            self.current_protected = state.current_protected;
+            self.insert_mode = state.insert_mode;
+            self.line_feed_mode = state.line_feed_mode;
         }
         self.in_alt = false;
     }

@@ -1,6 +1,7 @@
 //! Unit tests for Screen.
 
 use super::*;
+use crate::terminal::TerminalParser;
 
 #[test]
 fn write_char_marks_its_row() {
@@ -798,4 +799,327 @@ fn reset_display_uses_default_not_current_bg() {
             );
         }
     }
+}
+
+#[test]
+fn test_autowrap_and_pending_wrap() {
+    let mut screen = Screen::new(3, 5);
+    screen.autowrap = true;
+
+    // Write 5 characters to fill the first line (cols = 5)
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.row_text(0), "abcde");
+    assert_eq!(screen.cursor_x, 4, "cursor stays at the last column");
+    assert_eq!(screen.cursor_y, 0);
+    assert!(screen.pending_wrap, "should enter pending wrap state");
+
+    // Writing the 6th character should wrap to next line
+    screen.write_char('f');
+    assert_eq!(screen.row_text(1), "f    ");
+    assert_eq!(screen.cursor_x, 1);
+    assert_eq!(screen.cursor_y, 1);
+    assert!(!screen.pending_wrap);
+
+    // Turn autowrap off: writing past last column should overwrite the last column
+    screen.autowrap = false;
+    screen.cursor_x = 4;
+    screen.cursor_y = 1;
+    screen.write_char('x');
+    assert_eq!(screen.row_text(1), "f   x");
+    assert_eq!(screen.cursor_x, 4);
+    screen.write_char('y');
+    assert_eq!(
+        screen.row_text(1),
+        "f   y",
+        "should overwrite last column when autowrap is off"
+    );
+    assert_eq!(screen.cursor_x, 4);
+    assert!(!screen.pending_wrap);
+}
+
+#[test]
+fn test_cursor_visibility() {
+    let mut screen = Screen::new(5, 5);
+    assert!(screen.cursor_visible);
+    screen.set_private_mode(25, false);
+    assert!(!screen.cursor_visible);
+    screen.set_private_mode(25, true);
+    assert!(screen.cursor_visible);
+}
+
+#[test]
+fn test_origin_mode_positioning() {
+    let mut screen = Screen::new(5, 5);
+    screen.scroll_top = 1;
+    screen.scroll_bottom = 3;
+    screen.margin_left = 1;
+    screen.margin_right = 3;
+
+    // Origin mode off: set_cursor uses absolute screen coordinates
+    screen.origin_mode = false;
+    screen.set_cursor(1, 1);
+    assert_eq!(screen.cursor_y, 0);
+    assert_eq!(screen.cursor_x, 0);
+
+    // Origin mode on: set_cursor is relative to scroll region and margins
+    screen.origin_mode = true;
+    screen.set_cursor(1, 1); // Top-left of region/margins
+    assert_eq!(screen.cursor_y, 1);
+    assert_eq!(screen.cursor_x, 1);
+
+    screen.set_cursor(2, 2);
+    assert_eq!(screen.cursor_y, 2);
+    assert_eq!(screen.cursor_x, 2);
+
+    // Should clamp to the scrolling region boundaries
+    screen.set_cursor(100, 100);
+    assert_eq!(screen.cursor_y, 3);
+    assert_eq!(screen.cursor_x, 3);
+}
+
+#[test]
+fn test_horizontal_margins() {
+    let mut screen = Screen::new(5, 5);
+    screen.margin_mode = true;
+    screen.margin_left = 1;
+    screen.margin_right = 3;
+
+    // Cursor movements should clamp to margins
+    screen.cursor_x = 2;
+    screen.cursor_left(5);
+    assert_eq!(
+        screen.cursor_x, 1,
+        "cursor_left should clamp to margin_left"
+    );
+
+    screen.cursor_x = 2;
+    screen.cursor_right(5);
+    assert_eq!(
+        screen.cursor_x, 3,
+        "cursor_right should clamp to margin_right"
+    );
+
+    // Carriage return should go to margin_left
+    screen.cursor_x = 3;
+    screen.carriage_return();
+    assert_eq!(
+        screen.cursor_x, 1,
+        "carriage_return should reset to margin_left"
+    );
+
+    // Insert/delete character should only operate within margins
+    // Write "12345"
+    screen.margin_mode = false;
+    screen.cursor_x = 0;
+    for ch in "12345".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.row_text(0), "12345");
+
+    screen.margin_mode = true;
+    screen.cursor_x = 1; // pointing at '2'
+    screen.insert_chars(1); // shifts cells in col 1..3 right by 1. col 4 '5' is outside margins, stays.
+    assert_eq!(
+        screen.row_text(0),
+        "1 235",
+        "should shift only within margins"
+    );
+
+    screen.cursor_x = 1;
+    screen.delete_chars(1); // deletes col 1 (' '), shifts '23' left.
+    assert_eq!(screen.row_text(0), "123 5");
+}
+
+#[test]
+fn test_tab_stops_hts_tbc() {
+    let mut screen = Screen::new(1, 20);
+    // Default stops are every 8 columns: 0, 8, 16
+    screen.cursor_x = 0;
+    screen.horizontal_tab();
+    assert_eq!(screen.cursor_x, 8);
+
+    // Set custom tab stop at col 4
+    screen.cursor_x = 4;
+    screen.set_tab_stop();
+
+    screen.cursor_x = 0;
+    screen.horizontal_tab();
+    assert_eq!(screen.cursor_x, 4, "should jump to custom tab stop");
+
+    // Clear tab stop at col 4
+    screen.cursor_x = 4;
+    screen.clear_tab_stops(0);
+
+    screen.cursor_x = 0;
+    screen.horizontal_tab();
+    assert_eq!(screen.cursor_x, 8, "should jump over cleared tab stop");
+
+    // Clear all tab stops
+    screen.clear_tab_stops(3);
+    screen.cursor_x = 0;
+    screen.horizontal_tab();
+    assert_eq!(screen.cursor_x, 19, "should jump to the right margin limit");
+}
+
+#[test]
+fn test_erase_background_filling() {
+    let mut screen = Screen::new(3, 5);
+    screen.current_bg = Color::Named(4); // Blue
+    screen.current_fg = Color::Named(1); // Red
+    screen.current_attrs.set(CellAttrs::ITALIC);
+
+    // Erase exposed cells in insert_chars
+    screen.cursor_x = 0;
+    screen.write_char('a');
+    screen.cursor_x = 0;
+    screen.insert_chars(1);
+    let cell = screen.cell(0, 0);
+    assert_eq!(cell.ch, ' ');
+    assert_eq!(cell.bg, Color::Named(4));
+    assert_eq!(cell.fg, Color::Named(1));
+    assert!(cell.attrs.contains(CellAttrs::ITALIC));
+}
+
+#[test]
+fn test_selective_erase_protection() {
+    let mut screen = Screen::new(1, 5);
+
+    // Write "abcde" with 'c' protected
+    screen.write_char('a');
+    screen.write_char('b');
+    screen.current_protected = true;
+    screen.write_char('c');
+    screen.current_protected = false;
+    screen.write_char('d');
+    screen.write_char('e');
+    assert_eq!(screen.row_text(0), "abcde");
+
+    // Normal erase line clears everything
+    screen.cursor_x = 0;
+    let mut screen_copy = Screen::new(1, 5);
+    for col in 0..5 {
+        *screen_copy.cell_mut(0, col) = *screen.cell(0, col);
+    }
+    screen_copy.erase_line(2);
+    assert_eq!(screen_copy.row_text(0), "     ");
+
+    // Selective erase line clears only non-protected 'a', 'b', 'd', 'e'
+    screen.selective_erase_line(2);
+    assert_eq!(
+        screen.row_text(0),
+        "  c  ",
+        "protected cell should be preserved"
+    );
+}
+
+#[test]
+fn test_soft_reset_decstr() {
+    let mut screen = Screen::new(5, 5);
+    screen.current_bg = Color::Named(4);
+    screen.current_fg = Color::Named(1);
+    screen.origin_mode = true;
+    screen.autowrap = false;
+    screen.margin_mode = true;
+    screen.margin_left = 1;
+    screen.margin_right = 3;
+    screen.home_cursor(); // Set cursor to margin_left
+
+    screen.write_char('a');
+    assert_eq!(screen.row_text(0), " a   ");
+
+    // Perform soft reset
+    screen.soft_reset();
+
+    // Modes and attributes should be reset
+    assert_eq!(screen.current_bg, Color::Default);
+    assert_eq!(screen.current_fg, Color::Default);
+    assert!(!screen.origin_mode);
+    assert!(screen.autowrap);
+    assert!(!screen.margin_mode);
+    // Screen contents should NOT be cleared
+    assert_eq!(screen.row_text(0), " a   ");
+}
+
+#[test]
+fn line_feed_mode_defaults_and_resets_disabled() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+    screen.cursor_x = 3;
+    screen.cursor_y = 1;
+
+    parser.put_bytes(&mut screen, b"\n");
+    assert_eq!(screen.cursor_x, 3);
+    assert_eq!(screen.cursor_y, 2);
+
+    parser.put_bytes(&mut screen, b"\x1b[20h\n");
+    assert_eq!(screen.cursor_x, 0);
+    assert_eq!(screen.cursor_y, 3);
+
+    screen.cursor_x = 3;
+    parser.put_bytes(&mut screen, b"\x1b[20l\n");
+    assert_eq!(screen.cursor_x, 3);
+    assert_eq!(screen.cursor_y, 4);
+
+    parser.put_bytes(&mut screen, b"\x1b[20h\x1bc");
+    assert!(!screen.line_feed_mode);
+
+    parser.put_bytes(&mut screen, b"\x1b[20h\x1b[!p");
+    assert!(!screen.line_feed_mode);
+}
+
+#[test]
+fn test_decsca_protected_attr() {
+    let mut screen = Screen::new(5, 5);
+    assert!(!screen.current_protected);
+    screen.set_character_protection(1);
+    assert!(screen.current_protected);
+    screen.set_character_protection(0);
+    assert!(!screen.current_protected);
+}
+
+#[test]
+fn test_decstr_csi_dispatch() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+    screen.current_bg = Color::Named(4);
+
+    // Dispatch soft reset CSI ! p
+    parser.put_bytes(&mut screen, b"\x1b[!p");
+    assert_eq!(screen.current_bg, Color::Default);
+}
+
+#[test]
+fn test_decsca_csi_dispatch() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+    assert!(!screen.current_protected);
+
+    // Dispatch DECSCA 1 (protected on): CSI 1 " q
+    parser.put_bytes(&mut screen, b"\x1b[1\"q");
+    assert!(screen.current_protected);
+}
+
+#[test]
+fn test_decslrm_csi_dispatch() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+
+    // With margin_mode false, CSI s saves the cursor position
+    screen.cursor_x = 3;
+    screen.cursor_y = 3;
+    parser.put_bytes(&mut screen, b"\x1b[s");
+
+    screen.cursor_x = 0;
+    screen.cursor_y = 0;
+    parser.put_bytes(&mut screen, b"\x1b[u");
+    assert_eq!(screen.cursor_x, 3);
+    assert_eq!(screen.cursor_y, 3);
+
+    // Turn margin mode on: CSI left;right s sets horizontal margins to [left-1, right-1]
+    parser.put_bytes(&mut screen, b"\x1b[?69h"); // enable DECLRMM
+    parser.put_bytes(&mut screen, b"\x1b[2;4s"); // set left=2, right=4 (margins: 1, 3)
+    assert_eq!(screen.margin_left, 1);
+    assert_eq!(screen.margin_right, 3);
 }

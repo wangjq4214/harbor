@@ -19,10 +19,10 @@ fn writes_plain_characters_and_tracks_cursor() {
 }
 
 #[test]
-fn newline_moves_to_next_row_start() {
+fn crlf_moves_to_next_row_start() {
     let mut terminal = Terminal::new(2, 4);
 
-    terminal.put_str("a\nb");
+    terminal.put_str("a\r\nb");
 
     assert_eq!(terminal.row_text(0), "a   ");
     assert_eq!(terminal.row_text(1), "b   ");
@@ -75,7 +75,7 @@ fn backspace_erases_previous_cell() {
 fn scrolls_when_writing_past_last_row() {
     let mut terminal = Terminal::new(2, 4);
 
-    terminal.put_str("one\ntwo\nthr");
+    terminal.put_str("one\r\ntwo\r\nthr");
 
     assert_eq!(terminal.row_text(0), "two ");
     assert_eq!(terminal.row_text(1), "thr ");

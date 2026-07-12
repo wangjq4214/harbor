@@ -890,7 +890,7 @@ mod tests {
         let fonts = test_font_book();
         let mut terminal = Terminal::new(2, 5);
 
-        terminal.put_str("aa b\nc a");
+        terminal.put_str("aa b\r\nc a");
         let mut atlas = test_atlas(&fonts);
         let _ = atlas.update(&fonts, terminal.screen());
 
@@ -906,7 +906,7 @@ mod tests {
         let fonts = test_font_book();
         let mut terminal = Terminal::new(2, 4);
 
-        terminal.put_str("a b\n c ");
+        terminal.put_str("a b\r\n c ");
         let mut atlas = test_atlas(&fonts);
         let _ = atlas.update(&fonts, terminal.screen());
         let vertices = atlas.vertices(terminal.screen(), 800.0, 600.0);
