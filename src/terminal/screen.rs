@@ -267,6 +267,15 @@ pub(crate) struct Screen {
     pub(crate) insert_mode: bool,
     /// Standard line feed/new line mode (LNM).
     pub(crate) line_feed_mode: bool,
+    /// Application cursor keys mode (DECCKM).
+    pub(crate) application_cursor: bool,
+    /// Application keypad mode (DECKPAM/DECKPNM).
+    pub(crate) application_keypad: bool,
+    /// The most recently printed character (REP / CSI Ps b).
+    pub(crate) last_char: Option<char>,
+    pub(crate) g0_charset: u8,
+    pub(crate) g1_charset: u8,
+    pub(crate) active_charset: u8,
 }
 
 /// State saved when entering the alternate screen and restored on exit.
@@ -297,6 +306,19 @@ struct AltSavedState {
     current_protected: bool,
     insert_mode: bool,
     line_feed_mode: bool,
+    application_cursor: bool,
+    application_keypad: bool,
+    last_char: Option<char>,
+    g0_charset: u8,
+    g1_charset: u8,
+    active_charset: u8,
+}
+
+struct Rect {
+    top: usize,
+    left: usize,
+    bottom: usize,
+    right: usize,
 }
 
 impl Screen {
@@ -337,6 +359,12 @@ impl Screen {
             current_protected: false,
             insert_mode: false,
             line_feed_mode: false,
+            application_cursor: false,
+            application_keypad: false,
+            last_char: None,
+            g0_charset: b'B',
+            g1_charset: b'B',
+            active_charset: 0,
         }
     }
 
@@ -722,6 +750,17 @@ impl Screen {
     /// Writes one already-decoded printable character at the cursor and advances by its terminal
     /// cell width.
     pub(crate) fn write_char(&mut self, ch: char) {
+        let active_set = if self.active_charset == 0 {
+            self.g0_charset
+        } else {
+            self.g1_charset
+        };
+        let ch = if active_set == b'0' {
+            map_dec_graphics(ch)
+        } else {
+            ch
+        };
+
         let width = UnicodeWidthChar::width(ch).unwrap_or(0).min(2);
         if width == 0 {
             return;
@@ -780,6 +819,7 @@ impl Screen {
                 self.pending_wrap = true;
             }
         }
+        self.last_char = Some(ch);
     }
 
     /// Clears the target cell *and* any joined cell from a double-width glyph that overlaps it.
@@ -1143,6 +1183,11 @@ impl Screen {
         self.origin_mode = false;
         self.insert_mode = false;
         self.line_feed_mode = false;
+        self.application_cursor = false;
+        self.application_keypad = false;
+        self.g0_charset = b'B';
+        self.g1_charset = b'B';
+        self.active_charset = 0;
 
         // Restore default tab stops every 8 columns
         self.tab_stops = {
@@ -1156,6 +1201,7 @@ impl Screen {
         };
 
         self.saved_cursor = None;
+        self.last_char = None;
         self.mark_all_dirty();
     }
 
@@ -1178,8 +1224,11 @@ impl Screen {
         self.origin_mode = false;
         self.insert_mode = false;
         self.line_feed_mode = false;
+        self.application_cursor = false;
+        self.application_keypad = false;
 
         self.saved_cursor = None;
+        self.last_char = None;
         // Move cursor to Home (origin mode is false, so top-left of screen)
         self.cursor_x = 0;
         self.cursor_y = 0;
@@ -1565,6 +1614,12 @@ impl Screen {
 
     pub(crate) fn set_private_mode(&mut self, param: usize, enabled: bool) {
         match param {
+            1 => {
+                self.application_cursor = enabled;
+            }
+            66 => {
+                self.application_keypad = enabled;
+            }
             6 => {
                 self.origin_mode = enabled;
                 self.home_cursor();
@@ -1610,6 +1665,22 @@ impl Screen {
         }
     }
 
+    pub(crate) fn set_application_keypad(&mut self, enabled: bool) {
+        self.application_keypad = enabled;
+    }
+
+    pub(crate) fn designate_g0(&mut self, charset: u8) {
+        self.g0_charset = charset;
+    }
+
+    pub(crate) fn designate_g1(&mut self, charset: u8) {
+        self.g1_charset = charset;
+    }
+
+    pub(crate) fn set_active_charset(&mut self, active: u8) {
+        self.active_charset = active;
+    }
+
     pub(crate) fn home_cursor(&mut self) {
         if self.origin_mode {
             self.cursor_y = self.scroll_top;
@@ -1638,6 +1709,308 @@ impl Screen {
                 self.tab_stops.fill(false);
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn repeat_char(&mut self, n: usize) {
+        if let Some(ch) = self.last_char {
+            let n = if n == 0 { 1 } else { n };
+            let count = n.min(self.normal.cols());
+            for _ in 0..count {
+                self.write_char(ch);
+            }
+        }
+    }
+
+    fn resolve_rect(&self, top: usize, left: usize, bottom: usize, right: usize) -> Option<Rect> {
+        let (top_bound, bottom_bound, left_bound, right_bound) = if self.origin_mode {
+            (
+                self.scroll_top,
+                self.scroll_bottom,
+                self.margin_left,
+                self.margin_right,
+            )
+        } else {
+            (0, self.normal.rows() - 1, 0, self.normal.cols() - 1)
+        };
+
+        let row_origin = if self.origin_mode { top_bound } else { 0 };
+        let col_origin = if self.origin_mode { left_bound } else { 0 };
+        let default_bottom = bottom_bound - row_origin + 1;
+        let default_right = right_bound - col_origin + 1;
+
+        let top = if top == 0 { 1 } else { top };
+        let left = if left == 0 { 1 } else { left };
+        let bottom = if bottom == 0 { default_bottom } else { bottom };
+        let right = if right == 0 { default_right } else { right };
+
+        let top = row_origin.saturating_add(top - 1);
+        let left = col_origin.saturating_add(left - 1);
+        let bottom = row_origin.saturating_add(bottom - 1);
+        let right = col_origin.saturating_add(right - 1);
+
+        if top > bottom || left > right {
+            return None;
+        }
+
+        Some(Rect {
+            top: top.clamp(top_bound, bottom_bound),
+            left: left.clamp(left_bound, right_bound),
+            bottom: bottom.clamp(top_bound, bottom_bound),
+            right: right.clamp(left_bound, right_bound),
+        })
+    }
+
+    pub(crate) fn decera(&mut self, params: &Params) {
+        let top = params.get(0).unwrap_or(0);
+        let left = params.get(1).unwrap_or(0);
+        let bottom = params.get(2).unwrap_or(0);
+        let right = params.get(3).unwrap_or(0);
+
+        let Some(Rect {
+            top: t,
+            left: l,
+            bottom: b,
+            right: r,
+        }) = self.resolve_rect(top, left, bottom, right)
+        else {
+            return;
+        };
+        let erase = self.erase_cell();
+        for row in t..=b {
+            self.mark_row_dirty(row);
+            for col in l..=r {
+                *self.normal.cell_mut(row, col) = erase;
+            }
+        }
+    }
+
+    pub(crate) fn decsera(&mut self, params: &Params) {
+        let top = params.get(0).unwrap_or(0);
+        let left = params.get(1).unwrap_or(0);
+        let bottom = params.get(2).unwrap_or(0);
+        let right = params.get(3).unwrap_or(0);
+
+        let Some(Rect {
+            top: t,
+            left: l,
+            bottom: b,
+            right: r,
+        }) = self.resolve_rect(top, left, bottom, right)
+        else {
+            return;
+        };
+        let erase = self.erase_cell();
+        for row in t..=b {
+            self.mark_row_dirty(row);
+            for col in l..=r {
+                let cell = self.normal.cell_mut(row, col);
+                if !cell.protected {
+                    *cell = erase;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn decfra(&mut self, params: &Params) {
+        let ch_val = params.get(0).unwrap_or(0);
+        let top = params.get(1).unwrap_or(0);
+        let left = params.get(2).unwrap_or(0);
+        let bottom = params.get(3).unwrap_or(0);
+        let right = params.get(4).unwrap_or(0);
+
+        let Some(Rect {
+            top: t,
+            left: l,
+            bottom: b,
+            right: r,
+        }) = self.resolve_rect(top, left, bottom, right)
+        else {
+            return;
+        };
+        let fill_char = if (32..=126).contains(&ch_val) || (160..=255).contains(&ch_val) {
+            (ch_val as u8) as char
+        } else {
+            ' '
+        };
+
+        let cell = Cell {
+            ch: fill_char,
+            wide_continuation: false,
+            fg: self.current_fg,
+            bg: self.current_bg,
+            attrs: self.current_attrs,
+            protected: self.current_protected,
+        };
+
+        for row in t..=b {
+            self.mark_row_dirty(row);
+            for col in l..=r {
+                *self.normal.cell_mut(row, col) = cell;
+            }
+        }
+    }
+
+    pub(crate) fn deccra(&mut self, params: &Params) {
+        let src_top = params.get(0).unwrap_or(0);
+        let src_left = params.get(1).unwrap_or(0);
+        let src_bottom = params.get(2).unwrap_or(0);
+        let src_right = params.get(3).unwrap_or(0);
+        let dest_top = params.get(5).unwrap_or(0);
+        let dest_left = params.get(6).unwrap_or(0);
+
+        let Some(Rect {
+            top: st,
+            left: sl,
+            bottom: sb,
+            right: sr,
+        }) = self.resolve_rect(src_top, src_left, src_bottom, src_right)
+        else {
+            return;
+        };
+
+        let dt_start = if self.origin_mode {
+            let r = dest_top.saturating_sub(1);
+            self.scroll_top + r
+        } else {
+            dest_top.saturating_sub(1)
+        };
+        let dl_start = if self.origin_mode {
+            let c = dest_left.saturating_sub(1);
+            self.margin_left + c
+        } else {
+            dest_left.saturating_sub(1)
+        };
+
+        let height = sb - st + 1;
+        let width = sr - sl + 1;
+
+        let mut temp = Vec::with_capacity(height * width);
+        for row in st..=sb {
+            for col in sl..=sr {
+                temp.push(*self.normal.cell(row, col));
+            }
+        }
+
+        let max_rows = self.normal.rows();
+        let max_cols = self.normal.cols();
+
+        for h in 0..height {
+            let dest_row = dt_start + h;
+            if dest_row >= max_rows {
+                break;
+            }
+            self.mark_row_dirty(dest_row);
+            for w in 0..width {
+                let dest_col = dl_start + w;
+                if dest_col >= max_cols {
+                    break;
+                }
+                let src_cell = temp[h * width + w];
+                *self.normal.cell_mut(dest_row, dest_col) = src_cell;
+            }
+        }
+    }
+
+    fn apply_sgr_to_cell(cell: &mut Cell, code: usize) {
+        match code {
+            0 => {
+                cell.fg = Color::Default;
+                cell.bg = Color::Default;
+                cell.attrs = CellAttrs::default();
+                cell.protected = false;
+            }
+            1 => cell.attrs.set(CellAttrs::BOLD),
+            2 => cell.attrs.set(CellAttrs::DIM),
+            3 => cell.attrs.set(CellAttrs::ITALIC),
+            4 => cell.attrs.set(CellAttrs::UNDERLINE),
+            5 => cell.attrs.set(CellAttrs::BLINK),
+            7 => cell.attrs.set(CellAttrs::INVERSE),
+            9 => cell.attrs.set(CellAttrs::STRIKETHROUGH),
+            22 => cell.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
+            23 => cell.attrs.clear(CellAttrs::ITALIC),
+            24 => cell.attrs.clear(CellAttrs::UNDERLINE),
+            25 => cell.attrs.clear(CellAttrs::BLINK),
+            27 => cell.attrs.clear(CellAttrs::INVERSE),
+            29 => cell.attrs.clear(CellAttrs::STRIKETHROUGH),
+            30..=37 => cell.fg = Color::Named((code - 30) as u8),
+            40..=47 => cell.bg = Color::Named((code - 40) as u8),
+            39 => cell.fg = Color::Default,
+            49 => cell.bg = Color::Default,
+            90..=97 => cell.fg = Color::Bright((code - 90) as u8),
+            100..=107 => cell.bg = Color::Bright((code - 100) as u8),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn deccara(&mut self, params: &Params) {
+        let top = params.get(0).unwrap_or(0);
+        let left = params.get(1).unwrap_or(0);
+        let bottom = params.get(2).unwrap_or(0);
+        let right = params.get(3).unwrap_or(0);
+
+        let Some(Rect {
+            top: t,
+            left: l,
+            bottom: b,
+            right: r,
+        }) = self.resolve_rect(top, left, bottom, right)
+        else {
+            return;
+        };
+
+        for row in t..=b {
+            self.mark_row_dirty(row);
+            for col in l..=r {
+                let cell = self.normal.cell_mut(row, col);
+                for idx in 4..params.len {
+                    if let Some(code) = params.values[idx].get(0) {
+                        Self::apply_sgr_to_cell(cell, code);
+                    }
+                }
+            }
+        }
+    }
+
+    fn toggle_sgr_on_cell(cell: &mut Cell, code: usize) {
+        match code {
+            1 => cell.attrs.0 ^= CellAttrs::BOLD,
+            2 => cell.attrs.0 ^= CellAttrs::DIM,
+            3 => cell.attrs.0 ^= CellAttrs::ITALIC,
+            4 => cell.attrs.0 ^= CellAttrs::UNDERLINE,
+            5 => cell.attrs.0 ^= CellAttrs::BLINK,
+            7 => cell.attrs.0 ^= CellAttrs::INVERSE,
+            9 => cell.attrs.0 ^= CellAttrs::STRIKETHROUGH,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn decrara(&mut self, params: &Params) {
+        let top = params.get(0).unwrap_or(0);
+        let left = params.get(1).unwrap_or(0);
+        let bottom = params.get(2).unwrap_or(0);
+        let right = params.get(3).unwrap_or(0);
+
+        let Some(Rect {
+            top: t,
+            left: l,
+            bottom: b,
+            right: r,
+        }) = self.resolve_rect(top, left, bottom, right)
+        else {
+            return;
+        };
+
+        for row in t..=b {
+            self.mark_row_dirty(row);
+            for col in l..=r {
+                let cell = self.normal.cell_mut(row, col);
+                for idx in 4..params.len {
+                    if let Some(code) = params.values[idx].get(0) {
+                        Self::toggle_sgr_on_cell(cell, code);
+                    }
+                }
+            }
         }
     }
 
@@ -1718,6 +2091,12 @@ impl Screen {
             current_protected: self.current_protected,
             insert_mode: self.insert_mode,
             line_feed_mode: self.line_feed_mode,
+            application_cursor: self.application_cursor,
+            application_keypad: self.application_keypad,
+            last_char: self.last_char,
+            g0_charset: self.g0_charset,
+            g1_charset: self.g1_charset,
+            active_charset: self.active_charset,
         };
         self.normal.init_alt_buffer();
         self.alt_saved = Some(state);
@@ -1751,6 +2130,12 @@ impl Screen {
             self.current_protected = state.current_protected;
             self.insert_mode = state.insert_mode;
             self.line_feed_mode = state.line_feed_mode;
+            self.application_cursor = state.application_cursor;
+            self.application_keypad = state.application_keypad;
+            self.last_char = state.last_char;
+            self.g0_charset = state.g0_charset;
+            self.g1_charset = state.g1_charset;
+            self.active_charset = state.active_charset;
         }
         self.in_alt = false;
     }
@@ -1758,3 +2143,34 @@ impl Screen {
 
 #[cfg(test)]
 mod tests;
+
+fn map_dec_graphics(ch: char) -> char {
+    match ch {
+        '`' => '◆',
+        'a' => '▒',
+        'f' => '°',
+        'g' => '±',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        _ => ch,
+    }
+}

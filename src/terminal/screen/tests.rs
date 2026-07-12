@@ -1123,3 +1123,141 @@ fn test_decslrm_csi_dispatch() {
     assert_eq!(screen.margin_left, 1);
     assert_eq!(screen.margin_right, 3);
 }
+
+#[test]
+fn test_character_repetition_rep() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+
+    // Write 'a', then repeat 3 times: CSI 3 b
+    parser.put_bytes(&mut screen, b"a\x1b[3b");
+    assert_eq!(screen.row_text(0), "aaaa ");
+
+    // Empty/default parameter repeats once
+    parser.put_bytes(&mut screen, b"\x1b[2;2H"); // Move cursor to (1, 1 0-based), resets pending wrap
+    parser.put_bytes(&mut screen, b"b\x1b[b");
+    assert_eq!(screen.row_text(1), " bb  ");
+}
+
+#[test]
+fn test_rectangular_area_operations() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+
+    // Fill screen with 'a'
+    for _ in 0..25 {
+        screen.write_char('a');
+    }
+    assert_eq!(screen.row_text(0), "aaaaa");
+
+    // 1. Erase Rectangular Area (DECERA): top=2, left=2, bottom=4, right=4 (margins 1..3)
+    parser.put_bytes(&mut screen, b"\x1b[2;2;4;4$z");
+    assert_eq!(screen.row_text(0), "aaaaa");
+    assert_eq!(screen.row_text(1), "a   a");
+    assert_eq!(screen.row_text(2), "a   a");
+    assert_eq!(screen.row_text(3), "a   a");
+    assert_eq!(screen.row_text(4), "aaaaa");
+
+    // 2. Fill Rectangular Area (DECFRA): fill with 'X' (ASCII 88) at top=2, left=2, bottom=3, right=3
+    parser.put_bytes(&mut screen, b"\x1b[88;2;2;3;3$x");
+    assert_eq!(screen.row_text(1), "aXX a");
+    assert_eq!(screen.row_text(2), "aXX a");
+
+    // 3. Copy Rectangular Area (DECCRA): copy st=2, sl=2, sb=3, sr=3 (the 'X' block) to dt=3, dl=4
+    parser.put_bytes(&mut screen, b"\x1b[2;2;3;3;;3;4$v");
+    assert_eq!(screen.row_text(2), "aXXXX"); // dest row 2 (0-based) col 3..4 becomes 'X'
+    assert_eq!(screen.row_text(3), "a  XX"); // dest row 3 (0-based) col 3..4 becomes 'X'
+
+    // 4. Change Attributes in Rectangular Area (DECCARA): SGR 1 (bold) at top=2, left=2, bottom=2, right=2
+    parser.put_bytes(&mut screen, b"\x1b[2;2;2;2;1$r");
+    assert!(screen.cell(1, 1).attrs.contains(CellAttrs::BOLD));
+    assert!(!screen.cell(1, 2).attrs.contains(CellAttrs::BOLD));
+
+    // 5. Reverse Attributes in Rectangular Area (DECRARA): SGR 1 (toggle bold) at top=2, left=2, bottom=2, right=2
+    parser.put_bytes(&mut screen, b"\x1b[2;2;2;2;1$t");
+    assert!(
+        !screen.cell(1, 1).attrs.contains(CellAttrs::BOLD),
+        "bold should be toggled off"
+    );
+}
+
+fn screen_cells(screen: &Screen) -> Vec<Cell> {
+    let mut cells = Vec::with_capacity(screen.rows() * screen.cols());
+    for row in 0..screen.rows() {
+        for col in 0..screen.cols() {
+            cells.push(*screen.cell(row, col));
+        }
+    }
+    cells
+}
+
+#[test]
+fn reversed_rectangular_ranges_are_ignored() {
+    let invalid_sequences: [(&str, &[u8]); 12] = [
+        ("DECERA vertical", b"\x1b[4;2;2;4$z".as_slice()),
+        ("DECERA horizontal", b"\x1b[2;4;4;2$z".as_slice()),
+        ("DECSERA vertical", b"\x1b[4;2;2;4${".as_slice()),
+        ("DECSERA horizontal", b"\x1b[2;4;4;2${".as_slice()),
+        ("DECFRA vertical", b"\x1b[88;4;2;2;4$x".as_slice()),
+        ("DECFRA horizontal", b"\x1b[88;2;4;4;2$x".as_slice()),
+        ("DECCRA vertical", b"\x1b[4;2;2;4;;1;1$v".as_slice()),
+        ("DECCRA horizontal", b"\x1b[2;4;4;2;;1;1$v".as_slice()),
+        ("DECCARA vertical", b"\x1b[4;2;2;4;1$r".as_slice()),
+        ("DECCARA horizontal", b"\x1b[2;4;4;2;1$r".as_slice()),
+        ("DECRARA vertical", b"\x1b[4;2;2;4;1$t".as_slice()),
+        ("DECRARA horizontal", b"\x1b[2;4;4;2;1$t".as_slice()),
+    ];
+
+    for origin_mode in [false, true] {
+        for (name, sequence) in invalid_sequences {
+            let mut parser = TerminalParser::default();
+            let mut screen = Screen::new(6, 6);
+            for row in 0..screen.rows() {
+                for col in 0..screen.cols() {
+                    screen.cell_mut(row, col).ch =
+                        char::from_u32(0x41 + (row * screen.cols() + col) as u32).unwrap();
+                }
+            }
+            if origin_mode {
+                screen.scroll_top = 1;
+                screen.scroll_bottom = 4;
+                screen.margin_left = 1;
+                screen.margin_right = 4;
+                screen.origin_mode = true;
+            }
+            screen.clear_dirty();
+            let before = screen_cells(&screen);
+
+            parser.put_bytes(&mut screen, sequence);
+
+            let after = screen_cells(&screen);
+            assert_eq!(after, before, "{name}, origin_mode={origin_mode}");
+            assert!(
+                screen.dirty_rows().is_empty(),
+                "{name} dirtied rows, origin_mode={origin_mode}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_character_set_designation_and_mapping() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+
+    // Designate G1 as DEC Special Graphics: ESC ) 0
+    // Designate G0 as ASCII: ESC ( B
+    parser.put_bytes(&mut screen, b"\x1b)0\x1b(B");
+
+    // By default G0 is active. Write 'q' -> should be 'q' (ASCII)
+    parser.put_bytes(&mut screen, b"q");
+    assert_eq!(screen.row_text(0), "q    ");
+
+    // Invoke G1 (SO / 0x0E). Write 'q' -> should be mapped to '─'
+    parser.put_bytes(&mut screen, b"\x0eq");
+    assert_eq!(screen.row_text(0), "q─   ");
+
+    // Invoke G0 (SI / 0x0F). Write 'q' -> should be 'q'
+    parser.put_bytes(&mut screen, b"\x0fq");
+    assert_eq!(screen.row_text(0), "q─q  ");
+}

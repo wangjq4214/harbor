@@ -23,11 +23,13 @@ impl Perform for ScreenHandler<'_> {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x07 => {}
+            0x05 | 0x07 => {}
             0x08 => self.screen.backspace(),
             0x09 => self.screen.horizontal_tab(),
             0x0a..=0x0c => self.screen.line_feed(),
             0x0d => self.screen.carriage_return(),
+            0x0e => self.screen.set_active_charset(1),
+            0x0f => self.screen.set_active_charset(0),
             _ => {}
         }
     }
@@ -83,6 +85,23 @@ impl Perform for ScreenHandler<'_> {
             } else if intermediates == [b'"'] && action == b'q' {
                 self.screen
                     .set_character_protection(Self::param(params, 0, 0));
+            } else if intermediates == [b'$'] {
+                match action {
+                    b'z' => self.screen.decera(params),
+                    b'{' => self.screen.decsera(params),
+                    b'x' => self.screen.decfra(params),
+                    b'v' => self.screen.deccra(params),
+                    b'r' => self.screen.deccara(params),
+                    b't' => self.screen.decrara(params),
+                    _ => {
+                        tracing::warn!(
+                            "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
+                            intermediates,
+                            params.as_slice(),
+                            action,
+                        );
+                    }
+                }
             } else {
                 tracing::warn!(
                     "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
@@ -123,6 +142,9 @@ impl Perform for ScreenHandler<'_> {
             }
             b'g' => {
                 self.screen.clear_tab_stops(Self::param(params, 0, 0));
+            }
+            b'b' => {
+                self.screen.repeat_char(Self::param(params, 0, 1));
             }
             b'm' => self.screen.set_sgr(params),
             b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
@@ -165,10 +187,19 @@ impl Perform for ScreenHandler<'_> {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        if ignore || !intermediates.is_empty() {
-            tracing::warn!(
-                "unsupported escape sequence: ESC intermediates={intermediates:?} 0x{byte:02x}"
-            );
+        if ignore {
+            return;
+        }
+        if !intermediates.is_empty() {
+            if intermediates == [b'('] {
+                self.screen.designate_g0(byte);
+            } else if intermediates == [b')'] {
+                self.screen.designate_g1(byte);
+            } else {
+                tracing::warn!(
+                    "unsupported escape sequence: ESC intermediates={intermediates:?} 0x{byte:02x}"
+                );
+            }
             return;
         }
 
@@ -193,6 +224,12 @@ impl Perform for ScreenHandler<'_> {
             }
             b'8' => {
                 self.screen.restore_cursor();
+            }
+            b'=' => {
+                self.screen.set_application_keypad(true);
+            }
+            b'>' => {
+                self.screen.set_application_keypad(false);
             }
             _ => {
                 tracing::warn!("unsupported escape sequence: ESC 0x{byte:02x}");

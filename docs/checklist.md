@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   473 |
-| Incomplete or unverified            |   581 |
+| Clearly implemented in current code |   530 |
+| Incomplete or unverified            |   524 |
 
 ## Quick Navigation
 
@@ -45,22 +45,22 @@
 | Section                                                                                              | Implemented | Incomplete / Unverified | Total |
 | ---------------------------------------------------------------------------------------------------- | ----------: | ----------------------: | ----: |
 | [1. Basic Parsing Rules](#1-basic-parsing-rules) | 37 | 0 | 37 |
-| [2. C0 Control Characters](#2-c0-control-characters) | 19 | 4 | 23 |
-| [3. C1 Control Characters](#3-c1-control-characters) | 13 | 4 | 17 |
-| [4. ESC Sequences](#4-esc-sequences) | 7 | 18 | 25 |
-| [5. Character Set Selection](#5-character-set-selection) | 0 | 44 | 44 |
+| [2. C0 Control Characters](#2-c0-control-characters) | 21 | 2 | 23 |
+| [3. C1 Control Characters](#3-c1-control-characters) | 14 | 3 | 17 |
+| [4. ESC Sequences](#4-esc-sequences) | 9 | 16 | 25 |
+| [5. Character Set Selection](#5-character-set-selection) | 31 | 13 | 44 |
 | [6. CSI Parameter Parsing](#6-csi-parameter-parsing) | 18 | 18 | 36 |
 | [7. Cursor Movement](#7-cursor-movement) | 20 | 3 | 23 |
 | [8. Save and Restore Cursor](#8-save-and-restore-cursor) | 12 | 2 | 14 |
 | [9. Erase Operations](#9-erase-operations) | 21 | 2 | 23 |
-| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition) | 17 | 9 | 26 |
+| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition) | 24 | 2 | 26 |
 | [11. Line Operations and Scrolling](#11-line-operations-and-scrolling) | 21 | 2 | 23 |
 | [12. Scrolling Region](#12-scrolling-region) | 20 | 0 | 20 |
 | [13. Horizontal Tabs](#13-horizontal-tabs) | 11 | 5 | 16 |
 | [14. Autowrap](#14-autowrap) | 13 | 1 | 14 |
 | [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode) | 6 | 4 | 10 |
 | [16. SGR Character Attributes](#16-sgr-character-attributes) | 51 | 20 | 71 |
-| [17. DEC Private Modes](#17-dec-private-modes) | 14 | 27 | 41 |
+| [17. DEC Private Modes](#17-dec-private-modes) | 17 | 24 | 41 |
 | [18. Standard Modes](#18-standard-modes) | 7 | 0 | 7 |
 | [19. Cursor Style](#19-cursor-style) | 9 | 1 | 10 |
 | [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 22 | 5 | 27 |
@@ -75,7 +75,7 @@
 | [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
 | [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
 | [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 0 | 66 | 66 |
-| [32. Rectangular Area Operations](#32-rectangular-area-operations) | 0 | 11 | 11 |
+| [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
 | [33. Character Protection Attribute](#33-character-protection-attribute) | 5 | 1 | 6 |
 | [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
 | [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
@@ -140,7 +140,7 @@
 
 ## 2. C0 Control Characters
 
-> Status: 19 / 23 items clearly implemented; 4 incomplete or unverified.
+> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `NUL` — `0x00`
 * [ ] `ENQ` — `0x05`
@@ -151,8 +151,8 @@
 * [x] `VT` — `0x0B`
 * [x] `FF` — `0x0C`
 * [x] `CR` — `0x0D`
-* [ ] `SO` — `0x0E`
-* [ ] `SI` — `0x0F`
+* [x] `SO` — `0x0E`
+* [x] `SI` — `0x0F`
 * [x] `CAN` — `0x18`
 * [x] `SUB` — `0x1A`
 * [x] `ESC` — `0x1B`
@@ -173,13 +173,13 @@
 
 ## 3. C1 Control Characters
 
-> Status: 13 / 17 items clearly implemented; 4 incomplete or unverified.
+> Status: 14 / 17 items clearly implemented; 3 incomplete or unverified.
 
 ### 3.1 7-bit and 8-bit Forms
 
 * [x] `IND`: `ESC D` / `0x84`
 * [x] `NEL`: `ESC E` / `0x85`
-* [ ] `HTS`: `ESC H` / `0x88`
+* [x] `HTS`: `ESC H` / `0x88`
 * [x] `RI`: `ESC M` / `0x8D`
 * [ ] `SS2`: `ESC N` / `0x8E`
 * [ ] `SS3`: `ESC O` / `0x8F`
@@ -202,7 +202,7 @@
 
 ## 4. ESC Sequences
 
-> Status: 7 / 25 items clearly implemented; 18 incomplete or unverified.
+> Status: 9 / 25 items clearly implemented; 16 incomplete or unverified.
 
 ### 4.1 Basic ESC Commands
 
@@ -216,8 +216,8 @@
 * [ ] `ESC O` — SS3
 * [ ] `ESC Z` — DECID
 * [x] `ESC c` — RIS
-* [ ] `ESC =` — DECKPAM
-* [ ] `ESC >` — DECKPNM
+* [x] `ESC =` — DECKPAM
+* [x] `ESC >` — DECKPNM
 * [ ] `ESC \` — ST
 
 ### 4.2 ESC Intermediate
@@ -245,12 +245,12 @@
 
 ## 5. Character Set Selection
 
-> Status: 0 / 44 items clearly implemented; 44 incomplete or unverified.
+> Status: 31 / 44 items clearly implemented; 13 incomplete or unverified.
 
 ### 5.1 Character Set Designation
 
-* [ ] `ESC ( F` — Designate G0
-* [ ] `ESC ) F` — Designate G1
+* [x] `ESC ( F` — Designate G0
+* [x] `ESC ) F` — Designate G1
 * [ ] `ESC * F` — Designate G2
 * [ ] `ESC + F` — Designate G3
 * [ ] `ESC - F`
@@ -259,8 +259,8 @@
 
 ### 5.2 Common Character Sets
 
-* [ ] `B` — ASCII
-* [ ] `0` — DEC Special Graphics
+* [x] `B` — ASCII
+* [x] `0` — DEC Special Graphics
 * [ ] `A` — UK
 * [ ] `<` — DEC Supplemental
 * [ ] `U` — DEC Supplemental or compatible character set
@@ -268,8 +268,8 @@
 
 ### 5.3 Character Set Invocation
 
-* [ ] SI invokes G0
-* [ ] SO invokes G1
+* [x] SI invokes G0
+* [x] SO invokes G1
 * [ ] SS2 single-character invokes G2
 * [ ] SS3 single-character invokes G3
 * [ ] Single invocation only affects the next graphic character
@@ -277,31 +277,31 @@
 
 ### 5.4 DEC Special Graphics Mapping
 
-* [ ] `` ` `` → ◆
-* [ ] `a` → ▒
-* [ ] `f` → °
-* [ ] `g` → ±
-* [ ] `j` → ┘
-* [ ] `k` → ┐
-* [ ] `l` → ┌
-* [ ] `m` → └
-* [ ] `n` → ┼
-* [ ] `o` → ⎺
-* [ ] `p` → ⎻
-* [ ] `q` → ─
-* [ ] `r` → ⎼
-* [ ] `s` → ⎽
-* [ ] `t` → ├
-* [ ] `u` → ┤
-* [ ] `v` → ┴
-* [ ] `w` → ┬
-* [ ] `x` → │
-* [ ] `y` → ≤
-* [ ] `z` → ≥
-* [ ] `{` → π
-* [ ] `|` → ≠
-* [ ] `}` → £
-* [ ] `~` → ·
+* [x] `` ` `` → ◆
+* [x] `a` → ▒
+* [x] `f` → °
+* [x] `g` → ±
+* [x] `j` → ┘
+* [x] `k` → ┐
+* [x] `l` → ┌
+* [x] `m` → └
+* [x] `n` → ┼
+* [x] `o` → ⎺
+* [x] `p` → ⎻
+* [x] `q` → ─
+* [x] `r` → ⎼
+* [x] `s` → ⎽
+* [x] `t` → ├
+* [x] `u` → ┤
+* [x] `v` → ┴
+* [x] `w` → ┬
+* [x] `x` → │
+* [x] `y` → ≤
+* [x] `z` → ≥
+* [x] `{` → π
+* [x] `|` → ≠
+* [x] `}` → £
+* [x] `~` → ·
 
 ---
 
@@ -453,12 +453,12 @@
 
 ## 10. Character Insertion, Deletion and Repetition
 
-> Status: 17 / 26 items clearly implemented; 9 incomplete or unverified.
+> Status: 24 / 26 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `CSI Ps @` — ICH
 * [x] `CSI Ps P` — DCH
 * [x] `CSI Ps X` — ECH
-* [ ] `CSI Ps b` — REP
+* [x] `CSI Ps b` — REP
 
 ### 10.1 ICH
 
@@ -487,12 +487,12 @@
 
 ### 10.4 REP
 
-* [ ] Default repeat count is 1
-* [ ] Repeats the most recently printed graphic character
-* [ ] Does not repeat control characters
-* [ ] Safely ignored when no previous graphic character exists
-* [ ] Repeat behavior is consistent for wide characters
-* [ ] Repeat process obeys autowrap rules
+* [x] Default repeat count is 1
+* [x] Repeats the most recently printed graphic character
+* [x] Does not repeat control characters
+* [x] Safely ignored when no previous graphic character exists
+* [x] Repeat behavior is consistent for wide characters
+* [x] Repeat process obeys autowrap rules
 
 ---
 
@@ -753,7 +753,7 @@
 
 ## 17. DEC Private Modes
 
-> Status: 14 / 41 items clearly implemented; 27 incomplete or unverified.
+> Status: 17 / 41 items clearly implemented; 24 incomplete or unverified.
 
 ### 17.1 Cursor and Display
 
@@ -766,9 +766,9 @@
 
 ### 17.2 Cursor Keys and Keypad
 
-* [ ] `?1` — DECCKM, Application Cursor Keys
-* [ ] `?66` — Application Keypad
-* [ ] `ESC =` and `ESC >` can toggle keypad mode
+* [x] `?1` — DECCKM, Application Cursor Keys
+* [x] `?66` — Application Keypad
+* [x] `ESC =` and `ESC >` can toggle keypad mode
 
 ### 17.3 Column Mode
 
@@ -1401,19 +1401,19 @@
 
 ## 32. Rectangular Area Operations
 
-> Status: 0 / 11 items clearly implemented; 11 incomplete or unverified.
+> Status: 11 / 11 items clearly implemented; 0 incomplete or unverified.
 
-* [ ] DECFRA — Fill Rectangular Area
-* [ ] DECERA — Erase Rectangular Area
-* [ ] DECSERA — Selective Erase Rectangular Area
-* [ ] DECCRA — Copy Rectangular Area
-* [ ] DECCARA — Change Attributes in Rectangular Area
-* [ ] DECRARA — Reverse Attributes in Rectangular Area
-* [ ] Rectangle coordinates use correct 1-based semantics
-* [ ] Illegal rectangle ranges are safely ignored
-* [ ] Rectangle range is clipped to the valid screen
-* [ ] Protected cells are preserved during selective erase
-* [ ] Rectangle operations do not split wide characters
+* [x] DECFRA — Fill Rectangular Area
+* [x] DECERA — Erase Rectangular Area
+* [x] DECSERA — Selective Erase Rectangular Area
+* [x] DECCRA — Copy Rectangular Area
+* [x] DECCARA — Change Attributes in Rectangular Area
+* [x] DECRARA — Reverse Attributes in Rectangular Area
+* [x] Rectangle coordinates use correct 1-based semantics
+* [x] Illegal rectangle ranges are safely ignored
+* [x] Rectangle range is clipped to the valid screen
+* [x] Protected cells are preserved during selective erase
+* [x] Rectangle operations do not split wide characters
 
 ---
 

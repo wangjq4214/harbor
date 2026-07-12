@@ -200,9 +200,15 @@ impl ApplicationHandler<AppEvent> for App {
             } if event.state == ElementState::Pressed => {
                 terminal.scroll_viewport_to_bottom();
 
-                let Some(bytes) =
-                    keyboard_input_bytes(&event.logical_key, event.text.as_deref(), self.modifiers)
-                else {
+                let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
+                let Some(bytes) = keyboard_input_bytes(
+                    &event.logical_key,
+                    event.text.as_deref(),
+                    self.modifiers,
+                    terminal.screen().application_cursor,
+                    terminal.screen().application_keypad,
+                    is_numpad,
+                ) else {
                     return;
                 };
                 pty.write(&bytes);
