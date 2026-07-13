@@ -185,6 +185,3 @@ Write-Line ("  Time: {0:yyyy-MM-dd HH:mm:ss}" -f (Get-Date))
 Write-Line "  Size: $(Get-WindowWidth)×$(Get-WindowHeight) (cols×rows)"
 $termName = if ($env:TERM) { $env:TERM } else { 'unknown' }
 Write-Line "  TERM: $termName"
-
-
-
