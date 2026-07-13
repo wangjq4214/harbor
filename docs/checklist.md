@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   573 |
-| Incomplete or unverified            |   481 |
+| Clearly implemented in current code |   583 |
+| Incomplete or unverified            |   471 |
 
 ## Quick Navigation
 
@@ -74,7 +74,7 @@
 | [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
 | [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
 | [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
-| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 37 | 29 | 66 |
+| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 47 | 19 | 66 |
 | [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
 | [33. Character Protection Attribute](#33-character-protection-attribute) | 5 | 1 | 6 |
 | [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
@@ -1308,7 +1308,7 @@
 
 ## 31. Keyboard Mode Related Protocols
 
-> Status: 37 / 66 items clearly implemented; 29 incomplete or unverified.
+> Status: 47 / 66 items clearly implemented; 19 incomplete or unverified.
 
 ### 31.1 Application Cursor Keys
 

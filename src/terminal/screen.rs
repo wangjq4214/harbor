@@ -605,6 +605,16 @@ impl Screen {
         self.normal.resize(rows, cols);
         self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
         self.cursor_x = self.cursor_x.min(cols.saturating_sub(1));
+        let rightmost_col = cols.saturating_sub(1);
+        self.margin_left = self.margin_left.min(rightmost_col);
+        self.margin_right = self.margin_right.min(rightmost_col);
+        let old_tab_stop_count = self.tab_stops.len();
+        self.tab_stops.resize(cols, false);
+        for col in old_tab_stop_count..cols {
+            if col % 8 == 0 {
+                self.tab_stops[col] = true;
+            }
+        }
         self.scroll_top = 0;
         self.scroll_bottom = rows.saturating_sub(1);
         if let Some(ref mut saved) = self.saved_cursor {
@@ -772,8 +782,6 @@ impl Screen {
             self.pending_wrap = false;
         }
 
-
-
         let right_limit = if self.margin_mode {
             self.margin_right
         } else {
@@ -785,10 +793,16 @@ impl Screen {
             self.cursor_x = right_limit;
         }
 
-        // 3. If a wide character cannot fit in the remaining columns, wrap immediately
+        // 3. If a wide character cannot fit, wrap only when DECAWM is enabled.
         if width == 2 && self.cursor_x + 1 > right_limit {
+            if !self.autowrap {
+                return;
+            }
             self.newline();
             self.pending_wrap = false;
+        }
+        if self.insert_mode {
+            self.insert_chars(width);
         }
 
         self.mark_row_dirty(self.cursor_y);
@@ -874,22 +888,19 @@ impl Screen {
     /// region, moves down without scrolling.
     pub(crate) fn newline(&mut self) {
         self.carriage_return();
-        if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
-            if self.cursor_y == self.scroll_bottom {
-                self.scroll_region_up_one();
-            } else {
-                self.cursor_y += 1;
-            }
-        } else if self.cursor_y + 1 < self.normal.rows() {
-            self.cursor_y += 1;
-        }
-        self.pending_wrap = false;
+        self.index();
     }
 
     pub(crate) fn line_feed(&mut self) {
         if self.line_feed_mode {
             self.carriage_return();
         }
+        self.index();
+    }
+
+    /// Implements VT Index (IND): move down one row, scrolling at the bottom margin,
+    /// without changing the cursor column.
+    pub(crate) fn index(&mut self) {
         if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
             if self.cursor_y == self.scroll_bottom {
                 self.scroll_region_up_one();
@@ -1292,6 +1303,44 @@ impl Screen {
         self.cursor_y = 0;
     }
 
+    fn scroll_margin_rect_up(&mut self, top: usize, bottom: usize, n: usize) {
+        let height = bottom - top + 1;
+        if n < height {
+            for dst_row in top..=(bottom - n) {
+                let src_row = dst_row + n;
+                for col in self.margin_left..=self.margin_right {
+                    let cell = *self.normal.cell(src_row, col);
+                    *self.normal.cell_mut(dst_row, col) = cell;
+                }
+            }
+        }
+        let blank = self.erase_cell();
+        for row in (bottom + 1 - n)..=bottom {
+            for col in self.margin_left..=self.margin_right {
+                *self.normal.cell_mut(row, col) = blank;
+            }
+        }
+    }
+
+    fn scroll_margin_rect_down(&mut self, top: usize, bottom: usize, n: usize) {
+        let height = bottom - top + 1;
+        if n < height {
+            for dst_row in ((top + n)..=bottom).rev() {
+                let src_row = dst_row - n;
+                for col in self.margin_left..=self.margin_right {
+                    let cell = *self.normal.cell(src_row, col);
+                    *self.normal.cell_mut(dst_row, col) = cell;
+                }
+            }
+        }
+        let blank = self.erase_cell();
+        for row in top..(top + n) {
+            for col in self.margin_left..=self.margin_right {
+                *self.normal.cell_mut(row, col) = blank;
+            }
+        }
+    }
+
     /// Implements reverse index (`ESC M`): move up, or scroll the scrolling region down
     /// when already at the top of the region. When the cursor is above the region,
     /// moves up if not already at the top of the full screen.
@@ -1309,7 +1358,9 @@ impl Screen {
             for row in self.scroll_top..=self.scroll_bottom {
                 self.mark_row_dirty(row);
             }
-            if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
+            if self.margin_mode {
+                self.scroll_margin_rect_down(self.scroll_top, self.scroll_bottom, 1);
+            } else if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
                 // Full-screen reverse: use scroll_up_full_screen in reverse direction.
                 // Shift down by 1: blank top, everything moves down.
                 let tr = self.normal.total_rows();
@@ -1356,7 +1407,7 @@ impl Screen {
 
     /// Scrolls the scrolling region up by one row: shifts rows within `[scroll_top, scroll_bottom]`
     /// upward (row N → N-1) and fills the newly exposed bottom row of the region with blank
-    /// cells. The cursor moves to column 0 of the bottom region row.
+    /// cells. The caller controls the cursor column.
     fn scroll_region_up_one(&mut self) {
         tracing::debug!(
             scroll_top = self.scroll_top,
@@ -1369,7 +1420,9 @@ impl Screen {
         for row in self.scroll_top..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
-        if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
+        if self.margin_mode {
+            self.scroll_margin_rect_up(self.scroll_top, self.scroll_bottom, 1);
+        } else if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
             // Full-screen: O(1) ring-buffer advance.
             self.normal.scroll_up_full_screen(1, self.erase_cell());
         } else {
@@ -1393,14 +1446,13 @@ impl Screen {
                 .fill_row_with(self.scroll_bottom, self.erase_cell());
         }
         self.cursor_y = self.scroll_bottom;
-        self.cursor_x = 0;
     }
 
     /// Implements DECSTBM (`CSI r`): set scrolling region.
     ///
     /// `top` and `bottom` are 1-based ANSI coordinates. A value of 0 means "use default"
     /// (top=1, bottom=rows). If `top >= bottom` after clamping, the request is ignored.
-    /// Cursor is moved to home (0, 0) on success.
+    /// Cursor is moved to the active home position on success.
     pub(crate) fn set_scroll_region(&mut self, top: usize, bottom: usize) {
         let top = if top == 0 { 1 } else { top };
         let bottom = if bottom == 0 {
@@ -1415,8 +1467,7 @@ impl Screen {
         }
         self.scroll_top = top - 1;
         self.scroll_bottom = bottom - 1;
-        self.cursor_x = 0;
-        self.cursor_y = 0;
+        self.home_cursor();
     }
 
     pub(crate) fn set_left_right_margins(&mut self, left: usize, right: usize) {
@@ -1518,6 +1569,11 @@ impl Screen {
         for row in self.cursor_y..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
+        if self.margin_mode {
+            self.scroll_margin_rect_down(self.cursor_y, self.scroll_bottom, n);
+            self.cursor_x = 0;
+            return;
+        }
         // When n covers all remaining rows in the region, just blank them all.
         if n == max_n {
             for row in self.cursor_y..=self.scroll_bottom {
@@ -1557,6 +1613,11 @@ impl Screen {
         // Mark all affected rows dirty.
         for row in self.cursor_y..=self.scroll_bottom {
             self.mark_row_dirty(row);
+        }
+        if self.margin_mode {
+            self.scroll_margin_rect_up(self.cursor_y, self.scroll_bottom, n);
+            self.cursor_x = 0;
+            return;
         }
         if n == max_n {
             for row in self.cursor_y..=self.scroll_bottom {
@@ -1599,6 +1660,10 @@ impl Screen {
         for row in self.scroll_top..=self.scroll_bottom {
             self.mark_row_dirty(row);
         }
+        if self.margin_mode {
+            self.scroll_margin_rect_up(self.scroll_top, self.scroll_bottom, n);
+            return;
+        }
         // When n covers the entire region, just blank everything.
         if n == region_height {
             for row in self.scroll_top..=self.scroll_bottom {
@@ -1640,6 +1705,10 @@ impl Screen {
         // Mark only region rows dirty.
         for row in self.scroll_top..=self.scroll_bottom {
             self.mark_row_dirty(row);
+        }
+        if self.margin_mode {
+            self.scroll_margin_rect_down(self.scroll_top, self.scroll_bottom, n);
+            return;
         }
         // When n covers the entire region, just blank everything.
         if n == region_height {

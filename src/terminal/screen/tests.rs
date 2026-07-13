@@ -158,6 +158,28 @@ fn resize_rebuilds_dirty_all_true() {
         "resize should rebuild dirty_rows with all true"
     );
 }
+
+#[test]
+fn resize_clamps_margins_and_updates_tab_stops() {
+    let mut screen = Screen::new(2, 12);
+    screen.margin_mode = true;
+    screen.margin_left = 8;
+    screen.margin_right = 11;
+    screen.clear_tab_stops(3);
+    screen.tab_stops[4] = true;
+
+    screen.resize(2, 6);
+    assert_eq!((screen.margin_left, screen.margin_right), (5, 5));
+    assert_eq!(
+        screen.tab_stops,
+        vec![false, false, false, false, true, false]
+    );
+
+    screen.resize(2, 18);
+    assert!(screen.tab_stops[4], "existing tab stops must be preserved");
+    assert!(screen.tab_stops[8], "new default tab stop at column 8");
+    assert!(screen.tab_stops[16], "new default tab stop at column 16");
+}
 #[test]
 fn erase_chars_clears_from_cursor_to_right() {
     let mut screen = Screen::new(1, 14);
@@ -880,6 +902,21 @@ fn test_origin_mode_positioning() {
 }
 
 #[test]
+fn set_scroll_region_homes_cursor_within_origin_mode() {
+    let mut screen = Screen::new(6, 8);
+    screen.origin_mode = true;
+    screen.margin_mode = true;
+    screen.margin_left = 2;
+    screen.margin_right = 6;
+    screen.cursor_x = 5;
+    screen.cursor_y = 5;
+
+    screen.set_scroll_region(2, 5);
+
+    assert_eq!((screen.cursor_x, screen.cursor_y), (2, 1));
+}
+
+#[test]
 fn test_horizontal_margins() {
     let mut screen = Screen::new(5, 5);
     screen.margin_mode = true;
@@ -1067,6 +1104,42 @@ fn line_feed_mode_defaults_and_resets_disabled() {
 
     parser.put_bytes(&mut screen, b"\x1b[20h\x1b[!p");
     assert!(!screen.line_feed_mode);
+}
+
+#[test]
+fn index_is_independent_of_line_feed_mode() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(3, 6);
+    screen.cursor_x = 4;
+    screen.cursor_y = 1;
+
+    parser.put_bytes(&mut screen, b"\x1b[20h\x1bD");
+
+    assert!(screen.line_feed_mode);
+    assert_eq!((screen.cursor_x, screen.cursor_y), (4, 2));
+}
+
+#[test]
+fn scrolling_preserves_the_column_chosen_by_the_caller() {
+    let mut screen = Screen::new(3, 6);
+    screen.cursor_x = 4;
+    screen.cursor_y = 2;
+    screen.line_feed();
+    assert_eq!(
+        screen.cursor_x, 4,
+        "LF must preserve its column while scrolling"
+    );
+
+    screen.margin_mode = true;
+    screen.margin_left = 1;
+    screen.margin_right = 4;
+    screen.cursor_x = 3;
+    screen.cursor_y = 2;
+    screen.newline();
+    assert_eq!(
+        screen.cursor_x, 1,
+        "newline must retain the carriage-return margin while scrolling"
+    );
 }
 
 #[test]
@@ -1331,6 +1404,17 @@ fn test_margin_wide_character_wrapping() {
     // Check that row 1, col 2 has '中'
     assert_eq!(screen2.normal.cell(1, 2).ch, '中');
     assert!(screen2.normal.cell(1, 3).wide_continuation);
+
+    // Case C: with DECAWM disabled, a wide character that cannot fit is discarded.
+    let mut screen3 = Screen::new(2, 8);
+    screen3.margin_mode = true;
+    screen3.margin_left = 2;
+    screen3.margin_right = 5;
+    screen3.autowrap = false;
+    screen3.cursor_x = 5;
+    screen3.write_char('中');
+    assert_eq!((screen3.cursor_x, screen3.cursor_y), (5, 0));
+    assert_eq!(screen3.row_text(0), "        ");
 }
 
 #[test]
@@ -1412,3 +1496,85 @@ fn test_margin_selective_erase_operations() {
     assert_eq!(screen.row_text(2), "xx  x xx");
 }
 
+#[test]
+fn insert_mode_shifts_cells_within_horizontal_margins() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.margin_mode = true;
+    screen.margin_left = 1;
+    screen.margin_right = 4;
+    screen.cursor_x = 2;
+    screen.pending_wrap = false;
+    screen.insert_mode = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abXcdf");
+    assert_eq!(screen.cursor_x, 3);
+}
+
+fn margin_scroll_fixture() -> Screen {
+    let mut screen = Screen::new(4, 6);
+    screen.margin_mode = true;
+    screen.margin_left = 1;
+    screen.margin_right = 4;
+    for row in 0..4 {
+        for col in 0..6 {
+            screen.normal.cell_mut(row, col).ch = char::from(b'A' + row as u8);
+        }
+    }
+    screen
+}
+
+fn assert_margin_exterior_unchanged(screen: &Screen) {
+    for row in 0..4 {
+        let expected = char::from(b'A' + row as u8);
+        assert_eq!(screen.normal.cell(row, 0).ch, expected);
+        assert_eq!(screen.normal.cell(row, 5).ch, expected);
+    }
+}
+
+#[test]
+fn vertical_operations_scroll_only_within_horizontal_margins() {
+    let mut screen = margin_scroll_fixture();
+    screen.cursor_y = 3;
+    screen.line_feed();
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(0, 1).ch, 'B');
+    assert_eq!(screen.normal.cell(3, 1).ch, ' ');
+
+    let mut screen = margin_scroll_fixture();
+    screen.cursor_y = 0;
+    screen.reverse_index();
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(0, 1).ch, ' ');
+    assert_eq!(screen.normal.cell(1, 1).ch, 'A');
+
+    let mut screen = margin_scroll_fixture();
+    screen.cursor_y = 1;
+    screen.insert_lines(1);
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(1, 1).ch, ' ');
+    assert_eq!(screen.normal.cell(2, 1).ch, 'B');
+
+    let mut screen = margin_scroll_fixture();
+    screen.cursor_y = 1;
+    screen.delete_lines(1);
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(1, 1).ch, 'C');
+    assert_eq!(screen.normal.cell(3, 1).ch, ' ');
+
+    let mut screen = margin_scroll_fixture();
+    screen.scroll_up_region(1);
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(0, 1).ch, 'B');
+    assert_eq!(screen.normal.cell(3, 1).ch, ' ');
+
+    let mut screen = margin_scroll_fixture();
+    screen.scroll_down_region(1);
+    assert_margin_exterior_unchanged(&screen);
+    assert_eq!(screen.normal.cell(0, 1).ch, ' ');
+    assert_eq!(screen.normal.cell(1, 1).ch, 'A');
+}

@@ -208,7 +208,7 @@ impl Perform for ScreenHandler<'_> {
                 self.screen.reset_display();
             }
             b'D' => {
-                self.screen.line_feed();
+                self.screen.index();
             }
             b'E' => {
                 self.screen.newline();
