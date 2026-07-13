@@ -9,13 +9,6 @@ pub(crate) struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
 }
 
-impl ScreenHandler<'_> {
-    /// Returns a CSI parameter or the caller-specified default for missing/empty parameters.
-    fn param(params: &Params, index: usize, default: usize) -> usize {
-        params.get(index).unwrap_or(default)
-    }
-}
-
 impl Perform for ScreenHandler<'_> {
     fn print(&mut self, ch: char) {
         self.screen.write_char(ch);
@@ -45,7 +38,7 @@ impl Perform for ScreenHandler<'_> {
         if ignore {
             tracing::warn!(
                 "ignored CSI sequence: params={:?} final=0x{action:02x}",
-                params.as_slice(),
+                params.iter_flat().collect::<Vec<_>>(),
             );
             return;
         }
@@ -54,23 +47,22 @@ impl Perform for ScreenHandler<'_> {
             match (private_marker, action) {
                 (b'?', b'h' | b'l') => {
                     let enabled = action == b'h';
-                    for param_opt in params.as_slice() {
-                        if let Some(param) = *param_opt {
+                    for param_opt in params.iter_flat() {
+                        if let Some(param) = param_opt {
                             self.screen.set_private_mode(param, enabled);
                         }
                     }
                 }
                 (b'?', b'J') => {
-                    self.screen
-                        .selective_erase_display(Self::param(params, 0, 0));
+                    self.screen.selective_erase_display(params.get_or(0, 0));
                 }
                 (b'?', b'K') => {
-                    self.screen.selective_erase_line(Self::param(params, 0, 0));
+                    self.screen.selective_erase_line(params.get_or(0, 0));
                 }
                 _ => {
                     tracing::warn!(
                         "unsupported private CSI sequence: marker=0x{private_marker:02x} params={:?} final=0x{action:02x}",
-                        params.as_slice(),
+                        params.iter_flat().collect::<Vec<_>>(),
                     );
                 }
             }
@@ -79,12 +71,11 @@ impl Perform for ScreenHandler<'_> {
 
         if !intermediates.is_empty() {
             if intermediates == [b' '] && action == b'q' {
-                self.screen.set_cursor_style(Self::param(params, 0, 1));
+                self.screen.set_cursor_style(params.get_or(0, 1));
             } else if intermediates == [b'!'] && action == b'p' {
                 self.screen.soft_reset();
             } else if intermediates == [b'"'] && action == b'q' {
-                self.screen
-                    .set_character_protection(Self::param(params, 0, 0));
+                self.screen.set_character_protection(params.get_or(0, 0));
             } else if intermediates == [b'$'] {
                 match action {
                     b'z' => self.screen.decera(params),
@@ -97,7 +88,7 @@ impl Perform for ScreenHandler<'_> {
                         tracing::warn!(
                             "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
                             intermediates,
-                            params.as_slice(),
+                            params.iter_flat().collect::<Vec<_>>(),
                             action,
                         );
                     }
@@ -106,7 +97,7 @@ impl Perform for ScreenHandler<'_> {
                 tracing::warn!(
                     "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
                     intermediates,
-                    params.as_slice(),
+                    params.iter_flat().collect::<Vec<_>>(),
                     action,
                 );
             }
@@ -114,64 +105,62 @@ impl Perform for ScreenHandler<'_> {
         }
 
         match action {
-            b'A' => self.screen.cursor_up(Self::param(params, 0, 1)),
-            b'B' => self.screen.cursor_down(Self::param(params, 0, 1)),
-            b'C' => self.screen.cursor_right(Self::param(params, 0, 1)),
-            b'D' => self.screen.cursor_left(Self::param(params, 0, 1)),
+            b'A' => self.screen.cursor_up(params.get_or(0, 1)),
+            b'B' => self.screen.cursor_down(params.get_or(0, 1)),
+            b'C' => self.screen.cursor_right(params.get_or(0, 1)),
+            b'D' => self.screen.cursor_left(params.get_or(0, 1)),
             b'E' => {
-                let n = Self::param(params, 0, 1);
+                let n = params.get_or(0, 1);
                 self.screen.cursor_down(n);
                 self.screen.carriage_return();
             }
             b'F' => {
-                let n = Self::param(params, 0, 1);
+                let n = params.get_or(0, 1);
                 self.screen.cursor_up(n);
                 self.screen.carriage_return();
             }
             b'G' => {
-                self.screen.set_cursor_col(Self::param(params, 0, 1));
+                self.screen.set_cursor_col(params.get_or(0, 1));
             }
             b'H' | b'f' => {
                 self.screen
-                    .set_cursor_position(Self::param(params, 0, 1), Self::param(params, 1, 1));
+                    .set_cursor_position(params.get_or(0, 1), params.get_or(1, 1));
             }
-            b'J' => self.screen.erase_display(Self::param(params, 0, 0)),
-            b'K' => self.screen.erase_line(Self::param(params, 0, 0)),
+            b'J' => self.screen.erase_display(params.get_or(0, 0)),
+            b'K' => self.screen.erase_line(params.get_or(0, 0)),
             b'd' => {
-                self.screen.set_cursor_row(Self::param(params, 0, 1));
+                self.screen.set_cursor_row(params.get_or(0, 1));
             }
             b'g' => {
-                self.screen.clear_tab_stops(Self::param(params, 0, 0));
+                self.screen.clear_tab_stops(params.get_or(0, 0));
             }
             b'b' => {
-                self.screen.repeat_char(Self::param(params, 0, 1));
+                self.screen.repeat_char(params.get_or(0, 1));
             }
             b'm' => self.screen.set_sgr(params),
-            b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
+            b'X' => self.screen.erase_chars(params.get_or(0, 1)),
             b'r' => self
                 .screen
-                .set_scroll_region(Self::param(params, 0, 0), Self::param(params, 1, 0)),
+                .set_scroll_region(params.get_or(0, 0), params.get_or(1, 0)),
             b's' => {
                 if self.screen.margin_mode() {
-                    self.screen.set_left_right_margins(
-                        Self::param(params, 0, 0),
-                        Self::param(params, 1, 0),
-                    );
+                    self.screen
+                        .set_left_right_margins(params.get_or(0, 0), params.get_or(1, 0));
                 } else {
                     self.screen.save_cursor();
                 }
             }
             b'u' => self.screen.restore_cursor(),
-            b'@' => self.screen.insert_chars(Self::param(params, 0, 1)),
-            b'P' => self.screen.delete_chars(Self::param(params, 0, 1)),
-            b'L' => self.screen.insert_lines(Self::param(params, 0, 1)),
-            b'M' => self.screen.delete_lines(Self::param(params, 0, 1)),
-            b'S' => self.screen.scroll_up_region(Self::param(params, 0, 1)),
-            b'T' => self.screen.scroll_down_region(Self::param(params, 0, 1)),
+            b'@' => self.screen.insert_chars(params.get_or(0, 1)),
+            b'P' => self.screen.delete_chars(params.get_or(0, 1)),
+            b'L' => self.screen.insert_lines(params.get_or(0, 1)),
+            b'M' => self.screen.delete_lines(params.get_or(0, 1)),
+            b'S' => self.screen.scroll_up_region(params.get_or(0, 1)),
+            b'T' => self.screen.scroll_down_region(params.get_or(0, 1)),
             b'h' | b'l' => {
                 let enabled = action == b'h';
-                for param_opt in params.as_slice() {
-                    if let Some(param) = *param_opt {
+                for param_opt in params.iter_flat() {
+                    if let Some(param) = param_opt {
                         self.screen.set_standard_mode(param, enabled);
                     }
                 }
@@ -179,7 +168,7 @@ impl Perform for ScreenHandler<'_> {
             _ => {
                 tracing::warn!(
                     "unsupported CSI sequence: params={:?} final=0x{:02x}",
-                    params.as_slice(),
+                    params.iter_flat().collect::<Vec<_>>(),
                     action,
                 );
             }

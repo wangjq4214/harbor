@@ -32,7 +32,6 @@ impl Param {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Params {
     pub(crate) values: [Param; MAX_PARAMS],
-    pub(crate) flat_values: [Option<usize>; MAX_PARAMS],
     pub(crate) len: usize,
 }
 
@@ -53,15 +52,20 @@ impl Params {
         }
     }
 
-    pub fn as_slice(&self) -> &[Option<usize>] {
-        &self.flat_values[..self.len]
+    /// Iterates the first sub-parameter of every slot, yielding `None` for empty slots.
+    pub fn iter_flat(&self) -> impl Iterator<Item = Option<usize>> + '_ {
+        self.values[..self.len].iter().map(|p| p.get(0))
+    }
+
+    /// Returns a CSI parameter or `default` for missing/empty parameters.
+    pub fn get_or(&self, index: usize, default: usize) -> usize {
+        self.get(index).unwrap_or(default)
     }
 }
 
 impl From<&[Option<usize>]> for Params {
     fn from(slice: &[Option<usize>]) -> Self {
         let mut values = [Param::default(); MAX_PARAMS];
-        let mut flat_values = [None; MAX_PARAMS];
         let len = slice.len().min(MAX_PARAMS);
         for i in 0..len {
             values[i] = Param {
@@ -72,13 +76,8 @@ impl From<&[Option<usize>]> for Params {
                 },
                 len: 1,
             };
-            flat_values[i] = slice[i];
         }
-        Params {
-            values,
-            flat_values,
-            len,
-        }
+        Params { values, len }
     }
 }
 
@@ -125,13 +124,8 @@ impl CsiAccumulator {
     }
 
     pub fn params(&self) -> Params {
-        let mut flat_values = [None; MAX_PARAMS];
-        for (flat_value, param) in flat_values.iter_mut().zip(&self.values[..self.len]) {
-            *flat_value = param.get(0);
-        }
         Params {
             values: self.values,
-            flat_values,
             len: self.len,
         }
     }
