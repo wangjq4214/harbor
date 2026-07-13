@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   311 |
-| Incomplete or unverified            |   743 |
+| Clearly implemented in current code |   583 |
+| Incomplete or unverified            |   471 |
 
 ## Quick Navigation
 
@@ -44,51 +44,51 @@
 
 | Section                                                                                              | Implemented | Incomplete / Unverified | Total |
 | ---------------------------------------------------------------------------------------------------- | ----------: | ----------------------: | ----: |
-| [1. Basic Parsing Rules](#1-basic-parsing-rules)                                                     |          16 |                      21 |    37 |
-| [2. C0 Control Characters](#2-c0-control-characters)                                                 |          15 |                       8 |    23 |
-| [3. C1 Control Characters](#3-c1-control-characters)                                                 |           6 |                      11 |    17 |
-| [4. ESC Sequences](#4-esc-sequences)                                                                 |           6 |                      19 |    25 |
-| [5. Character Set Selection](#5-character-set-selection)                                             |           0 |                      44 |    44 |
-| [6. CSI Parameter Parsing](#6-csi-parameter-parsing)                                                 |          17 |                      19 |    36 |
-| [7. Cursor Movement](#7-cursor-movement)                                                             |          16 |                       7 |    23 |
-| [8. Save and Restore Cursor](#8-save-and-restore-cursor)                                             |           9 |                       5 |    14 |
-| [9. Erase Operations](#9-erase-operations)                                                           |          11 |                      12 |    23 |
-| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition)  |          13 |                      13 |    26 |
-| [11. Line Operations and Scrolling](#11-line-operations-and-scrolling)                               |          19 |                       4 |    23 |
-| [12. Scrolling Region](#12-scrolling-region)                                                         |          10 |                      10 |    20 |
-| [13. Horizontal Tabs](#13-horizontal-tabs)                                                           |           2 |                      14 |    16 |
-| [14. Autowrap](#14-autowrap)                                                                         |           2 |                      12 |    14 |
-| [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode)                             |           0 |                      10 |    10 |
-| [16. SGR Character Attributes](#16-sgr-character-attributes)                                         |          51 |                      20 |    71 |
-| [17. DEC Private Modes](#17-dec-private-modes)                                                       |           6 |                      35 |    41 |
-| [18. Standard Modes](#18-standard-modes)                                                             |           0 |                       7 |     7 |
-| [19. Cursor Style](#19-cursor-style)                                                                 |           9 |                       1 |    10 |
-| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset)                                       |           3 |                      24 |    27 |
-| [21. Device Status Reports](#21-device-status-reports)                                               |           0 |                      22 |    22 |
-| [22. Mode Queries](#22-mode-queries)                                                                 |           0 |                      12 |    12 |
-| [23. Window Operations](#23-window-operations)                                                       |           0 |                      19 |    19 |
-| [24. OSC Basic Parsing](#24-osc-basic-parsing)                                                       |           8 |                      70 |    78 |
-| [25. DCS Basic Parsing](#25-dcs-basic-parsing)                                                       |           0 |                      42 |    42 |
-| [26. APC, PM and SOS](#26-apc-pm-and-sos)                                                            |           0 |                      18 |    18 |
-| [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) |           6 |                       7 |    13 |
-| [28. Mouse Protocol Output](#28-mouse-protocol-output)                                               |           0 |                      34 |    34 |
-| [29. Bracketed Paste](#29-bracketed-paste)                                                           |           0 |                      10 |    10 |
-| [30. Synchronized Output](#30-synchronized-output)                                                   |           0 |                       9 |     9 |
-| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols)                           |           0 |                      66 |    66 |
-| [32. Rectangular Area Operations](#32-rectangular-area-operations)                                   |           0 |                      11 |    11 |
-| [33. Character Protection Attribute](#33-character-protection-attribute)                             |           0 |                       6 |     6 |
-| [34. Terminal Status Report Strings](#34-terminal-status-report-strings)                             |           0 |                       8 |     8 |
-| [35. Error Recovery](#35-error-recovery)                                                             |           9 |                       8 |    17 |
-| [36. Protocol Security Limits](#36-protocol-security-limits)                                         |           4 |                      18 |    22 |
-| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set)                         |          21 |                      35 |    56 |
-| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples)                                   |          46 |                      37 |    83 |
-| [39. Final Acceptance](#39-final-acceptance)                                                         |           6 |                      15 |    21 |
+| [1. Basic Parsing Rules](#1-basic-parsing-rules) | 37 | 0 | 37 |
+| [2. C0 Control Characters](#2-c0-control-characters) | 21 | 2 | 23 |
+| [3. C1 Control Characters](#3-c1-control-characters) | 14 | 3 | 17 |
+| [4. ESC Sequences](#4-esc-sequences) | 9 | 16 | 25 |
+| [5. Character Set Selection](#5-character-set-selection) | 31 | 13 | 44 |
+| [6. CSI Parameter Parsing](#6-csi-parameter-parsing) | 18 | 18 | 36 |
+| [7. Cursor Movement](#7-cursor-movement) | 20 | 3 | 23 |
+| [8. Save and Restore Cursor](#8-save-and-restore-cursor) | 12 | 2 | 14 |
+| [9. Erase Operations](#9-erase-operations) | 21 | 2 | 23 |
+| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition) | 24 | 2 | 26 |
+| [11. Line Operations and Scrolling](#11-line-operations-and-scrolling) | 21 | 2 | 23 |
+| [12. Scrolling Region](#12-scrolling-region) | 20 | 0 | 20 |
+| [13. Horizontal Tabs](#13-horizontal-tabs) | 11 | 5 | 16 |
+| [14. Autowrap](#14-autowrap) | 13 | 1 | 14 |
+| [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode) | 6 | 4 | 10 |
+| [16. SGR Character Attributes](#16-sgr-character-attributes) | 51 | 20 | 71 |
+| [17. DEC Private Modes](#17-dec-private-modes) | 17 | 24 | 41 |
+| [18. Standard Modes](#18-standard-modes) | 7 | 0 | 7 |
+| [19. Cursor Style](#19-cursor-style) | 9 | 1 | 10 |
+| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 22 | 5 | 27 |
+| [21. Device Status Reports](#21-device-status-reports) | 0 | 22 | 22 |
+| [22. Mode Queries](#22-mode-queries) | 0 | 12 | 12 |
+| [23. Window Operations](#23-window-operations) | 0 | 19 | 19 |
+| [24. OSC Basic Parsing](#24-osc-basic-parsing) | 8 | 70 | 78 |
+| [25. DCS Basic Parsing](#25-dcs-basic-parsing) | 0 | 42 | 42 |
+| [26. APC, PM and SOS](#26-apc-pm-and-sos) | 0 | 18 | 18 |
+| [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) | 13 | 0 | 13 |
+| [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
+| [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
+| [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
+| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 47 | 19 | 66 |
+| [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
+| [33. Character Protection Attribute](#33-character-protection-attribute) | 5 | 1 | 6 |
+| [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
+| [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
+| [36. Protocol Security Limits](#36-protocol-security-limits) | 11 | 11 | 22 |
+| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 25 | 31 | 56 |
+| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 56 | 27 | 83 |
+| [39. Final Acceptance](#39-final-acceptance) | 6 | 15 | 21 |
 
 ---
 
 ## 1. Basic Parsing Rules
 
-> Status: 27 / 37 items clearly implemented; 10 incomplete or unverified.
+> Status: 37 / 37 items clearly implemented; 0 incomplete or unverified.
 
 ### 1.1 Incremental Parsing
 
@@ -108,20 +108,20 @@
 * [x] C0 control characters: `0x00..0x1F`
 * [x] ESC: `0x1B`
 * [x] DEL: `0x7F`
-* [ ] CSI parameter bytes: `0x30..0x3F`
-* [ ] Intermediate bytes: `0x20..0x2F`
+* [x] CSI parameter bytes: `0x30..0x3F`
+* [x] Intermediate bytes: `0x20..0x2F`
 * [x] Final byte: `0x40..0x7E`
-* [ ] C1 control characters: `0x80..0x9F`
-* [ ] Supports 7-bit C1 representation
-* [ ] Optionally supports 8-bit C1 representation
-* [ ] Unknown but syntactically valid sequences are fully consumed then ignored
-* [ ] Illegal sequences do not corrupt subsequent normal text
+* [x] C1 control characters: `0x80..0x9F`
+* [x] Supports 7-bit C1 representation
+* [x] Optionally supports 8-bit C1 representation
+* [x] Unknown but syntactically valid sequences are fully consumed then ignored
+* [x] Illegal sequences do not corrupt subsequent normal text
 
 ### 1.3 Parser States
 
 * [x] Ground
 * [x] Escape
-* [ ] Escape Intermediate
+* [x] Escape Intermediate
 * [x] CSI Entry
 * [x] CSI Param
 * [x] CSI Intermediate
@@ -131,16 +131,16 @@
 * [x] DCS Param
 * [x] DCS Intermediate
 * [x] DCS Passthrough
-* [ ] DCS Ignore
+* [x] DCS Ignore
 * [x] SOS/PM/APC String
 * [x] Temporary ESC state before string termination
-* [ ] Discard state after string length exceeded
+* [x] Discard state after string length exceeded
 
 ---
 
 ## 2. C0 Control Characters
 
-> Status: 15 / 23 items clearly implemented; 8 incomplete or unverified.
+> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `NUL` — `0x00`
 * [ ] `ENQ` — `0x05`
@@ -151,8 +151,8 @@
 * [x] `VT` — `0x0B`
 * [x] `FF` — `0x0C`
 * [x] `CR` — `0x0D`
-* [ ] `SO` — `0x0E`
-* [ ] `SI` — `0x0F`
+* [x] `SO` — `0x0E`
+* [x] `SI` — `0x0F`
 * [x] `CAN` — `0x18`
 * [x] `SUB` — `0x1A`
 * [x] `ESC` — `0x1B`
@@ -160,41 +160,41 @@
 
 ### 2.1 C0 Special Rules
 
-* [ ] `CAN` can abort the current ESC/CSI/OSC/DCS/APC sequence
-* [ ] `SUB` can abort the current ESC/CSI/OSC/DCS/APC sequence
+* [x] `CAN` can abort the current ESC/CSI/OSC/DCS/APC sequence
+* [x] `SUB` can abort the current ESC/CSI/OSC/DCS/APC sequence
 * [x] `ESC` can abort the current CSI and begin a new ESC sequence
 * [x] `BEL` inside an OSC is recognized as a terminator
-* [ ] Executable C0 characters appearing in the CSI parameter area behave correctly
+* [x] Executable C0 characters appearing in the CSI parameter area behave correctly
 * [x] NUL and DEL are not displayed as ordinary characters
-* [ ] LF is not unconditionally treated as CRLF
+* [x] LF is not unconditionally treated as CRLF
 * [ ] SO/SI can switch the currently invoked character set
 
 ---
 
 ## 3. C1 Control Characters
 
-> Status: 6 / 17 items clearly implemented; 11 incomplete or unverified.
+> Status: 14 / 17 items clearly implemented; 3 incomplete or unverified.
 
 ### 3.1 7-bit and 8-bit Forms
 
 * [x] `IND`: `ESC D` / `0x84`
 * [x] `NEL`: `ESC E` / `0x85`
-* [ ] `HTS`: `ESC H` / `0x88`
+* [x] `HTS`: `ESC H` / `0x88`
 * [x] `RI`: `ESC M` / `0x8D`
 * [ ] `SS2`: `ESC N` / `0x8E`
 * [ ] `SS3`: `ESC O` / `0x8F`
-* [ ] `DCS`: `ESC P` / `0x90`
-* [ ] `SOS`: `ESC X` / `0x98`
+* [x] `DCS`: `ESC P` / `0x90`
+* [x] `SOS`: `ESC X` / `0x98`
 * [x] `CSI`: `ESC [` / `0x9B`
-* [ ] `ST`: `ESC \` / `0x9C`
+* [x] `ST`: `ESC \` / `0x9C`
 * [x] `OSC`: `ESC ]` / `0x9D`
-* [ ] `PM`: `ESC ^` / `0x9E`
-* [ ] `APC`: `ESC _` / `0x9F`
+* [x] `PM`: `ESC ^` / `0x9E`
+* [x] `APC`: `ESC _` / `0x9F`
 
 ### 3.2 C1 Modes
 
-* [ ] Can distinguish UTF-8 continuation bytes from 8-bit C1
-* [ ] 8-bit C1 support is configurable
+* [x] Can distinguish UTF-8 continuation bytes from 8-bit C1
+* [x] 8-bit C1 support is configurable
 * [x] Does not mistakenly treat illegal UTF-8 bytes as C1 by default
 * [ ] Terminal responses can optionally be generated in 7-bit or 8-bit control form
 
@@ -202,7 +202,7 @@
 
 ## 4. ESC Sequences
 
-> Status: 6 / 25 items clearly implemented; 19 incomplete or unverified.
+> Status: 9 / 25 items clearly implemented; 16 incomplete or unverified.
 
 ### 4.1 Basic ESC Commands
 
@@ -210,14 +210,14 @@
 * [x] `ESC 8` — DECRC, restore cursor state
 * [x] `ESC D` — IND
 * [x] `ESC E` — NEL
-* [ ] `ESC H` — HTS
+* [x] `ESC H` — HTS
 * [x] `ESC M` — RI
 * [ ] `ESC N` — SS2
 * [ ] `ESC O` — SS3
 * [ ] `ESC Z` — DECID
 * [x] `ESC c` — RIS
-* [ ] `ESC =` — DECKPAM
-* [ ] `ESC >` — DECKPNM
+* [x] `ESC =` — DECKPAM
+* [x] `ESC >` — DECKPNM
 * [ ] `ESC \` — ST
 
 ### 4.2 ESC Intermediate
@@ -245,12 +245,12 @@
 
 ## 5. Character Set Selection
 
-> Status: 0 / 44 items clearly implemented; 44 incomplete or unverified.
+> Status: 31 / 44 items clearly implemented; 13 incomplete or unverified.
 
 ### 5.1 Character Set Designation
 
-* [ ] `ESC ( F` — Designate G0
-* [ ] `ESC ) F` — Designate G1
+* [x] `ESC ( F` — Designate G0
+* [x] `ESC ) F` — Designate G1
 * [ ] `ESC * F` — Designate G2
 * [ ] `ESC + F` — Designate G3
 * [ ] `ESC - F`
@@ -259,8 +259,8 @@
 
 ### 5.2 Common Character Sets
 
-* [ ] `B` — ASCII
-* [ ] `0` — DEC Special Graphics
+* [x] `B` — ASCII
+* [x] `0` — DEC Special Graphics
 * [ ] `A` — UK
 * [ ] `<` — DEC Supplemental
 * [ ] `U` — DEC Supplemental or compatible character set
@@ -268,8 +268,8 @@
 
 ### 5.3 Character Set Invocation
 
-* [ ] SI invokes G0
-* [ ] SO invokes G1
+* [x] SI invokes G0
+* [x] SO invokes G1
 * [ ] SS2 single-character invokes G2
 * [ ] SS3 single-character invokes G3
 * [ ] Single invocation only affects the next graphic character
@@ -277,37 +277,37 @@
 
 ### 5.4 DEC Special Graphics Mapping
 
-* [ ] `` ` `` → ◆
-* [ ] `a` → ▒
-* [ ] `f` → °
-* [ ] `g` → ±
-* [ ] `j` → ┘
-* [ ] `k` → ┐
-* [ ] `l` → ┌
-* [ ] `m` → └
-* [ ] `n` → ┼
-* [ ] `o` → ⎺
-* [ ] `p` → ⎻
-* [ ] `q` → ─
-* [ ] `r` → ⎼
-* [ ] `s` → ⎽
-* [ ] `t` → ├
-* [ ] `u` → ┤
-* [ ] `v` → ┴
-* [ ] `w` → ┬
-* [ ] `x` → │
-* [ ] `y` → ≤
-* [ ] `z` → ≥
-* [ ] `{` → π
-* [ ] `|` → ≠
-* [ ] `}` → £
-* [ ] `~` → ·
+* [x] `` ` `` → ◆
+* [x] `a` → ▒
+* [x] `f` → °
+* [x] `g` → ±
+* [x] `j` → ┘
+* [x] `k` → ┐
+* [x] `l` → ┌
+* [x] `m` → └
+* [x] `n` → ┼
+* [x] `o` → ⎺
+* [x] `p` → ⎻
+* [x] `q` → ─
+* [x] `r` → ⎼
+* [x] `s` → ⎽
+* [x] `t` → ├
+* [x] `u` → ┤
+* [x] `v` → ┴
+* [x] `w` → ┬
+* [x] `x` → │
+* [x] `y` → ≤
+* [x] `z` → ≥
+* [x] `{` → π
+* [x] `|` → ≠
+* [x] `}` → £
+* [x] `~` → ·
 
 ---
 
 ## 6. CSI Parameter Parsing
 
-> Status: 17 / 36 items clearly implemented; 19 incomplete or unverified.
+> Status: 18 / 36 items clearly implemented; 18 incomplete or unverified.
 
 ### 6.1 Basic Parameters
 
@@ -343,7 +343,7 @@
 * [ ] `<`
 * [ ] `=`
 * [x] Private Marker is saved separately from regular parameters
-* [ ] Different Private Markers are not confused with each other
+* [x] Different Private Markers are not confused with each other
 
 ### 6.4 Sub-parameters
 
@@ -361,7 +361,7 @@
 
 ## 7. Cursor Movement
 
-> Status: 16 / 23 items clearly implemented; 7 incomplete or unverified.
+> Status: 20 / 23 items clearly implemented; 3 incomplete or unverified.
 
 * [x] `CSI Ps A` — CUU
 * [x] `CSI Ps B` — CUD
@@ -380,21 +380,21 @@
 ### 7.1 Cursor Movement Boundaries
 
 * [x] Default movement amount is 1
-* [ ] Parameter 0 is handled per-command rules
+* [x] Parameter 0 is handled per-command rules
 * [x] Cursor does not move to negative coordinates
 * [x] Cursor does not move beyond the valid area
 * [x] CUP/HVP uses 1-based coordinates
 * [x] Coordinates are relative to screen when Origin Mode is off
-* [ ] Row coordinates are relative to scrolling region when Origin Mode is on
-* [ ] Column coordinates are relative to left/right margins when margin mode is on
-* [ ] Cursor movement clears pending wrap
+* [x] Row coordinates are relative to scrolling region when Origin Mode is on
+* [x] Column coordinates are relative to left/right margins when margin mode is on
+* [x] Cursor movement clears pending wrap
 * [x] CNL/CPL moves column to the valid left margin
 
 ---
 
 ## 8. Save and Restore Cursor
 
-> Status: 9 / 14 items clearly implemented; 5 incomplete or unverified.
+> Status: 12 / 14 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `ESC 7` — DECSC
 * [x] `ESC 8` — DECRC
@@ -403,11 +403,11 @@
 * [x] Save row position
 * [x] Save column position
 * [x] Save current character attributes
-* [ ] Save Origin Mode
-* [ ] Save autowrap state
+* [x] Save Origin Mode
+* [x] Save autowrap state
 * [ ] Save character set state
 * [ ] Save character set invocation state
-* [ ] Save pending wrap state, or handle per target compatibility
+* [x] Save pending wrap state, or handle per target compatibility
 * [x] Coordinates are clamped to the current valid area on restore
 * [x] Main screen and alternate screen saved state are not incorrectly mixed
 
@@ -415,7 +415,7 @@
 
 ## 9. Erase Operations
 
-> Status: 11 / 23 items clearly implemented; 12 incomplete or unverified.
+> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 ### 9.1 ED — Erase in Display
 
@@ -426,7 +426,7 @@
 * [x] `CSI J` is equivalent to default parameter 0
 * [x] Erase range correctly includes or excludes the cursor cell
 * [x] Erase uses current erase attributes
-* [ ] Erase does not unconditionally move the cursor
+* [x] Erase does not unconditionally move the cursor
 * [ ] Erasing a wide character does not leave orphaned continuation cells
 
 ### 9.2 EL — Erase in Line
@@ -435,46 +435,46 @@
 * [x] `CSI 1 K` — Beginning of line to cursor
 * [x] `CSI 2 K` — Erase entire line
 * [x] `CSI K` is equivalent to default parameter 0
-* [ ] Erase range is correct under left/right margin mode
+* [x] Erase range is correct under left/right margin mode
 * [x] Erase does not unconditionally change cursor position
 
 ### 9.3 Selective Erase
 
-* [ ] `CSI ? 0 J` — DECSED
-* [ ] `CSI ? 1 J` — DECSED
-* [ ] `CSI ? 2 J` — DECSED
-* [ ] `CSI ? 0 K` — DECSEL
-* [ ] `CSI ? 1 K` — DECSEL
-* [ ] `CSI ? 2 K` — DECSEL
-* [ ] Protected cells are not erased by selective erase
-* [ ] Non-protected cells are erased normally
+* [x] `CSI ? 0 J` — DECSED
+* [x] `CSI ? 1 J` — DECSED
+* [x] `CSI ? 2 J` — DECSED
+* [x] `CSI ? 0 K` — DECSEL
+* [x] `CSI ? 1 K` — DECSEL
+* [x] `CSI ? 2 K` — DECSEL
+* [x] Protected cells are not erased by selective erase
+* [x] Non-protected cells are erased normally
 
 ---
 
 ## 10. Character Insertion, Deletion and Repetition
 
-> Status: 13 / 26 items clearly implemented; 13 incomplete or unverified.
+> Status: 24 / 26 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `CSI Ps @` — ICH
 * [x] `CSI Ps P` — DCH
 * [x] `CSI Ps X` — ECH
-* [ ] `CSI Ps b` — REP
+* [x] `CSI Ps b` — REP
 
 ### 10.1 ICH
 
 * [x] Default insert count is 1
 * [x] Subsequent content on the current line is shifted right
 * [x] Content beyond the right margin is discarded
-* [ ] Newly inserted cells use the current erase attributes
-* [ ] Operation occurs only within the valid left/right margins
+* [x] Newly inserted cells use the current erase attributes
+* [x] Operation occurs only within the valid left/right margins
 * [ ] Wide characters are not split in half
 
 ### 10.2 DCH
 
 * [x] Default delete count is 1
 * [x] Content on the right is shifted left
-* [ ] End of line is filled with erase attributes
-* [ ] Operation occurs only within the valid left/right margins
+* [x] End of line is filled with erase attributes
+* [x] Operation occurs only within the valid left/right margins
 * [ ] Deleting any part of a wide character fully cleans up that character
 
 ### 10.3 ECH
@@ -487,18 +487,18 @@
 
 ### 10.4 REP
 
-* [ ] Default repeat count is 1
-* [ ] Repeats the most recently printed graphic character
-* [ ] Does not repeat control characters
-* [ ] Safely ignored when no previous graphic character exists
-* [ ] Repeat behavior is consistent for wide characters
-* [ ] Repeat process obeys autowrap rules
+* [x] Default repeat count is 1
+* [x] Repeats the most recently printed graphic character
+* [x] Does not repeat control characters
+* [x] Safely ignored when no previous graphic character exists
+* [x] Repeat behavior is consistent for wide characters
+* [x] Repeat process obeys autowrap rules
 
 ---
 
 ## 11. Line Operations and Scrolling
 
-> Status: 19 / 23 items clearly implemented; 4 incomplete or unverified.
+> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 ### 11.1 Line Insertion and Deletion
 
@@ -508,7 +508,7 @@
 * [x] Behaves correctly when cursor is outside the scrolling region
 * [x] IL only affects from current cursor row to bottom margin
 * [x] DL only affects from current cursor row to bottom margin
-* [ ] Newly created rows use current erase attributes
+* [x] Newly created rows use current erase attributes
 * [ ] Rectangular area handling is correct under left/right margin mode
 
 ### 11.2 Explicit Scrolling
@@ -529,14 +529,14 @@
 * [x] IND triggers upward scroll at bottom margin
 * [x] RI triggers downward scroll at top margin
 * [x] NEL performs vertical movement and returns to the valid left margin
-* [ ] IND does not unconditionally perform CR
+* [x] IND does not unconditionally perform CR
 * [x] RI does not exceed the scrolling region
 
 ---
 
 ## 12. Scrolling Region
 
-> Status: 10 / 20 items clearly implemented; 10 incomplete or unverified.
+> Status: 20 / 20 items clearly implemented; 0 incomplete or unverified.
 
 ### 12.1 DECSTBM
 
@@ -548,39 +548,39 @@
 * [x] Setting succeeds when top < bottom
 * [x] Illegal regions are ignored per compatibility rules
 * [x] Cursor moves to Home after setting
-* [ ] Home is the top-left of the scrolling region when Origin Mode is on
+* [x] Home is the top-left of the scrolling region when Origin Mode is on
 * [x] Home is the top-left of the screen when Origin Mode is off
 
 ### 12.2 Left/Right Margins
 
-* [ ] `CSI ? 69 h` — Enable DECLRMM
-* [ ] `CSI ? 69 l` — Disable DECLRMM
-* [ ] `CSI left;right s` — DECSLRM
-* [ ] Restores full horizontal region when no parameters given
-* [ ] Left/right parameters use 1-based column numbers
-* [ ] Setting succeeds when left < right
-* [ ] Cursor moves to Home after setting left/right margins
-* [ ] Full width is restored after disabling DECLRMM
+* [x] `CSI ? 69 h` — Enable DECLRMM
+* [x] `CSI ? 69 l` — Disable DECLRMM
+* [x] `CSI left;right s` — DECSLRM
+* [x] Restores full horizontal region when no parameters given
+* [x] Left/right parameters use 1-based column numbers
+* [x] Setting succeeds when left < right
+* [x] Cursor moves to Home after setting left/right margins
+* [x] Full width is restored after disabling DECLRMM
 * [x] `CSI s` still works as save cursor when DECLRMM is off
-* [ ] Left/right margins affect insertion, deletion, scrolling and cursor positioning
+* [x] Left/right margins affect insertion, deletion, scrolling and cursor positioning
 
 ---
 
 ## 13. Horizontal Tabs
 
-> Status: 2 / 16 items clearly implemented; 14 incomplete or unverified.
+> Status: 11 / 16 items clearly implemented; 5 incomplete or unverified.
 
-* [ ] HT — Move to next tab stop
-* [ ] `ESC H` — HTS, set tab stop at current column
-* [ ] `CSI Ps g` — TBC
+* [x] HT — Move to next tab stop
+* [x] `ESC H` — HTS, set tab stop at current column
+* [x] `CSI Ps g` — TBC
 * [ ] `CSI Ps I` — CHT
 * [ ] `CSI Ps Z` — CBT
 
 ### 13.1 TBC
 
-* [ ] `CSI 0 g` — Clear tab stop at current column
-* [ ] `CSI 3 g` — Clear all tab stops
-* [ ] `CSI g` uses default parameter 0
+* [x] `CSI 0 g` — Clear tab stop at current column
+* [x] `CSI 3 g` — Clear all tab stops
+* [x] `CSI g` uses default parameter 0
 * [ ] Unknown parameters are safely ignored
 
 ### 13.2 Tab Movement
@@ -589,28 +589,28 @@
 * [x] HT moves to the valid right margin when no further tab stop exists
 * [ ] CHT defaults to moving 1 tab stop
 * [ ] CBT defaults to moving back 1 tab stop
-* [ ] Tab movement does not cross the valid left/right margins
-* [ ] Tab movement clears pending wrap
-* [ ] Default tab stops are restored after RIS
+* [x] Tab movement does not cross the valid left/right margins
+* [x] Tab movement clears pending wrap
+* [x] Default tab stops are restored after RIS
 
 ---
 
 ## 14. Autowrap
 
-> Status: 2 / 14 items clearly implemented; 12 incomplete or unverified.
+> Status: 13 / 14 items clearly implemented; 1 incomplete or unverified.
 
-* [ ] `CSI ? 7 h` — Enable DECAWM
-* [ ] `CSI ? 7 l` — Disable DECAWM
-* [ ] Writing to the last column enters pending wrap
-* [ ] Does not unconditionally wrap immediately when writing to the last column
-* [ ] The next printable character triggers the actual line wrap
+* [x] `CSI ? 7 h` — Enable DECAWM
+* [x] `CSI ? 7 l` — Disable DECAWM
+* [x] Writing to the last column enters pending wrap
+* [x] Does not unconditionally wrap immediately when writing to the last column
+* [x] The next printable character triggers the actual line wrap
 * [ ] Soft-wrapped lines are correctly marked
-* [ ] CR clears pending wrap
-* [ ] BS clears or correctly handles pending wrap
-* [ ] CUP/HVP clears pending wrap
-* [ ] Positioning operations such as CHA/VPA clear pending wrap
-* [ ] EL/ED handling of pending wrap is consistent
-* [ ] The last column is overwritten when autowrap is off
+* [x] CR clears pending wrap
+* [x] BS clears or correctly handles pending wrap
+* [x] CUP/HVP clears pending wrap
+* [x] Positioning operations such as CHA/VPA clear pending wrap
+* [x] EL/ED handling of pending wrap is consistent
+* [x] The last column is overwritten when autowrap is off
 * [x] Wide characters that cannot fully fit in the last column behave correctly
 * [x] Scrolling is correct when autowrap triggers at the bottom of the scrolling region
 
@@ -618,22 +618,22 @@
 
 ## 15. Insert Mode and Line Feed Mode
 
-> Status: 0 / 10 items clearly implemented; 10 incomplete or unverified.
+> Status: 6 / 10 items clearly implemented; 4 incomplete or unverified.
 
 ### 15.1 IRM
 
-* [ ] `CSI 4 h` — Enable Insert Mode
-* [ ] `CSI 4 l` — Disable Insert Mode
+* [x] `CSI 4 h` — Enable Insert Mode
+* [x] `CSI 4 l` — Disable Insert Mode
 * [ ] Printing characters in Insert Mode performs insertion first
 * [ ] Insertion is limited to the current valid horizontal area
 * [ ] Wide character insertion does not break cell consistency
 
 ### 15.2 LNM
 
-* [ ] `CSI 20 h` — Enable Line Feed/New Line Mode
-* [ ] `CSI 20 l` — Disable Line Feed/New Line Mode
-* [ ] LF performs CR+LF semantics when LNM is on
-* [ ] LF only performs vertical movement when LNM is off
+* [x] `CSI 20 h` — Enable Line Feed/New Line Mode
+* [x] `CSI 20 l` — Disable Line Feed/New Line Mode
+* [x] LF performs CR+LF semantics when LNM is on
+* [x] LF only performs vertical movement when LNM is off
 * [ ] NEL behavior is not affected by erroneous duplicate CR
 
 ---
@@ -753,22 +753,22 @@
 
 ## 17. DEC Private Modes
 
-> Status: 6 / 41 items clearly implemented; 35 incomplete or unverified.
+> Status: 17 / 41 items clearly implemented; 24 incomplete or unverified.
 
 ### 17.1 Cursor and Display
 
 * [ ] `?5` — DECSCNM, reverse screen
-* [ ] `?6` — DECOM, Origin Mode
-* [ ] `?7` — DECAWM, autowrap
+* [x] `?6` — DECOM, Origin Mode
+* [x] `?7` — DECAWM, autowrap
 * [ ] `?12` — Cursor blink
-* [ ] `?25` — Cursor visibility
+* [x] `?25` — Cursor visibility
 * [ ] `?45` — Reverse Wraparound
 
 ### 17.2 Cursor Keys and Keypad
 
-* [ ] `?1` — DECCKM, Application Cursor Keys
-* [ ] `?66` — Application Keypad
-* [ ] `ESC =` and `ESC >` can toggle keypad mode
+* [x] `?1` — DECCKM, Application Cursor Keys
+* [x] `?66` — Application Keypad
+* [x] `ESC =` and `ESC >` can toggle keypad mode
 
 ### 17.3 Column Mode
 
@@ -793,7 +793,7 @@
 
 ### 17.5 Left/Right Margins
 
-* [ ] `?69 h/l` — DECLRMM
+* [x] `?69 h/l` — DECLRMM
 
 ### 17.6 Mouse Modes
 
@@ -814,25 +814,25 @@
 
 ### 17.8 Multi-Mode Parameters
 
-* [ ] `CSI ? 1;25;1006 h` can set multiple modes at once
-* [ ] `CSI ? 1;25;1006 l` can clear multiple modes at once
-* [ ] Unknown modes do not affect known modes
-* [ ] Multiple modes are processed in order
+* [x] `CSI ? 1;25;1006 h` can set multiple modes at once
+* [x] `CSI ? 1;25;1006 l` can clear multiple modes at once
+* [x] Unknown modes do not affect known modes
+* [x] Multiple modes are processed in order
 * [ ] Querying an unknown mode returns unknown
 
 ---
 
 ## 18. Standard Modes
 
-> Status: 0 / 7 items clearly implemented; 7 incomplete or unverified.
+> Status: 7 / 7 items clearly implemented; 0 incomplete or unverified.
 
-* [ ] `CSI Ps h` — SM
-* [ ] `CSI Ps l` — RM
-* [ ] `CSI 4 h/l` — IRM
-* [ ] `CSI 20 h/l` — LNM
-* [ ] Supports setting multiple modes at once
-* [ ] Unknown standard modes are safely ignored
-* [ ] Standard mode state is separate from DEC Private Mode state
+* [x] `CSI Ps h` — SM
+* [x] `CSI Ps l` — RM
+* [x] `CSI 4 h/l` — IRM
+* [x] `CSI 20 h/l` — LNM
+* [x] Supports setting multiple modes at once
+* [x] Unknown standard modes are safely ignored
+* [x] Standard mode state is separate from DEC Private Mode state
 
 ---
 
@@ -855,40 +855,40 @@
 
 ## 20. Soft Reset and Hard Reset
 
-> Status: 3 / 27 items clearly implemented; 24 incomplete or unverified.
+> Status: 22 / 27 items clearly implemented; 5 incomplete or unverified.
 
 ### 20.1 RIS
 
 * [x] `ESC c` — RIS
-* [ ] Reset character attributes
+* [x] Reset character attributes
 * [x] Reset cursor position
-* [ ] Reset scrolling region
-* [ ] Reset left/right margins
-* [ ] Reset Origin Mode
-* [ ] Reset autowrap mode
-* [ ] Reset insert mode
+* [x] Reset scrolling region
+* [x] Reset left/right margins
+* [x] Reset Origin Mode
+* [x] Reset autowrap mode
+* [x] Reset insert mode
 * [ ] Reset character sets
-* [ ] Reset tab stops
+* [x] Reset tab stops
 * [ ] Reset mouse modes
 * [ ] Reset bracketed paste
 * [ ] Reset focus reporting
 * [ ] Reset synchronized output
-* [ ] Exit alternate screen
-* [ ] Clear pending wrap
+* [x] Exit alternate screen
+* [x] Clear pending wrap
 * [x] Clear incomplete control sequence state
 
 ### 20.2 DECSTR
 
-* [ ] `CSI ! p` — DECSTR
-* [ ] Correctly recognizes the Intermediate byte `!`
-* [ ] Resets selected modes
-* [ ] Resets character attributes
-* [ ] Resets cursor visibility
-* [ ] Resets autowrap
-* [ ] Resets Origin Mode
-* [ ] Resets insert mode
-* [ ] Is not erroneously equivalent to RIS
-* [ ] Does not unconditionally clear the entire terminal history
+* [x] `CSI ! p` — DECSTR
+* [x] Correctly recognizes the Intermediate byte `!`
+* [x] Resets selected modes
+* [x] Resets character attributes
+* [x] Resets cursor visibility
+* [x] Resets autowrap
+* [x] Resets Origin Mode
+* [x] Resets insert mode
+* [x] Is not erroneously equivalent to RIS
+* [x] Does not unconditionally clear the entire terminal history
 
 ---
 
@@ -1200,21 +1200,21 @@
 
 ## 27. String Sequence Interruption and Termination
 
-> Status: 6 / 13 items clearly implemented; 7 incomplete or unverified.
+> Status: 13 / 13 items clearly implemented; 0 incomplete or unverified.
 
 * [x] BEL terminates OSC normally
 * [x] ST terminates OSC normally
-* [ ] ST terminates DCS normally
-* [ ] ST terminates APC normally
-* [ ] ST terminates PM normally
-* [ ] ST terminates SOS normally
+* [x] ST terminates DCS normally
+* [x] ST terminates APC normally
+* [x] ST terminates PM normally
+* [x] ST terminates SOS normally
 * [x] The ESC and backslash of `ESC \` can be fragmented
-* [ ] CAN in a string cancels the current string
-* [ ] SUB in a string cancels the current string
+* [x] CAN in a string cancels the current string
+* [x] SUB in a string cancels the current string
 * [x] Non-ST ESC within a string is handled per target compatibility behavior
 * [x] The next sequence can be parsed immediately after string cancellation
 * [x] Oversized strings do not grow memory indefinitely
-* [ ] Terminators are still recognized while an oversized string is being discarded
+* [x] Terminators are still recognized while an oversized string is being discarded
 
 ---
 
@@ -1308,70 +1308,70 @@
 
 ## 31. Keyboard Mode Related Protocols
 
-> Status: 0 / 66 items clearly implemented; 66 incomplete or unverified.
+> Status: 47 / 66 items clearly implemented; 19 incomplete or unverified.
 
 ### 31.1 Application Cursor Keys
 
-* [ ] Normal Up: `ESC [ A`
-* [ ] Normal Down: `ESC [ B`
-* [ ] Normal Right: `ESC [ C`
-* [ ] Normal Left: `ESC [ D`
-* [ ] Application Up: `ESC O A`
-* [ ] Application Down: `ESC O B`
-* [ ] Application Right: `ESC O C`
-* [ ] Application Left: `ESC O D`
-* [ ] `?1 h/l` switches correctly
+* [x] Normal Up: `ESC [ A`
+* [x] Normal Down: `ESC [ B`
+* [x] Normal Right: `ESC [ C`
+* [x] Normal Left: `ESC [ D`
+* [x] Application Up: `ESC O A`
+* [x] Application Down: `ESC O B`
+* [x] Application Right: `ESC O C`
+* [x] Application Left: `ESC O D`
+* [x] `?1 h/l` switches correctly
 
 ### 31.2 Home and End
 
-* [ ] Normal Home encoding
-* [ ] Normal End encoding
-* [ ] Application Home encoding
-* [ ] Application End encoding
+* [x] Normal Home encoding
+* [x] Normal End encoding
+* [x] Application Home encoding
+* [x] Application End encoding
 * [ ] Consistent with terminfo declarations
 
 ### 31.3 Keypad
 
-* [ ] Numeric Keypad mode
-* [ ] Application Keypad mode
-* [ ] `ESC =` switches to Application
-* [ ] `ESC >` switches to Numeric
-* [ ] Keypad Enter
-* [ ] Keypad digits
-* [ ] Keypad operators
+* [x] Numeric Keypad mode
+* [x] Application Keypad mode
+* [x] `ESC =` switches to Application
+* [x] `ESC >` switches to Numeric
+* [x] Keypad Enter
+* [x] Keypad digits
+* [x] Keypad operators
 
 ### 31.4 Function Keys
 
-* [ ] F1
-* [ ] F2
-* [ ] F3
-* [ ] F4
-* [ ] F5
-* [ ] F6
-* [ ] F7
-* [ ] F8
-* [ ] F9
-* [ ] F10
-* [ ] F11
-* [ ] F12
-* [ ] Shift modifier
-* [ ] Alt modifier
-* [ ] Ctrl modifier
-* [ ] Multiple modifier key combinations
+* [x] F1
+* [x] F2
+* [x] F3
+* [x] F4
+* [x] F5
+* [x] F6
+* [x] F7
+* [x] F8
+* [x] F9
+* [x] F10
+* [x] F11
+* [x] F12
+* [x] Shift modifier
+* [x] Alt modifier
+* [x] Ctrl modifier
+* [x] Multiple modifier key combinations
 
 ### 31.5 Editing Keys
 
-* [ ] Insert
-* [ ] Delete
-* [ ] Page Up
-* [ ] Page Down
-* [ ] Home
-* [ ] End
-* [ ] Backspace
-* [ ] Enter
-* [ ] Tab
-* [ ] Shift+Tab
-* [ ] Escape
+* [x] Insert
+* [x] Delete
+* [x] Page Up
+* [x] Page Down
+* [x] Home
+* [x] End
+* [x] Backspace
+* [x] Enter
+* [x] Tab
+* [x] Shift+Tab
+* [x] Escape
 
 ### 31.6 ModifyOtherKeys
 
@@ -1401,32 +1401,32 @@
 
 ## 32. Rectangular Area Operations
 
-> Status: 0 / 11 items clearly implemented; 11 incomplete or unverified.
+> Status: 11 / 11 items clearly implemented; 0 incomplete or unverified.
 
-* [ ] DECFRA — Fill Rectangular Area
-* [ ] DECERA — Erase Rectangular Area
-* [ ] DECSERA — Selective Erase Rectangular Area
-* [ ] DECCRA — Copy Rectangular Area
-* [ ] DECCARA — Change Attributes in Rectangular Area
-* [ ] DECRARA — Reverse Attributes in Rectangular Area
-* [ ] Rectangle coordinates use correct 1-based semantics
-* [ ] Illegal rectangle ranges are safely ignored
-* [ ] Rectangle range is clipped to the valid screen
-* [ ] Protected cells are preserved during selective erase
-* [ ] Rectangle operations do not split wide characters
+* [x] DECFRA — Fill Rectangular Area
+* [x] DECERA — Erase Rectangular Area
+* [x] DECSERA — Selective Erase Rectangular Area
+* [x] DECCRA — Copy Rectangular Area
+* [x] DECCARA — Change Attributes in Rectangular Area
+* [x] DECRARA — Reverse Attributes in Rectangular Area
+* [x] Rectangle coordinates use correct 1-based semantics
+* [x] Illegal rectangle ranges are safely ignored
+* [x] Rectangle range is clipped to the valid screen
+* [x] Protected cells are preserved during selective erase
+* [x] Rectangle operations do not split wide characters
 
 ---
 
 ## 33. Character Protection Attribute
 
-> Status: 0 / 6 items clearly implemented; 6 incomplete or unverified.
+> Status: 5 / 6 items clearly implemented; 1 incomplete or unverified.
 
-* [ ] DECSCA sets character protection state
-* [ ] Subsequently written characters inherit the protection attribute
-* [ ] Normal ED/EL can erase protected cells
-* [ ] DECSED/DECSEL do not erase protected cells
+* [x] DECSCA sets character protection state
+* [x] Subsequently written characters inherit the protection attribute
+* [x] Normal ED/EL can erase protected cells
+* [x] DECSED/DECSEL do not erase protected cells
 * [ ] Effect of SGR Reset on protection attribute matches target behavior
-* [ ] RIS clears the protection state
+* [x] RIS clears the protection state
 
 ---
 
@@ -1449,41 +1449,41 @@
 
 ## 35. Error Recovery
 
-> Status: 9 / 17 items clearly implemented; 8 incomplete or unverified.
+> Status: 17 / 17 items clearly implemented; 0 incomplete or unverified.
 
 * [x] Unknown ESC sequences do not crash
 * [x] Unknown CSI sequences do not crash
 * [x] Unknown OSC sequences do not crash
-* [ ] Unknown DCS sequences do not crash
-* [ ] Unknown APC sequences do not crash
+* [x] Unknown DCS sequences do not crash
+* [x] Unknown APC sequences do not crash
 * [x] CSI parameter overflow does not crash
 * [x] Excessive parameter count does not allocate indefinitely
 * [x] Excessive Intermediates do not allocate indefinitely
 * [x] Unterminated OSC does not allocate indefinitely
-* [ ] Unterminated DCS does not allocate indefinitely
-* [ ] Unterminated APC does not allocate indefinitely
+* [x] Unterminated DCS does not allocate indefinitely
+* [x] Unterminated APC does not allocate indefinitely
 * [x] Can recover when illegal characters enter CSI
-* [ ] CAN can recover from any sequence state
-* [ ] SUB can recover from any sequence state
+* [x] CAN can recover from any sequence state
+* [x] SUB can recover from any sequence state
 * [x] ESC can interrupt CSI and start a new ESC
-* [ ] Normal text displays correctly after a sequence is ignored
-* [ ] Consecutive illegal sequences do not permanently desynchronize the parser
+* [x] Normal text displays correctly after a sequence is ignored
+* [x] Consecutive illegal sequences do not permanently desynchronize the parser
 
 ---
 
 ## 36. Protocol Security Limits
 
-> Status: 4 / 22 items clearly implemented; 18 incomplete or unverified.
+> Status: 11 / 22 items clearly implemented; 11 incomplete or unverified.
 
 * [x] Maximum CSI parameter count
-* [ ] Maximum CSI sub-parameter count
+* [x] Maximum CSI sub-parameter count
 * [x] Maximum parameter value
 * [x] Maximum Intermediate count
-* [ ] Maximum OSC length
-* [ ] Maximum DCS length
-* [ ] Maximum APC length
-* [ ] Maximum PM length
-* [ ] Maximum SOS length
+* [x] Maximum OSC length
+* [x] Maximum DCS length
+* [x] Maximum APC length
+* [x] Maximum PM length
+* [x] Maximum SOS length
 * [ ] Maximum title length
 * [ ] Maximum hyperlink URI length
 * [ ] Maximum OSC 52 Base64 length
@@ -1491,7 +1491,7 @@
 * [ ] Maximum image transfer length
 * [ ] Maximum image decoded size
 * [x] No further memory allocation after exceeding the limit
-* [ ] Terminator can still be scanned after exceeding the limit
+* [x] Terminator can still be scanned after exceeding the limit
 * [ ] OSC 52 read is restricted by default
 * [ ] OSC 52 write is restricted by default
 * [ ] File transfer protocol is restricted by default
@@ -1502,7 +1502,7 @@
 
 ## 37. Minimum Modern Compatibility Set
 
-> Status: 21 / 56 items clearly implemented; 35 incomplete or unverified.
+> Status: 25 / 56 items clearly implemented; 31 incomplete or unverified.
 
 ### 37.1 Shell Basic Compatibility
 
@@ -1522,10 +1522,10 @@
 
 ### 37.2 Vim/Neovim Compatibility
 
-* [ ] `?1`
-* [ ] `?6`
-* [ ] `?7`
-* [ ] `?25`
+* [x] `?1`
+* [x] `?6`
+* [x] `?7`
+* [x] `?25`
 * [x] `?1049`
 * [ ] `?2004`
 * [ ] `?1004`
@@ -1576,7 +1576,7 @@
 
 ## 38. Sequence-Level Test Samples
 
-> Status: 46 / 83 items clearly implemented; 37 incomplete or unverified.
+> Status: 56 / 83 items clearly implemented; 27 incomplete or unverified.
 
 ### 38.1 Basic Text and Attributes
 
@@ -1611,15 +1611,15 @@
 * [x] `\x1b[K`
 * [x] `\x1b[1K`
 * [x] `\x1b[2K`
-* [ ] `\x1b[?2J`
-* [ ] `\x1b[?2K`
+* [x] `\x1b[?2J`
+* [x] `\x1b[?2K`
 
 ### 38.4 Scrolling Region
 
 * [x] `\x1b[2;20r`
 * [x] `\x1b[r`
-* [ ] `\x1b[?6h`
-* [ ] `\x1b[?6l`
+* [x] `\x1b[?6h`
+* [x] `\x1b[?6l`
 * [x] `\x1bD`
 * [x] `\x1bM`
 * [x] `\x1b[3S`
@@ -1636,12 +1636,12 @@
 
 ### 38.6 Modes
 
-* [ ] `\x1b[?1h`
-* [ ] `\x1b[?1l`
-* [ ] `\x1b[?7h`
-* [ ] `\x1b[?7l`
-* [ ] `\x1b[?25h`
-* [ ] `\x1b[?25l`
+* [x] `\x1b[?1h`
+* [x] `\x1b[?1l`
+* [x] `\x1b[?7h`
+* [x] `\x1b[?7l`
+* [x] `\x1b[?25h`
+* [x] `\x1b[?25l`
 * [x] `\x1b[?1049h`
 * [x] `\x1b[?1049l`
 * [ ] `\x1b[?2004h`

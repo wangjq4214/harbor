@@ -23,11 +23,13 @@ impl Perform for ScreenHandler<'_> {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x07 => {}
+            0x05 | 0x07 => {}
             0x08 => self.screen.backspace(),
             0x09 => self.screen.horizontal_tab(),
-            0x0a..=0x0c => self.screen.newline(),
+            0x0a..=0x0c => self.screen.line_feed(),
             0x0d => self.screen.carriage_return(),
+            0x0e => self.screen.set_active_charset(1),
+            0x0f => self.screen.set_active_charset(0),
             _ => {}
         }
     }
@@ -37,7 +39,7 @@ impl Perform for ScreenHandler<'_> {
         params: &Params,
         intermediates: &[u8],
         ignore: bool,
-        private: bool,
+        private_marker: Option<u8>,
         action: u8,
     ) {
         if ignore {
@@ -48,46 +50,66 @@ impl Perform for ScreenHandler<'_> {
             return;
         }
 
-        if private {
-            match action {
-                b'h' if params.as_slice() == [Some(1049)] => {
-                    self.screen.request_alt_enter();
+        if let Some(private_marker) = private_marker {
+            match (private_marker, action) {
+                (b'?', b'h' | b'l') => {
+                    let enabled = action == b'h';
+                    for param_opt in params.as_slice() {
+                        if let Some(param) = *param_opt {
+                            self.screen.set_private_mode(param, enabled);
+                        }
+                    }
                 }
-                b'l' if params.as_slice() == [Some(1049)] => {
-                    self.screen.request_alt_exit();
+                (b'?', b'J') => {
+                    self.screen
+                        .selective_erase_display(Self::param(params, 0, 0));
+                }
+                (b'?', b'K') => {
+                    self.screen.selective_erase_line(Self::param(params, 0, 0));
                 }
                 _ => {
                     tracing::warn!(
-                        "unsupported private CSI sequence: params={:?} final=0x{:02x}",
+                        "unsupported private CSI sequence: marker=0x{private_marker:02x} params={:?} final=0x{action:02x}",
                         params.as_slice(),
-                        action,
                     );
                 }
             }
             return;
         }
 
-        // Handle SP intermediate: currently only CSI Ps SP q (DECSCUSR).
-        if intermediates == [b' '] {
-            if action == b'q' {
+        if !intermediates.is_empty() {
+            if intermediates == [b' '] && action == b'q' {
                 self.screen.set_cursor_style(Self::param(params, 0, 1));
+            } else if intermediates == [b'!'] && action == b'p' {
+                self.screen.soft_reset();
+            } else if intermediates == [b'"'] && action == b'q' {
+                self.screen
+                    .set_character_protection(Self::param(params, 0, 0));
+            } else if intermediates == [b'$'] {
+                match action {
+                    b'z' => self.screen.decera(params),
+                    b'{' => self.screen.decsera(params),
+                    b'x' => self.screen.decfra(params),
+                    b'v' => self.screen.deccra(params),
+                    b'r' => self.screen.deccara(params),
+                    b't' => self.screen.decrara(params),
+                    _ => {
+                        tracing::warn!(
+                            "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
+                            intermediates,
+                            params.as_slice(),
+                            action,
+                        );
+                    }
+                }
             } else {
                 tracing::warn!(
-                    "unrecognized CSI sequence with SP intermediate: params={:?} final=0x{:02x}",
+                    "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
+                    intermediates,
                     params.as_slice(),
                     action,
                 );
             }
-            return;
-        }
-
-        if !intermediates.is_empty() {
-            tracing::warn!(
-                "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
-                intermediates,
-                params.as_slice(),
-                action,
-            );
             return;
         }
 
@@ -107,30 +129,38 @@ impl Perform for ScreenHandler<'_> {
                 self.screen.carriage_return();
             }
             b'G' => {
-                // CHA: cursor horizontal absolute (1-based → 0-based).
-                let col = Self::param(params, 0, 1)
-                    .saturating_sub(1)
-                    .min(self.screen.cols() - 1);
-                self.screen.set_cursor(self.screen.cursor_y() + 1, col + 1);
+                self.screen.set_cursor_col(Self::param(params, 0, 1));
             }
-            b'H' | b'f' => self
-                .screen
-                .set_cursor(Self::param(params, 0, 1), Self::param(params, 1, 1)),
+            b'H' | b'f' => {
+                self.screen
+                    .set_cursor_position(Self::param(params, 0, 1), Self::param(params, 1, 1));
+            }
             b'J' => self.screen.erase_display(Self::param(params, 0, 0)),
             b'K' => self.screen.erase_line(Self::param(params, 0, 0)),
             b'd' => {
-                // VPA: vertical position absolute (1-based → 0-based).
-                let row = Self::param(params, 0, 1)
-                    .saturating_sub(1)
-                    .min(self.screen.rows() - 1);
-                self.screen.set_cursor(row + 1, self.screen.cursor_x() + 1);
+                self.screen.set_cursor_row(Self::param(params, 0, 1));
             }
-            b'm' => self.screen.set_sgr(params.as_slice()),
+            b'g' => {
+                self.screen.clear_tab_stops(Self::param(params, 0, 0));
+            }
+            b'b' => {
+                self.screen.repeat_char(Self::param(params, 0, 1));
+            }
+            b'm' => self.screen.set_sgr(params),
             b'X' => self.screen.erase_chars(Self::param(params, 0, 1)),
             b'r' => self
                 .screen
                 .set_scroll_region(Self::param(params, 0, 0), Self::param(params, 1, 0)),
-            b's' => self.screen.save_cursor(),
+            b's' => {
+                if self.screen.margin_mode {
+                    self.screen.set_left_right_margins(
+                        Self::param(params, 0, 0),
+                        Self::param(params, 1, 0),
+                    );
+                } else {
+                    self.screen.save_cursor();
+                }
+            }
             b'u' => self.screen.restore_cursor(),
             b'@' => self.screen.insert_chars(Self::param(params, 0, 1)),
             b'P' => self.screen.delete_chars(Self::param(params, 0, 1)),
@@ -138,6 +168,14 @@ impl Perform for ScreenHandler<'_> {
             b'M' => self.screen.delete_lines(Self::param(params, 0, 1)),
             b'S' => self.screen.scroll_up_region(Self::param(params, 0, 1)),
             b'T' => self.screen.scroll_down_region(Self::param(params, 0, 1)),
+            b'h' | b'l' => {
+                let enabled = action == b'h';
+                for param_opt in params.as_slice() {
+                    if let Some(param) = *param_opt {
+                        self.screen.set_standard_mode(param, enabled);
+                    }
+                }
+            }
             _ => {
                 tracing::warn!(
                     "unsupported CSI sequence: params={:?} final=0x{:02x}",
@@ -149,10 +187,19 @@ impl Perform for ScreenHandler<'_> {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        if ignore || !intermediates.is_empty() {
-            tracing::warn!(
-                "unsupported escape sequence: ESC intermediates={intermediates:?} 0x{byte:02x}"
-            );
+        if ignore {
+            return;
+        }
+        if !intermediates.is_empty() {
+            if intermediates == [b'('] {
+                self.screen.designate_g0(byte);
+            } else if intermediates == [b')'] {
+                self.screen.designate_g1(byte);
+            } else {
+                tracing::warn!(
+                    "unsupported escape sequence: ESC intermediates={intermediates:?} 0x{byte:02x}"
+                );
+            }
             return;
         }
 
@@ -161,20 +208,28 @@ impl Perform for ScreenHandler<'_> {
                 self.screen.reset_display();
             }
             b'D' => {
-                self.screen.newline();
+                self.screen.index();
             }
             b'E' => {
                 self.screen.newline();
-                self.screen.carriage_return();
             }
             b'M' => {
                 self.screen.reverse_index();
+            }
+            b'H' => {
+                self.screen.set_tab_stop();
             }
             b'7' => {
                 self.screen.save_cursor();
             }
             b'8' => {
                 self.screen.restore_cursor();
+            }
+            b'=' => {
+                self.screen.set_application_keypad(true);
+            }
+            b'>' => {
+                self.screen.set_application_keypad(false);
             }
             _ => {
                 tracing::warn!("unsupported escape sequence: ESC 0x{byte:02x}");

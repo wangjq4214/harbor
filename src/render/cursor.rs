@@ -43,6 +43,10 @@ struct LastCursorState {
     shape: CursorShape,
 }
 
+fn should_render_cursor(screen: &Screen, blink_visible: bool) -> bool {
+    screen.cursor_visible() && (!screen.cursor_blink() || blink_visible)
+}
+
 /// Combined cursor rendering + blink state machine.
 /// Replaces CursorLayer and CursorBlink in the component tree.
 pub(crate) struct Cursor {
@@ -268,11 +272,7 @@ impl CursorInput for Cursor {
         match event {
             winit::event::WindowEvent::RedrawRequested => {
                 let screen = caps.terminal().screen();
-                let visible = if screen.cursor_blink() {
-                    self.blink_visible()
-                } else {
-                    true
-                };
+                let visible = should_render_cursor(screen, self.blink_visible());
                 self.set_visible(visible, screen);
                 self.prepare(caps.gpu(), Some(screen));
                 self.commit_frame();
@@ -286,7 +286,8 @@ impl CursorInput for Cursor {
     where
         C: TerminalAccess + RedrawAccess,
     {
-        if !caps.terminal().screen().cursor_blink() {
+        let screen = caps.terminal().screen();
+        if !screen.cursor_visible() || !screen.cursor_blink() {
             return None;
         }
         let visible = self.blink_visible();
@@ -296,5 +297,27 @@ impl CursorInput for Cursor {
         let millis = self.blink_start.elapsed().as_millis() as u64;
         let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
         Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_render_cursor;
+    use crate::terminal::Terminal;
+
+    #[test]
+    fn dectcem_controls_rendered_cursor_visibility() {
+        let mut terminal = Terminal::new(3, 3);
+        assert!(should_render_cursor(terminal.screen(), true));
+        assert!(!should_render_cursor(terminal.screen(), false));
+
+        terminal.put_bytes(b"\x1b[2 q");
+        assert!(should_render_cursor(terminal.screen(), false));
+
+        terminal.put_bytes(b"\x1b[?25l");
+        assert!(!should_render_cursor(terminal.screen(), true));
+
+        terminal.put_bytes(b"\x1b[?25h");
+        assert!(should_render_cursor(terminal.screen(), true));
     }
 }

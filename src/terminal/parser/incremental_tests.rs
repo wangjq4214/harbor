@@ -1,8 +1,51 @@
 //! §1.1 chunk-equivalence harness and string-family consume-only tests.
 
 use super::super::Screen;
+use super::params::Params;
+use super::perform::Perform;
 use super::*;
 use crate::terminal::Terminal;
+
+#[derive(Default)]
+struct CsiRecorder {
+    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, u8)>,
+}
+
+impl Perform for CsiRecorder {
+    fn print(&mut self, _ch: char) {}
+
+    fn execute(&mut self, _byte: u8) {}
+
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        private_marker: Option<u8>,
+        action: u8,
+    ) {
+        self.dispatches
+            .push((private_marker, params.as_slice().to_vec(), action));
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: u8) {}
+
+    fn put(&mut self, _byte: u8) {}
+
+    fn unhook(&mut self) {}
+
+    fn start_string(&mut self, _kind: u8) {}
+}
+
+fn feed_core(parser: &mut Parser, recorder: &mut CsiRecorder, bytes: &[u8]) {
+    for &byte in bytes {
+        parser.advance(recorder, byte);
+    }
+}
 
 /// Snapshot of screen-visible parser outcomes for equivalence checks.
 #[derive(Debug, PartialEq, Eq)]
@@ -227,5 +270,118 @@ fn alt_screen_mid_batch_still_splits_via_terminal() {
     assert!(
         terminal.screen().is_alt(),
         "alt screen should be active after mid-batch switch"
+    );
+}
+
+#[test]
+fn c1_8bit_recognition() {
+    // Disabled by default: 0x9B is treated as non-ASCII text, printed as replacement char.
+    {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        feed_all(&mut parser, &mut screen, b"\x9b3A");
+        let text = screen.row_text(0);
+        assert!(text.contains('3') && text.contains('A'));
+    }
+
+    // Enabled explicitly: 0x9B acts as CSI.
+    {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        parser.inner.set_c1_enabled(true);
+        feed_all(&mut parser, &mut screen, b"\x1b[3;3H");
+        assert_eq!(screen.cursor_y(), 2);
+        feed_all(&mut parser, &mut screen, b"\x9b1A"); // CSI 1 A -> cursor up to y=1
+        assert_eq!(screen.cursor_y(), 1);
+    }
+}
+
+#[test]
+fn c1_st_terminates_strings_after_escape() {
+    for sequence in [
+        b"\x1b]title\x1b\x9cvisible".as_slice(),
+        b"\x1bPqpayload\x1b\x9cvisible".as_slice(),
+        b"\x1bXpayload\x1b\x9cvisible".as_slice(),
+    ] {
+        let mut screen = Screen::new(5, 20);
+        let mut parser = TerminalParser::default();
+        parser.inner.set_c1_enabled(true);
+        feed_all(&mut parser, &mut screen, sequence);
+        assert!(screen.row_text(0).contains("visible"));
+    }
+}
+
+#[test]
+fn c0_executable_in_csi() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    // Place cursor at (2,2), then send CSI 1; \x0d (CR) 2 H.
+    // CR executes immediately (cursor moves to col 0), then final H dispatches CUP with params [1, 2].
+    feed_all(&mut parser, &mut screen, b"\x1b[3;3H\x1b[1;\x0d2H");
+    assert_eq!(screen.cursor_y(), 0);
+    assert_eq!(screen.cursor_x(), 1);
+}
+
+#[test]
+fn string_overflow_safety() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+
+    // Send an oversized OSC sequence (> 4096 bytes) followed by terminator then visible text.
+    let mut seq = Vec::new();
+    seq.extend_from_slice(b"\x1b]");
+    seq.resize(seq.len() + 5000, b'a');
+    seq.extend_from_slice(b"\x07visible");
+    feed_all(&mut parser, &mut screen, &seq);
+
+    let row = screen.row_text(0);
+    assert!(row.contains("visible"), "row={row:?}");
+    assert!(!row.contains('a'));
+}
+
+#[test]
+fn string_cancellation() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+
+    // Send OSC, then CAN, then normal text.
+    feed_all(&mut parser, &mut screen, b"\x1b]title\x18visible");
+    let row = screen.row_text(0);
+    assert!(row.contains("visible"), "row={row:?}");
+    assert!(!row.contains("title"));
+
+    // Send DCS, then SUB, then normal text.
+    feed_all(&mut parser, &mut screen, b"\x1bPpayload\x1avisible2");
+    let row = screen.row_text(0);
+    assert!(row.contains("visible2"), "row={row:?}");
+    assert!(!row.contains("payload"));
+}
+
+#[test]
+fn csi_dispatch_preserves_private_marker_identity_and_clears_state() {
+    let mut parser = Parser::default();
+    let mut recorder = CsiRecorder::default();
+
+    feed_core(&mut parser, &mut recorder, b"\x1b[>1");
+    assert!(recorder.dispatches.is_empty());
+
+    feed_core(
+        &mut parser,
+        &mut recorder,
+        b"m\x1b[?2m\x1b[<3m\x1b[=4m\x1b[5m",
+    );
+
+    feed_core(&mut parser, &mut recorder, b"\x1b[?9\x18\x1b[6m");
+
+    assert_eq!(
+        recorder.dispatches,
+        vec![
+            (Some(b'>'), vec![Some(1)], b'm'),
+            (Some(b'?'), vec![Some(2)], b'm'),
+            (Some(b'<'), vec![Some(3)], b'm'),
+            (Some(b'='), vec![Some(4)], b'm'),
+            (None, vec![Some(5)], b'm'),
+            (None, vec![Some(6)], b'm'),
+        ]
     );
 }
