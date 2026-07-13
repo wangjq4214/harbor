@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    thread,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -92,15 +93,22 @@ fn load_configured_fonts() -> Result<Option<FontBook>> {
 }
 
 fn load_candidate_fonts() -> Option<FontBook> {
+    // Kick off CJK loading on a background thread so primary + CJK IO+parse
+    // overlap instead of running serially.
+    let cjk_handle = thread::spawn(|| load_first_cjk_font_file(cjk_font_candidates()));
+
     let primary = load_first_font_file(primary_font_candidates())?;
     if primary.font.has_glyph(CJK_PROBE) {
         tracing::info!(primary = %primary.family, "loaded terminal font from fast path");
+        // CJK thread no longer needed; let it finish in the background.
+        drop(cjk_handle);
         return Some(FontBook {
             fonts: vec![primary],
         });
     }
 
-    let fallback = load_first_cjk_font_file(cjk_font_candidates())?;
+    // Wait for the CJK thread result.
+    let fallback = cjk_handle.join().ok()??;
     tracing::info!(
         primary = %primary.family,
         fallback = %fallback.family,

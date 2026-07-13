@@ -246,10 +246,70 @@ impl App {
         let window =
             Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
 
+        // Phase 1: paint the terminal background color via GDI immediately after
+        // window creation. The GPU surface isn't ready yet, so this prevents
+        // the OS from showing a white window during the ~1.5s GPU init period.
+        #[cfg(target_os = "windows")]
+        paint_gdi_background(&window);
+
+        // Start font loading on a background thread so it overlaps with the
+        // GPU context initialisation (both are IO/compute heavy).
+        // On Windows, lower the thread priority so font IO+parse yields CPU
+        // to the DX12 driver during request_adapter/request_device.
+        let font_handle = std::thread::Builder::new()
+            .name("font-loader".into())
+            .spawn(|| {
+                #[cfg(target_os = "windows")]
+                {
+                    use windows::Win32::System::Threading::{
+                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                    };
+                    // SAFETY: GetCurrentThread returns a pseudo-handle that is always valid.
+                    unsafe { let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+                }
+                load_system_fonts()
+            })
+            .expect("failed to spawn font-loader thread");
+
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
-        let fonts = load_system_fonts().map_err(AppError::Renderer)?;
+
+        // Phase 2: submit one clear frame immediately after GPU init, before
+        // waiting for fonts. Replaces the white window with the terminal
+        // background color during the ~400ms font join wait.
+        if let wgpu::CurrentSurfaceTexture::Success(output) = gpu.get_current_texture() {
+            let view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::config::BACKGROUND),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }));
+            gpu.queue().submit(Some(encoder.finish()));
+            gpu.present(output);
+        }
+
+        let fonts = font_handle
+            .join()
+            .map_err(|_| AppError::Renderer(anyhow::anyhow!("font loader thread panicked")))?
+            .map_err(AppError::Renderer)?;
         let metrics = TextMetrics::new(&fonts);
+
 
         // Bootstrap with a 1×1 terminal so the glyph atlas has a screen to
         // build from. UiRoot computes the real grid size from font metrics.
@@ -340,5 +400,61 @@ impl App {
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+    }
+}
+
+/// Paints the terminal background color into the window using GDI, before the
+/// wgpu surface is ready. Prevents the OS from showing a white window during
+/// the GPU initialisation period.
+///
+/// The linear-light BACKGROUND values (0.36, 0.20, 0.08) are converted to
+/// sRGB bytes (162, 124, 80) for GDI. COLORREF format is 0x00BBGGRR.
+#[cfg(target_os = "windows")]
+fn paint_gdi_background(window: &Window) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    unsafe extern "system" {
+        fn GetDC(hwnd: isize) -> isize;
+        fn ReleaseDC(hwnd: isize, hdc: isize) -> i32;
+        fn CreateSolidBrush(color: u32) -> isize;
+        fn FillRect(hdc: isize, rect: *const Rect, brush: isize) -> i32;
+        fn DeleteObject(obj: isize) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+
+    let hwnd = h.hwnd.get();
+    let size = window.inner_size();
+    // BACKGROUND linear (0.36, 0.20, 0.08) → sRGB (162, 124, 80).
+    // COLORREF byte order is 0x00BBGGRR.
+    let color: u32 = 162 | (124 << 8) | (80 << 16);
+    let rect = Rect {
+        left: 0,
+        top: 0,
+        right: size.width as i32,
+        bottom: size.height as i32,
+    };
+
+    unsafe {
+        let hdc = GetDC(hwnd);
+        if hdc != 0 {
+            let brush = CreateSolidBrush(color);
+            FillRect(hdc, &rect, brush);
+            ReleaseDC(hwnd, hdc);
+            DeleteObject(brush);
+        }
     }
 }

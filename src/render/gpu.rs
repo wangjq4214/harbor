@@ -32,7 +32,13 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            #[cfg(target_os = "windows")]
+            backends: wgpu::Backends::DX12,
+            #[cfg(not(target_os = "windows"))]
+            backends: wgpu::Backends::all(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -48,7 +54,12 @@ impl GpuContext {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
+                // MemoryUsage: pre-allocate 8 MB device blocks instead of 128 MB.
+                // A terminal emitter never allocates large GPU buffers, so the
+                // smaller block size is sufficient and avoids unnecessary VRAM
+                // reservation at startup.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                // memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
             .await
