@@ -641,11 +641,19 @@ fn alt_screen_enter_exit_preserves_normal_screen() {
     let mut terminal = Terminal::new(3, 20);
     terminal.put_str("normal");
     assert_eq!(terminal.row_text(0).trim(), "normal");
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (6, 0)
+    );
 
     // Enter alt screen
     terminal.put_str("\x1b[?1049h");
-    // Alt screen starts blank
+    // Alt screen starts blank with default cursor
     assert!(terminal.row_text(0).trim().is_empty());
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (0, 0)
+    );
 
     // Write to alt screen
     terminal.put_str("alt");
@@ -653,8 +661,13 @@ fn alt_screen_enter_exit_preserves_normal_screen() {
 
     // Exit alt screen
     terminal.put_str("\x1b[?1049l");
-    // Normal screen restored
+    // Normal screen restored, alt content gone, cursor restored
     assert_eq!(terminal.row_text(0).trim(), "normal");
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (6, 0)
+    );
+    assert!(!terminal.is_alt_screen());
 }
 
 #[test]
@@ -699,6 +712,38 @@ fn alt_screen_resize_preserves_both_screens() {
     assert_eq!(terminal.screen().cols(), 30);
     terminal.put_str("\x1b[?1049l");
     assert_eq!(terminal.screen().rows(), 5);
+}
+
+#[test]
+fn alt_screen_exit_restores_scrollback_viewport() {
+    let mut terminal = Terminal::new(5, 10);
+    // Write enough lines to create scrollback.
+    for _ in 0..6 {
+        terminal.process_output(b"line\n");
+    }
+    terminal.scroll_viewport_up(2);
+    let offset_before = terminal.screen().view_offset();
+    assert!(offset_before > 0, "expected scrollback before alt screen");
+
+    // Enter alt screen: viewport should snap to the live bottom of the alt buffer.
+    terminal.put_str("\x1b[?1049h");
+    assert_eq!(
+        terminal.screen().view_offset(),
+        0,
+        "alt screen should start with zero view offset"
+    );
+
+    // Write to alt screen and exit.
+    terminal.put_str("alt");
+    terminal.put_str("\x1b[?1049l");
+
+    // Normal screen's scrollback viewport must be restored exactly.
+    assert_eq!(
+        terminal.screen().view_offset(),
+        offset_before,
+        "exit alt screen should restore previous view offset"
+    );
+    assert!(!terminal.is_alt_screen());
 }
 
 // ── ICH / DCH integration ───────────────────────────────────

@@ -126,46 +126,6 @@ impl NormalBuf {
         self.cells.copy_within(src, dst);
     }
 
-    // ── alt-screen helpers ─────────────────────────────────────────
-
-    /// Take ownership of the cells buffer (used when entering alt screen).
-    pub(crate) fn take_cells(&mut self) -> Vec<Cell> {
-        std::mem::take(&mut self.cells)
-    }
-
-    /// Restore a previously saved cells buffer (used when exiting alt screen).
-    pub(crate) fn restore_cells(&mut self, cells: Vec<Cell>) {
-        self.cells = cells;
-    }
-
-    /// Take ownership of the dirty-rows buffer (used when entering alt screen).
-    pub(crate) fn take_dirty_rows(&mut self) -> Vec<bool> {
-        std::mem::take(&mut self.dirty_rows)
-    }
-
-    /// Restore a previously saved dirty-rows buffer (used when exiting alt screen).
-    pub(crate) fn restore_dirty_rows(&mut self, dirty_rows: Vec<bool>) {
-        self.dirty_rows = dirty_rows;
-    }
-
-    /// Reinitialize the buffer for an alternate screen session.
-    pub(crate) fn init_alt_buffer(&mut self) {
-        self.cells = vec![Cell::default(); self.total_rows * self.cols];
-        self.dirty_rows = vec![true; self.visible_rows];
-        self.visible_start = self.max_scrollback;
-        self.scroll_count = 0;
-        self.view_offset = 0;
-    }
-
-    /// Set the ring index of the first visible display row (used by alt-screen restore).
-    pub(crate) fn set_visible_start(&mut self, value: usize) {
-        self.visible_start = value;
-    }
-
-    /// Set the number of saved scrollback rows (used by alt-screen restore).
-    pub(crate) fn set_scroll_count(&mut self, value: usize) {
-        self.scroll_count = value;
-    }
     /// Returns the text content of a display row as a string.
     pub(crate) fn row_text(&self, row: usize) -> String {
         assert!(row < self.visible_rows, "terminal row out of bounds");

@@ -200,8 +200,7 @@ struct SavedCursor {
 /// Cursor position, appearance, and saved-state (DECSC/DECRC).
 ///
 /// All coordinates are 0-based. The saved cursor snapshot persists until
-/// overwritten by a subsequent DECSC, a reset, or alt-screen entry (which
-/// moves it into [`AltSavedState`] and restores it on exit).
+/// overwritten by a subsequent DECSC, a reset, or alt-screen entry.
 #[derive(Debug, Clone)]
 struct CursorState {
     /// 0-based column.
@@ -227,20 +226,6 @@ impl CursorState {
             blink: true,
             visible: true,
             saved: None,
-        }
-    }
-
-    /// Takes a snapshot for alt-screen save: clones current state while
-    /// moving `saved` out so that the alt screen starts with `saved = None`.
-    fn snapshot_for_alt(&mut self) -> Self {
-        let saved = self.saved.take();
-        Self {
-            x: self.x,
-            y: self.y,
-            shape: self.shape,
-            blink: self.blink,
-            visible: self.visible,
-            saved,
         }
     }
 }
@@ -452,7 +437,7 @@ pub(crate) struct Screen {
     /// Vertical scrolling region (DECSTBM).
     scroll_region: ScrollRegion,
     /// Saved normal-screen state while the alternate screen is active.
-    alt_saved: Option<AltSavedState>,
+    alt_saved: Option<Box<Screen>>,
     /// Horizontal left/right margins (DECLRMM).
     margins: Margins,
     /// Horizontal tab stops (every 8 columns by default).
@@ -460,36 +445,6 @@ pub(crate) struct Screen {
     /// Binary terminal modes (DECAWM, DECOM, IRM, LNM, DECCKM, DECKPAM, …).
     modes: TerminalModes,
     /// Character set designations (G0, G1) and last printed character.
-    charsets: CharacterSets,
-}
-
-/// State saved when entering the alternate screen and restored on exit.
-///
-/// Holds a full snapshot of the normal-screen buffer and every state group
-/// so that [`Screen::exit_alt`] can restore them atomically.
-#[derive(Debug)]
-struct AltSavedState {
-    /// Snapshot of the normal-screen cell grid.
-    cells: Vec<Cell>,
-    /// Snapshot of the normal-screen dirty-row flags.
-    dirty_rows: Vec<bool>,
-    /// Normal-screen visible-start ring index.
-    visible_start: usize,
-    /// Normal-screen scrollback count.
-    scroll_count: usize,
-    /// Cursor state group.
-    cursor: CursorState,
-    /// SGR pen state group.
-    pen: Pen,
-    /// Scrolling region group.
-    scroll_region: ScrollRegion,
-    /// Horizontal margins group.
-    margins: Margins,
-    /// Terminal modes group.
-    modes: TerminalModes,
-    /// Tab stops group.
-    tab_stops: TabStops,
-    /// Character sets group.
     charsets: CharacterSets,
 }
 
@@ -771,6 +726,9 @@ impl Screen {
         self.margins.clamp(cols);
         self.tab_stops.resize(cols);
         self.scroll_region = ScrollRegion::full(rows);
+        if let Some(saved) = &mut self.alt_saved {
+            saved.resize(rows, cols);
+        }
         if let Some(ref mut saved) = self.cursor.saved {
             saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
             saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
@@ -2334,37 +2292,16 @@ impl Screen {
         if self.in_alt {
             return;
         }
-        let state = AltSavedState {
-            cells: self.normal.take_cells(),
-            dirty_rows: self.normal.take_dirty_rows(),
-            visible_start: self.normal.visible_start(),
-            scroll_count: self.normal.scroll_count(),
-            cursor: self.cursor.snapshot_for_alt(),
-            pen: self.pen,
-            scroll_region: self.scroll_region,
-            margins: self.margins,
-            modes: self.modes,
-            tab_stops: self.tab_stops.clone(),
-            charsets: self.charsets,
-        };
-        self.normal.init_alt_buffer();
-        self.alt_saved = Some(state);
+        let rows = self.rows();
+        let cols = self.cols();
+        let saved = std::mem::replace(self, Self::new(rows, cols));
+        self.alt_saved = Some(Box::new(saved));
         self.in_alt = true;
     }
 
     pub(crate) fn exit_alt(&mut self) {
-        if let Some(state) = self.alt_saved.take() {
-            self.normal.restore_cells(state.cells);
-            self.normal.restore_dirty_rows(state.dirty_rows);
-            self.normal.set_visible_start(state.visible_start);
-            self.normal.set_scroll_count(state.scroll_count);
-            self.cursor = state.cursor;
-            self.pen = state.pen;
-            self.scroll_region = state.scroll_region;
-            self.margins = state.margins;
-            self.modes = state.modes;
-            self.tab_stops = state.tab_stops;
-            self.charsets = state.charsets;
+        if let Some(saved) = self.alt_saved.take() {
+            *self = *saved;
         }
         self.in_alt = false;
     }
