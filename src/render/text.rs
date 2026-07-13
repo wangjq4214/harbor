@@ -4,6 +4,7 @@ use anyhow::Result;
 use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
+use crate::terminal::DirtyRange;
 use crate::{
     config::{FONT_SIZE, TEXT_PADDING},
     render::{
@@ -139,11 +140,11 @@ impl GlyphAtlas {
     fn update(&mut self, fonts: &FontBook, screen: &Screen) -> (Vec<char>, bool) {
         // Collect unique non-space chars from dirty rows only.
         let mut chars: Vec<char> = screen
-            .dirty_rows()
+            .dirty_ranges()
             .into_iter()
-            .flat_map(|row| {
-                (0..screen.cols()).filter_map(move |col| {
-                    let ch = screen.cell_char(row, col);
+            .flat_map(|range| {
+                (range.start_col..range.end_col).filter_map(move |col| {
+                    let ch = screen.cell_char(range.row, col);
                     if ch != ' ' { Some(ch) } else { None }
                 })
             })
@@ -666,17 +667,37 @@ impl Text {
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
-        let mut verts = Vec::with_capacity(screen.cols() * 6);
-        for col in 0..screen.cols() {
-            let cell = screen.cell(row, col);
+        self.build_range_vertices(
+            &DirtyRange {
+                row,
+                start_col: 0,
+                end_col: screen.cols(),
+            },
+            screen,
+            surf_w,
+            surf_h,
+        )
+    }
+
+    fn build_range_vertices(
+        &self,
+        range: &DirtyRange,
+        screen: &Screen,
+        surf_w: f32,
+        surf_h: f32,
+    ) -> Vec<TexturedVertex> {
+        let mut verts = Vec::with_capacity((range.end_col - range.start_col) * 6);
+        for col in range.start_col..range.end_col {
+            let cell = screen.cell(range.row, col);
             if cell.ch != ' '
                 && let Some(glyph) = self.atlas.glyph(cell.ch)
                 && glyph.width > 0
                 && glyph.height > 0
             {
                 let cell_x = TEXT_PADDING + col as f32 * self.atlas.cell_width;
-                let baseline =
-                    TEXT_PADDING + self.atlas.ascent.ceil() + row as f32 * self.atlas.line_height;
+                let baseline = TEXT_PADDING
+                    + self.atlas.ascent.ceil()
+                    + range.row as f32 * self.atlas.line_height;
                 let mut glyph_left = cell_x + glyph.xmin as f32;
                 let glyph_bottom = baseline - glyph.ymin as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -828,8 +849,8 @@ impl Component for Text {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let any_dirty_rows = !screen.dirty_rows().is_empty();
-        if !self.dirty && !any_dirty_rows {
+        let dirty_ranges = screen.dirty_ranges();
+        if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
 
@@ -840,13 +861,19 @@ impl Component for Text {
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
-            for row in screen.dirty_rows() {
-                let row_verts = self.build_row_vertices(row, screen, surf_w as f32, surf_h as f32);
-                let offset = row * screen.cols() * 6 * std::mem::size_of::<TexturedVertex>();
+            for range in dirty_ranges {
+                if range.start_col >= range.end_col {
+                    continue;
+                }
+                let range_verts =
+                    self.build_range_vertices(&range, screen, surf_w as f32, surf_h as f32);
+                let offset = (range.row * screen.cols() + range.start_col)
+                    * 6
+                    * std::mem::size_of::<TexturedVertex>();
                 gpu.queue().write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
-                    bytemuck::cast_slice(&row_verts),
+                    bytemuck::cast_slice(&range_verts),
                 );
             }
         }

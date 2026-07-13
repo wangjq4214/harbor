@@ -1,11 +1,10 @@
 mod normal_buf;
 mod parser;
 mod screen;
-
 #[cfg(test)]
 mod tests;
 
-pub(crate) use normal_buf::NormalBuf;
+pub(crate) use normal_buf::{DirtyRange, NormalBuf};
 use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;
 pub(crate) use screen::CellAttrs;

@@ -24,8 +24,8 @@ pub(crate) struct NormalBuf {
     scroll_count: usize,
     /// View offset from live bottom: 0 = bottom (live), >0 = scrolled back.
     view_offset: usize,
-    /// Dirty flags indexed by *display* row.
-    dirty_rows: Vec<bool>,
+    /// Damage tracker.
+    damage_tracker: DamageTracker,
     /// Maximum scrollback row count (hard-coded for now).
     max_scrollback: usize,
     /// Monotonically increasing scrollback generation base.
@@ -46,8 +46,8 @@ impl NormalBuf {
             scroll_count: 0,
             max_scrollback,
             view_offset: 0,
-            dirty_rows: vec![true; rows],
             history_start: 0,
+            damage_tracker: DamageTracker::new(rows, cols),
         }
     }
 
@@ -85,7 +85,6 @@ impl NormalBuf {
     pub(crate) fn history_start(&self) -> u64 {
         self.history_start
     }
-
     #[allow(dead_code)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
@@ -193,28 +192,51 @@ impl NormalBuf {
     /// When `view_offset > 0` (scrolled back), every visible row is
     /// considered dirty.
     pub(crate) fn dirty_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self.dirty_ranges().into_iter().map(|r| r.row).collect();
+        rows.dedup();
+        rows
+    }
+
+    pub(crate) fn dirty_ranges(&self) -> Vec<DirtyRange> {
         if self.view_offset > 0 {
-            (0..self.visible_rows).collect()
-        } else {
-            self.dirty_rows
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &d)| if d { Some(i) } else { None })
+            (0..self.visible_rows)
+                .map(|row| DirtyRange {
+                    row,
+                    start_col: 0,
+                    end_col: self.cols,
+                })
                 .collect()
+        } else {
+            self.damage_tracker.dirty_ranges()
         }
     }
 
     /// Resets all dirty flags to false.
     pub(crate) fn clear_dirty(&mut self) {
-        self.dirty_rows.fill(false);
+        self.damage_tracker.clear();
     }
 
     pub(crate) fn mark_row_dirty(&mut self, display_row: usize) {
-        self.dirty_rows[display_row] = true;
+        self.damage_tracker.mark_row_dirty(display_row);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn mark_cell_dirty(&mut self, display_row: usize, col: usize) {
+        self.damage_tracker.mark_cell_dirty(display_row, col);
+    }
+
+    pub(crate) fn mark_range_dirty(
+        &mut self,
+        display_row: usize,
+        start_col: usize,
+        end_col: usize,
+    ) {
+        self.damage_tracker
+            .mark_range_dirty(display_row, start_col, end_col);
     }
 
     pub(crate) fn mark_all_dirty(&mut self) {
-        self.dirty_rows.fill(true);
+        self.damage_tracker.mark_all_dirty();
     }
 
     /// Read a cell by stable generation coordinate.
@@ -281,7 +303,7 @@ impl NormalBuf {
         if self.view_offset > 0 {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
         }
-        self.dirty_rows.fill(true);
+        self.mark_all_dirty();
 
         tracing::debug!(
             n,
@@ -333,7 +355,7 @@ impl NormalBuf {
         self.scroll_count = 0;
         self.view_offset = 0;
         self.history_start = 0;
-        self.dirty_rows = vec![true; rows];
+        self.damage_tracker.resize(rows, cols);
 
         tracing::debug!(
             new_visible_start = self.visible_start,
@@ -375,6 +397,94 @@ impl NormalBuf {
         for d in 0..self.visible_rows {
             self.fill_row(d);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirtyRange {
+    pub(crate) row: usize,
+    pub(crate) start_col: usize,
+    pub(crate) end_col: usize, // exclusive
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DamageTracker {
+    rows: usize,
+    cols: usize,
+    grid: Vec<bool>,
+}
+
+impl DamageTracker {
+    pub(crate) fn new(rows: usize, cols: usize) -> Self {
+        Self {
+            rows,
+            cols,
+            grid: vec![true; rows * cols],
+        }
+    }
+
+    pub(crate) fn resize(&mut self, new_rows: usize, new_cols: usize) {
+        self.rows = new_rows;
+        self.cols = new_cols;
+        self.grid = vec![true; new_rows * new_cols];
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.grid.fill(false);
+    }
+
+    pub(crate) fn mark_all_dirty(&mut self) {
+        self.grid.fill(true);
+    }
+
+    pub(crate) fn mark_row_dirty(&mut self, row: usize) {
+        if row < self.rows {
+            let start = row * self.cols;
+            let end = start + self.cols;
+            self.grid[start..end].fill(true);
+        }
+    }
+
+    pub(crate) fn mark_cell_dirty(&mut self, row: usize, col: usize) {
+        if row < self.rows && col < self.cols {
+            self.grid[row * self.cols + col] = true;
+        }
+    }
+
+    pub(crate) fn mark_range_dirty(&mut self, row: usize, start_col: usize, end_col: usize) {
+        if row < self.rows {
+            let cols = self.cols;
+            let start_col = start_col.min(cols);
+            let end_col = end_col.min(cols);
+            if start_col < end_col {
+                let start = row * cols + start_col;
+                let end = row * cols + end_col;
+                self.grid[start..end].fill(true);
+            }
+        }
+    }
+
+    pub(crate) fn dirty_ranges(&self) -> Vec<DirtyRange> {
+        let mut ranges = Vec::new();
+        for row in 0..self.rows {
+            let mut col = 0;
+            while col < self.cols {
+                if self.grid[row * self.cols + col] {
+                    let start = col;
+                    while col < self.cols && self.grid[row * self.cols + col] {
+                        col += 1;
+                    }
+                    ranges.push(DirtyRange {
+                        row,
+                        start_col: start,
+                        end_col: col,
+                    });
+                } else {
+                    col += 1;
+                }
+            }
+        }
+        ranges
     }
 }
 
@@ -481,10 +591,7 @@ mod tests {
             "ring head should advance by 1"
         );
         assert!(buf.scroll_count >= 1, "scrollback should increase");
-        assert!(
-            buf.dirty_rows.iter().all(|&d| d),
-            "all rows should be dirty"
-        );
+        assert_eq!(buf.dirty_rows().len(), 2, "all rows should be dirty");
     }
 
     #[test]
@@ -494,7 +601,7 @@ mod tests {
         buf.scroll_count = 5;
         buf.scroll_up(2);
         assert_eq!(buf.view_offset, 2);
-        assert!(buf.dirty_rows.iter().all(|&d| d));
+        assert_eq!(buf.dirty_rows().len(), 3);
     }
 
     #[test]
@@ -517,7 +624,94 @@ mod tests {
         assert_eq!(buf.cols(), 5);
         assert_eq!(buf.scroll_count, 0, "scrollback discarded");
         assert_eq!(buf.view_offset, 0);
-        assert!(buf.dirty_rows.iter().all(|&d| d));
+        assert_eq!(buf.dirty_rows().len(), 4);
+    }
+
+    #[test]
+    fn test_damage_tracker() {
+        let mut tracker = DamageTracker::new(3, 4);
+        // New tracker has everything dirty.
+        assert_eq!(
+            tracker.dirty_ranges(),
+            vec![
+                DirtyRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 4
+                },
+                DirtyRange {
+                    row: 1,
+                    start_col: 0,
+                    end_col: 4
+                },
+                DirtyRange {
+                    row: 2,
+                    start_col: 0,
+                    end_col: 4
+                }
+            ]
+        );
+
+        tracker.clear();
+        assert!(tracker.dirty_ranges().is_empty());
+
+        // Mark single cell dirty
+        tracker.mark_cell_dirty(1, 2);
+        assert_eq!(
+            tracker.dirty_ranges(),
+            vec![DirtyRange {
+                row: 1,
+                start_col: 2,
+                end_col: 3
+            }]
+        );
+
+        // Mark range dirty
+        tracker.mark_range_dirty(1, 1, 3);
+        assert_eq!(
+            tracker.dirty_ranges(),
+            vec![DirtyRange {
+                row: 1,
+                start_col: 1,
+                end_col: 3
+            }]
+        );
+
+        // Mark row dirty
+        tracker.mark_row_dirty(0);
+        assert_eq!(
+            tracker.dirty_ranges(),
+            vec![
+                DirtyRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 4
+                },
+                DirtyRange {
+                    row: 1,
+                    start_col: 1,
+                    end_col: 3
+                }
+            ]
+        );
+
+        // Resize tracker
+        tracker.resize(2, 2);
+        assert_eq!(
+            tracker.dirty_ranges(),
+            vec![
+                DirtyRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 2
+                },
+                DirtyRange {
+                    row: 1,
+                    start_col: 0,
+                    end_col: 2
+                }
+            ]
+        );
     }
 
     #[test]

@@ -160,6 +160,161 @@ fn resize_rebuilds_dirty_all_true() {
 }
 
 #[test]
+fn test_write_char_range_dirty() {
+    use crate::terminal::DirtyRange;
+    let mut screen = Screen::new(3, 10);
+    screen.clear_dirty();
+
+    // Write a character at row 0, col 0.
+    screen.write_char('x');
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 2
+        }]
+    );
+
+    screen.clear_dirty();
+    // Move cursor to row 1, col 5.
+    screen.cursor.y = 1;
+    screen.cursor.x = 5;
+    screen.write_char('y');
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 1,
+            start_col: 5,
+            end_col: 7
+        }]
+    );
+
+    // Case 1: Overwriting a wide_continuation cell (splits wide char)
+    screen.clear_dirty();
+    // Write a double-width char at row 1, col 4 (occupies 4 and 5)
+    screen.cursor.y = 1;
+    screen.cursor.x = 4;
+    screen.write_char('中'); // double-width character
+    screen.clear_dirty();
+    // Now write a normal char at col 5 (overwriting the continuation)
+    screen.cursor.x = 5;
+    screen.write_char('z');
+    let ranges = screen.dirty_ranges();
+    // Overwriting continuation cell splits the wide character at col 4, so start_col is 4
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 1,
+            start_col: 4,
+            end_col: 7
+        }]
+    );
+
+    // Case 2: Overwriting the start of a wide character
+    screen.clear_dirty();
+    // Write a double-width char at row 1, col 4 (occupies 4 and 5)
+    screen.cursor.x = 4;
+    screen.write_char('中');
+    screen.clear_dirty();
+    // Now write a normal char at col 4 (overwriting the base cell)
+    screen.cursor.x = 4;
+    screen.write_char('w');
+    let ranges = screen.dirty_ranges();
+    // Overwriting base cell clears its continuation at col 5, so end_col covers col 5 (up to 6)
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 1,
+            start_col: 4,
+            end_col: 6
+        }]
+    );
+
+    // Case 3: Clamping at end of row
+    screen.clear_dirty();
+    screen.cursor.x = 9; // last column
+    screen.write_char('a');
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 1,
+            start_col: 9,
+            end_col: 10
+        }]
+    );
+}
+
+#[test]
+fn test_mutations_range_dirty() {
+    use crate::terminal::DirtyRange;
+    let mut screen = Screen::new(3, 10);
+
+    // 1. erase_line(0) (cursor to end)
+    screen.clear_dirty();
+    screen.cursor.y = 0;
+    screen.cursor.x = 4;
+    screen.erase_line(0);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 0,
+            start_col: 3,
+            end_col: 10
+        }]
+    );
+
+    // 2. erase_chars(3) (ECH)
+    screen.clear_dirty();
+    screen.cursor.y = 1;
+    screen.cursor.x = 3;
+    screen.erase_chars(3);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 1,
+            start_col: 2,
+            end_col: 7
+        }]
+    );
+
+    // 3. insert_chars(2) (ICH)
+    screen.clear_dirty();
+    screen.cursor.y = 2;
+    screen.cursor.x = 4;
+    screen.insert_chars(2);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 2,
+            start_col: 3,
+            end_col: 10
+        }]
+    );
+
+    // 4. delete_chars(2) (DCH)
+    screen.clear_dirty();
+    screen.cursor.y = 2;
+    screen.cursor.x = 4;
+    screen.delete_chars(2);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![DirtyRange {
+            row: 2,
+            start_col: 3,
+            end_col: 10
+        }]
+    );
+}
+
+#[test]
 fn resize_clamps_margins_and_updates_tab_stops() {
     let mut screen = Screen::new(2, 12);
     screen.margins.enabled = true;

@@ -7,8 +7,7 @@ use crate::{
         gpu::{self, ColoredVertex, GpuContext},
         metrics::TextMetrics,
     },
-    terminal::CellAttrs,
-    terminal::Screen,
+    terminal::{CellAttrs, Screen},
 };
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
@@ -206,8 +205,8 @@ impl Component for Decoration {
             return;
         }
 
-        let any_dirty_rows = !screen.dirty_rows().is_empty();
-        if !self.dirty && !any_dirty_rows {
+        let dirty_ranges = screen.dirty_ranges();
+        if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
 
@@ -237,17 +236,20 @@ impl Component for Decoration {
                 .write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
-            for row in screen.dirty_rows() {
-                let cell_top = TEXT_PADDING + row as f32 * self.line_height;
+            for range in dirty_ranges {
+                if range.start_col >= range.end_col {
+                    continue;
+                }
+                let cell_top = TEXT_PADDING + range.row as f32 * self.line_height;
                 let u_top = cell_top + self.underline_pos;
                 let u_bottom = u_top + self.underline_thickness;
                 let s_top = cell_top + self.strikethrough_pos - self.strikethrough_thickness / 2.0;
                 let s_bottom = s_top + self.strikethrough_thickness;
 
-                let mut u_row = Vec::with_capacity(screen.cols() * 6);
-                let mut s_row = Vec::with_capacity(screen.cols() * 6);
-                for col in 0..screen.cols() {
-                    let cell = screen.cell(row, col);
+                let mut u_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
+                let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
+                for col in range.start_col..range.end_col {
+                    let cell = screen.cell(range.row, col);
                     if cell.attrs.contains(CellAttrs::UNDERLINE) && cell.ch != ' ' {
                         let left = TEXT_PADDING + col as f32 * self.cell_width;
                         let right = TEXT_PADDING + (col + 1) as f32 * self.cell_width;
@@ -283,8 +285,9 @@ impl Component for Decoration {
                     }
                 }
 
-                let stride = screen.cols() * 6 * std::mem::size_of::<ColoredVertex>();
-                let offset = (row * stride) as u64;
+                let offset = ((range.row * screen.cols() + range.start_col)
+                    * 6
+                    * std::mem::size_of::<ColoredVertex>()) as u64;
                 gpu.queue().write_buffer(
                     &self.underline_buffer,
                     offset,
