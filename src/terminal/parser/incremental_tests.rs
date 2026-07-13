@@ -20,7 +20,6 @@ impl Perform for CsiRecorder {
         &mut self,
         params: &Params,
         _intermediates: &[u8],
-        _ignore: bool,
         private_marker: Option<u8>,
         action: u8,
     ) {

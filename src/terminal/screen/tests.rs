@@ -1474,11 +1474,8 @@ fn test_margin_selective_erase_operations() {
         for c in 0..8 {
             let cell = screen.normal.cell_mut(r, c);
             cell.ch = 'x';
-            if r == 2 && (c == 4 || c == 6) {
-                cell.protected = true;
-            } else {
-                cell.protected = false;
-            }
+
+            cell.protected = r == 2 && (c == 4 || c == 6);
         }
     }
 

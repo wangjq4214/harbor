@@ -382,7 +382,7 @@ impl Parser {
                 params.iter_flat().collect::<Vec<_>>(),
             );
         } else {
-            performer.csi_dispatch(&params, &intermediates, false, private_marker, action);
+            performer.csi_dispatch(&params, &intermediates, private_marker, action);
         }
         self.clear_csi();
         self.enter_ground();
