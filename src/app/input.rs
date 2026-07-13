@@ -2,6 +2,13 @@
 
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+/// Lightweight snapshot of Screen state relevant to keyboard mapping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeyboardConfig {
+    pub(super) application_cursor: bool,
+    pub(super) application_keypad: bool,
+}
+
 /// Maps a logical key + optional text + modifier state to the byte sequence
 /// to write to the PTY.  Named control/navigation keys are dispatched by
 /// `logical_key` first.  When Ctrl is held and the key is a single ASCII
@@ -11,10 +18,14 @@ pub(super) fn keyboard_input_bytes(
     logical_key: &Key,
     text: Option<&str>,
     modifiers: ModifiersState,
-    application_cursor: bool,
-    application_keypad: bool,
+    config: KeyboardConfig,
     is_numpad: bool,
 ) -> Option<Vec<u8>> {
+    let KeyboardConfig {
+        application_cursor,
+        application_keypad,
+    } = config;
+
     // Calculate ANSI modifier code:
     // Base is 1. Shift: +1, Alt: +2, Ctrl: +4, Super: +8.
     let mut modifier_code = 1;
@@ -327,7 +338,7 @@ mod tests {
     }
 
     fn test_bytes(key: &Key, text: Option<&str>, m: ModifiersState) -> Option<Vec<u8>> {
-        keyboard_input_bytes(key, text, m, false, false, false)
+        keyboard_input_bytes(key, text, m, KeyboardConfig::default(), false)
     }
 
     #[test]
@@ -473,37 +484,73 @@ mod tests {
 
         // Standard/default: application modes off
         assert_eq!(
-            keyboard_input_bytes(&key_up, None, mods, false, false, false),
+            keyboard_input_bytes(&key_up, None, mods, KeyboardConfig::default(), false),
             Some(b"\x1b[A".to_vec())
         );
         assert_eq!(
-            keyboard_input_bytes(&key_1, Some("1"), mods, false, false, true),
+            keyboard_input_bytes(&key_1, Some("1"), mods, KeyboardConfig::default(), true),
             Some(b"1".to_vec())
         );
         assert_eq!(
-            keyboard_input_bytes(&key_enter, None, mods, false, false, true),
+            keyboard_input_bytes(&key_enter, None, mods, KeyboardConfig::default(), true),
             Some(b"\r".to_vec())
         );
 
         // Application Cursor Keys on
         assert_eq!(
-            keyboard_input_bytes(&key_up, None, mods, true, false, false),
+            keyboard_input_bytes(
+                &key_up,
+                None,
+                mods,
+                KeyboardConfig {
+                    application_cursor: true,
+                    application_keypad: false
+                },
+                false
+            ),
             Some(b"\x1bOA".to_vec())
         );
 
         // Application Keypad on, but is_numpad false
         assert_eq!(
-            keyboard_input_bytes(&key_1, Some("1"), mods, false, true, false),
+            keyboard_input_bytes(
+                &key_1,
+                Some("1"),
+                mods,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
+                false
+            ),
             Some(b"1".to_vec())
         );
 
         // Application Keypad on and is_numpad true
         assert_eq!(
-            keyboard_input_bytes(&key_1, Some("1"), mods, false, true, true),
+            keyboard_input_bytes(
+                &key_1,
+                Some("1"),
+                mods,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
+                true
+            ),
             Some(b"\x1bOq".to_vec())
         );
         assert_eq!(
-            keyboard_input_bytes(&key_enter, None, mods, false, true, true),
+            keyboard_input_bytes(
+                &key_enter,
+                None,
+                mods,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
+                true
+            ),
             Some(b"\x1bOM".to_vec())
         );
     }
@@ -525,8 +572,10 @@ mod tests {
                     &key_up,
                     None,
                     mods(),
-                    terminal.screen().application_cursor(),
-                    terminal.screen().application_keypad(),
+                    KeyboardConfig {
+                        application_cursor: terminal.screen().application_cursor(),
+                        application_keypad: terminal.screen().application_keypad(),
+                    },
                     false,
                 ),
                 Some(b"\x1bOA".to_vec()),
@@ -537,8 +586,10 @@ mod tests {
                     &key_1,
                     Some("1"),
                     mods(),
-                    terminal.screen().application_cursor(),
-                    terminal.screen().application_keypad(),
+                    KeyboardConfig {
+                        application_cursor: terminal.screen().application_cursor(),
+                        application_keypad: terminal.screen().application_keypad(),
+                    },
                     true,
                 ),
                 Some(b"\x1bOq".to_vec()),
@@ -552,8 +603,10 @@ mod tests {
                     &key_up,
                     None,
                     mods(),
-                    terminal.screen().application_cursor(),
-                    terminal.screen().application_keypad(),
+                    KeyboardConfig {
+                        application_cursor: terminal.screen().application_cursor(),
+                        application_keypad: terminal.screen().application_keypad(),
+                    },
                     false,
                 ),
                 Some(b"\x1b[A".to_vec()),
@@ -564,8 +617,10 @@ mod tests {
                     &key_1,
                     Some("1"),
                     mods(),
-                    terminal.screen().application_cursor(),
-                    terminal.screen().application_keypad(),
+                    KeyboardConfig {
+                        application_cursor: terminal.screen().application_cursor(),
+                        application_keypad: terminal.screen().application_keypad(),
+                    },
                     true,
                 ),
                 Some(b"1".to_vec()),
@@ -695,8 +750,7 @@ mod tests {
                 &Key::Character("8".into()),
                 Some("8"),
                 mods,
-                false,
-                false,
+                KeyboardConfig::default(),
                 true
             ),
             Some(b"8".to_vec())
@@ -707,8 +761,10 @@ mod tests {
                 &Key::Character("8".into()),
                 Some("8"),
                 mods,
-                false,
-                true,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
                 true
             ),
             Some(b"\x1bOx".to_vec())
@@ -719,8 +775,10 @@ mod tests {
                 &Key::Character("8".into()),
                 Some("8"),
                 ctrl,
-                false,
-                true,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
                 true
             ),
             Some(b"8".to_vec())
@@ -729,17 +787,41 @@ mod tests {
         // 2. NumLock OFF (represented by Key::Named)
         // 2a. application_keypad = false, no modifiers -> standard ArrowUp \x1b[A
         assert_eq!(
-            keyboard_input_bytes(&k(NamedKey::ArrowUp), None, mods, false, false, true),
+            keyboard_input_bytes(
+                &k(NamedKey::ArrowUp),
+                None,
+                mods,
+                KeyboardConfig::default(),
+                true
+            ),
             Some(b"\x1b[A".to_vec())
         );
         // 2b. application_keypad = true, no modifiers -> standard ArrowUp \x1b[A
         assert_eq!(
-            keyboard_input_bytes(&k(NamedKey::ArrowUp), None, mods, false, true, true),
+            keyboard_input_bytes(
+                &k(NamedKey::ArrowUp),
+                None,
+                mods,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
+                true
+            ),
             Some(b"\x1b[A".to_vec())
         );
         // 2c. Ctrl modifier -> sends Ctrl+ArrowUp \x1b[1;5A
         assert_eq!(
-            keyboard_input_bytes(&k(NamedKey::ArrowUp), None, ctrl, false, true, true),
+            keyboard_input_bytes(
+                &k(NamedKey::ArrowUp),
+                None,
+                ctrl,
+                KeyboardConfig {
+                    application_cursor: false,
+                    application_keypad: true
+                },
+                true
+            ),
             Some(b"\x1b[1;5A".to_vec())
         );
     }

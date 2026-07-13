@@ -13,6 +13,7 @@ use winit::{
 };
 
 use crate::{
+    app::input::KeyboardConfig,
     event::AppEvent,
     pty::Pty,
     render::{EventResult, GpuContext, TextMetrics, load_system_fonts},
@@ -205,8 +206,10 @@ impl ApplicationHandler<AppEvent> for App {
                     &event.logical_key,
                     event.text.as_deref(),
                     self.modifiers,
-                    terminal.screen().application_cursor(),
-                    terminal.screen().application_keypad(),
+                    KeyboardConfig {
+                        application_cursor: terminal.screen().application_cursor(),
+                        application_keypad: terminal.screen().application_keypad(),
+                    },
                     is_numpad,
                 ) else {
                     return;
