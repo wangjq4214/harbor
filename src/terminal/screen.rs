@@ -1989,10 +1989,10 @@ impl Screen {
     }
 
     pub(crate) fn decera(&mut self, params: &Params) {
-        let top = params.get(0).unwrap_or(0);
-        let left = params.get(1).unwrap_or(0);
-        let bottom = params.get(2).unwrap_or(0);
-        let right = params.get(3).unwrap_or(0);
+        let top = params.get_or(0, 0);
+        let left = params.get_or(1, 0);
+        let bottom = params.get_or(2, 0);
+        let right = params.get_or(3, 0);
 
         let Some(Rect {
             top: t,
@@ -2013,10 +2013,10 @@ impl Screen {
     }
 
     pub(crate) fn decsera(&mut self, params: &Params) {
-        let top = params.get(0).unwrap_or(0);
-        let left = params.get(1).unwrap_or(0);
-        let bottom = params.get(2).unwrap_or(0);
-        let right = params.get(3).unwrap_or(0);
+        let top = params.get_or(0, 0);
+        let left = params.get_or(1, 0);
+        let bottom = params.get_or(2, 0);
+        let right = params.get_or(3, 0);
 
         let Some(Rect {
             top: t,
@@ -2040,11 +2040,11 @@ impl Screen {
     }
 
     pub(crate) fn decfra(&mut self, params: &Params) {
-        let ch_val = params.get(0).unwrap_or(0);
-        let top = params.get(1).unwrap_or(0);
-        let left = params.get(2).unwrap_or(0);
-        let bottom = params.get(3).unwrap_or(0);
-        let right = params.get(4).unwrap_or(0);
+        let ch_val = params.get_or(0, 0);
+        let top = params.get_or(1, 0);
+        let left = params.get_or(2, 0);
+        let bottom = params.get_or(3, 0);
+        let right = params.get_or(4, 0);
 
         let Some(Rect {
             top: t,
@@ -2079,12 +2079,12 @@ impl Screen {
     }
 
     pub(crate) fn deccra(&mut self, params: &Params) {
-        let src_top = params.get(0).unwrap_or(0);
-        let src_left = params.get(1).unwrap_or(0);
-        let src_bottom = params.get(2).unwrap_or(0);
-        let src_right = params.get(3).unwrap_or(0);
-        let dest_top = params.get(5).unwrap_or(0);
-        let dest_left = params.get(6).unwrap_or(0);
+        let src_top = params.get_or(0, 0);
+        let src_left = params.get_or(1, 0);
+        let src_bottom = params.get_or(2, 0);
+        let src_right = params.get_or(3, 0);
+        let dest_top = params.get_or(5, 0);
+        let dest_left = params.get_or(6, 0);
 
         let Some(Rect {
             top: st,
@@ -2171,10 +2171,10 @@ impl Screen {
     }
 
     pub(crate) fn deccara(&mut self, params: &Params) {
-        let top = params.get(0).unwrap_or(0);
-        let left = params.get(1).unwrap_or(0);
-        let bottom = params.get(2).unwrap_or(0);
-        let right = params.get(3).unwrap_or(0);
+        let top = params.get_or(0, 0);
+        let left = params.get_or(1, 0);
+        let bottom = params.get_or(2, 0);
+        let right = params.get_or(3, 0);
 
         let Some(Rect {
             top: t,
@@ -2213,10 +2213,10 @@ impl Screen {
     }
 
     pub(crate) fn decrara(&mut self, params: &Params) {
-        let top = params.get(0).unwrap_or(0);
-        let left = params.get(1).unwrap_or(0);
-        let bottom = params.get(2).unwrap_or(0);
-        let right = params.get(3).unwrap_or(0);
+        let top = params.get_or(0, 0);
+        let left = params.get_or(1, 0);
+        let bottom = params.get_or(2, 0);
+        let right = params.get_or(3, 0);
 
         let Some(Rect {
             top: t,

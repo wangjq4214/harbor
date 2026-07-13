@@ -24,8 +24,11 @@ impl Perform for CsiRecorder {
         private_marker: Option<u8>,
         action: u8,
     ) {
-        self.dispatches
-            .push((private_marker, params.as_slice().to_vec(), action));
+        self.dispatches.push((
+            private_marker,
+            params.iter_flat().collect::<Vec<_>>(),
+            action,
+        ));
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}

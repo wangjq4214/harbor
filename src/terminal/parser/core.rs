@@ -350,7 +350,7 @@ impl Parser {
                 // Consume final without side effects (malformed path).
                 tracing::warn!(
                     "malformed CSI sequence: params={:?} final=0x{byte:02x} — ignored",
-                    self.csi.params().as_slice(),
+                    self.csi.params().iter_flat().collect::<Vec<_>>(),
                 );
                 self.clear_csi();
                 self.enter_ground();
@@ -379,7 +379,7 @@ impl Parser {
         if malformed {
             tracing::warn!(
                 "malformed CSI sequence: params={:?} final=0x{action:02x} — ignored",
-                params.as_slice(),
+                params.iter_flat().collect::<Vec<_>>(),
             );
         } else {
             performer.csi_dispatch(&params, &intermediates, false, private_marker, action);
