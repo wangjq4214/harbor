@@ -31,26 +31,15 @@ impl Perform for ScreenHandler<'_> {
         &mut self,
         params: &Params,
         intermediates: &[u8],
-        ignore: bool,
         private_marker: Option<u8>,
         action: u8,
     ) {
-        if ignore {
-            tracing::warn!(
-                "ignored CSI sequence: params={:?} final=0x{action:02x}",
-                params.iter_flat().collect::<Vec<_>>(),
-            );
-            return;
-        }
-
         if let Some(private_marker) = private_marker {
             match (private_marker, action) {
                 (b'?', b'h' | b'l') => {
                     let enabled = action == b'h';
-                    for param_opt in params.iter_flat() {
-                        if let Some(param) = param_opt {
-                            self.screen.set_private_mode(param, enabled);
-                        }
+                    for param in params.iter_flat().flatten() {
+                        self.screen.set_private_mode(param, enabled);
                     }
                 }
                 (b'?', b'J') => {
@@ -159,10 +148,8 @@ impl Perform for ScreenHandler<'_> {
             b'T' => self.screen.scroll_down_region(params.get_or(0, 1)),
             b'h' | b'l' => {
                 let enabled = action == b'h';
-                for param_opt in params.iter_flat() {
-                    if let Some(param) = param_opt {
-                        self.screen.set_standard_mode(param, enabled);
-                    }
+                for param in params.iter_flat().flatten() {
+                    self.screen.set_standard_mode(param, enabled);
                 }
             }
             _ => {

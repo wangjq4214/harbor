@@ -14,7 +14,6 @@ pub(super) trait Perform {
         &mut self,
         params: &Params,
         intermediates: &[u8],
-        ignore: bool,
         private_marker: Option<u8>,
         action: u8,
     );
