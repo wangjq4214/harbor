@@ -268,7 +268,9 @@ pub(super) fn keyboard_input_bytes(
         _ => {
             let t = if let Some(t) = text {
                 t
-            } else if modifiers.alt_key() && let Key::Character(ch) = logical_key {
+            } else if modifiers.alt_key()
+                && let Key::Character(ch) = logical_key
+            {
                 ch.as_str()
             } else {
                 ""
@@ -581,33 +583,84 @@ mod tests {
         let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
 
         // 1. ArrowUp:
-        assert_eq!(test_bytes(&k(NamedKey::ArrowUp), None, mods()), Some(b"\x1b[A".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::ArrowUp), None, shift), Some(b"\x1b[1;2A".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::ArrowUp), None, alt), Some(b"\x1b[1;3A".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::ArrowUp), None, ctrl), Some(b"\x1b[1;5A".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::ArrowUp), None, ctrl_shift), Some(b"\x1b[1;6A".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::ArrowUp), None, mods()),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::ArrowUp), None, shift),
+            Some(b"\x1b[1;2A".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::ArrowUp), None, alt),
+            Some(b"\x1b[1;3A".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::ArrowUp), None, ctrl),
+            Some(b"\x1b[1;5A".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::ArrowUp), None, ctrl_shift),
+            Some(b"\x1b[1;6A".to_vec())
+        );
 
         // 2. Home / End:
-        assert_eq!(test_bytes(&k(NamedKey::Home), None, mods()), Some(b"\x1b[H".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::Home), None, ctrl), Some(b"\x1b[1;5H".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::End), None, ctrl), Some(b"\x1b[1;5F".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::Home), None, mods()),
+            Some(b"\x1b[H".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::Home), None, ctrl),
+            Some(b"\x1b[1;5H".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::End), None, ctrl),
+            Some(b"\x1b[1;5F".to_vec())
+        );
 
         // 3. Insert / PageUp:
-        assert_eq!(test_bytes(&k(NamedKey::Insert), None, mods()), Some(b"\x1b[2~".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::Insert), None, ctrl), Some(b"\x1b[2;5~".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::PageUp), None, ctrl), Some(b"\x1b[5;5~".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::Insert), None, mods()),
+            Some(b"\x1b[2~".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::Insert), None, ctrl),
+            Some(b"\x1b[2;5~".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::PageUp), None, ctrl),
+            Some(b"\x1b[5;5~".to_vec())
+        );
 
         // 4. F1 (SS3 -> CSI when parameterized):
-        assert_eq!(test_bytes(&k(NamedKey::F1), None, mods()), Some(b"\x1bOP".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::F1), None, ctrl), Some(b"\x1b[1;5P".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::F1), None, mods()),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::F1), None, ctrl),
+            Some(b"\x1b[1;5P".to_vec())
+        );
 
         // 5. F5:
-        assert_eq!(test_bytes(&k(NamedKey::F5), None, mods()), Some(b"\x1b[15~".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::F5), None, ctrl), Some(b"\x1b[15;5~".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::F5), None, mods()),
+            Some(b"\x1b[15~".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::F5), None, ctrl),
+            Some(b"\x1b[15;5~".to_vec())
+        );
 
         // 6. Shift+Tab -> \x1b[Z
-        assert_eq!(test_bytes(&k(NamedKey::Tab), None, shift), Some(b"\x1b[Z".to_vec()));
-        assert_eq!(test_bytes(&k(NamedKey::Tab), None, mods()), Some(b"\t".to_vec()));
+        assert_eq!(
+            test_bytes(&k(NamedKey::Tab), None, shift),
+            Some(b"\x1b[Z".to_vec())
+        );
+        assert_eq!(
+            test_bytes(&k(NamedKey::Tab), None, mods()),
+            Some(b"\t".to_vec())
+        );
 
         // 7. Alt + printable characters
         assert_eq!(
@@ -638,17 +691,38 @@ mod tests {
         // 1. NumLock ON (represented by Key::Character)
         // 1a. application_keypad = false, no modifiers -> standard character "8"
         assert_eq!(
-            keyboard_input_bytes(&Key::Character("8".into()), Some("8"), mods, false, false, true),
+            keyboard_input_bytes(
+                &Key::Character("8".into()),
+                Some("8"),
+                mods,
+                false,
+                false,
+                true
+            ),
             Some(b"8".to_vec())
         );
         // 1b. application_keypad = true, no modifiers -> application keypad sequence \x1bOx
         assert_eq!(
-            keyboard_input_bytes(&Key::Character("8".into()), Some("8"), mods, false, true, true),
+            keyboard_input_bytes(
+                &Key::Character("8".into()),
+                Some("8"),
+                mods,
+                false,
+                true,
+                true
+            ),
             Some(b"\x1bOx".to_vec())
         );
         // 1c. application_keypad = true, Ctrl modifier -> application keypad is bypassed, sends ctrl fallback
         assert_eq!(
-            keyboard_input_bytes(&Key::Character("8".into()), Some("8"), ctrl, false, true, true),
+            keyboard_input_bytes(
+                &Key::Character("8".into()),
+                Some("8"),
+                ctrl,
+                false,
+                true,
+                true
+            ),
             Some(b"8".to_vec())
         );
 

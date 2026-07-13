@@ -809,7 +809,7 @@ impl Screen {
 
         let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
         self.clear_cell_for_write(index);
-        if width == 2 && self.cursor_x + 1 <= right_limit {
+        if width == 2 && self.cursor_x < right_limit {
             self.clear_cell_for_write(index + 1);
         }
 
@@ -822,7 +822,7 @@ impl Screen {
             self.current_protected,
         );
 
-        if width == 2 && self.cursor_x + 1 <= right_limit {
+        if width == 2 && self.cursor_x < right_limit {
             *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
                 wide_continuation: true,
@@ -989,7 +989,9 @@ impl Screen {
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
     pub(crate) fn erase_display(&mut self, mode: usize) {
-        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+        if self.margin_mode
+            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        {
             return;
         }
         self.pending_wrap = false;
@@ -1011,14 +1013,22 @@ impl Screen {
                 for row in self.cursor_y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
+                    self.normal.fill_linear_range_with(
+                        r_row * cols + left_col,
+                        r_row * cols + right_col + 1,
+                        cell,
+                    );
                 }
             }
             1 => {
                 for row in 0..self.cursor_y {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
+                    self.normal.fill_linear_range_with(
+                        r_row * cols + left_col,
+                        r_row * cols + right_col + 1,
+                        cell,
+                    );
                 }
                 self.mark_row_dirty(self.cursor_y);
                 let ring_row = self.normal.display_to_ring(self.cursor_y);
@@ -1030,7 +1040,11 @@ impl Screen {
                 for row in 0..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
-                    self.normal.fill_linear_range_with(r_row * cols + left_col, r_row * cols + right_col + 1, cell);
+                    self.normal.fill_linear_range_with(
+                        r_row * cols + left_col,
+                        r_row * cols + right_col + 1,
+                        cell,
+                    );
                 }
                 self.home_cursor();
                 self.mark_all_dirty();
@@ -1041,7 +1055,9 @@ impl Screen {
 
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
-        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+        if self.margin_mode
+            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        {
             return;
         }
         self.pending_wrap = false;
@@ -1070,7 +1086,9 @@ impl Screen {
     /// Replaces cells with default (space) characters without moving the cursor.
     /// The default parameter (0) acts as 1.
     pub(crate) fn erase_chars(&mut self, n: usize) {
-        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+        if self.margin_mode
+            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        {
             return;
         }
         self.pending_wrap = false;
@@ -1090,7 +1108,9 @@ impl Screen {
     }
 
     pub(crate) fn selective_erase_display(&mut self, mode: usize) {
-        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+        if self.margin_mode
+            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        {
             return;
         }
         let erase = self.erase_cell();
@@ -1169,7 +1189,9 @@ impl Screen {
     }
 
     pub(crate) fn selective_erase_line(&mut self, mode: usize) {
-        if self.margin_mode && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right) {
+        if self.margin_mode
+            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        {
             return;
         }
         let erase = self.erase_cell();
