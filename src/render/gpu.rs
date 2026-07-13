@@ -146,7 +146,7 @@ impl GpuContext {
         Arc::clone(&self.colored_quad_pipeline)
     }
 
-    // ── surface-only operations (used exclusively by Renderer) ──────────
+    // ── surface operations ──────────────────────────────────────────────
 
     /// Gets the current frame surface texture.  See `CurrentSurfaceTexture`
     /// variant docs for how to handle each status.
@@ -157,6 +157,41 @@ impl GpuContext {
     /// Presents the frame after command submission.
     pub(crate) fn present(&self, surface_texture: wgpu::SurfaceTexture) {
         self.queue.present(surface_texture);
+    }
+
+    /// Acquires the surface texture, submits a single clear-color render pass,
+    /// and presents the frame. No-ops on non-`Success` variants to keep the
+    /// startup fast path simple — `Suboptimal` surfaces are intentionally
+    /// skipped rather than presented with a size mismatch.
+    pub(crate) fn clear_surface(&self, color: wgpu::Color) {
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(output) => output,
+            _ => return,
+        };
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
+        self.queue.submit(Some(encoder.finish()));
+        self.queue.present(output);
     }
 }
 

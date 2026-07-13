@@ -265,7 +265,9 @@ impl App {
                         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
                     };
                     // SAFETY: GetCurrentThread returns a pseudo-handle that is always valid.
-                    unsafe { let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+                    unsafe {
+                        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                    }
                 }
                 load_system_fonts()
             })
@@ -273,43 +275,16 @@ impl App {
 
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
-
         // Phase 2: submit one clear frame immediately after GPU init, before
         // waiting for fonts. Replaces the white window with the terminal
         // background color during the ~400ms font join wait.
-        if let wgpu::CurrentSurfaceTexture::Success(output) = gpu.get_current_texture() {
-            let view = output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = gpu
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::config::BACKGROUND),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            }));
-            gpu.queue().submit(Some(encoder.finish()));
-            gpu.present(output);
-        }
+        gpu.clear_surface(crate::config::BACKGROUND);
 
         let fonts = font_handle
             .join()
             .map_err(|_| AppError::Renderer(anyhow::anyhow!("font loader thread panicked")))?
             .map_err(AppError::Renderer)?;
         let metrics = TextMetrics::new(&fonts);
-
 
         // Bootstrap with a 1×1 terminal so the glyph atlas has a screen to
         // build from. UiRoot computes the real grid size from font metrics.

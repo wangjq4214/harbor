@@ -100,8 +100,6 @@ fn load_candidate_fonts() -> Option<FontBook> {
     let primary = load_first_font_file(primary_font_candidates())?;
     if primary.font.has_glyph(CJK_PROBE) {
         tracing::info!(primary = %primary.family, "loaded terminal font from fast path");
-        // CJK thread no longer needed; let it finish in the background.
-        drop(cjk_handle);
         return Some(FontBook {
             fonts: vec![primary],
         });
