@@ -205,8 +205,8 @@ impl ApplicationHandler<AppEvent> for App {
                     &event.logical_key,
                     event.text.as_deref(),
                     self.modifiers,
-                    terminal.screen().application_cursor,
-                    terminal.screen().application_keypad,
+                    terminal.screen().application_cursor(),
+                    terminal.screen().application_keypad(),
                     is_numpad,
                 ) else {
                     return;

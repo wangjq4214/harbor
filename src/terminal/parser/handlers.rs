@@ -152,7 +152,7 @@ impl Perform for ScreenHandler<'_> {
                 .screen
                 .set_scroll_region(Self::param(params, 0, 0), Self::param(params, 1, 0)),
             b's' => {
-                if self.screen.margin_mode {
+                if self.screen.margin_mode() {
                     self.screen.set_left_right_margins(
                         Self::param(params, 0, 0),
                         Self::param(params, 1, 0),

@@ -4,6 +4,9 @@ use super::parser::params::Params;
 
 use unicode_width::UnicodeWidthChar;
 
+#[cfg(test)]
+mod tests;
+
 /// Pending alternate-screen action set by the parser and consumed by Terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AltScreenAction {
@@ -194,6 +197,225 @@ struct SavedCursor {
     pending_wrap: bool,
 }
 
+/// Cursor position, appearance, and saved-state (DECSC/DECRC).
+///
+/// All coordinates are 0-based. The saved cursor snapshot persists until
+/// overwritten by a subsequent DECSC, a reset, or alt-screen entry (which
+/// moves it into [`AltSavedState`] and restores it on exit).
+#[derive(Debug, Clone)]
+struct CursorState {
+    /// 0-based column.
+    x: usize,
+    /// 0-based row.
+    y: usize,
+    /// Current cursor shape (DECSCUSR).
+    shape: CursorShape,
+    /// Whether the cursor blinks (DECSCUSR).
+    blink: bool,
+    /// Whether the cursor is visible (DECTCEM).
+    visible: bool,
+    /// Saved cursor snapshot from DECSC, or `None` before any save.
+    saved: Option<SavedCursor>,
+}
+
+impl CursorState {
+    fn new() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            shape: CursorShape::default(),
+            blink: true,
+            visible: true,
+            saved: None,
+        }
+    }
+
+    /// Takes a snapshot for alt-screen save: clones current state while
+    /// moving `saved` out so that the alt screen starts with `saved = None`.
+    fn snapshot_for_alt(&mut self) -> Self {
+        let saved = self.saved.take();
+        Self {
+            x: self.x,
+            y: self.y,
+            shape: self.shape,
+            blink: self.blink,
+            visible: self.visible,
+            saved,
+        }
+    }
+}
+
+/// Current SGR pen state — the active foreground, background, attributes,
+/// and protection flag applied to each newly written character.
+#[derive(Debug, Clone, Copy)]
+struct Pen {
+    /// Foreground color (SGR 30–39, 90–97, 38).
+    fg: Color,
+    /// Background color (SGR 40–49, 100–107, 48).
+    bg: Color,
+    /// Active text attributes (bold, italic, underline, etc.).
+    attrs: CellAttrs,
+    /// Whether newly written cells are protected (DECSCA).
+    protected: bool,
+}
+
+impl Pen {
+    fn reset() -> Self {
+        Self {
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: CellAttrs::default(),
+            protected: false,
+        }
+    }
+}
+
+/// Vertical scrolling region (DECSTBM).  Both boundaries are 0-based and
+/// inclusive: `top=0, bottom=rows-1` covers the full screen.
+#[derive(Debug, Clone, Copy)]
+struct ScrollRegion {
+    /// Top boundary of the scrolling region, inclusive.
+    top: usize,
+    /// Bottom boundary of the scrolling region, inclusive.
+    bottom: usize,
+}
+
+impl ScrollRegion {
+    fn full(rows: usize) -> Self {
+        Self {
+            top: 0,
+            bottom: rows.saturating_sub(1),
+        }
+    }
+}
+
+/// Horizontal left/right margins (DECLRMM, private mode 69).
+/// Both boundaries are 0-based and inclusive.  Only active when `enabled`
+/// is true.
+#[derive(Debug, Clone, Copy)]
+struct Margins {
+    /// Whether DECLRMM is active.
+    enabled: bool,
+    /// Left margin column, inclusive.
+    left: usize,
+    /// Right margin column, inclusive.
+    right: usize,
+}
+
+impl Margins {
+    fn full(cols: usize) -> Self {
+        Self {
+            enabled: false,
+            left: 0,
+            right: cols.saturating_sub(1),
+        }
+    }
+
+    /// Clamps both margin boundaries into `[0, cols-1]` without reordering.
+    fn clamp(&mut self, cols: usize) {
+        let rightmost = cols.saturating_sub(1);
+        self.left = self.left.min(rightmost);
+        self.right = self.right.min(rightmost);
+    }
+}
+
+/// Set of binary terminal modes — each maps to a DEC private or standard
+/// mode whose state is stored directly in the screen.
+#[derive(Debug, Clone, Copy)]
+struct TerminalModes {
+    /// DECAWM: autowrap at the right margin.
+    autowrap: bool,
+    /// Internal flag: true when the cursor reached the right margin and the
+    /// next printable character should wrap before printing.
+    pending_wrap: bool,
+    /// DECOM: cursor positioning is relative to the scrolling region.
+    origin: bool,
+    /// IRM (standard mode 4): insert characters instead of overwriting.
+    insert: bool,
+    /// LNM (standard mode 20): line feed also performs a carriage return.
+    line_feed: bool,
+    /// DECCKM: application cursor keys send SS3-style sequences.
+    application_cursor: bool,
+    /// DECKPAM: application keypad sends SS3-style sequences.
+    application_keypad: bool,
+}
+
+impl TerminalModes {
+    fn default() -> Self {
+        Self {
+            autowrap: true,
+            pending_wrap: false,
+            origin: false,
+            insert: false,
+            line_feed: false,
+            application_cursor: false,
+            application_keypad: false,
+        }
+    }
+}
+
+/// Horizontal tab stops.  `true` at column `c` means a tab stop is set.
+/// Default stops are at every 8th column.
+#[derive(Debug, Clone)]
+struct TabStops(Vec<bool>);
+
+impl TabStops {
+    fn new(cols: usize) -> Self {
+        let mut stops = vec![false; cols];
+        for (col, stop) in stops.iter_mut().enumerate() {
+            if col % 8 == 0 {
+                *stop = true;
+            }
+        }
+        Self(stops)
+    }
+
+    fn resize(&mut self, cols: usize) {
+        let old_len = self.0.len();
+        self.0.resize(cols, false);
+        for col in old_len..cols {
+            if col % 8 == 0 {
+                self.0[col] = true;
+            }
+        }
+    }
+}
+
+/// Character set state for GL mapping via G0/G1 designation.
+///
+/// `g0` and `g1` hold the final character of the designation escape
+/// (e.g. `b'B'` for US-ASCII, `b'0'` for DEC Special Graphics).
+/// `active` selects which set (0 = G0, 1 = G1) maps GL characters.
+#[derive(Debug, Clone, Copy)]
+struct CharacterSets {
+    /// Most recently printed character (used by REP / CSI Ps b).
+    last_char: Option<char>,
+    /// G0 character set designation.
+    g0: u8,
+    /// G1 character set designation.
+    g1: u8,
+    /// Active charset: 0 = G0, 1 = G1.
+    active: u8,
+}
+
+impl CharacterSets {
+    fn default() -> Self {
+        Self {
+            last_char: None,
+            g0: b'B',
+            g1: b'B',
+            active: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.last_char = None;
+        self.g0 = b'B';
+        self.g1 = b'B';
+        self.active = 0;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CursorShape {
     Block,
@@ -221,97 +443,54 @@ pub(crate) struct Screen {
     normal: NormalBuf,
     /// Whether the alternate screen is active.
     in_alt: bool,
-    /// 0-based column within the current row.
-    pub(crate) cursor_x: usize,
-    /// 0-based row index.
-    pub(crate) cursor_y: usize,
-    /// Current SGR foreground applied to each character written.
-    current_fg: Color,
-    /// Current SGR background applied to each character written.
-    current_bg: Color,
-    /// Current SGR attributes applied to each character written.
-    current_attrs: CellAttrs,
-    /// Pending alternate-screen request set by the parser, consumed by Terminal.
+    /// Cursor position, appearance, and saved-state (DECSC/DECRC).
+    cursor: CursorState,
+    /// Current SGR pen — foreground, background, attributes, protection.
+    pen: Pen,
+    /// Pending alt-screen request set by the parser, consumed by Terminal.
     alt_request: Option<AltScreenAction>,
-    /// Top boundary of the scrolling region (DECSTBM). 0-based, inclusive.
-    scroll_top: usize,
-    /// Bottom boundary of the scrolling region (DECSTBM). 0-based, inclusive.
-    scroll_bottom: usize,
-    /// Current cursor shape from DECSCUSR.
-    cursor_shape: CursorShape,
-    /// Whether cursor should blink.
-    cursor_blink: bool,
-    /// Saved cursor state (DECSC/DECRC), or `None` before any save.
-    saved_cursor: Option<SavedCursor>,
+    /// Vertical scrolling region (DECSTBM).
+    scroll_region: ScrollRegion,
     /// Saved normal-screen state while the alternate screen is active.
     alt_saved: Option<AltSavedState>,
-    /// Standard autowrap mode (DECAWM).
-    pub(crate) autowrap: bool,
-    /// Pending wrap state: true if cursor_x reached cols but hasn't wrapped yet.
-    pub(crate) pending_wrap: bool,
-    /// Whether the cursor is visible (DECTCEM).
-    pub(crate) cursor_visible: bool,
-    /// Origin mode (DECOM).
-    pub(crate) origin_mode: bool,
-    /// Horizontal left/right margin mode (DECLRMM).
-    pub(crate) margin_mode: bool,
-    /// Left margin column (0-based, inclusive).
-    pub(crate) margin_left: usize,
-    /// Right margin column (0-based, inclusive).
-    pub(crate) margin_right: usize,
-    /// Tab stop indicators for each column.
-    pub(crate) tab_stops: Vec<bool>,
-    /// Current Select Character Protection Attribute (DECSCA).
-    pub(crate) current_protected: bool,
-    /// Standard insert/replace mode (IRM).
-    pub(crate) insert_mode: bool,
-    /// Standard line feed/new line mode (LNM).
-    pub(crate) line_feed_mode: bool,
-    /// Application cursor keys mode (DECCKM).
-    pub(crate) application_cursor: bool,
-    /// Application keypad mode (DECKPAM/DECKPNM).
-    pub(crate) application_keypad: bool,
-    /// The most recently printed character (REP / CSI Ps b).
-    pub(crate) last_char: Option<char>,
-    pub(crate) g0_charset: u8,
-    pub(crate) g1_charset: u8,
-    pub(crate) active_charset: u8,
+    /// Horizontal left/right margins (DECLRMM).
+    margins: Margins,
+    /// Horizontal tab stops (every 8 columns by default).
+    tab_stops: TabStops,
+    /// Binary terminal modes (DECAWM, DECOM, IRM, LNM, DECCKM, DECKPAM, …).
+    modes: TerminalModes,
+    /// Character set designations (G0, G1) and last printed character.
+    charsets: CharacterSets,
 }
 
 /// State saved when entering the alternate screen and restored on exit.
+///
+/// Holds a full snapshot of the normal-screen buffer and every state group
+/// so that [`Screen::exit_alt`] can restore them atomically.
 #[derive(Debug)]
 struct AltSavedState {
+    /// Snapshot of the normal-screen cell grid.
     cells: Vec<Cell>,
+    /// Snapshot of the normal-screen dirty-row flags.
     dirty_rows: Vec<bool>,
-    cursor_x: usize,
-    cursor_y: usize,
-    current_fg: Color,
-    current_bg: Color,
-    current_attrs: CellAttrs,
-    scroll_top: usize,
-    scroll_bottom: usize,
-    cursor_shape: CursorShape,
-    cursor_blink: bool,
-    saved_cursor: Option<SavedCursor>,
+    /// Normal-screen visible-start ring index.
     visible_start: usize,
+    /// Normal-screen scrollback count.
     scroll_count: usize,
-    origin_mode: bool,
-    autowrap: bool,
-    pending_wrap: bool,
-    cursor_visible: bool,
-    margin_mode: bool,
-    margin_left: usize,
-    margin_right: usize,
-    tab_stops: Vec<bool>,
-    current_protected: bool,
-    insert_mode: bool,
-    line_feed_mode: bool,
-    application_cursor: bool,
-    application_keypad: bool,
-    last_char: Option<char>,
-    g0_charset: u8,
-    g1_charset: u8,
-    active_charset: u8,
+    /// Cursor state group.
+    cursor: CursorState,
+    /// SGR pen state group.
+    pen: Pen,
+    /// Scrolling region group.
+    scroll_region: ScrollRegion,
+    /// Horizontal margins group.
+    margins: Margins,
+    /// Terminal modes group.
+    modes: TerminalModes,
+    /// Tab stops group.
+    tab_stops: TabStops,
+    /// Character sets group.
+    charsets: CharacterSets,
 }
 
 struct Rect {
@@ -328,43 +507,15 @@ impl Screen {
         Self {
             normal: NormalBuf::new(rows, cols),
             in_alt: false,
-            cursor_x: 0,
-            cursor_y: 0,
-            current_fg: Color::Default,
-            current_bg: Color::Default,
-            current_attrs: CellAttrs::default(),
+            cursor: CursorState::new(),
+            pen: Pen::reset(),
             alt_request: None,
-            scroll_top: 0,
-            scroll_bottom: rows - 1,
-            cursor_shape: CursorShape::default(),
-            cursor_blink: true,
-            saved_cursor: None,
+            scroll_region: ScrollRegion::full(rows),
             alt_saved: None,
-            autowrap: true,
-            pending_wrap: false,
-            cursor_visible: true,
-            origin_mode: false,
-            margin_mode: false,
-            margin_left: 0,
-            margin_right: cols - 1,
-            tab_stops: {
-                let mut stops = vec![false; cols];
-                for (col, stop) in stops.iter_mut().enumerate() {
-                    if col % 8 == 0 {
-                        *stop = true;
-                    }
-                }
-                stops
-            },
-            current_protected: false,
-            insert_mode: false,
-            line_feed_mode: false,
-            application_cursor: false,
-            application_keypad: false,
-            last_char: None,
-            g0_charset: b'B',
-            g1_charset: b'B',
-            active_charset: 0,
+            margins: Margins::full(cols),
+            tab_stops: TabStops::new(cols),
+            modes: TerminalModes::default(),
+            charsets: CharacterSets::default(),
         }
     }
 
@@ -384,24 +535,24 @@ impl Screen {
         self.normal.rows()
     }
     pub(crate) fn cursor_x(&self) -> usize {
-        self.cursor_x
+        self.cursor.x
     }
     pub(crate) fn cursor_y(&self) -> usize {
         if self.normal.view_offset() > 0 {
             // Force cursor off-screen when viewing scrollback.
             self.normal.rows()
         } else {
-            self.cursor_y
+            self.cursor.y
         }
     }
     pub(crate) fn cursor_shape(&self) -> CursorShape {
-        self.cursor_shape
+        self.cursor.shape
     }
     pub(crate) fn cursor_blink(&self) -> bool {
-        self.cursor_blink
+        self.cursor.blink
     }
     pub(crate) fn cursor_visible(&self) -> bool {
-        self.cursor_visible
+        self.cursor.visible
     }
     pub(crate) fn set_cursor_style(&mut self, ps: usize) {
         let (shape, blink) = match ps {
@@ -414,8 +565,20 @@ impl Screen {
             6 => (CursorShape::Bar, false),
             _ => (CursorShape::default(), true),
         };
-        self.cursor_shape = shape;
-        self.cursor_blink = blink;
+        self.cursor.shape = shape;
+        self.cursor.blink = blink;
+    }
+
+    pub(crate) fn application_cursor(&self) -> bool {
+        self.modes.application_cursor
+    }
+
+    pub(crate) fn application_keypad(&self) -> bool {
+        self.modes.application_keypad
+    }
+
+    pub(crate) fn margin_mode(&self) -> bool {
+        self.margins.enabled
     }
     pub(crate) fn cells(&self) -> CellsIter<'_> {
         self.normal.cells()
@@ -479,29 +642,29 @@ impl Screen {
             let n = p.get(0).unwrap_or_default();
             match n {
                 0 => {
-                    self.current_fg = Color::Default;
-                    self.current_bg = Color::Default;
-                    self.current_attrs = CellAttrs::default();
+                    self.pen.fg = Color::Default;
+                    self.pen.bg = Color::Default;
+                    self.pen.attrs = CellAttrs::default();
                 }
-                1 => self.current_attrs.set(CellAttrs::BOLD),
-                2 => self.current_attrs.set(CellAttrs::DIM),
-                3 => self.current_attrs.set(CellAttrs::ITALIC),
-                4 => self.current_attrs.set(CellAttrs::UNDERLINE),
-                5 => self.current_attrs.set(CellAttrs::BLINK),
-                7 => self.current_attrs.set(CellAttrs::INVERSE),
-                9 => self.current_attrs.set(CellAttrs::STRIKETHROUGH),
-                22 => self.current_attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
-                23 => self.current_attrs.clear(CellAttrs::ITALIC),
-                24 => self.current_attrs.clear(CellAttrs::UNDERLINE),
-                25 => self.current_attrs.clear(CellAttrs::BLINK),
-                27 => self.current_attrs.clear(CellAttrs::INVERSE),
-                29 => self.current_attrs.clear(CellAttrs::STRIKETHROUGH),
-                30..=37 => self.current_fg = Color::Named((n - 30) as u8),
-                40..=47 => self.current_bg = Color::Named((n - 40) as u8),
-                39 => self.current_fg = Color::Default,
-                49 => self.current_bg = Color::Default,
-                90..=97 => self.current_fg = Color::Bright((n - 90) as u8),
-                100..=107 => self.current_bg = Color::Bright((n - 100) as u8),
+                1 => self.pen.attrs.set(CellAttrs::BOLD),
+                2 => self.pen.attrs.set(CellAttrs::DIM),
+                3 => self.pen.attrs.set(CellAttrs::ITALIC),
+                4 => self.pen.attrs.set(CellAttrs::UNDERLINE),
+                5 => self.pen.attrs.set(CellAttrs::BLINK),
+                7 => self.pen.attrs.set(CellAttrs::INVERSE),
+                9 => self.pen.attrs.set(CellAttrs::STRIKETHROUGH),
+                22 => self.pen.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
+                23 => self.pen.attrs.clear(CellAttrs::ITALIC),
+                24 => self.pen.attrs.clear(CellAttrs::UNDERLINE),
+                25 => self.pen.attrs.clear(CellAttrs::BLINK),
+                27 => self.pen.attrs.clear(CellAttrs::INVERSE),
+                29 => self.pen.attrs.clear(CellAttrs::STRIKETHROUGH),
+                30..=37 => self.pen.fg = Color::Named((n - 30) as u8),
+                40..=47 => self.pen.bg = Color::Named((n - 40) as u8),
+                39 => self.pen.fg = Color::Default,
+                49 => self.pen.bg = Color::Default,
+                90..=97 => self.pen.fg = Color::Bright((n - 90) as u8),
+                100..=107 => self.pen.bg = Color::Bright((n - 100) as u8),
                 38 | 48 => {
                     let is_fg = n == 38;
                     // Check if this parameter has colon sub-parameters
@@ -513,9 +676,9 @@ impl Screen {
                                     && val <= 255
                                 {
                                     if is_fg {
-                                        self.current_fg = Color::Indexed(val as u8);
+                                        self.pen.fg = Color::Indexed(val as u8);
                                     } else {
-                                        self.current_bg = Color::Indexed(val as u8);
+                                        self.pen.bg = Color::Indexed(val as u8);
                                     }
                                 }
                             }
@@ -529,9 +692,9 @@ impl Screen {
                                     && b <= 255
                                 {
                                     if is_fg {
-                                        self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
+                                        self.pen.fg = Color::Rgb(r as u8, g as u8, b as u8);
                                     } else {
-                                        self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                                        self.pen.bg = Color::Rgb(r as u8, g as u8, b as u8);
                                     }
                                 }
                             }
@@ -553,9 +716,9 @@ impl Screen {
                                     && val <= 255
                                 {
                                     if is_fg {
-                                        self.current_fg = Color::Indexed(val as u8);
+                                        self.pen.fg = Color::Indexed(val as u8);
                                     } else {
-                                        self.current_bg = Color::Indexed(val as u8);
+                                        self.pen.bg = Color::Indexed(val as u8);
                                     }
                                 }
                                 i += 2;
@@ -573,9 +736,9 @@ impl Screen {
                                     && b <= 255
                                 {
                                     if is_fg {
-                                        self.current_fg = Color::Rgb(r as u8, g as u8, b as u8);
+                                        self.pen.fg = Color::Rgb(r as u8, g as u8, b as u8);
                                     } else {
-                                        self.current_bg = Color::Rgb(r as u8, g as u8, b as u8);
+                                        self.pen.bg = Color::Rgb(r as u8, g as u8, b as u8);
                                     }
                                 }
                                 i += 4;
@@ -603,21 +766,12 @@ impl Screen {
     /// clamped into the new bounds.
     pub(crate) fn resize(&mut self, rows: usize, cols: usize) {
         self.normal.resize(rows, cols);
-        self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
-        self.cursor_x = self.cursor_x.min(cols.saturating_sub(1));
-        let rightmost_col = cols.saturating_sub(1);
-        self.margin_left = self.margin_left.min(rightmost_col);
-        self.margin_right = self.margin_right.min(rightmost_col);
-        let old_tab_stop_count = self.tab_stops.len();
-        self.tab_stops.resize(cols, false);
-        for col in old_tab_stop_count..cols {
-            if col % 8 == 0 {
-                self.tab_stops[col] = true;
-            }
-        }
-        self.scroll_top = 0;
-        self.scroll_bottom = rows.saturating_sub(1);
-        if let Some(ref mut saved) = self.saved_cursor {
+        self.cursor.y = self.cursor.y.min(rows.saturating_sub(1));
+        self.cursor.x = self.cursor.x.min(cols.saturating_sub(1));
+        self.margins.clamp(cols);
+        self.tab_stops.resize(cols);
+        self.scroll_region = ScrollRegion::full(rows);
+        if let Some(ref mut saved) = self.cursor.saved {
             saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
             saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
         }
@@ -676,81 +830,83 @@ impl Screen {
 
     /// Resets `cursor_x` to column 0, implementing the carriage-return (`\r`) semantics.
     pub(crate) fn carriage_return(&mut self) {
-        self.pending_wrap = false;
-        self.cursor_x = if self.margin_mode {
-            self.margin_left
+        self.modes.pending_wrap = false;
+        self.cursor.x = if self.margins.enabled {
+            self.margins.left
         } else {
             0
         };
     }
 
     pub(crate) fn cursor_up(&mut self, n: usize) {
-        self.pending_wrap = false;
-        let limit = if self.origin_mode
-            || (self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom)
+        self.modes.pending_wrap = false;
+        let limit = if self.modes.origin
+            || (self.cursor.y >= self.scroll_region.top
+                && self.cursor.y <= self.scroll_region.bottom)
         {
-            self.scroll_top
+            self.scroll_region.top
         } else {
             0
         };
-        self.cursor_y = self.cursor_y.saturating_sub(n).max(limit);
+        self.cursor.y = self.cursor.y.saturating_sub(n).max(limit);
     }
 
     pub(crate) fn cursor_down(&mut self, n: usize) {
-        self.pending_wrap = false;
-        let limit = if self.origin_mode
-            || (self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom)
+        self.modes.pending_wrap = false;
+        let limit = if self.modes.origin
+            || (self.cursor.y >= self.scroll_region.top
+                && self.cursor.y <= self.scroll_region.bottom)
         {
-            self.scroll_bottom
+            self.scroll_region.bottom
         } else {
             self.normal.rows() - 1
         };
-        self.cursor_y = self.cursor_y.saturating_add(n).min(limit);
+        self.cursor.y = self.cursor.y.saturating_add(n).min(limit);
     }
 
     pub(crate) fn cursor_left(&mut self, n: usize) {
-        self.pending_wrap = false;
-        let limit = if self.margin_mode
-            && self.cursor_x >= self.margin_left
-            && self.cursor_x <= self.margin_right
+        self.modes.pending_wrap = false;
+        let limit = if self.margins.enabled
+            && self.cursor.x >= self.margins.left
+            && self.cursor.x <= self.margins.right
         {
-            self.margin_left
+            self.margins.left
         } else {
             0
         };
-        self.cursor_x = self.cursor_x.saturating_sub(n).max(limit);
+        self.cursor.x = self.cursor.x.saturating_sub(n).max(limit);
     }
 
     pub(crate) fn cursor_right(&mut self, n: usize) {
-        self.pending_wrap = false;
-        let limit = if self.margin_mode
-            && self.cursor_x >= self.margin_left
-            && self.cursor_x <= self.margin_right
+        self.modes.pending_wrap = false;
+        let limit = if self.margins.enabled
+            && self.cursor.x >= self.margins.left
+            && self.cursor.x <= self.margins.right
         {
-            self.margin_right
+            self.margins.right
         } else {
             self.normal.cols() - 1
         };
-        self.cursor_x = self.cursor_x.saturating_add(n).min(limit);
+        self.cursor.x = self.cursor.x.saturating_add(n).min(limit);
     }
 
     /// Expands horizontal tab into spaces up to the next 8-column tab stop or row end.
     pub(crate) fn horizontal_tab(&mut self) {
-        self.pending_wrap = false;
-        let right_limit = if self.margin_mode {
-            self.margin_right
+        self.modes.pending_wrap = false;
+        let right_limit = if self.margins.enabled {
+            self.margins.right
         } else {
             self.normal.cols()
         };
         let mut target = right_limit;
-        for col in (self.cursor_x + 1)..=right_limit {
-            if col < self.tab_stops.len() && self.tab_stops[col] {
+        for col in (self.cursor.x + 1)..=right_limit {
+            if col < self.tab_stops.0.len() && self.tab_stops.0[col] {
                 target = col;
                 break;
             }
         }
-        if target > self.cursor_x {
-            let spaces = target - self.cursor_x;
+        if target > self.cursor.x {
+            let spaces = target - self.cursor.x;
             for _ in 0..spaces {
                 self.write_char(' ');
             }
@@ -760,10 +916,10 @@ impl Screen {
     /// Writes one already-decoded printable character at the cursor and advances by its terminal
     /// cell width.
     pub(crate) fn write_char(&mut self, ch: char) {
-        let active_set = if self.active_charset == 0 {
-            self.g0_charset
+        let active_set = if self.charsets.active == 0 {
+            self.charsets.g0
         } else {
-            self.g1_charset
+            self.charsets.g1
         };
         let ch = if active_set == b'0' {
             map_dec_graphics(ch)
@@ -777,71 +933,71 @@ impl Screen {
         }
 
         // 1. Handle pending wrap if autowrap is on
-        if self.autowrap && self.pending_wrap {
+        if self.modes.autowrap && self.modes.pending_wrap {
             self.newline();
-            self.pending_wrap = false;
+            self.modes.pending_wrap = false;
         }
 
-        let right_limit = if self.margin_mode {
-            self.margin_right
+        let right_limit = if self.margins.enabled {
+            self.margins.right
         } else {
             self.normal.cols().saturating_sub(1)
         };
 
         // 2. Clamp cursor if autowrap is off to prevent overflow
-        if !self.autowrap && self.cursor_x >= right_limit {
-            self.cursor_x = right_limit;
+        if !self.modes.autowrap && self.cursor.x >= right_limit {
+            self.cursor.x = right_limit;
         }
 
         // 3. If a wide character cannot fit, wrap only when DECAWM is enabled.
-        if width == 2 && self.cursor_x + 1 > right_limit {
-            if !self.autowrap {
+        if width == 2 && self.cursor.x + 1 > right_limit {
+            if !self.modes.autowrap {
                 return;
             }
             self.newline();
-            self.pending_wrap = false;
+            self.modes.pending_wrap = false;
         }
-        if self.insert_mode {
+        if self.modes.insert {
             self.insert_chars(width);
         }
 
-        self.mark_row_dirty(self.cursor_y);
+        self.mark_row_dirty(self.cursor.y);
 
-        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
+        let index = self.normal.display_to_ring(self.cursor.y) * self.normal.cols() + self.cursor.x;
         self.clear_cell_for_write(index);
-        if width == 2 && self.cursor_x < right_limit {
+        if width == 2 && self.cursor.x < right_limit {
             self.clear_cell_for_write(index + 1);
         }
 
-        let cell = self.normal.live_cell_mut(self.cursor_y, self.cursor_x);
+        let cell = self.normal.live_cell_mut(self.cursor.y, self.cursor.x);
         cell.set(
             ch,
-            self.current_fg,
-            self.current_bg,
-            self.current_attrs,
-            self.current_protected,
+            self.pen.fg,
+            self.pen.bg,
+            self.pen.attrs,
+            self.pen.protected,
         );
 
-        if width == 2 && self.cursor_x < right_limit {
+        if width == 2 && self.cursor.x < right_limit {
             *self.normal.cell_linear_mut(index + 1) = Cell {
                 ch: ' ',
                 wide_continuation: true,
-                fg: self.current_fg,
-                bg: self.current_bg,
-                attrs: self.current_attrs,
-                protected: self.current_protected,
+                fg: self.pen.fg,
+                bg: self.pen.bg,
+                attrs: self.pen.attrs,
+                protected: self.pen.protected,
             };
         }
 
         // 4. Advance cursor and handle autowrap boundaries
-        self.cursor_x += width;
-        if self.cursor_x > right_limit {
-            self.cursor_x = right_limit;
-            if self.autowrap {
-                self.pending_wrap = true;
+        self.cursor.x += width;
+        if self.cursor.x > right_limit {
+            self.cursor.x = right_limit;
+            if self.modes.autowrap {
+                self.modes.pending_wrap = true;
             }
         }
-        self.last_char = Some(ch);
+        self.charsets.last_char = Some(ch);
     }
 
     /// Clears the target cell *and* any joined cell from a double-width glyph that overlaps it.
@@ -892,7 +1048,7 @@ impl Screen {
     }
 
     pub(crate) fn line_feed(&mut self) {
-        if self.line_feed_mode {
+        if self.modes.line_feed {
             self.carriage_return();
         }
         self.index();
@@ -901,72 +1057,72 @@ impl Screen {
     /// Implements VT Index (IND): move down one row, scrolling at the bottom margin,
     /// without changing the cursor column.
     pub(crate) fn index(&mut self) {
-        if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
-            if self.cursor_y == self.scroll_bottom {
+        if self.cursor.y >= self.scroll_region.top && self.cursor.y <= self.scroll_region.bottom {
+            if self.cursor.y == self.scroll_region.bottom {
                 self.scroll_region_up_one();
             } else {
-                self.cursor_y += 1;
+                self.cursor.y += 1;
             }
-        } else if self.cursor_y + 1 < self.normal.rows() {
-            self.cursor_y += 1;
+        } else if self.cursor.y + 1 < self.normal.rows() {
+            self.cursor.y += 1;
         }
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
     }
 
     /// VT non-destructive backspace: move cursor left, skipping wide-continuation cells.
     pub(crate) fn backspace(&mut self) {
-        self.pending_wrap = false;
-        if self.cursor_x == 0 {
+        self.modes.pending_wrap = false;
+        if self.cursor.x == 0 {
             return;
         }
-        self.cursor_x -= 1;
+        self.cursor.x -= 1;
 
         // Step past the continuation half of a wide glyph so the cursor
         // lands at the start column rather than sitting mid-glyph.
-        let index = self.normal.display_to_ring(self.cursor_y) * self.normal.cols() + self.cursor_x;
-        if self.normal.cell_linear(index).wide_continuation && self.cursor_x > 0 {
-            self.cursor_x -= 1;
+        let index = self.normal.display_to_ring(self.cursor.y) * self.normal.cols() + self.cursor.x;
+        if self.normal.cell_linear(index).wide_continuation && self.cursor.x > 0 {
+            self.cursor.x -= 1;
         }
     }
 
     /// Positions the cursor from 1-based ANSI coordinates, clamped to the visible grid.
     pub(crate) fn set_cursor_position(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.pending_wrap = false;
-        if self.origin_mode {
+        self.modes.pending_wrap = false;
+        if self.modes.origin {
             let relative_row = row_1_based.saturating_sub(1);
-            let absolute_row = self.scroll_top.saturating_add(relative_row);
-            self.cursor_y = absolute_row.clamp(self.scroll_top, self.scroll_bottom);
+            let absolute_row = self.scroll_region.top.saturating_add(relative_row);
+            self.cursor.y = absolute_row.clamp(self.scroll_region.top, self.scroll_region.bottom);
 
             let relative_col = col_1_based.saturating_sub(1);
-            let absolute_col = self.margin_left.saturating_add(relative_col);
-            self.cursor_x = absolute_col.clamp(self.margin_left, self.margin_right);
+            let absolute_col = self.margins.left.saturating_add(relative_col);
+            self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
         } else {
             let row = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
             let col = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
-            self.cursor_y = row;
-            self.cursor_x = col;
+            self.cursor.y = row;
+            self.cursor.x = col;
         }
     }
 
     pub(crate) fn set_cursor_col(&mut self, col_1_based: usize) {
-        self.pending_wrap = false;
-        if self.origin_mode {
+        self.modes.pending_wrap = false;
+        if self.modes.origin {
             let relative_col = col_1_based.saturating_sub(1);
-            let absolute_col = self.margin_left.saturating_add(relative_col);
-            self.cursor_x = absolute_col.clamp(self.margin_left, self.margin_right);
+            let absolute_col = self.margins.left.saturating_add(relative_col);
+            self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
         } else {
-            self.cursor_x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
+            self.cursor.x = col_1_based.saturating_sub(1).min(self.normal.cols() - 1);
         }
     }
 
     pub(crate) fn set_cursor_row(&mut self, row_1_based: usize) {
-        self.pending_wrap = false;
-        if self.origin_mode {
+        self.modes.pending_wrap = false;
+        if self.modes.origin {
             let relative_row = row_1_based.saturating_sub(1);
-            let absolute_row = self.scroll_top.saturating_add(relative_row);
-            self.cursor_y = absolute_row.clamp(self.scroll_top, self.scroll_bottom);
+            let absolute_row = self.scroll_region.top.saturating_add(relative_row);
+            self.cursor.y = absolute_row.clamp(self.scroll_region.top, self.scroll_region.bottom);
         } else {
-            self.cursor_y = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
+            self.cursor.y = row_1_based.saturating_sub(1).min(self.normal.rows() - 1);
         }
     }
 
@@ -980,37 +1136,37 @@ impl Screen {
         Cell {
             ch: ' ',
             wide_continuation: false,
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
+            fg: self.pen.fg,
+            bg: self.pen.bg,
+            attrs: self.pen.attrs,
             protected: false,
         }
     }
 
     /// Implements CSI `J` erase-display modes that affect visible cells.
     pub(crate) fn erase_display(&mut self, mode: usize) {
-        if self.margin_mode
-            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        if self.margins.enabled
+            && (self.cursor.x < self.margins.left || self.cursor.x > self.margins.right)
         {
             return;
         }
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
         let cell = self.erase_cell();
         let cols = self.normal.cols();
-        let (left_col, right_col) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        let (left_col, right_col) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, cols - 1)
         };
 
         match mode {
             0 => {
-                self.mark_row_dirty(self.cursor_y);
-                let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start = ring_row * cols + self.cursor_x;
+                self.mark_row_dirty(self.cursor.y);
+                let ring_row = self.normal.display_to_ring(self.cursor.y);
+                let start = ring_row * cols + self.cursor.x;
                 let end = ring_row * cols + right_col + 1;
                 self.normal.fill_linear_range_with(start, end, cell);
-                for row in self.cursor_y + 1..self.normal.rows() {
+                for row in self.cursor.y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
                     self.normal.fill_linear_range_with(
@@ -1021,7 +1177,7 @@ impl Screen {
                 }
             }
             1 => {
-                for row in 0..self.cursor_y {
+                for row in 0..self.cursor.y {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
                     self.normal.fill_linear_range_with(
@@ -1030,10 +1186,10 @@ impl Screen {
                         cell,
                     );
                 }
-                self.mark_row_dirty(self.cursor_y);
-                let ring_row = self.normal.display_to_ring(self.cursor_y);
+                self.mark_row_dirty(self.cursor.y);
+                let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start = ring_row * cols + left_col;
-                let end = ring_row * cols + self.cursor_x + 1;
+                let end = ring_row * cols + self.cursor.x + 1;
                 self.normal.fill_linear_range_with(start, end, cell);
             }
             2 => {
@@ -1055,24 +1211,24 @@ impl Screen {
 
     /// Implements CSI `K` erase-line modes for the current row.
     pub(crate) fn erase_line(&mut self, mode: usize) {
-        if self.margin_mode
-            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        if self.margins.enabled
+            && (self.cursor.x < self.margins.left || self.cursor.x > self.margins.right)
         {
             return;
         }
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
         let cell = self.erase_cell();
-        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        let ring_row = self.normal.display_to_ring(self.cursor.y);
         let cols = self.normal.cols();
-        let (left_col, right_col) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        let (left_col, right_col) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, cols - 1)
         };
         let start = ring_row * cols + left_col;
-        let cursor = ring_row * cols + self.cursor_x;
+        let cursor = ring_row * cols + self.cursor.x;
         let end = ring_row * cols + right_col + 1;
-        self.mark_row_dirty(self.cursor_y);
+        self.mark_row_dirty(self.cursor.y);
         match mode {
             0 => self.normal.fill_linear_range_with(cursor, end, cell),
             1 => self.normal.fill_linear_range_with(start, cursor + 1, cell),
@@ -1086,46 +1242,46 @@ impl Screen {
     /// Replaces cells with default (space) characters without moving the cursor.
     /// The default parameter (0) acts as 1.
     pub(crate) fn erase_chars(&mut self, n: usize) {
-        if self.margin_mode
-            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        if self.margins.enabled
+            && (self.cursor.x < self.margins.left || self.cursor.x > self.margins.right)
         {
             return;
         }
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
         let cell = self.erase_cell();
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor_y);
-        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        self.mark_row_dirty(self.cursor.y);
+        let ring_row = self.normal.display_to_ring(self.cursor.y);
         let cols = self.normal.cols();
-        let right_col = if self.margin_mode {
-            self.margin_right
+        let right_col = if self.margins.enabled {
+            self.margins.right
         } else {
             cols - 1
         };
-        let start = ring_row * cols + self.cursor_x;
+        let start = ring_row * cols + self.cursor.x;
         let end = (start + n).min(ring_row * cols + right_col + 1);
         self.normal.fill_linear_range_with(start, end, cell);
     }
 
     pub(crate) fn selective_erase_display(&mut self, mode: usize) {
-        if self.margin_mode
-            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        if self.margins.enabled
+            && (self.cursor.x < self.margins.left || self.cursor.x > self.margins.right)
         {
             return;
         }
         let erase = self.erase_cell();
         let cols = self.normal.cols();
-        let (left_col, right_col) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        let (left_col, right_col) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, cols - 1)
         };
 
         match mode {
             0 => {
-                self.mark_row_dirty(self.cursor_y);
-                let ring_row = self.normal.display_to_ring(self.cursor_y);
-                let start_idx = ring_row * cols + self.cursor_x;
+                self.mark_row_dirty(self.cursor.y);
+                let ring_row = self.normal.display_to_ring(self.cursor.y);
+                let start_idx = ring_row * cols + self.cursor.x;
                 let row_end = ring_row * cols + right_col + 1;
                 for idx in start_idx..row_end {
                     let cell = self.normal.cell_linear_mut(idx);
@@ -1133,7 +1289,7 @@ impl Screen {
                         *cell = erase;
                     }
                 }
-                for row in self.cursor_y + 1..self.normal.rows() {
+                for row in self.cursor.y + 1..self.normal.rows() {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
                     let r_start = r_row * cols + left_col;
@@ -1147,7 +1303,7 @@ impl Screen {
                 }
             }
             1 => {
-                for row in 0..self.cursor_y {
+                for row in 0..self.cursor.y {
                     self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
                     let r_start = r_row * cols + left_col;
@@ -1159,10 +1315,10 @@ impl Screen {
                         }
                     }
                 }
-                self.mark_row_dirty(self.cursor_y);
-                let ring_row = self.normal.display_to_ring(self.cursor_y);
+                self.mark_row_dirty(self.cursor.y);
+                let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start_idx = ring_row * cols + left_col;
-                let end_idx = ring_row * cols + self.cursor_x + 1;
+                let end_idx = ring_row * cols + self.cursor.x + 1;
                 for idx in start_idx..end_idx {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1189,23 +1345,23 @@ impl Screen {
     }
 
     pub(crate) fn selective_erase_line(&mut self, mode: usize) {
-        if self.margin_mode
-            && (self.cursor_x < self.margin_left || self.cursor_x > self.margin_right)
+        if self.margins.enabled
+            && (self.cursor.x < self.margins.left || self.cursor.x > self.margins.right)
         {
             return;
         }
         let erase = self.erase_cell();
-        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        let ring_row = self.normal.display_to_ring(self.cursor.y);
         let cols = self.normal.cols();
-        let (left_col, right_col) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        let (left_col, right_col) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, cols - 1)
         };
         let start_idx = ring_row * cols + left_col;
-        let cursor_idx = ring_row * cols + self.cursor_x;
+        let cursor_idx = ring_row * cols + self.cursor.x;
         let end_idx = ring_row * cols + right_col + 1;
-        self.mark_row_dirty(self.cursor_y);
+        self.mark_row_dirty(self.cursor.y);
         match mode {
             0 => {
                 for idx in cursor_idx..end_idx {
@@ -1238,91 +1394,50 @@ impl Screen {
     pub(crate) fn set_character_protection(&mut self, ps: usize) {
         match ps {
             0 | 2 => {
-                self.current_protected = false;
+                self.pen.protected = false;
             }
             1 => {
-                self.current_protected = true;
+                self.pen.protected = true;
             }
             _ => {}
         }
     }
 
-    /// Clears all visible cells and homes the cursor.
+    /// Clears all visible cells, homes the cursor, and resets most state
+    /// groups to power-on defaults (RIS / `ESC c`).  Preserves cursor shape
+    /// and blink.
     pub(crate) fn reset_display(&mut self) {
-        // Exit alternate screen
         self.in_alt = false;
         self.alt_saved = None;
 
         self.normal.fill_all();
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.pending_wrap = false;
-        self.current_fg = Color::Default;
-        self.current_bg = Color::Default;
-        self.current_attrs = CellAttrs::default();
-        self.current_protected = false;
-
-        self.scroll_top = 0;
-        self.scroll_bottom = self.normal.rows().saturating_sub(1);
-
-        self.margin_mode = false;
-        self.margin_left = 0;
-        self.margin_right = self.normal.cols().saturating_sub(1);
-
-        self.autowrap = true;
-        self.cursor_visible = true;
-        self.origin_mode = false;
-        self.insert_mode = false;
-        self.line_feed_mode = false;
-        self.application_cursor = false;
-        self.application_keypad = false;
-        self.g0_charset = b'B';
-        self.g1_charset = b'B';
-        self.active_charset = 0;
-
-        // Restore default tab stops every 8 columns
-        self.tab_stops = {
-            let mut stops = vec![false; self.normal.cols()];
-            for (col, stop) in stops.iter_mut().enumerate() {
-                if col % 8 == 0 {
-                    *stop = true;
-                }
-            }
-            stops
-        };
-
-        self.saved_cursor = None;
-        self.last_char = None;
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+        self.cursor.visible = true;
+        self.pen = Pen::reset();
+        self.scroll_region = ScrollRegion::full(self.normal.rows());
+        self.margins = Margins::full(self.normal.cols());
+        self.modes = TerminalModes::default();
+        self.charsets.reset();
+        self.tab_stops = TabStops::new(self.normal.cols());
+        self.cursor.saved = None;
         self.mark_all_dirty();
     }
 
+    /// Soft terminal reset (DECSTR / `CSI ! p`): resets pen, scroll region,
+    /// margins, modes, and saved cursor.  Preserves character-set designations,
+    /// tab stops, cell contents, cursor shape, and blink.
     pub(crate) fn soft_reset(&mut self) {
-        self.pending_wrap = false;
-        self.current_fg = Color::Default;
-        self.current_bg = Color::Default;
-        self.current_attrs = CellAttrs::default();
-        self.current_protected = false;
+        self.pen = Pen::reset();
+        self.scroll_region = ScrollRegion::full(self.normal.rows());
+        self.margins = Margins::full(self.normal.cols());
+        self.modes = TerminalModes::default();
 
-        self.scroll_top = 0;
-        self.scroll_bottom = self.normal.rows().saturating_sub(1);
-
-        self.margin_mode = false;
-        self.margin_left = 0;
-        self.margin_right = self.normal.cols().saturating_sub(1);
-
-        self.autowrap = true;
-        self.cursor_visible = true;
-        self.origin_mode = false;
-        self.insert_mode = false;
-        self.line_feed_mode = false;
-        self.application_cursor = false;
-        self.application_keypad = false;
-
-        self.saved_cursor = None;
-        self.last_char = None;
-        // Move cursor to Home (origin mode is false, so top-left of screen)
-        self.cursor_x = 0;
-        self.cursor_y = 0;
+        self.cursor.saved = None;
+        self.charsets.last_char = None;
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+        self.cursor.visible = true;
     }
 
     fn scroll_margin_rect_up(&mut self, top: usize, bottom: usize, n: usize) {
@@ -1330,7 +1445,7 @@ impl Screen {
         if n < height {
             for dst_row in top..=(bottom - n) {
                 let src_row = dst_row + n;
-                for col in self.margin_left..=self.margin_right {
+                for col in self.margins.left..=self.margins.right {
                     let cell = *self.normal.cell(src_row, col);
                     *self.normal.cell_mut(dst_row, col) = cell;
                 }
@@ -1338,7 +1453,7 @@ impl Screen {
         }
         let blank = self.erase_cell();
         for row in (bottom + 1 - n)..=bottom {
-            for col in self.margin_left..=self.margin_right {
+            for col in self.margins.left..=self.margins.right {
                 *self.normal.cell_mut(row, col) = blank;
             }
         }
@@ -1349,7 +1464,7 @@ impl Screen {
         if n < height {
             for dst_row in ((top + n)..=bottom).rev() {
                 let src_row = dst_row - n;
-                for col in self.margin_left..=self.margin_right {
+                for col in self.margins.left..=self.margins.right {
                     let cell = *self.normal.cell(src_row, col);
                     *self.normal.cell_mut(dst_row, col) = cell;
                 }
@@ -1357,7 +1472,7 @@ impl Screen {
         }
         let blank = self.erase_cell();
         for row in top..(top + n) {
-            for col in self.margin_left..=self.margin_right {
+            for col in self.margins.left..=self.margins.right {
                 *self.normal.cell_mut(row, col) = blank;
             }
         }
@@ -1368,29 +1483,32 @@ impl Screen {
     /// moves up if not already at the top of the full screen.
     pub(crate) fn reverse_index(&mut self) {
         tracing::debug!(
-            cursor_y = self.cursor_y,
-            scroll_top = self.scroll_top,
-            scroll_bottom = self.scroll_bottom,
-            full_screen = (self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1),
+            cursor_y = self.cursor.y,
+            scroll_top = self.scroll_region.top,
+            scroll_bottom = self.scroll_region.bottom,
+            full_screen = (self.scroll_region.top == 0
+                && self.scroll_region.bottom == self.normal.rows() - 1),
             "reverse_index"
         );
 
-        if self.cursor_y == self.scroll_top && self.cursor_y <= self.scroll_bottom {
+        if self.cursor.y == self.scroll_region.top && self.cursor.y <= self.scroll_region.bottom {
             // Mark only region rows dirty.
-            for row in self.scroll_top..=self.scroll_bottom {
+            for row in self.scroll_region.top..=self.scroll_region.bottom {
                 self.mark_row_dirty(row);
             }
-            if self.margin_mode {
-                self.scroll_margin_rect_down(self.scroll_top, self.scroll_bottom, 1);
-            } else if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
+            if self.margins.enabled {
+                self.scroll_margin_rect_down(self.scroll_region.top, self.scroll_region.bottom, 1);
+            } else if self.scroll_region.top == 0
+                && self.scroll_region.bottom == self.normal.rows() - 1
+            {
                 // Full-screen reverse: use scroll_up_full_screen in reverse direction.
                 // Shift down by 1: blank top, everything moves down.
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
                 let c = self.normal.cols();
-                let src_start = ((vis + self.scroll_top) % tr) * c;
-                let src_end = ((vis + self.scroll_bottom) % tr) * c;
-                let dst = ((vis + self.scroll_top + 1) % tr) * c;
+                let src_start = ((vis + self.scroll_region.top) % tr) * c;
+                let src_end = ((vis + self.scroll_region.bottom) % tr) * c;
+                let dst = ((vis + self.scroll_region.top + 1) % tr) * c;
                 if src_start <= src_end {
                     self.normal.copy_linear_range(src_start, src_end, dst);
                 } else {
@@ -1401,15 +1519,15 @@ impl Screen {
                     self.normal.copy_cells_within(second_part, dst + first_len);
                 }
                 self.normal
-                    .fill_row_with(self.scroll_top, self.erase_cell());
+                    .fill_row_with(self.scroll_region.top, self.erase_cell());
             } else {
                 // Partial region: ring-aware copy_within down.
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
                 let c = self.normal.cols();
-                let src_start = ((vis + self.scroll_top) % tr) * c;
-                let src_end = ((vis + self.scroll_bottom) % tr) * c;
-                let dst = ((vis + self.scroll_top + 1) % tr) * c;
+                let src_start = ((vis + self.scroll_region.top) % tr) * c;
+                let src_end = ((vis + self.scroll_region.bottom) % tr) * c;
+                let dst = ((vis + self.scroll_region.top + 1) % tr) * c;
                 if src_start <= src_end {
                     self.normal.copy_linear_range(src_start, src_end, dst);
                 } else {
@@ -1420,10 +1538,10 @@ impl Screen {
                     self.normal.copy_cells_within(second_part, dst + first_len);
                 }
                 self.normal
-                    .fill_row_with(self.scroll_top, self.erase_cell());
+                    .fill_row_with(self.scroll_region.top, self.erase_cell());
             }
-        } else if self.cursor_y > 0 {
-            self.cursor_y -= 1;
+        } else if self.cursor.y > 0 {
+            self.cursor.y -= 1;
         }
     }
 
@@ -1432,19 +1550,21 @@ impl Screen {
     /// cells. The caller controls the cursor column.
     fn scroll_region_up_one(&mut self) {
         tracing::debug!(
-            scroll_top = self.scroll_top,
-            scroll_bottom = self.scroll_bottom,
+            scroll_top = self.scroll_region.top,
+            scroll_bottom = self.scroll_region.bottom,
             visible_rows = self.normal.rows(),
-            full_screen = (self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1),
+            full_screen = (self.scroll_region.top == 0
+                && self.scroll_region.bottom == self.normal.rows() - 1),
             "scroll_region_up_one"
         );
 
-        for row in self.scroll_top..=self.scroll_bottom {
+        for row in self.scroll_region.top..=self.scroll_region.bottom {
             self.mark_row_dirty(row);
         }
-        if self.margin_mode {
-            self.scroll_margin_rect_up(self.scroll_top, self.scroll_bottom, 1);
-        } else if self.scroll_top == 0 && self.scroll_bottom == self.normal.rows() - 1 {
+        if self.margins.enabled {
+            self.scroll_margin_rect_up(self.scroll_region.top, self.scroll_region.bottom, 1);
+        } else if self.scroll_region.top == 0 && self.scroll_region.bottom == self.normal.rows() - 1
+        {
             // Full-screen: O(1) ring-buffer advance.
             self.normal.scroll_up_full_screen(1, self.erase_cell());
         } else {
@@ -1452,9 +1572,9 @@ impl Screen {
             let tr = self.normal.total_rows();
             let vis = self.normal.visible_start();
             let c = self.normal.cols();
-            let src_start = ((vis + self.scroll_top + 1) % tr) * c;
-            let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
-            let dst = ((vis + self.scroll_top) % tr) * c;
+            let src_start = ((vis + self.scroll_region.top + 1) % tr) * c;
+            let src_end = ((vis + self.scroll_region.bottom + 1) % tr) * c;
+            let dst = ((vis + self.scroll_region.top) % tr) * c;
             if src_start <= src_end {
                 self.normal.copy_linear_range(src_start, src_end, dst);
             } else {
@@ -1465,9 +1585,9 @@ impl Screen {
                 self.normal.copy_cells_within(second_part, dst + first_len);
             }
             self.normal
-                .fill_row_with(self.scroll_bottom, self.erase_cell());
+                .fill_row_with(self.scroll_region.bottom, self.erase_cell());
         }
-        self.cursor_y = self.scroll_bottom;
+        self.cursor.y = self.scroll_region.bottom;
     }
 
     /// Implements DECSTBM (`CSI r`): set scrolling region.
@@ -1487,8 +1607,8 @@ impl Screen {
         if top >= bottom {
             return;
         }
-        self.scroll_top = top - 1;
-        self.scroll_bottom = bottom - 1;
+        self.scroll_region.top = top - 1;
+        self.scroll_region.bottom = bottom - 1;
         self.home_cursor();
     }
 
@@ -1502,8 +1622,8 @@ impl Screen {
         let left = left.max(1).min(self.normal.cols());
         let right = right.min(self.normal.cols());
         if left < right {
-            self.margin_left = left - 1;
-            self.margin_right = right - 1;
+            self.margins.left = left - 1;
+            self.margins.right = right - 1;
         }
         self.home_cursor();
     }
@@ -1512,12 +1632,12 @@ impl Screen {
     /// existing characters right. Characters past the right margin are lost.
     /// The cursor position does not change.
     pub(crate) fn insert_chars(&mut self, n: usize) {
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor_y);
-        let col = self.cursor_x;
-        let (left, right) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        self.mark_row_dirty(self.cursor.y);
+        let col = self.cursor.x;
+        let (left, right) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, self.normal.cols() - 1)
         };
@@ -1528,7 +1648,7 @@ impl Screen {
         if n == 0 {
             return;
         }
-        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        let ring_row = self.normal.display_to_ring(self.cursor.y);
         let row_start = ring_row * self.normal.cols();
 
         // Shift cells in [col, right - n + 1] right by n
@@ -1548,12 +1668,12 @@ impl Screen {
     /// characters left. Vacated cells at the right margin become blank.
     /// The cursor position does not change.
     pub(crate) fn delete_chars(&mut self, n: usize) {
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor_y);
-        let col = self.cursor_x;
-        let (left, right) = if self.margin_mode {
-            (self.margin_left, self.margin_right)
+        self.mark_row_dirty(self.cursor.y);
+        let col = self.cursor.x;
+        let (left, right) = if self.margins.enabled {
+            (self.margins.left, self.margins.right)
         } else {
             (0, self.normal.cols() - 1)
         };
@@ -1564,7 +1684,7 @@ impl Screen {
         if n == 0 {
             return;
         }
-        let ring_row = self.normal.display_to_ring(self.cursor_y);
+        let ring_row = self.normal.display_to_ring(self.cursor.y);
         let row_start = ring_row * self.normal.cols();
 
         // Shift cells in [col + n, right] left by n
@@ -1582,35 +1702,35 @@ impl Screen {
     }
     pub(crate) fn insert_lines(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
-        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+        if self.cursor.y < self.scroll_region.top || self.cursor.y > self.scroll_region.bottom {
             return;
         }
-        let max_n = self.scroll_bottom - self.cursor_y + 1;
+        let max_n = self.scroll_region.bottom - self.cursor.y + 1;
         let n = n.min(max_n);
         // Mark all affected rows dirty.
-        for row in self.cursor_y..=self.scroll_bottom {
+        for row in self.cursor.y..=self.scroll_region.bottom {
             self.mark_row_dirty(row);
         }
-        if self.margin_mode {
-            self.scroll_margin_rect_down(self.cursor_y, self.scroll_bottom, n);
-            self.cursor_x = 0;
+        if self.margins.enabled {
+            self.scroll_margin_rect_down(self.cursor.y, self.scroll_region.bottom, n);
+            self.cursor.x = 0;
             return;
         }
         // When n covers all remaining rows in the region, just blank them all.
         if n == max_n {
-            for row in self.cursor_y..=self.scroll_bottom {
+            for row in self.cursor.y..=self.scroll_region.bottom {
                 self.normal.fill_row_with(row, self.erase_cell());
             }
-            self.cursor_x = 0;
+            self.cursor.x = 0;
             return;
         }
         // Shift rows [cursor_y .. scroll_bottom - n + 1] down by n (ring-aware).
         let tr = self.normal.total_rows();
         let vis = self.normal.visible_start();
         let c = self.normal.cols();
-        let src_start = ((vis + self.cursor_y) % tr) * c;
-        let src_end = ((vis + self.scroll_bottom - n + 1) % tr) * c;
-        let dst = ((vis + self.cursor_y + n) % tr) * c;
+        let src_start = ((vis + self.cursor.y) % tr) * c;
+        let src_end = ((vis + self.scroll_region.bottom - n + 1) % tr) * c;
+        let dst = ((vis + self.cursor.y + n) % tr) * c;
         if src_start <= src_end {
             self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
@@ -1620,41 +1740,41 @@ impl Screen {
         }
         for i in 0..n {
             self.normal
-                .fill_row_with(self.cursor_y + i, self.erase_cell());
+                .fill_row_with(self.cursor.y + i, self.erase_cell());
         }
-        self.cursor_x = 0;
+        self.cursor.x = 0;
     }
 
     pub(crate) fn delete_lines(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
-        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+        if self.cursor.y < self.scroll_region.top || self.cursor.y > self.scroll_region.bottom {
             return;
         }
-        let max_n = self.scroll_bottom - self.cursor_y + 1;
+        let max_n = self.scroll_region.bottom - self.cursor.y + 1;
         let n = n.min(max_n);
         // Mark all affected rows dirty.
-        for row in self.cursor_y..=self.scroll_bottom {
+        for row in self.cursor.y..=self.scroll_region.bottom {
             self.mark_row_dirty(row);
         }
-        if self.margin_mode {
-            self.scroll_margin_rect_up(self.cursor_y, self.scroll_bottom, n);
-            self.cursor_x = 0;
+        if self.margins.enabled {
+            self.scroll_margin_rect_up(self.cursor.y, self.scroll_region.bottom, n);
+            self.cursor.x = 0;
             return;
         }
         if n == max_n {
-            for row in self.cursor_y..=self.scroll_bottom {
+            for row in self.cursor.y..=self.scroll_region.bottom {
                 self.normal.fill_row_with(row, self.erase_cell());
             }
-            self.cursor_x = 0;
+            self.cursor.x = 0;
             return;
         }
         // Shift rows [cursor_y + n ..= scroll_bottom] up by n (ring-aware).
         let tr = self.normal.total_rows();
         let vis = self.normal.visible_start();
         let c = self.normal.cols();
-        let src_start = ((vis + self.cursor_y + n) % tr) * c;
-        let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
-        let dst = ((vis + self.cursor_y) % tr) * c;
+        let src_start = ((vis + self.cursor.y + n) % tr) * c;
+        let src_end = ((vis + self.scroll_region.bottom + 1) % tr) * c;
+        let dst = ((vis + self.cursor.y) % tr) * c;
         if src_start <= src_end {
             self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
@@ -1666,9 +1786,9 @@ impl Screen {
         }
         for i in 0..n {
             self.normal
-                .fill_row_with(self.scroll_bottom - i, self.erase_cell());
+                .fill_row_with(self.scroll_region.bottom - i, self.erase_cell());
         }
-        self.cursor_x = 0;
+        self.cursor.x = 0;
     }
 
     /// Implements CSI `S` (SU): scroll the scrolling region up by `n` lines.
@@ -1676,19 +1796,19 @@ impl Screen {
     /// The cursor does not move.
     pub(crate) fn scroll_up_region(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
-        let region_height = self.scroll_bottom - self.scroll_top + 1;
+        let region_height = self.scroll_region.bottom - self.scroll_region.top + 1;
         let n = n.min(region_height);
         // Mark only region rows dirty.
-        for row in self.scroll_top..=self.scroll_bottom {
+        for row in self.scroll_region.top..=self.scroll_region.bottom {
             self.mark_row_dirty(row);
         }
-        if self.margin_mode {
-            self.scroll_margin_rect_up(self.scroll_top, self.scroll_bottom, n);
+        if self.margins.enabled {
+            self.scroll_margin_rect_up(self.scroll_region.top, self.scroll_region.bottom, n);
             return;
         }
         // When n covers the entire region, just blank everything.
         if n == region_height {
-            for row in self.scroll_top..=self.scroll_bottom {
+            for row in self.scroll_region.top..=self.scroll_region.bottom {
                 self.normal.fill_row_with(row, self.erase_cell());
             }
             return;
@@ -1698,14 +1818,14 @@ impl Screen {
         let tr = self.normal.total_rows();
         let vis = self.normal.visible_start();
         let c = self.normal.cols();
-        let src_start = ((vis + self.scroll_top + n) % tr) * c;
-        let src_end = ((vis + self.scroll_bottom + 1) % tr) * c;
-        let dst = ((vis + self.scroll_top) % tr) * c;
+        let src_start = ((vis + self.scroll_region.top + n) % tr) * c;
+        let src_end = ((vis + self.scroll_region.bottom + 1) % tr) * c;
+        let dst = ((vis + self.scroll_region.top) % tr) * c;
         // Handle wrap-around for copy_within.
         if src_start <= src_end {
             self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
-            let first_part = ((vis + self.scroll_top + n) % tr) * c..tr * c;
+            let first_part = ((vis + self.scroll_region.top + n) % tr) * c..tr * c;
             let second_part = 0..src_end;
             let first_len = first_part.len();
             self.normal.copy_cells_within(first_part, dst);
@@ -1713,7 +1833,7 @@ impl Screen {
         }
         for i in 0..n {
             self.normal
-                .fill_row_with(self.scroll_bottom - i, self.erase_cell());
+                .fill_row_with(self.scroll_region.bottom - i, self.erase_cell());
         }
     }
 
@@ -1722,19 +1842,19 @@ impl Screen {
     /// The cursor does not move.
     pub(crate) fn scroll_down_region(&mut self, n: usize) {
         let n = if n == 0 { 1 } else { n };
-        let region_height = self.scroll_bottom - self.scroll_top + 1;
+        let region_height = self.scroll_region.bottom - self.scroll_region.top + 1;
         let n = n.min(region_height);
         // Mark only region rows dirty.
-        for row in self.scroll_top..=self.scroll_bottom {
+        for row in self.scroll_region.top..=self.scroll_region.bottom {
             self.mark_row_dirty(row);
         }
-        if self.margin_mode {
-            self.scroll_margin_rect_down(self.scroll_top, self.scroll_bottom, n);
+        if self.margins.enabled {
+            self.scroll_margin_rect_down(self.scroll_region.top, self.scroll_region.bottom, n);
             return;
         }
         // When n covers the entire region, just blank everything.
         if n == region_height {
-            for row in self.scroll_top..=self.scroll_bottom {
+            for row in self.scroll_region.top..=self.scroll_region.bottom {
                 self.normal.fill_row_with(row, self.erase_cell());
             }
             return;
@@ -1743,9 +1863,9 @@ impl Screen {
         let tr = self.normal.total_rows();
         let vis = self.normal.visible_start();
         let c = self.normal.cols();
-        let src_start = ((vis + self.scroll_top) % tr) * c;
-        let src_end = ((vis + self.scroll_bottom - n + 1) % tr) * c;
-        let dst = ((vis + self.scroll_top + n) % tr) * c;
+        let src_start = ((vis + self.scroll_region.top) % tr) * c;
+        let src_end = ((vis + self.scroll_region.bottom - n + 1) % tr) * c;
+        let dst = ((vis + self.scroll_region.top + n) % tr) * c;
         if src_start <= src_end {
             self.normal.copy_linear_range(src_start, src_end, dst);
         } else {
@@ -1757,33 +1877,33 @@ impl Screen {
         }
         for i in 0..n {
             self.normal
-                .fill_row_with(self.scroll_top + i, self.erase_cell());
+                .fill_row_with(self.scroll_region.top + i, self.erase_cell());
         }
     }
 
     pub(crate) fn set_private_mode(&mut self, param: usize, enabled: bool) {
         match param {
             1 => {
-                self.application_cursor = enabled;
+                self.modes.application_cursor = enabled;
             }
             66 => {
-                self.application_keypad = enabled;
+                self.modes.application_keypad = enabled;
             }
             6 => {
-                self.origin_mode = enabled;
+                self.modes.origin = enabled;
                 self.home_cursor();
             }
             7 => {
-                self.autowrap = enabled;
+                self.modes.autowrap = enabled;
             }
             25 => {
-                self.cursor_visible = enabled;
+                self.cursor.visible = enabled;
             }
             69 => {
-                self.margin_mode = enabled;
+                self.margins.enabled = enabled;
                 if !enabled {
-                    self.margin_left = 0;
-                    self.margin_right = self.normal.cols().saturating_sub(1);
+                    self.margins.left = 0;
+                    self.margins.right = self.normal.cols().saturating_sub(1);
                 }
                 self.home_cursor();
             }
@@ -1803,10 +1923,10 @@ impl Screen {
     pub(crate) fn set_standard_mode(&mut self, param: usize, enabled: bool) {
         match param {
             4 => {
-                self.insert_mode = enabled;
+                self.modes.insert = enabled;
             }
             20 => {
-                self.line_feed_mode = enabled;
+                self.modes.line_feed = enabled;
             }
             _ => {
                 tracing::warn!("unsupported standard mode: {}", param);
@@ -1815,54 +1935,54 @@ impl Screen {
     }
 
     pub(crate) fn set_application_keypad(&mut self, enabled: bool) {
-        self.application_keypad = enabled;
+        self.modes.application_keypad = enabled;
     }
 
     pub(crate) fn designate_g0(&mut self, charset: u8) {
-        self.g0_charset = charset;
+        self.charsets.g0 = charset;
     }
 
     pub(crate) fn designate_g1(&mut self, charset: u8) {
-        self.g1_charset = charset;
+        self.charsets.g1 = charset;
     }
 
     pub(crate) fn set_active_charset(&mut self, active: u8) {
-        self.active_charset = active;
+        self.charsets.active = active;
     }
 
     pub(crate) fn home_cursor(&mut self) {
-        if self.origin_mode {
-            self.cursor_y = self.scroll_top;
-            self.cursor_x = self.margin_left;
+        if self.modes.origin {
+            self.cursor.y = self.scroll_region.top;
+            self.cursor.x = self.margins.left;
         } else {
-            self.cursor_y = 0;
-            self.cursor_x = 0;
+            self.cursor.y = 0;
+            self.cursor.x = 0;
         }
-        self.pending_wrap = false;
+        self.modes.pending_wrap = false;
     }
 
     pub(crate) fn set_tab_stop(&mut self) {
-        if self.cursor_x < self.tab_stops.len() {
-            self.tab_stops[self.cursor_x] = true;
+        if self.cursor.x < self.tab_stops.0.len() {
+            self.tab_stops.0[self.cursor.x] = true;
         }
     }
 
     pub(crate) fn clear_tab_stops(&mut self, mode: usize) {
         match mode {
             0 => {
-                if self.cursor_x < self.tab_stops.len() {
-                    self.tab_stops[self.cursor_x] = false;
+                if self.cursor.x < self.tab_stops.0.len() {
+                    self.tab_stops.0[self.cursor.x] = false;
                 }
             }
             3 => {
-                self.tab_stops.fill(false);
+                self.tab_stops.0.fill(false);
             }
             _ => {}
         }
     }
 
     pub(crate) fn repeat_char(&mut self, n: usize) {
-        if let Some(ch) = self.last_char {
+        if let Some(ch) = self.charsets.last_char {
             let n = if n == 0 { 1 } else { n };
             let count = n.min(self.normal.cols());
             for _ in 0..count {
@@ -1872,19 +1992,19 @@ impl Screen {
     }
 
     fn resolve_rect(&self, top: usize, left: usize, bottom: usize, right: usize) -> Option<Rect> {
-        let (top_bound, bottom_bound, left_bound, right_bound) = if self.origin_mode {
+        let (top_bound, bottom_bound, left_bound, right_bound) = if self.modes.origin {
             (
-                self.scroll_top,
-                self.scroll_bottom,
-                self.margin_left,
-                self.margin_right,
+                self.scroll_region.top,
+                self.scroll_region.bottom,
+                self.margins.left,
+                self.margins.right,
             )
         } else {
             (0, self.normal.rows() - 1, 0, self.normal.cols() - 1)
         };
 
-        let row_origin = if self.origin_mode { top_bound } else { 0 };
-        let col_origin = if self.origin_mode { left_bound } else { 0 };
+        let row_origin = if self.modes.origin { top_bound } else { 0 };
+        let col_origin = if self.modes.origin { left_bound } else { 0 };
         let default_bottom = bottom_bound - row_origin + 1;
         let default_right = right_bound - col_origin + 1;
 
@@ -1986,10 +2106,10 @@ impl Screen {
         let cell = Cell {
             ch: fill_char,
             wide_continuation: false,
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
-            protected: self.current_protected,
+            fg: self.pen.fg,
+            bg: self.pen.bg,
+            attrs: self.pen.attrs,
+            protected: self.pen.protected,
         };
 
         for row in t..=b {
@@ -2018,15 +2138,15 @@ impl Screen {
             return;
         };
 
-        let dt_start = if self.origin_mode {
+        let dt_start = if self.modes.origin {
             let r = dest_top.saturating_sub(1);
-            self.scroll_top + r
+            self.scroll_region.top + r
         } else {
             dest_top.saturating_sub(1)
         };
-        let dl_start = if self.origin_mode {
+        let dl_start = if self.modes.origin {
             let c = dest_left.saturating_sub(1);
-            self.margin_left + c
+            self.margins.left + c
         } else {
             dest_left.saturating_sub(1)
         };
@@ -2165,30 +2285,30 @@ impl Screen {
 
     /// Implements DECSC (`ESC 7`): save cursor position and SGR attributes.
     pub(crate) fn save_cursor(&mut self) {
-        self.saved_cursor = Some(SavedCursor {
-            cursor_x: self.cursor_x,
-            cursor_y: self.cursor_y,
-            fg: self.current_fg,
-            bg: self.current_bg,
-            attrs: self.current_attrs,
-            origin_mode: self.origin_mode,
-            autowrap: self.autowrap,
-            pending_wrap: self.pending_wrap,
+        self.cursor.saved = Some(SavedCursor {
+            cursor_x: self.cursor.x,
+            cursor_y: self.cursor.y,
+            fg: self.pen.fg,
+            bg: self.pen.bg,
+            attrs: self.pen.attrs,
+            origin_mode: self.modes.origin,
+            autowrap: self.modes.autowrap,
+            pending_wrap: self.modes.pending_wrap,
         });
     }
 
     /// Implements DECRC (`ESC 8`): restore cursor position and SGR attributes.
     /// If no cursor was previously saved, this is a no-op.
     pub(crate) fn restore_cursor(&mut self) {
-        if let Some(saved) = &self.saved_cursor {
-            self.cursor_x = saved.cursor_x;
-            self.cursor_y = saved.cursor_y;
-            self.current_fg = saved.fg;
-            self.current_bg = saved.bg;
-            self.current_attrs = saved.attrs;
-            self.origin_mode = saved.origin_mode;
-            self.autowrap = saved.autowrap;
-            self.pending_wrap = saved.pending_wrap;
+        if let Some(saved) = &self.cursor.saved {
+            self.cursor.x = saved.cursor_x;
+            self.cursor.y = saved.cursor_y;
+            self.pen.fg = saved.fg;
+            self.pen.bg = saved.bg;
+            self.pen.attrs = saved.attrs;
+            self.modes.origin = saved.origin_mode;
+            self.modes.autowrap = saved.autowrap;
+            self.modes.pending_wrap = saved.pending_wrap;
         }
     }
 
@@ -2217,35 +2337,15 @@ impl Screen {
         let state = AltSavedState {
             cells: self.normal.take_cells(),
             dirty_rows: self.normal.take_dirty_rows(),
-            cursor_x: self.cursor_x,
-            cursor_y: self.cursor_y,
-            current_fg: self.current_fg,
-            current_bg: self.current_bg,
-            current_attrs: self.current_attrs,
-            scroll_top: self.scroll_top,
-            scroll_bottom: self.scroll_bottom,
-            cursor_shape: self.cursor_shape,
-            cursor_blink: self.cursor_blink,
-            saved_cursor: self.saved_cursor.take(),
             visible_start: self.normal.visible_start(),
             scroll_count: self.normal.scroll_count(),
-            origin_mode: self.origin_mode,
-            autowrap: self.autowrap,
-            pending_wrap: self.pending_wrap,
-            cursor_visible: self.cursor_visible,
-            margin_mode: self.margin_mode,
-            margin_left: self.margin_left,
-            margin_right: self.margin_right,
+            cursor: self.cursor.snapshot_for_alt(),
+            pen: self.pen,
+            scroll_region: self.scroll_region,
+            margins: self.margins,
+            modes: self.modes,
             tab_stops: self.tab_stops.clone(),
-            current_protected: self.current_protected,
-            insert_mode: self.insert_mode,
-            line_feed_mode: self.line_feed_mode,
-            application_cursor: self.application_cursor,
-            application_keypad: self.application_keypad,
-            last_char: self.last_char,
-            g0_charset: self.g0_charset,
-            g1_charset: self.g1_charset,
-            active_charset: self.active_charset,
+            charsets: self.charsets,
         };
         self.normal.init_alt_buffer();
         self.alt_saved = Some(state);
@@ -2258,40 +2358,17 @@ impl Screen {
             self.normal.restore_dirty_rows(state.dirty_rows);
             self.normal.set_visible_start(state.visible_start);
             self.normal.set_scroll_count(state.scroll_count);
-            self.cursor_x = state.cursor_x;
-            self.cursor_y = state.cursor_y;
-            self.current_fg = state.current_fg;
-            self.current_bg = state.current_bg;
-            self.current_attrs = state.current_attrs;
-            self.scroll_top = state.scroll_top;
-            self.scroll_bottom = state.scroll_bottom;
-            self.cursor_shape = state.cursor_shape;
-            self.cursor_blink = state.cursor_blink;
-            self.saved_cursor = state.saved_cursor;
-            self.origin_mode = state.origin_mode;
-            self.autowrap = state.autowrap;
-            self.pending_wrap = state.pending_wrap;
-            self.cursor_visible = state.cursor_visible;
-            self.margin_mode = state.margin_mode;
-            self.margin_left = state.margin_left;
-            self.margin_right = state.margin_right;
+            self.cursor = state.cursor;
+            self.pen = state.pen;
+            self.scroll_region = state.scroll_region;
+            self.margins = state.margins;
+            self.modes = state.modes;
             self.tab_stops = state.tab_stops;
-            self.current_protected = state.current_protected;
-            self.insert_mode = state.insert_mode;
-            self.line_feed_mode = state.line_feed_mode;
-            self.application_cursor = state.application_cursor;
-            self.application_keypad = state.application_keypad;
-            self.last_char = state.last_char;
-            self.g0_charset = state.g0_charset;
-            self.g1_charset = state.g1_charset;
-            self.active_charset = state.active_charset;
+            self.charsets = state.charsets;
         }
         self.in_alt = false;
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 fn map_dec_graphics(ch: char) -> char {
     match ch {
