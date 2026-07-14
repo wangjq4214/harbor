@@ -13,6 +13,31 @@ use crate::{
 use arboard::Clipboard;
 use winit::keyboard::{Key, NamedKey};
 
+/// Maximum time between consecutive clicks (in ms) for them to count as a
+/// multi-click chain (double-click → word, triple-click+ → line).
+const MULTI_CLICK_TIMEOUT_MS: u64 = 500;
+
+/// Characters that delimit words for double-click word selection.
+/// Based on Alacritty's default separator set, extended for CJK punctuation.
+const WORD_SEPARATORS: &[char] = &[
+    ' ', '\t', '\n', '(', ')', '[', ']', '{', '}', '\'', '"', '`',
+    // CJK brackets and punctuation
+    '（', '）', '【', '】', '「', '」', '『', '』', '《', '》', '；', '：', '，', '。', '、', '？',
+    '！', '‘', '’', '＂',
+];
+
+/// The semantic granularity of an active selection, determined by click count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SelectionGranularity {
+    /// Free character-level selection (single click + drag).
+    #[default]
+    Character,
+    /// Word-level selection (double-click + word-wise drag).
+    Word,
+    /// Line-level selection (triple-click + line-wise drag).
+    Line,
+}
+
 // ── Selection model ─────────────────────────────────────────────────────────
 
 /// Tracks the current text selection as a pair of grid coordinates.
@@ -99,6 +124,14 @@ pub(crate) struct Selection {
     auto_scroll: Option<AutoScroll>,
     /// Deadline for the next auto-scroll tick (rate-limited to AUTO_SCROLL_INTERVAL_MS).
     next_auto_scroll_at: Option<Instant>,
+    /// Current selection granularity (Character / Word / Line).
+    granularity: SelectionGranularity,
+    /// Timestamp of the most recent `MouseInput::Pressed` (for click-chain detection).
+    last_click_at: Option<Instant>,
+    /// Grid cell of the most recent click (gen, col).
+    last_click_cell: Option<(u64, usize)>,
+    /// Consecutive click count (1 = single, 2 = double, 3+ = triple/line).
+    click_count: u32,
 }
 
 impl Selection {
@@ -125,6 +158,10 @@ impl Selection {
             },
             auto_scroll: None,
             next_auto_scroll_at: None,
+            granularity: SelectionGranularity::default(),
+            last_click_at: None,
+            last_click_cell: None,
+            click_count: 0,
         }
     }
 
@@ -277,6 +314,98 @@ impl Selection {
         }
     }
 
+    // ── Multi-click word/line boundary helpers ──────────────────────
+
+    /// Returns `((start_gen, start_col), (end_gen, end_col))` of the word
+    /// at `(generation, col)`.  When the clicked cell is a separator, the word
+    /// range is zero-width (just that cell).
+    fn find_word_range(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+    ) -> ((u64, usize), (u64, usize)) {
+        let cols = screen.cols();
+        let is_sep = |c: usize| {
+            screen
+                .cell_at_generation(generation, c)
+                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+        };
+
+        if is_sep(col) {
+            return ((generation, col), (generation, col));
+        }
+
+        // Scan left to word start
+        let mut left = col;
+        while left > 0 && !is_sep(left - 1) {
+            left -= 1;
+        }
+
+        // Scan right to word end
+        let mut right = col;
+        while right < cols - 1 && !is_sep(right + 1) {
+            right += 1;
+        }
+
+        ((generation, left), (generation, right))
+    }
+
+    /// Snap cursor column for word-wise drag.  Returns `(generation, snapped_col)`.
+    fn snap_word_cursor(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+        anchor: (u64, usize),
+    ) -> (u64, usize) {
+        let is_sep = |c: usize| {
+            screen
+                .cell_at_generation(generation, c)
+                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+        };
+        let cols = screen.cols();
+
+        if (generation, col) >= anchor {
+            // Expanding forward → snap to right boundary.
+            let mut c = col;
+            // Skip forward past any separator run.
+            while c < cols - 1 && is_sep(c) {
+                c += 1;
+            }
+            // Find end of the word at/before c.
+            while c < cols - 1 && !is_sep(c + 1) {
+                c += 1;
+            }
+            (generation, c)
+        } else {
+            // Expanding backward → snap to left boundary.
+            let mut c = col;
+            // Skip backward past any separator run.
+            while c > 0 && is_sep(c) {
+                c -= 1;
+            }
+            // Find start of the word at/before c.
+            while c > 0 && !is_sep(c - 1) {
+                c -= 1;
+            }
+            (generation, c)
+        }
+    }
+
+    /// Snap cursor column for line-wise drag.
+    fn snap_line_cursor(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+        anchor: (u64, usize),
+    ) -> (u64, usize) {
+        let last_col = screen.cols().saturating_sub(1);
+        if (generation, col) >= anchor {
+            (generation, last_col)
+        } else {
+            (generation, 0)
+        }
+    }
+
     fn handle_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
@@ -301,7 +430,13 @@ impl Selection {
         if let Some(sel) = &mut self.selection
             && sel.cursor != (g, col)
         {
-            sel.cursor = (g, col);
+            let anchor = sel.anchor; // Copy to avoid borrow conflict with self.snap_*
+            let new_cursor = match self.granularity {
+                SelectionGranularity::Word => Self::snap_word_cursor(screen, g, col, anchor),
+                SelectionGranularity::Line => Self::snap_line_cursor(screen, g, col, anchor),
+                SelectionGranularity::Character => (g, col),
+            };
+            sel.cursor = new_cursor;
             self.dirty = true;
             caps.request_redraw();
         }
@@ -359,10 +494,51 @@ impl Selection {
                         screen.rows(),
                         screen.cols(),
                     );
-                    self.selection = Some(SelectionRange {
-                        anchor: (g, col),
-                        cursor: (g, col),
+
+                    // ── Click chain detection ──────────────────────────
+                    let now = Instant::now();
+                    let in_timeout = self.last_click_at.is_some_and(|t| {
+                        now.duration_since(t).as_millis() < MULTI_CLICK_TIMEOUT_MS as u128
                     });
+                    let same_cell = self.last_click_cell == Some((g, col));
+
+                    if in_timeout && same_cell {
+                        self.click_count = self.click_count.saturating_add(1);
+                    } else {
+                        self.click_count = 1;
+                    }
+                    self.last_click_at = Some(now);
+                    self.last_click_cell = Some((g, col));
+
+                    // ── Set selection range by click count ─────────────
+                    let cols = screen.cols();
+                    match self.click_count {
+                        1 => {
+                            self.granularity = SelectionGranularity::Character;
+                            self.selection = Some(SelectionRange {
+                                anchor: (g, col),
+                                cursor: (g, col),
+                            });
+                        }
+                        2 => {
+                            self.granularity = SelectionGranularity::Word;
+                            let (start, end) = Self::find_word_range(screen, g, col);
+                            self.selection = Some(SelectionRange {
+                                anchor: start,
+                                cursor: end,
+                            });
+                        }
+                        _ => {
+                            // Triple click and beyond → line selection.
+                            self.granularity = SelectionGranularity::Line;
+                            let last = cols.saturating_sub(1);
+                            self.selection = Some(SelectionRange {
+                                anchor: (g, 0),
+                                cursor: (g, last),
+                            });
+                        }
+                    }
+
                     self.dragging = true;
                     caps.set_auto_scrolling(true);
                     self.dirty = true;
@@ -466,23 +642,63 @@ impl SelectionInput for Selection {
         {
             return Some(deadline);
         }
-        let screen = caps.terminal().screen();
+        // Extract scroll conditions before any mutable caps calls to avoid
+        // conflicting borrows through `screen`.
+        let can_scroll_up = {
+            let s = caps.terminal().screen();
+            s.view_offset() < s.scroll_count()
+        };
+        let can_scroll_down = {
+            let s = caps.terminal().screen();
+            s.view_offset() > 0
+        };
+
         match scroll {
-            AutoScroll::Up if screen.view_offset() < screen.scroll_count() => {
+            AutoScroll::Up if can_scroll_up => {
                 caps.scroll_viewport_up(1);
                 // Advance selection cursor to include the newly revealed row above.
                 if let Some(sel) = &mut self.selection {
                     // Decrease generation to extend selection upward (into scrollback).
                     sel.cursor.0 = sel.cursor.0.saturating_sub(1);
+                    // Re-snap column when in word or line mode.
+                    let anchor = sel.anchor;
+                    let cur = sel.cursor;
+                    let snapped = match self.granularity {
+                        SelectionGranularity::Word => {
+                            let screen = caps.terminal().screen();
+                            Self::snap_word_cursor(screen, cur.0, cur.1, anchor)
+                        }
+                        SelectionGranularity::Line => {
+                            let screen = caps.terminal().screen();
+                            Self::snap_line_cursor(screen, cur.0, cur.1, anchor)
+                        }
+                        SelectionGranularity::Character => cur,
+                    };
+                    sel.cursor = snapped;
                 }
                 self.dirty = true;
                 caps.request_redraw();
             }
-            AutoScroll::Down if screen.view_offset() > 0 => {
+            AutoScroll::Down if can_scroll_down => {
                 caps.scroll_viewport_down(1);
                 // Increase generation to extend selection downward (toward live content).
                 if let Some(sel) = &mut self.selection {
                     sel.cursor.0 = sel.cursor.0.saturating_add(1);
+                    // Re-snap column when in word or line mode.
+                    let anchor = sel.anchor;
+                    let cur = sel.cursor;
+                    let snapped = match self.granularity {
+                        SelectionGranularity::Word => {
+                            let screen = caps.terminal().screen();
+                            Self::snap_word_cursor(screen, cur.0, cur.1, anchor)
+                        }
+                        SelectionGranularity::Line => {
+                            let screen = caps.terminal().screen();
+                            Self::snap_line_cursor(screen, cur.0, cur.1, anchor)
+                        }
+                        SelectionGranularity::Character => cur,
+                    };
+                    sel.cursor = snapped;
                 }
                 self.dirty = true;
                 caps.request_redraw();

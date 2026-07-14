@@ -550,14 +550,21 @@ impl Screen {
     pub(crate) fn margin_mode(&self) -> bool {
         self.margins.enabled
     }
+
     pub(crate) fn cells(&self) -> CellsIter<'_> {
         self.normal.cells()
     }
+
     pub(crate) fn cell_char(&self, row: usize, col: usize) -> char {
         self.normal.cell(row, col).ch
     }
+
     pub(crate) fn cell(&self, row: usize, col: usize) -> &Cell {
         self.normal.cell(row, col)
+    }
+
+    pub(crate) fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
+        self.normal.cell_at_generation(generation, col)
     }
 
     /// Extracts the selected text for the given generation-coordinate bounds.
