@@ -70,7 +70,7 @@ impl NormalBuf {
         self.scroll_count
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_scrolled_back(&self) -> bool {
         self.view_offset > 0
     }
@@ -86,7 +86,7 @@ impl NormalBuf {
     pub(crate) fn history_start(&self) -> u64 {
         self.history_start
     }
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
