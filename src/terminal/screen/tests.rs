@@ -315,6 +315,290 @@ fn test_mutations_range_dirty() {
 }
 
 #[test]
+fn test_erase_display_range_dirty() {
+    use crate::terminal::DirtyRange;
+    let mut screen = Screen::new(5, 10);
+
+    // 1. erase_display(0) - cursor to end of screen
+    screen.clear_dirty();
+    screen.cursor.y = 2;
+    screen.cursor.x = 4;
+    screen.erase_display(0);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![
+            DirtyRange {
+                row: 2,
+                start_col: 4,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 4,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+
+    // 2. erase_display(1) - start of screen to cursor
+    screen.clear_dirty();
+    screen.cursor.y = 2;
+    screen.cursor.x = 4;
+    screen.erase_display(1);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![
+            DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 5
+            },
+        ]
+    );
+
+    // 3. erase_display(2) - entire screen
+    screen.clear_dirty();
+    screen.cursor.y = 2;
+    screen.cursor.x = 4;
+    screen.erase_display(2);
+    let ranges = screen.dirty_ranges();
+    assert_eq!(
+        ranges,
+        vec![
+            DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 4,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+}
+
+#[test]
+fn test_scroll_region_operations_damage() {
+    use crate::terminal::DirtyRange;
+    let mut screen = Screen::new(5, 10);
+    screen.scroll_region.top = 1;
+    screen.scroll_region.bottom = 3;
+
+    // 1. scroll_region_up_one
+    screen.clear_dirty();
+    screen.scroll_region_up_one();
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+
+    // 2. reverse_index (triggers scroll down in region [1, 3] when cursor at top)
+    screen.cursor.y = 1;
+    screen.clear_dirty();
+    screen.reverse_index();
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+
+    // 3. insert_lines(2) with n > 1
+    screen.cursor.y = 1;
+    screen.clear_dirty();
+    screen.insert_lines(2);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+
+    // 4. delete_lines(2) with n > 1
+    screen.cursor.y = 1;
+    screen.clear_dirty();
+    screen.delete_lines(2);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 2,
+                start_col: 0,
+                end_col: 10
+            },
+            DirtyRange {
+                row: 3,
+                start_col: 0,
+                end_col: 10
+            },
+        ]
+    );
+
+    // 5. cursor outside scroll region -> no-op for insert_lines / delete_lines
+    screen.cursor.y = 0; // outside [1, 3]
+    screen.clear_dirty();
+    screen.insert_lines(2);
+    assert!(screen.dirty_ranges().is_empty());
+
+    screen.cursor.y = 0; // outside [1, 3]
+    screen.clear_dirty();
+    screen.delete_lines(2);
+    assert!(screen.dirty_ranges().is_empty());
+}
+
+#[test]
+fn test_damage_accumulation_multi_frame() {
+    use crate::terminal::DirtyRange;
+    let mut screen = Screen::new(3, 10);
+    screen.clear_dirty();
+
+    // Step 1: Mark a single cell range at row 0, cols [2, 3)
+    screen.mark_range_dirty(0, 2, 3);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![DirtyRange {
+            row: 0,
+            start_col: 2,
+            end_col: 3
+        }]
+    );
+
+    // Step 2: Without clearing dirty flags, mark a range at row 0, cols [5, 6)
+    screen.mark_range_dirty(0, 5, 6);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 0,
+                start_col: 2,
+                end_col: 3
+            },
+            DirtyRange {
+                row: 0,
+                start_col: 5,
+                end_col: 6
+            },
+        ]
+    );
+
+    // Step 3: Mark a range at row 0, cols [3, 4), which is adjacent to [2, 3), so they merge into [2, 4)
+    screen.mark_range_dirty(0, 3, 4);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![
+            DirtyRange {
+                row: 0,
+                start_col: 2,
+                end_col: 4
+            },
+            DirtyRange {
+                row: 0,
+                start_col: 5,
+                end_col: 6
+            },
+        ]
+    );
+
+    // Step 4: Mark a range at row 0, cols [4, 5), bridging the gap -> they all merge into [2, 6)
+    screen.mark_range_dirty(0, 4, 5);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![DirtyRange {
+            row: 0,
+            start_col: 2,
+            end_col: 6
+        }]
+    );
+
+    // Step 5: Clear dirty flags, verify empty
+    screen.clear_dirty();
+    assert!(screen.dirty_ranges().is_empty());
+}
+
+#[test]
 fn resize_clamps_margins_and_updates_tab_stops() {
     let mut screen = Screen::new(2, 12);
     screen.margins.enabled = true;
@@ -1957,4 +2241,22 @@ fn selected_text_evicted_start_clamped_no_blank_lines() {
         result, "Z",
         "clamped selection must not produce leading blank lines"
     );
+}
+
+#[test]
+fn alt_screen_exit_marks_all_dirty() {
+    let mut screen = Screen::new(5, 10);
+    screen.clear_dirty();
+    assert!(screen.dirty_ranges().is_empty());
+
+    screen.enter_alt();
+    screen.exit_alt();
+
+    let ranges = screen.dirty_ranges();
+    assert_eq!(ranges.len(), 5);
+    for (i, range) in ranges.into_iter().enumerate() {
+        assert_eq!(range.row, i);
+        assert_eq!(range.start_col, 0);
+        assert_eq!(range.end_col, 10);
+    }
 }

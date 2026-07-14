@@ -7,7 +7,7 @@ use crate::{
         gpu::{self, ColoredVertex, GpuContext},
         metrics::TextMetrics,
     },
-    terminal::{CellAttrs, Screen},
+    terminal::{CellAttrs, DirtyRange, Screen},
 };
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
@@ -156,11 +156,13 @@ impl Decoration {
     }
 }
 
-impl Component for Decoration {
-    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
-        let Some(screen) = screen else {
-            return;
-        };
+impl Decoration {
+    pub(crate) fn prepare_with_dirty(
+        &mut self,
+        gpu: &GpuContext,
+        screen: &Screen,
+        dirty_ranges: &[DirtyRange],
+    ) {
         let (surf_w, surf_h) = gpu.surface_size();
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
@@ -205,7 +207,6 @@ impl Component for Decoration {
             return;
         }
 
-        let dirty_ranges = screen.dirty_ranges();
         if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
@@ -237,9 +238,6 @@ impl Component for Decoration {
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
-                if range.start_col >= range.end_col {
-                    continue;
-                }
                 let cell_top = TEXT_PADDING + range.row as f32 * self.line_height;
                 let u_top = cell_top + self.underline_pos;
                 let u_bottom = u_top + self.underline_thickness;
@@ -302,6 +300,14 @@ impl Component for Decoration {
         }
 
         self.dirty = false;
+    }
+}
+
+impl Component for Decoration {
+    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
+        if let Some(screen) = screen {
+            self.prepare_with_dirty(gpu, screen, &screen.dirty_ranges());
+        }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass) {

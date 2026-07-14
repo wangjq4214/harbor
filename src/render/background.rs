@@ -6,7 +6,7 @@ use crate::{
         Component,
         gpu::{self, ColoredVertex, GpuContext},
     },
-    terminal::{CellAttrs, Color, Screen},
+    terminal::{CellAttrs, Color, DirtyRange, Screen},
 };
 
 // ── BackgroundLayer ───────────────────────────────────────────────────────────
@@ -140,11 +140,13 @@ impl Background {
     }
 }
 
-impl Component for Background {
-    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
-        let Some(screen) = screen else {
-            return;
-        };
+impl Background {
+    pub(crate) fn prepare_with_dirty(
+        &mut self,
+        gpu: &GpuContext,
+        screen: &Screen,
+        dirty_ranges: &[DirtyRange],
+    ) {
         let (surf_w, surf_h) = gpu.surface_size();
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
@@ -172,7 +174,6 @@ impl Component for Background {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let dirty_ranges = screen.dirty_ranges();
         if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
@@ -185,9 +186,6 @@ impl Component for Background {
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
             for range in dirty_ranges {
-                if range.start_col >= range.end_col {
-                    continue;
-                }
                 let range_verts = Self::build_background_range_vertices(
                     self.cell_width,
                     self.line_height,
@@ -210,6 +208,14 @@ impl Component for Background {
         }
 
         self.dirty = false;
+    }
+}
+
+impl Component for Background {
+    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
+        if let Some(screen) = screen {
+            self.prepare_with_dirty(gpu, screen, &screen.dirty_ranges());
+        }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass) {

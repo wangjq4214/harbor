@@ -138,10 +138,18 @@ impl GlyphAtlas {
     /// Returns `(new_chars, evicted)` where `evicted` indicates the atlas was
     /// fully cleared and all UVs changed (atlas overflow → full rebuild).
     fn update(&mut self, fonts: &FontBook, screen: &Screen) -> (Vec<char>, bool) {
+        self.update_with_dirty(fonts, screen, &screen.dirty_ranges())
+    }
+
+    fn update_with_dirty(
+        &mut self,
+        fonts: &FontBook,
+        screen: &Screen,
+        dirty_ranges: &[DirtyRange],
+    ) -> (Vec<char>, bool) {
         // Collect unique non-space chars from dirty rows only.
-        let mut chars: Vec<char> = screen
-            .dirty_ranges()
-            .into_iter()
+        let mut chars: Vec<char> = dirty_ranges
+            .iter()
             .flat_map(|range| {
                 (range.start_col..range.end_col).filter_map(move |col| {
                     let ch = screen.cell_char(range.row, col);
@@ -794,9 +802,13 @@ impl Text {
     }
 }
 
-impl Component for Text {
-    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
-        let screen = screen.expect("text layer requires screen");
+impl Text {
+    pub(crate) fn prepare_with_dirty(
+        &mut self,
+        gpu: &GpuContext,
+        screen: &Screen,
+        dirty_ranges: &[DirtyRange],
+    ) {
         let (surf_w, surf_h) = gpu.surface_size();
 
         // Detect resize: dimensions changed → full rebuild.
@@ -831,7 +843,9 @@ impl Component for Text {
         }
 
         // Atlas update: incremental rasterization of new glyphs.
-        let (new_glyphs, evicted) = self.atlas.update(&self.fonts, screen);
+        let (new_glyphs, evicted) = self
+            .atlas
+            .update_with_dirty(&self.fonts, screen, dirty_ranges);
         if !new_glyphs.is_empty() {
             tracing::debug!(
                 new_glyphs = new_glyphs.len(),
@@ -849,7 +863,6 @@ impl Component for Text {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let dirty_ranges = screen.dirty_ranges();
         if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
@@ -862,11 +875,8 @@ impl Component for Text {
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
-                if range.start_col >= range.end_col {
-                    continue;
-                }
                 let range_verts =
-                    self.build_range_vertices(&range, screen, surf_w as f32, surf_h as f32);
+                    self.build_range_vertices(range, screen, surf_w as f32, surf_h as f32);
                 let offset = (range.row * screen.cols() + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
@@ -878,6 +888,14 @@ impl Component for Text {
             }
         }
         self.dirty = false;
+    }
+}
+
+impl Component for Text {
+    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
+        if let Some(screen) = screen {
+            self.prepare_with_dirty(gpu, screen, &screen.dirty_ranges());
+        }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass) {
