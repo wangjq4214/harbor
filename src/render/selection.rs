@@ -11,6 +11,7 @@ use crate::{
     terminal::{Screen, SelectionBounds},
 };
 use arboard::Clipboard;
+use winit::keyboard::{Key, NamedKey};
 
 // ── Selection model ─────────────────────────────────────────────────────────
 
@@ -46,6 +47,31 @@ enum AutoScroll {
 
 const AUTO_SCROLL_MARGIN: usize = 3;
 const AUTO_SCROLL_INTERVAL_MS: u64 = 16;
+
+/// Returns `true` when the logical key is a bare modifier or lock key.
+/// These are chord keys — they don't produce terminal input on their own
+/// and shouldn't clear the text selection.
+fn is_modifier_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::AltGraph
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+        )
+    )
+}
 
 // ── Selection ────────────────────────────────────────────────
 
@@ -358,22 +384,33 @@ impl SelectionInput for Selection {
     where
         C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess + ScrollAccess,
     {
-        // Ctrl+C/V clipboard — before alt-screen check so paste works in
-        // vim/less and copy works from scrollback.
-        if let Some(result) = self.try_handle_keyboard(event, caps) {
-            return result;
-        }
-
-        // In alt-screen mode, let the terminal application handle all mouse events.
-        // Cancel any in-flight drag so state doesn't leak past the boundary.
-        if caps.terminal().is_alt_screen() {
-            if self.dragging {
-                self.cancel_drag(caps);
-            }
-            return EventResult::Continue;
-        }
-
         match event {
+            // Keyboard press: try copy/paste first, then clear selection state.
+            winit::event::WindowEvent::KeyboardInput { event: kbd, .. }
+                if kbd.state == winit::event::ElementState::Pressed =>
+            {
+                let kb_result = self.try_handle_keyboard(event, caps);
+                // Bare modifier keys (Ctrl, Shift, Alt, Super, etc.) are
+                // part of a chord — don't clear selection until the actual
+                // character key arrives.  Otherwise pressing Ctrl alone
+                // would destroy the selection before Ctrl+C can copy.
+                if !is_modifier_key(&kbd.logical_key) {
+                    self.cancel_drag(caps);
+                    self.selection = None;
+                    self.dirty = true;
+                    caps.request_redraw();
+                }
+                kb_result.unwrap_or(EventResult::Continue)
+            }
+
+            // Alt-screen mode: cancel any in-flight drag, pass through to app.
+            _ if caps.terminal().is_alt_screen() => {
+                if self.dragging {
+                    self.cancel_drag(caps);
+                }
+                EventResult::Continue
+            }
+
             winit::event::WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, caps)
             }
@@ -496,5 +533,51 @@ impl Component for Selection {
         self.auto_scroll = None;
         self.next_auto_scroll_at = None;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_modifier_key;
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn modifier_keys_are_detected() {
+        // Chord keys — must NOT clear selection.
+        assert!(is_modifier_key(&Key::Named(NamedKey::Control)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Shift)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Alt)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Super)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::AltGraph)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Fn)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::FnLock)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Meta)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Hyper)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Symbol)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::SymbolLock)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::CapsLock)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::NumLock)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::ScrollLock)));
+    }
+
+    #[test]
+    fn ordinary_keys_are_not_modifiers() {
+        // Character keys — MUST clear selection.
+        assert!(!is_modifier_key(&Key::Character("a".into())));
+        assert!(!is_modifier_key(&Key::Character("c".into())));
+        assert!(!is_modifier_key(&Key::Character("A".into())));
+    }
+
+    #[test]
+    fn named_non_modifier_keys_are_not_modifiers() {
+        // Named keys that produce terminal output — MUST clear selection.
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Backspace)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Tab)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Escape)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::ArrowUp)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::ArrowDown)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::F1)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::F12)));
     }
 }

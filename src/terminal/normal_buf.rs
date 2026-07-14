@@ -86,7 +86,6 @@ impl NormalBuf {
         self.history_start
     }
 
-
     #[allow(dead_code)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
