@@ -32,16 +32,16 @@ The first compatibility target is the shell/Vim/tmux baseline. Optional protocol
 
 Snapshot date: **2026-07-11**.
 
-| Area           | Current state                                                                           | Immediate implication                                              |
-| -------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified         | Use `check.md` to select the next slice                            |
-| Tests          | Last observed `cargo test`: 199 passed                                                  | Add focused tests before changing protocol state                   |
-| Parser         | `Ground`, `Escape`, `Csi`, `Osc`, `OscEscape` only                                      | DCS/APC/PM/SOS and full C1 handling need a state-machine expansion |
-| Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR | Extend state before adding more dispatch cases                     |
-| PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                  | Unix PTY is a prerequisite for cross-platform runtime acceptance   |
-| Replies        | No parser-to-PTY reply channel                                                          | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet            |
-| Strings        | OSC framing is consumed and discarded; DCS/APC/PM/SOS are not separate states           | Build bounded consume-only string handling before side effects     |
-| Input          | Basic text, control bytes, and normal VT arrows                                         | Application modes, paste, focus, mouse, and IME are not wired      |
+| Area           | Current state                                                                                                                                                 | Immediate implication                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified                                                                               | Use `check.md` to select the next slice                                |
+| Tests          | Last observed `cargo test`: 317 passed                                                                                                                        | Add focused tests before changing protocol state                       |
+| Parser         | ECMA-48/DEC state machine: 17 states covering CSI, OSC, DCS, and SOS/PM/APC string families; 8-bit C1 recognition (test-only); chunk-equivalence test harness | Production C1 config, fuzz, and discard-after-limit tests remain       |
+| Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR                                                                       | Extend state before adding more dispatch cases                         |
+| PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                                                                                        | Unix PTY is a prerequisite for cross-platform runtime acceptance       |
+| Replies        | No parser-to-PTY reply channel                                                                                                                                | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet                |
+| Strings        | OSC framing consumed and discarded; DCS/APC/PM/SOS handled by dedicated parser states with consume-only dispatch                                              | Add bounded payload collection and side effects for supported families |
+| Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding   | Paste, focus, mouse, and IME are not wired                             |
 
 ## 3. Roadmap at a Glance
 
@@ -150,18 +150,18 @@ For each phase, use the same loop:
 
 **Dependencies:** P0 test harness.
 
-**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8. Remaining: 8-bit C1, colon subparams, discard-after-limit tests, fuzz.
+**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8; 8-bit C1 recognition implemented (`handle_c1`, `c1_enabled`; production setter pending); colon subparams preserved in fixed-capacity `Param.values`; discard/overflow states for strings and DCS. Remaining: production C1 config, discard-after-limit tests, fuzz.
 
 **Implementation path:**
 
 - [x] Split parser states into `Ground`, `Escape`, `EscapeIntermediate`, `CsiEntry`, `CsiParam`, `CsiIntermediate`, `CsiIgnore`, and string states for OSC/DCS/APC/PM/SOS.
-- [ ] Implement 7-bit C1 introducers and ST first; make 8-bit C1 recognition an explicit configuration option with a safe default.
-- [ ] Implement byte-class handling for C0, parameter, intermediate, final, CAN, SUB, and nested ESC transitions.
-- [ ] Preserve empty parameters, private markers, intermediate bytes, and colon subparameters without heap growth.
-- [ ] Add fixed limits for parameter count, subparameter count, parameter value, intermediate count, and each string family.
-- [ ] Add discard states for over-limit strings that continue scanning for BEL/ST/CAN/SUB without retaining payload bytes.
-- [ ] Ensure unknown but syntactically valid sequences are consumed and ignored; malformed sequences return to a known state without painting payload bytes.
-- [ ] Keep UTF-8 decoding incremental and independent from control-sequence state.
+- [x] Implement 7-bit C1 introducers and ST first; 8-bit C1 recognition implemented (test-only config; production setter pending).
+- [x] Implement byte-class handling for C0, parameter, intermediate, final, CAN, SUB, and nested ESC transitions.
+- [x] Preserve empty parameters, private markers, intermediate bytes, and colon subparameters without heap growth.
+- [x] Add fixed limits for parameter count, subparameter count, parameter value, intermediate count, and each string family.
+- [x] Add discard states for over-limit strings that continue scanning for BEL/ST/CAN/SUB without retaining payload bytes.
+- [x] Ensure unknown but syntactically valid sequences are consumed and ignored; malformed sequences return to a known state without painting payload bytes.
+- [x] Keep UTF-8 decoding incremental and independent from control-sequence state.
 
 **Acceptance:**
 
@@ -343,7 +343,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.2: Terminal Core (Parser + State + SGR)
 
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (199 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (317 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
 #### Done
 
@@ -355,7 +355,7 @@ The product milestones below retain the existing implementation notes, task list
 
 **Scrolling Region.** DECSTBM (`CSI r`), scroll/insert/delete operations respect top/bottom margins. Unit-tested with vim-like scenarios.
 
-**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC / CSI s/u). Cursor visibility (`?25h/l`) is not implemented yet; keep it out of the supported capability set until private-mode state exists. DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar. CHA (CSI G), VPA (CSI d), CNL (CSI E), CPL (CSI F) all implemented and parser-tested.
+**Cursor.** Move up/down/left/right (CSI A/B/C/D), set position (CSI H/f), clamp to bounds, save/restore (ESC 7/8 / DECSC/DECRC / CSI s/u). Cursor visibility (`?25h/l`) is handled through private mode dispatch. DECSCUSR (`CSI Ps SP q`) controls cursor shape (block/underline/bar) and blink mode (blinking/steady) — default is blinking bar. CHA (CSI G), VPA (CSI d), CNL (CSI E), CPL (CSI F) all implemented and parser-tested.
 
 **Alternate Screen.** Enter/exit (`CSI ?1049h/l`), main screen state preserved on enter and restored on exit. Isolation unit-tested, idempotent re-entry handled.
 
@@ -363,14 +363,14 @@ The product milestones below retain the existing implementation notes, task list
 
 **Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled.
 
-**Tests.** 199 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
+**Tests.** 317 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
 
 #### To Do
 
 **Parser Hardening**
 - [x] Log unsupported sequences via `tracing::warn!` instead of silent ignore
 - [x] Validate CSI parameter bounds (reject malformed sequences gracefully)
-- [ ] Parse private mode sequences (`CSI ? ...`) beyond `?1049h/l` for cursor and DEC modes
+- [x] Parse private mode sequences (`CSI ? ...`) beyond `?1049h/l` for cursor and DEC modes
 
 **Unit Test Coverage**
 - [ ] CSI cursor-movement sequences (A/B/C/D) tested at parser level (covered implicitly via oversized-param tests; add dedicated parser-through tests)
@@ -455,7 +455,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.4: Interactive Features
 
-> **Status: 🟡 Scrollback ring buffer + viewport scroll + scrollbar GPU rendering + mouse-drag selection + Ctrl+C/V clipboard done. Double-click/triple-click, IME, mouse protocol, keybindings, hyperlinks pending.**
+> **Status: 🟡 Scrollback, scrollbar, selection (including double-click/triple-click + auto-scroll), clipboard, application cursor/keypad keys, and key mappings done. IME, mouse protocol, bracketed paste, focus reporting, hyperlinks pending.**
 
 #### Done
 
@@ -493,11 +493,11 @@ The product milestones below retain the existing implementation notes, task list
 - [x] Click to set selection start, drag to update range
 - [x] Keep selection after mouse release
 - [x] Select text across multiple lines
-- [ ] Double-click to select word
-- [ ] Triple-click to select line
+- [x] Double-click to select word
+- [x] Triple-click to select line
 - [x] Clear selection (click without drag)
 - [x] Render selection highlight
-- [ ] Auto-scroll while selecting
+- [x] Auto-scroll while selecting
 
 **Clipboard**
 - [x] Integrate system clipboard
@@ -530,7 +530,7 @@ The product milestones below retain the existing implementation notes, task list
 - [ ] Ctrl+Plus / Ctrl+Minus / Ctrl+0 for font zoom
 - [ ] F11 toggles fullscreen
 - [x] Escape behaves correctly (mapped to `0x1b`)
-- [ ] F1-F12, Home/End/PageUp/PageDown mappings correct
+- [x] F1-F12, Home/End/PageUp/PageDown mappings correct
 
 **Hyperlink**
 - [ ] Detect URLs
