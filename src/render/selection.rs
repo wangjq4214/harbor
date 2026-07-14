@@ -38,8 +38,6 @@ enum SelectionGranularity {
     Line,
 }
 
-// ── Selection model ─────────────────────────────────────────────────────────
-
 /// Tracks the current text selection as a pair of grid coordinates.
 /// `anchor` is where the drag started; `cursor` is the current drag endpoint.
 /// Both use **generations** (stable scrollback coordinates).
@@ -73,44 +71,391 @@ enum AutoScroll {
 const AUTO_SCROLL_MARGIN: usize = 3;
 const AUTO_SCROLL_INTERVAL_MS: u64 = 16;
 
-/// Returns `true` when the logical key is a bare modifier or lock key.
-/// These are chord keys — they don't produce terminal input on their own
-/// and shouldn't clear the text selection.
-fn is_modifier_key(key: &Key) -> bool {
-    matches!(
-        key,
-        Key::Named(
-            NamedKey::Control
-                | NamedKey::Shift
-                | NamedKey::Alt
-                | NamedKey::Super
-                | NamedKey::AltGraph
-                | NamedKey::Fn
-                | NamedKey::FnLock
-                | NamedKey::Meta
-                | NamedKey::Hyper
-                | NamedKey::Symbol
-                | NamedKey::SymbolLock
-                | NamedKey::CapsLock
-                | NamedKey::NumLock
-                | NamedKey::ScrollLock
-        )
-    )
+/// Outcome of a [`SelectionModel`] state transition.
+///
+/// Informs the outer [`Selection`] layer which side-effects to apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionOutcome {
+    /// No state change.
+    None,
+    /// Drag started — set dirty + request redraw + suppress PTY scroll snap.
+    DragActive,
+    /// Drag ended — set dirty + request redraw + re-enable PTY scroll snap.
+    DragEnded,
 }
 
-// ── Selection ────────────────────────────────────────────────
+// ── Selection model ─────────────────────────────────────────────────────────
+
+/// Pure domain model for text selection state.
+///
+/// Owns anchor/cursor tracking, granularity, click-chain detection, and
+/// auto-scroll scheduling.  No GPU or window dependencies — testable without
+/// a rendering context.
+#[derive(Clone, Debug)]
+struct SelectionModel {
+    /// None = no active selection.
+    range: Option<SelectionRange>,
+    /// True while left mouse button is held.
+    dragging: bool,
+    /// Current selection granularity (Character / Word / Line).
+    granularity: SelectionGranularity,
+    /// Timestamp of the most recent `MouseInput::Pressed` (for click-chain detection).
+    last_click_at: Option<Instant>,
+    /// Grid cell of the most recent click (gen, col).
+    last_click_cell: Option<(u64, usize)>,
+    /// Consecutive click count (1 = single, 2 = double, 3+ = triple/line).
+    click_count: u32,
+    /// Auto-scroll direction while dragging at viewport edge (None = idle).
+    auto_scroll: Option<AutoScroll>,
+    /// Deadline for the next auto-scroll tick (rate-limited to AUTO_SCROLL_INTERVAL_MS).
+    next_auto_scroll_at: Option<Instant>,
+}
+
+impl SelectionModel {
+    fn new() -> Self {
+        Self {
+            range: None,
+            dragging: false,
+            granularity: SelectionGranularity::default(),
+            last_click_at: None,
+            last_click_cell: None,
+            click_count: 0,
+            auto_scroll: None,
+            next_auto_scroll_at: None,
+        }
+    }
+
+    /// Left-mouse-button press at `cell`.
+    ///
+    /// Detects click chains (double/triple-click) and sets the selection range
+    /// and granularity accordingly.
+    fn press(&mut self, cell: (u64, usize), now: Instant, screen: &Screen) -> SelectionOutcome {
+        // ── Click chain detection ──────────────────────────
+        let in_timeout = self
+            .last_click_at
+            .is_some_and(|t| now.duration_since(t).as_millis() < MULTI_CLICK_TIMEOUT_MS as u128);
+        let same_cell = self.last_click_cell == Some(cell);
+
+        if in_timeout && same_cell {
+            self.click_count = self.click_count.saturating_add(1);
+        } else {
+            self.click_count = 1;
+        }
+        self.last_click_at = Some(now);
+        self.last_click_cell = Some(cell);
+
+        // ── Set selection range by click count ─────────────
+        let cols = screen.cols();
+        match self.click_count {
+            1 => {
+                self.granularity = SelectionGranularity::Character;
+                self.range = Some(SelectionRange {
+                    anchor: cell,
+                    cursor: cell,
+                });
+            }
+            2 => {
+                self.granularity = SelectionGranularity::Word;
+                let (start, end) = Self::find_word_range(screen, cell.0, cell.1);
+                self.range = Some(SelectionRange {
+                    anchor: start,
+                    cursor: end,
+                });
+            }
+            _ => {
+                // Triple click and beyond → line selection.
+                self.granularity = SelectionGranularity::Line;
+                let last = cols.saturating_sub(1);
+                self.range = Some(SelectionRange {
+                    anchor: (cell.0, 0),
+                    cursor: (cell.0, last),
+                });
+            }
+        }
+
+        self.dragging = true;
+        SelectionOutcome::DragActive
+    }
+
+    /// Mouse drag to `cell` during an active selection.
+    fn drag_to(&mut self, cell: (u64, usize), screen: &Screen) -> bool {
+        let Some(ref mut sel) = self.range else {
+            return false;
+        };
+        if sel.cursor == cell {
+            return false;
+        }
+
+        let anchor = sel.anchor;
+        let new_cursor = match self.granularity {
+            SelectionGranularity::Word => Self::snap_word_cursor(screen, cell.0, cell.1, anchor),
+            SelectionGranularity::Line => Self::snap_line_cursor(screen, cell.0, cell.1, anchor),
+            SelectionGranularity::Character => cell,
+        };
+        sel.cursor = new_cursor;
+
+        // ── Auto-scroll direction detection ────────────────
+        let rows = screen.rows();
+        let view_offset = screen.view_offset();
+        let scroll_count = screen.scroll_count();
+        let display_row = ((cell.0 - screen.history_start()) as usize + view_offset)
+            .saturating_sub(scroll_count)
+            .min(rows - 1);
+        let new_auto_scroll = if display_row < AUTO_SCROLL_MARGIN && view_offset < scroll_count {
+            Some(AutoScroll::Up)
+        } else if display_row >= rows.saturating_sub(AUTO_SCROLL_MARGIN) && view_offset > 0 {
+            Some(AutoScroll::Down)
+        } else {
+            None
+        };
+        if new_auto_scroll != self.auto_scroll {
+            self.auto_scroll = new_auto_scroll;
+            self.next_auto_scroll_at = None;
+        }
+
+        true
+    }
+
+    /// Left-mouse-button release.
+    fn release(&mut self) -> SelectionOutcome {
+        if !self.dragging {
+            return SelectionOutcome::None;
+        }
+        self.dragging = false;
+        self.auto_scroll = None;
+        self.next_auto_scroll_at = None;
+
+        // Click without drag → clear selection.
+        let is_zero_width = self.range.is_some_and(|sel| sel.anchor == sel.cursor);
+        if is_zero_width {
+            self.range = None;
+        }
+        SelectionOutcome::DragEnded
+    }
+
+    /// Cancel an in-progress drag (focus loss, alt screen, resize, keyboard).
+    fn cancel(&mut self) -> SelectionOutcome {
+        if !self.dragging {
+            return SelectionOutcome::None;
+        }
+        self.dragging = false;
+        self.auto_scroll = None;
+        self.next_auto_scroll_at = None;
+        SelectionOutcome::DragEnded
+    }
+
+    /// Clear all selection state (terminal resize).
+    fn clear(&mut self) {
+        self.range = None;
+        self.dragging = false;
+        self.auto_scroll = None;
+        self.next_auto_scroll_at = None;
+        self.click_count = 0;
+        self.last_click_at = None;
+        self.last_click_cell = None;
+    }
+
+    /// Handle a non-modifier key press — always cancels selection.
+    /// Returns true if selection was active (caller should redraw).
+    fn on_key_press(&mut self) -> bool {
+        let had_selection = self.range.is_some() || self.dragging;
+        self.range = None;
+        self.dragging = false;
+        self.auto_scroll = None;
+        self.next_auto_scroll_at = None;
+        had_selection
+    }
+
+    /// Returns normalized [`SelectionBounds`] for the active selection, or `None`.
+    fn bounds(&self) -> Option<SelectionBounds> {
+        let sel = self.range?;
+        let (start_row, start_col, end_row, end_col) = sel.normalized();
+        Some(SelectionBounds {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        })
+    }
+
+    /// Whether the current selection range is zero-width (anchor == cursor).
+    fn is_range_empty(&self) -> bool {
+        self.range.is_some_and(|sel| sel.anchor == sel.cursor)
+    }
+
+    /// Whether a selection is active.
+    fn has_selection(&self) -> bool {
+        self.range.is_some()
+    }
+
+    fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    fn auto_scroll_direction(&self) -> Option<AutoScroll> {
+        self.auto_scroll
+    }
+
+    fn auto_scroll_deadline(&self) -> Option<Instant> {
+        self.next_auto_scroll_at
+    }
+
+    /// Compute the new cursor position after one auto-scroll tick.
+    ///
+    /// Returns `(direction, new_cursor)` if auto-scroll should proceed.
+    /// The caller is responsible for actually scrolling the viewport via
+    /// [`ScrollAccess`] — this method only calculates what the cursor would
+    /// become.
+    fn compute_auto_scroll_cursor(
+        &mut self,
+        now: Instant,
+        screen: &Screen,
+    ) -> Option<(AutoScroll, (u64, usize))> {
+        let scroll = self.auto_scroll?;
+        if !self.dragging {
+            self.auto_scroll = None;
+            self.next_auto_scroll_at = None;
+            return None;
+        }
+        // Rate limit.
+        if let Some(deadline) = self.next_auto_scroll_at
+            && deadline > now
+        {
+            return None;
+        }
+
+        let can_scroll_up = screen.view_offset() < screen.scroll_count();
+        let can_scroll_down = screen.view_offset() > 0;
+
+        let (direction, new_gen) = match scroll {
+            AutoScroll::Up if can_scroll_up => {
+                (AutoScroll::Up, self.range?.cursor.0.saturating_sub(1))
+            }
+            AutoScroll::Down if can_scroll_down => {
+                (AutoScroll::Down, self.range?.cursor.0.saturating_add(1))
+            }
+            _ => {
+                // Can't scroll in this direction — stop.
+                self.auto_scroll = None;
+                self.next_auto_scroll_at = None;
+                return None;
+            }
+        };
+
+        // Re-snap column when in word or line mode.
+        let anchor = self.range?.anchor;
+        let cur_col = self.range?.cursor.1;
+        let snapped = match self.granularity {
+            SelectionGranularity::Word => Self::snap_word_cursor(screen, new_gen, cur_col, anchor),
+            SelectionGranularity::Line => Self::snap_line_cursor(screen, new_gen, cur_col, anchor),
+            SelectionGranularity::Character => (new_gen, cur_col),
+        };
+
+        let deadline = Instant::now() + Duration::from_millis(AUTO_SCROLL_INTERVAL_MS);
+        self.next_auto_scroll_at = Some(deadline);
+
+        Some((direction, snapped))
+    }
+
+    // ── Word / line boundary helpers ─────────────────────────
+
+    /// Returns `((start_gen, start_col), (end_gen, end_col))` of the word
+    /// at `(generation, col)`.  When the clicked cell is a separator, the word
+    /// range is zero-width (just that cell).
+    fn find_word_range(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+    ) -> ((u64, usize), (u64, usize)) {
+        let cols = screen.cols();
+        let is_sep = |c: usize| {
+            screen
+                .cell_at_generation(generation, c)
+                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+        };
+
+        if is_sep(col) {
+            return ((generation, col), (generation, col));
+        }
+
+        // Scan left to word start
+        let mut left = col;
+        while left > 0 && !is_sep(left - 1) {
+            left -= 1;
+        }
+
+        // Scan right to word end
+        let mut right = col;
+        while right < cols - 1 && !is_sep(right + 1) {
+            right += 1;
+        }
+
+        ((generation, left), (generation, right))
+    }
+
+    /// Snap cursor column for word-wise drag.
+    fn snap_word_cursor(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+        anchor: (u64, usize),
+    ) -> (u64, usize) {
+        let is_sep = |c: usize| {
+            screen
+                .cell_at_generation(generation, c)
+                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+        };
+        let cols = screen.cols();
+
+        if (generation, col) >= anchor {
+            // Expanding forward → snap to right boundary.
+            let mut c = col;
+            while c < cols - 1 && is_sep(c) {
+                c += 1;
+            }
+            while c < cols - 1 && !is_sep(c + 1) {
+                c += 1;
+            }
+            (generation, c)
+        } else {
+            // Expanding backward → snap to left boundary.
+            let mut c = col;
+            while c > 0 && is_sep(c) {
+                c -= 1;
+            }
+            while c > 0 && !is_sep(c - 1) {
+                c -= 1;
+            }
+            (generation, c)
+        }
+    }
+
+    /// Snap cursor column for line-wise drag.
+    fn snap_line_cursor(
+        screen: &Screen,
+        generation: u64,
+        col: usize,
+        anchor: (u64, usize),
+    ) -> (u64, usize) {
+        let last_col = screen.cols().saturating_sub(1);
+        if (generation, col) >= anchor {
+            (generation, last_col)
+        } else {
+            (generation, 0)
+        }
+    }
+}
+
+// ── Selection (outer — GPU + events) ──────────────────────────────────────
 
 pub(crate) struct Selection {
+    model: SelectionModel,
     pipeline: Arc<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     /// Number of vertices to draw (0 when no selection).
     vertex_count: u32,
     /// Current vertex buffer capacity (rows * cols * 6).
     vertex_cap: usize,
-    /// None = no active selection.
-    selection: Option<SelectionRange>,
-    /// True while left mouse button is held.
-    dragging: bool,
     /// Cached from the most recent CursorMoved event (physical pixels).
     /// Needed because winit 0.30 MouseInput does not carry a position.
     last_cursor_pos: Option<(f64, f64)>,
@@ -120,18 +465,6 @@ pub(crate) struct Selection {
     dirty: bool,
     /// System clipboard handle (None when clipboard is unavailable, e.g. headless).
     clipboard: Option<Clipboard>,
-    /// Auto-scroll direction while dragging at viewport edge (None = idle).
-    auto_scroll: Option<AutoScroll>,
-    /// Deadline for the next auto-scroll tick (rate-limited to AUTO_SCROLL_INTERVAL_MS).
-    next_auto_scroll_at: Option<Instant>,
-    /// Current selection granularity (Character / Word / Line).
-    granularity: SelectionGranularity,
-    /// Timestamp of the most recent `MouseInput::Pressed` (for click-chain detection).
-    last_click_at: Option<Instant>,
-    /// Grid cell of the most recent click (gen, col).
-    last_click_cell: Option<(u64, usize)>,
-    /// Consecutive click count (1 = single, 2 = double, 3+ = triple/line).
-    click_count: u32,
 }
 
 impl Selection {
@@ -139,12 +472,11 @@ impl Selection {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {
+            model: SelectionModel::new(),
             pipeline,
             vertex_buffer,
             vertex_count: 0,
             vertex_cap: 0,
-            selection: None,
-            dragging: false,
             last_cursor_pos: None,
             cell_width,
             line_height,
@@ -156,12 +488,6 @@ impl Selection {
                 }
                 cb.ok()
             },
-            auto_scroll: None,
-            next_auto_scroll_at: None,
-            granularity: SelectionGranularity::default(),
-            last_click_at: None,
-            last_click_cell: None,
-            click_count: 0,
         }
     }
 
@@ -202,12 +528,14 @@ impl Selection {
     /// Build ColoredVertex quads for every cell in the current selection.
     /// Renders only the intersection of the selection range with the current viewport.
     fn build_vertices(&self, screen: &Screen, surf_w: f32, surf_h: f32) -> Vec<ColoredVertex> {
-        let sel = self.selection.unwrap();
+        let Some(ref range) = self.model.range else {
+            return Vec::new();
+        };
         // A zero-length range (anchor == cursor) has no area — nothing to render.
-        if sel.anchor == sel.cursor {
+        if range.anchor == range.cursor {
             return Vec::new();
         }
-        let (sg, sc, eg, ec) = sel.normalized();
+        let (sg, sc, eg, ec) = range.normalized();
         let rows = screen.rows();
         let cols = screen.cols();
         let view_offset = screen.view_offset();
@@ -255,19 +583,11 @@ impl Selection {
 
     /// Returns the currently selected text, or `None` when there is no active selection.
     fn selected_text(&self, screen: &Screen) -> Option<String> {
-        let sel = self.selection?;
-        // A zero-length range has no text to copy.
-        if sel.anchor == sel.cursor {
+        if self.model.is_range_empty() {
             return None;
         }
-
-        let (start_row, start_col, end_row, end_col) = sel.normalized();
-        let text = screen.selected_text(SelectionBounds {
-            start_row,
-            start_col,
-            end_row,
-            end_col,
-        });
+        let bounds = self.model.bounds()?;
+        let text = screen.selected_text(bounds);
         if text.is_empty() { None } else { Some(text) }
     }
 
@@ -314,95 +634,24 @@ impl Selection {
         }
     }
 
-    // ── Multi-click word/line boundary helpers ──────────────────────
-
-    /// Returns `((start_gen, start_col), (end_gen, end_col))` of the word
-    /// at `(generation, col)`.  When the clicked cell is a separator, the word
-    /// range is zero-width (just that cell).
-    fn find_word_range(
-        screen: &Screen,
-        generation: u64,
-        col: usize,
-    ) -> ((u64, usize), (u64, usize)) {
-        let cols = screen.cols();
-        let is_sep = |c: usize| {
-            screen
-                .cell_at_generation(generation, c)
-                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
-        };
-
-        if is_sep(col) {
-            return ((generation, col), (generation, col));
-        }
-
-        // Scan left to word start
-        let mut left = col;
-        while left > 0 && !is_sep(left - 1) {
-            left -= 1;
-        }
-
-        // Scan right to word end
-        let mut right = col;
-        while right < cols - 1 && !is_sep(right + 1) {
-            right += 1;
-        }
-
-        ((generation, left), (generation, right))
-    }
-
-    /// Snap cursor column for word-wise drag.  Returns `(generation, snapped_col)`.
-    fn snap_word_cursor(
-        screen: &Screen,
-        generation: u64,
-        col: usize,
-        anchor: (u64, usize),
-    ) -> (u64, usize) {
-        let is_sep = |c: usize| {
-            screen
-                .cell_at_generation(generation, c)
-                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
-        };
-        let cols = screen.cols();
-
-        if (generation, col) >= anchor {
-            // Expanding forward → snap to right boundary.
-            let mut c = col;
-            // Skip forward past any separator run.
-            while c < cols - 1 && is_sep(c) {
-                c += 1;
+    /// Apply [`SelectionOutcome`] — sets dirty flag on visual changes,
+    fn apply_outcome(
+        &mut self,
+        outcome: SelectionOutcome,
+        caps: &mut (impl ScrollAccess + RedrawAccess),
+    ) {
+        match outcome {
+            SelectionOutcome::None => {}
+            SelectionOutcome::DragActive => {
+                self.dirty = true;
+                caps.request_redraw();
+                caps.set_auto_scrolling(true);
             }
-            // Find end of the word at/before c.
-            while c < cols - 1 && !is_sep(c + 1) {
-                c += 1;
+            SelectionOutcome::DragEnded => {
+                self.dirty = true;
+                caps.request_redraw();
+                caps.set_auto_scrolling(false);
             }
-            (generation, c)
-        } else {
-            // Expanding backward → snap to left boundary.
-            let mut c = col;
-            // Skip backward past any separator run.
-            while c > 0 && is_sep(c) {
-                c -= 1;
-            }
-            // Find start of the word at/before c.
-            while c > 0 && !is_sep(c - 1) {
-                c -= 1;
-            }
-            (generation, c)
-        }
-    }
-
-    /// Snap cursor column for line-wise drag.
-    fn snap_line_cursor(
-        screen: &Screen,
-        generation: u64,
-        col: usize,
-        anchor: (u64, usize),
-    ) -> (u64, usize) {
-        let last_col = screen.cols().saturating_sub(1);
-        if (generation, col) >= anchor {
-            (generation, last_col)
-        } else {
-            (generation, 0)
         }
     }
 
@@ -413,7 +662,7 @@ impl Selection {
     ) -> EventResult {
         self.last_cursor_pos = Some((position.x, position.y));
 
-        if !self.dragging {
+        if !self.model.is_dragging() {
             return EventResult::Continue;
         }
 
@@ -427,50 +676,14 @@ impl Selection {
             screen.rows(),
             screen.cols(),
         );
-        if let Some(sel) = &mut self.selection
-            && sel.cursor != (g, col)
-        {
-            let anchor = sel.anchor; // Copy to avoid borrow conflict with self.snap_*
-            let new_cursor = match self.granularity {
-                SelectionGranularity::Word => Self::snap_word_cursor(screen, g, col, anchor),
-                SelectionGranularity::Line => Self::snap_line_cursor(screen, g, col, anchor),
-                SelectionGranularity::Character => (g, col),
-            };
-            sel.cursor = new_cursor;
+        if self.model.drag_to((g, col), screen) {
             self.dirty = true;
             caps.request_redraw();
-        }
-
-        // Auto-scroll direction detection
-        let rows = screen.rows();
-        let view_offset = screen.view_offset();
-        let scroll_count = screen.scroll_count();
-        let display_row = ((g - screen.history_start()) as usize + view_offset)
-            .saturating_sub(scroll_count)
-            .min(rows - 1);
-        let new_auto_scroll = if display_row < AUTO_SCROLL_MARGIN && view_offset < scroll_count {
-            Some(AutoScroll::Up)
-        } else if display_row >= rows.saturating_sub(AUTO_SCROLL_MARGIN) && view_offset > 0 {
-            Some(AutoScroll::Down)
-        } else {
-            None
-        };
-        if new_auto_scroll != self.auto_scroll {
-            self.auto_scroll = new_auto_scroll;
-            self.next_auto_scroll_at = None;
         }
 
         EventResult::Handled
     }
 
-    /// Cancel an in-progress drag, resetting auto-scroll state and
-    /// re-enabling the PTY scroll-to-bottom snap.
-    fn cancel_drag(&mut self, caps: &mut impl ScrollAccess) {
-        self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
-        caps.set_auto_scrolling(false);
-    }
     fn handle_mouse_input(
         &mut self,
         state: winit::event::ElementState,
@@ -494,75 +707,22 @@ impl Selection {
                         screen.rows(),
                         screen.cols(),
                     );
-
-                    // ── Click chain detection ──────────────────────────
                     let now = Instant::now();
-                    let in_timeout = self.last_click_at.is_some_and(|t| {
-                        now.duration_since(t).as_millis() < MULTI_CLICK_TIMEOUT_MS as u128
-                    });
-                    let same_cell = self.last_click_cell == Some((g, col));
-
-                    if in_timeout && same_cell {
-                        self.click_count = self.click_count.saturating_add(1);
-                    } else {
-                        self.click_count = 1;
-                    }
-                    self.last_click_at = Some(now);
-                    self.last_click_cell = Some((g, col));
-
-                    // ── Set selection range by click count ─────────────
-                    let cols = screen.cols();
-                    match self.click_count {
-                        1 => {
-                            self.granularity = SelectionGranularity::Character;
-                            self.selection = Some(SelectionRange {
-                                anchor: (g, col),
-                                cursor: (g, col),
-                            });
-                        }
-                        2 => {
-                            self.granularity = SelectionGranularity::Word;
-                            let (start, end) = Self::find_word_range(screen, g, col);
-                            self.selection = Some(SelectionRange {
-                                anchor: start,
-                                cursor: end,
-                            });
-                        }
-                        _ => {
-                            // Triple click and beyond → line selection.
-                            self.granularity = SelectionGranularity::Line;
-                            let last = cols.saturating_sub(1);
-                            self.selection = Some(SelectionRange {
-                                anchor: (g, 0),
-                                cursor: (g, last),
-                            });
-                        }
-                    }
-
-                    self.dragging = true;
-                    caps.set_auto_scrolling(true);
-                    self.dirty = true;
-                    caps.request_redraw();
+                    let outcome = self.model.press((g, col), now, screen);
+                    self.apply_outcome(outcome, caps);
                 }
                 EventResult::Handled
             }
             winit::event::ElementState::Released => {
-                if self.dragging {
-                    self.cancel_drag(caps);
-                    // Click without drag → clear selection.
-                    if let Some(sel) = self.selection
-                        && sel.anchor == sel.cursor
-                    {
-                        self.selection = None;
-                        self.dirty = true;
-                        caps.request_redraw();
-                    }
-                }
+                let outcome = self.model.release();
+                self.apply_outcome(outcome, caps);
                 EventResult::Handled
             }
         }
     }
 }
+
+// ── SelectionInput impl ──────────────────────────────────────────────────
 
 impl SelectionInput for Selection {
     fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &mut C) -> EventResult
@@ -579,9 +739,7 @@ impl SelectionInput for Selection {
                 // part of a chord — don't clear selection until the actual
                 // character key arrives.  Otherwise pressing Ctrl alone
                 // would destroy the selection before Ctrl+C can copy.
-                if !is_modifier_key(&kbd.logical_key) {
-                    self.cancel_drag(caps);
-                    self.selection = None;
+                if !is_modifier_key(&kbd.logical_key) && self.model.on_key_press() {
                     self.dirty = true;
                     caps.request_redraw();
                 }
@@ -590,9 +748,8 @@ impl SelectionInput for Selection {
 
             // Alt-screen mode: cancel any in-flight drag, pass through to app.
             _ if caps.terminal().is_alt_screen() => {
-                if self.dragging {
-                    self.cancel_drag(caps);
-                }
+                let outcome = self.model.cancel();
+                self.apply_outcome(outcome, caps);
                 EventResult::Continue
             }
 
@@ -604,16 +761,14 @@ impl SelectionInput for Selection {
             }
             // Focus-loss mid-drag: release may go to another window.
             winit::event::WindowEvent::Focused(false) => {
-                if self.dragging {
-                    self.cancel_drag(caps);
-                }
+                let outcome = self.model.cancel();
+                self.apply_outcome(outcome, caps);
                 EventResult::Continue
             }
             // Resize clears selection state — cancel any in-flight drag.
             winit::event::WindowEvent::Resized(_) => {
-                if self.dragging {
-                    self.cancel_drag(caps);
-                }
+                let outcome = self.model.cancel();
+                self.apply_outcome(outcome, caps);
                 EventResult::Continue // don't consume — let UiRoot::resize fire
             }
             _ => EventResult::Continue,
@@ -625,95 +780,46 @@ impl SelectionInput for Selection {
         C: TerminalAccess + ScrollAccess + RedrawAccess,
     {
         // Alt screen activated while dragging — cancel immediately.
-        if self.dragging && caps.terminal().is_alt_screen() {
-            self.cancel_drag(caps);
+        if self.model.is_dragging() && caps.terminal().is_alt_screen() {
+            let outcome = self.model.cancel();
+            self.apply_outcome(outcome, caps);
             return None;
         }
 
-        let scroll = self.auto_scroll?;
-        if !self.dragging {
-            self.auto_scroll = None;
-            self.next_auto_scroll_at = None;
-            return None;
-        }
-        // Rate limit: don't scroll faster than AUTO_SCROLL_INTERVAL_MS.
-        if let Some(deadline) = self.next_auto_scroll_at
-            && deadline > Instant::now()
+        // Early exit when no auto-scroll is active.
+        self.model.auto_scroll_direction()?;
+
+        let now = Instant::now();
+
+        // Rate-limit check — return existing deadline if not yet due.
+        if let Some(deadline) = self.model.auto_scroll_deadline()
+            && deadline > now
         {
             return Some(deadline);
         }
-        // Extract scroll conditions before any mutable caps calls to avoid
-        // conflicting borrows through `screen`.
-        let can_scroll_up = {
-            let s = caps.terminal().screen();
-            s.view_offset() < s.scroll_count()
-        };
-        let can_scroll_down = {
-            let s = caps.terminal().screen();
-            s.view_offset() > 0
-        };
 
-        match scroll {
-            AutoScroll::Up if can_scroll_up => {
-                caps.scroll_viewport_up(1);
-                // Advance selection cursor to include the newly revealed row above.
-                if let Some(sel) = &mut self.selection {
-                    // Decrease generation to extend selection upward (into scrollback).
-                    sel.cursor.0 = sel.cursor.0.saturating_sub(1);
-                    // Re-snap column when in word or line mode.
-                    let anchor = sel.anchor;
-                    let cur = sel.cursor;
-                    let snapped = match self.granularity {
-                        SelectionGranularity::Word => {
-                            let screen = caps.terminal().screen();
-                            Self::snap_word_cursor(screen, cur.0, cur.1, anchor)
-                        }
-                        SelectionGranularity::Line => {
-                            let screen = caps.terminal().screen();
-                            Self::snap_line_cursor(screen, cur.0, cur.1, anchor)
-                        }
-                        SelectionGranularity::Character => cur,
-                    };
-                    sel.cursor = snapped;
-                }
-                self.dirty = true;
-                caps.request_redraw();
-            }
-            AutoScroll::Down if can_scroll_down => {
-                caps.scroll_viewport_down(1);
-                // Increase generation to extend selection downward (toward live content).
-                if let Some(sel) = &mut self.selection {
-                    sel.cursor.0 = sel.cursor.0.saturating_add(1);
-                    // Re-snap column when in word or line mode.
-                    let anchor = sel.anchor;
-                    let cur = sel.cursor;
-                    let snapped = match self.granularity {
-                        SelectionGranularity::Word => {
-                            let screen = caps.terminal().screen();
-                            Self::snap_word_cursor(screen, cur.0, cur.1, anchor)
-                        }
-                        SelectionGranularity::Line => {
-                            let screen = caps.terminal().screen();
-                            Self::snap_line_cursor(screen, cur.0, cur.1, anchor)
-                        }
-                        SelectionGranularity::Character => cur,
-                    };
-                    sel.cursor = snapped;
-                }
-                self.dirty = true;
-                caps.request_redraw();
-            }
-            _ => {
-                self.auto_scroll = None;
-                self.next_auto_scroll_at = None;
-                return None;
-            }
+        let screen = caps.terminal().screen();
+        let (direction, new_cursor) = self.model.compute_auto_scroll_cursor(now, screen)?;
+
+        // Execute the viewport scroll.
+        match direction {
+            AutoScroll::Up => caps.scroll_viewport_up(1),
+            AutoScroll::Down => caps.scroll_viewport_down(1),
         }
-        let deadline = Instant::now() + Duration::from_millis(AUTO_SCROLL_INTERVAL_MS);
-        self.next_auto_scroll_at = Some(deadline);
-        Some(deadline)
+
+        // Apply the new cursor position computed by the model.
+        if let Some(ref mut sel) = self.model.range {
+            sel.cursor = new_cursor;
+        }
+
+        self.dirty = true;
+        caps.request_redraw();
+
+        self.model.auto_scroll_deadline()
     }
 }
+
+// ── Component impl ───────────────────────────────────────────────────────
 
 impl Component for Selection {
     fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
@@ -727,7 +833,7 @@ impl Component for Selection {
             return;
         };
 
-        if let Some(_sel) = self.selection {
+        if self.model.has_selection() {
             let rows = screen.rows();
             let cols = screen.cols();
             self.ensure_capacity(gpu, rows, cols);
@@ -753,22 +859,47 @@ impl Component for Selection {
 
     fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         // Grid dimensions changed; old selection coordinates are stale.
-        self.selection = None;
-        self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
+        self.model.clear();
         self.dirty = true;
     }
 }
 
+// ── Tests ────────────────────────────────────────────────────────────────
+
+/// Returns `true` when the logical key is a bare modifier or lock key.
+/// These are chord keys — they don't produce terminal input on their own
+/// and shouldn't clear the text selection.
+fn is_modifier_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::AltGraph
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_modifier_key;
+    use super::*;
     use winit::keyboard::{Key, NamedKey};
+
+    // ── is_modifier_key tests ─────────────────────────────────
 
     #[test]
     fn modifier_keys_are_detected() {
-        // Chord keys — must NOT clear selection.
         assert!(is_modifier_key(&Key::Named(NamedKey::Control)));
         assert!(is_modifier_key(&Key::Named(NamedKey::Shift)));
         assert!(is_modifier_key(&Key::Named(NamedKey::Alt)));
@@ -787,7 +918,6 @@ mod tests {
 
     #[test]
     fn ordinary_keys_are_not_modifiers() {
-        // Character keys — MUST clear selection.
         assert!(!is_modifier_key(&Key::Character("a".into())));
         assert!(!is_modifier_key(&Key::Character("c".into())));
         assert!(!is_modifier_key(&Key::Character("A".into())));
@@ -795,7 +925,6 @@ mod tests {
 
     #[test]
     fn named_non_modifier_keys_are_not_modifiers() {
-        // Named keys that produce terminal output — MUST clear selection.
         assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
         assert!(!is_modifier_key(&Key::Named(NamedKey::Backspace)));
         assert!(!is_modifier_key(&Key::Named(NamedKey::Tab)));
@@ -804,5 +933,322 @@ mod tests {
         assert!(!is_modifier_key(&Key::Named(NamedKey::ArrowDown)));
         assert!(!is_modifier_key(&Key::Named(NamedKey::F1)));
         assert!(!is_modifier_key(&Key::Named(NamedKey::F12)));
+    }
+
+    // ── SelectionModel unit tests ─────────────────────────────
+
+    /// Helper: create a tiny screen with known content.
+    fn test_screen(rows: usize, cols: usize) -> Screen {
+        let mut s = Screen::new(rows, cols);
+        // Fill row 0 with "abcd...".
+        for (c, ch) in "abcdefghij".chars().enumerate().take(cols) {
+            s.cell_mut(0, c).ch = ch;
+        }
+        if rows > 1 {
+            for (c, ch) in "ABCDEFGHIJ".chars().enumerate().take(cols) {
+                s.cell_mut(1, c).ch = ch;
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn press_single_click_creates_character_selection() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        let outcome = model.press((0, 3), now, &screen);
+
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+        assert!(model.is_dragging());
+        assert!(model.has_selection());
+        assert!(model.is_range_empty()); // anchor == cursor
+        assert_eq!(model.click_count, 1);
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // First click.
+        model.press((0, 3), now, &screen);
+        model.release();
+
+        // Second click (within timeout) at same cell.
+        let outcome = model.press((0, 3), now, &screen);
+
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+        assert_eq!(model.granularity, SelectionGranularity::Word);
+        // The word at col 3 in "abcdefghij" — col 3 is 'd', word spans 0..9.
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 9);
+    }
+
+    #[test]
+    fn triple_click_selects_full_line() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // Click 1.
+        model.press((0, 3), now, &screen);
+        model.release();
+        // Click 2.
+        model.press((0, 3), now, &screen);
+        model.release();
+        // Click 3.
+        let outcome = model.press((0, 3), now, &screen);
+
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+        assert_eq!(model.granularity, SelectionGranularity::Line);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 9); // cols - 1
+    }
+
+    #[test]
+    fn click_on_different_cell_resets_click_chain() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 3), now, &screen);
+        model.release();
+
+        // Different cell — should reset to single click.
+        let outcome = model.press((1, 5), now, &screen);
+        assert_eq!(model.click_count, 1);
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_row, 1);
+        assert_eq!(bounds.start_col, 5);
+    }
+
+    #[test]
+    fn drag_to_without_press_is_noop() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+
+        let changed = model.drag_to((0, 5), &screen);
+        assert!(!changed);
+        assert!(!model.has_selection());
+    }
+
+    #[test]
+    fn drag_to_updates_cursor() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+
+        let changed = model.drag_to((0, 7), &screen);
+        assert!(changed);
+
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_row, 0);
+        assert_eq!(bounds.start_col, 2);
+        assert_eq!(bounds.end_row, 0);
+        assert_eq!(bounds.end_col, 7);
+    }
+
+    #[test]
+    fn drag_to_same_cell_returns_false() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        let changed = model.drag_to((0, 2), &screen);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn drag_in_reverse_swaps_normalized_range() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // Press at col 7, drag left to col 2.
+        model.press((0, 7), now, &screen);
+        model.drag_to((0, 2), &screen);
+
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 2);
+        assert_eq!(bounds.end_col, 7);
+    }
+
+    #[test]
+    fn release_during_drag_ends_drag() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        assert!(model.is_dragging());
+        model.drag_to((0, 5), &screen); // extend to non-zero-width
+
+        let outcome = model.release();
+        assert_eq!(outcome, SelectionOutcome::DragEnded);
+        assert!(!model.is_dragging());
+        assert!(model.has_selection()); // non-zero-width survives
+    }
+
+    #[test]
+    fn release_without_drag_returns_none() {
+        let mut model = SelectionModel::new();
+        assert_eq!(model.release(), SelectionOutcome::None);
+    }
+
+    #[test]
+    fn click_and_release_without_drag_clears_selection() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        // Zero-width (anchor == cursor) — release should clear.
+        let outcome = model.release();
+        assert_eq!(outcome, SelectionOutcome::DragEnded);
+        assert!(!model.has_selection());
+    }
+
+    #[test]
+    fn cancel_clears_drag_state() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        assert!(model.is_dragging());
+
+        let outcome = model.cancel();
+        assert_eq!(outcome, SelectionOutcome::DragEnded);
+        assert!(!model.is_dragging());
+        // Selection range is still there (unlike release, cancel doesn't clear range).
+    }
+
+    #[test]
+    fn cancel_without_drag_returns_none() {
+        let mut model = SelectionModel::new();
+        assert_eq!(model.cancel(), SelectionOutcome::None);
+    }
+
+    #[test]
+    fn clear_resets_everything() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        model.drag_to((0, 5), &screen);
+        assert!(model.has_selection());
+        assert!(model.is_dragging());
+
+        model.clear();
+        assert!(!model.has_selection());
+        assert!(!model.is_dragging());
+        assert_eq!(model.click_count, 0);
+        assert!(model.last_click_at.is_none());
+    }
+
+    #[test]
+    fn on_key_press_clears_selection() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        assert!(model.on_key_press());
+        assert!(!model.has_selection());
+        assert!(!model.is_dragging());
+    }
+
+    #[test]
+    fn on_key_press_without_selection_returns_false() {
+        let mut model = SelectionModel::new();
+        assert!(!model.on_key_press());
+    }
+
+    #[test]
+    fn bounds_returns_none_when_no_selection() {
+        let model = SelectionModel::new();
+        assert!(model.bounds().is_none());
+    }
+
+    #[test]
+    fn is_range_empty_true_when_anchor_equals_cursor() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        assert!(model.is_range_empty());
+    }
+
+    #[test]
+    fn is_range_empty_false_after_drag() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen);
+        model.drag_to((0, 5), &screen);
+        assert!(!model.is_range_empty());
+    }
+
+    #[test]
+    fn find_word_range_middle_of_word() {
+        let screen = test_screen(3, 10);
+        // "abcdefghij" — clicking 'd' (col 3) spans 0..9.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 9));
+    }
+
+    #[test]
+    fn find_word_range_at_separator() {
+        let mut screen = test_screen(3, 10);
+        screen.cell_mut(0, 3).ch = ' ';
+        // Clicking a space at col 3 gives zero-width word.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        assert_eq!(start, (0, 3));
+        assert_eq!(end, (0, 3));
+    }
+
+    #[test]
+    fn snap_word_cursor_forward_lands_at_word_end() {
+        let screen = test_screen(3, 10);
+        // "abcdefghij" — anchor at 2, cursor moving to 5.
+        // Forward (>= anchor): lands at the end of the word (col 9).
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 5, (0, 2));
+        assert_eq!(snapped, (0, 9));
+    }
+
+    #[test]
+    fn snap_word_cursor_backward_lands_at_word_start() {
+        let screen = test_screen(3, 10);
+        // "abcdefghij" — anchor at 5, cursor moving to 2.
+        // Backward (< anchor): lands at start of word (col 0).
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 5));
+        assert_eq!(snapped, (0, 0));
+    }
+
+    #[test]
+    fn snap_line_cursor_forward_lands_at_last_col() {
+        let screen = test_screen(3, 10);
+        let snapped = SelectionModel::snap_line_cursor(&screen, 0, 5, (0, 2));
+        assert_eq!(snapped, (0, 9));
+    }
+
+    #[test]
+    fn snap_line_cursor_backward_lands_at_col_zero() {
+        let screen = test_screen(3, 10);
+        let snapped = SelectionModel::snap_line_cursor(&screen, 0, 2, (0, 5));
+        assert_eq!(snapped, (0, 0));
     }
 }
