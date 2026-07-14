@@ -166,6 +166,10 @@ impl Selection {
     /// Renders only the intersection of the selection range with the current viewport.
     fn build_vertices(&self, screen: &Screen, surf_w: f32, surf_h: f32) -> Vec<ColoredVertex> {
         let sel = self.selection.unwrap();
+        // A zero-length range (anchor == cursor) has no area — nothing to render.
+        if sel.anchor == sel.cursor {
+            return Vec::new();
+        }
         let (sg, sc, eg, ec) = sel.normalized();
         let rows = screen.rows();
         let cols = screen.cols();
@@ -215,6 +219,11 @@ impl Selection {
     /// Returns the currently selected text, or `None` when there is no active selection.
     fn selected_text(&self, screen: &Screen) -> Option<String> {
         let sel = self.selection?;
+        // A zero-length range has no text to copy.
+        if sel.anchor == sel.cursor {
+            return None;
+        }
+
         let (start_row, start_col, end_row, end_col) = sel.normalized();
         let text = screen.selected_text(SelectionBounds {
             start_row,
