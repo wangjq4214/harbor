@@ -29,11 +29,15 @@ The maximum interval (500ms) between consecutive clicks for them to count as a c
 _Avoid_: Double-click speed, click delay
 
 **Word boundary**:
-A position in a row where a word starts or ends. Words are delimited by characters in the `WORD_SEPARATORS` set: whitespace, ASCII brackets/braces/quotes, and common CJK punctuation. Alphanumeric characters, underscores, hyphens, and path separators (`/`, `\`) are part of a word.
+A position in a row where a word starts or ends, determined by the `WORD_SEPARATORS` set plus CJK character categories. For initial word finding (double-click), CJK characters group together but stop at separators or non-CJK word characters; for word-wise drag, each CJK character is its own boundary.
 _Avoid_: Word delimiter (that's the separator char, not the position)
 
+**CJK character**:
+A character in one of these Unicode blocks: CJK Unified Ideographs (U+4E00–U+9FFF and extensions), Hiragana (U+3040–U+309F), Katakana (U+30A0–U+30FF), and Hangul Syllables (U+AC00–U+D7AF). These characters participate in word selection with special grouping-vs-drag semantics.
+_Avoid_: Ideograph (too narrow — excludes Hiragana/Katakana/Hangul)
+
 **Word-wise drag**:
-Drag behavior after a double-click; the cursor snaps to word boundaries as it moves across rows.
+Drag behavior after a double-click; the cursor snaps to word boundaries as it moves across rows. For CJK text this means each CJK character is an individual snap point, allowing character-by-character expansion.
 _Avoid_: Smart selection, semantic drag
 
 **Line-wise drag**:

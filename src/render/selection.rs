@@ -26,6 +26,21 @@ const WORD_SEPARATORS: &[char] = &[
     '！', '‘', '’', '＂',
 ];
 
+/// Returns true if `ch` is a CJK character that gets special word-selection
+/// semantics: single-character word boundary during word-wise drag, but
+/// consecutive grouping during initial word finding.
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}'  // CJK Unified Ideographs Extension A
+        | '\u{20000}'..='\u{2A6DF}' // CJK Unified Ideographs Extension B
+        | '\u{3040}'..='\u{309F}'  // Hiragana
+        | '\u{30A0}'..='\u{30FF}'  // Katakana
+        | '\u{AC00}'..='\u{D7AF}'  // Hangul Syllables
+    )
+}
+
 /// The semantic granularity of an active selection, determined by click count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SelectionGranularity {
@@ -368,63 +383,131 @@ impl SelectionModel {
         col: usize,
     ) -> ((u64, usize), (u64, usize)) {
         let cols = screen.cols();
-        let is_sep = |c: usize| {
-            screen
-                .cell_at_generation(generation, c)
-                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+        let cell_at = |c: usize| screen.cell_at_generation(generation, c);
+        let cell_ch = |c: usize| cell_at(c).map(|cell| cell.ch);
+
+        // If we clicked on a wide_continuation cell, redirect to the
+        // real character cell (the preceding column).
+        let effective_col = if col > 0 && cell_at(col).is_some_and(|cell| cell.wide_continuation) {
+            col.saturating_sub(1)
+        } else {
+            col
         };
 
-        if is_sep(col) {
-            return ((generation, col), (generation, col));
+        let Some(clicked_ch) = cell_ch(effective_col) else {
+            return ((generation, effective_col), (generation, effective_col));
+        };
+
+        // Separator → zero-width.
+        if WORD_SEPARATORS.contains(&clicked_ch) {
+            return ((generation, effective_col), (generation, effective_col));
         }
 
-        // Scan left to word start
-        let mut left = col;
-        while left > 0 && !is_sep(left - 1) {
+        let clicked_is_cjk = is_cjk(clicked_ch);
+
+        // Decide what qualifies as "in the same word":
+        // - wide_continuation cells are transparent (inherit from prev char)
+        // - CJK → only consecutive CJK chars (stop at separators or non-CJK)
+        // - Latin/etc → only non-separator non-CJK chars (stop at separators or CJK)
+        let in_same_word = |c: usize| -> bool {
+            let Some(cell) = cell_at(c) else { return false };
+            if cell.wide_continuation {
+                return true; // transparent — part of the preceding char's word
+            }
+            if WORD_SEPARATORS.contains(&cell.ch) {
+                return false;
+            }
+            if clicked_is_cjk {
+                is_cjk(cell.ch)
+            } else {
+                !is_cjk(cell.ch)
+            }
+        };
+
+        // Scan left from the effective click column.
+        let mut left = effective_col;
+        while left > 0 && in_same_word(left - 1) {
             left -= 1;
         }
 
-        // Scan right to word end
-        let mut right = col;
-        while right < cols - 1 && !is_sep(right + 1) {
+        // Scan right from the effective click column.
+        let mut right = effective_col;
+        while right < cols - 1 && in_same_word(right + 1) {
             right += 1;
         }
 
         ((generation, left), (generation, right))
     }
 
-    /// Snap cursor column for word-wise drag.
     fn snap_word_cursor(
         screen: &Screen,
         generation: u64,
         col: usize,
         anchor: (u64, usize),
     ) -> (u64, usize) {
+        let cell_at = |c: usize| screen.cell_at_generation(generation, c);
+        // True separator: in WORD_SEPARATORS AND not a wide_continuation cell.
         let is_sep = |c: usize| {
-            screen
-                .cell_at_generation(generation, c)
-                .is_none_or(|cell| WORD_SEPARATORS.contains(&cell.ch))
+            cell_at(c)
+                .is_none_or(|cell| !cell.wide_continuation && WORD_SEPARATORS.contains(&cell.ch))
         };
+        // True CJK char cell (not wide_continuation).
+        let is_cjk_cell =
+            |c: usize| cell_at(c).is_some_and(|cell| !cell.wide_continuation && is_cjk(cell.ch));
         let cols = screen.cols();
 
         if (generation, col) >= anchor {
             // Expanding forward → snap to right boundary.
             let mut c = col;
+            // Skip past true separators.
             while c < cols - 1 && is_sep(c) {
                 c += 1;
             }
-            while c < cols - 1 && !is_sep(c + 1) {
+            // If CJK: advance past its wide_continuation to include the full char.
+            if is_cjk_cell(c)
+                && c < cols - 1
+                && cell_at(c + 1).is_some_and(|cell| cell.wide_continuation)
+            {
                 c += 1;
+            } else if !is_cjk_cell(c) {
+                // Latin word char: expand through consecutive non-sep non-CJK non-wide_cont chars.
+                while c < cols - 1 {
+                    let next = cell_at(c + 1);
+                    if next.is_none_or(|cell| {
+                        cell.wide_continuation
+                            || WORD_SEPARATORS.contains(&cell.ch)
+                            || is_cjk(cell.ch)
+                    }) {
+                        break;
+                    }
+                    c += 1;
+                }
             }
             (generation, c)
         } else {
             // Expanding backward → snap to left boundary.
             let mut c = col;
+            // Skip past true separators going left.
             while c > 0 && is_sep(c) {
                 c -= 1;
             }
-            while c > 0 && !is_sep(c - 1) {
+            // If on a wide_continuation, step back to the real char.
+            if cell_at(c).is_some_and(|cell| cell.wide_continuation) && c > 0 {
                 c -= 1;
+            }
+            // CJK: stay at real char (word start). Latin: scan left to word start.
+            if !is_cjk_cell(c) {
+                while c > 0 {
+                    let prev = cell_at(c - 1);
+                    if prev.is_none_or(|cell| {
+                        cell.wide_continuation
+                            || WORD_SEPARATORS.contains(&cell.ch)
+                            || is_cjk(cell.ch)
+                    }) {
+                        break;
+                    }
+                    c -= 1;
+                }
             }
             (generation, c)
         }
@@ -1250,5 +1333,348 @@ mod tests {
         let screen = test_screen(3, 10);
         let snapped = SelectionModel::snap_line_cursor(&screen, 0, 2, (0, 5));
         assert_eq!(snapped, (0, 0));
+    }
+
+    // ── CJK word selection tests ────────────────────────────
+
+    /// Create a tiny screen and fill row 0 with the given string.
+    fn screen_with_text(text: &str) -> Screen {
+        let chars: Vec<char> = text.chars().collect();
+        let cols = chars.len();
+        let mut s = Screen::new(2, cols);
+        for (c, &ch) in chars.iter().enumerate() {
+            s.cell_mut(0, c).ch = ch;
+        }
+        s
+    }
+
+    #[test]
+    fn is_cjk_detects_ideographs() {
+        assert!(is_cjk('你'));
+        assert!(is_cjk('好'));
+        assert!(is_cjk('世'));
+        assert!(is_cjk('界'));
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk(' '));
+        assert!(!is_cjk('1'));
+    }
+
+    #[test]
+    fn is_cjk_detects_hiragana() {
+        assert!(is_cjk('あ'));
+        assert!(is_cjk('い'));
+    }
+
+    #[test]
+    fn is_cjk_detects_katakana() {
+        assert!(is_cjk('ア'));
+        assert!(is_cjk('イ'));
+    }
+
+    #[test]
+    fn is_cjk_detects_hangul() {
+        assert!(is_cjk('한'));
+        assert!(is_cjk('글'));
+    }
+
+    #[test]
+    fn find_word_range_cjk_groups_consecutive() {
+        // "你好世界" — all CJK, should select entire run.
+        let screen = screen_with_text("你好世界");
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 1); // click '好'
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 3));
+    }
+
+    #[test]
+    fn find_word_range_cjk_stops_at_separator() {
+        // "你好 世界" — space at col 2.
+        let screen = screen_with_text("你好 世界");
+        // Click '好' (col 1) — should select only "你好" (cols 0-1).
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 1);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 1));
+    }
+
+    #[test]
+    fn find_word_range_cjk_stops_at_latin() {
+        // "hello世界" — Latin then CJK.
+        let screen = screen_with_text("hello世界");
+        // Click '世' (col 5) — CJK group: only cols 5-6.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 5);
+        assert_eq!(start, (0, 5));
+        assert_eq!(end, (0, 6));
+        // Click 'o' (col 4) — Latin group: cols 0-4.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 4);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 4));
+    }
+
+    #[test]
+    fn find_word_range_latin_stops_at_cjk() {
+        // "你好world" — CJK then Latin.
+        let screen = screen_with_text("你好world");
+        // Click '你' (col 0) — CJK group: cols 0-1.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 0);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 1));
+        // Click 'w' (col 2) — Latin group: cols 2-6.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        assert_eq!(start, (0, 2));
+        assert_eq!(end, (0, 6));
+    }
+
+    #[test]
+    fn find_word_range_cjk_punctuation_is_zero_width() {
+        // CJK punctuation is in WORD_SEPARATORS, not in is_cjk.
+        let screen = screen_with_text("你好，世界");
+        // Click '，' (col 2) — separator → zero-width.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        assert_eq!(start, (0, 2));
+        assert_eq!(end, (0, 2));
+    }
+
+    #[test]
+    fn snap_word_cursor_cjk_forward_stays_at_char() {
+        // "你好世界abcdef"
+        let screen = screen_with_text("你好世界abcdef");
+        // anchor at 0, cursor dragged to col 2 (世) → should stay at 2.
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        assert_eq!(snapped, (0, 2));
+    }
+
+    #[test]
+    fn snap_word_cursor_cjk_forward_skips_sep_to_cjk() {
+        // "你好 世界" — cols: 0=你, 1=好, 2=' ', 3=世, 4=界
+        let screen = screen_with_text("你好 世界");
+        // anchor at 0, cursor dragged to col 2 (space) →
+        // forward snap skips space, lands on 世 (col 3), CJK → stay.
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        assert_eq!(snapped, (0, 3));
+    }
+
+    #[test]
+    fn snap_word_cursor_cjk_forward_to_latin_expands() {
+        // "你好world"
+        let screen = screen_with_text("你好world");
+        // anchor at 0, cursor dragged to col 2 (w) →
+        // skip seps? none. w is Latin → expand to end of "world".
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        assert_eq!(snapped, (0, 6));
+    }
+
+    #[test]
+    fn snap_word_cursor_cjk_backward_stays_at_char() {
+        // "你好世界"
+        let screen = screen_with_text("你好世界");
+        // anchor at 3, cursor dragged to col 1 (好) backward.
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 1, (0, 3));
+        assert_eq!(snapped, (0, 1));
+    }
+
+    #[test]
+    fn double_click_cjk_selects_consecutive_run() {
+        // "你好世界hello"
+        let screen = screen_with_text("你好世界hello");
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // First click: char selection.
+        model.press((0, 1), now, &screen); // click '好'
+        // Second click within timeout at same cell → double-click → Word mode.
+        let now2 = now + Duration::from_millis(200);
+        let outcome = model.press((0, 1), now2, &screen);
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+
+        let bounds = model.bounds().unwrap();
+        // Should select "你好世界" (CJK run, cols 0-3).
+        assert_eq!(bounds.start_row, 0);
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_row, 0);
+        assert_eq!(bounds.end_col, 3);
+    }
+
+    #[test]
+    fn double_click_cjk_then_drag_char_by_char() {
+        // "你好世界"
+        let screen = screen_with_text("你好世界");
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // Double-click '好' (col 1).
+        model.press((0, 1), now, &screen);
+        let now2 = now + Duration::from_millis(200);
+        model.press((0, 1), now2, &screen);
+
+        // Initial: entire "你好世界" (0..3).
+        assert_eq!(model.bounds().unwrap().start_col, 0);
+        assert_eq!(model.bounds().unwrap().end_col, 3);
+
+        // Drag to col 2 (世) — forward snap, CJK stays at 2.
+        model.drag_to((0, 2), &screen);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 2);
+
+        // Drag to col 1 (好) — selection should be 0..1.
+        model.drag_to((0, 1), &screen);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 1);
+
+        // Drag to col 0 (你) — zero-width (anchor == cursor).
+        model.drag_to((0, 0), &screen);
+        assert!(model.is_range_empty());
+    }
+
+    // ── Wide-character (CJK) regression tests ──────────────
+    //
+    // In the real terminal, CJK characters occupy 2 cells:
+    //   col 0: ch='你', wide_continuation=false
+    //   col 1: ch=' ',  wide_continuation=true
+    //   col 2: ch='好', wide_continuation=false
+    //   col 3: ch=' ',  wide_continuation=true
+    //   ...
+    // The wide_continuation cell's ch=' ' was falsely matching
+    // WORD_SEPARATORS, breaking word boundary detection.
+
+    /// Create a screen with proper wide_continuation cells for CJK characters.
+    fn screen_with_wide_text(text: &str) -> Screen {
+        let chars: Vec<char> = text.chars().collect();
+        // Compute total cols: each CJK char is 2 wide, others 1.
+        let total_cols: usize = chars
+            .iter()
+            .map(|&ch| {
+                use unicode_width::UnicodeWidthChar;
+                UnicodeWidthChar::width(ch).unwrap_or(0).max(1).min(2)
+            })
+            .sum();
+        let mut s = Screen::new(2, total_cols);
+        let mut col = 0;
+        for &ch in &chars {
+            use unicode_width::UnicodeWidthChar;
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1).min(2);
+            s.cell_mut(0, col).ch = ch;
+            for offset in 1..w {
+                let cont = s.cell_mut(0, col + offset);
+                cont.ch = ' ';
+                cont.wide_continuation = true;
+            }
+            col += w;
+        }
+        s
+    }
+
+    #[test]
+    fn find_word_range_wide_cjk_groups_consecutive() {
+        // "你好世界" as 8 wide cells.
+        let screen = screen_with_wide_text("你好世界");
+        // Click '好' at col 2 (real char cell).
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        assert_eq!(start, (0, 0)); // 你
+        assert_eq!(end, (0, 7)); // 界's wide_continuation
+    }
+
+    #[test]
+    fn find_word_range_wide_cjk_click_on_continuation_redirects() {
+        // Click on wide_continuation cell of '好' (col 3).
+        let screen = screen_with_wide_text("你好世界");
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 7));
+    }
+
+    #[test]
+    fn find_word_range_wide_cjk_stops_at_separator() {
+        // "你好 世界" — space at cols 4-4, then 世界 at 5-8.
+        let screen = screen_with_wide_text("你好 世界");
+        // Click '好' (col 2) → should select "你好" (cols 0-3).
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 3)); // includes 好's wide_continuation
+    }
+
+    #[test]
+    fn find_word_range_wide_cjk_stops_at_latin() {
+        // "hello世" — "hello" cols 0-4, "世" cols 5-6.
+        let screen = screen_with_wide_text("hello世");
+        // Click '世' (col 5) → CJK group: cols 5-6 only.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 5);
+        assert_eq!(start, (0, 5));
+        assert_eq!(end, (0, 6));
+        // Click 'o' (col 4) → Latin group: cols 0-4.
+        let (start, end) = SelectionModel::find_word_range(&screen, 0, 4);
+        assert_eq!(start, (0, 0));
+        assert_eq!(end, (0, 4));
+    }
+
+    #[test]
+    fn snap_word_cursor_wide_cjk_forward_snaps_to_char_end() {
+        // "你好世界" → 8 cells: 你(0),wc(1),好(2),wc(3),世(4),wc(5),界(6),wc(7)
+        let screen = screen_with_wide_text("你好世界");
+        // anchor at 0, cursor dragged to col 4 (世's real cell)
+        // → CJK: advance to wide_continuation at col 5.
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 4, (0, 0));
+        assert_eq!(snapped, (0, 5));
+    }
+
+    #[test]
+    fn snap_word_cursor_wide_cjk_backward_stays_at_char_start() {
+        let screen = screen_with_wide_text("你好世界");
+        // anchor at 7 (界's wc), cursor dragged to col 3 (好's wc).
+        // backward: skip seps, step off wc to col 2 (好), CJK → stay.
+        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 3, (0, 7));
+        assert_eq!(snapped, (0, 2));
+    }
+
+    #[test]
+    fn double_click_wide_cjk_selects_full_run() {
+        let screen = screen_with_wide_text("你好世界");
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        model.press((0, 2), now, &screen); // click '好' at col 2
+        let now2 = now + Duration::from_millis(200);
+        let outcome = model.press((0, 2), now2, &screen);
+        assert_eq!(outcome, SelectionOutcome::DragActive);
+
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 7);
+    }
+
+    #[test]
+    fn double_click_wide_cjk_then_drag_char_by_char() {
+        // "你好世界" → 8 cells.
+        let screen = screen_with_wide_text("你好世界");
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+
+        // Double-click '好' (col 2).
+        model.press((0, 2), now, &screen);
+        let now2 = now + Duration::from_millis(200);
+        model.press((0, 2), now2, &screen);
+
+        // Initial: entire run (0..7).
+        assert_eq!(model.bounds().unwrap().start_col, 0);
+        assert_eq!(model.bounds().unwrap().end_col, 7);
+
+        // Drag to col 4 (世) → snaps to col 5 (wc).
+        model.drag_to((0, 4), &screen);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 5); // 你好世
+
+        // Drag to col 2 (好) → snaps to col 3 (wc).
+        model.drag_to((0, 2), &screen);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 3); // 你好
+
+        // Drag to col 0 (你) → snaps to col 1 (wc).
+        model.drag_to((0, 0), &screen);
+        let bounds = model.bounds().unwrap();
+        assert_eq!(bounds.start_col, 0);
+        assert_eq!(bounds.end_col, 1); // 你
     }
 }
