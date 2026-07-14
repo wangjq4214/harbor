@@ -8,6 +8,7 @@ edition = "2024"
 anyhow = "1.0"
 thiserror = "2.0"
 unicode-width = "0.2"
+bitvec = "1.0"
 
 # basic lib
 dirs = "6.0"

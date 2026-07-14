@@ -1,6 +1,6 @@
-use super::NormalBuf;
 use super::normal_buf::CellsIter;
 use super::parser::params::Params;
+use super::{DirtyRange, NormalBuf};
 
 use unicode_width::UnicodeWidthChar;
 
@@ -777,17 +777,29 @@ impl Screen {
     }
 
     /// Returns dirty display-row indices (Vec for direct iteration).
+    #[cfg(test)]
     pub(crate) fn dirty_rows(&self) -> Vec<usize> {
         self.normal.dirty_rows()
     }
 
+    pub(crate) fn dirty_ranges(&self) -> Vec<DirtyRange> {
+        self.normal.dirty_ranges()
+    }
     /// Resets all dirty flags to false.
     pub(crate) fn clear_dirty(&mut self) {
         self.normal.clear_dirty()
     }
 
-    fn mark_row_dirty(&mut self, row: usize) {
+    pub(crate) fn mark_row_dirty(&mut self, row: usize) {
         self.normal.mark_row_dirty(row);
+    }
+
+    pub(crate) fn mark_rows_dirty(&mut self, start_row: usize, end_row: usize) {
+        self.normal.mark_rows_dirty(start_row, end_row);
+    }
+
+    pub(crate) fn mark_range_dirty(&mut self, row: usize, start_col: usize, end_col: usize) {
+        self.normal.mark_range_dirty(row, start_col, end_col);
     }
 
     pub(crate) fn mark_all_dirty(&mut self) {
@@ -960,7 +972,15 @@ impl Screen {
             self.insert_chars(width);
         }
 
-        self.mark_row_dirty(self.cursor.y);
+        let start_x = self.cursor.x;
+        let start_col = if start_x > 0 && self.normal.cell(self.cursor.y, start_x).wide_continuation
+        {
+            start_x - 1
+        } else {
+            start_x
+        };
+        let end_col = (start_x + width + 1).min(self.normal.cols());
+        self.mark_range_dirty(self.cursor.y, start_col, end_col);
 
         let index = self.normal.display_to_ring(self.cursor.y) * self.normal.cols() + self.cursor.x;
         self.clear_cell_for_write(index);
@@ -1160,7 +1180,7 @@ impl Screen {
 
         match mode {
             0 => {
-                self.mark_row_dirty(self.cursor.y);
+                self.mark_range_dirty(self.cursor.y, self.cursor.x, right_col + 1);
                 let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start = ring_row * cols + self.cursor.x;
                 let end = ring_row * cols + right_col + 1;
@@ -1185,7 +1205,7 @@ impl Screen {
                         cell,
                     );
                 }
-                self.mark_row_dirty(self.cursor.y);
+                self.mark_range_dirty(self.cursor.y, left_col, self.cursor.x + 1);
                 let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start = ring_row * cols + left_col;
                 let end = ring_row * cols + self.cursor.x + 1;
@@ -1193,7 +1213,6 @@ impl Screen {
             }
             2 => {
                 for row in 0..self.normal.rows() {
-                    self.mark_row_dirty(row);
                     let r_row = self.normal.display_to_ring(row);
                     self.normal.fill_linear_range_with(
                         r_row * cols + left_col,
@@ -1227,7 +1246,17 @@ impl Screen {
         let start = ring_row * cols + left_col;
         let cursor = ring_row * cols + self.cursor.x;
         let end = ring_row * cols + right_col + 1;
-        self.mark_row_dirty(self.cursor.y);
+        // Extend range by ±1 to cover wide characters that may be split at the boundary.
+        match mode {
+            0 => self.mark_range_dirty(
+                self.cursor.y,
+                self.cursor.x.saturating_sub(1),
+                right_col + 1,
+            ),
+            1 => self.mark_range_dirty(self.cursor.y, left_col, (self.cursor.x + 2).min(cols)),
+            2 => self.mark_range_dirty(self.cursor.y, left_col, right_col + 1),
+            _ => {}
+        }
         match mode {
             0 => self.normal.fill_linear_range_with(cursor, end, cell),
             1 => self.normal.fill_linear_range_with(start, cursor + 1, cell),
@@ -1249,7 +1278,6 @@ impl Screen {
         self.modes.pending_wrap = false;
         let cell = self.erase_cell();
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor.y);
         let ring_row = self.normal.display_to_ring(self.cursor.y);
         let cols = self.normal.cols();
         let right_col = if self.margins.enabled {
@@ -1257,6 +1285,12 @@ impl Screen {
         } else {
             cols - 1
         };
+        let end_col = (self.cursor.x + n).min(right_col + 1);
+        self.mark_range_dirty(
+            self.cursor.y,
+            self.cursor.x.saturating_sub(1),
+            (end_col + 1).min(cols),
+        );
         let start = ring_row * cols + self.cursor.x;
         let end = (start + n).min(ring_row * cols + right_col + 1);
         self.normal.fill_linear_range_with(start, end, cell);
@@ -1278,7 +1312,7 @@ impl Screen {
 
         match mode {
             0 => {
-                self.mark_row_dirty(self.cursor.y);
+                self.mark_range_dirty(self.cursor.y, self.cursor.x, right_col + 1);
                 let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start_idx = ring_row * cols + self.cursor.x;
                 let row_end = ring_row * cols + right_col + 1;
@@ -1289,7 +1323,7 @@ impl Screen {
                     }
                 }
                 for row in self.cursor.y + 1..self.normal.rows() {
-                    self.mark_row_dirty(row);
+                    self.mark_range_dirty(row, left_col, right_col + 1);
                     let r_row = self.normal.display_to_ring(row);
                     let r_start = r_row * cols + left_col;
                     let r_end = r_row * cols + right_col + 1;
@@ -1303,7 +1337,7 @@ impl Screen {
             }
             1 => {
                 for row in 0..self.cursor.y {
-                    self.mark_row_dirty(row);
+                    self.mark_range_dirty(row, left_col, right_col + 1);
                     let r_row = self.normal.display_to_ring(row);
                     let r_start = r_row * cols + left_col;
                     let r_end = r_row * cols + right_col + 1;
@@ -1314,7 +1348,7 @@ impl Screen {
                         }
                     }
                 }
-                self.mark_row_dirty(self.cursor.y);
+                self.mark_range_dirty(self.cursor.y, left_col, self.cursor.x + 1);
                 let ring_row = self.normal.display_to_ring(self.cursor.y);
                 let start_idx = ring_row * cols + left_col;
                 let end_idx = ring_row * cols + self.cursor.x + 1;
@@ -1327,7 +1361,7 @@ impl Screen {
             }
             2 => {
                 for row in 0..self.normal.rows() {
-                    self.mark_row_dirty(row);
+                    self.mark_range_dirty(row, left_col, right_col + 1);
                     let r_row = self.normal.display_to_ring(row);
                     let r_start = r_row * cols + left_col;
                     let r_end = r_row * cols + right_col + 1;
@@ -1360,9 +1394,9 @@ impl Screen {
         let start_idx = ring_row * cols + left_col;
         let cursor_idx = ring_row * cols + self.cursor.x;
         let end_idx = ring_row * cols + right_col + 1;
-        self.mark_row_dirty(self.cursor.y);
         match mode {
             0 => {
+                self.mark_range_dirty(self.cursor.y, self.cursor.x, right_col + 1);
                 for idx in cursor_idx..end_idx {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1371,6 +1405,7 @@ impl Screen {
                 }
             }
             1 => {
+                self.mark_range_dirty(self.cursor.y, left_col, self.cursor.x + 1);
                 for idx in start_idx..=cursor_idx {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1379,6 +1414,7 @@ impl Screen {
                 }
             }
             2 => {
+                self.mark_range_dirty(self.cursor.y, left_col, right_col + 1);
                 for idx in start_idx..end_idx {
                     let cell = self.normal.cell_linear_mut(idx);
                     if !cell.protected {
@@ -1492,9 +1528,10 @@ impl Screen {
 
         if self.cursor.y == self.scroll_region.top && self.cursor.y <= self.scroll_region.bottom {
             // Mark only region rows dirty.
-            for row in self.scroll_region.top..=self.scroll_region.bottom {
-                self.mark_row_dirty(row);
-            }
+            self.mark_rows_dirty(
+                self.scroll_region.top,
+                self.scroll_region.bottom.saturating_add(1),
+            );
             if self.margins.enabled {
                 self.scroll_margin_rect_down(self.scroll_region.top, self.scroll_region.bottom, 1);
             } else if self.scroll_region.top == 0
@@ -1557,9 +1594,10 @@ impl Screen {
             "scroll_region_up_one"
         );
 
-        for row in self.scroll_region.top..=self.scroll_region.bottom {
-            self.mark_row_dirty(row);
-        }
+        self.mark_rows_dirty(
+            self.scroll_region.top,
+            self.scroll_region.bottom.saturating_add(1),
+        );
         if self.margins.enabled {
             self.scroll_margin_rect_up(self.scroll_region.top, self.scroll_region.bottom, 1);
         } else if self.scroll_region.top == 0 && self.scroll_region.bottom == self.normal.rows() - 1
@@ -1633,13 +1671,13 @@ impl Screen {
     pub(crate) fn insert_chars(&mut self, n: usize) {
         self.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor.y);
         let col = self.cursor.x;
         let (left, right) = if self.margins.enabled {
             (self.margins.left, self.margins.right)
         } else {
             (0, self.normal.cols() - 1)
         };
+        self.mark_range_dirty(self.cursor.y, col.saturating_sub(1), right + 1);
         if col < left || col > right {
             return;
         }
@@ -1669,13 +1707,13 @@ impl Screen {
     pub(crate) fn delete_chars(&mut self, n: usize) {
         self.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
-        self.mark_row_dirty(self.cursor.y);
         let col = self.cursor.x;
         let (left, right) = if self.margins.enabled {
             (self.margins.left, self.margins.right)
         } else {
             (0, self.normal.cols() - 1)
         };
+        self.mark_range_dirty(self.cursor.y, col.saturating_sub(1), right + 1);
         if col < left || col > right {
             return;
         }
@@ -1707,9 +1745,7 @@ impl Screen {
         let max_n = self.scroll_region.bottom - self.cursor.y + 1;
         let n = n.min(max_n);
         // Mark all affected rows dirty.
-        for row in self.cursor.y..=self.scroll_region.bottom {
-            self.mark_row_dirty(row);
-        }
+        self.mark_rows_dirty(self.cursor.y, self.scroll_region.bottom.saturating_add(1));
         if self.margins.enabled {
             self.scroll_margin_rect_down(self.cursor.y, self.scroll_region.bottom, n);
             self.cursor.x = 0;
@@ -1752,9 +1788,7 @@ impl Screen {
         let max_n = self.scroll_region.bottom - self.cursor.y + 1;
         let n = n.min(max_n);
         // Mark all affected rows dirty.
-        for row in self.cursor.y..=self.scroll_region.bottom {
-            self.mark_row_dirty(row);
-        }
+        self.mark_rows_dirty(self.cursor.y, self.scroll_region.bottom.saturating_add(1));
         if self.margins.enabled {
             self.scroll_margin_rect_up(self.cursor.y, self.scroll_region.bottom, n);
             self.cursor.x = 0;
@@ -2046,7 +2080,7 @@ impl Screen {
         };
         let erase = self.erase_cell();
         for row in t..=b {
-            self.mark_row_dirty(row);
+            self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 *self.normal.cell_mut(row, col) = erase;
             }
@@ -2070,7 +2104,7 @@ impl Screen {
         };
         let erase = self.erase_cell();
         for row in t..=b {
-            self.mark_row_dirty(row);
+            self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 let cell = self.normal.cell_mut(row, col);
                 if !cell.protected {
@@ -2112,7 +2146,7 @@ impl Screen {
         };
 
         for row in t..=b {
-            self.mark_row_dirty(row);
+            self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 *self.normal.cell_mut(row, col) = cell;
             }
@@ -2168,7 +2202,7 @@ impl Screen {
             if dest_row >= max_rows {
                 break;
             }
-            self.mark_row_dirty(dest_row);
+            self.mark_range_dirty(dest_row, dl_start, (dl_start + width).min(max_cols));
             for w in 0..width {
                 let dest_col = dl_start + w;
                 if dest_col >= max_cols {
@@ -2228,7 +2262,7 @@ impl Screen {
         };
 
         for row in t..=b {
-            self.mark_row_dirty(row);
+            self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 let cell = self.normal.cell_mut(row, col);
                 for idx in 4..params.len {
@@ -2270,7 +2304,7 @@ impl Screen {
         };
 
         for row in t..=b {
-            self.mark_row_dirty(row);
+            self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 let cell = self.normal.cell_mut(row, col);
                 for idx in 4..params.len {
@@ -2343,6 +2377,7 @@ impl Screen {
     pub(crate) fn exit_alt(&mut self) {
         if let Some(saved) = self.alt_saved.take() {
             *self = *saved;
+            self.mark_all_dirty();
         }
         self.in_alt = false;
     }

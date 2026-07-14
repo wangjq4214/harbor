@@ -6,7 +6,7 @@ use crate::{
         Component,
         gpu::{self, ColoredVertex, GpuContext},
     },
-    terminal::{CellAttrs, Color, Screen},
+    terminal::{CellAttrs, Color, DirtyRange, Screen},
 };
 
 // ── BackgroundLayer ───────────────────────────────────────────────────────────
@@ -74,8 +74,30 @@ impl Background {
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
-        let mut verts = Vec::with_capacity(screen.cols() * 6);
-        for col in 0..screen.cols() {
+        Self::build_background_range_vertices(
+            cell_width,
+            line_height,
+            row,
+            0,
+            screen.cols(),
+            screen,
+            surf_w,
+            surf_h,
+        )
+    }
+
+    pub(crate) fn build_background_range_vertices(
+        cell_width: f32,
+        line_height: f32,
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        screen: &Screen,
+        surf_w: f32,
+        surf_h: f32,
+    ) -> Vec<ColoredVertex> {
+        let mut verts = Vec::with_capacity((end_col - start_col) * 6);
+        for col in start_col..end_col {
             let cell = screen.cell(row, col);
             let inverse = cell.attrs.contains(CellAttrs::INVERSE);
             if cell.bg != Color::Default || (inverse && cell.fg != Color::Default) {
@@ -118,11 +140,13 @@ impl Background {
     }
 }
 
-impl Component for Background {
-    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
-        let Some(screen) = screen else {
-            return;
-        };
+impl Background {
+    pub(crate) fn prepare_with_dirty(
+        &mut self,
+        gpu: &GpuContext,
+        screen: &Screen,
+        dirty_ranges: &[DirtyRange],
+    ) {
         let (surf_w, surf_h) = gpu.surface_size();
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
@@ -150,8 +174,7 @@ impl Component for Background {
         }
 
         // Dirty check: skip upload if nothing changed.
-        let any_dirty_rows = !screen.dirty_rows().is_empty();
-        if !self.dirty && !any_dirty_rows {
+        if !self.dirty && dirty_ranges.is_empty() {
             return;
         }
 
@@ -162,25 +185,37 @@ impl Component for Background {
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
-            for row in screen.dirty_rows() {
-                let row_verts = Self::build_background_row_vertices(
+            for range in dirty_ranges {
+                let range_verts = Self::build_background_range_vertices(
                     self.cell_width,
                     self.line_height,
-                    row,
+                    range.row,
+                    range.start_col,
+                    range.end_col,
                     screen,
                     surf_w as f32,
                     surf_h as f32,
                 );
-                let offset = row * screen.cols() * 6 * std::mem::size_of::<ColoredVertex>();
+                let offset = (range.row * screen.cols() + range.start_col)
+                    * 6
+                    * std::mem::size_of::<ColoredVertex>();
                 gpu.queue().write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
-                    bytemuck::cast_slice(&row_verts),
+                    bytemuck::cast_slice(&range_verts),
                 );
             }
         }
 
         self.dirty = false;
+    }
+}
+
+impl Component for Background {
+    fn prepare(&mut self, gpu: &GpuContext, screen: Option<&Screen>) {
+        if let Some(screen) = screen {
+            self.prepare_with_dirty(gpu, screen, &screen.dirty_ranges());
+        }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass) {

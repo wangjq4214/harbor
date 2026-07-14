@@ -58,9 +58,12 @@ impl UiRoot {
     /// Uploads dirty GPU resources for all five components.
     /// Called after terminal content changes or resize.
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
-        self.background.prepare(gpu, Some(screen));
-        self.text.prepare(gpu, Some(screen));
-        self.decoration.prepare(gpu, Some(screen));
+        let dirty_ranges = screen.dirty_ranges();
+        self.background
+            .prepare_with_dirty(gpu, screen, &dirty_ranges);
+        self.text.prepare_with_dirty(gpu, screen, &dirty_ranges);
+        self.decoration
+            .prepare_with_dirty(gpu, screen, &dirty_ranges);
         self.selection.prepare(gpu, Some(screen));
         self.cursor.prepare(gpu, Some(screen));
         self.scrollbar.prepare(gpu, Some(screen));

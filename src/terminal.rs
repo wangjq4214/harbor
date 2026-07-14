@@ -1,10 +1,11 @@
+mod damage;
 mod normal_buf;
 mod parser;
 mod screen;
-
 #[cfg(test)]
 mod tests;
 
+pub(crate) use damage::DirtyRange;
 pub(crate) use normal_buf::NormalBuf;
 use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;

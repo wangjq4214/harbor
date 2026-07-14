@@ -1,3 +1,4 @@
+use crate::terminal::damage::{DamageTracker, DirtyRange};
 use crate::terminal::screen::Cell;
 
 /// Ring-buffer backed scrollback buffer.
@@ -24,8 +25,8 @@ pub(crate) struct NormalBuf {
     scroll_count: usize,
     /// View offset from live bottom: 0 = bottom (live), >0 = scrolled back.
     view_offset: usize,
-    /// Dirty flags indexed by *display* row.
-    dirty_rows: Vec<bool>,
+    /// Damage tracker.
+    damage_tracker: DamageTracker,
     /// Maximum scrollback row count (hard-coded for now).
     max_scrollback: usize,
     /// Monotonically increasing scrollback generation base.
@@ -46,8 +47,8 @@ impl NormalBuf {
             scroll_count: 0,
             max_scrollback,
             view_offset: 0,
-            dirty_rows: vec![true; rows],
             history_start: 0,
+            damage_tracker: DamageTracker::new(rows, cols),
         }
     }
 
@@ -69,7 +70,7 @@ impl NormalBuf {
         self.scroll_count
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_scrolled_back(&self) -> bool {
         self.view_offset > 0
     }
@@ -85,8 +86,7 @@ impl NormalBuf {
     pub(crate) fn history_start(&self) -> u64 {
         self.history_start
     }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
@@ -192,29 +192,52 @@ impl NormalBuf {
     ///
     /// When `view_offset > 0` (scrolled back), every visible row is
     /// considered dirty.
+    #[cfg(test)]
     pub(crate) fn dirty_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self.dirty_ranges().into_iter().map(|r| r.row).collect();
+        rows.dedup();
+        rows
+    }
+
+    pub(crate) fn dirty_ranges(&self) -> Vec<DirtyRange> {
         if self.view_offset > 0 {
-            (0..self.visible_rows).collect()
-        } else {
-            self.dirty_rows
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &d)| if d { Some(i) } else { None })
+            (0..self.visible_rows)
+                .map(|row| DirtyRange {
+                    row,
+                    start_col: 0,
+                    end_col: self.cols,
+                })
                 .collect()
+        } else {
+            self.damage_tracker.dirty_ranges()
         }
     }
 
     /// Resets all dirty flags to false.
     pub(crate) fn clear_dirty(&mut self) {
-        self.dirty_rows.fill(false);
+        self.damage_tracker.clear();
     }
 
     pub(crate) fn mark_row_dirty(&mut self, display_row: usize) {
-        self.dirty_rows[display_row] = true;
+        self.damage_tracker.mark_row_dirty(display_row);
+    }
+
+    pub(crate) fn mark_rows_dirty(&mut self, start_row: usize, end_row: usize) {
+        self.damage_tracker.mark_rows_dirty(start_row, end_row);
+    }
+
+    pub(crate) fn mark_range_dirty(
+        &mut self,
+        display_row: usize,
+        start_col: usize,
+        end_col: usize,
+    ) {
+        self.damage_tracker
+            .mark_range_dirty(display_row, start_col, end_col);
     }
 
     pub(crate) fn mark_all_dirty(&mut self) {
-        self.dirty_rows.fill(true);
+        self.damage_tracker.mark_all_dirty();
     }
 
     /// Read a cell by stable generation coordinate.
@@ -281,7 +304,8 @@ impl NormalBuf {
         if self.view_offset > 0 {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
         }
-        self.dirty_rows.fill(true);
+        // TODO: row remapping would reduce this to O(n)
+        self.mark_all_dirty();
 
         tracing::debug!(
             n,
@@ -333,7 +357,7 @@ impl NormalBuf {
         self.scroll_count = 0;
         self.view_offset = 0;
         self.history_start = 0;
-        self.dirty_rows = vec![true; rows];
+        self.damage_tracker.resize(rows, cols);
 
         tracing::debug!(
             new_visible_start = self.visible_start,
@@ -481,10 +505,7 @@ mod tests {
             "ring head should advance by 1"
         );
         assert!(buf.scroll_count >= 1, "scrollback should increase");
-        assert!(
-            buf.dirty_rows.iter().all(|&d| d),
-            "all rows should be dirty"
-        );
+        assert_eq!(buf.dirty_rows().len(), 2, "all rows should be dirty");
     }
 
     #[test]
@@ -494,7 +515,7 @@ mod tests {
         buf.scroll_count = 5;
         buf.scroll_up(2);
         assert_eq!(buf.view_offset, 2);
-        assert!(buf.dirty_rows.iter().all(|&d| d));
+        assert_eq!(buf.dirty_rows().len(), 3);
     }
 
     #[test]
@@ -517,7 +538,7 @@ mod tests {
         assert_eq!(buf.cols(), 5);
         assert_eq!(buf.scroll_count, 0, "scrollback discarded");
         assert_eq!(buf.view_offset, 0);
-        assert!(buf.dirty_rows.iter().all(|&d| d));
+        assert_eq!(buf.dirty_rows().len(), 4);
     }
 
     #[test]
