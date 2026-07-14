@@ -406,13 +406,13 @@ impl SelectionModel {
         let clicked_is_cjk = is_cjk(clicked_ch);
 
         // Decide what qualifies as "in the same word":
-        // - wide_continuation cells are transparent (inherit from prev char)
+        // - wide_continuation cells are transparent only when grouping CJK chars
         // - CJK → only consecutive CJK chars (stop at separators or non-CJK)
         // - Latin/etc → only non-separator non-CJK chars (stop at separators or CJK)
         let in_same_word = |c: usize| -> bool {
             let Some(cell) = cell_at(c) else { return false };
             if cell.wide_continuation {
-                return true; // transparent — part of the preceding char's word
+                return clicked_is_cjk;
             }
             if WORD_SEPARATORS.contains(&cell.ch) {
                 return false;
@@ -455,6 +455,12 @@ impl SelectionModel {
         let is_cjk_cell =
             |c: usize| cell_at(c).is_some_and(|cell| !cell.wide_continuation && is_cjk(cell.ch));
         let cols = screen.cols();
+        // True word boundary: separator, CJK char, or wide_continuation cell.
+        let is_boundary = |c: usize| {
+            cell_at(c).is_none_or(|cell| {
+                cell.wide_continuation || WORD_SEPARATORS.contains(&cell.ch) || is_cjk(cell.ch)
+            })
+        };
 
         if (generation, col) >= anchor {
             // Expanding forward → snap to right boundary.
@@ -462,6 +468,11 @@ impl SelectionModel {
             // Skip past true separators.
             while c < cols - 1 && is_sep(c) {
                 c += 1;
+            }
+            // If we landed on a CJK wide_continuation, we're already at the
+            // character's right edge — no further expansion.
+            if cell_at(c).is_some_and(|cell| cell.wide_continuation) {
+                return (generation, c);
             }
             // If CJK: advance past its wide_continuation to include the full char.
             if is_cjk_cell(c)
@@ -472,12 +483,7 @@ impl SelectionModel {
             } else if !is_cjk_cell(c) {
                 // Latin word char: expand through consecutive non-sep non-CJK non-wide_cont chars.
                 while c < cols - 1 {
-                    let next = cell_at(c + 1);
-                    if next.is_none_or(|cell| {
-                        cell.wide_continuation
-                            || WORD_SEPARATORS.contains(&cell.ch)
-                            || is_cjk(cell.ch)
-                    }) {
+                    if is_boundary(c + 1) {
                         break;
                     }
                     c += 1;
@@ -498,12 +504,7 @@ impl SelectionModel {
             // CJK: stay at real char (word start). Latin: scan left to word start.
             if !is_cjk_cell(c) {
                 while c > 0 {
-                    let prev = cell_at(c - 1);
-                    if prev.is_none_or(|cell| {
-                        cell.wide_continuation
-                            || WORD_SEPARATORS.contains(&cell.ch)
-                            || is_cjk(cell.ch)
-                    }) {
+                    if is_boundary(c - 1) {
                         break;
                     }
                     c -= 1;
@@ -1546,14 +1547,14 @@ mod tests {
             .iter()
             .map(|&ch| {
                 use unicode_width::UnicodeWidthChar;
-                UnicodeWidthChar::width(ch).unwrap_or(0).max(1).min(2)
+                UnicodeWidthChar::width(ch).unwrap_or(0).clamp(1, 2)
             })
             .sum();
         let mut s = Screen::new(2, total_cols);
         let mut col = 0;
         for &ch in &chars {
             use unicode_width::UnicodeWidthChar;
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1).min(2);
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0).clamp(1, 2);
             s.cell_mut(0, col).ch = ch;
             for offset in 1..w {
                 let cont = s.cell_mut(0, col + offset);
