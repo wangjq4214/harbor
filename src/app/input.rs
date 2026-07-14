@@ -305,6 +305,7 @@ pub(super) fn keyboard_input_bytes(
             }
         }
         Key::Named(NamedKey::Escape) => Some(Cow::Borrowed(b"\x1b")),
+        Key::Named(NamedKey::Space) => Some(Cow::Borrowed(b" ")),
         Key::Named(name) => {
             named_key_desc(name).map(|d| render_csi_key(&d, modifier_code, application_cursor))
         }
