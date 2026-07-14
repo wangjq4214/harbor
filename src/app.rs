@@ -8,7 +8,7 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    keyboard::ModifiersState,
+    keyboard::{Key, ModifiersState},
     window::{Window, WindowId},
 };
 
@@ -136,12 +136,41 @@ impl ApplicationHandler<AppEvent> for App {
         // Interactive layers first — each gets only the rights it needs.
         // Scope so gpu/terminal borrows are released before prepare-on-Handled.
         let handled = ui.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
-        if handled == EventResult::Handled {
-            ui.prepare(
-                self.gpu.as_mut().unwrap(),
-                self.terminal.as_ref().unwrap().screen(),
+
+        // Detect Ctrl+C copy — the only keyboard event that should NOT
+        // scroll to bottom (user is reading scrollback while copying).
+        let is_copy = self.modifiers.control_key()
+            && matches!(&event, WindowEvent::KeyboardInput { event: kbd, .. }
+                if kbd.state == ElementState::Pressed
+                && matches!(&kbd.logical_key, Key::Character(ch) if ch == "c" || ch == "C")
             );
+
+        // Scroll to bottom on keyboard input that produces visible text.
+        // Bare modifiers, arrow keys, F-keys, and Ctrl+C copy don't scroll.
+        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
+            && kbd.state == ElementState::Pressed
+            && kbd.text.is_some()
+            && !(handled == EventResult::Handled && is_copy)
+        {
+            terminal.scroll_viewport_to_bottom();
+        }
+
+        // Handled events (copy, paste): prepare + redraw so the GPU
+        // vertex buffer reflects the cleared selection, then return
+        // early to avoid forwarding the key to the PTY.
+        if handled == EventResult::Handled {
+            ui.prepare(gpu, terminal.screen());
+            window.request_redraw();
             return;
+        }
+
+        // Unhandled keyboard: prepare + redraw so the cleared
+        // selection is rendered before the PTY output arrives.
+        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
+            && kbd.state == ElementState::Pressed
+        {
+            ui.prepare(gpu, terminal.screen());
+            window.request_redraw();
         }
 
         match event {
@@ -199,8 +228,6 @@ impl ApplicationHandler<AppEvent> for App {
                 event,
                 is_synthetic: _,
             } if event.state == ElementState::Pressed => {
-                terminal.scroll_viewport_to_bottom();
-
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
                 let Some(bytes) = keyboard_input_bytes(
                     &event.logical_key,

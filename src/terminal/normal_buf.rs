@@ -28,11 +28,13 @@ pub(crate) struct NormalBuf {
     dirty_rows: Vec<bool>,
     /// Maximum scrollback row count (hard-coded for now).
     max_scrollback: usize,
+    /// Monotonically increasing scrollback generation base.
+    /// Incremented when ring-buffer wraparound evicts old rows.
+    history_start: u64,
 }
 
 impl NormalBuf {
     const DEFAULT_MAX_SCROLLBACK: usize = 1000;
-
     pub(crate) fn new(rows: usize, cols: usize) -> Self {
         let max_scrollback = Self::DEFAULT_MAX_SCROLLBACK;
         Self {
@@ -45,6 +47,7 @@ impl NormalBuf {
             max_scrollback,
             view_offset: 0,
             dirty_rows: vec![true; rows],
+            history_start: 0,
         }
     }
 
@@ -66,6 +69,7 @@ impl NormalBuf {
         self.scroll_count
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_scrolled_back(&self) -> bool {
         self.view_offset > 0
     }
@@ -78,6 +82,11 @@ impl NormalBuf {
         self.visible_start
     }
 
+    pub(crate) fn history_start(&self) -> u64 {
+        self.history_start
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
@@ -127,6 +136,7 @@ impl NormalBuf {
     }
 
     /// Returns the text content of a display row as a string.
+    #[allow(dead_code)]
     pub(crate) fn row_text(&self, row: usize) -> String {
         assert!(row < self.visible_rows, "terminal row out of bounds");
         let ring_row = self.display_to_ring(row);
@@ -207,6 +217,22 @@ impl NormalBuf {
         self.dirty_rows.fill(true);
     }
 
+    /// Read a cell by stable generation coordinate.
+    /// Returns `None` when the generation has been evicted from the ring buffer.
+    pub(crate) fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
+        debug_assert!(col < self.cols);
+        if generation < self.history_start {
+            return None;
+        }
+        let offset = (generation - self.history_start) as usize;
+        if offset >= self.scroll_count + self.visible_rows {
+            return None;
+        }
+        let ring_row =
+            (self.visible_start + self.total_rows - self.scroll_count + offset) % self.total_rows;
+        Some(&self.cells[ring_row * self.cols + col])
+    }
+
     // ── viewport scroll (user scrolling through history) ────────────
 
     /// Scroll the viewport up by `n` rows (toward older history).
@@ -241,8 +267,12 @@ impl NormalBuf {
         );
 
         let n = n.min(self.visible_rows);
+        let old_sc = self.scroll_count;
         self.scroll_count = (self.scroll_count + n).min(self.max_scrollback);
         self.visible_start = (self.visible_start + n) % self.total_rows;
+        if old_sc + n > self.max_scrollback {
+            self.history_start += (old_sc + n - self.max_scrollback) as u64;
+        }
         // Blank the newly exposed rows at the bottom of the viewport.
         for i in 0..n {
             let row = (self.visible_start + self.visible_rows - 1 - i) % self.total_rows;
@@ -302,6 +332,7 @@ impl NormalBuf {
         self.visible_start = self.max_scrollback;
         self.scroll_count = 0;
         self.view_offset = 0;
+        self.history_start = 0;
         self.dirty_rows = vec![true; rows];
 
         tracing::debug!(
@@ -495,5 +526,61 @@ mod tests {
         let iter = buf.cells();
         assert_eq!(iter.len(), 6);
         assert_eq!(iter.size_hint(), (6, Some(6)));
+    }
+
+    // ── generation stability ───────────────────────────────────────
+
+    #[test]
+    fn history_starts_at_zero() {
+        let buf = NormalBuf::new(5, 10);
+        assert_eq!(buf.history_start(), 0);
+    }
+
+    #[test]
+    fn scroll_up_full_screen_eviction_increments_history_start() {
+        let mut buf = NormalBuf::new(5, 3);
+        let max = buf.max_scrollback();
+        for _ in 0..max + 10 {
+            buf.scroll_up_full_screen(1, Cell::default());
+        }
+        assert_eq!(buf.history_start(), 10);
+        assert_eq!(buf.scroll_count(), max);
+    }
+
+    #[test]
+    fn cell_at_generation_returns_none_for_evicted() {
+        let mut buf = NormalBuf::new(5, 3);
+        let max = buf.max_scrollback();
+        for _ in 0..max + 1 {
+            buf.scroll_up_full_screen(1, Cell::default());
+        }
+        assert!(
+            buf.cell_at_generation(0, 0).is_none(),
+            "evicted gen should be None"
+        );
+        assert!(
+            buf.cell_at_generation(buf.history_start(), 0).is_some(),
+            "oldest valid gen should be Some"
+        );
+    }
+
+    #[test]
+    fn cell_at_generation_returns_correct_content() {
+        let mut buf = NormalBuf::new(5, 3);
+        buf.live_cell_mut(0, 0).ch = 'X';
+        let cell = buf
+            .cell_at_generation(0, 0)
+            .expect("valid gen should return cell");
+        assert_eq!(cell.ch, 'X');
+    }
+
+    #[test]
+    fn cell_at_generation_out_of_range_returns_none() {
+        let buf = NormalBuf::new(5, 3);
+        let max_gen = buf.scroll_count() + buf.rows();
+        assert!(
+            buf.cell_at_generation(max_gen as u64, 0).is_none(),
+            "gen past end should be None"
+        );
     }
 }

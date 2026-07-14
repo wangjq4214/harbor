@@ -1688,3 +1688,118 @@ fn alt_screen_restores_all_state_groups() {
     assert_eq!(screen.cursor.x, 5, "saved cursor x restored");
     assert_eq!(screen.cursor.y, 2, "saved cursor y restored");
 }
+
+// ── selected_text with generation coordinates ─────────────────
+
+#[test]
+fn selected_text_across_scrollback_generations() {
+    let mut screen = Screen::new(5, 3);
+    // Write identifiable content to display rows.
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.cell_mut(1, 0).ch = 'B';
+    screen.cell_mut(2, 0).ch = 'C';
+    // Push into scrollback.
+    screen.normal.scroll_up_full_screen(3, Cell::default());
+    // Now gen 0 = 'A', gen 1 = 'B', gen 2 = 'C'.
+    // Write fresh content to new visible rows.
+    screen.cell_mut(0, 0).ch = 'X'; // gen 3
+    screen.cell_mut(1, 0).ch = 'Y'; // gen 4
+
+    // Select gens 0-4 — spans scrollback + visible.
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 4,
+        end_col: 0,
+    });
+    assert_eq!(result, "A\nB\nC\nX\nY", "scrollback+visible selection");
+
+    // Select just visible range (gens 3-4).
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 3,
+        start_col: 0,
+        end_row: 4,
+        end_col: 0,
+    });
+    assert_eq!(result, "X\nY", "visible-only selection via generation");
+
+    // Select just scrollback (gens 0-1).
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 1,
+        end_col: 0,
+    });
+    assert_eq!(result, "A\nB", "scrollback-only selection via generation");
+}
+
+#[test]
+fn selected_text_evicted_generation_skipped() {
+    let mut screen = Screen::new(5, 3);
+    let max = screen.normal.max_scrollback();
+
+    // Write a marker at gen 0.
+    screen.cell_mut(0, 0).ch = 'M';
+    // Fill the ring until gen 0 is evicted (max+1 scrolls).
+    for _ in 0..max + 1 {
+        screen.normal.scroll_up_full_screen(1, Cell::default());
+    }
+    // gen 0 is now evicted (history_start = 1).
+
+    // Write fresh content to new display rows.
+    screen.cell_mut(0, 0).ch = 'N'; // gen = history_start + scroll_count - view_offset + 0
+
+    // Selecting gen 0 should skip it (not panic).
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 0,
+    });
+    assert_eq!(
+        result, "",
+        "evicted gen produces empty selection, not panic"
+    );
+
+    // Select the current generation (display row 0 after max+1 scrolls).
+    let hist_start = screen.normal.history_start();
+    let scroll_count = screen.normal.scroll_count();
+    let current_gen = hist_start + scroll_count as u64; // display row 0
+    let result = screen.selected_text(SelectionBounds {
+        start_row: current_gen,
+        start_col: 0,
+        end_row: current_gen,
+        end_col: 0,
+    });
+    assert_eq!(result, "N", "current visible gen after eviction");
+}
+
+#[test]
+fn selected_text_evicted_start_clamped_no_blank_lines() {
+    let mut screen = Screen::new(5, 3);
+    let max = screen.normal.max_scrollback();
+
+    // Write a distinct marker at display row 1 (generation 1: hist_start=0, scroll_count=0, row=1).
+    screen.cell_mut(1, 0).ch = 'Z';
+    // One scroll pushes gen 0 into scrollback; 'Z' lands at gen 1 display row 0.
+    screen.normal.scroll_up_full_screen(1, Cell::default());
+    // Fill the ring to evict gen 0 (max more scrolls → total = max+1).
+    for _ in 0..max {
+        screen.normal.scroll_up_full_screen(1, Cell::default());
+    }
+    // history_start == 1 now → gen 0 evicted, gen 1 is the first retained gen.
+    assert_eq!(screen.normal.history_start(), 1, "gen 0 must be evicted");
+
+    // Select from evicted gen 0 through the first retained gen (hist_start = 1).
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 1,
+        end_col: 0,
+    });
+    // Must NOT have leading blank lines from billions of evicted generations.
+    assert_eq!(
+        result, "Z",
+        "clamped selection must not produce leading blank lines"
+    );
+}

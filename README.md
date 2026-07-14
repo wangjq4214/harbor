@@ -15,16 +15,15 @@ A fast terminal core with a custom wgpu renderer (Vulkan/Metal/DX12), following 
 
 ## 📊 Current Status
 
-| Milestone                                           | Status                                         |
-| --------------------------------------------------- | ---------------------------------------------- |
-| 🏁 v0.1 End-to-end terminal loop                     | ✅ Windows complete                             |
-| 🧠 v0.2 Terminal core (Parser + SGR + state machine) | 🟡 Core done, **177 tests** passing 🔬           |
-| 🖌️ v0.3 Cell-based wgpu renderer                     | 🟡 Color / decoration / cursor / viewport ready |
-| 🚀 v0.4 Interactive features                         | 🟡 **Scrollback + scrollbar done** 📜            |
-| 🎯 v0.5 Performance & stability                      | 🟡 Damage tracking + ring buffer in place       |
-| 🏡 v0.6 Daily usable release                         | 🔴 Not started                                  |
+| Milestone                                           | Status                                                                                                           |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 🏁 v0.1 End-to-end terminal loop                     | ✅ Windows complete                                                                                               |
+| 🧠 v0.2 Terminal core (Parser + SGR + state machine) | 🟡 Core done, **317 tests** passing 🔬                                                                             |
+| 🖌️ v0.3 Cell-based wgpu renderer                     | ✅ Color / decoration / cursor / viewport done                                                                    |
+| 🚀 v0.4 Interactive features                         | 🟡 Selection (double/triple-click + auto-scroll), clipboard, keyboard mapping done. IME / mouse / paste pending 📜 |
+| 🎯 v0.5 Performance & stability                      | 🟡 Damage tracking + ring buffer in place                                                                         |
 
-We're at the **v0.3–v0.4 crossover** 🛤️: all GPU rendering pipelines, viewport-offset scrollback, and scrollbar UI are done. Next up: text selection, clipboard, and mouse protocol.
+We're well into **v0.4 interactive features**: multi-click selection (double/triple-click + auto-scroll), clipboard copy/paste, scrollback viewport, and full keyboard with application modes (DECCKM, DECKPAM), Home/End/Page/F1-F12 mappings are done. Next up: IME, mouse protocols, bracketed paste, focus reporting.
 
 ```bash
 cargo run    # 🪟 Windows only — Unix PTY is a stub for now
@@ -33,8 +32,8 @@ cargo run    # 🪟 Windows only — Unix PTY is a stub for now
 ## ✨ Features at a Glance
 
 **Terminal Core** 🧠
-- Custom ANSI/VT parser (not vte) — handles SGR, DECSTBM, DECSCUSR, alt screen, grid editing (ICH/DCH/IL/DL/SU/SD)
-- 177 unit tests covering color modes, scroll regions, cursor save/restore, CJK wide chars, parser error recovery
+- Custom ECMA-48/DEC streaming parser — full state machine covering CSI, OSC, DCS, SOS/PM/APC string families; SGR, DECSTBM, DECSCUSR, alt screen, grid editing (ICH/DCH/IL/DL/SU/SD)
+- 317 unit tests covering color modes, scroll regions, cursor save/restore, CJK wide chars, parser error recovery
 - CSI parameter hardening — malformed sequences rejected gracefully, unsupported sequences logged via `tracing::warn!`
 
 **GPU Rendering** 🎨
@@ -63,7 +62,7 @@ winit → App → UiRoot (Background + TextLayer + Decoration + Cursor + Scrollb
 ## 🧪 Run Tests
 
 ```bash
-cargo test   # 177 tests, all passing ✅
+cargo test   # 317 tests, all passing ✅
 ```
 
 > ⚓ **Build a reliable terminal first. Turn it into a development environment later.**

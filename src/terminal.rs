@@ -1,6 +1,10 @@
 mod normal_buf;
 mod parser;
 mod screen;
+
+#[cfg(test)]
+mod tests;
+
 pub(crate) use normal_buf::NormalBuf;
 use parser::TerminalParser;
 pub(crate) use screen::AltScreenAction;
@@ -9,6 +13,7 @@ pub(crate) use screen::Color;
 pub(crate) use screen::CursorShape;
 pub(crate) use screen::Screen;
 pub(crate) use screen::SelectionBounds;
+
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalSize {
@@ -24,6 +29,9 @@ pub(crate) struct Terminal {
     parser: TerminalParser,
     /// Screen (primary buffer; alt screen handled internally via in_alt).
     normal: Screen,
+    /// When true, `process_output` skips the scroll-to-bottom snap
+    /// (active while the user is dragging a text selection).
+    suppress_scroll_snap: bool,
 }
 
 impl Terminal {
@@ -31,11 +39,13 @@ impl Terminal {
         Self {
             parser: TerminalParser::default(),
             normal: Screen::new(rows, cols),
+            suppress_scroll_snap: false,
         }
     }
 
     pub(crate) fn resize(&mut self, rows: usize, cols: usize) {
         self.normal.resize(rows, cols);
+        self.suppress_scroll_snap = false;
     }
 
     #[cfg(test)]
@@ -59,6 +69,9 @@ impl Terminal {
             if let Some(action) = result.alt_request {
                 // Consume the alt request flag and handle it.
                 self.normal.take_alt_request();
+                // Clear selection-drag suppression so normal-mode output
+                // always snaps to bottom after any alt-screen transition.
+                self.suppress_scroll_snap = false;
                 match action {
                     AltScreenAction::Enter => self.normal.enter_alt(),
                     AltScreenAction::Exit => self.normal.exit_alt(),
@@ -73,8 +86,8 @@ impl Terminal {
             tracing::trace!("ignored empty pty output chunk");
             return;
         }
-        // Snap back to live bottom on new output unless in alt screen.
-        if !self.normal.is_alt() {
+        // Snap back to live bottom on new output unless in alt screen or dragging a selection.
+        if !self.normal.is_alt() && !self.suppress_scroll_snap {
             self.normal.scroll_to_bottom();
         }
         // Feed bytes into the terminal parser (updates screen cells and cursor).
@@ -134,7 +147,9 @@ impl Terminal {
     pub(crate) fn is_alt_screen(&self) -> bool {
         self.normal.is_alt()
     }
-}
 
-#[cfg(test)]
-mod tests;
+    /// Suppress or re-enable the scroll-to-bottom snap on PTY output (used during selection drag).
+    pub(crate) fn set_suppress_scroll_snap(&mut self, suppress: bool) {
+        self.suppress_scroll_snap = suppress;
+    }
+}
