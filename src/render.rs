@@ -12,7 +12,7 @@ mod text;
 pub(crate) use background::Background;
 pub(crate) use caps::{
     CursorContext, CursorInput, CursorWaitContext, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, SelectionContext, SelectionInput,
+    ScrollbarWaitContext, SelectionContext, SelectionInput, SelectionWaitContext,
 };
 pub(crate) use cursor::Cursor;
 pub(crate) use decoration::Decoration;

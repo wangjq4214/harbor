@@ -410,11 +410,12 @@ pub(crate) enum CursorShape {
 }
 
 /// Display-coordinate bounds of a text selection, row-major, inclusive.
+/// `start_row` / `end_row` are **generations** (stable scrollback coordinates).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SelectionBounds {
-    pub(crate) start_row: usize,
+    pub(crate) start_row: u64,
     pub(crate) start_col: usize,
-    pub(crate) end_row: usize,
+    pub(crate) end_row: u64,
     pub(crate) end_col: usize,
 }
 
@@ -477,21 +478,31 @@ impl Screen {
     pub(crate) fn rows(&self) -> usize {
         self.normal.rows()
     }
+
     pub(crate) fn cols(&self) -> usize {
         self.normal.cols()
     }
+
     pub(crate) fn scroll_count(&self) -> usize {
         self.normal.scroll_count()
     }
+
     pub(crate) fn view_offset(&self) -> usize {
         self.normal.view_offset()
     }
+
     pub(crate) fn visible_rows(&self) -> usize {
         self.normal.rows()
     }
+
+    pub(crate) fn history_start(&self) -> u64 {
+        self.normal.history_start()
+    }
+
     pub(crate) fn cursor_x(&self) -> usize {
         self.cursor.x
     }
+
     pub(crate) fn cursor_y(&self) -> usize {
         if self.normal.view_offset() > 0 {
             // Force cursor off-screen when viewing scrollback.
@@ -500,15 +511,19 @@ impl Screen {
             self.cursor.y
         }
     }
+
     pub(crate) fn cursor_shape(&self) -> CursorShape {
         self.cursor.shape
     }
+
     pub(crate) fn cursor_blink(&self) -> bool {
         self.cursor.blink
     }
+
     pub(crate) fn cursor_visible(&self) -> bool {
         self.cursor.visible
     }
+
     pub(crate) fn set_cursor_style(&mut self, ps: usize) {
         let (shape, blink) = match ps {
             0 => (CursorShape::Bar, true),
@@ -545,7 +560,7 @@ impl Screen {
         self.normal.cell(row, col)
     }
 
-    /// Extracts the selected text for the given display-coordinate bounds.
+    /// Extracts the selected text for the given generation-coordinate bounds.
     pub(crate) fn selected_text(&self, bounds: SelectionBounds) -> String {
         let SelectionBounds {
             start_row,
@@ -554,11 +569,28 @@ impl Screen {
             end_col,
         } = bounds;
         let cols = self.cols();
+        let hist_start = self.normal.history_start();
+        let retained_rows = self.normal.scroll_count() + self.normal.rows();
+        let max_gen = hist_start + retained_rows as u64 - 1;
+
+        // Clamp to the interval of retained generations.
+        let orig_start = start_row;
+        let orig_end = end_row;
+        let start_row = start_row.max(hist_start);
+        let end_row = end_row.min(max_gen);
+        if start_row > end_row {
+            return String::new();
+        }
+
         let mut buf = String::new();
 
-        for row in start_row..=end_row {
-            let col_start = if row == start_row { start_col } else { 0 };
-            let col_end = if row == end_row {
+        for generation in start_row..=end_row {
+            let col_start = if generation == orig_start {
+                start_col
+            } else {
+                0
+            };
+            let col_end = if generation == orig_end {
                 end_col
             } else {
                 cols.saturating_sub(1)
@@ -568,7 +600,9 @@ impl Screen {
             // whitespace without affecting previous rows or newline separators.
             let row_len_before = buf.len();
             for col in col_start..=col_end {
-                let cell = self.cell(row, col);
+                let Some(cell) = self.normal.cell_at_generation(generation, col) else {
+                    continue; // content evicted from scrollback
+                };
                 if cell.wide_continuation {
                     continue;
                 }
@@ -578,7 +612,7 @@ impl Screen {
             let row_text = &buf[row_len_before..];
             let trim_len = row_text.trim_end().len();
             buf.truncate(row_len_before + trim_len);
-            if row < end_row {
+            if generation < end_row {
                 buf.push('\n');
             }
         }

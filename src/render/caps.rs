@@ -36,10 +36,18 @@ pub(crate) trait ModifiersAccess {
     fn modifiers(&self) -> ModifiersState;
 }
 
+/// Scroll and auto-scroll control for selection drag.
+pub(crate) trait ScrollAccess {
+    fn scroll_viewport_up(&mut self, n: usize);
+    fn scroll_viewport_down(&mut self, n: usize);
+    /// Suppress PTY-output scroll-to-bottom snap during drag.
+    fn set_auto_scrolling(&mut self, active: bool);
+}
+
 // ── Layer contexts (grant only their own rights) ────────────────────────────
 
 pub(crate) struct SelectionContext<'a> {
-    pub(crate) terminal: &'a Terminal,
+    pub(crate) terminal: &'a mut Terminal,
     pub(crate) window: &'a Window,
     pub(crate) pty: &'a mut Pty,
     pub(crate) modifiers: ModifiersState,
@@ -50,19 +58,68 @@ impl TerminalAccess for SelectionContext<'_> {
         self.terminal
     }
 }
+
 impl RedrawAccess for SelectionContext<'_> {
     fn request_redraw(&self) {
         self.window.request_redraw();
     }
 }
+
 impl PtyAccess for SelectionContext<'_> {
     fn pty(&mut self) -> &mut Pty {
         self.pty
     }
 }
+
 impl ModifiersAccess for SelectionContext<'_> {
     fn modifiers(&self) -> ModifiersState {
         self.modifiers
+    }
+}
+
+impl ScrollAccess for SelectionContext<'_> {
+    fn scroll_viewport_up(&mut self, n: usize) {
+        self.terminal.scroll_viewport_up(n);
+    }
+    fn scroll_viewport_down(&mut self, n: usize) {
+        self.terminal.scroll_viewport_down(n);
+    }
+    fn set_auto_scrolling(&mut self, active: bool) {
+        self.terminal.set_suppress_scroll_snap(active);
+    }
+}
+
+// ── SelectionWaitContext ──────────────────────────────────────
+
+/// Timer context for selection auto-scroll — grants scroll + read + redraw.
+pub(crate) struct SelectionWaitContext<'a> {
+    pub(crate) terminal: &'a mut Terminal,
+    pub(crate) window: &'a Window,
+}
+
+impl TerminalAccess for SelectionWaitContext<'_> {
+    fn terminal(&self) -> &Terminal {
+        self.terminal
+    }
+}
+
+impl RedrawAccess for SelectionWaitContext<'_> {
+    fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+}
+
+impl ScrollAccess for SelectionWaitContext<'_> {
+    fn scroll_viewport_up(&mut self, n: usize) {
+        self.terminal.scroll_viewport_up(n);
+    }
+
+    fn scroll_viewport_down(&mut self, n: usize) {
+        self.terminal.scroll_viewport_down(n);
+    }
+
+    fn set_auto_scrolling(&mut self, active: bool) {
+        self.terminal.set_suppress_scroll_snap(active);
     }
 }
 
@@ -125,6 +182,7 @@ impl TerminalAccess for CursorWaitContext<'_> {
         self.terminal
     }
 }
+
 impl RedrawAccess for CursorWaitContext<'_> {
     fn request_redraw(&self) {
         self.window.request_redraw();
@@ -133,11 +191,15 @@ impl RedrawAccess for CursorWaitContext<'_> {
 
 // ── Layer handler traits (exact rights, no more) ────────────────────────────
 
-/// Selection: terminal + redraw + PTY write + modifiers.
+/// Selection: terminal + redraw + PTY write + modifiers + scroll.
 pub(crate) trait SelectionInput {
     fn handle_event<C>(&mut self, event: &WindowEvent, caps: &mut C) -> EventResult
     where
-        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess;
+        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess + ScrollAccess;
+
+    fn on_about_to_wait<C>(&mut self, caps: &mut C) -> Option<Instant>
+    where
+        C: TerminalAccess + ScrollAccess + RedrawAccess;
 }
 
 /// Scrollbar: terminal + gpu + redraw on events; redraw only for auto-hide.

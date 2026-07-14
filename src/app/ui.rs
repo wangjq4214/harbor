@@ -5,7 +5,8 @@ use crate::{
     render::{
         Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext, Decoration,
         EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-        ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, Text, TextMetrics,
+        ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext,
+        Text, TextMetrics,
     },
     terminal::{Screen, Terminal, TerminalSize},
 };
@@ -93,7 +94,7 @@ impl UiRoot {
     pub(crate) fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        terminal: &Terminal,
+        terminal: &mut Terminal,
         window: &Window,
         gpu: &GpuContext,
         pty: &mut Pty,
@@ -102,7 +103,7 @@ impl UiRoot {
         if self.selection.handle_event(
             event,
             &mut SelectionContext {
-                terminal,
+                terminal: &mut *terminal,
                 window,
                 pty,
                 modifiers,
@@ -111,10 +112,11 @@ impl UiRoot {
         {
             return EventResult::Handled;
         }
+        // After SelectionContext is dropped, terminal reborrow is released.
         if self.scrollbar.handle_event(
             event,
             &ScrollbarContext {
-                terminal,
+                terminal, // &mut Terminal auto-reborrows to &Terminal
                 gpu,
                 window,
             },
@@ -133,13 +135,23 @@ impl UiRoot {
     }
 
     /// Collects the next wake deadline from interactive components
-    /// (cursor blink or scrollbar auto-hide).
+    /// (cursor blink, scrollbar auto-hide, or selection auto-scroll).
     pub(crate) fn compact_deadline(
         &mut self,
-        terminal: &Terminal,
+        terminal: &mut Terminal,
         window: &Window,
     ) -> Option<std::time::Instant> {
         let mut deadline: Option<std::time::Instant> = None;
+
+        // Selection auto-scroll — needs &mut Terminal for ScrollAccess.
+        if let Some(d) = self.selection.on_about_to_wait(&mut SelectionWaitContext {
+            terminal: &mut *terminal,
+            window,
+        }) {
+            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
+        }
+
+        // Cursor blink — reborrows terminal as &Terminal (no conflict after selection).
         if let Some(d) = self
             .cursor
             .on_about_to_wait(&CursorWaitContext { terminal, window })
