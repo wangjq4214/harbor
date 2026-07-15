@@ -139,6 +139,12 @@ impl Terminal {
         self.normal.scroll_down(n);
     }
 
+    /// Snaps viewport to the oldest available scrollback row.
+    pub(crate) fn scroll_viewport_to_top(&mut self) {
+        let scroll_count = self.normal.scroll_count();
+        self.normal.scroll_up(scroll_count);
+    }
+
     /// Snaps viewport to live bottom.
     pub(crate) fn scroll_viewport_to_bottom(&mut self) {
         self.normal.scroll_to_bottom();

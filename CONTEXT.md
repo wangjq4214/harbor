@@ -8,6 +8,10 @@ A GPU-driven terminal emulator built from scratch with Rust + winit + wgpu.
 A range of highlighted cells in the terminal grid, defined by an anchor and cursor in generation-coordinate space. The range is rendered as a colored overlay and can be copied via Ctrl+C.
 _Avoid_: Highlight, mark, region
 
+**Selection cancellation**:
+The removal of an existing selection after a keyboard action, including scrollback navigation.
+_Avoid_: Deselect, selection reset
+
 **SelectionGranularity**:
 The semantic unit by which a selection expands: `Character` (free drag), `Word` (double-click + word-wise drag), or `Line` (triple-click + line-wise drag).
 _Avoid_: Level, mode (too overloaded)
@@ -43,3 +47,15 @@ _Avoid_: Smart selection, semantic drag
 **Line-wise drag**:
 Drag behavior after a triple-click; the cursor snaps to the first/last column of each row as it moves.
 _Avoid_: Line drag, row drag
+
+**Scrollback**:
+Retained primary-screen terminal output that precedes the live viewport and remains available for review.
+_Avoid_: Terminal history (ambiguous with shell command history)
+
+**Scrollback navigation**:
+User-initiated movement of the viewport through scrollback. In the normal screen, bare PageUp, PageDown, Home, and End belong to Harbor rather than the PTY; the alternate screen retains application ownership of those keys.
+_Avoid_: Paging, history navigation
+
+**Scrollback page**:
+One current viewport height, measured in terminal rows. PageUp and PageDown move by one scrollback page.
+_Avoid_: Fixed page size

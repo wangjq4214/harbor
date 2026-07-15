@@ -30,18 +30,18 @@ The first compatibility target is the shell/Vim/tmux baseline. Optional protocol
 
 ## 2. Current Baseline
 
-Snapshot date: **2026-07-11**.
+Snapshot date: **2026-07-15**.
 
 | Area           | Current state                                                                                                                                                 | Immediate implication                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified                                                                               | Use `check.md` to select the next slice                                |
-| Tests          | Last observed `cargo test`: 317 passed                                                                                                                        | Add focused tests before changing protocol state                       |
+| Tests          | Focused `cargo test navigation`: 3 passed (326 filtered; 329 total)                                                                                         | Add focused tests before changing protocol state                       |
 | Parser         | ECMA-48/DEC state machine: 17 states covering CSI, OSC, DCS, and SOS/PM/APC string families; 8-bit C1 recognition (test-only); chunk-equivalence test harness | Production C1 config, fuzz, and discard-after-limit tests remain       |
 | Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR                                                                       | Extend state before adding more dispatch cases                         |
 | PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                                                                                        | Unix PTY is a prerequisite for cross-platform runtime acceptance       |
 | Replies        | No parser-to-PTY reply channel                                                                                                                                | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet                |
 | Strings        | OSC framing consumed and discarded; DCS/APC/PM/SOS handled by dedicated parser states with consume-only dispatch                                              | Add bounded payload collection and side effects for supported families |
-| Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding   | Paste, focus, mouse, and IME are not wired                             |
+| Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, normal-screen bare PageUp/PageDown/Home/End scrollback navigation, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding | Paste, focus, mouse, and IME are not wired |
 
 ## 3. Roadmap at a Glance
 
@@ -455,15 +455,13 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.4: Interactive Features
 
-> **Status: 🟡 Scrollback, scrollbar, selection (including double-click/triple-click + auto-scroll), clipboard, application cursor/keypad keys, and key mappings done. IME, mouse protocol, bracketed paste, focus reporting, hyperlinks pending.**
+> **Status: 🟡 Scrollback, keyboard scrollback navigation, scrollbar, selection (including double-click/triple-click + auto-scroll), clipboard, application cursor/keypad keys, and key mappings done. IME, mouse protocol, bracketed paste, focus reporting, hyperlinks pending.**
 
 #### Done
 
 **Scrollback Buffer.** `NormalBuf` ring buffer with 1000-line default max capacity. Ring head advances O(1) via pointer bump on full-screen scroll. Visible rows occupy consecutive ring slots starting at `visible_start`. Scrollback tracked via `scroll_count`.
 
-**Viewport Scroll Navigation.** `scroll_up` / `scroll_down` / `scroll_to_bottom` on viewport. `view_offset` controls which part of ring is displayed as the visible grid. New output auto-scrolls to bottom in normal screen. When viewing scrollback, all rows are marked dirty for full redraw.
-
-**Mouse Wheel.** Scroll wheel scrolls viewport through history in normal screen. PageUp/PageDown and Home/End keyboard scroll not yet mapped.
+**Viewport Scroll Navigation.** `scroll_up` / `scroll_down` / `scroll_to_top` / `scroll_to_bottom` move the normal-screen viewport through history. Mouse wheel scrolls by input delta; bare PageUp/PageDown move one visible viewport height, while Home/End jump to the oldest scrollback/live bottom. These keyboard actions consume the key, clear an active selection, and leave alternate-screen or modified-key handling to the application. `view_offset` controls which part of ring is displayed as the visible grid. New output auto-scrolls to bottom in normal screen. When viewing scrollback, all rows are marked dirty for full redraw.
 
 **Scrollbar.** `ScrollbarComponent` with GPU-rendered rounded-rect thumb via SDF shader, thumb height proportional to visible ratio, auto-hide after 1500 ms inactivity, activity tracking (mouse move + mouse wheel), degenerate (hidden) state in alt screen or when no scrollback exists, and visibility state machine with blink-style deadline.
 
@@ -482,8 +480,8 @@ The product milestones below retain the existing implementation notes, task list
 - [x] Normal screen output enters scrollback
 - [x] Alternate screen does not enter scrollback by default
 - [x] Mouse wheel enters history view
-- [ ] PageUp / PageDown for scrollback navigation
-- [ ] Home / End to top/bottom of scrollback
+- [x] PageUp / PageDown for scrollback navigation
+- [x] Home / End to top/bottom of scrollback
 - [x] Limit maximum scrollback lines (1000 hard-coded)
 - [ ] Configurable scrollback line count
 - [x] Copy text from scrollback (via selection + clipboard)

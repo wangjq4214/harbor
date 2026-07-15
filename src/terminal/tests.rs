@@ -944,6 +944,40 @@ fn process_output_snaps_viewport() {
     );
 }
 
+#[test]
+fn viewport_navigation_pages_and_reaches_top() {
+    let mut terminal = Terminal::new(4, 10);
+    for _ in 0..10 {
+        terminal.process_output(b"line\n");
+    }
+
+    let page_rows = terminal.screen().rows();
+    let scroll_count = terminal.screen().scroll_count();
+    assert!(
+        scroll_count > page_rows,
+        "test setup requires more than one page of scrollback"
+    );
+
+    terminal.scroll_viewport_up(page_rows);
+    assert_eq!(terminal.screen().view_offset(), page_rows);
+
+    terminal.scroll_viewport_down(page_rows);
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    terminal.scroll_viewport_to_top();
+    assert_eq!(terminal.screen().view_offset(), scroll_count);
+
+    terminal.scroll_viewport_down(page_rows);
+    assert_eq!(
+        terminal.screen().view_offset(),
+        scroll_count - page_rows,
+        "PageDown must move one viewport height toward live content"
+    );
+
+    terminal.scroll_viewport_to_bottom();
+    assert_eq!(terminal.screen().view_offset(), 0);
+}
+
 // ── SGR background + erase integration ────────────────────────
 
 #[test]
