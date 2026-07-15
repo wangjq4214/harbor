@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
+    app::input::InputEncoder,
     config::{SELECTION_COLOR, TEXT_PADDING},
     render::{
         Component, EventResult, SelectionInput,
@@ -707,7 +708,11 @@ impl Selection {
             winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
                 if let Some(clipboard) = self.clipboard.as_mut() {
                     match clipboard.get_text() {
-                        Ok(text) => caps.pty().write(text.as_bytes()),
+                        Ok(text) => {
+                            let modes = caps.terminal().screen().input_modes();
+                            let bytes = InputEncoder::paste(text.as_bytes(), modes);
+                            caps.pty().write(&bytes);
+                        }
                         Err(e) => tracing::warn!(error = %e, "failed to read clipboard text"),
                     }
                 }

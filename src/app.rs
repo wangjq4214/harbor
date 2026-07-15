@@ -1,6 +1,6 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
-mod input;
+pub(crate) mod input;
 mod ui;
 
 use std::sync::Arc;
@@ -13,13 +13,12 @@ use winit::{
 };
 
 use crate::{
-    app::input::KeyboardConfig,
+    app::input::InputEncoder,
     event::AppEvent,
     pty::Pty,
     render::{EventResult, GpuContext, TextMetrics, load_system_fonts},
     terminal::{Terminal, TerminalSize},
 };
-use input::keyboard_input_bytes;
 use ui::UiRoot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -280,14 +279,11 @@ impl ApplicationHandler<AppEvent> for App {
                 is_synthetic: _,
             } if event.state == ElementState::Pressed => {
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
-                let Some(bytes) = keyboard_input_bytes(
+                let Some(bytes) = InputEncoder::key(
                     &event.logical_key,
                     event.text.as_deref(),
                     self.modifiers,
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     is_numpad,
                 ) else {
                     return;

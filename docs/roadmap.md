@@ -273,9 +273,9 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [ ] Move keyboard encoding behind an `InputEncoder` that reads terminal mode state instead of hard-coding normal arrows.
+- [x] Move keyboard encoding behind an `InputEncoder` that reads terminal mode state instead of hard-coding normal arrows.
 - [ ] Implement application cursor keys, application keypad, Home/End/Page keys, function keys, modifier encoding, and terminfo-compatible defaults.
-- [ ] Implement bracketed paste with explicit start/end markers, empty/multiline paste tests, and ESC bytes treated as data.
+- [x] Implement bracketed paste with explicit start/end markers, empty/multiline paste tests, and ESC bytes treated as data.
 - [ ] Implement focus reporting (`CSI I`/`CSI O`) only when enabled.
 - [ ] Implement X10, normal, button, any-event, SGR, urxvt, and optional pixel mouse encodings with mode priority and modifier bits.
 - [ ] Add ModifyOtherKeys and Kitty keyboard protocol only after the traditional key paths are stable.

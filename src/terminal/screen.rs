@@ -1,6 +1,6 @@
 use super::normal_buf::CellsIter;
 use super::parser::params::Params;
-use super::{DirtyRange, NormalBuf};
+use super::{DirtyRange, InputModes, NormalBuf};
 
 use unicode_width::UnicodeWidthChar;
 
@@ -323,6 +323,8 @@ struct TerminalModes {
     application_cursor: bool,
     /// DECKPAM: application keypad sends SS3-style sequences.
     application_keypad: bool,
+    /// Bracketed paste mode (DECSET ?2004).
+    bracketed_paste: bool,
 }
 
 impl TerminalModes {
@@ -335,6 +337,7 @@ impl TerminalModes {
             line_feed: false,
             application_cursor: false,
             application_keypad: false,
+            bracketed_paste: false,
         }
     }
 }
@@ -539,12 +542,12 @@ impl Screen {
         self.cursor.blink = blink;
     }
 
-    pub(crate) fn application_cursor(&self) -> bool {
-        self.modes.application_cursor
-    }
-
-    pub(crate) fn application_keypad(&self) -> bool {
-        self.modes.application_keypad
+    pub(crate) fn input_modes(&self) -> InputModes {
+        InputModes {
+            application_cursor: self.modes.application_cursor,
+            application_keypad: self.modes.application_keypad,
+            bracketed_paste: self.modes.bracketed_paste,
+        }
     }
 
     pub(crate) fn margin_mode(&self) -> bool {
@@ -1921,6 +1924,9 @@ impl Screen {
             }
             66 => {
                 self.modes.application_keypad = enabled;
+            }
+            2004 => {
+                self.modes.bracketed_paste = enabled;
             }
             6 => {
                 self.modes.origin = enabled;

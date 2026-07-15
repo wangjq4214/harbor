@@ -1,14 +1,8 @@
 //! Keyboard → PTY byte mapping.
 
+use crate::terminal::InputModes;
 use std::borrow::Cow;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-/// Lightweight snapshot of Screen state relevant to keyboard mapping.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct KeyboardConfig {
-    pub(super) application_cursor: bool,
-    pub(super) application_keypad: bool,
-}
 
 fn modifier_code(modifiers: ModifiersState) -> u8 {
     let mut code = 1;
@@ -252,64 +246,83 @@ fn render_csi_key(
     }
 }
 
-/// Maps a logical key + optional text + modifier state to the byte sequence
-/// to write to the PTY.  Named control/navigation keys are dispatched by
-/// `logical_key` first.  When Ctrl is held and the key is a single ASCII
-/// letter (a–z / A–Z), the corresponding control character (0x01–0x1A) is
-/// emitted regardless of what winit places in `text`.
-pub(super) fn keyboard_input_bytes(
-    logical_key: &Key,
-    text: Option<&str>,
-    modifiers: ModifiersState,
-    config: KeyboardConfig,
-    is_numpad: bool,
-) -> Option<Cow<'static, [u8]>> {
-    let KeyboardConfig {
-        application_cursor,
-        application_keypad,
-    } = config;
+/// Encodes keyboard and paste input according to a current terminal-mode snapshot.
+pub(crate) struct InputEncoder;
 
-    let modifier_code = modifier_code(modifiers);
+impl InputEncoder {
+    /// Maps a logical key + optional text + modifier state to the byte sequence
+    /// to write to the PTY. Named control/navigation keys are dispatched by
+    /// `logical_key` first. When Ctrl is held and the key is a single ASCII
+    /// letter (a–z / A–Z), the corresponding control character (0x01–0x1A) is
+    /// emitted regardless of what winit places in `text`.
+    pub(crate) fn key(
+        logical_key: &Key,
+        text: Option<&str>,
+        modifiers: ModifiersState,
+        modes: InputModes,
+        is_numpad: bool,
+    ) -> Option<Cow<'static, [u8]>> {
+        let InputModes {
+            application_cursor,
+            application_keypad,
+            ..
+        } = modes;
 
-    if application_keypad
-        && is_numpad
-        && modifier_code == 1
-        && let Some(seq) = keypad_sequence(logical_key)
-    {
-        return Some(seq);
-    }
+        let modifier_code = modifier_code(modifiers);
 
-    // Ctrl+letter → control character (0x01–0x1A).
-    // Prepend ESC (0x1b) if Alt is also pressed.
-    if modifiers.control_key()
-        && let Key::Character(ch) = logical_key
-        && let Some(ctrl_byte) = ctrl_letter_to_byte(ch)
-    {
-        if modifiers.alt_key() {
-            return Some(Cow::Owned(vec![0x1b, ctrl_byte]));
-        } else {
-            return Some(Cow::Owned(vec![ctrl_byte]));
+        if application_keypad
+            && is_numpad
+            && modifier_code == 1
+            && let Some(seq) = keypad_sequence(logical_key)
+        {
+            return Some(seq);
         }
-    }
 
-    // If it's some other character with Ctrl held, fall through —
-    // winit may have placed a control character in `text` already.
-    match logical_key {
-        Key::Named(NamedKey::Enter) => Some(Cow::Borrowed(b"\r")),
-        Key::Named(NamedKey::Backspace) => Some(Cow::Borrowed(b"\x7f")),
-        Key::Named(NamedKey::Tab) => {
-            if modifiers.shift_key() {
-                Some(Cow::Borrowed(b"\x1b[Z"))
+        // Ctrl+letter → control character (0x01–0x1A).
+        // Prepend ESC (0x1b) if Alt is also pressed.
+        if modifiers.control_key()
+            && let Key::Character(ch) = logical_key
+            && let Some(ctrl_byte) = ctrl_letter_to_byte(ch)
+        {
+            if modifiers.alt_key() {
+                return Some(Cow::Owned(vec![0x1b, ctrl_byte]));
             } else {
-                Some(Cow::Borrowed(b"\t"))
+                return Some(Cow::Owned(vec![ctrl_byte]));
             }
         }
-        Key::Named(NamedKey::Escape) => Some(Cow::Borrowed(b"\x1b")),
-        Key::Named(NamedKey::Space) => Some(Cow::Borrowed(b" ")),
-        Key::Named(name) => {
-            named_key_desc(name).map(|d| render_csi_key(&d, modifier_code, application_cursor))
+
+        // If it's some other character with Ctrl held, fall through —
+        // winit may have placed a control character in `text` already.
+        match logical_key {
+            Key::Named(NamedKey::Enter) => Some(Cow::Borrowed(b"\r")),
+            Key::Named(NamedKey::Backspace) => Some(Cow::Borrowed(b"\x7f")),
+            Key::Named(NamedKey::Tab) => {
+                if modifiers.shift_key() {
+                    Some(Cow::Borrowed(b"\x1b[Z"))
+                } else {
+                    Some(Cow::Borrowed(b"\t"))
+                }
+            }
+            Key::Named(NamedKey::Escape) => Some(Cow::Borrowed(b"\x1b")),
+            Key::Named(NamedKey::Space) => Some(Cow::Borrowed(b" ")),
+            Key::Named(name) => {
+                named_key_desc(name).map(|d| render_csi_key(&d, modifier_code, application_cursor))
+            }
+            _ => text_fallback(logical_key, text, modifiers),
         }
-        _ => text_fallback(logical_key, text, modifiers),
+    }
+
+    /// Returns raw pasted bytes, framed with bracketed-paste markers when enabled.
+    pub(crate) fn paste<'a>(text: &'a [u8], modes: InputModes) -> Cow<'a, [u8]> {
+        if !modes.bracketed_paste {
+            return Cow::Borrowed(text);
+        }
+
+        let mut bytes = Vec::with_capacity(text.len() + b"\x1b[200~".len() + b"\x1b[201~".len());
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(text);
+        bytes.extend_from_slice(b"\x1b[201~");
+        Cow::Owned(bytes)
     }
 }
 
@@ -332,7 +345,7 @@ fn ctrl_letter_to_byte(ch: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::Terminal;
+    use crate::terminal::{InputModes, Terminal};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn k(name: NamedKey) -> Key {
@@ -348,7 +361,7 @@ mod tests {
     }
 
     fn test_bytes(key: &Key, text: Option<&str>, m: ModifiersState) -> Option<Cow<'static, [u8]>> {
-        keyboard_input_bytes(key, text, m, KeyboardConfig::default(), false)
+        InputEncoder::key(key, text, m, InputModes::default(), false)
     }
 
     #[test]
@@ -497,29 +510,28 @@ mod tests {
 
         // Standard/default: application modes off
         assert_eq!(
-            keyboard_input_bytes(&key_up, None, mods, KeyboardConfig::default(), false).as_deref(),
+            InputEncoder::key(&key_up, None, mods, InputModes::default(), false).as_deref(),
             Some(b"\x1b[A".as_slice())
         );
         assert_eq!(
-            keyboard_input_bytes(&key_1, Some("1"), mods, KeyboardConfig::default(), true)
-                .as_deref(),
+            InputEncoder::key(&key_1, Some("1"), mods, InputModes::default(), true).as_deref(),
             Some(b"1".as_slice())
         );
         assert_eq!(
-            keyboard_input_bytes(&key_enter, None, mods, KeyboardConfig::default(), true)
-                .as_deref(),
+            InputEncoder::key(&key_enter, None, mods, InputModes::default(), true).as_deref(),
             Some(b"\r".as_slice())
         );
 
         // Application Cursor Keys on
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &key_up,
                 None,
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: true,
-                    application_keypad: false
+                    application_keypad: false,
+                    bracketed_paste: false,
                 },
                 false
             )
@@ -529,13 +541,14 @@ mod tests {
 
         // Application Keypad on, but is_numpad false
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &key_1,
                 Some("1"),
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 false
             )
@@ -545,13 +558,14 @@ mod tests {
 
         // Application Keypad on and is_numpad true
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &key_1,
                 Some("1"),
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -559,13 +573,14 @@ mod tests {
             Some(b"\x1bOq".as_slice())
         );
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &key_enter,
                 None,
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -587,14 +602,11 @@ mod tests {
             terminal.put_bytes(b"\x1b[?1h\x1b=");
 
             assert_eq!(
-                keyboard_input_bytes(
+                InputEncoder::key(
                     &key_up,
                     None,
                     mods(),
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     false,
                 )
                 .as_deref(),
@@ -602,14 +614,11 @@ mod tests {
                 "{name} setup did not enable application cursor mode"
             );
             assert_eq!(
-                keyboard_input_bytes(
+                InputEncoder::key(
                     &key_1,
                     Some("1"),
                     mods(),
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     true,
                 )
                 .as_deref(),
@@ -620,14 +629,11 @@ mod tests {
             terminal.put_bytes(reset);
 
             assert_eq!(
-                keyboard_input_bytes(
+                InputEncoder::key(
                     &key_up,
                     None,
                     mods(),
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     false,
                 )
                 .as_deref(),
@@ -635,14 +641,11 @@ mod tests {
                 "{name} did not reset application cursor mode"
             );
             assert_eq!(
-                keyboard_input_bytes(
+                InputEncoder::key(
                     &key_1,
                     Some("1"),
                     mods(),
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     true,
                 )
                 .as_deref(),
@@ -769,11 +772,11 @@ mod tests {
         // 1. NumLock ON (represented by Key::Character)
         // 1a. application_keypad = false, no modifiers -> standard character "8"
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &Key::Character("8".into()),
                 Some("8"),
                 mods,
-                KeyboardConfig::default(),
+                InputModes::default(),
                 true
             )
             .as_deref(),
@@ -781,13 +784,14 @@ mod tests {
         );
         // 1b. application_keypad = true, no modifiers -> application keypad sequence \x1bOx
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &Key::Character("8".into()),
                 Some("8"),
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -796,13 +800,14 @@ mod tests {
         );
         // 1c. application_keypad = true, Ctrl modifier -> application keypad is bypassed, sends ctrl fallback
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &Key::Character("8".into()),
                 Some("8"),
                 ctrl,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -813,11 +818,11 @@ mod tests {
         // 2. NumLock OFF (represented by Key::Named)
         // 2a. application_keypad = false, no modifiers -> standard ArrowUp \x1b[A
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 mods,
-                KeyboardConfig::default(),
+                InputModes::default(),
                 true
             )
             .as_deref(),
@@ -825,13 +830,14 @@ mod tests {
         );
         // 2b. application_keypad = true, no modifiers -> standard ArrowUp \x1b[A
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 mods,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -840,13 +846,14 @@ mod tests {
         );
         // 2c. Ctrl modifier -> sends Ctrl+ArrowUp \x1b[1;5A
         assert_eq!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 ctrl,
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             )
@@ -861,24 +868,25 @@ mod tests {
 
         // ── Borrowed: plain arrow key ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 mods(),
-                KeyboardConfig::default(),
+                InputModes::default(),
                 false
             ),
             Some(Cow::Borrowed(b"\x1b[A"))
         ));
         // ── Borrowed: application cursor mode ArrowUp ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 mods(),
-                KeyboardConfig {
+                InputModes {
                     application_cursor: true,
-                    application_keypad: false
+                    application_keypad: false,
+                    bracketed_paste: false,
                 },
                 false
             ),
@@ -886,13 +894,14 @@ mod tests {
         ));
         // ── Borrowed: application keypad mode Enter ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::Enter),
                 None,
                 mods(),
-                KeyboardConfig {
+                InputModes {
                     application_cursor: false,
-                    application_keypad: true
+                    application_keypad: true,
+                    bracketed_paste: false,
                 },
                 true
             ),
@@ -901,36 +910,91 @@ mod tests {
 
         // ── Owned: modifier formatting path (Ctrl+ArrowUp → \x1b[1;5A) ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &k(NamedKey::ArrowUp),
                 None,
                 ModifiersState::CONTROL,
-                KeyboardConfig::default(),
+                InputModes::default(),
                 false
             ),
             Some(Cow::Owned(_))
         ));
         // ── Owned: text fallback path (printable character) ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &Key::Character("a".into()),
                 Some("a"),
                 ModifiersState::default(),
-                KeyboardConfig::default(),
+                InputModes::default(),
                 false
             ),
             Some(Cow::Owned(_))
         ));
         // ── Owned: Ctrl+letter path (Ctrl+C → \x03) ──
         assert!(matches!(
-            keyboard_input_bytes(
+            InputEncoder::key(
                 &Key::Character("c".into()),
                 None,
                 ModifiersState::CONTROL,
-                KeyboardConfig::default(),
+                InputModes::default(),
                 false
             ),
             Some(Cow::Owned(_))
         ));
+    }
+
+    #[test]
+    fn bracketed_paste_frames_multiline_content_with_esc_as_data() {
+        let modes = InputModes {
+            bracketed_paste: true,
+            ..InputModes::default()
+        };
+
+        assert_eq!(
+            InputEncoder::paste(b"first\r\nsecond\x1b[A", modes).as_ref(),
+            b"\x1b[200~first\r\nsecond\x1b[A\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn normal_paste_preserves_raw_bytes_without_copying() {
+        let bytes = InputEncoder::paste(b"first\r\nsecond\x1b[A", InputModes::default());
+
+        assert!(matches!(bytes, Cow::Borrowed(_)));
+        assert_eq!(bytes.as_ref(), b"first\r\nsecond\x1b[A");
+    }
+
+    #[test]
+    fn bracketed_paste_frames_empty_content() {
+        let modes = InputModes {
+            bracketed_paste: true,
+            ..InputModes::default()
+        };
+
+        assert_eq!(
+            InputEncoder::paste(b"", modes).as_ref(),
+            b"\x1b[200~\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_retains_end_marker_for_one_mebibyte_content() {
+        let text = vec![b'x'; 1024 * 1024];
+        let modes = InputModes {
+            bracketed_paste: true,
+            ..InputModes::default()
+        };
+
+        let bytes = InputEncoder::paste(&text, modes);
+        assert_eq!(
+            bytes.len(),
+            text.len() + b"\x1b[200~".len() + b"\x1b[201~".len()
+        );
+        assert_eq!(&bytes[..b"\x1b[200~".len()], b"\x1b[200~");
+        assert_eq!(
+            &bytes[b"\x1b[200~".len()..b"\x1b[200~".len() + text.len()],
+            text.as_slice()
+        );
+        assert_eq!(&bytes[text.len() + b"\x1b[200~".len()..], b"\x1b[201~");
     }
 }

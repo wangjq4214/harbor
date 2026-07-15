@@ -15,8 +15,8 @@
 | Metric                              | Count |
 | ----------------------------------- | ----: |
 | Total checklist items               |  1054 |
-| Clearly implemented in current code |   583 |
-| Incomplete or unverified            |   471 |
+| Clearly implemented in current code |   600 |
+| Incomplete or unverified            |   454 |
 
 ## Quick Navigation
 
@@ -60,10 +60,10 @@
 | [14. Autowrap](#14-autowrap) | 13 | 1 | 14 |
 | [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode) | 6 | 4 | 10 |
 | [16. SGR Character Attributes](#16-sgr-character-attributes) | 51 | 20 | 71 |
-| [17. DEC Private Modes](#17-dec-private-modes) | 17 | 24 | 41 |
+| [17. DEC Private Modes](#17-dec-private-modes) | 18 | 23 | 41 |
 | [18. Standard Modes](#18-standard-modes) | 7 | 0 | 7 |
 | [19. Cursor Style](#19-cursor-style) | 9 | 1 | 10 |
-| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 22 | 5 | 27 |
+| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 23 | 4 | 27 |
 | [21. Device Status Reports](#21-device-status-reports) | 0 | 22 | 22 |
 | [22. Mode Queries](#22-mode-queries) | 0 | 12 | 12 |
 | [23. Window Operations](#23-window-operations) | 0 | 19 | 19 |
@@ -72,7 +72,7 @@
 | [26. APC, PM and SOS](#26-apc-pm-and-sos) | 0 | 18 | 18 |
 | [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) | 13 | 0 | 13 |
 | [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
-| [29. Bracketed Paste](#29-bracketed-paste) | 0 | 10 | 10 |
+| [29. Bracketed Paste](#29-bracketed-paste) | 10 | 0 | 10 |
 | [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
 | [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 47 | 19 | 66 |
 | [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
@@ -80,9 +80,9 @@
 | [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
 | [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
 | [36. Protocol Security Limits](#36-protocol-security-limits) | 11 | 11 | 22 |
-| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 25 | 31 | 56 |
-| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 56 | 27 | 83 |
-| [39. Final Acceptance](#39-final-acceptance) | 6 | 15 | 21 |
+| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 27 | 29 | 56 |
+| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 58 | 25 | 83 |
+| [39. Final Acceptance](#39-final-acceptance) | 7 | 14 | 21 |
 
 ---
 
@@ -753,7 +753,7 @@
 
 ## 17. DEC Private Modes
 
-> Status: 17 / 41 items clearly implemented; 24 incomplete or unverified.
+> Status: 18 / 41 items clearly implemented; 23 incomplete or unverified.
 
 ### 17.1 Cursor and Display
 
@@ -809,7 +809,7 @@
 ### 17.7 Other Modern Modes
 
 * [ ] `?1004` — Focus Reporting
-* [ ] `?2004` — Bracketed Paste
+* [x] `?2004` — Bracketed Paste
 * [ ] `?2026` — Synchronized Output
 
 ### 17.8 Multi-Mode Parameters
@@ -855,7 +855,7 @@
 
 ## 20. Soft Reset and Hard Reset
 
-> Status: 22 / 27 items clearly implemented; 5 incomplete or unverified.
+> Status: 23 / 27 items clearly implemented; 4 incomplete or unverified.
 
 ### 20.1 RIS
 
@@ -870,7 +870,7 @@
 * [ ] Reset character sets
 * [x] Reset tab stops
 * [ ] Reset mouse modes
-* [ ] Reset bracketed paste
+* [x] Reset bracketed paste
 * [ ] Reset focus reporting
 * [ ] Reset synchronized output
 * [x] Exit alternate screen
@@ -1275,18 +1275,18 @@
 
 ## 29. Bracketed Paste
 
-> Status: 0 / 10 items clearly implemented; 10 incomplete or unverified.
+> Status: 10 / 10 items clearly implemented; 0 incomplete or unverified.
 
-* [ ] `CSI ? 2004 h`
-* [ ] `CSI ? 2004 l`
-* [ ] Paste start sends `ESC [ 200 ~`
-* [ ] Paste end sends `ESC [ 201 ~`
-* [ ] Wrapped only when mode is enabled
-* [ ] Empty paste behaves correctly
-* [ ] Multi-line text preserves expected line breaks
-* [ ] Large text does not omit the end marker
-* [ ] ESC sequences in pasted content are sent as data
-* [ ] Normal paste behavior is restored after disabling the mode
+* [x] `CSI ? 2004 h`
+* [x] `CSI ? 2004 l`
+* [x] Paste start sends `ESC [ 200 ~`
+* [x] Paste end sends `ESC [ 201 ~`
+* [x] Wrapped only when mode is enabled
+* [x] Empty paste behaves correctly
+* [x] Multi-line text preserves expected line breaks
+* [x] Large text does not omit the end marker
+* [x] ESC sequences in pasted content are sent as data
+* [x] Normal paste behavior is restored after disabling the mode
 
 ---
 
@@ -1502,7 +1502,7 @@
 
 ## 37. Minimum Modern Compatibility Set
 
-> Status: 25 / 56 items clearly implemented; 31 incomplete or unverified.
+> Status: 27 / 56 items clearly implemented; 29 incomplete or unverified.
 
 ### 37.1 Shell Basic Compatibility
 
@@ -1527,7 +1527,7 @@
 * [x] `?7`
 * [x] `?25`
 * [x] `?1049`
-* [ ] `?2004`
+* [x] `?2004`
 * [ ] `?1004`
 * [ ] `?1006`
 * [ ] `?2026`
@@ -1556,7 +1556,7 @@
 * [ ] DA2
 * [ ] OSC 8
 * [ ] OSC 52
-* [ ] Bracketed Paste
+* [x] Bracketed Paste
 * [ ] Focus Reporting
 * [ ] SGR Mouse
 * [ ] Application Cursor
@@ -1644,8 +1644,8 @@
 * [x] `\x1b[?25l`
 * [x] `\x1b[?1049h`
 * [x] `\x1b[?1049l`
-* [ ] `\x1b[?2004h`
-* [ ] `\x1b[?2004l`
+* [x] `\x1b[?2004h`
+* [x] `\x1b[?2004l`
 * [ ] `\x1b[?2026h`
 * [ ] `\x1b[?2026l`
 
@@ -1695,7 +1695,7 @@
 
 ## 39. Final Acceptance
 
-> Status: 6 / 21 items clearly implemented; 15 incomplete or unverified.
+> Status: 7 / 21 items clearly implemented; 14 incomplete or unverified.
 
 * [ ] All control sequences support arbitrary input fragmentation
 * [ ] All unknown sequences can be safely ignored
@@ -1707,7 +1707,7 @@
 * [ ] less, top, htop, fzf, lazygit work correctly
 * [ ] Application cursor keys and normal cursor keys switch correctly
 * [x] Main screen and alternate screen switch correctly
-* [ ] Bracketed Paste correct
+* [x] Bracketed Paste correct
 * [ ] Focus Reporting correct
 * [ ] SGR Mouse correct
 * [ ] True Color correct

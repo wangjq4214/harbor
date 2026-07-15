@@ -1028,3 +1028,31 @@ fn default_bg_after_sgr_reset_and_erase() {
         assert_eq!(terminal.screen().cell(0, col).bg, Color::Default);
     }
 }
+
+#[test]
+fn bracketed_paste_mode_tracks_decset_and_decrst() {
+    let mut terminal = Terminal::new(1, 1);
+
+    terminal.put_bytes(b"\x1b[?2004h");
+    assert!(terminal.screen().input_modes().bracketed_paste);
+
+    terminal.put_bytes(b"\x1b[?2004l");
+    assert!(!terminal.screen().input_modes().bracketed_paste);
+}
+
+#[test]
+fn bracketed_paste_mode_resets_and_is_scoped_to_active_screen() {
+    let mut terminal = Terminal::new(1, 1);
+
+    terminal.put_bytes(b"\x1b[?2004h\x1bc");
+    assert!(!terminal.screen().input_modes().bracketed_paste);
+
+    terminal.put_bytes(b"\x1b[?2004h\x1b[!p");
+    assert!(!terminal.screen().input_modes().bracketed_paste);
+
+    terminal.put_bytes(b"\x1b[?2004h\x1b[?1049h");
+    assert!(!terminal.screen().input_modes().bracketed_paste);
+
+    terminal.put_bytes(b"\x1b[?2004h\x1b[?1049l");
+    assert!(terminal.screen().input_modes().bracketed_paste);
+}

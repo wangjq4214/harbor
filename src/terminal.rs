@@ -24,6 +24,14 @@ pub(crate) struct TerminalSize {
     pub(crate) cols: usize,
 }
 
+/// Lightweight snapshot of terminal modes that affect input encoding.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct InputModes {
+    pub(crate) application_cursor: bool,
+    pub(crate) application_keypad: bool,
+    pub(crate) bracketed_paste: bool,
+}
+
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.
 pub(crate) struct Terminal {
     /// Incremental ANSI/VT parser.
