@@ -10,7 +10,11 @@ use winit::window::Window;
 ///
 /// Fields are private — layers access device/queue/surface through methods only.
 pub(crate) struct GpuContext {
-    /// wgpu surface bound to the window, provides frame buffers.
+    /// wgpu instance, kept alive for secondary surface creation (e.g. dialog windows).
+    instance: Arc<wgpu::Instance>,
+    /// Adapter, kept alive for secondary surface capability queries.
+    adapter: wgpu::Adapter,
+    /// wgpu surface bound to the main window, provides frame buffers.
     surface: wgpu::Surface<'static>,
     /// Logical GPU device for creating pipelines / textures / buffers.
     device: wgpu::Device,
@@ -32,13 +36,13 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
             #[cfg(target_os = "windows")]
             backends: wgpu::Backends::DX12,
             #[cfg(not(target_os = "windows"))]
             backends: wgpu::Backends::all(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        }));
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -101,6 +105,8 @@ impl GpuContext {
         ));
 
         Ok(Self {
+            instance,
+            adapter,
             surface,
             device,
             queue,
@@ -144,6 +150,18 @@ impl GpuContext {
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
     pub(crate) fn colored_quad_pipeline(&self) -> Arc<wgpu::RenderPipeline> {
         Arc::clone(&self.colored_quad_pipeline)
+    }
+
+    /// Creates a wgpu surface from an owned window handle, using the same Instance.
+    /// The returned surface has a `'static` lifetime and the caller is responsible
+    /// for configuring the surface.
+    pub(crate) fn create_surface(&self, window: Arc<winit::window::Window>) -> wgpu::Surface<'static> {
+        self.instance.create_surface(window).expect("create dialog surface")
+    }
+
+    /// Queries surface capabilities for a new surface, using the stored adapter.
+    pub(crate) fn surface_capabilities(&self, surface: &wgpu::Surface) -> wgpu::SurfaceCapabilities {
+        surface.get_capabilities(&self.adapter)
     }
 
     // ── surface operations ──────────────────────────────────────────────

@@ -3,10 +3,10 @@
 use crate::{
     pty::Pty,
     render::{
-        Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext, Decoration,
-        EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-        ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext,
-        Text, TextMetrics,
+        AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
+        Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext,
+        ScrollbarInput, ScrollbarWaitContext, Selection, SelectionContext, SelectionInput,
+        SelectionWaitContext, Text, TextMetrics,
     },
     terminal::{Screen, Terminal, TerminalSize},
 };
@@ -53,6 +53,31 @@ impl UiRoot {
     /// Returns the cell dimensions (rows × cols) for the current surface size.
     pub(crate) fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
         self.text.terminal_size(gpu)
+    }
+
+    /// Font metrics (cell dimensions, ascent, etc.).
+    pub(crate) fn text_metrics(&self) -> &TextMetrics {
+        self.text.metrics()
+    }
+
+    /// Looks up a glyph in the CPU-side atlas.
+    pub(crate) fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
+        self.text.glyph(ch)
+    }
+
+    /// The text render pipeline.
+    pub(crate) fn text_pipeline(&self) -> &wgpu::RenderPipeline {
+        self.text.text_pipeline()
+    }
+
+    /// The bind group holding the glyph atlas texture and sampler.
+    pub(crate) fn text_bind_group(&self) -> &wgpu::BindGroup {
+        self.text.text_bind_group()
+    }
+
+    /// Ensures dialog text characters are rasterized.
+    pub(crate) fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.text.ensure_glyphs(text, device, queue);
     }
 
     /// Uploads dirty GPU resources for all five components.
@@ -103,7 +128,7 @@ impl UiRoot {
         pty: &mut Pty,
         modifiers: ModifiersState,
     ) -> EventResult {
-        if self.selection.handle_event(
+        let sel_result = self.selection.handle_event(
             event,
             &mut SelectionContext {
                 terminal: &mut *terminal,
@@ -111,9 +136,10 @@ impl UiRoot {
                 pty,
                 modifiers,
             },
-        ) == EventResult::Handled
-        {
-            return EventResult::Handled;
+        );
+        // Propagate Handled or ConfirmPaste; only Continue falls through.
+        if sel_result != EventResult::Continue {
+            return sel_result;
         }
         // After SelectionContext is dropped, terminal reborrow is released.
         if self.scrollbar.handle_event(

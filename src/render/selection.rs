@@ -8,7 +8,7 @@ use crate::{
         caps::{ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, TerminalAccess},
         gpu::{self, ColoredVertex, GpuContext},
     },
-    terminal::{self, Screen, SelectionBounds},
+    terminal::{self, PasteDisposition, Screen, SelectionBounds},
 };
 use arboard::Clipboard;
 use winit::keyboard::{Key, NamedKey};
@@ -688,37 +688,77 @@ impl Selection {
         let winit::event::WindowEvent::KeyboardInput { event: kbd, .. } = event else {
             return None;
         };
-        if kbd.state != winit::event::ElementState::Pressed || !caps.modifiers().control_key() {
+        if kbd.state != winit::event::ElementState::Pressed {
+            return None;
+        }
+        let ctrl = caps.modifiers().control_key();
+        let shift = caps.modifiers().shift_key();
+        if !ctrl && !shift {
             return None;
         }
 
-        match &kbd.logical_key {
-            winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
-                let Some(text) = self.selected_text(caps.terminal().screen()) else {
-                    return Some(EventResult::Continue);
-                };
-                if let Some(clipboard) = self.clipboard.as_mut()
-                    && let Err(e) = clipboard.set_text(text)
-                {
-                    tracing::warn!(error = %e, "failed to set clipboard text");
+        /// Reads clipboard and returns the paste disposition or None on error.
+        fn read_paste_text(clipboard: &mut Option<arboard::Clipboard>) -> Option<String> {
+            clipboard.as_mut().and_then(|cb| match cb.get_text() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read clipboard text");
+                    None
                 }
-                Some(EventResult::Handled)
+            })
+        }
+
+        // Ctrl+V paste
+        if ctrl {
+            match &kbd.logical_key {
+                winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
+                    let Some(text) = self.selected_text(caps.terminal().screen()) else {
+                        return Some(EventResult::Continue);
+                    };
+                    if let Some(clipboard) = self.clipboard.as_mut()
+                        && let Err(e) = clipboard.set_text(text)
+                    {
+                        tracing::warn!(error = %e, "failed to set clipboard text");
+                    }
+                    return Some(EventResult::Handled);
+                }
+                winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
+                    if let Some(text) = read_paste_text(&mut self.clipboard) {
+                        let modes = caps.terminal().screen().input_modes();
+                        match PasteDisposition::decide(modes, &text) {
+                            PasteDisposition::SendDirect => {
+                                terminal::send_paste(modes, &text, caps.pty());
+                            }
+                            PasteDisposition::Confirm { raw_text } => {
+                                return Some(EventResult::ConfirmPaste(raw_text));
+                            }
+                        }
+                    }
+                    return Some(EventResult::Handled);
+                }
+                _ => {}
             }
-            winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
-                if let Some(clipboard) = self.clipboard.as_mut() {
-                    match clipboard.get_text() {
-                        Ok(text) => {
-                            let modes = caps.terminal().screen().input_modes();
+        }
+
+        // Shift+Insert paste
+        if shift {
+            if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Insert) = &kbd.logical_key {
+                if let Some(text) = read_paste_text(&mut self.clipboard) {
+                    let modes = caps.terminal().screen().input_modes();
+                    match PasteDisposition::decide(modes, &text) {
+                        PasteDisposition::SendDirect => {
                             terminal::send_paste(modes, &text, caps.pty());
                         }
-                        Err(e) => tracing::warn!(error = %e, "failed to read clipboard text"),
+                        PasteDisposition::Confirm { raw_text } => {
+                            return Some(EventResult::ConfirmPaste(raw_text));
+                        }
                     }
                 }
-                // Always Handled — never send \x16 to the PTY.
-                Some(EventResult::Handled)
+                return Some(EventResult::Handled);
             }
-            _ => None,
         }
+
+        None
     }
 
     /// Apply [`SelectionOutcome`] — sets dirty flag on visual changes,

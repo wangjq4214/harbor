@@ -50,34 +50,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Atlas placement and metrics for one rasterized glyph.
 #[derive(Clone, Copy)]
-struct AtlasGlyph {
+pub(crate) struct AtlasGlyph {
     /// UV sub-region (unit texture coordinates).
-    uv: AtlasUv,
+    pub(crate) uv: AtlasUv,
     /// Glyph pixel width.
-    width: u32,
+    pub(crate) width: u32,
     /// Glyph pixel height.
-    height: u32,
+    pub(crate) height: u32,
     /// fontdue horizontal offset (sub-pixel).
-    xmin: i32,
+    pub(crate) xmin: i32,
     /// fontdue vertical offset (sub-pixel).
-    ymin: i32,
+    pub(crate) ymin: i32,
     /// Pixel x position within the fixed-size atlas.
-    atlas_x: u32,
+    pub(crate) atlas_x: u32,
     /// Pixel y position within the fixed-size atlas.
-    atlas_y: u32,
+    pub(crate) atlas_y: u32,
 }
 
 /// UV rectangle within the atlas texture.
 #[derive(Clone, Copy)]
-struct AtlasUv {
+pub(crate) struct AtlasUv {
     /// Left UV boundary [0, 1].
-    left: f32,
+    pub(crate) left: f32,
     /// Top UV boundary [0, 1].
-    top: f32,
+    pub(crate) top: f32,
     /// Right UV boundary [0, 1].
-    right: f32,
+    pub(crate) right: f32,
     /// Bottom UV boundary [0, 1].
-    bottom: f32,
+    pub(crate) bottom: f32,
 }
 
 /// One rasterised glyph (used for repacking).
@@ -407,6 +407,98 @@ impl GlyphAtlas {
         self.glyphs.get(&ch)
     }
 
+    /// Ensures the given characters are rasterized and packed into the atlas.
+    /// Returns the list of newly added characters (empty if all were already cached).
+    /// Returns `None` if the atlas is full and a rebuild would be needed
+    /// (dialog chars are skipped — not worth evicting the screen atlas).
+    pub(crate) fn ensure_chars(
+        &mut self,
+        chars: &[char],
+        fonts: &FontBook,
+    ) -> Vec<char> {
+        // Rasterize only new glyphs
+        let mut new_glyphs: Vec<RasterizedGlyph> = Vec::new();
+        for ch in chars {
+            if !self.glyphs.contains_key(ch) && *ch != ' ' {
+                let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
+                new_glyphs.push(RasterizedGlyph { ch: *ch, metrics, bitmap });
+            }
+        }
+        if new_glyphs.is_empty() {
+            return Vec::new();
+        }
+        let new_chars: Vec<char> = new_glyphs.iter().map(|g| g.ch).collect();
+        // Pack into shelves
+        for glyph in &new_glyphs {
+            let gw = glyph.metrics.width as u32 + ATLAS_PADDING;
+            let gh = glyph.metrics.height as u32;
+            let mut placed = false;
+            for shelf in &mut self.shelves {
+                if shelf.height >= gh && shelf.next_x + gw <= MAX_ATLAS_SIZE {
+                    let x = shelf.next_x;
+                    let y = shelf.y;
+                    for row in 0..glyph.metrics.height {
+                        let dst = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
+                        let src = row * glyph.metrics.width;
+                        self.pixels[dst..dst + glyph.metrics.width]
+                            .copy_from_slice(&glyph.bitmap[src..src + glyph.metrics.width]);
+                    }
+                    let left = x as f32 / MAX_ATLAS_SIZE as f32;
+                    let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
+                    let top = y as f32 / MAX_ATLAS_SIZE as f32;
+                    let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
+                    self.glyphs.insert(glyph.ch, AtlasGlyph {
+                        uv: AtlasUv { left, top, right, bottom },
+                        width: glyph.metrics.width as u32,
+                        height: glyph.metrics.height as u32,
+                        xmin: glyph.metrics.xmin,
+                        ymin: glyph.metrics.ymin,
+                        atlas_x: x,
+                        atlas_y: y,
+                    });
+                    shelf.next_x += glyph.metrics.width as u32 + ATLAS_PADDING;
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
+                if shelf_y + gh > MAX_ATLAS_SIZE {
+                    tracing::warn!("glyph atlas full; skipping dialog chars");
+                    break;
+                }
+                let x = 0u32;
+                let y = shelf_y;
+                for row in 0..glyph.metrics.height {
+                    let dst = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
+                    let src = row * glyph.metrics.width;
+                    self.pixels[dst..dst + glyph.metrics.width]
+                        .copy_from_slice(&glyph.bitmap[src..src + glyph.metrics.width]);
+                }
+                let left = x as f32 / MAX_ATLAS_SIZE as f32;
+                let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
+                let top = y as f32 / MAX_ATLAS_SIZE as f32;
+                let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
+                self.glyphs.insert(glyph.ch, AtlasGlyph {
+                    uv: AtlasUv { left, top, right, bottom },
+                    width: glyph.metrics.width as u32,
+                    height: glyph.metrics.height as u32,
+                    xmin: glyph.metrics.xmin,
+                    ymin: glyph.metrics.ymin,
+                    atlas_x: x,
+                    atlas_y: y,
+                });
+                self.shelves.push(Shelf {
+                    y: shelf_y,
+                    height: gh,
+                    next_x: glyph.metrics.width as u32 + ATLAS_PADDING,
+                });
+            }
+        }
+        self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
+        new_chars
+    }
+
     /// Generates vertices for non-empty cells using atlas UVs.
     /// Only used in tests; TextLayer uses `build_all_vertices` instead.
     #[cfg(test)]
@@ -667,6 +759,38 @@ impl Text {
         self.metrics.terminal_size(w, h)
     }
 
+    /// Font metrics (cell dimensions, ascent, etc.).
+    pub(crate) fn metrics(&self) -> &TextMetrics {
+        &self.metrics
+    }
+
+    /// Looks up a glyph in the CPU-side atlas.
+    pub(crate) fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
+        self.atlas.glyph(ch)
+    }
+
+    /// The text render pipeline (glyph atlas texture bind group layout).
+    pub(crate) fn text_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+
+    /// The bind group holding the glyph atlas texture and sampler.
+    pub(crate) fn text_bind_group(&self) -> &wgpu::BindGroup {
+        &self.gpu_atlas.bind_group
+    }
+
+
+    /// Ensures all characters in `text` are rasterized and uploaded to the GPU atlas.
+    /// Call before building text vertices for dialog labels that reference the atlas.
+    pub(crate) fn ensure_glyphs(&mut self, text: &str, _device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
+        chars.sort_unstable();
+        chars.dedup();
+        let new_chars = self.atlas.ensure_chars(&chars, &self.fonts);
+        if !new_chars.is_empty() {
+            self.gpu_atlas.update_glyphs(queue, &self.atlas, &new_chars);
+        }
+    }
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
     fn build_row_vertices(
         &self,

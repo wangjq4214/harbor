@@ -21,16 +21,18 @@ pub(crate) use gpu::GpuContext;
 pub(crate) use metrics::TextMetrics;
 pub(crate) use scrollbar::Scrollbar;
 pub(crate) use selection::Selection;
-pub(crate) use text::Text;
+pub(crate) use text::{AtlasGlyph, Text};
 
 use crate::terminal::Screen;
 
 /// Result of an event handler — controls whether propagation continues.
 #[must_use]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EventResult {
     Handled,
     Continue,
+    /// Multi-line paste needs confirmation. Contains the raw clipboard text.
+    ConfirmPaste(String),
 }
 
 /// Every UI element: prepare + draw (+ optional resize).

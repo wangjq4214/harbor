@@ -48,6 +48,87 @@ impl InputModes {
     }
 }
 
+/// Disposition of a paste operation after checking multi-line and bracketed-paste state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PasteDisposition {
+    /// Send directly to PTY — no confirmation needed.
+    SendDirect,
+    /// Confirmation required; holds the raw paste text.
+    Confirm { raw_text: String },
+}
+
+impl PasteDisposition {
+    /// Determines the paste disposition from InputModes and clipboard text.
+    ///
+    /// Returns `SendDirect` when bracketed paste is ON or the text has at most
+    /// one meaningful line (after trimming trailing newlines). Returns `Confirm`
+    /// when bracketed paste is OFF and the text contains real newlines.
+    pub(crate) fn decide(modes: InputModes, text: &str) -> Self {
+        if modes.bracketed_paste || !should_confirm_multiline(text) {
+            PasteDisposition::SendDirect
+        } else {
+            PasteDisposition::Confirm {
+                raw_text: text.to_owned(),
+            }
+        }
+    }
+}
+
+/// Returns `true` when `text` contains at least one newline after recursively
+/// trimming all trailing newline sequences (`\r\n`, `\n`, `\r`).
+///
+/// Single-line text (with or without trailing newlines) and text that becomes
+/// empty after trimming are not multi-line.
+pub(crate) fn should_confirm_multiline(text: &str) -> bool {
+    let trimmed = trim_trailing_newlines(text);
+    trimmed.contains('\n') || trimmed.contains('\r')
+}
+
+/// Escapes C0 control characters (U+0000–U+001F) and DEL (U+007F) in a single
+/// line to visible Unicode markers. Tab is rendered as `→`. All other C0 chars
+/// use the Unicode Control Pictures block (U+2400 + byte value). DEL uses U+2421.
+///
+/// LF (`\n`) and CR (`\r`) pass through unchanged — the caller is responsible
+/// for line splitting; this function receives individual lines that should not
+/// contain line-break characters.
+pub(crate) fn safe_preview_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for ch in line.chars() {
+        match ch {
+            '\t' => out.push('\u{2192}'),              // →
+            // LF and CR pass through (caller splits lines, not us)
+            '\n' | '\r' => out.push(ch),
+            c if (c as u32) <= 0x1F => {
+                out.push(char::from_u32(0x2400 + c as u32).unwrap_or('?'));
+            }
+            '\x7F' => out.push('\u{2421}'),            // ␡
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Trims any trailing newline sequences (`\r\n`, `\n`, `\r`) from the input,
+/// returning the remaining prefix.
+fn trim_trailing_newlines(text: &str) -> &str {
+    let mut end = text.len();
+    loop {
+        if end >= 2 && text.as_bytes()[end - 2..end] == *b"\r\n" {
+            end -= 2;
+        } else if end >= 1 {
+            let last = text.as_bytes()[end - 1];
+            if last == b'\n' || last == b'\r' {
+                end -= 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    &text[..end]
+}
+
 /// Delivers paste text to the PTY, framing with bracketed-paste markers when
 /// the mode is enabled.  This is the single entry point for paste delivery;
 /// callers should not reach for `Pty::write` directly for paste payloads.
