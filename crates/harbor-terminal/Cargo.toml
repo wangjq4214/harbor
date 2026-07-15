@@ -1,0 +1,11 @@
+[package]
+name = "harbor-terminal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+harbor-types = { workspace = true }
+harbor-parser = { workspace = true }
+unicode-width = { workspace = true }
+bitvec = { workspace = true }
+tracing = { workspace = true }

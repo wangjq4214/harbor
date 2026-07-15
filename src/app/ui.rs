@@ -1,15 +1,13 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
-use crate::{
-    pty::Pty,
-    render::{
-        Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext, Decoration,
-        EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-        ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext,
-        Text, TextMetrics,
-    },
-    terminal::{Screen, Terminal, TerminalSize},
+use harbor_pty::Pty;
+use harbor_render::{
+    AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
+    Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
+    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
+    TextMetrics,
 };
+use harbor_terminal::{Screen, Terminal, TerminalSize};
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
@@ -40,13 +38,14 @@ impl UiRoot {
         _fonts: FontBook,
         metrics: TextMetrics,
     ) -> anyhow::Result<Self> {
+        let snap = screen.snapshot();
         Ok(Self {
-            background: Background::new(gpu, screen, metrics.cell_width, metrics.line_height),
-            text: Text::new(gpu, _fonts, metrics, screen)?,
-            decoration: Decoration::new(gpu, screen, metrics),
+            background: Background::new(gpu, &snap, metrics.cell_width, metrics.line_height),
+            text: Text::new(gpu, _fonts, metrics, &snap)?,
+            decoration: Decoration::new(gpu, &snap, metrics),
             selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),
-            scrollbar: Scrollbar::new(gpu, screen),
+            scrollbar: Scrollbar::new(gpu, &snap),
         })
     }
 
@@ -55,18 +54,43 @@ impl UiRoot {
         self.text.terminal_size(gpu)
     }
 
+    /// Font metrics (cell dimensions, ascent, etc.).
+    pub(crate) fn text_metrics(&self) -> &TextMetrics {
+        self.text.metrics()
+    }
+
+    /// Looks up a glyph in the CPU-side atlas.
+    pub(crate) fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
+        self.text.glyph(ch)
+    }
+
+    /// The text render pipeline.
+    pub(crate) fn text_pipeline(&self) -> &wgpu::RenderPipeline {
+        self.text.text_pipeline()
+    }
+
+    /// The bind group holding the glyph atlas texture and sampler.
+    pub(crate) fn text_bind_group(&self) -> &wgpu::BindGroup {
+        self.text.text_bind_group()
+    }
+
+    /// Ensures dialog text characters are rasterized.
+    pub(crate) fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.text.ensure_glyphs(text, device, queue);
+    }
+
     /// Uploads dirty GPU resources for all five components.
-    /// Called after terminal content changes or resize.
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
-        let dirty_ranges = screen.dirty_ranges();
+        let snap = screen.snapshot();
+        let dirty_ranges = snap.dirty_ranges.clone();
         self.background
-            .prepare_with_dirty(gpu, screen, &dirty_ranges);
-        self.text.prepare_with_dirty(gpu, screen, &dirty_ranges);
+            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
+        self.text.prepare_with_dirty(gpu, &snap, &dirty_ranges);
         self.decoration
-            .prepare_with_dirty(gpu, screen, &dirty_ranges);
-        self.selection.prepare(gpu, Some(screen));
-        self.cursor.prepare(gpu, Some(screen));
-        self.scrollbar.prepare(gpu, Some(screen));
+            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
+        self.selection.prepare(gpu, Some(&snap));
+        self.cursor.prepare(gpu, Some(&snap));
+        self.scrollbar.prepare(gpu, Some(&snap));
     }
 
     /// Issues draw calls for all five components in z-order (back to front).
@@ -103,7 +127,7 @@ impl UiRoot {
         pty: &mut Pty,
         modifiers: ModifiersState,
     ) -> EventResult {
-        if self.selection.handle_event(
+        let sel_result = self.selection.handle_event(
             event,
             &mut SelectionContext {
                 terminal: &mut *terminal,
@@ -111,9 +135,10 @@ impl UiRoot {
                 pty,
                 modifiers,
             },
-        ) == EventResult::Handled
-        {
-            return EventResult::Handled;
+        );
+        // Propagate Handled or ConfirmPaste; only Continue falls through.
+        if sel_result != EventResult::Continue {
+            return sel_result;
         }
         // After SelectionContext is dropped, terminal reborrow is released.
         if self.scrollbar.handle_event(

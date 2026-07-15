@@ -745,13 +745,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
- "bitvec",
  "bytemuck",
  "dirs",
  "fontdb",
  "fontdue",
+ "harbor-config",
+ "harbor-parser",
+ "harbor-pty",
+ "harbor-render",
+ "harbor-terminal",
+ "harbor-types",
+ "harbor-ui",
  "hashbrown 0.17.1",
- "parking_lot",
  "pollster",
  "thiserror 2.0.18",
  "tracing",
@@ -760,6 +765,69 @@ dependencies = [
  "unicode-width",
  "wgpu",
  "windows",
+ "winit",
+]
+
+[[package]]
+name = "harbor-config"
+version = "0.1.0"
+
+[[package]]
+name = "harbor-parser"
+version = "0.1.0"
+
+[[package]]
+name = "harbor-pty"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harbor-types",
+ "parking_lot",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "harbor-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "bytemuck",
+ "fontdb",
+ "fontdue",
+ "harbor-config",
+ "harbor-pty",
+ "harbor-terminal",
+ "harbor-types",
+ "hashbrown 0.17.1",
+ "tracing",
+ "unicode-width",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "harbor-terminal"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "harbor-parser",
+ "harbor-types",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
+name = "harbor-types"
+version = "0.1.0"
+
+[[package]]
+name = "harbor-ui"
+version = "0.1.0"
+dependencies = [
+ "harbor-render",
+ "wgpu",
  "winit",
 ]
 

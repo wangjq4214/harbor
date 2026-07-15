@@ -1,6 +1,7 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
 mod input;
+mod paste_dialog;
 mod ui;
 
 use std::sync::Arc;
@@ -13,13 +14,15 @@ use winit::{
 };
 
 use crate::{
-    app::input::KeyboardConfig,
+    app::input::InputEncoder,
     event::AppEvent,
-    pty::Pty,
-    render::{EventResult, GpuContext, TextMetrics, load_system_fonts},
-    terminal::{Terminal, TerminalSize},
+    pty::{Pty, PtyWakeHandler},
+    terminal::Terminal,
 };
-use input::keyboard_input_bytes;
+use harbor_render::{EventResult, GpuContext, TextMetrics, load_system_fonts};
+use harbor_types::TerminalSize;
+use harbor_ui::DialogResult;
+use paste_dialog::PasteDialog;
 use ui::UiRoot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +72,8 @@ pub(crate) struct App {
     pending_resize: Option<TerminalSize>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
+    /// Active paste confirmation dialog (None when no confirmation is pending).
+    paste_dialog: Option<PasteDialog>,
 }
 
 /// Errors that can occur while starting the application.
@@ -150,6 +155,71 @@ impl ApplicationHandler<AppEvent> for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // ── Dialog window handling ──────────────────────────────────────
+        // Use take/replace to avoid simultaneous mutable borrows.
+        let dialog_opt = self.paste_dialog.take();
+        if let Some(mut dialog) = dialog_opt {
+            if dialog.window_id() == window_id {
+                let result = dialog.handle_event(&event);
+                match result {
+                    DialogResult::Confirmed => {
+                        let text = dialog.raw_text.clone();
+                        let modes = self
+                            .terminal
+                            .as_ref()
+                            .map(|t| t.screen().input_modes())
+                            .unwrap_or_default();
+                        crate::terminal::send_paste(modes, &text, &mut self.pty);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        // dialog dropped; don't put back
+                        return;
+                    }
+                    DialogResult::Cancelled => {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        // dialog dropped; don't put back
+                        return;
+                    }
+                    DialogResult::None => {
+                        // Put dialog back; render below
+                        if matches!(&event, WindowEvent::RedrawRequested) {
+                            // Ensure dialog glyphs, then prepare + render.
+                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_mut()) {
+                                let ensure_text = format!(
+                                    "[ Paste ][ Cancel ]Paste {} lines?",
+                                    dialog.raw_text.lines().count()
+                                );
+                                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
+                            }
+                            // Prepare: borrow ui (immutable refs for metrics/glyph/pipeline)
+                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
+                                let metrics = ui.text_metrics();
+                                dialog.prepare(
+                                    gpu,
+                                    metrics,
+                                    |ch| ui.text_glyph(ch).copied(),
+                                    ui.text_pipeline(),
+                                    ui.text_bind_group(),
+                                );
+                            }
+                            // Render: borrow ui for pipeline/bind_group
+                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
+                                dialog.render(gpu, ui.text_pipeline(), ui.text_bind_group());
+                            }
+                        }
+                        self.paste_dialog = Some(dialog);
+                    }
+                }
+            } else {
+                // Event not for dialog window; put dialog back
+                self.paste_dialog = Some(dialog);
+            }
+        }
+        let dialog_active = self.paste_dialog.is_some();
+
         let (Some(gpu), Some(ui), Some(terminal), Some(pty), Some(window)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
@@ -167,6 +237,28 @@ impl ApplicationHandler<AppEvent> for App {
         // Interactive layers first — each gets only the rights it needs.
         // Scope so gpu/terminal borrows are released before prepare-on-Handled.
         let handled = ui.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
+
+        // Multi-line paste confirmation: create dialog instead of sending to PTY.
+        // Duplicate paste while dialog is open is a no-op.
+        if let EventResult::ConfirmPaste(raw_text) = &handled {
+            if self.paste_dialog.is_none() {
+                // Ensure dialog text glyphs are rasterized before dialog render.
+                let ensure_text = format!(
+                    "[ Paste ][ Cancel ]Paste {} lines?0123456789",
+                    raw_text.lines().count()
+                );
+                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
+                self.paste_dialog = Some(PasteDialog::new(
+                    raw_text.clone(),
+                    event_loop,
+                    gpu,
+                    Some(window),
+                ));
+            }
+            ui.prepare(gpu, terminal.screen());
+            window.request_redraw();
+            return;
+        }
 
         // Detect Ctrl+C copy — the only keyboard event that should NOT
         // scroll to bottom (user is reading scrollback while copying).
@@ -278,16 +370,13 @@ impl ApplicationHandler<AppEvent> for App {
                 device_id: _,
                 event,
                 is_synthetic: _,
-            } if event.state == ElementState::Pressed => {
+            } if event.state == ElementState::Pressed && !dialog_active => {
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
-                let Some(bytes) = keyboard_input_bytes(
+                let Some(bytes) = InputEncoder::key(
                     &event.logical_key,
                     event.text.as_deref(),
                     self.modifiers,
-                    KeyboardConfig {
-                        application_cursor: terminal.screen().application_cursor(),
-                        application_keypad: terminal.screen().application_keypad(),
-                    },
+                    terminal.screen().input_modes(),
                     is_numpad,
                 ) else {
                     return;
@@ -310,9 +399,10 @@ impl App {
             gpu: None,
             ui: None,
             terminal: None,
-            pty: Pty::new(event_proxy),
+            pty: Pty::new(PtyWakeHandler::new(event_proxy)),
             pending_resize: None,
             modifiers: ModifiersState::default(),
+            paste_dialog: None,
         }
     }
 
@@ -359,7 +449,7 @@ impl App {
         // Phase 2: submit one clear frame immediately after GPU init, before
         // waiting for fonts. Replaces the white window with the terminal
         // background color during the ~400ms font join wait.
-        gpu.clear_surface(crate::config::BACKGROUND);
+        gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
         let fonts = font_handle
             .join()
@@ -441,7 +531,7 @@ impl App {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::config::BACKGROUND),
+                        load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -456,6 +546,16 @@ impl App {
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+    }
+}
+
+/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`.
+fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
+    wgpu::Color {
+        r: c[0] as f64,
+        g: c[1] as f64,
+        b: c[2] as f64,
+        a: c[3] as f64,
     }
 }
 

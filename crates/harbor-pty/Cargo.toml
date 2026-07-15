@@ -1,0 +1,13 @@
+[package]
+name = "harbor-pty"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+harbor-types = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+windows = { workspace = true }

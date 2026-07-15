@@ -3,46 +3,25 @@ name = "harbor"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-# error handle
+[workspace]
+resolver = "3"
+members = [".", "crates/*"]
+
+[workspace.dependencies]
+# ── workspace crates ──────────────────────────────────────────────────────────
+harbor-config = { path = "crates/harbor-config" }
+harbor-parser = { path = "crates/harbor-parser" }
+harbor-pty = { path = "crates/harbor-pty" }
+harbor-terminal = { path = "crates/harbor-terminal" }
+harbor-types = { path = "crates/harbor-types" }
+harbor-render = { path = "crates/harbor-render" }
+harbor-ui = { path = "crates/harbor-ui" }
+
+# ── shared external deps (used by 2+ crates) ─────────────────────────────────
 anyhow = "1.0"
-thiserror = "2.0"
-unicode-width = "0.2"
-bitvec = "1.0"
-
-# basic lib
-dirs = "6.0"
-hashbrown = "0.17"
-
-# sync
-parking_lot = "0.12"
-
-# async poll
-pollster = "0.4"
-
-# windows deps
-wgpu = "30.0"
-winit = "0.30"
-
-# logger
-tracing = "0.1"
-tracing-appender = "0.2"
-tracing-subscriber = {
-  version = "0.3",
-  features = ["env-filter", "fmt", "json"]
-}
-
-# vertex casting
-bytemuck = { version = "1.21", features = ["derive"] }
-
-# system font rasterization
-fontdb = "0.23.0"
-fontdue = "0.9"
-
-# clipboard
 arboard = "3.6"
-
-[target."cfg(windows)".dependencies]
+tracing = "0.1"
+unicode-width = "0.2"
 windows = {
   version = "0.62",
   features = [
@@ -55,3 +34,51 @@ windows = {
     "Win32_System_Threading",
   ]
 }
+
+# ── single-crate deps (centralized version management) ────────────────────────
+bitvec = "1.0"
+bytemuck = { version = "1.21", features = ["derive"] }
+dirs = "6.0"
+fontdb = "0.23.0"
+fontdue = "0.9"
+hashbrown = "0.17"
+parking_lot = "0.12"
+pollster = "0.4"
+thiserror = "2.0"
+tracing-appender = "0.2"
+tracing-subscriber = {
+  version = "0.3",
+  features = ["env-filter", "fmt", "json"]
+}
+wgpu = "30.0"
+winit = { version = "0.30", features = ["rwh_06"] }
+
+[dependencies]
+# workspace crates
+harbor-config = { workspace = true }
+harbor-parser = { workspace = true }
+harbor-pty = { workspace = true }
+harbor-terminal = { workspace = true }
+harbor-types = { workspace = true }
+harbor-render = { workspace = true }
+harbor-ui = { workspace = true }
+
+# external
+anyhow = { workspace = true }
+arboard = { workspace = true }
+bytemuck = { workspace = true }
+dirs = { workspace = true }
+fontdb = { workspace = true }
+fontdue = { workspace = true }
+hashbrown = { workspace = true }
+pollster = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+unicode-width = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+windows = { workspace = true }
