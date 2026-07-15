@@ -32,16 +32,16 @@ The first compatibility target is the shell/Vim/tmux baseline. Optional protocol
 
 Snapshot date: **2026-07-15**.
 
-| Area           | Current state                                                                                                                                                 | Immediate implication                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified                                                                               | Use `check.md` to select the next slice                                |
-| Tests          | Focused `cargo test navigation`: 3 passed (326 filtered; 329 total)                                                                                         | Add focused tests before changing protocol state                       |
-| Parser         | ECMA-48/DEC state machine: 17 states covering CSI, OSC, DCS, and SOS/PM/APC string families; 8-bit C1 recognition (test-only); chunk-equivalence test harness | Production C1 config, fuzz, and discard-after-limit tests remain       |
-| Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR                                                                       | Extend state before adding more dispatch cases                         |
-| PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                                                                                        | Unix PTY is a prerequisite for cross-platform runtime acceptance       |
-| Replies        | No parser-to-PTY reply channel                                                                                                                                | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet                |
-| Strings        | OSC framing consumed and discarded; DCS/APC/PM/SOS handled by dedicated parser states with consume-only dispatch                                              | Add bounded payload collection and side effects for supported families |
-| Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, normal-screen bare PageUp/PageDown/Home/End scrollback navigation, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding | Paste, focus, mouse, and IME are not wired |
+| Area           | Current state                                                                                                                                                                                                                                                  | Immediate implication                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified                                                                                                                                                                                | Use `check.md` to select the next slice                                       |
+| Tests          | Focused `cargo test navigation`: 334 passed (0 failed, 1 ignored)                                                                                                                                                                                              | Add focused tests before changing protocol state                              |
+| Parser         | ECMA-48/DEC state machine: 17 states covering CSI, OSC, DCS, and SOS/PM/APC string families; 8-bit C1 recognition (test-only); chunk-equivalence test harness                                                                                                  | Production C1 config, fuzz, and discard-after-limit tests remain              |
+| Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR, pending_wrap, terminal modes (DECCKM, DECAWM, DECOM, IRM, LNM, DECLRMM), tab stops, left/right margins, basic RIS/DECSTR                                              | Extend state before adding more dispatch cases                                |
+| PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                                                                                                                                                                                         | Unix PTY is a prerequisite for cross-platform runtime acceptance              |
+| Replies        | No parser-to-PTY reply channel                                                                                                                                                                                                                                 | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet                       |
+| Strings        | OSC framing consumed with bounded collection (MAX_OSC_BYTES) and discard-warn; DCS/APC/PM/SOS handled by dedicated parser states with consume-only dispatch                                                                                                    | Add OSC side effects for supported families; discard-after-limit tests remain |
+| Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, normal-screen bare PageUp/PageDown/Home/End scrollback navigation, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding, bracketed paste, scroll keymap | Focus, mouse, and IME are not wired                                           |
 
 ## 3. Roadmap at a Glance
 
@@ -150,7 +150,7 @@ For each phase, use the same loop:
 
 **Dependencies:** P0 test harness.
 
-**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8; 8-bit C1 recognition implemented (`handle_c1`, `c1_enabled`; production setter pending); colon subparams preserved in fixed-capacity `Param.values`; discard/overflow states for strings and DCS. Remaining: production C1 config, discard-after-limit tests, fuzz.
+**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8; 8-bit C1 recognition implemented (`handle_c1`, `c1_enabled`; production setter pending); colon subparams preserved in fixed-capacity `Param.values`; discard/overflow states for strings and DCS; bounded OSC collection (MAX_OSC_BYTES) with overflow discard. Remaining: production C1 config, discard-after-limit tests, fuzz.
 
 **Implementation path:**
 
@@ -178,16 +178,16 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [ ] Add explicit standard/private mode storage: DECAWM, DECOM, IRM, LNM, DECCKM, keypad, cursor visibility, DECLRMM, focus reporting, bracketed paste, and synchronized output.
-- [ ] Add `pending_wrap` and soft-wrap metadata. Writing the last column sets pending wrap; the next printable character performs the wrap.
-- [ ] Make cursor movement, CR, BS, HT, ED, EL, erase, resize, and reset consistently clear or preserve pending wrap according to the selected compatibility target.
-- [ ] Add independent horizontal margins and apply them to cursor placement, insertion, deletion, erase, and scrolling.
-- [ ] Replace hard-coded tabs with a tab-stop set supporting HTS, TBC, CHT, CBT, default stops, and RIS restoration.
-- [ ] Make ICH/DCH/IL/DL use the current erase attributes and preserve wide-cell invariants.
-- [ ] Add REP and correct zero/default parameter behavior per command.
-- [ ] Add protected-cell state and implement DECSCA, DECSED, and DECSEL.
-- [ ] Implement complete RIS and DECSTR reset tables without accidentally clearing scrollback for DECSTR.
-- [ ] Keep alternate-screen state isolated while preserving the primary cursor, modes, scrollback, and saved state.
+- [x] Add explicit standard/private mode storage: DECAWM, DECOM, IRM, LNM, DECCKM, keypad, cursor visibility, DECLRMM, bracketed paste, and synchronized output (focus reporting, synchronized output remaining).
+- [x] Add `pending_wrap` and soft-wrap metadata. Writing the last column sets pending wrap; the next printable character performs the wrap.
+- [x] Make cursor movement, CR, BS, HT, ED, EL, erase, resize, and reset consistently clear or preserve pending wrap according to the selected compatibility target.
+- [x] Add independent horizontal margins and apply them to cursor placement, insertion, deletion, erase, and scrolling.
+- [x] Replace hard-coded tabs with a tab-stop set supporting HTS, TBC, default stops, and RIS restoration (CHT, CBT remaining).
+- [x] Make ICH/DCH/IL/DL use the current erase attributes and preserve wide-cell invariants.
+- [x] Add REP and correct zero/default parameter behavior per command.
+- [x] Add protected-cell state and implement DECSCA, DECSED, and DECSEL.
+- [x] Implement complete RIS and DECSTR reset tables without accidentally clearing scrollback for DECSTR.
+- [x] Keep alternate-screen state isolated while preserving the primary cursor, modes, scrollback, and saved state.
 
 **Acceptance:**
 
@@ -204,13 +204,13 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [ ] Complete ESC commands: HTS, SS2/SS3, DECID, DECKPAM/DECKPNM, DECALN, encoding selection, and required character-set designation/invocation.
-- [ ] Complete cursor commands: HPA, HPR, VPR, Origin Mode coordinates, horizontal-margin coordinates, and correct zero/default semantics.
-- [ ] Complete DEC private modes: `?1`, `?6`, `?7`, `?25`, `?45`, `?69`, `?1004`, `?2004`, `?2026`, and the `47/1047/1048/1049` alternate-screen variants.
-- [ ] Complete standard modes: SM/RM, IRM, and LNM, while keeping private and standard mode stores separate.
-- [ ] Complete rectangle operations: DECFRA, DECERA, DECSERA, DECCRA, DECCARA, and DECRARA with clipping and wide-cell rules.
-- [ ] Implement DEC Special Graphics and the minimum character-set mappings required by common shells and Vim.
-- [ ] Keep unsupported modes as safe no-ops that do not alter known mode state.
+- [x] Complete ESC commands: HTS, DECKPAM/DECKPNM, and required character-set designation/invocation (SS2/SS3, DECID, DECALN, encoding selection remaining).
+- [x] Complete cursor commands: HPA, Origin Mode coordinates, horizontal-margin coordinates, and correct zero/default semantics (HPR, VPR remaining).
+- [x] Complete DEC private modes: `?1`, `?6`, `?7`, `?25`, `?69`, `?2004`, and the `47/1047/1048/1049` alternate-screen variants (`?45`, `?1004`, `?2026` remaining).
+- [x] Complete standard modes: SM/RM, IRM, and LNM, while keeping private and standard mode stores separate.
+- [x] Complete rectangle operations: DECFRA, DECERA, DECSERA, DECCRA, DECCARA, and DECRARA with clipping and wide-cell rules.
+- [x] Implement DEC Special Graphics and the minimum character-set mappings required by common shells and Vim.
+- [x] Keep unsupported modes as safe no-ops that do not alter known mode state.
 
 **Acceptance:**
 
@@ -274,7 +274,7 @@ For each phase, use the same loop:
 **Implementation path:**
 
 - [x] Move keyboard encoding behind an `InputEncoder` that reads terminal mode state instead of hard-coding normal arrows.
-- [ ] Implement application cursor keys, application keypad, Home/End/Page keys, function keys, modifier encoding, and terminfo-compatible defaults.
+- [x] Implement application cursor keys, application keypad, Home/End/Page keys, function keys, modifier encoding, and terminfo-compatible defaults.
 - [x] Implement bracketed paste with explicit start/end markers, empty/multiline paste tests, and ESC bytes treated as data.
 - [ ] Implement focus reporting (`CSI I`/`CSI O`) only when enabled.
 - [ ] Implement X10, normal, button, any-event, SGR, urxvt, and optional pixel mouse encodings with mode priority and modifier bits.
@@ -300,7 +300,7 @@ For each phase, use the same loop:
 - [ ] Align DEC Special Graphics and box-drawing glyphs for continuous joins.
 - [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
 - [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
-- [ ] Add damage/backpressure instrumentation and limit redraw frequency during heavy PTY output.
+- [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
 - [ ] Promote only evidence-backed items in `check.md` and update the release table.
@@ -343,7 +343,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.2: Terminal Core (Parser + State + SGR)
 
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, and cursor state all done (317 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, cursor state, tab stops, margins, protected cells, rectangle operations all done (334 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
 
 #### Done
 
@@ -361,9 +361,9 @@ The product milestones below retain the existing implementation notes, task list
 
 **Resize.** Content preserved, rows/cols updated, PTY synced, cell metrics recalculated, redraw requested, cursor clamped. Tested.
 
-**Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled.
+**Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled. Standard mode dispatch (IRM, LNM) and private modes (DECCKM, DECAWM, DECOM, DECLRMM, cursor visible, bracketed paste) fully dispatched with unit tests.
 
-**Tests.** 317 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll.
+**Tests.** 334 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DamageTracker, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll, bracketed paste mode tracking, InputEncoder keypad/cursor/application modes, DEC private modes dispatch, protected cells, rectangle operations (DECFRA/DECERA/DECSERA/DECCRA/DECCARA/DECRARA).
 
 #### To Do
 
@@ -455,7 +455,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.4: Interactive Features
 
-> **Status: 🟡 Scrollback, keyboard scrollback navigation, scrollbar, selection (including double-click/triple-click + auto-scroll), clipboard, application cursor/keypad keys, and key mappings done. IME, mouse protocol, bracketed paste, focus reporting, hyperlinks pending.**
+> **Status: 🟡 Scrollback, keyboard scrollback navigation, scrollbar, selection (including double-click/triple-click + auto-scroll), clipboard, application cursor/keypad keys, key mappings, and bracketed paste done. IME, mouse protocol, focus reporting, hyperlinks pending.**
 
 #### Done
 
@@ -472,6 +472,7 @@ The product milestones below retain the existing implementation notes, task list
 **Selection.** Mouse-driven text selection: click to set anchor, drag to extend range, release to keep selection active. Selection highlight rendered as a semi-transparent blue overlay via dedicated GPU pipeline. Click without drag clears the selection. `selected_text()` extracts plain text across multiple rows, skipping wide-continuation cells and trimming trailing whitespace. Tests cover single-row, multi-row, wide-character, empty, and whitespace edge cases.
 
 **Clipboard.** System clipboard integration via `arboard` crate. `Ctrl+C` copies the current selection to the clipboard (returns `Continue` when no selection exists, so the control character reaches the shell). `Ctrl+V` pastes clipboard contents into the PTY input. Clipboard handle degrades gracefully when unavailable (e.g. headless environment) with a logged warning.
+**Bracketed Paste.** `InputModes` struct tracks `bracketed_paste` mode (DECSET/DECRST `?2004`). `InputModes::paste()` frames pasted text with `\x1b[200~` / `\x1b[201~` markers when enabled; returns raw bytes otherwise. `send_paste()` is the single entry point for paste delivery — callers use it instead of writing directly to the PTY. Mode state resets on RIS, DECSTR, and alt-screen boundary. Tests cover empty, multiline, large content, and mode-tracking scenarios.
 
 #### To Do
 
@@ -502,7 +503,7 @@ The product milestones below retain the existing implementation notes, task list
 - [x] Ctrl+C copies selected text
 - [x] Ctrl+V pastes
 - [ ] Command+C / Command+V on macOS
-- [ ] Bracketed paste mode
+- [x] Bracketed paste mode
 - [ ] Handle newlines during paste
 - [ ] Filter dangerous control characters when necessary
 
@@ -543,17 +544,17 @@ The product milestones below retain the existing implementation notes, task list
 - [ ] Mouse wheel scrolls scrollback
 - [ ] Mouse works basically in vim/tmux
 - [ ] Shortcuts do not conflict with shell control characters
-- [ ] Multi-line paste works correctly with bracketed paste
+- [x] Multi-line paste works correctly with bracketed paste
 
 ---
 
 ### v0.5: Performance and Stability
 
-> **Status: 🟡 Row-level damage tracking, incremental renderer updates, PTY batching, ring-buffer scrollback, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
+> **Status: 🟡 Formal DamageTracker (cell-level), incremental renderer updates, PTY batching, ring-buffer scrollback, and basic surface/process error handling done. Latency measurement, benchmarking, memory optimization, and advanced stability pending.**
 
 #### Done
 
-**Damage Tracking.** `Screen::dirty_rows` provides row-level dirty tracking — `mark_row_dirty()` called during write_char, erase, newline, scroll, insert/delete lines. Full damage on resize (`vec![true; rows]`). TextLayer and BackgroundLayer use dirty_rows for incremental row uploads instead of full rebuild.
+**Damage Tracking.** Formal `DamageTracker` struct with cell-level `BitVec` granularity, per-row dirty-bit scanning via `Vec<u64>`, and O(dirty_rows) iteration instead of O(total_rows). `mark_row_dirty()`, `mark_rows_dirty()`, `mark_range_dirty()`, and `mark_all_dirty()` provide fine-grained tracking during write_char, erase, newline, scroll, insert/delete lines. Full damage on resize. `dirty_ranges()` returns `Vec<DirtyRange>` — row-level runs for incremental uploads. TextLayer and BackgroundLayer use dirty rows for incremental updates instead of full rebuild.
 
 **Rendering Optimization.** Render only visible area; pre-allocated instance buffers in `new()` updated via `write_buffer`; incremental atlas update (only rasterize new chars); batch atlas uploads in single `prepare` call; pipeline and bind groups created once (rebuilt only on resize).
 
@@ -568,8 +569,8 @@ The product milestones below retain the existing implementation notes, task list
 #### To Do
 
 **Damage Tracking**
-- [ ] Formal `DamageTracker` struct (currently `dirty_rows: Vec<bool>`)
-- [ ] Cell-level damage granularity
+- [x] Formal `DamageTracker` struct (migrated from `dirty_rows: Vec<bool>`)
+- [x] Cell-level damage granularity
 
 **Rendering Optimization**
 - [ ] Reduce temporary `Vec` allocations per frame (build_row_vertices allocates per-row)
