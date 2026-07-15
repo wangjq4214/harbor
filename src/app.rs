@@ -8,7 +8,7 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    keyboard::{Key, ModifiersState},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
 };
 
@@ -21,6 +21,37 @@ use crate::{
 };
 use input::keyboard_input_bytes;
 use ui::UiRoot;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollbackNavigation {
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+}
+
+fn scrollback_navigation(
+    logical_key: &Key,
+    modifiers: ModifiersState,
+    is_alt_screen: bool,
+) -> Option<ScrollbackNavigation> {
+    if is_alt_screen
+        || modifiers.shift_key()
+        || modifiers.control_key()
+        || modifiers.alt_key()
+        || modifiers.super_key()
+    {
+        return None;
+    }
+
+    match logical_key {
+        Key::Named(NamedKey::PageUp) => Some(ScrollbackNavigation::PageUp),
+        Key::Named(NamedKey::PageDown) => Some(ScrollbackNavigation::PageDown),
+        Key::Named(NamedKey::Home) => Some(ScrollbackNavigation::Top),
+        Key::Named(NamedKey::End) => Some(ScrollbackNavigation::Bottom),
+        _ => None,
+    }
+}
 
 /// Application state holding the window and its renderer.
 pub(crate) struct App {
@@ -160,6 +191,26 @@ impl ApplicationHandler<AppEvent> for App {
         // early to avoid forwarding the key to the PTY.
         if handled == EventResult::Handled {
             ui.prepare(gpu, terminal.screen());
+            window.request_redraw();
+            return;
+        }
+
+        // Bare navigation keys own the normal-screen scrollback viewport.
+        // Selection has already observed the press and cancelled itself.
+        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
+            && kbd.state == ElementState::Pressed
+            && let Some(navigation) =
+                scrollback_navigation(&kbd.logical_key, self.modifiers, terminal.is_alt_screen())
+        {
+            let page_rows = terminal.screen().rows();
+            match navigation {
+                ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(page_rows),
+                ScrollbackNavigation::PageDown => terminal.scroll_viewport_down(page_rows),
+                ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
+                ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
+            }
+            ui.prepare(gpu, terminal.screen());
+            terminal.clear_screen_dirty();
             window.request_redraw();
             return;
         }
@@ -461,5 +512,51 @@ fn paint_gdi_background(window: &Window) {
             ReleaseDC(hwnd, hdc);
             DeleteObject(brush);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    fn key(name: NamedKey) -> Key {
+        Key::Named(name)
+    }
+
+    #[test]
+    fn bare_navigation_keys_are_owned_in_normal_screen() {
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::PageUp), ModifiersState::default(), false),
+            Some(ScrollbackNavigation::PageUp)
+        );
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::PageDown), ModifiersState::default(), false),
+            Some(ScrollbackNavigation::PageDown)
+        );
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::Home), ModifiersState::default(), false),
+            Some(ScrollbackNavigation::Top)
+        );
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::End), ModifiersState::default(), false),
+            Some(ScrollbackNavigation::Bottom)
+        );
+    }
+
+    #[test]
+    fn modified_or_alt_screen_navigation_is_not_owned() {
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::PageUp), ModifiersState::SHIFT, false),
+            None
+        );
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::Home), ModifiersState::CONTROL, false),
+            None
+        );
+        assert_eq!(
+            scrollback_navigation(&key(NamedKey::End), ModifiersState::default(), true),
+            None
+        );
     }
 }
