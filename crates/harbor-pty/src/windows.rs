@@ -1,41 +1,58 @@
 use std::{
     ffi::{OsStr, OsString},
     mem::size_of,
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, io::AsRawHandle},
+    sync::{Arc, Mutex, mpsc},
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use ::windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{
+            CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
+            WAIT_TIMEOUT,
+        },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
-            Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            IO::CancelSynchronousIo,
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject,
+            },
             Pipes::CreatePipe,
             Threading::{
-                CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-                EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
-                LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-                UpdateProcThreadAttribute,
+                CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+                DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+                InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread,
+                STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+                WaitForSingleObject,
             },
         },
     },
-    core::{PCWSTR, PWSTR},
+    core::{HRESULT, PCWSTR, PWSTR},
 };
 use anyhow::{Context as _, ensure};
 
-use crate::PtySize;
+use crate::{PtySize, ReaderShutdown};
 
 /// Windows ConPTY session and the handles that must outlive the shell process.
 pub struct Pty {
     /// Input write end retained so ConPTY keeps stdin open for the child.
-    _input_write: OwnedHandle,
+    _input_write: Option<OwnedHandle>,
     /// ConPTY handle; must outlive the process attached through the attribute list.
-    _pseudo_console: PseudoConsole,
+    _pseudo_console: Option<PseudoConsole>,
     /// Shell process handle retained for lifetime ownership.
-    _process: OwnedHandle,
+    _process: Option<OwnedHandle>,
     /// Primary thread handle returned with the process handle.
-    _thread: OwnedHandle,
+    _thread: Option<OwnedHandle>,
+    /// Windows Job Object used to ensure pwsh and cmd processes exit atomically together.
+    _job: Option<OwnedHandle>,
+    /// Whether an explicit job termination request has already been issued.
+    terminated: bool,
 }
 
 /// Read side of the ConPTY output pipe consumed by the background pump.
@@ -49,6 +66,28 @@ impl Pty {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "creating windows pty");
 
+        // 1. Create and configure Job Object
+        let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
+            .context("failed to create job object")?;
+        let job = OwnedHandle::new(job);
+
+        let mut limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set_job = unsafe {
+            SetInformationJobObject(
+                job.handle(),
+                JobObjectExtendedLimitInformation,
+                &limit_info as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if let Err(err) = set_job {
+            return Err(anyhow::anyhow!(
+                "failed to set job object information: {:?}",
+                err
+            ));
+        }
+
         let (input_read, input_write) =
             OwnedHandle::pipe().context("failed to create pty input pipe")?;
         let (output_read, output_write) =
@@ -61,6 +100,25 @@ impl Pty {
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
         let process_info = create_shell_process(&attribute_list)?;
         tracing::info!("created shell process");
+
+        // The suspended process cannot create children before Job assignment succeeds.
+        let assign = unsafe { AssignProcessToJobObject(job.handle(), process_info.hProcess) };
+        if let Err(err) = assign {
+            terminate_process(&process_info);
+            return Err(anyhow::anyhow!(
+                "failed to assign process to job object: {:?}",
+                err
+            ));
+        }
+
+        // Assignment is complete, so the shell and every subsequently-created child belong to
+        // the Job before shell startup code executes.
+        if unsafe { ResumeThread(process_info.hThread) } == u32::MAX {
+            let err = ::windows::core::Error::from_thread();
+            terminate_process(&process_info);
+            return Err(anyhow::anyhow!("failed to resume shell process: {err:?}"));
+        }
+
         // The pseudo console owns the child-side pipe handles after process creation.
         // Dropping our duplicates makes EOF observable when the shell exits.
         drop(input_read);
@@ -68,10 +126,12 @@ impl Pty {
 
         Ok((
             Self {
-                _input_write: input_write,
-                _pseudo_console: pseudo_console,
-                _process: OwnedHandle::new(process_info.hProcess),
-                _thread: OwnedHandle::new(process_info.hThread),
+                _input_write: Some(input_write),
+                _pseudo_console: Some(pseudo_console),
+                _process: Some(OwnedHandle::new(process_info.hProcess)),
+                _thread: Some(OwnedHandle::new(process_info.hThread)),
+                _job: Some(job),
+                terminated: false,
             },
             PtyReader { output_read },
         ))
@@ -80,12 +140,191 @@ impl Pty {
     pub fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
-        self._pseudo_console.resize(size)
+        self._pseudo_console.as_mut().unwrap().resize(size)
     }
 
     /// Writes keyboard input bytes into the ConPTY input pipe.
-    pub fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
-        self._input_write.write(data)
+    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
+        self._input_write.as_mut().unwrap().write(data)
+    }
+
+    /// Starts termination of the shell process tree without blocking the caller.
+    fn terminate(&mut self) {
+        if self.terminated {
+            return;
+        }
+        self.terminated = true;
+
+        if let Some(job) = &self._job
+            && let Err(err) = unsafe { TerminateJobObject(job.handle(), 0xcfffffff) }
+        {
+            tracing::error!(error = ?err, "failed to terminate job object");
+        }
+    }
+
+    /// Waits for the terminated Job only from the shutdown worker.
+    fn wait_for_exit(&self) {
+        if !self.terminated {
+            return;
+        }
+
+        if let Some(job) = &self._job {
+            unsafe {
+                match WaitForSingleObject(job.handle(), 5000) {
+                    WAIT_TIMEOUT => {
+                        tracing::warn!("WaitForSingleObject on Job timed out after 5000ms");
+                    }
+                    WAIT_FAILED => {
+                        tracing::error!(
+                            error = ?::windows::core::Error::from_thread(),
+                            "WaitForSingleObject on Job failed"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Transfers the complete shutdown ownership graph to one worker. The worker owns both the
+    /// reader and ConPTY until the reader acknowledges that it has released `output_read`.
+    pub(crate) fn shutdown(pty: Self, reader: JoinHandle<()>, reader_shutdown: ReaderShutdown) {
+        let shutdown_work = Arc::new(Mutex::new(Some((pty, reader, reader_shutdown))));
+        let worker_work = Arc::clone(&shutdown_work);
+        let worker = std::thread::Builder::new()
+            .name("harbor-pty-shutdown".into())
+            .spawn(move || {
+                let (mut pty, reader, reader_shutdown) = worker_work
+                    .lock()
+                    .expect("pty shutdown work lock poisoned")
+                    .take()
+                    .expect("pty shutdown worker started without work");
+                pty.terminate();
+                reader_shutdown.request_stop();
+
+                if Self::wait_for_reader(
+                    &reader,
+                    &reader_shutdown,
+                    Instant::now() + Duration::from_secs(2),
+                ) {
+                    Self::finish_shutdown(pty, reader);
+                } else {
+                    tracing::error!(
+                        "pty reader did not acknowledge shutdown within 2s; deferring to reaper"
+                    );
+                    Self::defer_to_reaper(pty, reader, reader_shutdown);
+                }
+            });
+
+        if let Err(error) = worker {
+            // Closing ConPTY while its reader may still use output_read is unsafe. Preserve the
+            // ownership graph for process teardown rather than reintroducing a UI-thread wait.
+            tracing::error!(
+                ?error,
+                "failed to spawn pty shutdown worker; leaking session"
+            );
+            let work = shutdown_work
+                .lock()
+                .expect("pty shutdown work lock poisoned")
+                .take()
+                .expect("pty shutdown work lost before worker startup");
+            std::mem::forget(work);
+        }
+    }
+
+    fn wait_for_reader(
+        reader: &JoinHandle<()>,
+        reader_shutdown: &ReaderShutdown,
+        deadline: Instant,
+    ) -> bool {
+        loop {
+            Self::shutdown_reader(reader.as_raw_handle());
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if reader_shutdown.wait_for_completion(remaining.min(Duration::from_millis(10))) {
+                return true;
+            }
+        }
+    }
+
+    /// Runs only after the reader's completion acknowledgement was observed.
+    fn finish_shutdown(pty: Self, reader: JoinHandle<()>) {
+        // The acknowledgement is emitted only after `PtyReader` has been dropped, so this join
+        // cannot wait for another ReadFile and remains off the event-loop thread.
+        let _ = reader.join();
+        pty.wait_for_exit();
+        drop(pty);
+    }
+
+    fn defer_to_reaper(pty: Self, reader: JoinHandle<()>, reader_shutdown: ReaderShutdown) {
+        let reaper_work = Arc::new(Mutex::new(Some((pty, reader, reader_shutdown))));
+        let worker_work = Arc::clone(&reaper_work);
+        let reaper = std::thread::Builder::new()
+            .name("harbor-pty-reaper".into())
+            .spawn(move || {
+                let (pty, reader, reader_shutdown) = worker_work
+                    .lock()
+                    .expect("pty reaper work lock poisoned")
+                    .take()
+                    .expect("pty reaper started without work");
+
+                // The reaper retains the complete graph until the same acknowledgement is
+                // observed, then performs the only JoinHandle::join call.
+                while !reader_shutdown.wait_for_completion(Duration::from_millis(10)) {
+                    Self::shutdown_reader(reader.as_raw_handle());
+                }
+                Self::finish_shutdown(pty, reader);
+            });
+
+        if let Err(error) = reaper {
+            tracing::error!(?error, "failed to spawn pty reaper; leaking session");
+            let work = reaper_work
+                .lock()
+                .expect("pty reaper work lock poisoned")
+                .take()
+                .expect("pty reaper work lost before startup");
+            std::mem::forget(work);
+        }
+    }
+
+    /// Requests cancellation of the reader's current synchronous I/O operation. ERROR_NOT_FOUND
+    /// only means the reader is between reads; the reaper retries until it receives its ack.
+    fn shutdown_reader(reader_handle: std::os::windows::io::RawHandle) {
+        unsafe {
+            if let Err(err) = CancelSynchronousIo(HANDLE(reader_handle as *mut _)) {
+                if err.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
+                    tracing::debug!("reader had no synchronous I/O to cancel");
+                } else {
+                    tracing::error!(error = ?err, "CancelSynchronousIo on reader thread failed");
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        self.terminate();
+
+        // Re-order field dropping explicitly to ensure all handle references (especially process/thread/job)
+        // are closed before ClosePseudoConsole is invoked.
+        if self._job.is_some() {
+            drop(self._job.take());
+        }
+        if self._process.is_some() {
+            drop(self._process.take());
+        }
+        if self._thread.is_some() {
+            drop(self._thread.take());
+        }
+        if self._input_write.is_some() {
+            drop(self._input_write.take());
+        }
+        if self._pseudo_console.is_some() {
+            drop(self._pseudo_console.take());
+        }
     }
 }
 
@@ -107,7 +346,7 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
             None,
             None,
             false,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
             Some(environment_block.as_ptr().cast()),
             PCWSTR::null(),
             &startup_info as *const STARTUPINFOEXW as *const _,
@@ -117,6 +356,13 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
     .context("failed to create shell process")?;
 
     Ok(process_info)
+}
+fn terminate_process(process_info: &PROCESS_INFORMATION) {
+    unsafe {
+        let _ = TerminateProcess(process_info.hProcess, 0xcfffffff);
+        let _ = CloseHandle(process_info.hProcess);
+        let _ = CloseHandle(process_info.hThread);
+    }
 }
 
 fn shell_command_line() -> Vec<u16> {
@@ -187,6 +433,12 @@ impl PtyReader {
 
         Ok(bytes_read as usize)
     }
+
+    pub(crate) fn is_shutdown_error(error: &anyhow::Error) -> bool {
+        error
+            .downcast_ref::<::windows::core::Error>()
+            .is_some_and(|error| error.code() == HRESULT::from_win32(ERROR_OPERATION_ABORTED.0))
+    }
 }
 
 /// RAII wrapper for Win32 handles returned by pipe and process APIs.
@@ -224,7 +476,10 @@ impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
             unsafe {
-                let _ = CloseHandle(self.0);
+                let result = CloseHandle(self.0);
+                if let Err(err) = result {
+                    tracing::error!("CloseHandle failed for handle {:?}: {:?}", self.0, err);
+                }
             }
         }
     }
@@ -278,8 +533,29 @@ impl PseudoConsole {
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            unsafe {
-                ClosePseudoConsole(self.0);
+            let (tx, rx) = mpsc::channel();
+            let hpcon_val = self.0.0;
+
+            let _ = std::thread::spawn(move || {
+                unsafe {
+                    use ::windows::Win32::System::Console::ClosePseudoConsole;
+                    use ::windows::Win32::System::Console::HPCON;
+                    ClosePseudoConsole(HPCON(hpcon_val));
+                }
+                let _ = tx.send(());
+            });
+
+            // Synchronously wait for up to 500 milliseconds for ClosePseudoConsole to return.
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        "ClosePseudoConsole TIMEOUT after 500ms (abandoned, OS will reclaim resource on process exit)"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::error!("ClosePseudoConsole channel disconnected unexpectedly");
+                }
             }
         }
     }

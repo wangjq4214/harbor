@@ -10,8 +10,14 @@ mod unix;
 mod windows;
 
 use parking_lot::Mutex;
-use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::JoinHandle,
+};
 #[cfg(unix)]
 use unix::{Pty as RawPty, PtyReader};
 #[cfg(windows)]
@@ -51,14 +57,63 @@ struct PendingState {
     wake_pending: bool,
 }
 
+/// Coordinates a reader shutdown with the platform-specific reaper.
+pub(crate) struct ReaderShutdown {
+    stopping: Arc<AtomicBool>,
+    completed: mpsc::Receiver<()>,
+}
+
+struct ReaderCompletion {
+    completed: Option<mpsc::Sender<()>>,
+}
+
+impl ReaderShutdown {
+    fn new() -> (Self, ReaderCompletion) {
+        let (completed_tx, completed) = mpsc::channel();
+        (
+            Self {
+                stopping: Arc::new(AtomicBool::new(false)),
+                completed,
+            },
+            ReaderCompletion {
+                completed: Some(completed_tx),
+            },
+        )
+    }
+
+    fn stopping(&self) -> Arc<AtomicBool> {
+        self.stopping.clone()
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn wait_for_completion(&self, timeout: std::time::Duration) -> bool {
+        matches!(
+            self.completed.recv_timeout(timeout),
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+        )
+    }
+}
+
+impl Drop for ReaderCompletion {
+    fn drop(&mut self) {
+        if let Some(completed) = self.completed.take() {
+            let _ = completed.send(());
+        }
+    }
+}
+
 // ── PtySession ───────────────────────────────────────────────────────────────
 
 /// Running shell session plus the background output reader.
 pub struct PtySession {
     /// Platform-owned pseudo terminal and child-process handles.
-    pty: RawPty,
-    /// Joining is unnecessary on shutdown; the handle keeps the reader thread owned.
-    _reader: JoinHandle<()>,
+    pty: Option<RawPty>,
+    /// The reader confirms it has released its output handle before the platform PTY closes.
+    reader: Option<JoinHandle<()>>,
+    reader_shutdown: Option<ReaderShutdown>,
 }
 
 impl PtySize {
@@ -88,23 +143,64 @@ impl PtySession {
 
         let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?)?;
         tracing::info!("pty shell spawned");
-        let reader = std::thread::spawn(|| pump_pty_output(reader, output_handler));
+        let (reader_shutdown, reader_completion) = ReaderShutdown::new();
+        let stopping = reader_shutdown.stopping();
+        let reader = std::thread::spawn(move || {
+            let _reader_completion = reader_completion;
+            pump_pty_output(reader, output_handler, &stopping);
+        });
 
         Ok(Self {
-            pty,
-            _reader: reader,
+            pty: Some(pty),
+            reader: Some(reader),
+            reader_shutdown: Some(reader_shutdown),
         })
     }
 
     pub fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
         tracing::info!(rows = size.rows, cols = size.cols, "resizing pty");
 
-        self.pty.resize(PtySize::from_terminal(size)?)
+        self.pty
+            .as_mut()
+            .expect("pty session is unavailable during shutdown")
+            .resize(PtySize::from_terminal(size)?)
     }
 
     /// Forwards keyboard input bytes to the underlying PTY.
     pub fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
-        self.pty.write(data)
+        self.pty
+            .as_mut()
+            .expect("pty session is unavailable during shutdown")
+            .write(data)
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            let pty = self
+                .pty
+                .take()
+                .expect("pty session must own its platform pty until shutdown");
+            let reader = self
+                .reader
+                .take()
+                .expect("pty session must own its output reader until shutdown");
+            let reader_shutdown = self
+                .reader_shutdown
+                .take()
+                .expect("pty session must own its reader shutdown protocol");
+            RawPty::shutdown(pty, reader, reader_shutdown);
+        }
+
+        #[cfg(not(windows))]
+        {
+            drop(self.reader_shutdown.take());
+            if let Some(reader) = self.reader.take() {
+                let _ = reader.join();
+            }
+        }
     }
 }
 
@@ -206,13 +302,20 @@ impl Pty {
 
 // ── pump_pty_output ──────────────────────────────────────────────────────────
 
-fn pump_pty_output<F>(mut reader: PtyReader, output_handler: F)
+fn pump_pty_output<F>(mut reader: PtyReader, output_handler: F, stopping: &AtomicBool)
 where
     F: Fn(Vec<u8>) -> bool,
 {
     let mut buffer = [0_u8; 4096];
     tracing::info!("pty output pump started");
     loop {
+        // The reaper keeps cancelling until this acknowledgement path runs, so a read that
+        // completes normally during shutdown cannot lead to another blocking ReadFile.
+        if stopping.load(Ordering::Acquire) {
+            tracing::debug!("pty output pump stopped before read");
+            break;
+        }
+
         match reader.read(&mut buffer) {
             Ok(0) => {
                 tracing::info!("pty output stream reached eof");
@@ -223,14 +326,18 @@ where
                     bytes = %String::from_utf8_lossy(&buffer[..bytes]).escape_debug(),
                     "pty output"
                 );
-                // A false return means the UI event loop rejected the message, so the
-                // shell output pump should terminate instead of buffering unreachable data.
                 if !output_handler(buffer[..bytes].to_vec()) {
                     tracing::info!("pty output pump stopped after handler rejection");
                     break;
                 }
             }
             Err(error) => {
+                #[cfg(windows)]
+                if stopping.load(Ordering::Acquire) && PtyReader::is_shutdown_error(&error) {
+                    tracing::debug!("pty output read cancelled during shutdown");
+                    break;
+                }
+
                 tracing::error!(error = %format_args!("{error:#}"), "failed to read pty output");
                 break;
             }
@@ -297,5 +404,59 @@ mod tests {
         }
         let s = pending.lock();
         assert!(!s.wake_pending);
+    }
+    #[test]
+    fn reader_stop_acknowledges_after_normal_read_without_reentry() {
+        use std::{
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                mpsc,
+            },
+            time::Duration,
+        };
+
+        let (shutdown, completion) = ReaderShutdown::new();
+        let stopping = shutdown.stopping();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (normal_read_finished, wait_for_stop) = mpsc::channel();
+        let (allow_reentry, reentry_allowed) = mpsc::channel();
+        let thread_reads = Arc::clone(&reads);
+        let reader = std::thread::spawn(move || {
+            let _completion = completion;
+            thread_reads.fetch_add(1, Ordering::Relaxed);
+            normal_read_finished.send(()).unwrap();
+            reentry_allowed.recv().unwrap();
+
+            if !stopping.load(Ordering::Acquire) {
+                thread_reads.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        wait_for_stop.recv_timeout(Duration::from_secs(1)).unwrap();
+        shutdown.request_stop();
+        allow_reentry.send(()).unwrap();
+        assert!(
+            shutdown.wait_for_completion(Duration::from_secs(1)),
+            "reader must acknowledge that it will not re-enter ReadFile"
+        );
+        reader.join().unwrap();
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_idle_reader_drop_returns_before_shutdown_budget() {
+        use std::time::{Duration, Instant};
+
+        let session = PtySession::start_shell_reader(TerminalSize { rows: 24, cols: 80 }, |_| true)
+            .expect("Windows ConPTY session should start");
+        std::thread::sleep(Duration::from_millis(25));
+
+        let started = Instant::now();
+        drop(session);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "PtySession::drop must transfer shutdown rather than wait for the reader"
+        );
     }
 }
