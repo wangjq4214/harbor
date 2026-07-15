@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-harbor-render = { workspace = true }
+anyhow = { workspace = true }
+harbor-gpu = { workspace = true }
+harbor-types = { workspace = true }
+harbor-pty = { workspace = true }
+harbor-terminal = { workspace = true }
 winit = { workspace = true }
 wgpu = { workspace = true }

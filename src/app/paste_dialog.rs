@@ -1,8 +1,15 @@
 //! Confirmation dialog for multi-line paste when bracketed paste is OFF.
 
 use std::sync::Arc;
+
+use harbor_gpu::gpu::ColoredVertex;
+use harbor_gpu::{AtlasGlyph, GpuContext, TextMetrics};
+use harbor_terminal::safe_preview_line;
+use harbor_ui::{
+    Button, ButtonState, Dialog, DialogRuntime, Key as UiKey, Rect, Text as UiText, WindowSpec,
+};
 use winit::{
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{Key, NamedKey},
     window::Window,
@@ -13,14 +20,21 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use harbor_render::gpu::ColoredVertex;
-use harbor_render::{AtlasGlyph, GpuContext, TextMetrics};
-use harbor_terminal::safe_preview_line;
-use harbor_ui::{DialogButton, DialogResult};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteDialogAction {
+    Paste,
+    Cancel,
+}
 
-const DIALOG_WIDTH: u32 = 600;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PasteDialogResult {
+    None,
+    Confirmed,
+    Cancelled,
+}
 
-const DIALOG_HEIGHT: u32 = 400;
+const PASTE_ACTION_KEY: UiKey = UiKey(1);
+const CANCEL_ACTION_KEY: UiKey = UiKey(2);
 const HEADER_HEIGHT: f32 = 40.0;
 const BUTTON_HEIGHT: f32 = 30.0;
 const BUTTON_WIDTH: f32 = 120.0;
@@ -34,6 +48,16 @@ const PREVIEW_TOP_GAP: f32 = 6.0;
 /// Vertical gap between preview area bottom and buttons top.
 const PREVIEW_BOTTOM_GAP: f32 = 12.0;
 
+fn paste_dialog_spec(line_count: usize) -> Dialog<PasteDialogAction, ()> {
+    Dialog::new(WindowSpec::fixed("Paste confirmation", 600.0, 400.0), ())
+        .title(UiText::new(format!("Paste {line_count} lines?")))
+        .actions(vec![
+            Button::new(UiText::new("Paste"), PasteDialogAction::Paste).key(PASTE_ACTION_KEY),
+            Button::new(UiText::new("Cancel"), PasteDialogAction::Cancel).key(CANCEL_ACTION_KEY),
+        ])
+        .initial_focus(CANCEL_ACTION_KEY)
+}
+
 fn background_color() -> [f32; 4] {
     harbor_config::BACKGROUND
 }
@@ -46,23 +70,19 @@ pub(crate) struct PasteDialog {
     surface_config: wgpu::SurfaceConfiguration,
     /// Raw (unmodified) text to send to the PTY on confirm.
     pub(crate) raw_text: String,
-    /// Logical line count (before wrapping).
-    logical_line_count: usize,
-    focused_button: DialogButton,
+    dialog: Dialog<PasteDialogAction, ()>,
+    runtime: DialogRuntime<PasteDialogAction>,
     bg_pipeline: Arc<wgpu::RenderPipeline>,
     bg_vertex_buffer: wgpu::Buffer,
     bg_vertex_count: u32,
     text_vertex_buffer: wgpu::Buffer,
     text_vertex_count: u32,
     dirty: bool,
-    /// ── #23 preview state ─────────────────────────────────────────────────
     /// All wrapped preview lines (split by \n, each wrapped to fit).
     /// Populated lazily on first `prepare()` after metrics are known.
     wrapped_lines: Vec<String>,
     /// Total number of wrapped lines (for scrollbar range).
     total_preview_lines: usize,
-    /// Scroll offset in wrapped lines from top.
-    scroll_offset: usize,
     /// Whether wrapped_lines have been computed.
     preview_initialized: bool,
 }
@@ -74,13 +94,16 @@ impl PasteDialog {
         gpu: &GpuContext,
         main_window: Option<&Window>,
     ) -> Self {
-        let logical_line_count = raw_text.lines().count();
+        let dialog = paste_dialog_spec(raw_text.lines().count());
+        let mut runtime = DialogRuntime::default();
+        runtime.sync(&dialog);
+        let width = dialog.window.preferred_width;
+        let height = dialog.window.preferred_height;
 
         let mut window_attrs = Window::default_attributes()
-            .with_title("")
-            .with_decorations(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(DIALOG_WIDTH, DIALOG_HEIGHT))
-            .with_resizable(false);
+            .with_title(&dialog.window.title)
+            .with_inner_size(winit::dpi::LogicalSize::new(width, height))
+            .with_resizable(dialog.window.resizable);
 
         // Owned window on Windows: keep dialog above main window in z-order
         // and tie minimize/destroy together.
@@ -105,8 +128,8 @@ impl PasteDialog {
             let main_y = outer.y as f64;
             let main_w = main_size.width as f64;
             let main_h = main_size.height as f64;
-            let dialog_x = main_x + (main_w - DIALOG_WIDTH as f64) / 2.0;
-            let dialog_y = main_y + (main_h - DIALOG_HEIGHT as f64) / 2.0;
+            let dialog_x = main_x + (main_w - width as f64) / 2.0;
+            let dialog_y = main_y + (main_h - height as f64) / 2.0;
             window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(
                 dialog_x.max(0.0),
                 dialog_y.max(0.0),
@@ -137,8 +160,8 @@ impl PasteDialog {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            width: DIALOG_WIDTH,
-            height: DIALOG_HEIGHT,
+            width: width as u32,
+            height: height as u32,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
@@ -155,7 +178,7 @@ impl PasteDialog {
 
         let text_vertex_buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("paste dialog text vertices"),
-            size: (8192 * std::mem::size_of::<harbor_render::gpu::TexturedVertex>()) as u64,
+            size: (8192 * std::mem::size_of::<harbor_gpu::gpu::TexturedVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -165,8 +188,8 @@ impl PasteDialog {
             surface,
             surface_config,
             raw_text,
-            logical_line_count,
-            focused_button: DialogButton::Cancel,
+            dialog,
+            runtime,
             bg_pipeline: gpu.colored_quad_pipeline(),
             bg_vertex_buffer,
             bg_vertex_count: 0,
@@ -175,7 +198,6 @@ impl PasteDialog {
             dirty: true,
             wrapped_lines: Vec::new(),
             total_preview_lines: 0,
-            scroll_offset: 0,
             preview_initialized: false,
         }
     }
@@ -184,128 +206,69 @@ impl PasteDialog {
         self.window.id()
     }
 
-    pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> DialogResult {
-        let result = match event {
-            WindowEvent::CloseRequested => DialogResult::Cancelled,
+    fn action_bounds(&self) -> [Rect; 2] {
+        let width = self.dialog.window.preferred_width;
+        let button_y = self.dialog.window.preferred_height - 50.0;
+        [
+            Rect {
+                x: width / 2.0 - BUTTON_WIDTH - 20.0,
+                y: button_y,
+                width: BUTTON_WIDTH,
+                height: BUTTON_HEIGHT,
+            },
+            Rect {
+                x: width / 2.0 + 20.0,
+                y: button_y,
+                width: BUTTON_WIDTH,
+                height: BUTTON_HEIGHT,
+            },
+        ]
+    }
 
+    fn result(action: PasteDialogAction) -> PasteDialogResult {
+        match action {
+            PasteDialogAction::Paste => PasteDialogResult::Confirmed,
+            PasteDialogAction::Cancel => PasteDialogResult::Cancelled,
+        }
+    }
+
+    pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> PasteDialogResult {
+        let result = match event {
+            WindowEvent::CloseRequested => PasteDialogResult::Cancelled,
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if key_event.state == ElementState::Pressed => {
-                match &key_event.logical_key {
-                    Key::Named(NamedKey::Escape) => DialogResult::Cancelled,
-
-                    // y / n shortcuts for confirm / cancel
-                    Key::Character(ch) if ch == "y" || ch == "Y" => DialogResult::Confirmed,
-                    Key::Character(ch) if ch == "n" || ch == "N" => DialogResult::Cancelled,
-
-                    Key::Named(NamedKey::Enter) => match self.focused_button {
-                        DialogButton::Paste => DialogResult::Confirmed,
-                        DialogButton::Cancel => DialogResult::Cancelled,
-                    },
-
-                    Key::Named(NamedKey::Tab) => {
-                        self.focused_button = match self.focused_button {
-                            DialogButton::Paste => DialogButton::Cancel,
-                            DialogButton::Cancel => DialogButton::Paste,
-                        };
-                        self.dirty = true;
-                        DialogResult::None
-                    }
-
-                    // Preview scrolling
-                    Key::Named(NamedKey::ArrowUp) => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                        self.dirty = true;
-                        DialogResult::None
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let max = self.total_preview_lines.saturating_sub(VISIBLE_LINES);
-                        if self.scroll_offset < max {
-                            self.scroll_offset += 1;
-                        }
-                        self.dirty = true;
-                        DialogResult::None
-                    }
-                    Key::Named(NamedKey::PageUp) => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(VISIBLE_LINES);
-                        self.dirty = true;
-                        DialogResult::None
-                    }
-                    Key::Named(NamedKey::PageDown) => {
-                        let max = self.total_preview_lines.saturating_sub(VISIBLE_LINES);
-                        self.scroll_offset = (self.scroll_offset + VISIBLE_LINES).min(max);
-                        self.dirty = true;
-                        DialogResult::None
-                    }
-
-                    _ => DialogResult::None,
-                }
+            } if key_event.state == ElementState::Pressed => match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => PasteDialogResult::Cancelled,
+                Key::Character(ch) if ch == "y" || ch == "Y" => PasteDialogResult::Confirmed,
+                Key::Character(ch) if ch == "n" || ch == "N" => PasteDialogResult::Cancelled,
+                _ => self
+                    .runtime
+                    .handle_key(&self.dialog, event)
+                    .copied()
+                    .map_or(PasteDialogResult::None, Self::result),
+            },
+            _ => {
+                let action_bounds = self.action_bounds();
+                self.runtime
+                    .handle_pointer(&self.dialog, event, &action_bounds)
+                    .copied()
+                    .map_or(PasteDialogResult::None, Self::result)
             }
-
-            // Mouse wheel -> scroll preview
-            WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as isize,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        if pos.y > 0.0 {
-                            -1
-                        } else if pos.y < 0.0 {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                };
-                if lines != 0 {
-                    let max = self.total_preview_lines.saturating_sub(VISIBLE_LINES) as isize;
-                    let new = (self.scroll_offset as isize - lines).clamp(0, max.max(0));
-                    if new != self.scroll_offset as isize {
-                        self.scroll_offset = new as usize;
-                        self.dirty = true;
-                    }
-                }
-                DialogResult::None
-            }
-
-            // Mouse button click -> detect button hit
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let button_result = match self.focused_button {
-                    DialogButton::Paste => DialogResult::Confirmed,
-                    DialogButton::Cancel => DialogResult::Cancelled,
-                };
-                return button_result;
-            }
-
-            WindowEvent::CursorMoved { position, .. } => {
-                let (x, y) = (position.x as f32, position.y as f32);
-                let btn_y = DIALOG_HEIGHT as f32 - 50.0;
-                let paste_x = DIALOG_WIDTH as f32 / 2.0 - BUTTON_WIDTH - 20.0;
-                let cancel_x = DIALOG_WIDTH as f32 / 2.0 + 20.0;
-
-                if y >= btn_y && y <= btn_y + BUTTON_HEIGHT {
-                    if x >= paste_x && x <= paste_x + BUTTON_WIDTH {
-                        if self.focused_button != DialogButton::Paste {
-                            self.focused_button = DialogButton::Paste;
-                            self.dirty = true;
-                        }
-                    } else if x >= cancel_x
-                        && x <= cancel_x + BUTTON_WIDTH
-                        && self.focused_button != DialogButton::Cancel
-                    {
-                        self.focused_button = DialogButton::Cancel;
-                        self.dirty = true;
-                    }
-                }
-                DialogResult::None
-            }
-
-            WindowEvent::RedrawRequested => DialogResult::None,
-            _ => DialogResult::None,
         };
+
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::CursorMoved { .. }
+        ) {
+            self.runtime.scroll_offset = self
+                .runtime
+                .scroll_offset
+                .min(self.total_preview_lines.saturating_sub(VISIBLE_LINES));
+            self.dirty = true;
+        }
         if self.dirty {
             self.window.request_redraw();
         }
@@ -325,8 +288,8 @@ impl PasteDialog {
         }
         self.dirty = false;
 
-        let surf_w = DIALOG_WIDTH as f32;
-        let surf_h = DIALOG_HEIGHT as f32;
+        let surf_w = self.dialog.window.preferred_width;
+        let surf_h = self.dialog.window.preferred_height;
         let bg = background_color();
         let cell_w = metrics.cell_width;
         let line_h = metrics.line_height;
@@ -341,10 +304,10 @@ impl PasteDialog {
             self.wrapped_lines = wrap_text_lines(&self.raw_text, max_chars);
             self.total_preview_lines = self.wrapped_lines.len();
             // Clamp scroll offset after initialization.
-            let max = self.total_preview_lines.saturating_sub(VISIBLE_LINES);
-            if self.scroll_offset > max {
-                self.scroll_offset = max;
-            }
+            self.runtime.scroll_offset = self
+                .runtime
+                .scroll_offset
+                .min(self.total_preview_lines.saturating_sub(VISIBLE_LINES));
             self.preview_initialized = true;
         }
 
@@ -366,35 +329,36 @@ impl PasteDialog {
         ));
 
         // Button area background
-        let btn_y = surf_h - 50.0;
-        let paste_x = surf_w / 2.0 - BUTTON_WIDTH - 20.0;
-        let cancel_x = surf_w / 2.0 + 20.0;
-
-        let paste_color = if self.focused_button == DialogButton::Paste {
-            [0.15, 0.45, 0.15, 1.0]
-        } else {
-            [0.15, 0.15, 0.15, 1.0]
+        let [paste_bounds, cancel_bounds] = self.action_bounds();
+        let paste_state = self.runtime.focused_state(&self.dialog, 0);
+        let cancel_state = self.runtime.focused_state(&self.dialog, 1);
+        let paste_color = match paste_state {
+            ButtonState::Focused | ButtonState::Pressed => [0.15, 0.45, 0.15, 1.0],
+            ButtonState::Normal | ButtonState::Hover | ButtonState::Disabled => {
+                [0.15, 0.15, 0.15, 1.0]
+            }
         };
-        let cancel_color = if self.focused_button == DialogButton::Cancel {
-            [0.45, 0.15, 0.15, 1.0]
-        } else {
-            [0.15, 0.15, 0.15, 1.0]
+        let cancel_color = match cancel_state {
+            ButtonState::Focused | ButtonState::Pressed => [0.45, 0.15, 0.15, 1.0],
+            ButtonState::Normal | ButtonState::Hover | ButtonState::Disabled => {
+                [0.15, 0.15, 0.15, 1.0]
+            }
         };
 
         bg_verts.extend_from_slice(&colored_quad(
-            paste_x,
-            btn_y,
-            paste_x + BUTTON_WIDTH,
-            btn_y + BUTTON_HEIGHT,
+            paste_bounds.x,
+            paste_bounds.y,
+            paste_bounds.x + paste_bounds.width,
+            paste_bounds.y + paste_bounds.height,
             paste_color,
             surf_w,
             surf_h,
         ));
         bg_verts.extend_from_slice(&colored_quad(
-            cancel_x,
-            btn_y,
-            cancel_x + BUTTON_WIDTH,
-            btn_y + BUTTON_HEIGHT,
+            cancel_bounds.x,
+            cancel_bounds.y,
+            cancel_bounds.x + cancel_bounds.width,
+            cancel_bounds.y + cancel_bounds.height,
             cancel_color,
             surf_w,
             surf_h,
@@ -402,7 +366,7 @@ impl PasteDialog {
 
         // ── Scrollbar ───────────────────────────────────────────────────
         let preview_top = HEADER_HEIGHT + PREVIEW_TOP_GAP;
-        let preview_area_h = btn_y - PREVIEW_BOTTOM_GAP - preview_top;
+        let preview_area_h = paste_bounds.y - PREVIEW_BOTTOM_GAP - preview_top;
         let scrollbar_x = preview_area_right;
         let scrollbar_bg_color = [0.08, 0.08, 0.08, 1.0];
         let scrollbar_thumb_color = [0.25, 0.25, 0.25, 1.0];
@@ -426,7 +390,7 @@ impl PasteDialog {
             let thumb_h = thumb_h.max(16.0); // minimum thumb height
             let max_scroll = self.total_preview_lines.saturating_sub(VISIBLE_LINES) as f32;
             let scroll_frac = if max_scroll > 0.0 {
-                self.scroll_offset as f32 / max_scroll
+                self.runtime.scroll_offset as f32 / max_scroll
             } else {
                 0.0
             };
@@ -448,13 +412,18 @@ impl PasteDialog {
 
         // ── Build text quads ────────────────────────────────────────────
         let fg_color = [1.0, 1.0, 1.0, 1.0];
-        let mut text_verts: Vec<harbor_render::gpu::TexturedVertex> = Vec::new();
+        let mut text_verts: Vec<harbor_gpu::gpu::TexturedVertex> = Vec::new();
 
         // Header: "Paste N lines?"
-        let header_text = format!("Paste {} lines?", self.logical_line_count);
+        let header_text = &self
+            .dialog
+            .title
+            .as_ref()
+            .expect("paste dialog title")
+            .content;
         let header_y = TEXT_PADDING + ascent.ceil();
         build_text_quads(
-            &header_text,
+            header_text,
             preview_area_left,
             header_y,
             cell_w,
@@ -467,9 +436,10 @@ impl PasteDialog {
         );
 
         // Preview lines: only render visible subset; call safe_preview_line lazily.
-        let visible_end = (self.scroll_offset + VISIBLE_LINES).min(self.total_preview_lines);
+        let visible_end =
+            (self.runtime.scroll_offset + VISIBLE_LINES).min(self.total_preview_lines);
         let mut line_y = preview_top + ascent.ceil();
-        for i in self.scroll_offset..visible_end {
+        for i in self.runtime.scroll_offset..visible_end {
             if let Some(raw_line) = self.wrapped_lines.get(i) {
                 let escaped = safe_preview_line(raw_line);
                 build_text_quads(
@@ -489,22 +459,22 @@ impl PasteDialog {
         }
 
         // Button labels
-        let label_y = btn_y + ascent.ceil() + 4.0;
-        let paste_label = if self.focused_button == DialogButton::Paste {
-            "[ Paste ]"
+        let label_y = paste_bounds.y + ascent.ceil() + 4.0;
+        let paste_label = if matches!(paste_state, ButtonState::Focused | ButtonState::Pressed) {
+            format!("[ {} ]", self.dialog.actions[0].child.content)
         } else {
-            "  Paste  "
+            format!("  {}  ", self.dialog.actions[0].child.content)
         };
-        let cancel_label = if self.focused_button == DialogButton::Cancel {
-            "[ Cancel ]"
+        let cancel_label = if matches!(cancel_state, ButtonState::Focused | ButtonState::Pressed) {
+            format!("[ {} ]", self.dialog.actions[1].child.content)
         } else {
-            "  Cancel  "
+            format!("  {}  ", self.dialog.actions[1].child.content)
         };
         let paste_label_w = paste_label.chars().count() as f32 * cell_w;
         let cancel_label_w = cancel_label.chars().count() as f32 * cell_w;
         build_text_quads(
-            paste_label,
-            paste_x + (BUTTON_WIDTH - paste_label_w) / 2.0,
+            &paste_label,
+            paste_bounds.x + (paste_bounds.width - paste_label_w) / 2.0,
             label_y,
             cell_w,
             line_h,
@@ -515,8 +485,8 @@ impl PasteDialog {
             &mut text_verts,
         );
         build_text_quads(
-            cancel_label,
-            cancel_x + (BUTTON_WIDTH - cancel_label_w) / 2.0,
+            &cancel_label,
+            cancel_bounds.x + (cancel_bounds.width - cancel_label_w) / 2.0,
             label_y,
             cell_w,
             line_h,
@@ -626,7 +596,7 @@ fn build_text_quads(
     surf_w: f32,
     surf_h: f32,
     glyph: &impl Fn(char) -> Option<AtlasGlyph>,
-    verts: &mut Vec<harbor_render::gpu::TexturedVertex>,
+    verts: &mut Vec<harbor_gpu::gpu::TexturedVertex>,
 ) {
     let mut pen_x = start_x;
     for ch in text.chars() {
@@ -638,7 +608,7 @@ fn build_text_quads(
             let glyph_bottom = baseline_y - g.ymin as f32;
             let glyph_top = glyph_bottom - g.height as f32;
             let glyph_right = glyph_left + g.width as f32;
-            verts.extend_from_slice(&harbor_render::gpu::TexturedVertex::from_pixel_rect(
+            verts.extend_from_slice(&harbor_gpu::gpu::TexturedVertex::from_pixel_rect(
                 glyph_left,
                 glyph_top,
                 glyph_right,
@@ -694,4 +664,30 @@ fn wrap_text_lines(raw_text: &str, max_chars: usize) -> Vec<String> {
     // Don't forget the last line (even if empty).
     result.push(current_line);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dialog_spec_uses_ui_actions_and_cancel_focus() {
+        let dialog = paste_dialog_spec(3);
+        let mut runtime = DialogRuntime::default();
+        runtime.sync(&dialog);
+
+        assert_eq!(
+            dialog.window,
+            WindowSpec::fixed("Paste confirmation", 600.0, 400.0)
+        );
+        assert_eq!(
+            dialog.title.as_ref().map(|title| title.content.as_str()),
+            Some("Paste 3 lines?")
+        );
+        assert_eq!(dialog.actions[0].child.content, "Paste");
+        assert_eq!(dialog.actions[0].intent, PasteDialogAction::Paste);
+        assert_eq!(dialog.actions[1].child.content, "Cancel");
+        assert_eq!(dialog.actions[1].intent, PasteDialogAction::Cancel);
+        assert_eq!(runtime.focused_state(&dialog, 1), ButtonState::Focused);
+    }
 }

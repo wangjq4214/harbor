@@ -14,7 +14,7 @@ harbor-parser = { path = "crates/harbor-parser" }
 harbor-pty = { path = "crates/harbor-pty" }
 harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-types = { path = "crates/harbor-types" }
-harbor-render = { path = "crates/harbor-render" }
+harbor-gpu = { path = "crates/harbor-gpu" }
 harbor-ui = { path = "crates/harbor-ui" }
 
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
@@ -60,7 +60,7 @@ harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
-harbor-render = { workspace = true }
+harbor-gpu = { workspace = true }
 harbor-ui = { workspace = true }
 
 # external

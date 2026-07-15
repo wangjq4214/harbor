@@ -2,7 +2,6 @@
 
 mod input;
 mod paste_dialog;
-mod ui;
 
 use std::sync::Arc;
 use winit::{
@@ -19,11 +18,10 @@ use crate::{
     pty::{Pty, PtyWakeHandler},
     terminal::Terminal,
 };
-use harbor_render::{EventResult, GpuContext, TextMetrics, load_system_fonts};
+use harbor_gpu::{ EventResult, GpuContext, TextMetrics, load_system_fonts };
 use harbor_types::TerminalSize;
-use harbor_ui::DialogResult;
-use paste_dialog::PasteDialog;
-use ui::UiRoot;
+use harbor_ui::UiRoot;
+use paste_dialog::{PasteDialog, PasteDialogResult};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScrollbackNavigation {
@@ -162,7 +160,7 @@ impl ApplicationHandler<AppEvent> for App {
             if dialog.window_id() == window_id {
                 let result = dialog.handle_event(&event);
                 match result {
-                    DialogResult::Confirmed => {
+                    PasteDialogResult::Confirmed => {
                         let text = dialog.raw_text.clone();
                         let modes = self
                             .terminal
@@ -176,14 +174,14 @@ impl ApplicationHandler<AppEvent> for App {
                         // dialog dropped; don't put back
                         return;
                     }
-                    DialogResult::Cancelled => {
+                    PasteDialogResult::Cancelled => {
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
                         // dialog dropped; don't put back
                         return;
                     }
-                    DialogResult::None => {
+                    PasteDialogResult::None => {
                         // Put dialog back; render below
                         if matches!(&event, WindowEvent::RedrawRequested) {
                             // Ensure dialog glyphs, then prepare + render.
@@ -231,6 +229,14 @@ impl ApplicationHandler<AppEvent> for App {
         };
 
         if window.id() != window_id {
+            return;
+        }
+
+        // A paste confirmation is application-modal: only redraw and process
+        // shutdown for the owner window while its native dialog is open.
+        if dialog_active
+            && !matches!(&event, WindowEvent::RedrawRequested | WindowEvent::CloseRequested)
+        {
             return;
         }
 

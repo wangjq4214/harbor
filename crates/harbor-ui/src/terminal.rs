@@ -1,38 +1,34 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
 use harbor_pty::Pty;
-use harbor_render::{
-    AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
-    Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
-    TextMetrics,
-};
+use harbor_gpu::{ AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
+Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
+ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
+TextMetrics, };
 use harbor_terminal::{Screen, Terminal, TerminalSize};
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
 /// Container for all UI components. Owns GPU resources and delegates
 /// render / event calls to each component in z-order.
-pub(crate) struct UiRoot {
-    /// Solid-color background behind each non-default cell.
-    background: Background,
-    /// Text rendering: glyph atlas + vertex buffer for every grid cell.
-    text: Text,
-    /// Underline / strikethrough decoration overlay.
-    decoration: Decoration,
-    /// Text selection: mouse-drag highlight overlay.
-    selection: Selection,
-    /// Cursor rendering + blink timer.
-    cursor: Cursor,
-    /// Scrollbar: visibility state machine + GPU thumb.
-    scrollbar: Scrollbar,
-}
+pub struct UiRoot { /// Solid-color background behind each non-default cell.
+background: Background,
+/// Text rendering: glyph atlas + vertex buffer for every grid cell.
+text: Text,
+/// Underline / strikethrough decoration overlay.
+decoration: Decoration,
+/// Text selection: mouse-drag highlight overlay.
+selection: Selection,
+/// Cursor rendering + blink timer.
+cursor: Cursor,
+/// Scrollbar: visibility state machine + GPU thumb.
+scrollbar: Scrollbar, }
 
 impl UiRoot {
     /// Creates all five UI components from the GPU context and font metrics.
     /// The `screen` provides the initial grid state for atlas construction.
     /// `_fonts` is consumed by `Text::new`.
-    pub(crate) fn new(
+    pub fn new(
         gpu: &GpuContext,
         screen: &Screen,
         _fonts: FontBook,
@@ -50,37 +46,37 @@ impl UiRoot {
     }
 
     /// Returns the cell dimensions (rows × cols) for the current surface size.
-    pub(crate) fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
+    pub fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
         self.text.terminal_size(gpu)
     }
 
     /// Font metrics (cell dimensions, ascent, etc.).
-    pub(crate) fn text_metrics(&self) -> &TextMetrics {
+    pub fn text_metrics(&self) -> &TextMetrics {
         self.text.metrics()
     }
 
     /// Looks up a glyph in the CPU-side atlas.
-    pub(crate) fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
+    pub fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
         self.text.glyph(ch)
     }
 
     /// The text render pipeline.
-    pub(crate) fn text_pipeline(&self) -> &wgpu::RenderPipeline {
+    pub fn text_pipeline(&self) -> &wgpu::RenderPipeline {
         self.text.text_pipeline()
     }
 
     /// The bind group holding the glyph atlas texture and sampler.
-    pub(crate) fn text_bind_group(&self) -> &wgpu::BindGroup {
+    pub fn text_bind_group(&self) -> &wgpu::BindGroup {
         self.text.text_bind_group()
     }
 
     /// Ensures dialog text characters are rasterized.
-    pub(crate) fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.text.ensure_glyphs(text, device, queue);
     }
 
     /// Uploads dirty GPU resources for all five components.
-    pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
+    pub fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
         let snap = screen.snapshot();
         let dirty_ranges = snap.dirty_ranges.clone();
         self.background
@@ -95,7 +91,7 @@ impl UiRoot {
 
     /// Issues draw calls for all five components in z-order (back to front).
     /// Binds pipelines and vertex buffers; no GPU allocation.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         self.background.draw(pass);
         self.text.draw(pass);
         self.decoration.draw(pass);
@@ -106,7 +102,7 @@ impl UiRoot {
 
     /// Called when the window surface is resized. Forwards to all components
     /// so they can mark their GPU resources as needing re-upload.
-    pub(crate) fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
+    pub fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
         Component::resize(&mut self.background, gpu, size);
         Component::resize(&mut self.text, gpu, size);
         Component::resize(&mut self.decoration, gpu, size);
@@ -118,7 +114,7 @@ impl UiRoot {
     /// Dispatches to interactive layers only, each with the rights it needs.
     /// Selection first — scrollbar always returns Handled on CursorMoved,
     /// which would block selection drag updates.
-    pub(crate) fn handle_event(
+    pub fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
         terminal: &mut Terminal,
@@ -164,7 +160,7 @@ impl UiRoot {
 
     /// Collects the next wake deadline from interactive components
     /// (cursor blink, scrollbar auto-hide, or selection auto-scroll).
-    pub(crate) fn compact_deadline(
+    pub fn compact_deadline(
         &mut self,
         terminal: &mut Terminal,
         window: &Window,
