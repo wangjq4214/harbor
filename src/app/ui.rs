@@ -1,15 +1,13 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
-use crate::{
-    pty::Pty,
-    render::{
-        AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
-        Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext,
-        ScrollbarInput, ScrollbarWaitContext, Selection, SelectionContext, SelectionInput,
-        SelectionWaitContext, Text, TextMetrics,
-    },
-    terminal::{Screen, Terminal, TerminalSize},
+use harbor_pty::Pty;
+use harbor_render::{
+    AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
+    Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
+    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
+    TextMetrics,
 };
+use harbor_terminal::{Screen, Terminal, TerminalSize};
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
@@ -40,13 +38,14 @@ impl UiRoot {
         _fonts: FontBook,
         metrics: TextMetrics,
     ) -> anyhow::Result<Self> {
+        let snap = screen.snapshot();
         Ok(Self {
-            background: Background::new(gpu, screen, metrics.cell_width, metrics.line_height),
-            text: Text::new(gpu, _fonts, metrics, screen)?,
-            decoration: Decoration::new(gpu, screen, metrics),
+            background: Background::new(gpu, &snap, metrics.cell_width, metrics.line_height),
+            text: Text::new(gpu, _fonts, metrics, &snap)?,
+            decoration: Decoration::new(gpu, &snap, metrics),
             selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),
-            scrollbar: Scrollbar::new(gpu, screen),
+            scrollbar: Scrollbar::new(gpu, &snap),
         })
     }
 
@@ -81,17 +80,17 @@ impl UiRoot {
     }
 
     /// Uploads dirty GPU resources for all five components.
-    /// Called after terminal content changes or resize.
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
-        let dirty_ranges = screen.dirty_ranges();
+        let snap = screen.snapshot();
+        let dirty_ranges = snap.dirty_ranges.clone();
         self.background
-            .prepare_with_dirty(gpu, screen, &dirty_ranges);
-        self.text.prepare_with_dirty(gpu, screen, &dirty_ranges);
+            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
+        self.text.prepare_with_dirty(gpu, &snap, &dirty_ranges);
         self.decoration
-            .prepare_with_dirty(gpu, screen, &dirty_ranges);
-        self.selection.prepare(gpu, Some(screen));
-        self.cursor.prepare(gpu, Some(screen));
-        self.scrollbar.prepare(gpu, Some(screen));
+            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
+        self.selection.prepare(gpu, Some(&snap));
+        self.cursor.prepare(gpu, Some(&snap));
+        self.scrollbar.prepare(gpu, Some(&snap));
     }
 
     /// Issues draw calls for all five components in z-order (back to front).

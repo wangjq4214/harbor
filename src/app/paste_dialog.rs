@@ -13,27 +13,13 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::{
-    render::{gpu::ColoredVertex, AtlasGlyph, GpuContext, TextMetrics},
-    terminal::safe_preview_line,
-};
-
-/// Which button currently has keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DialogButton {
-    Paste,
-    Cancel,
-}
-
-/// Result of processing a dialog input event.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DialogResult {
-    None,
-    Confirmed,
-    Cancelled,
-}
+use harbor_render::gpu::ColoredVertex;
+use harbor_render::{AtlasGlyph, GpuContext, TextMetrics};
+use harbor_terminal::safe_preview_line;
+use harbor_ui::{DialogButton, DialogResult};
 
 const DIALOG_WIDTH: u32 = 600;
+
 const DIALOG_HEIGHT: u32 = 400;
 const HEADER_HEIGHT: f32 = 40.0;
 const BUTTON_HEIGHT: f32 = 30.0;
@@ -49,8 +35,7 @@ const PREVIEW_TOP_GAP: f32 = 6.0;
 const PREVIEW_BOTTOM_GAP: f32 = 12.0;
 
 fn background_color() -> [f32; 4] {
-    let c = crate::config::BACKGROUND;
-    [c.r as f32, c.g as f32, c.b as f32, c.a as f32]
+    harbor_config::BACKGROUND
 }
 
 /// A secondary winit window that asks the user to confirm a multi-line paste.
@@ -101,34 +86,31 @@ impl PasteDialog {
         // and tie minimize/destroy together.
         #[cfg(target_os = "windows")]
         if let Some(main) = main_window {
-            let hwnd = main
-                .window_handle()
-                .ok()
-                .and_then(|h| match h.as_raw() {
-                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-                    _ => None,
-                });
+            let hwnd = main.window_handle().ok().and_then(|h| match h.as_raw() {
+                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                _ => None,
+            });
             if let Some(hwnd) = hwnd {
                 // SAFETY: HWND from raw-window-handle is the Win32 window handle.
-                window_attrs = window_attrs.with_owner_window(hwnd as isize);
+                window_attrs = window_attrs.with_owner_window(hwnd);
             }
         }
 
         // Center dialog over the main window.
-        if let Some(main) = main_window {
-            if let Ok(outer) = main.outer_position() {
-                let main_size = main.inner_size();
-                let main_x = outer.x as f64;
-                let main_y = outer.y as f64;
-                let main_w = main_size.width as f64;
-                let main_h = main_size.height as f64;
-                let dialog_x = main_x + (main_w - DIALOG_WIDTH as f64) / 2.0;
-                let dialog_y = main_y + (main_h - DIALOG_HEIGHT as f64) / 2.0;
-                window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(
-                    dialog_x.max(0.0),
-                    dialog_y.max(0.0),
-                ));
-            }
+        if let Some(main) = main_window
+            && let Ok(outer) = main.outer_position()
+        {
+            let main_size = main.inner_size();
+            let main_x = outer.x as f64;
+            let main_y = outer.y as f64;
+            let main_w = main_size.width as f64;
+            let main_h = main_size.height as f64;
+            let dialog_x = main_x + (main_w - DIALOG_WIDTH as f64) / 2.0;
+            let dialog_y = main_y + (main_h - DIALOG_HEIGHT as f64) / 2.0;
+            window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(
+                dialog_x.max(0.0),
+                dialog_y.max(0.0),
+            ));
         }
 
         let window = Arc::new(
@@ -173,7 +155,7 @@ impl PasteDialog {
 
         let text_vertex_buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("paste dialog text vertices"),
-            size: (8192 * std::mem::size_of::<crate::render::gpu::TexturedVertex>()) as u64,
+            size: (8192 * std::mem::size_of::<harbor_render::gpu::TexturedVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -213,12 +195,8 @@ impl PasteDialog {
                     Key::Named(NamedKey::Escape) => DialogResult::Cancelled,
 
                     // y / n shortcuts for confirm / cancel
-                    Key::Character(ch) if ch == "y" || ch == "Y" => {
-                        DialogResult::Confirmed
-                    }
-                    Key::Character(ch) if ch == "n" || ch == "N" => {
-                        DialogResult::Cancelled
-                    }
+                    Key::Character(ch) if ch == "y" || ch == "Y" => DialogResult::Confirmed,
+                    Key::Character(ch) if ch == "n" || ch == "N" => DialogResult::Cancelled,
 
                     Key::Named(NamedKey::Enter) => match self.focused_button {
                         DialogButton::Paste => DialogResult::Confirmed,
@@ -249,9 +227,7 @@ impl PasteDialog {
                         DialogResult::None
                     }
                     Key::Named(NamedKey::PageUp) => {
-                        self.scroll_offset = self
-                            .scroll_offset
-                            .saturating_sub(VISIBLE_LINES);
+                        self.scroll_offset = self.scroll_offset.saturating_sub(VISIBLE_LINES);
                         self.dirty = true;
                         DialogResult::None
                     }
@@ -271,7 +247,13 @@ impl PasteDialog {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => *y as isize,
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        if pos.y > 0.0 { -1 } else if pos.y < 0.0 { 1 } else { 0 }
+                        if pos.y > 0.0 {
+                            -1
+                        } else if pos.y < 0.0 {
+                            1
+                        } else {
+                            0
+                        }
                     }
                 };
                 if lines != 0 {
@@ -310,11 +292,12 @@ impl PasteDialog {
                             self.focused_button = DialogButton::Paste;
                             self.dirty = true;
                         }
-                    } else if x >= cancel_x && x <= cancel_x + BUTTON_WIDTH {
-                        if self.focused_button != DialogButton::Cancel {
-                            self.focused_button = DialogButton::Cancel;
-                            self.dirty = true;
-                        }
+                    } else if x >= cancel_x
+                        && x <= cancel_x + BUTTON_WIDTH
+                        && self.focused_button != DialogButton::Cancel
+                    {
+                        self.focused_button = DialogButton::Cancel;
+                        self.dirty = true;
                     }
                 }
                 DialogResult::None
@@ -328,7 +311,6 @@ impl PasteDialog {
         }
         result
     }
-
 
     pub(crate) fn prepare(
         &mut self,
@@ -369,14 +351,18 @@ impl PasteDialog {
         // ── Build background quads ──────────────────────────────────────
         let mut bg_verts: Vec<ColoredVertex> = Vec::new();
         // Full background
-        bg_verts.extend_from_slice(&colored_quad(
-            0.0, 0.0, surf_w, surf_h, bg, surf_w, surf_h,
-        ));
+        bg_verts.extend_from_slice(&colored_quad(0.0, 0.0, surf_w, surf_h, bg, surf_w, surf_h));
 
         // Header bar
         let header_color = [0.12, 0.12, 0.12, 1.0];
         bg_verts.extend_from_slice(&colored_quad(
-            0.0, 0.0, surf_w, HEADER_HEIGHT, header_color, surf_w, surf_h,
+            0.0,
+            0.0,
+            surf_w,
+            HEADER_HEIGHT,
+            header_color,
+            surf_w,
+            surf_h,
         ));
 
         // Button area background
@@ -396,12 +382,22 @@ impl PasteDialog {
         };
 
         bg_verts.extend_from_slice(&colored_quad(
-            paste_x, btn_y, paste_x + BUTTON_WIDTH, btn_y + BUTTON_HEIGHT,
-            paste_color, surf_w, surf_h,
+            paste_x,
+            btn_y,
+            paste_x + BUTTON_WIDTH,
+            btn_y + BUTTON_HEIGHT,
+            paste_color,
+            surf_w,
+            surf_h,
         ));
         bg_verts.extend_from_slice(&colored_quad(
-            cancel_x, btn_y, cancel_x + BUTTON_WIDTH, btn_y + BUTTON_HEIGHT,
-            cancel_color, surf_w, surf_h,
+            cancel_x,
+            btn_y,
+            cancel_x + BUTTON_WIDTH,
+            btn_y + BUTTON_HEIGHT,
+            cancel_color,
+            surf_w,
+            surf_h,
         ));
 
         // ── Scrollbar ───────────────────────────────────────────────────
@@ -447,18 +443,27 @@ impl PasteDialog {
         }
 
         self.bg_vertex_count = bg_verts.len() as u32;
-        gpu.queue().write_buffer(&self.bg_vertex_buffer, 0, bytemuck::cast_slice(&bg_verts));
+        gpu.queue()
+            .write_buffer(&self.bg_vertex_buffer, 0, bytemuck::cast_slice(&bg_verts));
 
         // ── Build text quads ────────────────────────────────────────────
         let fg_color = [1.0, 1.0, 1.0, 1.0];
-        let mut text_verts: Vec<crate::render::gpu::TexturedVertex> = Vec::new();
+        let mut text_verts: Vec<harbor_render::gpu::TexturedVertex> = Vec::new();
 
         // Header: "Paste N lines?"
         let header_text = format!("Paste {} lines?", self.logical_line_count);
         let header_y = TEXT_PADDING + ascent.ceil();
         build_text_quads(
-            &header_text, preview_area_left, header_y, cell_w, line_h,
-            fg_color, surf_w, surf_h, &glyph, &mut text_verts,
+            &header_text,
+            preview_area_left,
+            header_y,
+            cell_w,
+            line_h,
+            fg_color,
+            surf_w,
+            surf_h,
+            &glyph,
+            &mut text_verts,
         );
 
         // Preview lines: only render visible subset; call safe_preview_line lazily.
@@ -523,7 +528,11 @@ impl PasteDialog {
         );
 
         self.text_vertex_count = text_verts.len() as u32;
-        gpu.queue().write_buffer(&self.text_vertex_buffer, 0, bytemuck::cast_slice(&text_verts));
+        gpu.queue().write_buffer(
+            &self.text_vertex_buffer,
+            0,
+            bytemuck::cast_slice(&text_verts),
+        );
     }
 
     pub(crate) fn render(
@@ -540,9 +549,11 @@ impl PasteDialog {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu.device().create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("paste dialog") },
-        );
+        let mut encoder = gpu
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("paste dialog"),
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -615,30 +626,31 @@ fn build_text_quads(
     surf_w: f32,
     surf_h: f32,
     glyph: &impl Fn(char) -> Option<AtlasGlyph>,
-    verts: &mut Vec<crate::render::gpu::TexturedVertex>,
+    verts: &mut Vec<harbor_render::gpu::TexturedVertex>,
 ) {
     let mut pen_x = start_x;
     for ch in text.chars() {
-        if let Some(g) = glyph(ch) {
-            if g.width > 0 && g.height > 0 {
-                let glyph_left = pen_x + g.xmin as f32;
-                let glyph_bottom = baseline_y - g.ymin as f32;
-                let glyph_top = glyph_bottom - g.height as f32;
-                let glyph_right = glyph_left + g.width as f32;
-                verts.extend_from_slice(&crate::render::gpu::TexturedVertex::from_pixel_rect(
-                    glyph_left,
-                    glyph_top,
-                    glyph_right,
-                    glyph_bottom,
-                    g.uv.left,
-                    g.uv.top,
-                    g.uv.right,
-                    g.uv.bottom,
-                    color,
-                    surf_w,
-                    surf_h,
-                ));
-            }
+        if let Some(g) = glyph(ch)
+            && g.width > 0
+            && g.height > 0
+        {
+            let glyph_left = pen_x + g.xmin as f32;
+            let glyph_bottom = baseline_y - g.ymin as f32;
+            let glyph_top = glyph_bottom - g.height as f32;
+            let glyph_right = glyph_left + g.width as f32;
+            verts.extend_from_slice(&harbor_render::gpu::TexturedVertex::from_pixel_rect(
+                glyph_left,
+                glyph_top,
+                glyph_right,
+                glyph_bottom,
+                g.uv.left,
+                g.uv.top,
+                g.uv.right,
+                g.uv.bottom,
+                color,
+                surf_w,
+                surf_h,
+            ));
         }
         pen_x += cell_w;
     }
@@ -659,11 +671,17 @@ fn wrap_text_lines(raw_text: &str, max_chars: usize) -> Vec<String> {
         } else {
             // CJK characters count as 2 for width purposes (unicode-width).
             // Use unicode-width for accurate measurement.
-            let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            let char_width = unicode_width::UnicodeWidthChar::width(ch)
+                .unwrap_or(1)
+                .max(1);
             if !current_line.is_empty() {
                 let current_width: usize = current_line
                     .chars()
-                    .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1).max(1))
+                    .map(|c| {
+                        unicode_width::UnicodeWidthChar::width(c)
+                            .unwrap_or(1)
+                            .max(1)
+                    })
                     .sum();
                 if current_width + char_width > max_chars {
                     result.push(std::mem::take(&mut current_line));

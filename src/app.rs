@@ -14,12 +14,14 @@ use winit::{
 };
 
 use crate::{
-    app::{input::InputEncoder, paste_dialog::DialogResult},
+    app::input::InputEncoder,
     event::AppEvent,
-    pty::Pty,
-    render::{EventResult, GpuContext, TextMetrics, load_system_fonts},
-    terminal::{Terminal, TerminalSize},
+    pty::{Pty, PtyWakeHandler},
+    terminal::Terminal,
 };
+use harbor_render::{EventResult, GpuContext, TextMetrics, load_system_fonts};
+use harbor_types::TerminalSize;
+use harbor_ui::DialogResult;
 use paste_dialog::PasteDialog;
 use ui::UiRoot;
 
@@ -162,7 +164,9 @@ impl ApplicationHandler<AppEvent> for App {
                 match result {
                     DialogResult::Confirmed => {
                         let text = dialog.raw_text.clone();
-                        let modes = self.terminal.as_ref()
+                        let modes = self
+                            .terminal
+                            .as_ref()
                             .map(|t| t.screen().input_modes())
                             .unwrap_or_default();
                         crate::terminal::send_paste(modes, &text, &mut self.pty);
@@ -193,7 +197,13 @@ impl ApplicationHandler<AppEvent> for App {
                             // Prepare: borrow ui (immutable refs for metrics/glyph/pipeline)
                             if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
                                 let metrics = ui.text_metrics();
-                                dialog.prepare(gpu, metrics, |ch| ui.text_glyph(ch).copied(), ui.text_pipeline(), ui.text_bind_group());
+                                dialog.prepare(
+                                    gpu,
+                                    metrics,
+                                    |ch| ui.text_glyph(ch).copied(),
+                                    ui.text_pipeline(),
+                                    ui.text_bind_group(),
+                                );
                             }
                             // Render: borrow ui for pipeline/bind_group
                             if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
@@ -389,7 +399,7 @@ impl App {
             gpu: None,
             ui: None,
             terminal: None,
-            pty: Pty::new(event_proxy),
+            pty: Pty::new(PtyWakeHandler::new(event_proxy)),
             pending_resize: None,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
@@ -439,7 +449,7 @@ impl App {
         // Phase 2: submit one clear frame immediately after GPU init, before
         // waiting for fonts. Replaces the white window with the terminal
         // background color during the ~400ms font join wait.
-        gpu.clear_surface(crate::config::BACKGROUND);
+        gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
         let fonts = font_handle
             .join()
@@ -521,7 +531,7 @@ impl App {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::config::BACKGROUND),
+                        load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -536,6 +546,16 @@ impl App {
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+    }
+}
+
+/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`.
+fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
+    wgpu::Color {
+        r: c[0] as f64,
+        g: c[1] as f64,
+        b: c[2] as f64,
+        a: c[3] as f64,
     }
 }
 

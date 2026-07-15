@@ -4,10 +4,8 @@
 )]
 
 mod app;
-mod config;
 mod event;
 mod pty;
-mod render;
 mod terminal;
 
 use anyhow::{Context as _, Result};
