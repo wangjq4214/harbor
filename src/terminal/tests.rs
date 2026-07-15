@@ -1,8 +1,9 @@
 //! Integration-style tests for the Terminal facade.
 
-use super::Terminal;
 use super::screen::CellAttrs;
 use super::screen::Color;
+use super::{InputModes, Terminal};
+use std::borrow::Cow;
 
 #[test]
 fn writes_plain_characters_and_tracks_cursor() {
@@ -1055,4 +1056,55 @@ fn bracketed_paste_mode_resets_and_is_scoped_to_active_screen() {
 
     terminal.put_bytes(b"\x1b[?2004h\x1b[?1049l");
     assert!(terminal.screen().input_modes().bracketed_paste);
+}
+
+#[test]
+fn paste_without_bracketed_mode_preserves_raw_bytes() {
+    let modes = InputModes::default();
+    let bytes = modes.paste(b"first\r\nsecond\x1b[A");
+
+    assert!(matches!(bytes, Cow::Borrowed(_)));
+    assert_eq!(bytes.as_ref(), b"first\r\nsecond\x1b[A");
+}
+
+#[test]
+fn paste_with_bracketed_mode_frames_multiline_content() {
+    let modes = InputModes {
+        bracketed_paste: true,
+        ..InputModes::default()
+    };
+    assert_eq!(
+        modes.paste(b"first\r\nsecond\x1b[A").as_ref(),
+        b"\x1b[200~first\r\nsecond\x1b[A\x1b[201~"
+    );
+}
+
+#[test]
+fn paste_with_bracketed_mode_frames_empty_content() {
+    let modes = InputModes {
+        bracketed_paste: true,
+        ..InputModes::default()
+    };
+    assert_eq!(modes.paste(b"").as_ref(), b"\x1b[200~\x1b[201~");
+}
+
+#[test]
+fn paste_with_bracketed_mode_retains_end_marker_for_large_content() {
+    let text = vec![b'x'; 1024 * 1024];
+    let modes = InputModes {
+        bracketed_paste: true,
+        ..InputModes::default()
+    };
+
+    let bytes = modes.paste(&text);
+    assert_eq!(
+        bytes.len(),
+        text.len() + b"\x1b[200~".len() + b"\x1b[201~".len()
+    );
+    assert_eq!(&bytes[..b"\x1b[200~".len()], b"\x1b[200~");
+    assert_eq!(
+        &bytes[b"\x1b[200~".len()..b"\x1b[200~".len() + text.len()],
+        text.as_slice()
+    );
+    assert_eq!(&bytes[text.len() + b"\x1b[200~".len()..], b"\x1b[201~");
 }

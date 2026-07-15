@@ -1,6 +1,6 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
-pub(crate) mod input;
+mod input;
 mod ui;
 
 use std::sync::Arc;

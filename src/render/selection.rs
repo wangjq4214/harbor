@@ -2,14 +2,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    app::input::InputEncoder,
     config::{SELECTION_COLOR, TEXT_PADDING},
     render::{
         Component, EventResult, SelectionInput,
         caps::{ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, TerminalAccess},
         gpu::{self, ColoredVertex, GpuContext},
     },
-    terminal::{Screen, SelectionBounds},
+    terminal::{self, Screen, SelectionBounds},
 };
 use arboard::Clipboard;
 use winit::keyboard::{Key, NamedKey};
@@ -710,8 +709,7 @@ impl Selection {
                     match clipboard.get_text() {
                         Ok(text) => {
                             let modes = caps.terminal().screen().input_modes();
-                            let bytes = InputEncoder::paste(text.as_bytes(), modes);
-                            caps.pty().write(&bytes);
+                            terminal::send_paste(modes, &text, caps.pty());
                         }
                         Err(e) => tracing::warn!(error = %e, "failed to read clipboard text"),
                     }

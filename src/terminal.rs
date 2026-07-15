@@ -1,4 +1,5 @@
 mod damage;
+use crate::pty::Pty;
 mod normal_buf;
 mod parser;
 mod screen;
@@ -14,6 +15,7 @@ pub(crate) use screen::Color;
 pub(crate) use screen::CursorShape;
 pub(crate) use screen::Screen;
 pub(crate) use screen::SelectionBounds;
+use std::borrow::Cow;
 
 /// Terminal dimensions in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +32,27 @@ pub(crate) struct InputModes {
     pub(crate) application_cursor: bool,
     pub(crate) application_keypad: bool,
     pub(crate) bracketed_paste: bool,
+}
+
+impl InputModes {
+    /// Returns raw pasted bytes, framed with bracketed-paste markers when enabled.
+    pub(crate) fn paste<'a>(&self, text: &'a [u8]) -> Cow<'a, [u8]> {
+        if !self.bracketed_paste {
+            return Cow::Borrowed(text);
+        }
+        let mut bytes = Vec::with_capacity(text.len() + b"\x1b[200~".len() + b"\x1b[201~".len());
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(text);
+        bytes.extend_from_slice(b"\x1b[201~");
+        Cow::Owned(bytes)
+    }
+}
+
+/// Delivers paste text to the PTY, framing with bracketed-paste markers when
+/// the mode is enabled.  This is the single entry point for paste delivery;
+/// callers should not reach for `Pty::write` directly for paste payloads.
+pub(crate) fn send_paste(modes: InputModes, text: &str, pty: &mut Pty) {
+    pty.write(&modes.paste(text.as_bytes()));
 }
 
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.

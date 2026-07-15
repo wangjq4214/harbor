@@ -246,7 +246,7 @@ fn render_csi_key(
     }
 }
 
-/// Encodes keyboard and paste input according to a current terminal-mode snapshot.
+/// Encodes keyboard input according to a current terminal-mode snapshot.
 pub(crate) struct InputEncoder;
 
 impl InputEncoder {
@@ -310,19 +310,6 @@ impl InputEncoder {
             }
             _ => text_fallback(logical_key, text, modifiers),
         }
-    }
-
-    /// Returns raw pasted bytes, framed with bracketed-paste markers when enabled.
-    pub(crate) fn paste<'a>(text: &'a [u8], modes: InputModes) -> Cow<'a, [u8]> {
-        if !modes.bracketed_paste {
-            return Cow::Borrowed(text);
-        }
-
-        let mut bytes = Vec::with_capacity(text.len() + b"\x1b[200~".len() + b"\x1b[201~".len());
-        bytes.extend_from_slice(b"\x1b[200~");
-        bytes.extend_from_slice(text);
-        bytes.extend_from_slice(b"\x1b[201~");
-        Cow::Owned(bytes)
     }
 }
 
@@ -941,60 +928,5 @@ mod tests {
             ),
             Some(Cow::Owned(_))
         ));
-    }
-
-    #[test]
-    fn bracketed_paste_frames_multiline_content_with_esc_as_data() {
-        let modes = InputModes {
-            bracketed_paste: true,
-            ..InputModes::default()
-        };
-
-        assert_eq!(
-            InputEncoder::paste(b"first\r\nsecond\x1b[A", modes).as_ref(),
-            b"\x1b[200~first\r\nsecond\x1b[A\x1b[201~"
-        );
-    }
-
-    #[test]
-    fn normal_paste_preserves_raw_bytes_without_copying() {
-        let bytes = InputEncoder::paste(b"first\r\nsecond\x1b[A", InputModes::default());
-
-        assert!(matches!(bytes, Cow::Borrowed(_)));
-        assert_eq!(bytes.as_ref(), b"first\r\nsecond\x1b[A");
-    }
-
-    #[test]
-    fn bracketed_paste_frames_empty_content() {
-        let modes = InputModes {
-            bracketed_paste: true,
-            ..InputModes::default()
-        };
-
-        assert_eq!(
-            InputEncoder::paste(b"", modes).as_ref(),
-            b"\x1b[200~\x1b[201~"
-        );
-    }
-
-    #[test]
-    fn bracketed_paste_retains_end_marker_for_one_mebibyte_content() {
-        let text = vec![b'x'; 1024 * 1024];
-        let modes = InputModes {
-            bracketed_paste: true,
-            ..InputModes::default()
-        };
-
-        let bytes = InputEncoder::paste(&text, modes);
-        assert_eq!(
-            bytes.len(),
-            text.len() + b"\x1b[200~".len() + b"\x1b[201~".len()
-        );
-        assert_eq!(&bytes[..b"\x1b[200~".len()], b"\x1b[200~");
-        assert_eq!(
-            &bytes[b"\x1b[200~".len()..b"\x1b[200~".len() + text.len()],
-            text.as_slice()
-        );
-        assert_eq!(&bytes[text.len() + b"\x1b[200~".len()..], b"\x1b[201~");
     }
 }

@@ -28,7 +28,7 @@ pub(crate) struct DamageTracker {
 
 impl DamageTracker {
     pub(crate) fn new(rows: usize, cols: usize) -> Self {
-        let mut dirty_row_bits = vec![u64::MAX; (rows + 63) / 64];
+        let mut dirty_row_bits = vec![u64::MAX; rows.div_ceil(64)];
         Self::mask_trailing_bits(&mut dirty_row_bits, rows);
         Self {
             rows,
@@ -47,7 +47,7 @@ impl DamageTracker {
         self.cols = new_cols;
         self.grid.clear();
         self.grid.resize(new_rows * new_cols, true);
-        self.dirty_row_bits = vec![u64::MAX; (new_rows + 63) / 64];
+        self.dirty_row_bits = vec![u64::MAX; new_rows.div_ceil(64)];
         Self::mask_trailing_bits(&mut self.dirty_row_bits, new_rows);
     }
 
@@ -135,10 +135,10 @@ impl DamageTracker {
     /// Clear bits beyond `rows` in the last word so they are never visited.
     fn mask_trailing_bits(bits: &mut [u64], rows: usize) {
         let remainder = rows % 64;
-        if remainder != 0 {
-            if let Some(last) = bits.last_mut() {
-                *last &= (1u64 << remainder) - 1;
-            }
+        if remainder != 0
+            && let Some(last) = bits.last_mut()
+        {
+            *last &= (1u64 << remainder) - 1;
         }
     }
 }
