@@ -51,7 +51,10 @@ fn paste_dialog_spec(raw_text: &str) -> PasteDialogWidget {
         WindowSpec::fixed("Paste confirmation", 600.0, 400.0),
         ScrollView::new(UiText::new(preview_text(raw_text)).wrap()),
     )
-    .title(UiText::new(format!("Paste {} lines?", raw_text.lines().count())))
+    .title(UiText::new(format!(
+        "Paste {} lines?",
+        raw_text.lines().count()
+    )))
     .actions(vec![
         Button::new(UiText::new("Paste"), PasteDialogAction::Paste).key(PASTE_ACTION_KEY),
         Button::new(UiText::new("Cancel"), PasteDialogAction::Cancel).key(CANCEL_ACTION_KEY),
@@ -89,10 +92,13 @@ impl PasteDialog {
 
         #[cfg(target_os = "windows")]
         if let Some(main) = main_window {
-            let hwnd = main.window_handle().ok().and_then(|handle| match handle.as_raw() {
-                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-                _ => None,
-            });
+            let hwnd = main
+                .window_handle()
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                    _ => None,
+                });
             if let Some(hwnd) = hwnd {
                 // SAFETY: HWND from raw-window-handle is the Win32 window handle.
                 window_attrs = window_attrs.with_owner_window(hwnd);
@@ -168,30 +174,28 @@ impl PasteDialog {
     pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> PasteDialogResult {
         let result = match event {
             WindowEvent::CloseRequested => PasteDialogResult::Cancelled,
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
-                match &key_event.logical_key {
-                    Key::Named(NamedKey::Escape) => PasteDialogResult::Cancelled,
-                    Key::Character(ch) if ch == "y" || ch == "Y" => PasteDialogResult::Confirmed,
-                    Key::Character(ch) if ch == "n" || ch == "N" => PasteDialogResult::Cancelled,
-                    _ => match self.runtime.event(
-                        &self.dialog,
-                        event,
-                        harbor_ui::Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            width: self.dialog.window.preferred_width,
-                            height: self.dialog.window.preferred_height,
-                        },
-                    ) {
-                        WidgetEventResult::Intent(action) => Self::result(action),
-                        WidgetEventResult::Ignored | WidgetEventResult::Handled => {
-                            PasteDialogResult::None
-                        }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => PasteDialogResult::Cancelled,
+                Key::Character(ch) if ch == "y" || ch == "Y" => PasteDialogResult::Confirmed,
+                Key::Character(ch) if ch == "n" || ch == "N" => PasteDialogResult::Cancelled,
+                _ => match self.runtime.event(
+                    &self.dialog,
+                    event,
+                    harbor_ui::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: self.dialog.window.preferred_width,
+                        height: self.dialog.window.preferred_height,
                     },
-                }
-            }
+                ) {
+                    WidgetEventResult::Intent(action) => Self::result(action),
+                    WidgetEventResult::Ignored | WidgetEventResult::Handled => {
+                        PasteDialogResult::None
+                    }
+                },
+            },
             _ => match self.runtime.event(
                 &self.dialog,
                 event,
@@ -256,11 +260,8 @@ impl PasteDialog {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.runtime.paint(
-                &self.dialog,
-                PaintContext { gpu, text, bounds },
-                &mut pass,
-            );
+            self.runtime
+                .paint(&self.dialog, PaintContext { gpu, text, bounds }, &mut pass);
         }
         gpu.queue().submit(Some(encoder.finish()));
         gpu.queue().present(output);

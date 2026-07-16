@@ -15,9 +15,9 @@ mod widget;
 
 pub use button::{Button, ButtonState};
 pub use container::{Alignment, Container};
-pub use layout::{Column, Expanded, Row, ScrollView, Stack};
 pub use custom_paint::{CustomPaint, CustomPainter, PaintContext};
 pub use dialog::{Dialog, DialogEvent, DialogRuntime, WindowSpec};
+pub use layout::{Column, Expanded, Row, ScrollView, Stack};
 pub use primitives::{BoxConstraints, Color, EdgeInsets, Key, Rect};
 pub use terminal::{
     AtlasGlyph, FontBook, Terminal, TerminalIntent, TerminalScroll, TextMetrics, TextResources,
@@ -82,13 +82,19 @@ mod tests {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(10.0, 10.0),
         };
-        assert_eq!(runtime.event(&button, &cursor, bounds), WidgetEventResult::Ignored);
+        assert_eq!(
+            runtime.event(&button, &cursor, bounds),
+            WidgetEventResult::Ignored
+        );
         let pressed = winit::event::WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         };
-        assert_eq!(runtime.event(&button, &pressed, bounds), WidgetEventResult::Handled);
+        assert_eq!(
+            runtime.event(&button, &pressed, bounds),
+            WidgetEventResult::Handled
+        );
         let released = winit::event::WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Released,
@@ -118,7 +124,10 @@ mod tests {
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         };
-        assert_eq!(runtime.event(&widget, &pressed, bounds), WidgetEventResult::Handled);
+        assert_eq!(
+            runtime.event(&widget, &pressed, bounds),
+            WidgetEventResult::Handled
+        );
         let released = winit::event::WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Released,

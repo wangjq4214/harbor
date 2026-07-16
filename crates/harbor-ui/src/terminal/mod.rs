@@ -67,7 +67,11 @@ impl Terminal {
     }
 
     pub fn event_intent(&self, event: &winit::event::WindowEvent) -> Option<TerminalIntent> {
-        if self.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_alt) {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.is_alt)
+        {
             return None;
         }
         let winit::event::WindowEvent::MouseWheel { delta, .. } = event else {
@@ -149,4 +153,3 @@ impl Widget<TerminalIntent> for Terminal {
         decoration.draw(pass);
     }
 }
-

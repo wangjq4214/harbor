@@ -192,19 +192,43 @@ impl Cursor {
             let cell_x = TEXT_PADDING + snap.cursor_x as f32 * self.cell_width;
             let cell_y = TEXT_PADDING + snap.cursor_y as f32 * self.line_height;
             let (left, top, right, bottom) = match self.shape {
-                CursorShape::Block => (cell_x, cell_y, cell_x + self.cell_width, cell_y + self.line_height),
+                CursorShape::Block => (
+                    cell_x,
+                    cell_y,
+                    cell_x + self.cell_width,
+                    cell_y + self.line_height,
+                ),
                 CursorShape::Underline => {
                     let thickness = (self.line_height * 0.1).max(2.0);
-                    (cell_x, cell_y + self.line_height - thickness, cell_x + self.cell_width, cell_y + self.line_height)
+                    (
+                        cell_x,
+                        cell_y + self.line_height - thickness,
+                        cell_x + self.cell_width,
+                        cell_y + self.line_height,
+                    )
                 }
                 CursorShape::Bar => {
                     let thickness = (self.cell_width * 0.15).max(2.0);
-                    (cell_x, cell_y, cell_x + thickness, cell_y + self.line_height)
+                    (
+                        cell_x,
+                        cell_y,
+                        cell_x + thickness,
+                        cell_y + self.line_height,
+                    )
                 }
             };
             let vertices = TexturedVertex::from_pixel_rect(
-                left, top, right, bottom, 0.0, 0.0, 1.0, 1.0, [1.0; 4],
-                surf_w as f32, surf_h as f32,
+                left,
+                top,
+                right,
+                bottom,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                [1.0; 4],
+                surf_w as f32,
+                surf_h as f32,
             );
             gpu.queue()
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));

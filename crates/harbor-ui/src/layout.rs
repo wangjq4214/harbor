@@ -45,8 +45,14 @@ where
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
         let back = self.back.layout(&mut state.back, constraints);
         let front = self.front.layout(&mut state.front, constraints);
-        let (width, height) = constraints.constrain(back.width.max(front.width), back.height.max(front.height));
-        let bounds = Rect { x: 0.0, y: 0.0, width, height };
+        let (width, height) =
+            constraints.constrain(back.width.max(front.width), back.height.max(front.height));
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
         state.back_bounds = bounds;
         state.front_bounds = bounds;
         bounds
@@ -58,11 +64,19 @@ where
         event: &winit::event::WindowEvent,
         bounds: Rect,
     ) -> WidgetEventResult<A> {
-        let front = self.front.event(&mut state.front, event, translated(bounds, state.front_bounds));
+        let front = self.front.event(
+            &mut state.front,
+            event,
+            translated(bounds, state.front_bounds),
+        );
         if !matches!(front, WidgetEventResult::Ignored) {
             return front;
         }
-        self.back.event(&mut state.back, event, translated(bounds, state.back_bounds))
+        self.back.event(
+            &mut state.back,
+            event,
+            translated(bounds, state.back_bounds),
+        )
     }
 
     fn paint<'pass>(
@@ -123,30 +137,63 @@ pub struct LinearState<First, Second> {
 
 fn child_constraints(constraints: BoxConstraints, horizontal: bool, main: f32) -> BoxConstraints {
     if horizontal {
-        BoxConstraints { min_width: main, max_width: main, min_height: 0.0, max_height: constraints.max_height }
+        BoxConstraints {
+            min_width: main,
+            max_width: main,
+            min_height: 0.0,
+            max_height: constraints.max_height,
+        }
     } else {
-        BoxConstraints { min_width: 0.0, max_width: constraints.max_width, min_height: main, max_height: main }
+        BoxConstraints {
+            min_width: 0.0,
+            max_width: constraints.max_width,
+            min_height: main,
+            max_height: main,
+        }
     }
 }
 
 fn natural_constraints(constraints: BoxConstraints, horizontal: bool) -> BoxConstraints {
     if horizontal {
-        BoxConstraints { min_width: 0.0, max_width: constraints.max_width, min_height: 0.0, max_height: constraints.max_height }
+        BoxConstraints {
+            min_width: 0.0,
+            max_width: constraints.max_width,
+            min_height: 0.0,
+            max_height: constraints.max_height,
+        }
     } else {
-        BoxConstraints { min_width: 0.0, max_width: constraints.max_width, min_height: 0.0, max_height: constraints.max_height }
+        BoxConstraints {
+            min_width: 0.0,
+            max_width: constraints.max_width,
+            min_height: 0.0,
+            max_height: constraints.max_height,
+        }
     }
 }
 
 fn main(bounds: Rect, horizontal: bool) -> f32 {
-    if horizontal { bounds.width } else { bounds.height }
+    if horizontal {
+        bounds.width
+    } else {
+        bounds.height
+    }
 }
 
 fn cross(bounds: Rect, horizontal: bool) -> f32 {
-    if horizontal { bounds.height } else { bounds.width }
+    if horizontal {
+        bounds.height
+    } else {
+        bounds.width
+    }
 }
 
 fn rect(width: f32, height: f32) -> Rect {
-    Rect { x: 0.0, y: 0.0, width, height }
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        width,
+        height,
+    }
 }
 
 macro_rules! impl_linear {
@@ -168,19 +215,38 @@ macro_rules! impl_linear {
             }
 
             fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-                let max_main = if $horizontal { constraints.max_width } else { constraints.max_height };
+                let max_main = if $horizontal {
+                    constraints.max_width
+                } else {
+                    constraints.max_height
+                };
                 let first_expands = self.$first.expands();
                 let second_expands = self.$second.expands();
                 let natural = natural_constraints(constraints, $horizontal);
-                let mut first = if first_expands { Rect::default() } else { self.$first.layout(&mut state.first, natural) };
-                let mut second = if second_expands { Rect::default() } else { self.$second.layout(&mut state.second, natural) };
-                let remaining = (max_main - main(first, $horizontal) - main(second, $horizontal)).max(0.0);
+                let mut first = if first_expands {
+                    Rect::default()
+                } else {
+                    self.$first.layout(&mut state.first, natural)
+                };
+                let mut second = if second_expands {
+                    Rect::default()
+                } else {
+                    self.$second.layout(&mut state.second, natural)
+                };
+                let remaining =
+                    (max_main - main(first, $horizontal) - main(second, $horizontal)).max(0.0);
                 let expanded = first_expands as u8 + second_expands as u8;
                 if first_expands {
-                    first = self.$first.layout(&mut state.first, child_constraints(constraints, $horizontal, remaining / expanded as f32));
+                    first = self.$first.layout(
+                        &mut state.first,
+                        child_constraints(constraints, $horizontal, remaining / expanded as f32),
+                    );
                 }
                 if second_expands {
-                    second = self.$second.layout(&mut state.second, child_constraints(constraints, $horizontal, remaining / expanded as f32));
+                    second = self.$second.layout(
+                        &mut state.second,
+                        child_constraints(constraints, $horizontal, remaining / expanded as f32),
+                    );
                 }
                 let total_main = main(first, $horizontal) + main(second, $horizontal);
                 let max_cross = cross(first, $horizontal).max(cross(second, $horizontal));
@@ -191,22 +257,50 @@ macro_rules! impl_linear {
                 };
                 state.first_bounds = rect(first.width, first.height);
                 state.second_bounds = if $horizontal {
-                    Rect { x: first.width, y: 0.0, width: second.width, height: second.height }
+                    Rect {
+                        x: first.width,
+                        y: 0.0,
+                        width: second.width,
+                        height: second.height,
+                    }
                 } else {
-                    Rect { x: 0.0, y: first.height, width: second.width, height: second.height }
+                    Rect {
+                        x: 0.0,
+                        y: first.height,
+                        width: second.width,
+                        height: second.height,
+                    }
                 };
                 rect(width, height)
             }
 
-            fn event(&self, state: &mut Self::State, event: &winit::event::WindowEvent, bounds: Rect) -> WidgetEventResult<A> {
-                let second = self.$second.event(&mut state.second, event, translated(bounds, state.second_bounds));
+            fn event(
+                &self,
+                state: &mut Self::State,
+                event: &winit::event::WindowEvent,
+                bounds: Rect,
+            ) -> WidgetEventResult<A> {
+                let second = self.$second.event(
+                    &mut state.second,
+                    event,
+                    translated(bounds, state.second_bounds),
+                );
                 if !matches!(second, WidgetEventResult::Ignored) {
                     return second;
                 }
-                self.$first.event(&mut state.first, event, translated(bounds, state.first_bounds))
+                self.$first.event(
+                    &mut state.first,
+                    event,
+                    translated(bounds, state.first_bounds),
+                )
             }
 
-            fn paint<'pass>(&self, state: &mut Self::State, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>) {
+            fn paint<'pass>(
+                &self,
+                state: &mut Self::State,
+                context: PaintContext<'_>,
+                pass: &mut wgpu::RenderPass<'pass>,
+            ) {
                 self.$first.paint(
                     &mut state.first,
                     PaintContext {
@@ -254,7 +348,9 @@ where
     type State = ExpandedState<W::State>;
 
     fn create_state(&self) -> Self::State {
-        ExpandedState { child: self.child.create_state() }
+        ExpandedState {
+            child: self.child.create_state(),
+        }
     }
 
     fn expands(&self) -> bool {
@@ -263,14 +359,27 @@ where
 
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
         let child = self.child.layout(&mut state.child, constraints);
-        rect(constraints.max_width.max(child.width), constraints.max_height.max(child.height))
+        rect(
+            constraints.max_width.max(child.width),
+            constraints.max_height.max(child.height),
+        )
     }
 
-    fn event(&self, state: &mut Self::State, event: &winit::event::WindowEvent, bounds: Rect) -> WidgetEventResult<A> {
+    fn event(
+        &self,
+        state: &mut Self::State,
+        event: &winit::event::WindowEvent,
+        bounds: Rect,
+    ) -> WidgetEventResult<A> {
         self.child.event(&mut state.child, event, bounds)
     }
 
-    fn paint<'pass>(&self, state: &mut Self::State, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>) {
+    fn paint<'pass>(
+        &self,
+        state: &mut Self::State,
+        context: PaintContext<'_>,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
         self.child.paint(&mut state.child, context, pass);
     }
 }
@@ -316,15 +425,26 @@ where
             },
         );
         let viewport = rect(
-            child.width.clamp(constraints.min_width, constraints.max_width),
-            child.height.clamp(constraints.min_height, constraints.max_height),
+            child
+                .width
+                .clamp(constraints.min_width, constraints.max_width),
+            child
+                .height
+                .clamp(constraints.min_height, constraints.max_height),
         );
         state.child_bounds = child;
-        state.offset = state.offset.clamp(0.0, (child.height - viewport.height).max(0.0));
+        state.offset = state
+            .offset
+            .clamp(0.0, (child.height - viewport.height).max(0.0));
         viewport
     }
 
-    fn event(&self, state: &mut Self::State, event: &winit::event::WindowEvent, bounds: Rect) -> WidgetEventResult<A> {
+    fn event(
+        &self,
+        state: &mut Self::State,
+        event: &winit::event::WindowEvent,
+        bounds: Rect,
+    ) -> WidgetEventResult<A> {
         if let winit::event::WindowEvent::MouseWheel { delta, .. } = event {
             let distance = match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => *y * 20.0,
@@ -344,7 +464,12 @@ where
         )
     }
 
-    fn paint<'pass>(&self, state: &mut Self::State, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>) {
+    fn paint<'pass>(
+        &self,
+        state: &mut Self::State,
+        context: PaintContext<'_>,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
         let surface = context.gpu.surface_size();
         let left = context.bounds.x.max(0.0).floor() as u32;
         let top = context.bounds.y.max(0.0).floor() as u32;

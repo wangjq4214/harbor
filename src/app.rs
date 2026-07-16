@@ -206,8 +206,7 @@ impl ApplicationHandler<AppEvent> for App {
                     PasteDialogResult::None => {
                         // Put dialog back; render below
                         if matches!(&event, WindowEvent::RedrawRequested)
-                            && let (Some(gpu), Some(text)) =
-                                (self.gpu.as_ref(), self.text.as_mut())
+                            && let (Some(gpu), Some(text)) = (self.gpu.as_ref(), self.text.as_mut())
                         {
                             dialog.render(gpu, text);
                         }
@@ -237,7 +236,8 @@ impl ApplicationHandler<AppEvent> for App {
             self.terminal.as_mut(),
             Some(&mut self.pty),
             self.window.as_ref(),
-        ) else {
+        )
+        else {
             return;
         };
 

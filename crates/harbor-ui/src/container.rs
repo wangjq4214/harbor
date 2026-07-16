@@ -97,8 +97,10 @@ where
     }
 
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let horizontal = self.margin.left + self.margin.right + self.padding.left + self.padding.right;
-        let vertical = self.margin.top + self.margin.bottom + self.padding.top + self.padding.bottom;
+        let horizontal =
+            self.margin.left + self.margin.right + self.padding.left + self.padding.right;
+        let vertical =
+            self.margin.top + self.margin.bottom + self.padding.top + self.padding.bottom;
         let child_constraints = BoxConstraints {
             min_width: 0.0,
             max_width: (constraints.max_width - horizontal).max(0.0),
@@ -166,7 +168,10 @@ where
                 context.gpu.surface_size().1 as f32,
             );
             let buffer = state.background_buffer.get_or_insert_with(|| {
-                gpu::create_colored_vertex_buffer(context.gpu.device(), &[ColoredVertex::default(); 6])
+                gpu::create_colored_vertex_buffer(
+                    context.gpu.device(),
+                    &[ColoredVertex::default(); 6],
+                )
             });
             context
                 .gpu

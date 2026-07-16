@@ -1,6 +1,5 @@
 use crate::{
-    BoxConstraints, Button, ButtonState, Key, PaintContext, Rect, Text, Widget,
-    WidgetEventResult,
+    BoxConstraints, Button, ButtonState, Key, PaintContext, Rect, Text, Widget, WidgetEventResult,
 };
 use crate::{button::ButtonRuntime, text::TextState};
 use harbor_gpu::gpu::{self, ColoredVertex};
@@ -87,10 +86,7 @@ where
         runtime.sync(self);
         DialogWidgetState {
             runtime,
-            title: self
-                .title
-                .as_ref()
-                .map(<Text as Widget<A>>::create_state),
+            title: self.title.as_ref().map(<Text as Widget<A>>::create_state),
             title_bounds: Rect::default(),
             body: self.body.create_state(),
             body_bounds: Rect::default(),
@@ -101,10 +97,8 @@ where
     }
 
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let (width, height) = constraints.constrain(
-            self.window.preferred_width,
-            self.window.preferred_height,
-        );
+        let (width, height) =
+            constraints.constrain(self.window.preferred_width, self.window.preferred_height);
         let title_height = match (&self.title, &mut state.title) {
             (Some(title), Some(title_state)) => {
                 let title = <Text as Widget<A>>::layout(

@@ -117,9 +117,7 @@ where
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let inside = state
-                    .pointer
-                    .is_some_and(|(x, y)| bounds.contains(x, y));
+                let inside = state.pointer.is_some_and(|(x, y)| bounds.contains(x, y));
                 match button_state {
                     winit::event::ElementState::Pressed if inside => {
                         state.state = ButtonState::Pressed;

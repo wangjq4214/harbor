@@ -106,7 +106,9 @@ impl<A> Widget<A> for Text {
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
         let estimated_cell_width = (self.style.size * 0.6).max(1.0);
         let columns = if self.wrap {
-            (constraints.max_width / estimated_cell_width).floor().max(1.0) as usize
+            (constraints.max_width / estimated_cell_width)
+                .floor()
+                .max(1.0) as usize
         } else {
             usize::MAX
         };
@@ -159,7 +161,8 @@ impl<A> Widget<A> for Text {
                 if glyph.width == 0 || glyph.height == 0 {
                     continue;
                 }
-                let left = context.bounds.x + column as f32 * cell_width + glyph.xmin as f32 * scale;
+                let left =
+                    context.bounds.x + column as f32 * cell_width + glyph.xmin as f32 * scale;
                 let bottom = baseline - glyph.ymin as f32 * scale;
                 let top = bottom - glyph.height as f32 * scale;
                 let right = left + glyph.width as f32 * scale;
