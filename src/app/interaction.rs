@@ -13,7 +13,7 @@ use super::{
 use harbor_gpu::GpuContext;
 use harbor_pty::Pty;
 use harbor_terminal::{Screen, Terminal};
-use harbor_ui::{Component, TerminalOverlays, TerminalRenderer, TextMetrics};
+use harbor_ui::TextMetrics;
 use winit::{event::WindowEvent, keyboard::ModifiersState, window::Window};
 
 /// Shell-owned terminal interaction state and event dispatch.
@@ -32,16 +32,23 @@ impl TerminalInteraction {
         }
     }
 
-    pub(crate) fn prepare(&mut self, ui: &mut TerminalRenderer, gpu: &GpuContext, screen: &Screen) {
-        ui.prepare(gpu, screen, self);
+    pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
+        let snapshot = screen.snapshot();
+        self.selection.prepare(gpu, Some(&snapshot));
+        self.cursor.prepare(gpu, Some(&snapshot));
+        self.scrollbar.prepare(gpu, Some(&snapshot));
     }
 
-    pub(crate) fn draw(&self, ui: &TerminalRenderer, pass: &mut wgpu::RenderPass) {
-        ui.draw(pass, self);
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
+        self.selection.draw(pass);
+        self.cursor.draw(pass);
+        self.scrollbar.draw(pass);
     }
 
-    pub(crate) fn resize(&mut self, ui: &mut TerminalRenderer, gpu: &GpuContext, size: (u32, u32)) {
-        ui.resize(gpu, size, self);
+    pub(crate) fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
+        self.selection.resize(gpu, size);
+        self.cursor.resize(gpu, size);
+        self.scrollbar.resize(gpu, size);
     }
 
     pub(crate) fn handle_event(
@@ -110,22 +117,3 @@ impl TerminalInteraction {
     }
 }
 
-impl TerminalOverlays for TerminalInteraction {
-    fn prepare(&mut self, gpu: &GpuContext, snap: &harbor_types::RenderSnapshot) {
-        self.selection.prepare(gpu, Some(snap));
-        self.cursor.prepare(gpu, Some(snap));
-        self.scrollbar.prepare(gpu, Some(snap));
-    }
-
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
-        self.selection.draw(pass);
-        self.cursor.draw(pass);
-        self.scrollbar.draw(pass);
-    }
-
-    fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
-        Component::resize(&mut self.selection, gpu, size);
-        Component::resize(&mut self.cursor, gpu, size);
-        Component::resize(&mut self.scrollbar, gpu, size);
-    }
-}

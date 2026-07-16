@@ -25,7 +25,10 @@ use crate::{
 };
 use harbor_gpu::GpuContext;
 use harbor_types::TerminalSize;
-use harbor_ui::{TerminalRenderer, TextMetrics, load_system_fonts};
+use harbor_ui::{
+    Key as UiKey, Terminal as UiTerminal, TextMetrics, TextResources, WidgetRuntime,
+    load_system_fonts,
+};
 use interaction::TerminalInteraction;
 use paste_dialog::{PasteDialog, PasteDialogResult};
 
@@ -75,8 +78,12 @@ pub(crate) struct App {
     window: Option<Arc<Window>>,
     /// GPU context (surface / device / queue).
     gpu: Option<GpuContext>,
-    /// Terminal renderer layers and shared UI resources.
-    ui: Option<TerminalRenderer>,
+    /// Immutable terminal widget configuration rebuilt from the latest screen snapshot.
+    ui: Option<UiTerminal>,
+    /// Retained state for the terminal's static widget tree.
+    ui_runtime: Option<WidgetRuntime<UiTerminal, harbor_ui::TerminalIntent>>,
+    /// Shared glyph atlas and text pipeline for every widget in this window.
+    text: Option<TextResources>,
     /// Shell-owned terminal interaction state.
     interaction: Option<TerminalInteraction>,
     /// Terminal model: byte-stream parser plus visible screen.
@@ -116,9 +123,8 @@ impl ApplicationHandler<AppEvent> for App {
     /// Handles PTY output events from the background reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::PtyOutputReady = event;
-        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(window)) = (
+        let (Some(gpu), Some(interaction), Some(terminal), Some(window)) = (
             self.gpu.as_mut(),
-            self.ui.as_mut(),
             self.interaction.as_mut(),
             self.terminal.as_mut(),
             self.window.as_ref(),
@@ -131,17 +137,15 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         terminal.process_output(&output);
-        interaction.prepare(ui, gpu, terminal.screen());
-        terminal.clear_screen_dirty();
+        interaction.prepare(gpu, terminal.screen());
         window.request_redraw();
     }
 
     /// Called when the event loop is about to block. Applies pending resize,
     /// then drives component deadlines (cursor blink, scrollbar auto-hide).
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
+        let (Some(gpu), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
             self.gpu.as_mut(),
-            self.ui.as_mut(),
             self.interaction.as_mut(),
             self.terminal.as_mut(),
             Some(&mut self.pty),
@@ -155,8 +159,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(new_size) = self.pending_resize.take()
             && terminal.resize_terminal_if_changed(new_size)
         {
-            interaction.prepare(ui, gpu, terminal.screen());
-            terminal.clear_screen_dirty();
+            interaction.prepare(gpu, terminal.screen());
             pty.resize(new_size);
         }
 
@@ -202,30 +205,11 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     PasteDialogResult::None => {
                         // Put dialog back; render below
-                        if matches!(&event, WindowEvent::RedrawRequested) {
-                            // Ensure dialog glyphs, then prepare + render.
-                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_mut()) {
-                                let ensure_text = format!(
-                                    "[ Paste ][ Cancel ]Paste {} lines?",
-                                    dialog.raw_text.lines().count()
-                                );
-                                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
-                            }
-                            // Prepare: borrow ui (immutable refs for metrics/glyph/pipeline)
-                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
-                                let metrics = ui.text_metrics();
-                                dialog.prepare(
-                                    gpu,
-                                    metrics,
-                                    |ch| ui.text_glyph(ch).copied(),
-                                    ui.text_pipeline(),
-                                    ui.text_bind_group(),
-                                );
-                            }
-                            // Render: borrow ui for pipeline/bind_group
-                            if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
-                                dialog.render(gpu, ui.text_pipeline(), ui.text_bind_group());
-                            }
+                        if matches!(&event, WindowEvent::RedrawRequested)
+                            && let (Some(gpu), Some(text)) =
+                                (self.gpu.as_ref(), self.text.as_mut())
+                        {
+                            dialog.render(gpu, text);
                         }
                         self.paste_dialog = Some(dialog);
                     }
@@ -237,9 +221,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let dialog_active = self.paste_dialog.is_some();
 
-        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
+        let (Some(gpu), Some(text), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
             self.gpu.as_mut(),
-            self.ui.as_mut(),
+            self.text.as_mut(),
             self.interaction.as_mut(),
             self.terminal.as_mut(),
             Some(&mut self.pty),
@@ -271,12 +255,6 @@ impl ApplicationHandler<AppEvent> for App {
         // Duplicate paste while dialog is open is a no-op.
         if let EventResult::ConfirmPaste(raw_text) = &handled {
             if self.paste_dialog.is_none() {
-                // Ensure dialog text glyphs are rasterized before dialog render.
-                let ensure_text = format!(
-                    "[ Paste ][ Cancel ]Paste {} lines?0123456789",
-                    raw_text.lines().count()
-                );
-                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
                 self.paste_dialog = Some(PasteDialog::new(
                     raw_text.clone(),
                     event_loop,
@@ -284,7 +262,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(window),
                 ));
             }
-            interaction.prepare(ui, gpu, terminal.screen());
+            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -311,7 +289,7 @@ impl ApplicationHandler<AppEvent> for App {
         // vertex buffer reflects the cleared selection, then return
         // early to avoid forwarding the key to the PTY.
         if handled == EventResult::Handled {
-            interaction.prepare(ui, gpu, terminal.screen());
+            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -330,8 +308,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
             }
-            interaction.prepare(ui, gpu, terminal.screen());
-            terminal.clear_screen_dirty();
+            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -341,7 +318,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
         {
-            interaction.prepare(ui, gpu, terminal.screen());
+            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
         }
 
@@ -363,8 +340,8 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 gpu.resize(size.width, size.height);
-                interaction.resize(ui, gpu, (size.width, size.height));
-                let new_size = ui.terminal_size(gpu);
+                interaction.resize(gpu, (size.width, size.height));
+                let new_size = text.terminal_size(gpu);
                 self.pending_resize = Some(new_size);
                 window.request_redraw();
             }
@@ -389,8 +366,7 @@ impl ApplicationHandler<AppEvent> for App {
                 } else if lines < 0 {
                     terminal.scroll_viewport_down((-lines) as usize);
                 }
-                interaction.prepare(ui, gpu, terminal.screen());
-                terminal.clear_screen_dirty();
+                interaction.prepare(gpu, terminal.screen());
                 window.request_redraw();
             }
 
@@ -427,6 +403,8 @@ impl App {
             window: None,
             gpu: None,
             ui: None,
+            ui_runtime: None,
+            text: None,
             interaction: None,
             terminal: None,
             pty: Pty::new(PtyWakeHandler::new(event_proxy)),
@@ -487,18 +465,23 @@ impl App {
             .map_err(AppError::Renderer)?;
         let metrics = TextMetrics::new(&fonts);
 
-        // Bootstrap with a 1×1 terminal so the glyph atlas has a screen to
-        // build from. TerminalRenderer computes the real grid size from font metrics.
+        // Bootstrap with a 1×1 terminal so shared text resources can compute
+        // the surface grid before the PTY starts.
         let mut terminal = Terminal::new(1, 1);
-        let ui = TerminalRenderer::new(&gpu, terminal.screen(), fonts, metrics)
+        let initial_snapshot = terminal.screen().snapshot();
+        let text = TextResources::new(&gpu, fonts, metrics, &initial_snapshot)
             .map_err(AppError::Renderer)?;
-        let size = ui.terminal_size(&gpu);
+        let size = text.terminal_size(&gpu);
         terminal.resize(size.rows, size.cols);
+        let ui = UiTerminal::with_snapshot(UiKey(0), Arc::new(terminal.screen().snapshot()));
+        let ui_runtime = WidgetRuntime::new(&ui);
         let interaction = TerminalInteraction::new(&gpu, terminal.screen(), metrics);
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
 
         self.gpu = Some(gpu);
         self.ui = Some(ui);
+        self.ui_runtime = Some(ui_runtime);
+        self.text = Some(text);
         self.interaction = Some(interaction);
         self.terminal = Some(terminal);
         self.window = Some(window.clone());
@@ -507,11 +490,21 @@ impl App {
         Ok(())
     }
 
-    /// Acquires the surface texture, draws all components, and presents.
-    /// Callers are responsible for calling `TerminalRenderer::prepare` before this.
+    /// Acquires the surface texture, paints the terminal widget tree, and presents.
     fn render_frame(&mut self) {
-        let (Some(ui), Some(gpu), Some(interaction)) = (
+        if let (Some(ui), Some(ui_runtime), Some(terminal)) = (
             self.ui.as_mut(),
+            self.ui_runtime.as_mut(),
+            self.terminal.as_ref(),
+        ) {
+            let next = ui.with_render_snapshot(Arc::new(terminal.screen().snapshot()));
+            ui_runtime.reconcile(ui, &next);
+            *ui = next;
+        }
+        let (Some(ui), Some(ui_runtime), Some(text), Some(gpu), Some(interaction)) = (
+            self.ui.as_ref(),
+            self.ui_runtime.as_mut(),
+            self.text.as_mut(),
             self.gpu.as_mut(),
             self.interaction.as_mut(),
         ) else {
@@ -577,11 +570,26 @@ impl App {
                 multiview_mask: None,
             });
 
-            interaction.draw(ui, &mut render_pass);
+            let bounds = ui_runtime.layout(
+                ui,
+                harbor_ui::BoxConstraints::tight(
+                    gpu.surface_size().0 as f32,
+                    gpu.surface_size().1 as f32,
+                ),
+            );
+            ui_runtime.paint(
+                ui,
+                harbor_ui::PaintContext { gpu, text, bounds },
+                &mut render_pass,
+            );
+            interaction.draw(&mut render_pass);
         }
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.clear_screen_dirty();
+        }
     }
 }
 

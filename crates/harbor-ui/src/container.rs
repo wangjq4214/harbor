@@ -1,4 +1,5 @@
 use crate::{BoxConstraints, Color, EdgeInsets, PaintContext, Rect, Widget, WidgetEventResult};
+use harbor_gpu::gpu::{self, ColoredVertex};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Alignment {
@@ -73,6 +74,7 @@ impl<W> Container<W> {
 pub struct ContainerState<S> {
     child: S,
     child_bounds: Rect,
+    background_buffer: Option<wgpu::Buffer>,
 }
 
 impl<A, W> Widget<A> for Container<W>
@@ -90,6 +92,7 @@ where
                 width: 0.0,
                 height: 0.0,
             },
+            background_buffer: None,
         }
     }
 
@@ -152,6 +155,27 @@ where
         context: PaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
+        if let Some(color) = self.background {
+            let vertices = ColoredVertex::from_pixel_rect(
+                context.bounds.x,
+                context.bounds.y,
+                context.bounds.x + context.bounds.width,
+                context.bounds.y + context.bounds.height,
+                color.0,
+                context.gpu.surface_size().0 as f32,
+                context.gpu.surface_size().1 as f32,
+            );
+            let buffer = state.background_buffer.get_or_insert_with(|| {
+                gpu::create_colored_vertex_buffer(context.gpu.device(), &[ColoredVertex::default(); 6])
+            });
+            context
+                .gpu
+                .queue()
+                .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+            pass.set_pipeline(&context.gpu.colored_quad_pipeline());
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(0..6, 0..1);
+        }
         let child_bounds = Rect {
             x: context.bounds.x + state.child_bounds.x,
             y: context.bounds.y + state.child_bounds.y,
@@ -161,6 +185,7 @@ where
             &mut state.child,
             PaintContext {
                 gpu: context.gpu,
+                text: context.text,
                 bounds: child_bounds,
             },
             pass,

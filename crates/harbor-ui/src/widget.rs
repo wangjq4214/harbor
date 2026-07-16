@@ -82,6 +82,14 @@ where
         }
     }
 
+    /// Reconciles a rebuilt root configuration. Fixed child state is retained
+    /// by its structural path; replacing the root's explicit key resets it.
+    pub fn reconcile(&mut self, previous: &W, next: &W) {
+        if previous.key() != next.key() {
+            self.state = next.create_state();
+        }
+    }
+
     pub fn layout(&mut self, widget: &W, constraints: BoxConstraints) -> Rect {
         widget.layout(&mut self.state, constraints)
     }

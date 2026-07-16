@@ -5,7 +5,7 @@ use anyhow::Result;
 use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
-use super::{Component, FontBook, TextMetrics};
+use super::{FontBook, TextMetrics};
 use harbor_config::{FONT_SIZE, TEXT_PADDING};
 use harbor_gpu::{
     GpuContext,
@@ -694,7 +694,7 @@ pub fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
 // ── TextLayer ─────────────────────────────────────────────────────────────
 
 /// Holds the text render pipeline, glyph atlas, bind group layout, and pre-allocated vertex buffer.
-pub(super) struct TerminalTextLayer {
+pub struct TextResources {
     /// Loaded font set (primary + fallback fonts).
     fonts: FontBook,
     /// Cell dimensions and baseline metrics.
@@ -716,7 +716,7 @@ pub(super) struct TerminalTextLayer {
     cols: usize,
 }
 
-impl TerminalTextLayer {
+impl TextResources {
     /// Creates the text render pipeline, bind group layout, initial glyph atlas,
     /// and pre-allocated vertex buffer from the given GPU context and snap.
     pub fn new(
@@ -947,7 +947,7 @@ impl TerminalTextLayer {
     }
 }
 
-impl TerminalTextLayer {
+impl TextResources {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
@@ -1032,14 +1032,8 @@ impl TerminalTextLayer {
     }
 }
 
-impl Component for TerminalTextLayer {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
-        if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
-        }
-    }
-
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+impl TextResources {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.gpu_atlas.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -1047,9 +1041,6 @@ impl Component for TerminalTextLayer {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
-    }
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }
 

@@ -1,8 +1,10 @@
-use crate::{BoxConstraints, Key, Rect, Widget};
+use crate::{BoxConstraints, Key, Rect, TextResources, Widget};
 use harbor_gpu::GpuContext;
 
+/// Frame-scoped GPU resources shared by every widget in one UI runtime.
 pub struct PaintContext<'a> {
     pub gpu: &'a GpuContext,
+    pub text: &'a mut TextResources,
     pub bounds: Rect,
 }
 

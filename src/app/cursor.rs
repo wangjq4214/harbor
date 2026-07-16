@@ -11,7 +11,7 @@ use harbor_gpu::{
     gpu::{self, TexturedVertex},
 };
 use harbor_terminal::CursorShape;
-use harbor_ui::{Component, TextMetrics};
+use harbor_ui::TextMetrics;
 
 const CURSOR_SHADER: &str = r#"
 struct VertexInput {
@@ -174,10 +174,8 @@ impl Cursor {
     }
 }
 
-impl Component for Cursor {
-    /// If dirty, computes cell-aligned vertex quad for the current cursor
-    /// shape and uploads it.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+impl Cursor {
+    pub(crate) fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
         if !self.dirty {
             return;
         }
@@ -193,46 +191,20 @@ impl Component for Cursor {
             let (surf_w, surf_h) = gpu.surface_size();
             let cell_x = TEXT_PADDING + snap.cursor_x as f32 * self.cell_width;
             let cell_y = TEXT_PADDING + snap.cursor_y as f32 * self.line_height;
-
             let (left, top, right, bottom) = match self.shape {
-                CursorShape::Block => (
-                    cell_x,
-                    cell_y,
-                    cell_x + self.cell_width,
-                    cell_y + self.line_height,
-                ),
+                CursorShape::Block => (cell_x, cell_y, cell_x + self.cell_width, cell_y + self.line_height),
                 CursorShape::Underline => {
                     let thickness = (self.line_height * 0.1).max(2.0);
-                    (
-                        cell_x,
-                        cell_y + self.line_height - thickness,
-                        cell_x + self.cell_width,
-                        cell_y + self.line_height,
-                    )
+                    (cell_x, cell_y + self.line_height - thickness, cell_x + self.cell_width, cell_y + self.line_height)
                 }
                 CursorShape::Bar => {
                     let thickness = (self.cell_width * 0.15).max(2.0);
-                    (
-                        cell_x,
-                        cell_y,
-                        cell_x + thickness,
-                        cell_y + self.line_height,
-                    )
+                    (cell_x, cell_y, cell_x + thickness, cell_y + self.line_height)
                 }
             };
-
             let vertices = TexturedVertex::from_pixel_rect(
-                left,
-                top,
-                right,
-                bottom,
-                0.0,
-                0.0,
-                1.0,
-                1.0, // UV unused, shader outputs solid color
-                [1.0; 4],
-                surf_w as f32,
-                surf_h as f32,
+                left, top, right, bottom, 0.0, 0.0, 1.0, 1.0, [1.0; 4],
+                surf_w as f32, surf_h as f32,
             );
             gpu.queue()
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
@@ -249,18 +221,16 @@ impl Component for Cursor {
         }
     }
 
-    /// Sets the pipeline and issues the draw call. No-op when vertex_count is 0.
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
         if self.vertex_count == 0 {
             return;
         }
-
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+    pub(crate) fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         self.dirty = true;
     }
 }

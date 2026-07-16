@@ -15,7 +15,6 @@ use harbor_gpu::{
     gpu::{self, ColoredVertex},
 };
 use harbor_terminal::{self, PasteDisposition, Screen};
-use harbor_ui::Component;
 use winit::keyboard::{Key, NamedKey};
 
 use harbor_terminal::{AutoScroll, SelectionModel, SelectionOutcome};
@@ -391,7 +390,7 @@ impl SelectionInput for Selection {
             winit::event::WindowEvent::Resized(_) => {
                 let outcome = self.model.cancel();
                 self.apply_outcome(outcome, caps);
-                EventResult::Continue // don't consume — let TerminalRenderer::resize fire
+                EventResult::Continue // don't consume — let the shell resize the terminal widget.
             }
             _ => EventResult::Continue,
         }
@@ -441,10 +440,10 @@ impl SelectionInput for Selection {
     }
 }
 
-// ── Component impl ───────────────────────────────────────────────────────
+// ── Visual lifecycle ───────────────────────────────────────────────────────
 
-impl Component for Selection {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+impl Selection {
+    pub(crate) fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
         if !self.dirty {
             return;
         }
@@ -456,10 +455,7 @@ impl Component for Selection {
         };
 
         if self.model.has_selection() {
-            let rows = snap.rows;
-            let cols = snap.cols;
-            self.ensure_capacity(gpu, rows, cols);
-
+            self.ensure_capacity(gpu, snap.rows, snap.cols);
             let (surf_w, surf_h) = gpu.surface_size();
             let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
             gpu.queue()
@@ -470,7 +466,7 @@ impl Component for Selection {
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
         if self.vertex_count == 0 {
             return;
         }
@@ -479,8 +475,7 @@ impl Component for Selection {
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        // Grid dimensions changed; old selection coordinates are stale.
+    pub(crate) fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         self.model.clear();
         self.dirty = true;
     }

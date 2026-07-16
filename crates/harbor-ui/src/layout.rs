@@ -73,12 +73,20 @@ where
     ) {
         self.back.paint(
             &mut state.back,
-            PaintContext { gpu: context.gpu, bounds: translated(context.bounds, state.back_bounds) },
+            PaintContext {
+                gpu: context.gpu,
+                text: &mut *context.text,
+                bounds: translated(context.bounds, state.back_bounds),
+            },
             pass,
         );
         self.front.paint(
             &mut state.front,
-            PaintContext { gpu: context.gpu, bounds: translated(context.bounds, state.front_bounds) },
+            PaintContext {
+                gpu: context.gpu,
+                text: &mut *context.text,
+                bounds: translated(context.bounds, state.front_bounds),
+            },
             pass,
         );
     }
@@ -199,8 +207,24 @@ macro_rules! impl_linear {
             }
 
             fn paint<'pass>(&self, state: &mut Self::State, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>) {
-                self.$first.paint(&mut state.first, PaintContext { gpu: context.gpu, bounds: translated(context.bounds, state.first_bounds) }, pass);
-                self.$second.paint(&mut state.second, PaintContext { gpu: context.gpu, bounds: translated(context.bounds, state.second_bounds) }, pass);
+                self.$first.paint(
+                    &mut state.first,
+                    PaintContext {
+                        gpu: context.gpu,
+                        text: &mut *context.text,
+                        bounds: translated(context.bounds, state.first_bounds),
+                    },
+                    pass,
+                );
+                self.$second.paint(
+                    &mut state.second,
+                    PaintContext {
+                        gpu: context.gpu,
+                        text: &mut *context.text,
+                        bounds: translated(context.bounds, state.second_bounds),
+                    },
+                    pass,
+                );
             }
         }
     };
@@ -263,6 +287,7 @@ impl<W> ScrollView<W> {
 
 pub struct ScrollViewState<S> {
     child: S,
+    child_bounds: Rect,
     pub offset: f32,
 }
 
@@ -273,12 +298,30 @@ where
     type State = ScrollViewState<W::State>;
 
     fn create_state(&self) -> Self::State {
-        ScrollViewState { child: self.child.create_state(), offset: 0.0 }
+        ScrollViewState {
+            child: self.child.create_state(),
+            child_bounds: Rect::default(),
+            offset: 0.0,
+        }
     }
 
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let child = self.child.layout(&mut state.child, constraints.loosen());
-        rect(child.width.clamp(constraints.min_width, constraints.max_width), child.height.clamp(constraints.min_height, constraints.max_height))
+        let child = self.child.layout(
+            &mut state.child,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: constraints.max_width,
+                min_height: 0.0,
+                max_height: f32::INFINITY,
+            },
+        );
+        let viewport = rect(
+            child.width.clamp(constraints.min_width, constraints.max_width),
+            child.height.clamp(constraints.min_height, constraints.max_height),
+        );
+        state.child_bounds = child;
+        state.offset = state.offset.clamp(0.0, (child.height - viewport.height).max(0.0));
+        viewport
     }
 
     fn event(&self, state: &mut Self::State, event: &winit::event::WindowEvent, bounds: Rect) -> WidgetEventResult<A> {
@@ -290,10 +333,50 @@ where
             state.offset = (state.offset - distance).max(0.0);
             return WidgetEventResult::Handled;
         }
-        self.child.event(&mut state.child, event, bounds)
+        self.child.event(
+            &mut state.child,
+            event,
+            Rect {
+                x: bounds.x,
+                y: bounds.y - state.offset,
+                ..state.child_bounds
+            },
+        )
     }
 
     fn paint<'pass>(&self, state: &mut Self::State, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>) {
-        self.child.paint(&mut state.child, context, pass);
+        let surface = context.gpu.surface_size();
+        let left = context.bounds.x.max(0.0).floor() as u32;
+        let top = context.bounds.y.max(0.0).floor() as u32;
+        let width = context
+            .bounds
+            .width
+            .min(surface.0.saturating_sub(left) as f32)
+            .max(0.0)
+            .floor() as u32;
+        let height = context
+            .bounds
+            .height
+            .min(surface.1.saturating_sub(top) as f32)
+            .max(0.0)
+            .floor() as u32;
+        if width == 0 || height == 0 {
+            return;
+        }
+        pass.set_scissor_rect(left, top, width, height);
+        self.child.paint(
+            &mut state.child,
+            PaintContext {
+                gpu: context.gpu,
+                text: context.text,
+                bounds: Rect {
+                    x: context.bounds.x,
+                    y: context.bounds.y - state.offset,
+                    ..state.child_bounds
+                },
+            },
+            pass,
+        );
+        pass.set_scissor_rect(0, 0, surface.0, surface.1);
     }
 }

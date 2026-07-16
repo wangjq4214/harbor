@@ -20,8 +20,7 @@ pub use custom_paint::{CustomPaint, CustomPainter, PaintContext};
 pub use dialog::{Dialog, DialogEvent, DialogRuntime, WindowSpec};
 pub use primitives::{BoxConstraints, Color, EdgeInsets, Key, Rect};
 pub use terminal::{
-    AtlasGlyph, Component, FontBook, Terminal, TerminalIntent, TerminalOverlays, TerminalRenderer,
-    TextMetrics, load_system_fonts,
+    AtlasGlyph, FontBook, Terminal, TerminalIntent, TextMetrics, TextResources, load_system_fonts,
 };
 pub use text::{Text, TextStyle};
 pub use widget::{EventResult as WidgetEventResult, Map, Widget, WidgetRuntime};
@@ -53,6 +52,8 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Intent {
         Activate,
+        Back,
+        Front,
     }
 
     #[test]
@@ -79,6 +80,36 @@ mod tests {
         assert_eq!(
             runtime.event(&button, &released, bounds),
             WidgetEventResult::Intent(Intent::Activate)
+        );
+    }
+
+    #[test]
+    fn stack_routes_pointer_release_to_frontmost_widget() {
+        let widget = Stack::new(
+            Button::new(Text::new("Back"), Intent::Back),
+            Button::new(Text::new("Front"), Intent::Front),
+        );
+        let mut runtime: WidgetRuntime<_, Intent> = WidgetRuntime::new(&widget);
+        let bounds = runtime.layout(&widget, BoxConstraints::tight(100.0, 24.0));
+        let cursor = winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(10.0, 10.0),
+        };
+        runtime.event(&widget, &cursor, bounds);
+        let pressed = winit::event::WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        };
+        assert_eq!(runtime.event(&widget, &pressed, bounds), WidgetEventResult::Handled);
+        let released = winit::event::WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: winit::event::ElementState::Released,
+            button: winit::event::MouseButton::Left,
+        };
+        assert_eq!(
+            runtime.event(&widget, &released, bounds),
+            WidgetEventResult::Intent(Intent::Front)
         );
     }
 

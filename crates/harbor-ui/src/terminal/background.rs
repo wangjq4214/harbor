@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use harbor_config::TEXT_PADDING;
 
-use super::Component;
 use harbor_gpu::{
     GpuContext,
     gpu::{self, ColoredVertex},
@@ -213,25 +212,14 @@ impl Background {
     }
 }
 
-impl Component for Background {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
-        if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
-        }
-    }
-
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+impl Background {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-
         let vertex_count = (self.rows * self.cols * 6) as u32;
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
-    }
-
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }
 

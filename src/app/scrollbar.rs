@@ -15,7 +15,6 @@ use harbor_gpu::{
     GpuContext,
     gpu::{self, ColoredVertex},
 };
-use harbor_ui::Component;
 
 // ── Scrollbar uniform ─────────────────────────────────────────────────────────
 
@@ -274,25 +273,21 @@ impl Scrollbar {
     }
 }
 
-impl Component for Scrollbar {
-    /// Upload scrollbar vertices and uniform data for the current snap state.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+impl Scrollbar {
+    pub(crate) fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
         let Some(snap) = snap else {
             return;
         };
         let (surf_w, surf_h) = gpu.surface_size();
-
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
         gpu.queue()
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-
         let uniform = compute_uniform(snap, surf_w as f32, surf_h as f32);
         gpu.queue()
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    /// Draw the scrollbar thumb (no-op when hidden).
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
         if !self.visible {
             return;
         }
@@ -301,6 +296,8 @@ impl Component for Scrollbar {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..6, 0..1);
     }
+
+    pub(crate) fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {}
 }
 
 impl ScrollbarInput for Scrollbar {

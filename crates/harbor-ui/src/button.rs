@@ -1,4 +1,5 @@
 use crate::{BoxConstraints, Key, PaintContext, Rect, Widget, WidgetEventResult};
+use harbor_gpu::gpu::{self, ColoredVertex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonState {
@@ -41,7 +42,9 @@ impl<A, W> Button<A, W> {
 pub struct ButtonRuntime<S> {
     pub state: ButtonState,
     child: S,
+    child_bounds: Rect,
     pointer: Option<(f32, f32)>,
+    background_buffer: Option<wgpu::Buffer>,
 }
 
 impl<A, W> Widget<A> for Button<A, W>
@@ -59,7 +62,9 @@ where
                 ButtonState::Disabled
             },
             child: self.child.create_state(),
+            child_bounds: Rect::default(),
             pointer: None,
+            background_buffer: None,
         }
     }
 
@@ -68,7 +73,19 @@ where
     }
 
     fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        self.child.layout(&mut state.child, constraints)
+        let child = self.child.layout(&mut state.child, constraints.loosen());
+        let (width, height) = constraints.constrain(child.width, child.height);
+        state.child_bounds = Rect {
+            x: (width - child.width).max(0.0) / 2.0,
+            y: (height - child.height).max(0.0) / 2.0,
+            ..child
+        };
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
     }
 
     fn event(
@@ -123,7 +140,15 @@ where
                     _ => WidgetEventResult::Ignored,
                 }
             }
-            _ => self.child.event(&mut state.child, event, bounds),
+            _ => self.child.event(
+                &mut state.child,
+                event,
+                Rect {
+                    x: bounds.x + state.child_bounds.x,
+                    y: bounds.y + state.child_bounds.y,
+                    ..state.child_bounds
+                },
+            ),
         }
     }
 
@@ -133,6 +158,44 @@ where
         context: PaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.child.paint(&mut state.child, context, pass);
+        let color = match state.state {
+            ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
+            ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
+            ButtonState::Pressed => [0.1, 0.35, 0.1, 1.0],
+            ButtonState::Focused => [0.15, 0.45, 0.15, 1.0],
+            ButtonState::Disabled => [0.1, 0.1, 0.1, 1.0],
+        };
+        let vertices = ColoredVertex::from_pixel_rect(
+            context.bounds.x,
+            context.bounds.y,
+            context.bounds.x + context.bounds.width,
+            context.bounds.y + context.bounds.height,
+            color,
+            context.gpu.surface_size().0 as f32,
+            context.gpu.surface_size().1 as f32,
+        );
+        let buffer = state.background_buffer.get_or_insert_with(|| {
+            gpu::create_colored_vertex_buffer(context.gpu.device(), &[ColoredVertex::default(); 6])
+        });
+        context
+            .gpu
+            .queue()
+            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+        pass.set_pipeline(&context.gpu.colored_quad_pipeline());
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        pass.draw(0..6, 0..1);
+        self.child.paint(
+            &mut state.child,
+            PaintContext {
+                gpu: context.gpu,
+                text: context.text,
+                bounds: Rect {
+                    x: context.bounds.x + state.child_bounds.x,
+                    y: context.bounds.y + state.child_bounds.y,
+                    ..state.child_bounds
+                },
+            },
+            pass,
+        );
     }
 }

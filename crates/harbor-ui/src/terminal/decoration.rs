@@ -1,7 +1,7 @@
 use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 
-use super::{Component, TextMetrics};
+use super::TextMetrics;
 use harbor_config::TEXT_PADDING;
 use harbor_gpu::{
     GpuContext,
@@ -302,14 +302,8 @@ impl Decoration {
     }
 }
 
-impl Component for Decoration {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
-        if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
-        }
-    }
-
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+impl Decoration {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.underline_buffer.slice(..));
         let vertex_count = (self.rows * self.cols * 6) as u32;
@@ -320,10 +314,6 @@ impl Component for Decoration {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
-    }
-
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }
 
