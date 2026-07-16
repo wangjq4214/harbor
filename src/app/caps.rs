@@ -12,7 +12,8 @@ use winit::event::WindowEvent;
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
-use crate::{EventResult, GpuContext};
+use super::EventResult;
+use harbor_gpu::GpuContext;
 
 // ── Access traits (resources a handler may request) ─────────────────────────
 

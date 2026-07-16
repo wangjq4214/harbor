@@ -147,3 +147,19 @@ _Avoid_: Per-window GPU context, shared window surface
 **UI render host**:
 The application shell that owns a window’s frame lifecycle and provides each frame to its UI runtime for drawing.
 _Avoid_: UI runtime-owned surface, widget-level renderer
+
+**GPU runtime**:
+The domain-neutral owner of GPU initialization, device and queue access, surface lifecycle, and reusable GPU primitives. It does not know about terminal state, PTY sessions, clipboard access, windows beyond surface creation, or UI content.
+_Avoid_: Terminal renderer, application renderer
+
+**Terminal renderer**:
+The UI-layer renderer that converts terminal state into GPU draw operations through the GPU runtime.
+_Avoid_: GPU runtime, terminal session
+
+**Terminal interaction**:
+Window-event handling that changes terminal-session state or causes external effects, including selection, scrolling, PTY input, clipboard access, and redraw scheduling. It is owned by the application shell rather than a renderer.
+_Avoid_: Terminal rendering, UI effect
+
+**Terminal visual state**:
+The renderer-facing projection of terminal interaction state, such as the selected range, cursor visibility, and scrollbar visibility. The application shell supplies it; the terminal renderer consumes it without performing effects.
+_Avoid_: Renderer-owned interaction state, UI session state

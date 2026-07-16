@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 
+use harbor_gpu::GpuContext;
 use harbor_gpu::gpu::ColoredVertex;
-use harbor_gpu::{AtlasGlyph, GpuContext, TextMetrics};
 use harbor_terminal::safe_preview_line;
 use harbor_ui::{
-    Button, ButtonState, Dialog, DialogRuntime, Key as UiKey, Rect, Text as UiText, WindowSpec,
+    AtlasGlyph, Button, ButtonState, Dialog, DialogRuntime, Key as UiKey, Rect, Text as UiText,
+    TextMetrics, WindowSpec,
 };
 use winit::{
     event::{ElementState, WindowEvent},

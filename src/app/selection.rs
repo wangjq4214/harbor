@@ -2,14 +2,20 @@ use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::{
-    Component, EventResult, SelectionInput,
-    caps::{ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, TerminalAccess},
-    gpu::{self, ColoredVertex, GpuContext},
+use super::{
+    EventResult,
+    caps::{
+        ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, SelectionInput, TerminalAccess,
+    },
 };
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, ColoredVertex},
+};
 use harbor_terminal::{self, PasteDisposition, Screen};
+use harbor_ui::Component;
 use winit::keyboard::{Key, NamedKey};
 
 use harbor_terminal::{AutoScroll, SelectionModel, SelectionOutcome};

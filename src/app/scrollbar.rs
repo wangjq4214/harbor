@@ -7,11 +7,15 @@ use harbor_config::{
     SCROLLBAR_WIDTH, TEXT_PADDING,
 };
 
-use crate::{
-    Component, EventResult, ScrollbarInput,
-    caps::{GpuAccess, RedrawAccess, TerminalAccess},
-    gpu::{self, ColoredVertex, GpuContext},
+use super::{
+    EventResult,
+    caps::{GpuAccess, RedrawAccess, ScrollbarInput, TerminalAccess},
 };
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, ColoredVertex},
+};
+use harbor_ui::Component;
 
 // ── Scrollbar uniform ─────────────────────────────────────────────────────────
 

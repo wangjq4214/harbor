@@ -5,9 +5,15 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+bytemuck = { workspace = true }
+fontdb = { workspace = true }
+fontdue = { workspace = true }
+harbor-config = { workspace = true }
 harbor-gpu = { workspace = true }
-harbor-types = { workspace = true }
-harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
-winit = { workspace = true }
+harbor-types = { workspace = true }
+hashbrown = { workspace = true }
+tracing = { workspace = true }
+unicode-width = { workspace = true }
 wgpu = { workspace = true }
+winit = { workspace = true }

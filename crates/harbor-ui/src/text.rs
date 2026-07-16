@@ -5,13 +5,12 @@ use anyhow::Result;
 use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
-use crate::{
-    Component,
-    font::FontBook,
-    gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
-};
+use crate::{Component, font::FontBook, metrics::TextMetrics};
 use harbor_config::{FONT_SIZE, TEXT_PADDING};
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, TexturedVertex},
+};
 use harbor_terminal::{CellAttrs, Color, DirtyRange, TerminalSize};
 
 const ATLAS_PADDING: u32 = 1;

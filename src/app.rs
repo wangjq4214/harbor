@@ -1,7 +1,12 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
+mod caps;
+mod cursor;
 mod input;
+mod interaction;
 mod paste_dialog;
+mod scrollbar;
+mod selection;
 
 use std::sync::Arc;
 use winit::{
@@ -18,10 +23,20 @@ use crate::{
     pty::{Pty, PtyWakeHandler},
     terminal::Terminal,
 };
-use harbor_gpu::{ EventResult, GpuContext, TextMetrics, load_system_fonts };
+use harbor_gpu::GpuContext;
 use harbor_types::TerminalSize;
-use harbor_ui::UiRoot;
+use harbor_ui::{TextMetrics, UiRoot, load_system_fonts};
+use interaction::TerminalInteraction;
 use paste_dialog::{PasteDialog, PasteDialogResult};
+
+/// Result of a shell-owned terminal interaction event.
+#[must_use]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum EventResult {
+    Handled,
+    Continue,
+    ConfirmPaste(String),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScrollbackNavigation {
@@ -60,8 +75,10 @@ pub(crate) struct App {
     window: Option<Arc<Window>>,
     /// GPU context (surface / device / queue).
     gpu: Option<GpuContext>,
-    /// Component tree (owns all rendering state + handles events).
+    /// Terminal renderer layers and shared UI resources.
     ui: Option<UiRoot>,
+    /// Shell-owned terminal interaction state.
+    interaction: Option<TerminalInteraction>,
     /// Terminal model: byte-stream parser plus visible screen.
     terminal: Option<Terminal>,
     /// Shell process with background output reader.
@@ -99,9 +116,10 @@ impl ApplicationHandler<AppEvent> for App {
     /// Handles PTY output events from the background reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::PtyOutputReady = event;
-        let (Some(gpu), Some(ui), Some(terminal), Some(window)) = (
+        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(window)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
+            self.interaction.as_mut(),
             self.terminal.as_mut(),
             self.window.as_ref(),
         ) else {
@@ -113,7 +131,7 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         terminal.process_output(&output);
-        ui.prepare(gpu, terminal.screen());
+        interaction.prepare(ui, gpu, terminal.screen());
         terminal.clear_screen_dirty();
         window.request_redraw();
     }
@@ -121,9 +139,10 @@ impl ApplicationHandler<AppEvent> for App {
     /// Called when the event loop is about to block. Applies pending resize,
     /// then drives component deadlines (cursor blink, scrollbar auto-hide).
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (Some(gpu), Some(ui), Some(terminal), Some(pty), Some(window)) = (
+        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
+            self.interaction.as_mut(),
             self.terminal.as_mut(),
             Some(&mut self.pty),
             self.window.as_ref(),
@@ -136,12 +155,12 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(new_size) = self.pending_resize.take()
             && terminal.resize_terminal_if_changed(new_size)
         {
-            ui.prepare(gpu, terminal.screen());
+            interaction.prepare(ui, gpu, terminal.screen());
             terminal.clear_screen_dirty();
             pty.resize(new_size);
         }
 
-        let deadline = ui.compact_deadline(terminal, window);
+        let deadline = interaction.deadline(terminal, window);
 
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
@@ -218,9 +237,10 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let dialog_active = self.paste_dialog.is_some();
 
-        let (Some(gpu), Some(ui), Some(terminal), Some(pty), Some(window)) = (
+        let (Some(gpu), Some(ui), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
+            self.interaction.as_mut(),
             self.terminal.as_mut(),
             Some(&mut self.pty),
             self.window.as_ref(),
@@ -235,14 +255,17 @@ impl ApplicationHandler<AppEvent> for App {
         // A paste confirmation is application-modal: only redraw and process
         // shutdown for the owner window while its native dialog is open.
         if dialog_active
-            && !matches!(&event, WindowEvent::RedrawRequested | WindowEvent::CloseRequested)
+            && !matches!(
+                &event,
+                WindowEvent::RedrawRequested | WindowEvent::CloseRequested
+            )
         {
             return;
         }
 
         // Interactive layers first — each gets only the rights it needs.
         // Scope so gpu/terminal borrows are released before prepare-on-Handled.
-        let handled = ui.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
+        let handled = interaction.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
 
         // Multi-line paste confirmation: create dialog instead of sending to PTY.
         // Duplicate paste while dialog is open is a no-op.
@@ -261,7 +284,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(window),
                 ));
             }
-            ui.prepare(gpu, terminal.screen());
+            interaction.prepare(ui, gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -288,7 +311,7 @@ impl ApplicationHandler<AppEvent> for App {
         // vertex buffer reflects the cleared selection, then return
         // early to avoid forwarding the key to the PTY.
         if handled == EventResult::Handled {
-            ui.prepare(gpu, terminal.screen());
+            interaction.prepare(ui, gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -307,7 +330,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
             }
-            ui.prepare(gpu, terminal.screen());
+            interaction.prepare(ui, gpu, terminal.screen());
             terminal.clear_screen_dirty();
             window.request_redraw();
             return;
@@ -318,7 +341,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
         {
-            ui.prepare(gpu, terminal.screen());
+            interaction.prepare(ui, gpu, terminal.screen());
             window.request_redraw();
         }
 
@@ -340,7 +363,7 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 gpu.resize(size.width, size.height);
-                ui.resize(gpu, (size.width, size.height));
+                interaction.resize(ui, gpu, (size.width, size.height));
                 let new_size = ui.terminal_size(gpu);
                 self.pending_resize = Some(new_size);
                 window.request_redraw();
@@ -366,7 +389,7 @@ impl ApplicationHandler<AppEvent> for App {
                 } else if lines < 0 {
                     terminal.scroll_viewport_down((-lines) as usize);
                 }
-                ui.prepare(gpu, terminal.screen());
+                interaction.prepare(ui, gpu, terminal.screen());
                 terminal.clear_screen_dirty();
                 window.request_redraw();
             }
@@ -404,6 +427,7 @@ impl App {
             window: None,
             gpu: None,
             ui: None,
+            interaction: None,
             terminal: None,
             pty: Pty::new(PtyWakeHandler::new(event_proxy)),
             pending_resize: None,
@@ -470,10 +494,12 @@ impl App {
             UiRoot::new(&gpu, terminal.screen(), fonts, metrics).map_err(AppError::Renderer)?;
         let size = ui.terminal_size(&gpu);
         terminal.resize(size.rows, size.cols);
+        let interaction = TerminalInteraction::new(&gpu, terminal.screen(), metrics);
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
 
         self.gpu = Some(gpu);
         self.ui = Some(ui);
+        self.interaction = Some(interaction);
         self.terminal = Some(terminal);
         self.window = Some(window.clone());
         self.pty.start(size).map_err(AppError::Pty)?;
@@ -484,7 +510,11 @@ impl App {
     /// Acquires the surface texture, draws all components, and presents.
     /// Callers are responsible for calling `UiRoot::prepare` before this.
     fn render_frame(&mut self) {
-        let Some((ui, gpu)) = self.ui.as_mut().zip(self.gpu.as_mut()) else {
+        let (Some(ui), Some(gpu), Some(interaction)) = (
+            self.ui.as_mut(),
+            self.gpu.as_mut(),
+            self.interaction.as_mut(),
+        ) else {
             return;
         };
 
@@ -547,7 +577,7 @@ impl App {
                 multiview_mask: None,
             });
 
-            ui.draw(&mut render_pass);
+            interaction.draw(ui, &mut render_pass);
         }
 
         gpu.queue().submit(Some(encoder.finish()));

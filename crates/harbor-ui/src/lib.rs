@@ -3,14 +3,42 @@
 //! Widgets are immutable configuration. [`DialogRuntime`] retains only transient
 //! interaction state and emits host-owned intents.
 
+mod background;
+mod decoration;
+pub mod font;
+pub mod metrics;
 mod terminal;
+mod text;
+
+pub use font::{FontBook, load_system_fonts};
+pub use metrics::TextMetrics;
 pub use terminal::UiRoot;
+pub use text::AtlasGlyph;
 
 use harbor_gpu::GpuContext;
+use harbor_types::RenderSnapshot;
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{Key as WinitKey, NamedKey},
 };
+
+/// Every terminal renderer layer: prepare + draw (+ optional resize).
+pub trait Component {
+    /// Uploads dirty GPU resources. No-op when nothing changed.
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>);
+    /// Issues draw calls. Always lightweight, no GPU allocation.
+    fn draw(&self, pass: &mut wgpu::RenderPass);
+
+    /// Called when the window surface is resized.
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {}
+}
+
+/// Shell-owned terminal overlays rendered after the UI terminal layers.
+pub trait TerminalOverlays {
+    fn prepare(&mut self, gpu: &GpuContext, snap: &RenderSnapshot);
+    fn draw(&self, pass: &mut wgpu::RenderPass);
+    fn resize(&mut self, gpu: &GpuContext, size: (u32, u32));
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Key(pub u64);
@@ -25,7 +53,12 @@ pub struct BoxConstraints {
 
 impl BoxConstraints {
     pub const fn tight(width: f32, height: f32) -> Self {
-        Self { min_width: width, max_width: width, min_height: height, max_height: height }
+        Self {
+            min_width: width,
+            max_width: width,
+            min_height: height,
+            max_height: height,
+        }
     }
 }
 
@@ -39,7 +72,12 @@ pub struct EdgeInsets {
 
 impl EdgeInsets {
     pub const fn all(value: f32) -> Self {
-        Self { left: value, top: value, right: value, bottom: value }
+        Self {
+            left: value,
+            top: value,
+            right: value,
+            bottom: value,
+        }
     }
 }
 
@@ -56,7 +94,12 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { color: Color([1.0, 1.0, 1.0, 1.0]), size: 14.0, line_height: 20.0, bold: false }
+        Self {
+            color: Color([1.0, 1.0, 1.0, 1.0]),
+            size: 14.0,
+            line_height: 20.0,
+            bold: false,
+        }
     }
 }
 
@@ -68,7 +111,10 @@ pub struct Text {
 
 impl Text {
     pub fn new(content: impl Into<String>) -> Self {
-        Self { content: content.into(), style: TextStyle::default() }
+        Self {
+            content: content.into(),
+            style: TextStyle::default(),
+        }
     }
 
     pub fn style(mut self, style: TextStyle) -> Self {
@@ -111,17 +157,44 @@ impl<W> Container<W> {
         }
     }
 
-    pub fn width(mut self, width: f32) -> Self { self.width = Some(width); self }
-    pub fn height(mut self, height: f32) -> Self { self.height = Some(height); self }
-    pub fn padding(mut self, padding: EdgeInsets) -> Self { self.padding = padding; self }
-    pub fn margin(mut self, margin: EdgeInsets) -> Self { self.margin = margin; self }
-    pub fn align(mut self, alignment: Alignment) -> Self { self.alignment = alignment; self }
-    pub fn background(mut self, color: Color) -> Self { self.background = Some(color); self }
-    pub fn corner_radius(mut self, radius: f32) -> Self { self.corner_radius = radius; self }
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+    pub fn padding(mut self, padding: EdgeInsets) -> Self {
+        self.padding = padding;
+        self
+    }
+    pub fn margin(mut self, margin: EdgeInsets) -> Self {
+        self.margin = margin;
+        self
+    }
+    pub fn align(mut self, alignment: Alignment) -> Self {
+        self.alignment = alignment;
+        self
+    }
+    pub fn background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+    pub fn corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = radius;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ButtonState { Normal, Hover, Pressed, Focused, Disabled }
+pub enum ButtonState {
+    Normal,
+    Hover,
+    Pressed,
+    Focused,
+    Disabled,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Button<A, W> {
@@ -133,11 +206,22 @@ pub struct Button<A, W> {
 
 impl<A, W> Button<A, W> {
     pub fn new(child: W, intent: A) -> Self {
-        Self { child, intent, enabled: true, key: None }
+        Self {
+            child,
+            intent,
+            enabled: true,
+            key: None,
+        }
     }
 
-    pub fn disabled(mut self, disabled: bool) -> Self { self.enabled = !disabled; self }
-    pub fn key(mut self, key: Key) -> Self { self.key = Some(key); self }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.enabled = !disabled;
+        self
+    }
+    pub fn key(mut self, key: Key) -> Self {
+        self.key = Some(key);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,7 +234,12 @@ pub struct WindowSpec {
 
 impl WindowSpec {
     pub fn fixed(title: impl Into<String>, width: f32, height: f32) -> Self {
-        Self { title: title.into(), preferred_width: width, preferred_height: height, resizable: false }
+        Self {
+            title: title.into(),
+            preferred_width: width,
+            preferred_height: height,
+            resizable: false,
+        }
     }
 }
 
@@ -165,16 +254,36 @@ pub struct Dialog<A, W = Text> {
 
 impl<A, W> Dialog<A, W> {
     pub fn new(window: WindowSpec, body: W) -> Self {
-        Self { window, title: None, body, actions: Vec::new(), initial_focus: None }
+        Self {
+            window,
+            title: None,
+            body,
+            actions: Vec::new(),
+            initial_focus: None,
+        }
     }
 
-    pub fn title(mut self, title: Text) -> Self { self.title = Some(title); self }
-    pub fn actions(mut self, actions: Vec<Button<A, Text>>) -> Self { self.actions = actions; self }
-    pub fn initial_focus(mut self, key: Key) -> Self { self.initial_focus = Some(key); self }
+    pub fn title(mut self, title: Text) -> Self {
+        self.title = Some(title);
+        self
+    }
+    pub fn actions(mut self, actions: Vec<Button<A, Text>>) -> Self {
+        self.actions = actions;
+        self
+    }
+    pub fn initial_focus(mut self, key: Key) -> Self {
+        self.initial_focus = Some(key);
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect { pub x: f32, pub y: f32, pub width: f32, pub height: f32 }
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
 
 impl Rect {
     pub fn contains(self, x: f32, y: f32) -> bool {
@@ -192,11 +301,19 @@ pub trait CustomPainter {
     fn paint<'pass>(&mut self, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>);
 }
 
-pub struct CustomPaint<P> { pub painter: P, pub key: Option<Key> }
+pub struct CustomPaint<P> {
+    pub painter: P,
+    pub key: Option<Key>,
+}
 
 impl<P> CustomPaint<P> {
-    pub fn new(painter: P) -> Self { Self { painter, key: None } }
-    pub fn key(mut self, key: Key) -> Self { self.key = Some(key); self }
+    pub fn new(painter: P) -> Self {
+        Self { painter, key: None }
+    }
+    pub fn key(mut self, key: Key) -> Self {
+        self.key = Some(key);
+        self
+    }
 }
 
 /// Special UI component whose painter renders a terminal viewport.
@@ -213,14 +330,11 @@ pub enum TerminalIntent {
 }
 
 impl Terminal {
-    pub const fn new(key: Key) -> Self { Self { key } }
+    pub const fn new(key: Key) -> Self {
+        Self { key }
+    }
 
-    pub fn resize_intent(
-        self,
-        bounds: Rect,
-        cell_width: f32,
-        line_height: f32,
-    ) -> TerminalIntent {
+    pub fn resize_intent(self, bounds: Rect, cell_width: f32, line_height: f32) -> TerminalIntent {
         let cols = (bounds.width / cell_width).floor().max(1.0) as usize;
         let rows = (bounds.height / line_height).floor().max(1.0) as usize;
         TerminalIntent::Resize(harbor_types::TerminalSize { rows, cols })
@@ -228,7 +342,10 @@ impl Terminal {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DialogEvent { None, ScrollChanged }
+pub enum DialogEvent {
+    None,
+    ScrollChanged,
+}
 
 /// Retained dialog interaction state. The host owns the dialog's business data.
 pub struct DialogRuntime<A> {
@@ -241,14 +358,23 @@ pub struct DialogRuntime<A> {
 
 impl<A> Default for DialogRuntime<A> {
     fn default() -> Self {
-        Self { focused: None, pressed: None, pointer: None, scroll_offset: 0, _intent: std::marker::PhantomData }
+        Self {
+            focused: None,
+            pressed: None,
+            pointer: None,
+            scroll_offset: 0,
+            _intent: std::marker::PhantomData,
+        }
     }
 }
 
 impl<A> DialogRuntime<A> {
     pub fn sync<W>(&mut self, dialog: &Dialog<A, W>) {
         if let Some(key) = dialog.initial_focus
-            && let Some(index) = dialog.actions.iter().position(|button| button.enabled && button.key == Some(key))
+            && let Some(index) = dialog
+                .actions
+                .iter()
+                .position(|button| button.enabled && button.key == Some(key))
         {
             self.focused = Some(index);
         } else if self.focused.is_none() {
@@ -315,37 +441,82 @@ impl<A> DialogRuntime<A> {
         }
     }
 
-    pub fn handle_pointer<'a, W>(&mut self, dialog: &'a Dialog<A, W>, event: &WindowEvent, action_bounds: &[Rect]) -> Option<&'a A> {
+    pub fn handle_pointer<'a, W>(
+        &mut self,
+        dialog: &'a Dialog<A, W>,
+        event: &WindowEvent,
+        action_bounds: &[Rect],
+    ) -> Option<&'a A> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Some((position.x as f32, position.y as f32));
                 if self.pressed.is_none() {
-                    self.focused = action_bounds.iter().enumerate().find_map(|(index, bounds)| {
-                        dialog.actions.get(index).filter(|button| button.enabled && bounds.contains(position.x as f32, position.y as f32)).map(|_| index)
-                    }).or(self.focused);
+                    self.focused = action_bounds
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, bounds)| {
+                            dialog
+                                .actions
+                                .get(index)
+                                .filter(|button| {
+                                    button.enabled
+                                        && bounds.contains(position.x as f32, position.y as f32)
+                                })
+                                .map(|_| index)
+                        })
+                        .or(self.focused);
                 }
                 None
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let (x, y) = self.pointer?;
-                self.pressed = action_bounds.iter().enumerate().find_map(|(index, bounds)| {
-                    dialog.actions.get(index).filter(|button| button.enabled && bounds.contains(x, y)).map(|_| index)
-                });
+                self.pressed = action_bounds
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, bounds)| {
+                        dialog
+                            .actions
+                            .get(index)
+                            .filter(|button| button.enabled && bounds.contains(x, y))
+                            .map(|_| index)
+                    });
                 self.focused = self.pressed.or(self.focused);
                 None
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let pressed = self.pressed.take()?;
                 let (x, y) = self.pointer?;
-                action_bounds.get(pressed).filter(|bounds| bounds.contains(x, y))?;
-                dialog.actions.get(pressed).filter(|button| button.enabled).map(|button| &button.intent)
+                action_bounds
+                    .get(pressed)
+                    .filter(|bounds| bounds.contains(x, y))?;
+                dialog
+                    .actions
+                    .get(pressed)
+                    .filter(|button| button.enabled)
+                    .map(|button| &button.intent)
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 match delta {
-                    MouseScrollDelta::LineDelta(_, lines) if *lines > 0.0 => self.scroll_offset = self.scroll_offset.saturating_sub(*lines as usize),
-                    MouseScrollDelta::LineDelta(_, lines) if *lines < 0.0 => self.scroll_offset = self.scroll_offset.saturating_add((-*lines) as usize),
-                    MouseScrollDelta::PixelDelta(position) if position.y > 0.0 => self.scroll_offset = self.scroll_offset.saturating_sub(1),
-                    MouseScrollDelta::PixelDelta(position) if position.y < 0.0 => self.scroll_offset = self.scroll_offset.saturating_add(1),
+                    MouseScrollDelta::LineDelta(_, lines) if *lines > 0.0 => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(*lines as usize)
+                    }
+                    MouseScrollDelta::LineDelta(_, lines) if *lines < 0.0 => {
+                        self.scroll_offset = self.scroll_offset.saturating_add((-*lines) as usize)
+                    }
+                    MouseScrollDelta::PixelDelta(position) if position.y > 0.0 => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1)
+                    }
+                    MouseScrollDelta::PixelDelta(position) if position.y < 0.0 => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1)
+                    }
                     _ => {}
                 }
                 None
@@ -355,9 +526,19 @@ impl<A> DialogRuntime<A> {
     }
 
     fn advance_focus<W>(&mut self, dialog: &Dialog<A, W>, reverse: bool) {
-        let enabled: Vec<usize> = dialog.actions.iter().enumerate().filter_map(|(index, button)| button.enabled.then_some(index)).collect();
-        if enabled.is_empty() { self.focused = None; return; }
-        let current = self.focused.and_then(|focus| enabled.iter().position(|index| *index == focus));
+        let enabled: Vec<usize> = dialog
+            .actions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, button)| button.enabled.then_some(index))
+            .collect();
+        if enabled.is_empty() {
+            self.focused = None;
+            return;
+        }
+        let current = self
+            .focused
+            .and_then(|focus| enabled.iter().position(|index| *index == focus));
         let next = match (current, reverse) {
             (Some(index), false) => (index + 1) % enabled.len(),
             (Some(0), true) => enabled.len() - 1,
@@ -368,7 +549,10 @@ impl<A> DialogRuntime<A> {
     }
 
     fn focused_intent<'a, W>(&self, dialog: &'a Dialog<A, W>) -> Option<&'a A> {
-        self.focused.and_then(|index| dialog.actions.get(index)).filter(|button| button.enabled).map(|button| &button.intent)
+        self.focused
+            .and_then(|index| dialog.actions.get(index))
+            .filter(|button| button.enabled)
+            .map(|button| &button.intent)
     }
 }
 
@@ -377,15 +561,21 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    enum Intent { Confirm, Cancel }
+    enum Intent {
+        Confirm,
+        Cancel,
+    }
 
     fn dialog() -> Dialog<Intent> {
-        Dialog::new(WindowSpec::fixed("Paste confirmation", 600.0, 400.0), Text::new("preview"))
-            .actions(vec![
-                Button::new(Text::new("Paste"), Intent::Confirm).key(Key(1)),
-                Button::new(Text::new("Cancel"), Intent::Cancel).key(Key(2)),
-            ])
-            .initial_focus(Key(2))
+        Dialog::new(
+            WindowSpec::fixed("Paste confirmation", 600.0, 400.0),
+            Text::new("preview"),
+        )
+        .actions(vec![
+            Button::new(Text::new("Paste"), Intent::Confirm).key(Key(1)),
+            Button::new(Text::new("Cancel"), Intent::Cancel).key(Key(2)),
+        ])
+        .initial_focus(Key(2))
     }
 
     #[test]
@@ -411,8 +601,18 @@ mod tests {
         let mut runtime = DialogRuntime::default();
         runtime.sync(&dialog);
         let bounds = [
-            Rect { x: 0.0, y: 0.0, width: 50.0, height: 20.0 },
-            Rect { x: 60.0, y: 0.0, width: 50.0, height: 20.0 },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 20.0,
+            },
+            Rect {
+                x: 60.0,
+                y: 0.0,
+                width: 50.0,
+                height: 20.0,
+            },
         ];
         runtime.pointer = Some((10.0, 10.0));
         runtime.pressed = Some(0);
@@ -429,11 +629,19 @@ mod tests {
     fn terminal_resize_intent_uses_assigned_bounds() {
         assert_eq!(
             Terminal::new(Key(9)).resize_intent(
-                Rect { x: 0.0, y: 0.0, width: 805.0, height: 401.0 },
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 805.0,
+                    height: 401.0
+                },
                 8.0,
                 20.0,
             ),
-            TerminalIntent::Resize(harbor_types::TerminalSize { rows: 20, cols: 100 }),
+            TerminalIntent::Resize(harbor_types::TerminalSize {
+                rows: 20,
+                cols: 100
+            }),
         );
     }
 }

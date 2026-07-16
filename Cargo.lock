@@ -777,17 +777,8 @@ name = "harbor-gpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "bytemuck",
- "fontdb",
- "fontdue",
- "harbor-config",
- "harbor-pty",
- "harbor-terminal",
- "harbor-types",
- "hashbrown 0.17.1",
  "tracing",
- "unicode-width",
  "wgpu",
  "winit",
 ]
@@ -827,10 +818,16 @@ name = "harbor-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
+ "fontdb",
+ "fontdue",
+ "harbor-config",
  "harbor-gpu",
- "harbor-pty",
  "harbor-terminal",
  "harbor-types",
+ "hashbrown 0.17.1",
+ "tracing",
+ "unicode-width",
  "wgpu",
  "winit",
 ]

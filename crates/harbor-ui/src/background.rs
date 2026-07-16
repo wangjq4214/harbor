@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use harbor_config::TEXT_PADDING;
 
-use crate::{
-    Component,
-    gpu::{self, ColoredVertex, GpuContext},
+use crate::Component;
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, ColoredVertex},
 };
 
 use harbor_terminal::{CellAttrs, Color, DirtyRange};

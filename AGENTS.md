@@ -151,6 +151,20 @@ Before considering the requirement complete, verify:
 - Matching documentation entries accurately reflect the final state.
 ```
 
+## 7. Agent skills
+
+### Issue tracker
+
+Issues and PRDs live in this repository's GitHub Issues; use `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map to identically named GitHub labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: use root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
 <!-- CODEGRAPH_START -->
 ## CodeGraph
 

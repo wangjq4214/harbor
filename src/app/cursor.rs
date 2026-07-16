@@ -1,14 +1,17 @@
 use harbor_types::RenderSnapshot;
 use std::time::Instant;
 
-use crate::{
-    Component, CursorInput, EventResult,
-    caps::{GpuAccess, RedrawAccess, TerminalAccess},
-    gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
+use super::{
+    EventResult,
+    caps::{CursorInput, GpuAccess, RedrawAccess, TerminalAccess},
 };
 use harbor_config::{BLINK_INTERVAL_MS, TEXT_PADDING};
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, TexturedVertex},
+};
 use harbor_terminal::CursorShape;
+use harbor_ui::{Component, TextMetrics};
 
 const CURSOR_SHADER: &str = r#"
 struct VertexInput {

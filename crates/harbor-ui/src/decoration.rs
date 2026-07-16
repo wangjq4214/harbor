@@ -1,12 +1,12 @@
 use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 
-use crate::{
-    Component,
-    gpu::{self, ColoredVertex, GpuContext},
-    metrics::TextMetrics,
-};
+use crate::{Component, metrics::TextMetrics};
 use harbor_config::TEXT_PADDING;
+use harbor_gpu::{
+    GpuContext,
+    gpu::{self, ColoredVertex},
+};
 use harbor_terminal::{CellAttrs, DirtyRange};
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
