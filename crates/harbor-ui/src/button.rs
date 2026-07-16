@@ -14,6 +14,16 @@ pub enum ButtonState {
     Disabled,
 }
 
+fn button_color(state: ButtonState) -> [f32; 4] {
+    match state {
+        ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
+        ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
+        ButtonState::Pressed => [0.1, 0.35, 0.1, 1.0],
+        ButtonState::Focused => [0.15, 0.45, 0.15, 1.0],
+        ButtonState::Disabled => [0.1, 0.1, 0.1, 1.0],
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Button<A, W> {
     pub child: W,
@@ -162,13 +172,7 @@ where
     }
 
     fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
-        let color = match state.state {
-            ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
-            ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
-            ButtonState::Pressed => [0.1, 0.35, 0.1, 1.0],
-            ButtonState::Focused => [0.15, 0.45, 0.15, 1.0],
-            ButtonState::Disabled => [0.1, 0.1, 0.1, 1.0],
-        };
+        let color = button_color(state.state);
         context.fill_rect(context.bounds(), RgbaColor(color));
         let bounds = context.bounds();
         let child_bounds = Rect {
@@ -187,13 +191,7 @@ where
         context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        let color = match state.state {
-            ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
-            ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
-            ButtonState::Pressed => [0.1, 0.35, 0.1, 1.0],
-            ButtonState::Focused => [0.15, 0.45, 0.15, 1.0],
-            ButtonState::Disabled => [0.1, 0.1, 0.1, 1.0],
-        };
+        let color = button_color(state.state);
         let vertices = ColoredVertex::from_pixel_rect(
             context.bounds.x,
             context.bounds.y,

@@ -359,7 +359,13 @@ impl RenderTarget {
                         command,
                         self.environment,
                     ),
-                    PaintCommand::GlyphBatch { .. } => {}
+                    PaintCommand::GlyphBatch { glyphs, .. } => self.text.draw_glyphs(
+                        self.runtime.device(),
+                        self.runtime.queue(),
+                        &mut pass,
+                        glyphs,
+                        self.environment,
+                    ),
                 }
             }
         }

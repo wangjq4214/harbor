@@ -5,7 +5,7 @@ use fontdue::{Font, FontSettings};
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
-use crate::{PaintCommand, RenderEnvironment};
+use crate::{Glyph as PaintGlyph, PaintCommand, RenderEnvironment};
 
 const ATLAS_SIZE: u32 = 2048;
 const ATLAS_PADDING: u32 = 1;
@@ -120,7 +120,7 @@ impl Vertex {
     }
 }
 
-struct Glyph {
+struct AtlasGlyph {
     width: u32,
     height: u32,
     xmin: i32,
@@ -141,7 +141,7 @@ pub(crate) struct TextRenderer {
     cell_width: f32,
     line_height: f32,
     ascent: f32,
-    glyphs: HashMap<char, Glyph>,
+    glyphs: HashMap<char, AtlasGlyph>,
     shelves: Vec<Shelf>,
     atlas: wgpu::Texture,
     bind_group: wgpu::BindGroup,
@@ -319,6 +319,46 @@ impl TextRenderer {
                 environment.logical_size(),
             ));
         }
+        let _ = line_height;
+        self.draw_vertices(device, queue, pass, vertices);
+    }
+
+    pub(crate) fn draw_glyphs(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        glyphs: &[PaintGlyph],
+        environment: RenderEnvironment,
+    ) {
+        let mut vertices = Vec::with_capacity(glyphs.len() * 6);
+        for glyph in glyphs {
+            let Some(atlas_glyph) = self.glyph(queue, glyph.character) else {
+                continue;
+            };
+            if atlas_glyph.width == 0 || atlas_glyph.height == 0 {
+                continue;
+            }
+            vertices.extend_from_slice(&Vertex::quad(
+                glyph.bounds.x,
+                glyph.bounds.y,
+                glyph.bounds.x + glyph.bounds.width,
+                glyph.bounds.y + glyph.bounds.height,
+                atlas_glyph.uv,
+                glyph.color.0,
+                environment.logical_size(),
+            ));
+        }
+        self.draw_vertices(device, queue, pass, vertices);
+    }
+
+    fn draw_vertices(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        vertices: Vec<Vertex>,
+    ) {
         if vertices.is_empty() {
             return;
         }
@@ -337,14 +377,13 @@ impl TextRenderer {
         let Some(buffer) = &self.vertices else {
             return;
         };
-        let _ = line_height;
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, buffer.slice(..));
         pass.draw(0..vertices.len() as u32, 0..1);
     }
 
-    fn glyph(&mut self, queue: &wgpu::Queue, character: char) -> Option<&Glyph> {
+    fn glyph(&mut self, queue: &wgpu::Queue, character: char) -> Option<&AtlasGlyph> {
         if !self.glyphs.contains_key(&character) {
             let (metrics, pixels) = self
                 .fonts
@@ -378,7 +417,7 @@ impl TextRenderer {
             }
             self.glyphs.insert(
                 character,
-                Glyph {
+                AtlasGlyph {
                     width,
                     height,
                     xmin: metrics.xmin,

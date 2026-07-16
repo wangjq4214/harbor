@@ -49,6 +49,18 @@ impl Text {
         self
     }
 
+    fn cell_width(&self, environment: RenderEnvironment) -> f32 {
+        (environment.text_metrics().cell_width * self.style.size / FONT_SIZE).max(1.0)
+    }
+
+    fn columns(&self, environment: RenderEnvironment, width: f32) -> usize {
+        if self.wrap {
+            (width / self.cell_width(environment)).floor().max(1.0) as usize
+        } else {
+            usize::MAX
+        }
+    }
+
     fn sync_lines(&self, state: &mut TextState, columns: usize) {
         if state.content == self.content && state.columns == columns && state.wrap == self.wrap {
             return;
@@ -111,15 +123,8 @@ impl<A> Widget<A> for Text {
         environment: RenderEnvironment,
         constraints: BoxConstraints,
     ) -> Rect {
-        let estimated_cell_width =
-            (environment.text_metrics().cell_width * self.style.size / FONT_SIZE).max(1.0);
-        let columns = if self.wrap {
-            (constraints.max_width / estimated_cell_width)
-                .floor()
-                .max(1.0) as usize
-        } else {
-            usize::MAX
-        };
+        let estimated_cell_width = self.cell_width(environment);
+        let columns = self.columns(environment, constraints.max_width);
         self.sync_lines(state, columns);
         let longest_line = state
             .lines
@@ -141,14 +146,7 @@ impl<A> Widget<A> for Text {
 
     fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
         let bounds = context.bounds();
-        let estimated_cell_width =
-            (context.environment().text_metrics().cell_width * self.style.size / FONT_SIZE)
-                .max(1.0);
-        let columns = if self.wrap {
-            (bounds.width / estimated_cell_width).floor().max(1.0) as usize
-        } else {
-            usize::MAX
-        };
+        let columns = self.columns(context.environment(), bounds.width);
         self.sync_lines(state, columns);
         for (row, line) in state.lines.iter().enumerate() {
             context.draw_text(
