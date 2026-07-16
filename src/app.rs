@@ -210,10 +210,8 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     PasteDialogResult::None => {
                         // Put dialog back; render below
-                        if matches!(&event, WindowEvent::RedrawRequested)
-                            && let (Some(gpu), Some(text)) = (self.gpu.as_ref(), self.text.as_mut())
-                        {
-                            dialog.render(gpu, text);
+                        if matches!(&event, WindowEvent::RedrawRequested) {
+                            dialog.render();
                         }
                         self.paste_dialog = Some(dialog);
                     }
@@ -228,6 +226,7 @@ impl ApplicationHandler<AppEvent> for App {
         let (
             Some(ui),
             Some(gpu),
+            Some(renderer),
             Some(text),
             Some(interaction),
             Some(terminal),
@@ -236,6 +235,7 @@ impl ApplicationHandler<AppEvent> for App {
         ) = (
             self.ui.as_ref(),
             self.gpu.as_mut(),
+            self.renderer.as_ref(),
             self.text.as_mut(),
             self.interaction.as_mut(),
             self.terminal.as_mut(),
@@ -272,7 +272,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.paste_dialog = Some(PasteDialog::new(
                     raw_text.clone(),
                     event_loop,
-                    gpu,
+                    renderer,
                     Some(window),
                 ));
             }

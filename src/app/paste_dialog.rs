@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use harbor_gpu::GpuContext;
+use harbor_render::{RenderTarget, UiRenderer};
 use harbor_terminal::safe_preview_line;
 use harbor_ui::{
-    BoxConstraints, Button, Dialog, Key as UiKey, LegacyPaintContext, RenderEnvironment,
-    ScrollView, Text as UiText, TextResources, WidgetEventResult, WidgetRuntime, WindowSpec,
+    BoxConstraints, Button, Dialog, Key as UiKey, ScrollView, Text as UiText, WidgetEventResult,
+    WidgetRuntime, WindowSpec,
 };
 use winit::{
     event::{ElementState, WindowEvent},
@@ -65,9 +65,7 @@ fn paste_dialog_spec(raw_text: &str) -> PasteDialogWidget {
 /// A secondary native window whose contents are rendered by the UI widget runtime.
 pub(crate) struct PasteDialog {
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    #[allow(dead_code)]
-    surface_config: wgpu::SurfaceConfiguration,
+    target: RenderTarget,
     /// Raw (unmodified) text to send to the PTY on confirm.
     pub(crate) raw_text: String,
     dialog: PasteDialogWidget,
@@ -78,7 +76,7 @@ impl PasteDialog {
     pub(crate) fn new(
         raw_text: String,
         event_loop: &ActiveEventLoop,
-        gpu: &GpuContext,
+        renderer: &UiRenderer,
         main_window: Option<&Window>,
     ) -> Self {
         let dialog = paste_dialog_spec(&raw_text);
@@ -122,42 +120,17 @@ impl PasteDialog {
                 .create_window(window_attrs)
                 .expect("create paste dialog window"),
         );
-        let surface = gpu.create_surface(Arc::clone(&window));
-        let caps = gpu.surface_capabilities(&surface);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|format| *format == gpu.format())
-            .unwrap_or(caps.formats[0]);
-        let alpha_mode = caps
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: width as u32,
-            height: height as u32,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(gpu.device(), &surface_config);
+        let target = renderer
+            .attach_window(Arc::clone(&window))
+            .expect("attach paste dialog render target");
+        let environment = target.environment();
+        let (width, height) = environment.logical_size();
 
         let mut runtime = WidgetRuntime::new(&dialog);
-        runtime.layout(
-            &dialog,
-            RenderEnvironment::new(width, height, window.scale_factor()),
-            BoxConstraints::tight(width, height),
-        );
+        runtime.layout(&dialog, environment, BoxConstraints::tight(width, height));
         Self {
             window,
-            surface,
-            surface_config,
+            target,
             raw_text,
             dialog,
             runtime,
@@ -176,6 +149,17 @@ impl PasteDialog {
     }
 
     pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> PasteDialogResult {
+        if let WindowEvent::Resized(size) = event {
+            self.target
+                .resize(size.width, size.height, self.window.scale_factor());
+        }
+        let (width, height) = self.target.environment().logical_size();
+        let bounds = harbor_ui::Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
         let result = match event {
             WindowEvent::CloseRequested => PasteDialogResult::Cancelled,
             WindowEvent::KeyboardInput {
@@ -184,32 +168,14 @@ impl PasteDialog {
                 Key::Named(NamedKey::Escape) => PasteDialogResult::Cancelled,
                 Key::Character(ch) if ch == "y" || ch == "Y" => PasteDialogResult::Confirmed,
                 Key::Character(ch) if ch == "n" || ch == "N" => PasteDialogResult::Cancelled,
-                _ => match self.runtime.event(
-                    &self.dialog,
-                    event,
-                    harbor_ui::Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: self.dialog.window.preferred_width,
-                        height: self.dialog.window.preferred_height,
-                    },
-                ) {
+                _ => match self.runtime.event(&self.dialog, event, bounds) {
                     WidgetEventResult::Intent(action) => Self::result(action),
                     WidgetEventResult::Ignored | WidgetEventResult::Handled => {
                         PasteDialogResult::None
                     }
                 },
             },
-            _ => match self.runtime.event(
-                &self.dialog,
-                event,
-                harbor_ui::Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: self.dialog.window.preferred_width,
-                    height: self.dialog.window.preferred_height,
-                },
-            ) {
+            _ => match self.runtime.event(&self.dialog, event, bounds) {
                 WidgetEventResult::Intent(action) => Self::result(action),
                 WidgetEventResult::Ignored | WidgetEventResult::Handled => PasteDialogResult::None,
             },
@@ -227,56 +193,12 @@ impl PasteDialog {
         result
     }
 
-    pub(crate) fn render(&mut self, gpu: &GpuContext, text: &mut TextResources) {
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => output,
-            _ => return,
-        };
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("paste dialog"),
-            });
-        let bounds = self.runtime.layout(
-            &self.dialog,
-            RenderEnvironment::new(
-                self.dialog.window.preferred_width,
-                self.dialog.window.preferred_height,
-                self.window.scale_factor(),
-            ),
-            BoxConstraints::tight(
-                self.dialog.window.preferred_width,
-                self.dialog.window.preferred_height,
-            ),
-        );
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("paste dialog pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            self.runtime.legacy_paint(
-                &self.dialog,
-                LegacyPaintContext { gpu, text, bounds },
-                &mut pass,
-            );
-        }
-        gpu.queue().submit(Some(encoder.finish()));
-        gpu.queue().present(output);
+    pub(crate) fn render(&mut self) {
+        let (target, runtime, dialog) = (&mut self.target, &mut self.runtime, &self.dialog);
+        let environment = target.environment();
+        let (width, height) = environment.logical_size();
+        runtime.layout(dialog, environment, BoxConstraints::tight(width, height));
+        let _ = target.render(|context| runtime.paint(dialog, context));
     }
 }
 
@@ -299,6 +221,7 @@ mod tests {
         assert_eq!(dialog.actions[0].intent, PasteDialogAction::Paste);
         assert_eq!(dialog.actions[1].child.content, "Cancel");
         assert_eq!(dialog.actions[1].intent, PasteDialogAction::Cancel);
+        assert_eq!(dialog.initial_focus, Some(CANCEL_ACTION_KEY));
     }
 
     #[test]
