@@ -18,6 +18,21 @@ impl BoxConstraints {
             max_height: height,
         }
     }
+
+    pub fn constrain(self, width: f32, height: f32) -> (f32, f32) {
+        (
+            width.clamp(self.min_width, self.max_width),
+            height.clamp(self.min_height, self.max_height),
+        )
+    }
+
+    pub fn loosen(self) -> Self {
+        Self {
+            min_width: 0.0,
+            min_height: 0.0,
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -42,7 +57,7 @@ impl EdgeInsets {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Color(pub [f32; 4]);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,

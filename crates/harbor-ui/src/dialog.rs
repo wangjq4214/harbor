@@ -1,4 +1,4 @@
-use crate::{Button, ButtonState, Key, Rect, Text};
+use crate::{BoxConstraints, Button, ButtonState, Key, PaintContext, Rect, Text, Widget, WidgetEventResult};
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{Key as WinitKey, NamedKey},
@@ -56,6 +56,128 @@ impl<A, W> Dialog<A, W> {
     pub fn initial_focus(mut self, key: Key) -> Self {
         self.initial_focus = Some(key);
         self
+    }
+}
+
+pub struct DialogWidgetState<A, S> {
+    runtime: DialogRuntime<A>,
+    body: S,
+    body_bounds: Rect,
+    action_bounds: Vec<Rect>,
+}
+
+impl<A, W> Widget<A> for Dialog<A, W>
+where
+    A: Clone,
+    W: Widget<A>,
+{
+    type State = DialogWidgetState<A, W::State>;
+
+    fn create_state(&self) -> Self::State {
+        let mut runtime = DialogRuntime::default();
+        runtime.sync(self);
+        DialogWidgetState {
+            runtime,
+            body: self.body.create_state(),
+            body_bounds: Rect::default(),
+            action_bounds: vec![Rect::default(); self.actions.len()],
+        }
+    }
+
+    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+        let (width, height) = constraints.constrain(
+            self.window.preferred_width,
+            self.window.preferred_height,
+        );
+        let title_height = self.title.as_ref().map_or(0.0, |title| title.style.line_height);
+        let action_height = (!self.actions.is_empty()).then_some(40.0).unwrap_or(0.0);
+        let body_height = (height - title_height - action_height).max(0.0);
+        state.body_bounds = Rect {
+            x: 0.0,
+            y: title_height,
+            width,
+            height: body_height,
+        };
+        self.body.layout(
+            &mut state.body,
+            BoxConstraints::tight(width, body_height),
+        );
+        let action_width = if self.actions.is_empty() {
+            0.0
+        } else {
+            width / self.actions.len() as f32
+        };
+        state.action_bounds.clear();
+        for index in 0..self.actions.len() {
+            state.action_bounds.push(Rect {
+                x: index as f32 * action_width,
+                y: height - action_height,
+                width: action_width,
+                height: action_height,
+            });
+        }
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
+    }
+
+    fn event(
+        &self,
+        state: &mut Self::State,
+        event: &WindowEvent,
+        bounds: Rect,
+    ) -> WidgetEventResult<A> {
+        state.runtime.sync(self);
+        if let Some(intent) = state.runtime.handle_key(self, event).cloned() {
+            return WidgetEventResult::Intent(intent);
+        }
+        for action in &mut state.action_bounds {
+            action.x += bounds.x;
+            action.y += bounds.y;
+        }
+        let intent = state
+            .runtime
+            .handle_pointer(self, event, &state.action_bounds)
+            .cloned();
+        for action in &mut state.action_bounds {
+            action.x -= bounds.x;
+            action.y -= bounds.y;
+        }
+        if let Some(intent) = intent {
+            return WidgetEventResult::Intent(intent);
+        }
+        self.body.event(
+            &mut state.body,
+            event,
+            Rect {
+                x: bounds.x + state.body_bounds.x,
+                y: bounds.y + state.body_bounds.y,
+                ..state.body_bounds
+            },
+        )
+    }
+
+    fn paint<'pass>(
+        &self,
+        state: &mut Self::State,
+        context: PaintContext<'_>,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        self.body.paint(
+            &mut state.body,
+            PaintContext {
+                gpu: context.gpu,
+                bounds: Rect {
+                    x: context.bounds.x + state.body_bounds.x,
+                    y: context.bounds.y + state.body_bounds.y,
+                    ..state.body_bounds
+                },
+            },
+            pass,
+        );
     }
 }
 

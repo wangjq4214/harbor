@@ -1,4 +1,4 @@
-use crate::Color;
+use crate::{BoxConstraints, Color, Rect, Widget};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
@@ -36,5 +36,29 @@ impl Text {
     pub fn style(mut self, style: TextStyle) -> Self {
         self.style = style;
         self
+    }
+}
+
+impl<A> Widget<A> for Text {
+    type State = ();
+
+    fn create_state(&self) -> Self::State {}
+
+    fn layout(&self, _state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+        let (line_count, longest_line) = self.content.lines().fold((0usize, 0usize), |(count, longest), line| {
+            (count + 1, longest.max(line.chars().count()))
+        });
+        let line_count = line_count.max(1) as f32;
+        let longest_line = longest_line as f32;
+        let (width, height) = constraints.constrain(
+            longest_line * self.style.size * 0.6,
+            line_count * self.style.line_height,
+        );
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
     }
 }

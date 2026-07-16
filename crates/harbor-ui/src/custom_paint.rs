@@ -1,4 +1,4 @@
-use crate::{Key, Rect};
+use crate::{BoxConstraints, Key, Rect, Widget};
 use harbor_gpu::GpuContext;
 
 pub struct PaintContext<'a> {
@@ -8,7 +8,7 @@ pub struct PaintContext<'a> {
 
 /// A custom GPU painter. The UI runtime owns surface acquisition and presentation.
 pub trait CustomPainter {
-    fn paint<'pass>(&mut self, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>);
+    fn paint<'pass>(&self, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>);
 }
 
 pub struct CustomPaint<P> {
@@ -24,5 +24,36 @@ impl<P> CustomPaint<P> {
     pub fn key(mut self, key: Key) -> Self {
         self.key = Some(key);
         self
+    }
+}
+
+impl<A, P> Widget<A> for CustomPaint<P>
+where
+    P: CustomPainter,
+{
+    type State = ();
+
+    fn create_state(&self) -> Self::State {}
+
+    fn key(&self) -> Option<Key> {
+        self.key
+    }
+
+    fn layout(&self, _state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: constraints.max_width,
+            height: constraints.max_height,
+        }
+    }
+
+    fn paint<'pass>(
+        &self,
+        _state: &mut Self::State,
+        context: PaintContext<'_>,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        self.painter.paint(context, pass);
     }
 }

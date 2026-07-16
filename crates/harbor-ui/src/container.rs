@@ -1,4 +1,4 @@
-use crate::{Color, EdgeInsets};
+use crate::{BoxConstraints, Color, EdgeInsets, PaintContext, Rect, Widget, WidgetEventResult};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Alignment {
@@ -67,5 +67,103 @@ impl<W> Container<W> {
     pub fn corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = radius;
         self
+    }
+}
+
+pub struct ContainerState<S> {
+    child: S,
+    child_bounds: Rect,
+}
+
+impl<A, W> Widget<A> for Container<W>
+where
+    W: Widget<A>,
+{
+    type State = ContainerState<W::State>;
+
+    fn create_state(&self) -> Self::State {
+        ContainerState {
+            child: self.child.create_state(),
+            child_bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        }
+    }
+
+    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+        let horizontal = self.margin.left + self.margin.right + self.padding.left + self.padding.right;
+        let vertical = self.margin.top + self.margin.bottom + self.padding.top + self.padding.bottom;
+        let child_constraints = BoxConstraints {
+            min_width: 0.0,
+            max_width: (constraints.max_width - horizontal).max(0.0),
+            min_height: 0.0,
+            max_height: (constraints.max_height - vertical).max(0.0),
+        };
+        let child = self.child.layout(&mut state.child, child_constraints);
+        let requested_width = self.width.unwrap_or(child.width + horizontal);
+        let requested_height = self.height.unwrap_or(child.height + vertical);
+        let (width, height) = constraints.constrain(requested_width, requested_height);
+        let available_width = (width - horizontal).max(0.0);
+        let available_height = (height - vertical).max(0.0);
+        let offset_x = match self.alignment {
+            Alignment::Start => 0.0,
+            Alignment::Center => (available_width - child.width).max(0.0) / 2.0,
+            Alignment::End => (available_width - child.width).max(0.0),
+        };
+        let offset_y = match self.alignment {
+            Alignment::Start => 0.0,
+            Alignment::Center => (available_height - child.height).max(0.0) / 2.0,
+            Alignment::End => (available_height - child.height).max(0.0),
+        };
+        state.child_bounds = Rect {
+            x: self.margin.left + self.padding.left + offset_x,
+            y: self.margin.top + self.padding.top + offset_y,
+            width: child.width,
+            height: child.height,
+        };
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
+    }
+
+    fn event(
+        &self,
+        state: &mut Self::State,
+        event: &winit::event::WindowEvent,
+        bounds: Rect,
+    ) -> WidgetEventResult<A> {
+        let child_bounds = Rect {
+            x: bounds.x + state.child_bounds.x,
+            y: bounds.y + state.child_bounds.y,
+            ..state.child_bounds
+        };
+        self.child.event(&mut state.child, event, child_bounds)
+    }
+
+    fn paint<'pass>(
+        &self,
+        state: &mut Self::State,
+        context: PaintContext<'_>,
+        pass: &mut wgpu::RenderPass<'pass>,
+    ) {
+        let child_bounds = Rect {
+            x: context.bounds.x + state.child_bounds.x,
+            y: context.bounds.y + state.child_bounds.y,
+            ..state.child_bounds
+        };
+        self.child.paint(
+            &mut state.child,
+            PaintContext {
+                gpu: context.gpu,
+                bounds: child_bounds,
+            },
+            pass,
+        );
     }
 }
