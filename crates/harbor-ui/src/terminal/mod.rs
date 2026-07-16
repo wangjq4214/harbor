@@ -13,7 +13,8 @@ pub use metrics::TextMetrics;
 pub use text::{AtlasGlyph, TextResources};
 
 use self::{background::Background, decoration::Decoration};
-use crate::{BoxConstraints, Key, PaintContext, Rect, Widget, WidgetEventResult};
+use crate::{BoxConstraints, Key, LegacyPaintContext, Rect, Widget, WidgetEventResult};
+use harbor_render::RenderEnvironment;
 use harbor_types::{RenderSnapshot, TerminalSize};
 
 /// A terminal viewport configuration. The shell owns the terminal session and
@@ -100,7 +101,12 @@ impl Widget<TerminalIntent> for Terminal {
         Some(self.key)
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        _environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
         state.bounds = Rect {
             x: 0.0,
             y: 0.0,
@@ -120,10 +126,10 @@ impl Widget<TerminalIntent> for Terminal {
             .map_or(WidgetEventResult::Ignored, WidgetEventResult::Intent)
     }
 
-    fn paint<'pass>(
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let Some(snapshot) = self.snapshot.as_deref() else {

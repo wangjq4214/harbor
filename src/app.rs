@@ -579,14 +579,19 @@ impl App {
 
             let bounds = ui_runtime.layout(
                 ui,
+                harbor_ui::RenderEnvironment::new(
+                    gpu.surface_size().0 as f32,
+                    gpu.surface_size().1 as f32,
+                    1.0,
+                ),
                 harbor_ui::BoxConstraints::tight(
                     gpu.surface_size().0 as f32,
                     gpu.surface_size().1 as f32,
                 ),
             );
-            ui_runtime.paint(
+            ui_runtime.legacy_paint(
                 ui,
-                harbor_ui::PaintContext { gpu, text, bounds },
+                harbor_ui::LegacyPaintContext { gpu, text, bounds },
                 &mut render_pass,
             );
             interaction.draw(&mut render_pass);

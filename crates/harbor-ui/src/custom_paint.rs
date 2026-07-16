@@ -1,16 +1,18 @@
 use crate::{BoxConstraints, Key, Rect, TextResources, Widget};
 use harbor_gpu::GpuContext;
+pub use harbor_render::PaintContext;
+use harbor_render::RenderEnvironment;
 
-/// Frame-scoped GPU resources shared by every widget in one UI runtime.
-pub struct PaintContext<'a> {
+/// Frame-scoped GPU resources retained only for the expand-phase legacy paint path.
+pub struct LegacyPaintContext<'a> {
     pub gpu: &'a GpuContext,
     pub text: &'a mut TextResources,
     pub bounds: Rect,
 }
 
-/// A custom GPU painter. The UI runtime owns surface acquisition and presentation.
+/// A renderer-command painter supplied by a UI-owned [`CustomPaint`] Widget.
 pub trait CustomPainter {
-    fn paint<'pass>(&self, context: PaintContext<'_>, pass: &mut wgpu::RenderPass<'pass>);
+    fn paint<'a>(&'a self, context: &mut PaintContext<'a>);
 }
 
 pub struct CustomPaint<P> {
@@ -41,7 +43,12 @@ where
         self.key
     }
 
-    fn layout(&self, _state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+    fn layout(
+        &self,
+        _state: &mut Self::State,
+        _environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
         Rect {
             x: 0.0,
             y: 0.0,
@@ -50,12 +57,7 @@ where
         }
     }
 
-    fn paint<'pass>(
-        &self,
-        _state: &mut Self::State,
-        context: PaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        self.painter.paint(context, pass);
+    fn paint<'a>(&'a self, _state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        self.painter.paint(context);
     }
 }

@@ -1,5 +1,9 @@
-use crate::{BoxConstraints, Key, PaintContext, Rect, Widget, WidgetEventResult};
+use crate::{
+    BoxConstraints, Key, LegacyPaintContext, PaintContext, Rect, Widget, WidgetEventResult,
+};
 use harbor_gpu::gpu::{self, ColoredVertex};
+use harbor_render::RenderEnvironment;
+use harbor_types::RgbaColor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonState {
@@ -72,8 +76,15 @@ where
         self.key
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let child = self.child.layout(&mut state.child, constraints.loosen());
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        let child = self
+            .child
+            .layout(&mut state.child, environment, constraints.loosen());
         let (width, height) = constraints.constrain(child.width, child.height);
         state.child_bounds = Rect {
             x: (width - child.width).max(0.0) / 2.0,
@@ -150,10 +161,30 @@ where
         }
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        let color = match state.state {
+            ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
+            ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
+            ButtonState::Pressed => [0.1, 0.35, 0.1, 1.0],
+            ButtonState::Focused => [0.15, 0.45, 0.15, 1.0],
+            ButtonState::Disabled => [0.1, 0.1, 0.1, 1.0],
+        };
+        context.fill_rect(context.bounds(), RgbaColor(color));
+        let bounds = context.bounds();
+        let child_bounds = Rect {
+            x: bounds.x + state.child_bounds.x,
+            y: bounds.y + state.child_bounds.y,
+            ..state.child_bounds
+        };
+        context.with_bounds(child_bounds, |context| {
+            self.child.paint(&mut state.child, context);
+        });
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let color = match state.state {
@@ -182,9 +213,9 @@ where
         pass.set_pipeline(&context.gpu.colored_quad_pipeline());
         pass.set_vertex_buffer(0, buffer.slice(..));
         pass.draw(0..6, 0..1);
-        self.child.paint(
+        self.child.legacy_paint(
             &mut state.child,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: context.text,
                 bounds: Rect {

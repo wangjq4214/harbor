@@ -803,6 +803,10 @@ name = "harbor-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
+ "fontdb",
+ "fontdue",
+ "harbor-config",
  "harbor-gpu",
  "harbor-types",
  "pollster",
@@ -836,6 +840,7 @@ dependencies = [
  "fontdue",
  "harbor-config",
  "harbor-gpu",
+ "harbor-render",
  "harbor-terminal",
  "harbor-types",
  "hashbrown 0.17.1",

@@ -1,6 +1,8 @@
-use crate::{BoxConstraints, Color, PaintContext, Rect, Widget};
+use crate::{BoxConstraints, Color, LegacyPaintContext, PaintContext, Rect, Widget};
 use harbor_config::FONT_SIZE;
 use harbor_gpu::gpu::{self, TexturedVertex};
+use harbor_render::RenderEnvironment;
+use harbor_types::RgbaColor;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
@@ -103,8 +105,14 @@ impl<A> Widget<A> for Text {
         }
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let estimated_cell_width = (self.style.size * 0.6).max(1.0);
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        let estimated_cell_width =
+            (environment.text_metrics().cell_width * self.style.size / FONT_SIZE).max(1.0);
         let columns = if self.wrap {
             (constraints.max_width / estimated_cell_width)
                 .floor()
@@ -131,10 +139,33 @@ impl<A> Widget<A> for Text {
         }
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        let bounds = context.bounds();
+        let estimated_cell_width =
+            (context.environment().text_metrics().cell_width * self.style.size / FONT_SIZE)
+                .max(1.0);
+        let columns = if self.wrap {
+            (bounds.width / estimated_cell_width).floor().max(1.0) as usize
+        } else {
+            usize::MAX
+        };
+        self.sync_lines(state, columns);
+        for (row, line) in state.lines.iter().enumerate() {
+            context.draw_text(
+                (bounds.x, bounds.y + row as f32 * self.style.line_height),
+                line,
+                RgbaColor(self.style.color.0),
+                self.style.size,
+                self.style.line_height,
+                self.style.bold,
+            );
+        }
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         context

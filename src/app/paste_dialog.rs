@@ -5,8 +5,8 @@ use std::sync::Arc;
 use harbor_gpu::GpuContext;
 use harbor_terminal::safe_preview_line;
 use harbor_ui::{
-    BoxConstraints, Button, Dialog, Key as UiKey, PaintContext, ScrollView, Text as UiText,
-    TextResources, WidgetEventResult, WidgetRuntime, WindowSpec,
+    BoxConstraints, Button, Dialog, Key as UiKey, LegacyPaintContext, RenderEnvironment,
+    ScrollView, Text as UiText, TextResources, WidgetEventResult, WidgetRuntime, WindowSpec,
 };
 use winit::{
     event::{ElementState, WindowEvent},
@@ -149,7 +149,11 @@ impl PasteDialog {
         surface.configure(gpu.device(), &surface_config);
 
         let mut runtime = WidgetRuntime::new(&dialog);
-        runtime.layout(&dialog, BoxConstraints::tight(width, height));
+        runtime.layout(
+            &dialog,
+            RenderEnvironment::new(width, height, window.scale_factor()),
+            BoxConstraints::tight(width, height),
+        );
         Self {
             window,
             surface,
@@ -238,6 +242,11 @@ impl PasteDialog {
             });
         let bounds = self.runtime.layout(
             &self.dialog,
+            RenderEnvironment::new(
+                self.dialog.window.preferred_width,
+                self.dialog.window.preferred_height,
+                self.window.scale_factor(),
+            ),
             BoxConstraints::tight(
                 self.dialog.window.preferred_width,
                 self.dialog.window.preferred_height,
@@ -260,8 +269,11 @@ impl PasteDialog {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.runtime
-                .paint(&self.dialog, PaintContext { gpu, text, bounds }, &mut pass);
+            self.runtime.legacy_paint(
+                &self.dialog,
+                LegacyPaintContext { gpu, text, bounds },
+                &mut pass,
+            );
         }
         gpu.queue().submit(Some(encoder.finish()));
         gpu.queue().present(output);

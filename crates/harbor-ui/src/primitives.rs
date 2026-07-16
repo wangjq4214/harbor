@@ -1,3 +1,5 @@
+pub use harbor_types::Rect;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Key(pub u64);
 
@@ -56,17 +58,3 @@ impl EdgeInsets {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Color(pub [f32; 4]);
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-impl Rect {
-    pub fn contains(self, x: f32, y: f32) -> bool {
-        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
-    }
-}

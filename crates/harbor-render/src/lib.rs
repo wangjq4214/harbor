@@ -1,10 +1,23 @@
 //! Renderer-owned UI frame and paint command contracts.
 
+mod solid;
+mod text;
+
 use anyhow::Result;
 use harbor_gpu::{GpuRuntime, GpuSurface};
 use harbor_types::{Rect, RgbaColor};
+use solid::SolidRenderer;
 use std::{collections::HashSet, sync::Arc};
+use text::TextRenderer;
 use winit::window::Window;
+
+/// Renderer-derived measurements exposed to Widget layout without font resources.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextMetrics {
+    pub cell_width: f32,
+    pub line_height: f32,
+    pub ascent: f32,
+}
 
 /// Read-only, GPU-handle-free values supplied by a render target during layout.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -12,6 +25,7 @@ pub struct RenderEnvironment {
     logical_width: f32,
     logical_height: f32,
     scale_factor: f64,
+    text_metrics: TextMetrics,
 }
 
 impl RenderEnvironment {
@@ -20,6 +34,11 @@ impl RenderEnvironment {
             logical_width,
             logical_height,
             scale_factor,
+            text_metrics: TextMetrics {
+                cell_width: 8.0,
+                line_height: 16.0,
+                ascent: 12.0,
+            },
         }
     }
 
@@ -29,6 +48,15 @@ impl RenderEnvironment {
 
     pub const fn scale_factor(self) -> f64 {
         self.scale_factor
+    }
+
+    pub const fn text_metrics(self) -> TextMetrics {
+        self.text_metrics
+    }
+
+    const fn with_text_metrics(mut self, metrics: TextMetrics) -> Self {
+        self.text_metrics = metrics;
+        self
     }
 }
 
@@ -62,6 +90,9 @@ pub enum PaintCommand<'a> {
         origin: (f32, f32),
         text: &'a str,
         color: RgbaColor,
+        font_size: f32,
+        line_height: f32,
+        bold: bool,
         clip: Rect,
     },
     GlyphBatch {
@@ -108,6 +139,14 @@ impl<'a> PaintContext<'a> {
         self.bounds
     }
 
+    /// Runs `paint` in a child Widget scope, clipping it to the child's assigned bounds.
+    pub fn with_bounds(&mut self, bounds: Rect, paint: impl FnOnce(&mut Self)) {
+        let previous_bounds = self.bounds;
+        self.bounds = bounds;
+        self.with_clip(bounds, paint);
+        self.bounds = previous_bounds;
+    }
+
     /// Records a solid rectangle without changing the current paint order.
     pub fn fill_rect(&mut self, rect: Rect, color: RgbaColor) {
         self.commands.push(PaintCommand::FillRect {
@@ -117,12 +156,23 @@ impl<'a> PaintContext<'a> {
         });
     }
 
-    /// Records a positioned text run.
-    pub fn draw_text(&mut self, origin: (f32, f32), text: &'a str, color: RgbaColor) {
+    /// Records a positioned styled text run.
+    pub fn draw_text(
+        &mut self,
+        origin: (f32, f32),
+        text: &'a str,
+        color: RgbaColor,
+        font_size: f32,
+        line_height: f32,
+        bold: bool,
+    ) {
         self.commands.push(PaintCommand::Text {
             origin,
             text,
             color,
+            font_size,
+            line_height,
+            bold,
             clip: self.clip,
         });
     }
@@ -178,7 +228,7 @@ impl UiRenderer {
         let scale_factor = window.scale_factor();
         let (runtime, surface) = GpuRuntime::new(window).await?;
         let runtime = Arc::new(runtime);
-        let target = RenderTarget::new(Arc::clone(&runtime), surface, scale_factor);
+        let target = RenderTarget::new(Arc::clone(&runtime), surface, scale_factor)?;
         Ok((Self { runtime }, target))
     }
 
@@ -186,31 +236,38 @@ impl UiRenderer {
     pub fn attach_window(&self, window: Arc<Window>) -> Result<RenderTarget> {
         let scale_factor = window.scale_factor();
         let surface = self.runtime.create_surface(window)?;
-        Ok(RenderTarget::new(
-            Arc::clone(&self.runtime),
-            surface,
-            scale_factor,
-        ))
+        RenderTarget::new(Arc::clone(&self.runtime), surface, scale_factor)
     }
 }
-
 /// Opaque renderer target for one host-owned native window.
 pub struct RenderTarget {
     runtime: Arc<GpuRuntime>,
     surface: GpuSurface,
     environment: RenderEnvironment,
     cached_identities: HashSet<RenderIdentity>,
+    text: TextRenderer,
+    solid: SolidRenderer,
 }
 
 impl RenderTarget {
-    fn new(runtime: Arc<GpuRuntime>, surface: GpuSurface, scale_factor: f64) -> Self {
-        let environment = environment_for(surface.size(), scale_factor);
-        Self {
+    fn new(runtime: Arc<GpuRuntime>, surface: GpuSurface, scale_factor: f64) -> Result<Self> {
+        let solid = SolidRenderer::new(runtime.device(), surface.format());
+        let text = TextRenderer::new(runtime.device(), surface.format())?;
+        let (cell_width, line_height, ascent) = text.metrics();
+        let environment =
+            environment_for(surface.size(), scale_factor).with_text_metrics(TextMetrics {
+                cell_width,
+                line_height,
+                ascent,
+            });
+        Ok(Self {
             runtime,
             surface,
             environment,
             cached_identities: HashSet::new(),
-        }
+            text,
+            solid,
+        })
     }
 
     pub const fn environment(&self) -> RenderEnvironment {
@@ -228,7 +285,13 @@ impl RenderTarget {
             return;
         }
         self.surface.resize(&self.runtime, width, height);
-        self.environment = environment_for((width, height), scale_factor);
+        let (cell_width, line_height, ascent) = self.text.metrics();
+        self.environment =
+            environment_for((width, height), scale_factor).with_text_metrics(TextMetrics {
+                cell_width,
+                line_height,
+                ascent,
+            });
     }
 
     /// Runs one frame. A non-successful surface acquisition skips the paint callback.
@@ -247,6 +310,7 @@ impl RenderTarget {
         paint(&mut context);
         self.cached_identities
             .clone_from(context.visited_identities());
+        let commands = context.finish();
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -256,26 +320,72 @@ impl RenderTarget {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("harbor render target"),
                 });
-        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("harbor render target clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }));
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("harbor render target"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for command in &commands {
+                let Some((left, top, width, height)) =
+                    scissor(command.clip(), self.environment, self.surface.size())
+                else {
+                    continue;
+                };
+                pass.set_scissor_rect(left, top, width, height);
+                match command {
+                    PaintCommand::FillRect { rect, color, .. } => self.solid.draw(
+                        self.runtime.queue(),
+                        &mut pass,
+                        *rect,
+                        color.0,
+                        self.environment,
+                    ),
+                    PaintCommand::Text { .. } => self.text.draw(
+                        self.runtime.device(),
+                        self.runtime.queue(),
+                        &mut pass,
+                        command,
+                        self.environment,
+                    ),
+                    PaintCommand::GlyphBatch { .. } => {}
+                }
+            }
+        }
         self.runtime.queue().submit(Some(encoder.finish()));
         self.runtime.queue().present(output);
         FrameOutcome::Presented
     }
+}
+
+fn scissor(
+    clip: Rect,
+    environment: RenderEnvironment,
+    surface: (u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    let scale = environment.scale_factor() as f32;
+    let left = (clip.x * scale).max(0.0).floor() as u32;
+    let top = (clip.y * scale).max(0.0).floor() as u32;
+    let right = ((clip.x + clip.width) * scale)
+        .min(surface.0 as f32)
+        .max(left as f32)
+        .floor() as u32;
+    let bottom = ((clip.y + clip.height) * scale)
+        .min(surface.1 as f32)
+        .max(top as f32)
+        .floor() as u32;
+    (right > left && bottom > top).then_some((left, top, right - left, bottom - top))
 }
 
 fn environment_for((width, height): (u32, u32), scale_factor: f64) -> RenderEnvironment {
@@ -385,7 +495,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a native window and GPU"]
-    fn render_target_presents_a_black_frame() {
+    fn render_target_presents_generic_commands() {
         use std::sync::Arc;
         use winit::{
             application::ApplicationHandler,
@@ -405,7 +515,11 @@ mod tests {
                         .unwrap(),
                 );
                 let (_, mut target) = pollster::block_on(super::UiRenderer::new(window)).unwrap();
-                self.outcome = Some(target.render(|_| {}));
+                self.outcome = Some(target.render(|context| {
+                    let bounds = context.bounds();
+                    context.fill_rect(bounds, RgbaColor([0.1, 0.1, 0.1, 1.0]));
+                    context.draw_text((20.0, 40.0), "Harbor", RgbaColor::WHITE, 14.0, 18.0, false);
+                }));
                 event_loop.exit();
             }
 

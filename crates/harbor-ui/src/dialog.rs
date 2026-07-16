@@ -1,8 +1,10 @@
 use crate::{
-    BoxConstraints, Button, ButtonState, Key, PaintContext, Rect, Text, Widget, WidgetEventResult,
+    BoxConstraints, Button, ButtonState, Key, LegacyPaintContext, Rect, Text, Widget,
+    WidgetEventResult,
 };
 use crate::{button::ButtonRuntime, text::TextState};
 use harbor_gpu::gpu::{self, ColoredVertex};
+use harbor_render::RenderEnvironment;
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{Key as WinitKey, NamedKey},
@@ -96,7 +98,12 @@ where
         }
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
         let (width, height) =
             constraints.constrain(self.window.preferred_width, self.window.preferred_height);
         let title_height = match (&self.title, &mut state.title) {
@@ -104,6 +111,7 @@ where
                 let title = <Text as Widget<A>>::layout(
                     title,
                     title_state,
+                    environment,
                     BoxConstraints {
                         min_width: 0.0,
                         max_width: (width - 32.0).max(0.0),
@@ -137,6 +145,7 @@ where
         };
         self.body.layout(
             &mut state.body,
+            environment,
             BoxConstraints::tight(state.body_bounds.width, state.body_bounds.height),
         );
 
@@ -155,6 +164,7 @@ where
             };
             action.layout(
                 &mut state.actions[index],
+                environment,
                 BoxConstraints::tight(bounds.width, bounds.height),
             );
             state.action_bounds.push(bounds);
@@ -206,10 +216,10 @@ where
         )
     }
 
-    fn paint<'pass>(
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let vertices = ColoredVertex::from_pixel_rect(
@@ -232,10 +242,10 @@ where
         pass.set_vertex_buffer(0, buffer.slice(..));
         pass.draw(0..6, 0..1);
         if let (Some(title), Some(title_state)) = (&self.title, &mut state.title) {
-            <Text as Widget<A>>::paint(
+            <Text as Widget<A>>::legacy_paint(
                 title,
                 title_state,
-                PaintContext {
+                LegacyPaintContext {
                     gpu: context.gpu,
                     text: &mut *context.text,
                     bounds: Rect {
@@ -247,9 +257,9 @@ where
                 pass,
             );
         }
-        self.body.paint(
+        self.body.legacy_paint(
             &mut state.body,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: &mut *context.text,
                 bounds: Rect {
@@ -261,9 +271,9 @@ where
             pass,
         );
         for (index, action) in self.actions.iter().enumerate() {
-            action.paint(
+            action.legacy_paint(
                 &mut state.actions[index],
-                PaintContext {
+                LegacyPaintContext {
                     gpu: context.gpu,
                     text: &mut *context.text,
                     bounds: Rect {

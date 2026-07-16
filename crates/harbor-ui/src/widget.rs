@@ -1,4 +1,5 @@
-use crate::{BoxConstraints, Key, PaintContext, Rect};
+use crate::{BoxConstraints, Key, LegacyPaintContext, Rect};
+use harbor_render::{PaintContext, RenderEnvironment};
 
 /// Result of routing one window event through a widget tree.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,7 +41,12 @@ pub trait Widget<A> {
     }
 
     /// Computes this widget's assigned bounds inside the offered constraints.
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect;
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect;
 
     /// Routes a window event inside `bounds` and may emit one typed intent.
     fn event(
@@ -52,11 +58,14 @@ pub trait Widget<A> {
         EventResult::Ignored
     }
 
-    /// Draws inside the bounds returned by `layout`.
-    fn paint<'pass>(
+    /// Records ordered renderer commands inside the bounds returned by `layout`.
+    fn paint<'a>(&'a self, _state: &'a mut Self::State, _context: &mut PaintContext<'a>) {}
+
+    /// Draws through the temporary legacy GPU path during the expand phase.
+    fn legacy_paint<'pass>(
         &self,
         _state: &mut Self::State,
-        _context: PaintContext<'_>,
+        _context: LegacyPaintContext<'_>,
         _pass: &mut wgpu::RenderPass<'pass>,
     ) {
     }
@@ -90,8 +99,13 @@ where
         }
     }
 
-    pub fn layout(&mut self, widget: &W, constraints: BoxConstraints) -> Rect {
-        widget.layout(&mut self.state, constraints)
+    pub fn layout(
+        &mut self,
+        widget: &W,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        widget.layout(&mut self.state, environment, constraints)
     }
 
     pub fn event(
@@ -103,13 +117,17 @@ where
         widget.event(&mut self.state, event, bounds)
     }
 
-    pub fn paint<'pass>(
+    pub fn paint<'a>(&'a mut self, widget: &'a W, context: &mut PaintContext<'a>) {
+        widget.paint(&mut self.state, context);
+    }
+
+    pub fn legacy_paint<'pass>(
         &mut self,
         widget: &W,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        widget.paint(&mut self.state, context, pass);
+        widget.legacy_paint(&mut self.state, context, pass);
     }
 }
 
@@ -145,8 +163,13 @@ where
         self.child.key()
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        self.child.layout(state, constraints)
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        self.child.layout(state, environment, constraints)
     }
 
     fn event(
@@ -158,12 +181,16 @@ where
         self.child.event(state, event, bounds).map(&self.map)
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        self.child.paint(state, context);
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.child.paint(state, context, pass);
+        self.child.legacy_paint(state, context, pass);
     }
 }

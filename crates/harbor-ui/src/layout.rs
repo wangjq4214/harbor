@@ -1,4 +1,5 @@
-use crate::{BoxConstraints, PaintContext, Rect, Widget, WidgetEventResult};
+use crate::{BoxConstraints, LegacyPaintContext, PaintContext, Rect, Widget, WidgetEventResult};
+use harbor_render::RenderEnvironment;
 
 fn translated(parent: Rect, child: Rect) -> Rect {
     Rect {
@@ -42,9 +43,16 @@ where
         }
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let back = self.back.layout(&mut state.back, constraints);
-        let front = self.front.layout(&mut state.front, constraints);
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        let back = self.back.layout(&mut state.back, environment, constraints);
+        let front = self
+            .front
+            .layout(&mut state.front, environment, constraints);
         let (width, height) =
             constraints.constrain(back.width.max(front.width), back.height.max(front.height));
         let bounds = Rect {
@@ -79,24 +87,34 @@ where
         )
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        let bounds = context.bounds();
+        context.with_bounds(translated(bounds, state.back_bounds), |context| {
+            self.back.paint(&mut state.back, context);
+        });
+        context.with_bounds(translated(bounds, state.front_bounds), |context| {
+            self.front.paint(&mut state.front, context);
+        });
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.back.paint(
+        self.back.legacy_paint(
             &mut state.back,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: &mut *context.text,
                 bounds: translated(context.bounds, state.back_bounds),
             },
             pass,
         );
-        self.front.paint(
+        self.front.legacy_paint(
             &mut state.front,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: &mut *context.text,
                 bounds: translated(context.bounds, state.front_bounds),
@@ -214,7 +232,12 @@ macro_rules! impl_linear {
                 }
             }
 
-            fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+            fn layout(
+                &self,
+                state: &mut Self::State,
+                environment: RenderEnvironment,
+                constraints: BoxConstraints,
+            ) -> Rect {
                 let max_main = if $horizontal {
                     constraints.max_width
                 } else {
@@ -226,12 +249,12 @@ macro_rules! impl_linear {
                 let mut first = if first_expands {
                     Rect::default()
                 } else {
-                    self.$first.layout(&mut state.first, natural)
+                    self.$first.layout(&mut state.first, environment, natural)
                 };
                 let mut second = if second_expands {
                     Rect::default()
                 } else {
-                    self.$second.layout(&mut state.second, natural)
+                    self.$second.layout(&mut state.second, environment, natural)
                 };
                 let remaining =
                     (max_main - main(first, $horizontal) - main(second, $horizontal)).max(0.0);
@@ -239,12 +262,14 @@ macro_rules! impl_linear {
                 if first_expands {
                     first = self.$first.layout(
                         &mut state.first,
+                        environment,
                         child_constraints(constraints, $horizontal, remaining / expanded as f32),
                     );
                 }
                 if second_expands {
                     second = self.$second.layout(
                         &mut state.second,
+                        environment,
                         child_constraints(constraints, $horizontal, remaining / expanded as f32),
                     );
                 }
@@ -295,24 +320,34 @@ macro_rules! impl_linear {
                 )
             }
 
-            fn paint<'pass>(
+            fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+                let bounds = context.bounds();
+                context.with_bounds(translated(bounds, state.first_bounds), |context| {
+                    self.$first.paint(&mut state.first, context);
+                });
+                context.with_bounds(translated(bounds, state.second_bounds), |context| {
+                    self.$second.paint(&mut state.second, context);
+                });
+            }
+
+            fn legacy_paint<'pass>(
                 &self,
                 state: &mut Self::State,
-                context: PaintContext<'_>,
+                context: LegacyPaintContext<'_>,
                 pass: &mut wgpu::RenderPass<'pass>,
             ) {
-                self.$first.paint(
+                self.$first.legacy_paint(
                     &mut state.first,
-                    PaintContext {
+                    LegacyPaintContext {
                         gpu: context.gpu,
                         text: &mut *context.text,
                         bounds: translated(context.bounds, state.first_bounds),
                     },
                     pass,
                 );
-                self.$second.paint(
+                self.$second.legacy_paint(
                     &mut state.second,
-                    PaintContext {
+                    LegacyPaintContext {
                         gpu: context.gpu,
                         text: &mut *context.text,
                         bounds: translated(context.bounds, state.second_bounds),
@@ -357,8 +392,15 @@ where
         true
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
-        let child = self.child.layout(&mut state.child, constraints);
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
+        let child = self
+            .child
+            .layout(&mut state.child, environment, constraints);
         rect(
             constraints.max_width.max(child.width),
             constraints.max_height.max(child.height),
@@ -374,13 +416,17 @@ where
         self.child.event(&mut state.child, event, bounds)
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        self.child.paint(&mut state.child, context);
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
-        self.child.paint(&mut state.child, context, pass);
+        self.child.legacy_paint(&mut state.child, context, pass);
     }
 }
 
@@ -414,9 +460,15 @@ where
         }
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
         let child = self.child.layout(
             &mut state.child,
+            environment,
             BoxConstraints {
                 min_width: 0.0,
                 max_width: constraints.max_width,
@@ -464,10 +516,24 @@ where
         )
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        let viewport = context.bounds();
+        let child_bounds = Rect {
+            x: viewport.x,
+            y: viewport.y - state.offset,
+            ..state.child_bounds
+        };
+        context.with_clip(viewport, |context| {
+            context.with_bounds(child_bounds, |context| {
+                self.child.paint(&mut state.child, context);
+            });
+        });
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         let surface = context.gpu.surface_size();
@@ -489,9 +555,9 @@ where
             return;
         }
         pass.set_scissor_rect(left, top, width, height);
-        self.child.paint(
+        self.child.legacy_paint(
             &mut state.child,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: context.text,
                 bounds: Rect {

@@ -1,5 +1,10 @@
-use crate::{BoxConstraints, Color, EdgeInsets, PaintContext, Rect, Widget, WidgetEventResult};
+use crate::{
+    BoxConstraints, Color, EdgeInsets, LegacyPaintContext, PaintContext, Rect, Widget,
+    WidgetEventResult,
+};
 use harbor_gpu::gpu::{self, ColoredVertex};
+use harbor_render::RenderEnvironment;
+use harbor_types::RgbaColor;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Alignment {
@@ -96,7 +101,12 @@ where
         }
     }
 
-    fn layout(&self, state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+    fn layout(
+        &self,
+        state: &mut Self::State,
+        environment: RenderEnvironment,
+        constraints: BoxConstraints,
+    ) -> Rect {
         let horizontal =
             self.margin.left + self.margin.right + self.padding.left + self.padding.right;
         let vertical =
@@ -107,7 +117,9 @@ where
             min_height: 0.0,
             max_height: (constraints.max_height - vertical).max(0.0),
         };
-        let child = self.child.layout(&mut state.child, child_constraints);
+        let child = self
+            .child
+            .layout(&mut state.child, environment, child_constraints);
         let requested_width = self.width.unwrap_or(child.width + horizontal);
         let requested_height = self.height.unwrap_or(child.height + vertical);
         let (width, height) = constraints.constrain(requested_width, requested_height);
@@ -151,10 +163,25 @@ where
         self.child.event(&mut state.child, event, child_bounds)
     }
 
-    fn paint<'pass>(
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        if let Some(color) = self.background {
+            context.fill_rect(context.bounds(), RgbaColor(color.0));
+        }
+        let bounds = context.bounds();
+        let child_bounds = Rect {
+            x: bounds.x + state.child_bounds.x,
+            y: bounds.y + state.child_bounds.y,
+            ..state.child_bounds
+        };
+        context.with_bounds(child_bounds, |context| {
+            self.child.paint(&mut state.child, context);
+        });
+    }
+
+    fn legacy_paint<'pass>(
         &self,
         state: &mut Self::State,
-        context: PaintContext<'_>,
+        context: LegacyPaintContext<'_>,
         pass: &mut wgpu::RenderPass<'pass>,
     ) {
         if let Some(color) = self.background {
@@ -186,9 +213,9 @@ where
             y: context.bounds.y + state.child_bounds.y,
             ..state.child_bounds
         };
-        self.child.paint(
+        self.child.legacy_paint(
             &mut state.child,
-            PaintContext {
+            LegacyPaintContext {
                 gpu: context.gpu,
                 text: context.text,
                 bounds: child_bounds,
