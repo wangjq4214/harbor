@@ -11,7 +11,7 @@ pub use metrics::TextMetrics;
 pub use text::AtlasGlyph;
 
 use self::{background::Background, decoration::Decoration, text::TerminalTextLayer};
-use crate::{Key, Rect};
+use crate::{BoxConstraints, Key, Rect, Widget};
 use harbor_gpu::GpuContext;
 use harbor_terminal::{Screen, TerminalSize};
 use harbor_types::RenderSnapshot;
@@ -56,6 +56,25 @@ impl Terminal {
         let cols = (bounds.width / cell_width).floor().max(1.0) as usize;
         let rows = (bounds.height / line_height).floor().max(1.0) as usize;
         TerminalIntent::Resize(harbor_types::TerminalSize { rows, cols })
+    }
+}
+
+impl Widget<TerminalIntent> for Terminal {
+    type State = ();
+
+    fn create_state(&self) -> Self::State {}
+
+    fn key(&self) -> Option<Key> {
+        Some(self.key)
+    }
+
+    fn layout(&self, _state: &mut Self::State, constraints: BoxConstraints) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: constraints.max_width,
+            height: constraints.max_height,
+        }
     }
 }
 
