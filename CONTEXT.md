@@ -73,8 +73,12 @@ A declarative UI tree node reconciled by the UI runtime to layout, hit-test, and
 _Avoid_: UI component, control
 
 **Terminal widget**:
-A special Harbor UI widget that composes all terminal visual child widgets into an interactive viewport and emits grid-resize intents; the caller retains terminal-session and interaction state plus external effects.
-_Avoid_: Terminal overlay, terminal renderer
+A Harbor UI tree node that reads the Terminal model and supplied Terminal visual state to compose an interactive viewport and emit grid-resize intents. Its CustomPaint behavior projects that data into the same generic Render paint API used by every other UI widget; the caller retains terminal-session and interaction state plus external effects.
+_Avoid_: Terminal overlay, terminal-specific render API
+
+**Terminal model**:
+The stateful, GPU-agnostic terminal domain model containing ANSI/VT parsing, screen state, scrollback, resizing, and selection-relevant state. It does not depend on UI, rendering, GPU, or windowing.
+_Avoid_: Pure data DTO, renderer state
 
 **Box constraints**:
 The minimum and maximum width and height a parent offers a UI component when laying out the Harbor UI tree.
@@ -125,23 +129,51 @@ A single-child interactive widget that emits its configured UI intent when activ
 _Avoid_: Label button, action row
 
 **CustomPaint**:
-A low-level composable UI widget leaf that follows the Widget lifecycle and delegates only its GPU paint hook inside assigned layout bounds to a painter; terminal visual child widgets are its first uses.
+A low-level composable UI widget leaf that follows the Widget lifecycle and describes custom drawing through the renderer-provided paint API within assigned layout bounds. It may use renderer GPU primitives, but neither owns nor exposes the underlying GPU implementation; terminal visual child widgets are its first uses.
 _Avoid_: Render component, ad hoc GPU widget
 
+**Render paint API**:
+The renderer-defined, backend-owned command API exposed to CustomPaint for issuing bounded custom drawing through reusable GPU primitives without exposing `wgpu` resources or surface lifecycle.
+_Avoid_: GPU context, raw wgpu API
+
+**Render primitive**:
+A renderer-managed drawing operation exposed through the Render paint API, such as a solid rectangle, a text run, or a glyph batch. Primitives must cover the current UI’s observable drawing capabilities without exposing shaders, pipelines, buffers, textures, or render passes.
+_Avoid_: Public shader API, raw GPU command
+
 **Paint context**:
-The frame-scoped rendering capability passed to a CustomPaint painter, limited to drawing inside its assigned bounds and shared GPU resources.
-_Avoid_: Surface owner, standalone renderer
+The frame-scoped command context passed to a CustomPaint painter. It records generic Render primitives in strict UI tree and command order, automatically clipped to assigned layout bounds; the renderer may batch only adjacent operations without changing that order and owns GPU resources and execution.
+_Avoid_: Surface owner, standalone renderer, UI-built draw list, raw scissor control, global primitive reordering
+
+**Scoped clip**:
+A temporary Paint context restriction that intersects a child viewport with the current clip and restores it on scope exit. It may only shrink the visible region and cannot reset, disable, or expand an ancestor clip.
+_Avoid_: Raw scissor state, resettable clip stack, unclipped child paint
+
+**Render environment**:
+The renderer-created, GPU-handle-free read-only context automatically injected by the UI runtime into every Widget layout. It supplies renderer-derived values such as Text metrics, target logical size, and scale.
+_Avoid_: GPU context, host-injected per-widget metrics
+
+**Renderer font set**:
+The renderer-owned system font selection, fallback lookup, and glyph rasterization source used to produce text and glyph batches. It is configured by existing Harbor font settings and is not exposed to UI.
+_Avoid_: UI-owned font database, glyph atlas
+
+**Text metrics**:
+Renderer-derived immutable numerical measurements for text layout, including terminal cell width, line height, and ascent. Widgets consume them through the Render environment without accessing font or atlas resources.
+_Avoid_: UI font resource, renderer-owned layout
 
 **Widget configuration**:
-An immutable declarative description supplied by the host; the UI runtime reconciles it by structural path for fixed children and stable Key for dynamic children, retaining layout, GPU, and transient interaction state.
+An immutable declarative description supplied by the host; the UI runtime reconciles it by structural path for fixed children and stable Key for dynamic children, retaining layout and transient interaction state. The UI renderer independently retains GPU state using the same Widget identity.
 _Avoid_: Retained widget, mutable component tree
 
 **Widget identity**:
 The reconciliation identity of a widget configuration: a structural path for a fixed child and an explicit stable Key for a dynamic child that may be reordered, inserted, or removed.
 _Avoid_: Positional dynamic identity, universally required Key
 
+**Render identity**:
+The opaque renderer cache key derived from a Widget identity. It scopes renderer-held GPU resources and is released when its widget disappears during reconciliation.
+_Avoid_: UI-owned resource handle, positional dynamic cache key
+
 **Widget lifecycle**:
-The UI runtime-mediated layout, paint, and event protocol that every Harbor UI widget follows; the runtime owns each widget’s retained transient state and GPU resources.
+The UI runtime-mediated layout, paint, and event protocol that every Harbor UI widget follows. Layout receives the automatically injected Render environment; the UI runtime owns retained UI state, while the UI renderer owns GPU state associated with the Render identity.
 _Avoid_: Renderer-layer lifecycle, per-widget runtime
 
 **Window spec**:
@@ -169,20 +201,32 @@ A native dialog that blocks all terminal-window input until it confirms or cance
 _Avoid_: Keyboard-only modal, modeless dialog
 
 **UI runtime**:
-A per-window reconciler and renderer for a UI tree, backed by shared GPU resources and drawing into a frame provided by its UI render host.
-_Avoid_: Per-window GPU context, shared window surface
- 
+A per-window reconciler for a UI tree that owns retained UI state, layout, hit testing, and event routing; it delegates painting through the Render paint API.
+_Avoid_: Per-window GPU context, renderer-owned widget state
+
+**UI renderer**:
+The render-layer owner of one shared GPU runtime and the creator of per-window Render targets. It owns renderer-held GPU state and complete UI frame execution—surface acquisition, encoding, submission, and presentation—while the application has no direct GPU dependency.
+_Avoid_: UI runtime, application render loop, application-owned GPU runtime
+
+**Render target**:
+An opaque per-window handle created by the UI renderer for a host-owned native window. It owns that window’s surface, surface configuration, frame resources, and Render identity cache; it clears each frame to black, renders through the frame callback, and releases those resources when dropped.
+_Avoid_: Application-owned wgpu surface, host-controlled clear color, implicit WindowId surface map
+
+**Frame outcome**:
+The result of one Render target frame attempt. `Presented` confirms the UI paint commands were submitted and presented; a skipped outcome means no paint callback ran and model dirt remains pending.
+_Avoid_: Fire-and-forget render, implicit dirty acknowledgement
+
 **UI render host**:
-The application shell that owns a window’s frame lifecycle and provides each frame to its UI runtime for drawing.
-_Avoid_: UI runtime-owned surface, widget-level renderer
+The application shell that owns a window, routes its events, schedules redraws, and delegates rendering to its UI renderer.
+_Avoid_: UI runtime-owned window, application-owned GPU frame
 
 **GPU runtime**:
-The domain-neutral owner of GPU initialization, device and queue access, surface lifecycle, and reusable GPU primitives. It does not know about terminal state, PTY sessions, clipboard access, windows beyond surface creation, or UI content.
-_Avoid_: Terminal renderer, application renderer
+The domain-neutral owner of GPU initialization, device and queue access, and low-level surface creation and configuration. It contains no UI/render pipelines, shaders, vertex layouts, or rendering primitives, and does not know about terminal state, PTY sessions, clipboard access, or UI content.
+_Avoid_: Terminal renderer, application renderer, UI primitive library
 
-**Terminal renderer**:
-The UI-layer renderer that converts terminal state into GPU draw operations through the GPU runtime.
-_Avoid_: GPU runtime, terminal session
+**Terminal visual projection**:
+The UI-layer CustomPaint behavior that converts Terminal model data and Terminal visual state into generic Render paint API operations. It owns no GPU resources and defines no terminal-specific rendering interface or frame lifecycle.
+_Avoid_: Terminal renderer, terminal-specific render API
 
 **Terminal interaction**:
 Application-shell handling that applies semantic Terminal UI intents to change terminal-session state or cause external effects, including selection, scrolling, PTY input, clipboard access, and redraw scheduling.

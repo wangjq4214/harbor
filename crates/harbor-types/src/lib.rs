@@ -4,6 +4,42 @@
 
 use std::borrow::Cow;
 
+// ── Render values ────────────────────────────────────────────────────────────
+
+/// Backend-neutral RGBA color used by UI and renderer commands.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RgbaColor(pub [f32; 4]);
+
+impl RgbaColor {
+    pub const BLACK: Self = Self([0.0, 0.0, 0.0, 1.0]);
+    pub const WHITE: Self = Self([1.0, 1.0, 1.0, 1.0]);
+}
+
+/// Axis-aligned logical rectangle shared by UI layout and renderer commands.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Rect {
+    pub fn intersect(self, other: Self) -> Self {
+        let left = self.x.max(other.x);
+        let top = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+
+        Self {
+            x: left,
+            y: top,
+            width: (right - left).max(0.0),
+            height: (bottom - top).max(0.0),
+        }
+    }
+}
+
 // ── Color ────────────────────────────────────────────────────────────────────
 
 /// Terminal color value.

@@ -15,6 +15,7 @@ harbor-pty = { path = "crates/harbor-pty" }
 harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-types = { path = "crates/harbor-types" }
 harbor-gpu = { path = "crates/harbor-gpu" }
+harbor-render = { path = "crates/harbor-render" }
 harbor-ui = { path = "crates/harbor-ui" }
 
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────

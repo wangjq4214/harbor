@@ -799,6 +799,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "harbor-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "harbor-gpu",
+ "harbor-types",
+ "pollster",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "harbor-terminal"
 version = "0.1.0"
 dependencies = [
