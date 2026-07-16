@@ -1,7 +1,7 @@
 use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 
-use crate::{Component, metrics::TextMetrics};
+use super::{Component, TextMetrics};
 use harbor_config::TEXT_PADDING;
 use harbor_gpu::{
     GpuContext,

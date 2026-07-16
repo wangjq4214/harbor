@@ -89,7 +89,7 @@ A native dialog whose host supplies a sanitized, scrollable view of a pending mu
 _Avoid_: Paste prompt, paste warning
 
 **UI text**:
-A single UTF-8 text segment laid out in pixel BoxConstraints with a basic style, distinct from terminal grid-cell content.
+A public declarative UTF-8 text segment laid out in pixel BoxConstraints with a basic style, distinct from terminal grid-cell content. It is the only text type exposed by the UI component API; terminal grid-cell text remains internal to the terminal renderer.
 _Avoid_: Rich text, terminal cell text
 
 **UI intent**:

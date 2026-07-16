@@ -25,7 +25,7 @@ use crate::{
 };
 use harbor_gpu::GpuContext;
 use harbor_types::TerminalSize;
-use harbor_ui::{TextMetrics, UiRoot, load_system_fonts};
+use harbor_ui::{TerminalRenderer, TextMetrics, load_system_fonts};
 use interaction::TerminalInteraction;
 use paste_dialog::{PasteDialog, PasteDialogResult};
 
@@ -76,7 +76,7 @@ pub(crate) struct App {
     /// GPU context (surface / device / queue).
     gpu: Option<GpuContext>,
     /// Terminal renderer layers and shared UI resources.
-    ui: Option<UiRoot>,
+    ui: Option<TerminalRenderer>,
     /// Shell-owned terminal interaction state.
     interaction: Option<TerminalInteraction>,
     /// Terminal model: byte-stream parser plus visible screen.
@@ -488,10 +488,10 @@ impl App {
         let metrics = TextMetrics::new(&fonts);
 
         // Bootstrap with a 1×1 terminal so the glyph atlas has a screen to
-        // build from. UiRoot computes the real grid size from font metrics.
+        // build from. TerminalRenderer computes the real grid size from font metrics.
         let mut terminal = Terminal::new(1, 1);
-        let ui =
-            UiRoot::new(&gpu, terminal.screen(), fonts, metrics).map_err(AppError::Renderer)?;
+        let ui = TerminalRenderer::new(&gpu, terminal.screen(), fonts, metrics)
+            .map_err(AppError::Renderer)?;
         let size = ui.terminal_size(&gpu);
         terminal.resize(size.rows, size.cols);
         let interaction = TerminalInteraction::new(&gpu, terminal.screen(), metrics);
@@ -508,7 +508,7 @@ impl App {
     }
 
     /// Acquires the surface texture, draws all components, and presents.
-    /// Callers are responsible for calling `UiRoot::prepare` before this.
+    /// Callers are responsible for calling `TerminalRenderer::prepare` before this.
     fn render_frame(&mut self) {
         let (Some(ui), Some(gpu), Some(interaction)) = (
             self.ui.as_mut(),

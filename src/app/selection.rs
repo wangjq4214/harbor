@@ -391,7 +391,7 @@ impl SelectionInput for Selection {
             winit::event::WindowEvent::Resized(_) => {
                 let outcome = self.model.cancel();
                 self.apply_outcome(outcome, caps);
-                EventResult::Continue // don't consume — let UiRoot::resize fire
+                EventResult::Continue // don't consume — let TerminalRenderer::resize fire
             }
             _ => EventResult::Continue,
         }

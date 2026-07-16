@@ -1,24 +1,72 @@
-//! Component tree: owns GPU layers and dispatches events in z-order.
+//! Declarative terminal component and its GPU renderer.
 
-use crate::{
-    Component, TerminalOverlays,
-    background::Background,
-    decoration::Decoration,
-    font::FontBook,
-    metrics::TextMetrics,
-    text::{AtlasGlyph, Text},
-};
+mod background;
+mod decoration;
+mod font;
+mod metrics;
+mod text;
+
+pub use font::{FontBook, load_system_fonts};
+pub use metrics::TextMetrics;
+pub use text::AtlasGlyph;
+
+use self::{background::Background, decoration::Decoration, text::TerminalTextLayer};
+use crate::{Key, Rect};
 use harbor_gpu::GpuContext;
 use harbor_terminal::{Screen, TerminalSize};
+use harbor_types::RenderSnapshot;
+
+/// Every terminal renderer layer: prepare + draw (+ optional resize).
+pub trait Component {
+    /// Uploads dirty GPU resources. No-op when nothing changed.
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>);
+    /// Issues draw calls. Always lightweight, no GPU allocation.
+    fn draw(&self, pass: &mut wgpu::RenderPass);
+
+    /// Called when the window surface is resized.
+    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {}
+}
+
+/// Shell-owned terminal overlays rendered after the UI terminal layers.
+pub trait TerminalOverlays {
+    fn prepare(&mut self, gpu: &GpuContext, snap: &RenderSnapshot);
+    fn draw(&self, pass: &mut wgpu::RenderPass);
+    fn resize(&mut self, gpu: &GpuContext, size: (u32, u32));
+}
+
+/// Special UI component whose painter renders a terminal viewport.
+///
+/// The host owns the terminal session and applies returned resize intents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Terminal {
+    pub key: Key,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalIntent {
+    Resize(harbor_types::TerminalSize),
+}
+
+impl Terminal {
+    pub const fn new(key: Key) -> Self {
+        Self { key }
+    }
+
+    pub fn resize_intent(self, bounds: Rect, cell_width: f32, line_height: f32) -> TerminalIntent {
+        let cols = (bounds.width / cell_width).floor().max(1.0) as usize;
+        let rows = (bounds.height / line_height).floor().max(1.0) as usize;
+        TerminalIntent::Resize(harbor_types::TerminalSize { rows, cols })
+    }
+}
 
 /// Terminal renderer layers. Interactive layer state remains in the application shell.
-pub struct UiRoot {
+pub struct TerminalRenderer {
     background: Background,
-    text: Text,
+    text: TerminalTextLayer,
     decoration: Decoration,
 }
 
-impl UiRoot {
+impl TerminalRenderer {
     /// Creates terminal rendering layers from the GPU context and font metrics.
     pub fn new(
         gpu: &GpuContext,
@@ -29,7 +77,7 @@ impl UiRoot {
         let snap = screen.snapshot();
         Ok(Self {
             background: Background::new(gpu, &snap, metrics.cell_width, metrics.line_height),
-            text: Text::new(gpu, fonts, metrics, &snap)?,
+            text: TerminalTextLayer::new(gpu, fonts, metrics, &snap)?,
             decoration: Decoration::new(gpu, &snap, metrics),
         })
     }

@@ -13,7 +13,7 @@ use super::{
 use harbor_gpu::GpuContext;
 use harbor_pty::Pty;
 use harbor_terminal::{Screen, Terminal};
-use harbor_ui::{Component, TerminalOverlays, TextMetrics, UiRoot};
+use harbor_ui::{Component, TerminalOverlays, TerminalRenderer, TextMetrics};
 use winit::{event::WindowEvent, keyboard::ModifiersState, window::Window};
 
 /// Shell-owned terminal interaction state and event dispatch.
@@ -32,15 +32,15 @@ impl TerminalInteraction {
         }
     }
 
-    pub(crate) fn prepare(&mut self, ui: &mut UiRoot, gpu: &GpuContext, screen: &Screen) {
+    pub(crate) fn prepare(&mut self, ui: &mut TerminalRenderer, gpu: &GpuContext, screen: &Screen) {
         ui.prepare(gpu, screen, self);
     }
 
-    pub(crate) fn draw(&self, ui: &UiRoot, pass: &mut wgpu::RenderPass) {
+    pub(crate) fn draw(&self, ui: &TerminalRenderer, pass: &mut wgpu::RenderPass) {
         ui.draw(pass, self);
     }
 
-    pub(crate) fn resize(&mut self, ui: &mut UiRoot, gpu: &GpuContext, size: (u32, u32)) {
+    pub(crate) fn resize(&mut self, ui: &mut TerminalRenderer, gpu: &GpuContext, size: (u32, u32)) {
         ui.resize(gpu, size, self);
     }
 

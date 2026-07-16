@@ -1,4 +1,4 @@
-use crate::font::FontBook;
+use super::FontBook;
 use harbor_config::TEXT_PADDING;
 use harbor_types::TerminalSize;
 

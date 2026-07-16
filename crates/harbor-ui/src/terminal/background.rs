@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use harbor_config::TEXT_PADDING;
 
-use crate::Component;
+use super::Component;
 use harbor_gpu::{
     GpuContext,
     gpu::{self, ColoredVertex},
