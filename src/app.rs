@@ -11,7 +11,7 @@ mod selection;
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
@@ -26,8 +26,8 @@ use crate::{
 use harbor_gpu::GpuContext;
 use harbor_types::TerminalSize;
 use harbor_ui::{
-    Key as UiKey, Terminal as UiTerminal, TextMetrics, TextResources, WidgetRuntime,
-    load_system_fonts,
+    Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, TextMetrics,
+    TextResources, WidgetRuntime, load_system_fonts,
 };
 use interaction::TerminalInteraction;
 use paste_dialog::{PasteDialog, PasteDialogResult};
@@ -221,7 +221,16 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let dialog_active = self.paste_dialog.is_some();
 
-        let (Some(gpu), Some(text), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
+        let (
+            Some(ui),
+            Some(gpu),
+            Some(text),
+            Some(interaction),
+            Some(terminal),
+            Some(pty),
+            Some(window),
+        ) = (
+            self.ui.as_ref(),
             self.gpu.as_mut(),
             self.text.as_mut(),
             self.interaction.as_mut(),
@@ -352,22 +361,20 @@ impl ApplicationHandler<AppEvent> for App {
                 self.render_frame();
             }
 
-            // Mouse wheel → scroll viewport through history.
-            WindowEvent::MouseWheel { delta, .. } => {
-                if terminal.is_alt_screen() {
-                    return;
+            // Terminal owns wheel interpretation and emits a semantic intent;
+            // the shell applies the resulting viewport transition.
+            WindowEvent::MouseWheel { .. } => {
+                if let Some(TerminalIntent::Scroll(TerminalScroll::Lines(lines))) =
+                    ui.event_intent(&event)
+                {
+                    if lines > 0 {
+                        terminal.scroll_viewport_up(lines as usize);
+                    } else {
+                        terminal.scroll_viewport_down((-lines) as usize);
+                    }
+                    interaction.prepare(gpu, terminal.screen());
+                    window.request_redraw();
                 }
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
-                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
-                };
-                if lines > 0 {
-                    terminal.scroll_viewport_up(lines as usize);
-                } else if lines < 0 {
-                    terminal.scroll_viewport_down((-lines) as usize);
-                }
-                interaction.prepare(gpu, terminal.screen());
-                window.request_redraw();
             }
 
             // Keyboard press → forward the key event to the PTY stdin pipe.

@@ -20,7 +20,8 @@ pub use custom_paint::{CustomPaint, CustomPainter, PaintContext};
 pub use dialog::{Dialog, DialogEvent, DialogRuntime, WindowSpec};
 pub use primitives::{BoxConstraints, Color, EdgeInsets, Key, Rect};
 pub use terminal::{
-    AtlasGlyph, FontBook, Terminal, TerminalIntent, TextMetrics, TextResources, load_system_fonts,
+    AtlasGlyph, FontBook, Terminal, TerminalIntent, TerminalScroll, TextMetrics, TextResources,
+    load_system_fonts,
 };
 pub use text::{Text, TextStyle};
 pub use widget::{EventResult as WidgetEventResult, Map, Widget, WidgetRuntime};
@@ -46,6 +47,22 @@ mod tests {
                 rows: 20,
                 cols: 100,
             }),
+        );
+    }
+
+    #[test]
+    fn terminal_widget_emits_semantic_wheel_scroll_intent() {
+        let terminal = Terminal::new(Key(9));
+        let mut runtime: WidgetRuntime<_, TerminalIntent> = WidgetRuntime::new(&terminal);
+        let bounds = runtime.layout(&terminal, BoxConstraints::tight(100.0, 100.0));
+        let event = winit::event::WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert_eq!(
+            runtime.event(&terminal, &event, bounds),
+            WidgetEventResult::Intent(TerminalIntent::Scroll(TerminalScroll::Lines(3)))
         );
     }
 

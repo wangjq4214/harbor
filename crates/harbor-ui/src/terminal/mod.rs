@@ -13,7 +13,7 @@ pub use metrics::TextMetrics;
 pub use text::{AtlasGlyph, TextResources};
 
 use self::{background::Background, decoration::Decoration};
-use crate::{BoxConstraints, Key, PaintContext, Rect, Widget};
+use crate::{BoxConstraints, Key, PaintContext, Rect, Widget, WidgetEventResult};
 use harbor_types::{RenderSnapshot, TerminalSize};
 
 /// A terminal viewport configuration. The shell owns the terminal session and
@@ -25,8 +25,14 @@ pub struct Terminal {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalScroll {
+    Lines(isize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalIntent {
     Resize(TerminalSize),
+    Scroll(TerminalScroll),
 }
 
 pub struct TerminalState {
@@ -59,6 +65,20 @@ impl Terminal {
         let rows = (bounds.height / line_height).floor().max(1.0) as usize;
         TerminalIntent::Resize(TerminalSize { rows, cols })
     }
+
+    pub fn event_intent(&self, event: &winit::event::WindowEvent) -> Option<TerminalIntent> {
+        if self.snapshot.as_ref().is_some_and(|snapshot| snapshot.is_alt) {
+            return None;
+        }
+        let winit::event::WindowEvent::MouseWheel { delta, .. } = event else {
+            return None;
+        };
+        let lines = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => (*y * 3.0) as isize,
+            winit::event::MouseScrollDelta::PixelDelta(position) => (position.y / 20.0) as isize,
+        };
+        (lines != 0).then_some(TerminalIntent::Scroll(TerminalScroll::Lines(lines)))
+    }
 }
 
 impl Widget<TerminalIntent> for Terminal {
@@ -84,6 +104,16 @@ impl Widget<TerminalIntent> for Terminal {
             height: constraints.max_height,
         };
         state.bounds
+    }
+
+    fn event(
+        &self,
+        _state: &mut Self::State,
+        event: &winit::event::WindowEvent,
+        _bounds: Rect,
+    ) -> WidgetEventResult<TerminalIntent> {
+        self.event_intent(event)
+            .map_or(WidgetEventResult::Ignored, WidgetEventResult::Intent)
     }
 
     fn paint<'pass>(
