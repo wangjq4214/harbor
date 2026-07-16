@@ -1,27 +1,17 @@
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use crate::runtime::{GpuRuntime, GpuSurface};
+
 // ── GpuContext ────────────────────────────────────────────────────────────
 
-/// Shared GPU handles for layers to create and upload resources.
-///
-/// Fields are private — layers access device/queue/surface through methods only.
+/// Legacy GPU access facade retained while UI callers migrate to `GpuRuntime`.
 pub struct GpuContext {
-    /// wgpu instance, kept alive for secondary surface creation (e.g. dialog windows).
-    instance: Arc<wgpu::Instance>,
-    /// Adapter, kept alive for secondary surface capability queries.
-    adapter: wgpu::Adapter,
-    /// wgpu surface bound to the main window, provides frame buffers.
-    surface: wgpu::Surface<'static>,
-    /// Logical GPU device for creating pipelines / textures / buffers.
-    device: wgpu::Device,
-    /// Command submission queue.
-    queue: wgpu::Queue,
-    /// Surface configuration (format, size, present mode).
-    config: wgpu::SurfaceConfiguration,
+    runtime: GpuRuntime,
+    surface: GpuSurface,
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
     colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
 }
@@ -36,81 +26,24 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
-        let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
-            #[cfg(target_os = "windows")]
-            backends: wgpu::Backends::DX12,
-            #[cfg(not(target_os = "windows"))]
-            backends: wgpu::Backends::all(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        }));
-        let surface = instance.create_surface(window).context("create surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .context("request adapter")?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                // MemoryUsage: pre-allocate 8 MB device blocks instead of 128 MB.
-                // A terminal emitter never allocates large GPU buffers, so the
-                // smaller block size is sufficient and avoids unnecessary VRAM
-                // reservation at startup.
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                // memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .context("request device")?;
-
-        // Prefer sRGB format so fragment shader colours display correctly.
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(capabilities.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        let (runtime, surface) = GpuRuntime::new(window).await?;
+        let format = surface.format();
+        let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
+            runtime.device(),
             format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
+            "colored-quad pipeline",
+        ));
 
         tracing::info!(
-            width = config.width,
-            height = config.height,
+            width = surface.size().0,
+            height = surface.size().1,
             ?format,
             "gpu context configured"
         );
 
-        let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
-            &device,
-            config.format,
-            "colored-quad pipeline",
-        ));
-
         Ok(Self {
-            instance,
-            adapter,
+            runtime,
             surface,
-            device,
-            queue,
-            config,
             colored_quad_pipeline,
         })
     }
@@ -121,30 +54,28 @@ impl GpuContext {
             tracing::trace!("ignored zero-sized resize");
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
         tracing::trace!(width, height, "gpu context resized");
-        self.surface.configure(&self.device, &self.config);
+        self.surface.resize(&self.runtime, width, height);
     }
 
     /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        self.surface.format()
     }
 
     /// Current surface dimensions `(width, height)`.
     pub fn surface_size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        self.surface.size()
     }
 
     /// Logical GPU device reference.
     pub fn device(&self) -> &wgpu::Device {
-        &self.device
+        self.runtime.device()
     }
 
     /// Command queue reference.
     pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
+        self.runtime.queue()
     }
 
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
@@ -152,31 +83,31 @@ impl GpuContext {
         Arc::clone(&self.colored_quad_pipeline)
     }
 
-    /// Creates a wgpu surface from an owned window handle, using the same Instance.
+    /// Creates a wgpu surface from an owned window handle, using the shared runtime.
     /// The returned surface has a `'static` lifetime and the caller is responsible
     /// for configuring the surface.
     pub fn create_surface(&self, window: Arc<winit::window::Window>) -> wgpu::Surface<'static> {
-        self.instance
-            .create_surface(window)
+        self.runtime
+            .create_unconfigured_surface(window)
             .expect("create dialog surface")
     }
 
-    /// Queries surface capabilities for a new surface, using the stored adapter.
+    /// Queries surface capabilities for a new surface, using the shared runtime adapter.
     pub fn surface_capabilities(&self, surface: &wgpu::Surface) -> wgpu::SurfaceCapabilities {
-        surface.get_capabilities(&self.adapter)
+        self.runtime.surface_capabilities(surface)
     }
 
     // ── surface operations ──────────────────────────────────────────────
 
-    /// Gets the current frame surface texture.  See `CurrentSurfaceTexture`
+    /// Gets the current frame surface texture. See `CurrentSurfaceTexture`
     /// variant docs for how to handle each status.
     pub fn get_current_texture(&self) -> wgpu::CurrentSurfaceTexture {
-        self.surface.get_current_texture()
+        self.surface.acquire()
     }
 
     /// Presents the frame after command submission.
     pub fn present(&self, surface_texture: wgpu::SurfaceTexture) {
-        self.queue.present(surface_texture);
+        self.runtime.queue().present(surface_texture);
     }
 
     /// Acquires the surface texture, submits a single clear-color render pass,
@@ -184,7 +115,7 @@ impl GpuContext {
     /// startup fast path simple — `Suboptimal` surfaces are intentionally
     /// skipped rather than presented with a size mismatch.
     pub fn clear_surface(&self, color: wgpu::Color) {
-        let output = match self.surface.get_current_texture() {
+        let output = match self.surface.acquire() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
             _ => return,
         };
@@ -192,7 +123,8 @@ impl GpuContext {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
-            .device
+            .runtime
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -210,8 +142,8 @@ impl GpuContext {
             occlusion_query_set: None,
             multiview_mask: None,
         }));
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(output);
+        self.runtime.queue().submit(Some(encoder.finish()));
+        self.runtime.queue().present(output);
     }
 }
 

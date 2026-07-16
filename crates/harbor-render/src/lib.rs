@@ -86,7 +86,7 @@ pub struct PaintContext<'a> {
     bounds: Rect,
     clip: Rect,
     commands: Vec<PaintCommand<'a>>,
-    identities: Vec<RenderIdentity>,
+    identities: HashSet<RenderIdentity>,
 }
 
 impl<'a> PaintContext<'a> {
@@ -96,7 +96,7 @@ impl<'a> PaintContext<'a> {
             bounds,
             clip: bounds,
             commands: Vec::new(),
-            identities: Vec::new(),
+            identities: HashSet::new(),
         }
     }
 
@@ -145,13 +145,11 @@ impl<'a> PaintContext<'a> {
 
     /// Marks commands emitted by `paint` as belonging to one reconciled Widget.
     pub fn with_identity(&mut self, identity: RenderIdentity, paint: impl FnOnce(&mut Self)) {
-        if !self.identities.contains(&identity) {
-            self.identities.push(identity);
-        }
+        self.identities.insert(identity);
         paint(self);
     }
 
-    pub fn visited_identities(&self) -> &[RenderIdentity] {
+    pub fn visited_identities(&self) -> &HashSet<RenderIdentity> {
         &self.identities
     }
 
@@ -247,10 +245,8 @@ impl RenderTarget {
         };
         let mut context = PaintContext::new(self.environment, bounds);
         paint(&mut context);
-        self.cached_identities.clear();
         self.cached_identities
-            .extend(context.visited_identities().iter().copied());
-        let _commands = context.finish();
+            .clone_from(context.visited_identities());
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -283,11 +279,11 @@ impl RenderTarget {
 }
 
 fn environment_for((width, height): (u32, u32), scale_factor: f64) -> RenderEnvironment {
-    let scale_factor = scale_factor.max(1.0);
+    let effective_scale_factor = scale_factor.max(f64::MIN_POSITIVE);
     RenderEnvironment::new(
-        width as f32 / scale_factor as f32,
-        height as f32 / scale_factor as f32,
-        scale_factor,
+        width as f32 / effective_scale_factor as f32,
+        height as f32 / effective_scale_factor as f32,
+        effective_scale_factor,
     )
 }
 
@@ -379,7 +375,11 @@ mod tests {
             context.fill_rect(BOUNDS, RgbaColor::BLACK);
         });
 
-        assert_eq!(context.visited_identities(), &[RenderIdentity::new(7)]);
+        assert!(
+            context
+                .visited_identities()
+                .contains(&RenderIdentity::new(7))
+        );
         assert_eq!(context.finish().len(), 1);
     }
 
