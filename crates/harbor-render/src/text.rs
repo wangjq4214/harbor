@@ -2,10 +2,10 @@ use anyhow::{Result, anyhow};
 use bytemuck::{Pod, Zeroable};
 use fontdb::{Database, Family, Query};
 use fontdue::{Font, FontSettings};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 
-use crate::{Glyph as PaintGlyph, PaintCommand, RenderEnvironment};
+use crate::{Glyph as PaintGlyph, GlyphPatch, PaintCommand, RenderEnvironment, RenderIdentity};
 
 const ATLAS_SIZE: u32 = 2048;
 const ATLAS_PADDING: u32 = 1;
@@ -135,6 +135,11 @@ struct Shelf {
     next_x: u32,
 }
 
+struct CachedGrid {
+    slots: usize,
+    vertices: wgpu::Buffer,
+}
+
 /// Renderer-owned font fallback set, glyph atlas, and text GPU resources.
 pub(crate) struct TextRenderer {
     fonts: Vec<Font>,
@@ -148,6 +153,7 @@ pub(crate) struct TextRenderer {
     pipeline: wgpu::RenderPipeline,
     vertices: Option<wgpu::Buffer>,
     vertex_capacity: usize,
+    grids: HashMap<RenderIdentity, CachedGrid>,
 }
 
 impl TextRenderer {
@@ -269,6 +275,7 @@ impl TextRenderer {
             pipeline,
             vertices: None,
             vertex_capacity: 0,
+            grids: HashMap::new(),
         })
     }
 
@@ -350,6 +357,81 @@ impl TextRenderer {
             ));
         }
         self.draw_vertices(device, queue, pass, vertices);
+    }
+
+    pub(crate) fn draw_glyph_patch(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        patch: &GlyphPatch,
+        environment: RenderEnvironment,
+    ) {
+        let reset = self
+            .grids
+            .get(&patch.identity)
+            .is_none_or(|grid| grid.slots != patch.slots);
+        if reset {
+            let vertices = vec![Vertex::zeroed(); patch.slots.max(1) * 6];
+            self.grids.insert(
+                patch.identity,
+                CachedGrid {
+                    slots: patch.slots,
+                    vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("harbor renderer cached glyph grid"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    }),
+                },
+            );
+        }
+        let ascent = self.ascent;
+        for update in &patch.updates {
+            let Some(grid) = self.grids.get(&patch.identity) else {
+                return;
+            };
+            if update.slot >= grid.slots {
+                continue;
+            }
+            let vertices = update
+                .glyph
+                .and_then(|glyph| {
+                    self.glyph(queue, glyph.character).and_then(|atlas| {
+                        (atlas.width > 0 && atlas.height > 0).then(|| {
+                            let left = glyph.bounds.x + atlas.xmin as f32;
+                            let bottom = glyph.bounds.y + ascent - atlas.ymin as f32;
+                            Vertex::quad(
+                                left,
+                                bottom - atlas.height as f32,
+                                left + atlas.width as f32,
+                                bottom,
+                                atlas.uv,
+                                glyph.color.0,
+                                environment.logical_size(),
+                            )
+                        })
+                    })
+                })
+                .unwrap_or([Vertex::zeroed(); 6]);
+            let grid = self.grids.get(&patch.identity).expect("grid retained");
+            queue.write_buffer(
+                &grid.vertices,
+                (update.slot * 6 * std::mem::size_of::<Vertex>()) as u64,
+                bytemuck::cast_slice(&vertices),
+            );
+        }
+        let grid = self.grids.get(&patch.identity).expect("grid retained");
+        if grid.slots > 0 {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, grid.vertices.slice(..));
+            pass.draw(0..(grid.slots * 6) as u32, 0..1);
+        }
+    }
+
+    pub(crate) fn retain_identities(&mut self, identities: &HashSet<RenderIdentity>) {
+        self.grids
+            .retain(|identity, _| identities.contains(identity));
     }
 
     fn draw_vertices(

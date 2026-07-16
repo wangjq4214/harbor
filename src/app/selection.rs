@@ -1,5 +1,3 @@
-use harbor_types::RenderSnapshot;
-use std::sync::Arc;
 use std::time::Instant;
 
 use super::{
@@ -9,11 +7,7 @@ use super::{
     },
 };
 use arboard::Clipboard;
-use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
-use harbor_gpu::{
-    GpuContext,
-    gpu::{self, ColoredVertex},
-};
+use harbor_config::TEXT_PADDING;
 use harbor_terminal::{self, PasteDisposition, Screen};
 use winit::keyboard::{Key, NamedKey};
 
@@ -23,37 +17,22 @@ use harbor_terminal::{AutoScroll, SelectionModel, SelectionOutcome};
 
 pub struct Selection {
     model: SelectionModel,
-    pipeline: Arc<wgpu::RenderPipeline>,
-    vertex_buffer: wgpu::Buffer,
-    /// Number of vertices to draw (0 when no selection).
-    vertex_count: u32,
-    /// Current vertex buffer capacity (rows * cols * 6).
-    vertex_cap: usize,
     /// Cached from the most recent CursorMoved event (physical pixels).
     /// Needed because winit 0.30 MouseInput does not carry a position.
     last_cursor_pos: Option<(f64, f64)>,
     cell_width: f32,
     line_height: f32,
-    /// Whether vertex buffer needs re-upload.
-    dirty: bool,
     /// System clipboard handle (None when clipboard is unavailable, e.g. headless).
     clipboard: Option<Clipboard>,
 }
 
 impl Selection {
-    pub fn new(gpu: &GpuContext, cell_width: f32, line_height: f32) -> Self {
-        let pipeline = gpu.colored_quad_pipeline();
-        let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
+    pub fn new(cell_width: f32, line_height: f32) -> Self {
         Self {
             model: SelectionModel::new(),
-            pipeline,
-            vertex_buffer,
-            vertex_count: 0,
-            vertex_cap: 0,
             last_cursor_pos: None,
             cell_width,
             line_height,
-            dirty: false,
             clipboard: {
                 let cb = Clipboard::new();
                 if cb.is_err() {
@@ -62,6 +41,11 @@ impl Selection {
                 cb.ok()
             },
         }
+    }
+
+    pub(crate) fn selection_bounds(&self) -> Option<harbor_terminal::SelectionBounds> {
+        let bounds = self.model.bounds()?;
+        (bounds.start_row != bounds.end_row || bounds.start_col != bounds.end_col).then_some(bounds)
     }
 
     /// Convert a physical-pixel cursor position to a generation+col.
@@ -84,79 +68,6 @@ impl Selection {
         let g = hist_start + (scroll_count.saturating_sub(view_offset)) as u64 + display_row as u64;
         let max_g = hist_start + (scroll_count + rows) as u64 - 1;
         (g.min(max_g), col)
-    }
-
-    /// Grow the vertex buffer if the current capacity is too small for the grid.
-    fn ensure_capacity(&mut self, gpu: &GpuContext, rows: usize, cols: usize) {
-        let needed = rows * cols * 6;
-        if needed > self.vertex_cap {
-            self.vertex_buffer = gpu::create_colored_vertex_buffer(
-                gpu.device(),
-                &vec![ColoredVertex::default(); needed],
-            );
-            self.vertex_cap = needed;
-        }
-    }
-
-    /// Build ColoredVertex quads for every cell in the current selection.
-    /// Renders only the intersection of the selection range with the current viewport.
-    fn build_vertices(
-        &self,
-        snap: &RenderSnapshot,
-        surf_w: f32,
-        surf_h: f32,
-    ) -> Vec<ColoredVertex> {
-        let Some(ref range) = self.model.range else {
-            return Vec::new();
-        };
-        // A zero-length range (anchor == cursor) has no area — nothing to render.
-        if range.anchor == range.cursor {
-            return Vec::new();
-        }
-        let (sg, sc, eg, ec) = range.normalized();
-        let rows = snap.rows;
-        let cols = snap.cols;
-        let view_offset = snap.view_offset;
-        let scroll_count = snap.scroll_count;
-        let hist_start = snap.history_start;
-
-        // Viewport generation range
-        let view_start = hist_start + (scroll_count.saturating_sub(view_offset)) as u64;
-        let view_end = view_start + rows as u64 - 1;
-        // Clamp selection to viewport
-        let loop_start = sg.max(view_start);
-        let loop_end = eg.min(view_end);
-
-        let mut verts = if loop_start <= loop_end {
-            let visible_rows = (loop_end - loop_start + 1) as usize;
-            Vec::with_capacity(visible_rows * cols * 6)
-        } else {
-            return Vec::new();
-        };
-
-        for g in loop_start..=loop_end {
-            let display_row = (g - view_start) as usize;
-            let col_start = if g == sg { sc } else { 0 };
-            let col_end = if g == eg { ec } else { cols.saturating_sub(1) };
-
-            for col in col_start..=col_end {
-                let left = TEXT_PADDING + col as f32 * self.cell_width;
-                let top = TEXT_PADDING + display_row as f32 * self.line_height;
-                let right = left + self.cell_width;
-                let bottom = top + self.line_height;
-                let quad = ColoredVertex::from_pixel_rect(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    SELECTION_COLOR,
-                    surf_w,
-                    surf_h,
-                );
-                verts.extend_from_slice(&quad);
-            }
-        }
-        verts
     }
 
     /// Returns the currently selected text, or `None` when there is no active selection.
@@ -264,12 +175,10 @@ impl Selection {
         match outcome {
             SelectionOutcome::None => {}
             SelectionOutcome::DragActive => {
-                self.dirty = true;
                 caps.request_redraw();
                 caps.set_auto_scrolling(true);
             }
             SelectionOutcome::DragEnded => {
-                self.dirty = true;
                 caps.request_redraw();
                 caps.set_auto_scrolling(false);
             }
@@ -298,7 +207,6 @@ impl Selection {
             snap.cols(),
         );
         if self.model.drag_to((g, col), snap) {
-            self.dirty = true;
             caps.request_redraw();
         }
 
@@ -361,7 +269,6 @@ impl SelectionInput for Selection {
                 // character key arrives.  Otherwise pressing Ctrl alone
                 // would destroy the selection before Ctrl+C can copy.
                 if !is_modifier_key(&kbd.logical_key) && self.model.on_key_press() {
-                    self.dirty = true;
                     caps.request_redraw();
                 }
                 kb_result.unwrap_or(EventResult::Continue)
@@ -433,51 +340,9 @@ impl SelectionInput for Selection {
             sel.cursor = new_cursor;
         }
 
-        self.dirty = true;
         caps.request_redraw();
 
         self.model.auto_scroll_deadline()
-    }
-}
-
-// ── Visual lifecycle ───────────────────────────────────────────────────────
-
-impl Selection {
-    pub(crate) fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
-        let Some(snap) = snap else {
-            self.vertex_count = 0;
-            return;
-        };
-
-        if self.model.has_selection() {
-            self.ensure_capacity(gpu, snap.rows, snap.cols);
-            let (surf_w, surf_h) = gpu.surface_size();
-            let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
-            self.vertex_count = verts.len() as u32;
-        } else {
-            self.vertex_count = 0;
-        }
-    }
-
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.vertex_count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.draw(0..self.vertex_count, 0..1);
-    }
-
-    pub(crate) fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.model.clear();
-        self.dirty = true;
     }
 }
 

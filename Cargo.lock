@@ -753,6 +753,7 @@ dependencies = [
  "harbor-gpu",
  "harbor-parser",
  "harbor-pty",
+ "harbor-render",
  "harbor-terminal",
  "harbor-types",
  "harbor-ui",

@@ -99,6 +99,10 @@ impl Cursor {
         }
     }
 
+    pub(crate) const fn is_visible(&self) -> bool {
+        self.visible
+    }
+
     /// Compiles the solid-color cursor shader into a render pipeline.
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

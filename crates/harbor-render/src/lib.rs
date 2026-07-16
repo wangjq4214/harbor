@@ -78,6 +78,36 @@ pub struct Glyph {
     pub color: RgbaColor,
 }
 
+/// A fixed grid slot updated by a generic rectangle command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RectSlot {
+    pub slot: usize,
+    pub rect: Option<Rect>,
+    pub color: RgbaColor,
+}
+
+/// A fixed grid slot updated by a generic glyph command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphSlot {
+    pub slot: usize,
+    pub glyph: Option<Glyph>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RectPatch {
+    pub identity: RenderIdentity,
+    pub slots: usize,
+    pub updates: Vec<RectSlot>,
+}
+
+/// A cacheable grid of generic glyphs keyed by renderer identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphPatch {
+    pub identity: RenderIdentity,
+    pub slots: usize,
+    pub updates: Vec<GlyphSlot>,
+}
+
 /// A single ordered render operation emitted through [`PaintContext`].
 #[derive(Debug, PartialEq)]
 pub enum PaintCommand<'a> {
@@ -99,6 +129,14 @@ pub enum PaintCommand<'a> {
         glyphs: &'a [Glyph],
         clip: Rect,
     },
+    RectPatch {
+        patch: RectPatch,
+        clip: Rect,
+    },
+    GlyphPatch {
+        patch: GlyphPatch,
+        clip: Rect,
+    },
 }
 
 impl PaintCommand<'_> {
@@ -106,7 +144,9 @@ impl PaintCommand<'_> {
         match self {
             Self::FillRect { clip, .. }
             | Self::Text { clip, .. }
-            | Self::GlyphBatch { clip, .. } => *clip,
+            | Self::GlyphBatch { clip, .. }
+            | Self::RectPatch { clip, .. }
+            | Self::GlyphPatch { clip, .. } => *clip,
         }
     }
 }
@@ -181,6 +221,22 @@ impl<'a> PaintContext<'a> {
     pub fn draw_glyph_batch(&mut self, glyphs: &'a [Glyph]) {
         self.commands.push(PaintCommand::GlyphBatch {
             glyphs,
+            clip: self.clip,
+        });
+    }
+
+    /// Records dirty slots for a retained grid of generic rectangles.
+    pub fn draw_rect_patch(&mut self, patch: RectPatch) {
+        self.commands.push(PaintCommand::RectPatch {
+            patch,
+            clip: self.clip,
+        });
+    }
+
+    /// Records dirty slots for a retained grid of generic glyphs.
+    pub fn draw_glyph_patch(&mut self, patch: GlyphPatch) {
+        self.commands.push(PaintCommand::GlyphPatch {
+            patch,
             clip: self.clip,
         });
     }
@@ -308,8 +364,8 @@ impl RenderTarget {
         };
         let mut context = PaintContext::new(self.environment, bounds);
         paint(&mut context);
-        self.cached_identities
-            .clone_from(context.visited_identities());
+        let visited = context.visited_identities().clone();
+        self.cached_identities.clone_from(&visited);
         let commands = context.finish();
         let view = output
             .texture
@@ -366,9 +422,25 @@ impl RenderTarget {
                         glyphs,
                         self.environment,
                     ),
+                    PaintCommand::RectPatch { patch, .. } => self.solid.draw_patch(
+                        self.runtime.device(),
+                        self.runtime.queue(),
+                        &mut pass,
+                        patch,
+                        self.environment,
+                    ),
+                    PaintCommand::GlyphPatch { patch, .. } => self.text.draw_glyph_patch(
+                        self.runtime.device(),
+                        self.runtime.queue(),
+                        &mut pass,
+                        patch,
+                        self.environment,
+                    ),
                 }
             }
         }
+        self.solid.retain_identities(&visited);
+        self.text.retain_identities(&visited);
         self.runtime.queue().submit(Some(encoder.finish()));
         self.runtime.queue().present(output);
         FrameOutcome::Presented

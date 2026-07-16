@@ -24,6 +24,7 @@ use crate::{
     terminal::Terminal,
 };
 use harbor_gpu::GpuContext;
+use harbor_render::{FrameOutcome, RenderTarget, UiRenderer};
 use harbor_types::TerminalSize;
 use harbor_ui::{
     Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, TextMetrics,
@@ -78,6 +79,10 @@ pub(crate) struct App {
     window: Option<Arc<Window>>,
     /// GPU context (surface / device / queue).
     gpu: Option<GpuContext>,
+    /// Renderer-owned resources for the main terminal window.
+    renderer: Option<UiRenderer>,
+    /// Render target that records and presents the main widget tree.
+    render_target: Option<RenderTarget>,
     /// Immutable terminal widget configuration rebuilt from the latest screen snapshot.
     ui: Option<UiTerminal>,
     /// Retained state for the terminal's static widget tree.
@@ -349,7 +354,9 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 gpu.resize(size.width, size.height);
-                interaction.resize(gpu, (size.width, size.height));
+                if let Some(render_target) = self.render_target.as_mut() {
+                    render_target.resize(size.width, size.height, window.scale_factor());
+                }
                 let new_size = text.terminal_size(gpu);
                 self.pending_resize = Some(new_size);
                 window.request_redraw();
@@ -409,6 +416,8 @@ impl App {
         Self {
             window: None,
             gpu: None,
+            renderer: None,
+            render_target: None,
             ui: None,
             ui_runtime: None,
             text: None,
@@ -465,6 +474,8 @@ impl App {
         // waiting for fonts. Replaces the white window with the terminal
         // background color during the ~400ms font join wait.
         gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
+        let (renderer, render_target) =
+            pollster::block_on(UiRenderer::new(window.clone())).map_err(AppError::Renderer)?;
 
         let fonts = font_handle
             .join()
@@ -486,6 +497,8 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
 
         self.gpu = Some(gpu);
+        self.renderer = Some(renderer);
+        self.render_target = Some(render_target);
         self.ui = Some(ui);
         self.ui_runtime = Some(ui_runtime);
         self.text = Some(text);
@@ -497,110 +510,39 @@ impl App {
         Ok(())
     }
 
-    /// Acquires the surface texture, paints the terminal widget tree, and presents.
+    /// Records the main terminal widget tree and clears dirt only after presentation.
     fn render_frame(&mut self) {
-        if let (Some(ui), Some(ui_runtime), Some(terminal)) = (
+        if let (Some(ui), Some(ui_runtime), Some(terminal), Some(interaction)) = (
             self.ui.as_mut(),
             self.ui_runtime.as_mut(),
             self.terminal.as_ref(),
+            self.interaction.as_ref(),
         ) {
-            let next = ui.with_render_snapshot(Arc::new(terminal.screen().snapshot()));
+            let next = ui
+                .with_render_snapshot(Arc::new(terminal.screen().snapshot()))
+                .with_visual_state(interaction.visual_state());
             ui_runtime.reconcile(ui, &next);
             *ui = next;
         }
-        let (Some(ui), Some(ui_runtime), Some(text), Some(gpu), Some(interaction)) = (
+        let (Some(render_target), Some(ui), Some(ui_runtime)) = (
+            self.render_target.as_mut(),
             self.ui.as_ref(),
             self.ui_runtime.as_mut(),
-            self.text.as_mut(),
-            self.gpu.as_mut(),
-            self.interaction.as_mut(),
         ) else {
             return;
         };
-
-        // wgpu surface acquisition: handle transient failures by reconfiguring
-        // or skipping the frame (the event loop will re-request a redraw).
-        let output = match gpu.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => output,
-            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
-                tracing::warn!("surface texture suboptimal");
-                output
+        let environment = render_target.environment();
+        let (width, height) = environment.logical_size();
+        ui_runtime.layout(
+            ui,
+            environment,
+            harbor_ui::BoxConstraints::tight(width, height),
+        );
+        let outcome = render_target.render(|context| ui_runtime.paint(ui, context));
+        if outcome == FrameOutcome::Presented {
+            if let Some(terminal) = self.terminal.as_mut() {
+                terminal.clear_screen_dirty();
             }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                tracing::warn!("surface lost; reconfiguring");
-                let (w, h) = gpu.surface_size();
-                gpu.resize(w, h);
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                tracing::warn!("surface outdated; reconfiguring");
-                let (w, h) = gpu.surface_size();
-                gpu.resize(w, h);
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                tracing::trace!("surface texture timeout");
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                tracing::trace!("surface occluded");
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                tracing::warn!("surface validation failed");
-                return;
-            }
-        };
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            let bounds = ui_runtime.layout(
-                ui,
-                harbor_ui::RenderEnvironment::new(
-                    gpu.surface_size().0 as f32,
-                    gpu.surface_size().1 as f32,
-                    1.0,
-                ),
-                harbor_ui::BoxConstraints::tight(
-                    gpu.surface_size().0 as f32,
-                    gpu.surface_size().1 as f32,
-                ),
-            );
-            ui_runtime.legacy_paint(
-                ui,
-                harbor_ui::LegacyPaintContext { gpu, text, bounds },
-                &mut render_pass,
-            );
-            interaction.draw(&mut render_pass);
-        }
-
-        gpu.queue().submit(Some(encoder.finish()));
-        gpu.present(output);
-        if let Some(terminal) = self.terminal.as_mut() {
-            terminal.clear_screen_dirty();
         }
     }
 }

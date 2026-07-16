@@ -21,8 +21,8 @@ pub use harbor_render::RenderEnvironment;
 pub use layout::{Column, Expanded, Row, ScrollView, Stack};
 pub use primitives::{BoxConstraints, Color, EdgeInsets, Key, Rect};
 pub use terminal::{
-    AtlasGlyph, FontBook, Terminal, TerminalIntent, TerminalScroll, TextMetrics, TextResources,
-    load_system_fonts,
+    AtlasGlyph, FontBook, Terminal, TerminalIntent, TerminalScroll, TerminalVisualState,
+    TextMetrics, TextResources, load_system_fonts,
 };
 pub use text::{Text, TextStyle};
 pub use widget::{EventResult as WidgetEventResult, Map, Widget, WidgetRuntime};

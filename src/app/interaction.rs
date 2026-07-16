@@ -13,7 +13,7 @@ use super::{
 use harbor_gpu::GpuContext;
 use harbor_pty::Pty;
 use harbor_terminal::{Screen, Terminal};
-use harbor_ui::TextMetrics;
+use harbor_ui::{TerminalVisualState, TextMetrics};
 use winit::{event::WindowEvent, keyboard::ModifiersState, window::Window};
 
 /// Shell-owned terminal interaction state and event dispatch.
@@ -26,29 +26,24 @@ pub(crate) struct TerminalInteraction {
 impl TerminalInteraction {
     pub(crate) fn new(gpu: &GpuContext, screen: &Screen, metrics: TextMetrics) -> Self {
         Self {
-            selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
+            selection: Selection::new(metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),
             scrollbar: Scrollbar::new(gpu, &screen.snapshot()),
         }
     }
 
+    pub(crate) fn visual_state(&self) -> TerminalVisualState {
+        TerminalVisualState {
+            selection: self.selection.selection_bounds(),
+            cursor_visible: self.cursor.is_visible(),
+            scrollbar_visible: self.scrollbar.is_visible(),
+        }
+    }
+
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
         let snapshot = screen.snapshot();
-        self.selection.prepare(gpu, Some(&snapshot));
         self.cursor.prepare(gpu, Some(&snapshot));
         self.scrollbar.prepare(gpu, Some(&snapshot));
-    }
-
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass) {
-        self.selection.draw(pass);
-        self.cursor.draw(pass);
-        self.scrollbar.draw(pass);
-    }
-
-    pub(crate) fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
-        self.selection.resize(gpu, size);
-        self.cursor.resize(gpu, size);
-        self.scrollbar.resize(gpu, size);
     }
 
     pub(crate) fn handle_event(
