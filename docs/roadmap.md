@@ -1,7 +1,7 @@
 # WGPU Terminal Emulator Roadmap
 
 > This roadmap has two coordinated tracks: the protocol track closes terminal correctness gaps, while the product track turns the core into a daily-usable application.
-> The protocol audit in [`check.md`](../check.md) is the source of truth for feature coverage. A roadmap checkbox is not evidence of implementation; update it only after tests or runtime acceptance pass.
+> The protocol audit in [`checklist.md`](checklist.md) is the source of truth for feature coverage. A roadmap checkbox is not evidence of implementation; update it only after tests or runtime acceptance pass.
 
 ## Contents
 
@@ -34,11 +34,12 @@ Snapshot date: **2026-07-15**.
 
 | Area           | Current state                                                                                                                                                                                                                                                  | Immediate implication                                                         |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Protocol audit | 1,054 checklist items; 311 explicitly implemented; 743 incomplete or unverified                                                                                                                                                                                | Use `check.md` to select the next slice                                       |
-| Tests          | Focused `cargo test navigation`: 334 passed (0 failed, 1 ignored)                                                                                                                                                                                              | Add focused tests before changing protocol state                              |
+| Protocol audit | 1,054 checklist items; 600 clearly implemented; 454 incomplete or unverified                                                                                                                                                                                   | Use `checklist.md` to select the next slice                                  |
+| Tests          | `cargo test --workspace`: 359 passed, 0 failed, 2 ignored (2026-07-15)                                                                                                                                                                                         | Add focused tests before changing protocol state                              |
 | Parser         | ECMA-48/DEC state machine: 17 states covering CSI, OSC, DCS, and SOS/PM/APC string families; 8-bit C1 recognition (test-only); chunk-equivalence test harness                                                                                                  | Production C1 config, fuzz, and discard-after-limit tests remain              |
 | Terminal model | Cell grid, SGR, cursor, scroll regions, editing, scrollback, alternate screen, DECSCUSR, pending_wrap, terminal modes (DECCKM, DECAWM, DECOM, IRM, LNM, DECLRMM), tab stops, left/right margins, basic RIS/DECSTR                                              | Extend state before adding more dispatch cases                                |
 | PTY            | Windows ConPTY works; Unix startup is a `bail!()` stub                                                                                                                                                                                                         | Unix PTY is a prerequisite for cross-platform runtime acceptance              |
+| CI             | No `.github/workflows` workflow is present                                                                                                                                                                                                                      | Local tests are not cross-platform CI evidence                                |
 | Replies        | No parser-to-PTY reply channel                                                                                                                                                                                                                                 | DSR, DA, DECRQM, DECRQSS, and XTGETTCAP cannot work yet                       |
 | Strings        | OSC framing consumed with bounded collection (MAX_OSC_BYTES) and discard-warn; DCS/APC/PM/SOS handled by dedicated parser states with consume-only dispatch                                                                                                    | Add OSC side effects for supported families; discard-after-limit tests remain |
 | Input          | Basic text, control bytes, VT arrows, Home/End/Page/F1-F12/Insert/Delete, normal-screen bare PageUp/PageDown/Home/End scrollback navigation, cursor application keys (DECCKM), application keypad (DECKPAM), modifier encoding, bracketed paste, scroll keymap | Focus, mouse, and IME are not wired                                           |
@@ -87,7 +88,7 @@ Snapshot date: **2026-07-15**.
 3. **Prefer a complete small compatibility slice.** Do not scatter optional extensions across an incomplete core.
 4. **Centralize limits.** CSI parameters, strings, titles, URIs, clipboard data, replies, and images need named limits and boundary tests.
 5. **Advertise only real capabilities.** DA/DA2/XTGETTCAP replies must come from the actual enabled feature set.
-6. **Update `check.md` from evidence only.** Use a focused unit/integration test or reproducible runtime test for every new `[x]`.
+6. **Update `checklist.md` from evidence only.** Use a focused unit/integration test or reproducible runtime test for every new `[x]`.
 
 ### 4.2 Phase Dependencies
 
@@ -117,7 +118,7 @@ For each phase, use the same loop:
 2. Implement the smallest state/API change that makes those tests pass.
 3. Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`.
 4. Run the relevant runtime smoke test when the phase affects PTY, replies, rendering, or input.
-5. Update `check.md` only for behaviors now backed by evidence; record exclusions next to the unchecked item when needed.
+5. Update `checklist.md` only for behaviors now backed by evidence; record exclusions next to the unchecked item when needed.
 6. Do not start the next dependent phase while the current phase still has unbounded input, parser desynchronization, or state-reset failures.
 
 ## 5. Protocol Track: Detailed Plan
@@ -130,9 +131,9 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [ ] Add a reusable parser feed harness that compares one-shot input with arbitrary chunk boundaries, including UTF-8, CSI, OSC, cancellation, and nested `ESC` cases.
+- [x] Add a reusable parser feed harness that compares one-shot input with chunks of 1, 2, 3, and 7 bytes for UTF-8, CSI, OSC, DCS, APC, PM, and SOS; separate recovery tests cover CAN/SUB and split `ESC`.
 - [ ] Add screen snapshot helpers for cursor, modes, margins, cell attributes, scrollback, and alternate-screen state.
-- [ ] Add focused test modules that map directly to `check.md` sections instead of relying only on broad integration tests.
+- [ ] Add focused test modules that map directly to `checklist.md` sections instead of relying only on broad integration tests.
 - [ ] Implement Unix PTY using the existing `Pty`/`PtyReader` abstraction; keep Windows ConPTY unchanged. Prefer a small `cfg(unix)` dependency such as `rustix` for `openpty`, `setsid`, controlling-terminal setup, resize, read, and write.
 - [ ] Add a platform-neutral PTY reply/write interface so application-generated terminal responses use the same path as keyboard input.
 - [ ] Add CI commands for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test` on the supported host platforms.
@@ -142,7 +143,7 @@ For each phase, use the same loop:
 - [ ] The existing Windows shell loop still works.
 - [ ] Unix can start a shell, resize it, read output, and write input.
 - [ ] Chunk-equivalence tests pass for every parser state implemented so far.
-- [ ] A failing protocol test identifies its `check.md` section and sequence sample.
+- [ ] A failing protocol test identifies its `checklist.md` section and sequence sample.
 
 ### P1 — Streaming VT Parser and Safety Contract
 
@@ -150,7 +151,7 @@ For each phase, use the same loop:
 
 **Dependencies:** P0 test harness.
 
-**Progress:** parser core/handler split landed (`src/terminal/parser/{core,params,perform,handlers}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8; 8-bit C1 recognition implemented (`handle_c1`, `c1_enabled`; production setter pending); colon subparams preserved in fixed-capacity `Param.values`; discard/overflow states for strings and DCS; bounded OSC collection (MAX_OSC_BYTES) with overflow discard. Remaining: production C1 config, discard-after-limit tests, fuzz.
+**Progress:** parser core/handler split landed (`crates/harbor-parser/src/{core,params,perform}` and `crates/harbor-terminal/src/parser/{handlers,...}`); §1.1 chunk-equivalence harness covers CSI/OSC/DCS/APC/PM/SOS/UTF-8 with chunks of 1, 2, 3, and 7 bytes; 8-bit C1 recognition implemented (`handle_c1`, `c1_enabled`; production setter pending); colon subparams preserved in fixed-capacity `Param.values`; discard/overflow states for strings and DCS; bounded OSC collection (MAX_OSC_BYTES) with overflow discard. Remaining: production C1 config, discard-after-limit tests, fuzz.
 
 **Implementation path:**
 
@@ -165,10 +166,10 @@ For each phase, use the same loop:
 
 **Acceptance:**
 
-- [ ] Sections 1–3, 27, 35, and 36 in `check.md` have focused coverage for every checked item.
+- [ ] Sections 1–3, 27, 35, and 36 in `checklist.md` have focused coverage for every checked item.
 - [ ] Arbitrary chunking produces the same screen and parser result as one-shot input.
 - [ ] Fuzz/property tests show no panic, infinite loop, or unbounded allocation for arbitrary bytes.
-- [ ] DCS/APC/PM/SOS payloads never appear as visible text when the sequence is unsupported.
+- [x] DCS/APC/PM/SOS payloads never appear as visible text when the sequence is unsupported.
 
 ### P2 — Terminal State Model and Core Screen Semantics
 
@@ -178,12 +179,12 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [x] Add explicit standard/private mode storage: DECAWM, DECOM, IRM, LNM, DECCKM, keypad, cursor visibility, DECLRMM, bracketed paste, and synchronized output (focus reporting, synchronized output remaining).
+- [ ] Complete explicit mode storage for focus reporting and synchronized output. The current model already stores DECAWM, DECOM, IRM, LNM, DECCKM/keypad, cursor visibility, DECLRMM, and bracketed paste.
 - [x] Add `pending_wrap` and soft-wrap metadata. Writing the last column sets pending wrap; the next printable character performs the wrap.
-- [x] Make cursor movement, CR, BS, HT, ED, EL, erase, resize, and reset consistently clear or preserve pending wrap according to the selected compatibility target.
+- [ ] Define and test pending-wrap semantics for cursor movement, CR, BS, HT, ED, EL, erase, resize, and reset. `resize` currently leaves `pending_wrap` unchanged.
 - [x] Add independent horizontal margins and apply them to cursor placement, insertion, deletion, erase, and scrolling.
 - [x] Replace hard-coded tabs with a tab-stop set supporting HTS, TBC, default stops, and RIS restoration (CHT, CBT remaining).
-- [x] Make ICH/DCH/IL/DL use the current erase attributes and preserve wide-cell invariants.
+- [ ] Make ICH/DCH/IL/DL use the current erase attributes and preserve wide-cell invariants. Erase attributes are applied, but raw cell-range shifts still need wide-cell-safe normalization.
 - [x] Add REP and correct zero/default parameter behavior per command.
 - [x] Add protected-cell state and implement DECSCA, DECSED, and DECSEL.
 - [x] Implement complete RIS and DECSTR reset tables without accidentally clearing scrollback for DECSTR.
@@ -191,7 +192,7 @@ For each phase, use the same loop:
 
 **Acceptance:**
 
-- [ ] Sections 7–16, 19–20, and 33 of `check.md` pass their focused model tests.
+- [ ] Sections 7–16, 19–20, and 33 of `checklist.md` pass their focused model tests.
 - [ ] Wide characters cannot leave orphan continuation cells after write, erase, insert, delete, or rectangle operations.
 - [ ] Mode transitions are idempotent and restore the documented state after RIS, DECSTR, and alternate-screen exit.
 - [ ] Existing SGR, scroll, alternate-screen, and renderer tests remain green.
@@ -204,11 +205,11 @@ For each phase, use the same loop:
 
 **Implementation path:**
 
-- [x] Complete ESC commands: HTS, DECKPAM/DECKPNM, and required character-set designation/invocation (SS2/SS3, DECID, DECALN, encoding selection remaining).
+- [ ] Complete ESC commands. HTS, DECKPAM/DECKPNM, and G0/G1 designation are implemented; SS2/SS3, DECID, DECALN, and encoding selection remain.
 - [x] Complete cursor commands: HPA, Origin Mode coordinates, horizontal-margin coordinates, and correct zero/default semantics (HPR, VPR remaining).
-- [x] Complete DEC private modes: `?1`, `?6`, `?7`, `?25`, `?69`, `?2004`, and the `47/1047/1048/1049` alternate-screen variants (`?45`, `?1004`, `?2026` remaining).
+- [ ] Complete DEC private modes. The dispatcher supports `?1`, `?6`, `?7`, `?25`, `?69`, `?2004`, and `?1049`; `?45`, `?47`, `?1004`, `?1047`, `?1048`, and `?2026` remain.
 - [x] Complete standard modes: SM/RM, IRM, and LNM, while keeping private and standard mode stores separate.
-- [x] Complete rectangle operations: DECFRA, DECERA, DECSERA, DECCRA, DECCARA, and DECRARA with clipping and wide-cell rules.
+- [ ] Complete rectangle operations: DECFRA, DECERA, DECSERA, DECCRA, DECCARA, and DECRARA exist with clipping, but their cell-wise mutations still need wide-cell invariant handling and tests.
 - [x] Implement DEC Special Graphics and the minimum character-set mappings required by common shells and Vim.
 - [x] Keep unsupported modes as safe no-ops that do not alter known mode state.
 
@@ -239,7 +240,7 @@ For each phase, use the same loop:
 
 - [ ] Sections 21–23 and 34 pass protocol-format tests.
 - [ ] `tmux` can query DA, DECRQM, DECRQSS, and XTGETTCAP without hanging.
-- [ ] No response advertises a feature that is still unchecked in `check.md`.
+- [ ] No response advertises a feature that is still unchecked in `checklist.md`.
 
 ### P5 — OSC, DCS, and Secure String Extensions
 
@@ -256,13 +257,13 @@ For each phase, use the same loop:
 - [ ] Implement OSC 10/11/12 default-color state and OSC 104/110/111/112 resets.
 - [ ] Implement OSC 52 only behind explicit permission, with strict Base64 and decoded-size limits; remote clipboard reads remain disabled by default.
 - [ ] Recognize OSC 133 shell markers and expose them as optional metadata without changing visible text.
-- [ ] Consume unsupported DCS/APC/PM/SOS safely through ST; do not implement Sixel or Kitty graphics until the bounded consume-only path is proven.
+- [x] Consume unsupported DCS/APC/PM/SOS safely through ST; do not implement Sixel or Kitty graphics until the bounded consume-only path is proven.
 - [ ] Add optional Sixel/Kitty graphics only as separate feature work with independent size, memory, and permission limits.
 
 **Acceptance:**
 
 - [ ] Sections 24–27 and 36 have boundary, limit, cancellation, and permission tests.
-- [ ] Unknown/unsupported string protocols cannot leak payload into the screen.
+- [x] Unknown/unsupported string protocols cannot leak payload into the screen.
 - [ ] OSC 8, OSC 52, title, and working-directory behavior is verified through application-level tests.
 
 ### P6 — Interactive Input Protocols
@@ -303,7 +304,7 @@ For each phase, use the same loop:
 - [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
-- [ ] Promote only evidence-backed items in `check.md` and update the release table.
+- [ ] Promote only evidence-backed items in `checklist.md` and update the release table.
 
 **Acceptance:**
 
@@ -343,7 +344,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ### v0.2: Terminal Core (Parser + State + SGR)
 
-> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, cursor state, tab stops, margins, protected cells, rectangle operations all done (334 tests pass). Parser hardening and runtime verification pending (needs Unix PTY).**
+> **Status: 🟡 Cell model, SGR, grid editing, alt screen, DECSTBM, DECSCUSR, cursor state, tab stops, margins, protected cells, and rectangle operation implementations are present (359 tests passed; 2 ignored). Wide-cell normalization for editing/rectangle operations, parser hardening, and runtime verification remain pending (Unix PTY is still required for cross-platform runtime verification).**
 
 #### Done
 
@@ -363,7 +364,7 @@ The product milestones below retain the existing implementation notes, task list
 
 **Parser Hardening.** CSI parameter bounds validated (`MAX_CSI_PARAM = 65535`), malformed intermediate/param bytes rejected gracefully, `?` prefix tracked for private mode dispatch, unsupported sequences logged via `tracing::warn!`, many-empty-params overflow handled, UTF-8 split across PTY reads handled. Standard mode dispatch (IRM, LNM) and private modes (DECCKM, DECAWM, DECOM, DECLRMM, cursor visible, bracketed paste) fully dispatched with unit tests.
 
-**Tests.** 334 tests pass: SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DamageTracker, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll, bracketed paste mode tracking, InputEncoder keypad/cursor/application modes, DEC private modes dispatch, protected cells, rectangle operations (DECFRA/DECERA/DECSERA/DECCRA/DECCARA/DECRARA).
+**Tests.** `cargo test --workspace` passes 359 tests (2 ignored): SGR (all color modes + attribute combinations), ICH/DCH, IL/DL, alt screen, cursor save/restore, SU/SD, scroll region, resize, CJK wide chars, dirty-row tracking, DamageTracker, DECSCUSR, CHA/VPA/CNL/CPL, CSI s/u save/restore, parser param validation and error recovery, normal_buf ring buffer scrollback, viewport scroll, bracketed paste mode tracking, InputEncoder keypad/cursor/application modes, DEC private modes dispatch, protected cells, and rectangle operations. Wide-cell behavior across edit and rectangle operations remains incomplete.
 
 #### To Do
 
@@ -504,7 +505,7 @@ The product milestones below retain the existing implementation notes, task list
 - [x] Ctrl+V pastes
 - [ ] Command+C / Command+V on macOS
 - [x] Bracketed paste mode
-- [ ] Handle newlines during paste
+- [x] Handle newlines during paste with a confirmation dialog when bracketed paste is disabled
 - [ ] Filter dangerous control characters when necessary
 
 **Mouse Protocol**
@@ -575,16 +576,16 @@ The product milestones below retain the existing implementation notes, task list
 **Rendering Optimization**
 - [ ] Reduce temporary `Vec` allocations per frame (build_row_vertices allocates per-row)
 - [ ] Track atlas hit rate
-- [ ] Frame coalescing during heavy PTY output
+- [x] Frame coalescing during heavy PTY output
 
 **PTY / Parser Performance**
-- [ ] Limit redraw frequency during heavy output
+- [x] Limit redraw frequency during heavy output
 - [ ] Backpressure strategy
 
 **Latency**
 - [ ] Record key input → PTY write → output receive → render timestamps
 - [ ] Measure input-to-present latency
-- [ ] Request redraw immediately after input
+- [x] Request redraw immediately after input
 - [ ] Avoid lock contention
 
 **Benchmark**
@@ -715,7 +716,7 @@ The product milestones below retain the existing implementation notes, task list
 
 ## 7. Release Gates and Definition of Done
 
-- [ ] Every checked item in `check.md` has a focused test or reproducible runtime evidence.
+- [ ] Every checked item in `checklist.md` has a focused test or reproducible runtime evidence.
 - [ ] Unknown sequences are consumed safely, and unsupported string payloads never become visible text.
 - [ ] Every string and reply path has explicit size, permission, and cancellation behavior.
 - [ ] DA/DA2/XTGETTCAP advertise only implemented capabilities.
@@ -730,7 +731,7 @@ The product milestones below retain the existing implementation notes, task list
 - Run the relevant focused tests before marking a roadmap item complete.
 - Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test` at each phase boundary.
 - Run application smoke tests whenever a change affects PTY, replies, rendering, or input.
-- Keep known compatibility exclusions documented in `check.md` and this roadmap.
+- Keep known compatibility exclusions documented in `checklist.md` and this roadmap.
 - Do not call the terminal daily-usable until the section 39 acceptance commands, fuzz checks, benchmarks, and known limitations are recorded.
 
 > Build a reliable terminal first. Turn it into a development environment later.

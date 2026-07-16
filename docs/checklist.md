@@ -8,7 +8,7 @@
 - The checklist retains the original protocol and behavioral granularity; each item remains independently auditable.
 - The "Status" line under each top-level section heading summarizes that section; it does not replace the item-level results below.
 - `[ ]` does not distinguish between "fully unimplemented" and "partially implemented"; refer back to the specific item boundaries when implementation is needed.
-- Code audit focuses on `src/terminal/parser.rs`, `src/terminal/screen.rs`, `src/terminal.rs`, and `src/app.rs`.
+- Code audit focuses on `crates/harbor-parser/src/{core,params,perform}.rs`, `crates/harbor-terminal/src/{parser,screen}.rs`, `crates/harbor-terminal/src/parser/handlers.rs`, `src/terminal.rs`, and `src/app.rs`.
 
 ## Audit Overview
 
