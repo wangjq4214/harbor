@@ -151,6 +151,9 @@ impl ApplicationHandler<AppEvent> for App {
             && terminal.resize_terminal_if_changed(new_size)
         {
             self.pty.resize(new_size);
+            // Redraw immediately with the resized grid (preserved old content)
+            // instead of waiting for the shell to produce output after SIGWINCH.
+            window.request_redraw();
         }
 
         let deadline = interaction.deadline(terminal, window);
