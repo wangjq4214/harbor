@@ -1,5 +1,6 @@
 //! Renderer-owned UI frame and paint command contracts.
 
+mod cache;
 mod gpu;
 mod solid;
 mod text;

@@ -1,9 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::cache::{CachedGrid, GridCache};
 use crate::{RectPatch, RenderEnvironment, RenderIdentity};
 use harbor_types::Rect;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 const SHADER: &str = r#"
 struct Input { @location(0) position: vec2<f32>, @location(1) color: vec4<f32>, }
@@ -19,16 +20,11 @@ struct Vertex {
     color: [f32; 4],
 }
 
-struct CachedGrid {
-    slots: usize,
-    vertices: wgpu::Buffer,
-}
-
 /// Renderer-owned solid-rectangle GPU primitive.
 pub(crate) struct SolidRenderer {
     pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
-    grids: HashMap<RenderIdentity, CachedGrid>,
+    grids: GridCache,
 }
 
 impl SolidRenderer {
@@ -90,7 +86,7 @@ impl SolidRenderer {
         Self {
             pipeline,
             vertices,
-            grids: HashMap::new(),
+            grids: GridCache::new(),
         }
     }
 
@@ -149,7 +145,7 @@ impl SolidRenderer {
     ) {
         let reset = self
             .grids
-            .get(&patch.identity)
+            .get(patch.identity)
             .is_none_or(|grid| grid.slots != patch.slots);
         if reset {
             let vertices = vec![Vertex::zeroed(); patch.slots.max(1) * 6];
@@ -165,7 +161,7 @@ impl SolidRenderer {
                 },
             );
         }
-        let grid = self.grids.get(&patch.identity).expect("grid inserted");
+        let grid = self.grids.get(patch.identity).expect("grid inserted");
         for update in &patch.updates {
             if update.slot >= grid.slots {
                 continue;
@@ -187,8 +183,7 @@ impl SolidRenderer {
     }
 
     pub(crate) fn retain_identities(&mut self, identities: &HashSet<RenderIdentity>) {
-        self.grids
-            .retain(|identity, _| identities.contains(identity));
+        self.grids.retain(identities);
     }
 }
 
@@ -199,29 +194,11 @@ fn vertices(rect: Rect, color: [f32; 4], environment: RenderEnvironment) -> [Ver
     let y0 = 1.0 - rect.y / height * 2.0;
     let y1 = 1.0 - (rect.y + rect.height) / height * 2.0;
     [
-        Vertex {
-            position: [x0, y0],
-            color,
-        },
-        Vertex {
-            position: [x0, y1],
-            color,
-        },
-        Vertex {
-            position: [x1, y1],
-            color,
-        },
-        Vertex {
-            position: [x0, y0],
-            color,
-        },
-        Vertex {
-            position: [x1, y1],
-            color,
-        },
-        Vertex {
-            position: [x1, y0],
-            color,
-        },
+        Vertex { position: [x0, y0], color },
+        Vertex { position: [x0, y1], color },
+        Vertex { position: [x1, y1], color },
+        Vertex { position: [x0, y0], color },
+        Vertex { position: [x1, y1], color },
+        Vertex { position: [x1, y0], color },
     ]
 }

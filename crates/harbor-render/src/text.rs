@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 
 use crate::{Glyph as PaintGlyph, GlyphPatch, PaintCommand, RenderEnvironment, RenderIdentity};
-
+use crate::cache::{CachedGrid, GridCache};
 const ATLAS_SIZE: u32 = 2048;
 const ATLAS_PADDING: u32 = 1;
 
@@ -135,10 +135,6 @@ struct Shelf {
     next_x: u32,
 }
 
-struct CachedGrid {
-    slots: usize,
-    vertices: wgpu::Buffer,
-}
 
 /// Renderer-owned font fallback set, glyph atlas, and text GPU resources.
 pub(crate) struct TextRenderer {
@@ -153,7 +149,7 @@ pub(crate) struct TextRenderer {
     pipeline: wgpu::RenderPipeline,
     vertices: Option<wgpu::Buffer>,
     vertex_capacity: usize,
-    grids: HashMap<RenderIdentity, CachedGrid>,
+    grids: GridCache,
 }
 
 impl TextRenderer {
@@ -275,7 +271,7 @@ impl TextRenderer {
             pipeline,
             vertices: None,
             vertex_capacity: 0,
-            grids: HashMap::new(),
+            grids: GridCache::new(),
         })
     }
 
@@ -369,7 +365,7 @@ impl TextRenderer {
     ) {
         let reset = self
             .grids
-            .get(&patch.identity)
+            .get(patch.identity)
             .is_none_or(|grid| grid.slots != patch.slots);
         if reset {
             let vertices = vec![Vertex::zeroed(); patch.slots.max(1) * 6];
@@ -387,7 +383,7 @@ impl TextRenderer {
         }
         let ascent = self.ascent;
         for update in &patch.updates {
-            let Some(grid) = self.grids.get(&patch.identity) else {
+            let Some(grid) = self.grids.get(patch.identity) else {
                 return;
             };
             if update.slot >= grid.slots {
@@ -413,14 +409,14 @@ impl TextRenderer {
                     })
                 })
                 .unwrap_or([Vertex::zeroed(); 6]);
-            let grid = self.grids.get(&patch.identity).expect("grid retained");
+            let grid = self.grids.get(patch.identity).expect("grid retained");
             queue.write_buffer(
                 &grid.vertices,
                 (update.slot * 6 * std::mem::size_of::<Vertex>()) as u64,
                 bytemuck::cast_slice(&vertices),
             );
         }
-        let grid = self.grids.get(&patch.identity).expect("grid retained");
+        let grid = self.grids.get(patch.identity).expect("grid retained");
         if grid.slots > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
@@ -430,8 +426,7 @@ impl TextRenderer {
     }
 
     pub(crate) fn retain_identities(&mut self, identities: &HashSet<RenderIdentity>) {
-        self.grids
-            .retain(|identity, _| identities.contains(identity));
+        self.grids.retain(identities);
     }
 
     fn draw_vertices(
