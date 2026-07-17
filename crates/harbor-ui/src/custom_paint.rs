@@ -1,14 +1,6 @@
-use crate::{BoxConstraints, Key, Rect, TextResources, Widget};
-use harbor_gpu::GpuContext;
+use crate::{BoxConstraints, Key, Rect, Widget};
 pub use harbor_render::PaintContext;
 use harbor_render::RenderEnvironment;
-
-/// Frame-scoped GPU resources retained only for the expand-phase legacy paint path.
-pub struct LegacyPaintContext<'a> {
-    pub gpu: &'a GpuContext,
-    pub text: &'a mut TextResources,
-    pub bounds: Rect,
-}
 
 /// A renderer-command painter supplied by a UI-owned [`CustomPaint`] Widget.
 pub trait CustomPainter {

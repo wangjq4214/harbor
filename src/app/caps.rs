@@ -13,7 +13,6 @@ use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
 use super::EventResult;
-use harbor_gpu::GpuContext;
 
 // ── Access traits (resources a handler may request) ─────────────────────────
 
@@ -24,10 +23,6 @@ pub trait TerminalAccess {
 /// Redraw-only window right. Prefer this over handing out a full `&Window`.
 pub trait RedrawAccess {
     fn request_redraw(&self);
-}
-
-pub trait GpuAccess {
-    fn gpu(&self) -> &GpuContext;
 }
 
 pub trait PtyAccess {
@@ -127,18 +122,12 @@ impl ScrollAccess for SelectionWaitContext<'_> {
 
 pub struct ScrollbarContext<'a> {
     pub terminal: &'a Terminal,
-    pub gpu: &'a GpuContext,
     pub window: &'a Window,
 }
 
 impl TerminalAccess for ScrollbarContext<'_> {
     fn terminal(&self) -> &Terminal {
         self.terminal
-    }
-}
-impl GpuAccess for ScrollbarContext<'_> {
-    fn gpu(&self) -> &GpuContext {
-        self.gpu
     }
 }
 impl RedrawAccess for ScrollbarContext<'_> {
@@ -160,17 +149,11 @@ impl RedrawAccess for ScrollbarWaitContext<'_> {
 
 pub struct CursorContext<'a> {
     pub terminal: &'a Terminal,
-    pub gpu: &'a GpuContext,
 }
 
 impl TerminalAccess for CursorContext<'_> {
     fn terminal(&self) -> &Terminal {
         self.terminal
-    }
-}
-impl GpuAccess for CursorContext<'_> {
-    fn gpu(&self) -> &GpuContext {
-        self.gpu
     }
 }
 
@@ -204,22 +187,22 @@ pub trait SelectionInput {
         C: TerminalAccess + ScrollAccess + RedrawAccess;
 }
 
-/// Scrollbar: terminal + gpu + redraw on events; redraw only for auto-hide.
+/// Scrollbar: terminal + redraw on events; redraw only for auto-hide.
 pub trait ScrollbarInput {
     fn handle_event<C>(&mut self, event: &WindowEvent, caps: &C) -> EventResult
     where
-        C: TerminalAccess + GpuAccess + RedrawAccess;
+        C: TerminalAccess + RedrawAccess;
 
     fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<Instant>
     where
         C: RedrawAccess;
 }
 
-/// Cursor: terminal + gpu on event; terminal + redraw on blink timer.
+/// Cursor: terminal on events; terminal + redraw on blink timer.
 pub trait CursorInput {
     fn handle_event<C>(&mut self, event: &WindowEvent, caps: &C) -> EventResult
     where
-        C: TerminalAccess + GpuAccess;
+        C: TerminalAccess;
 
     fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<Instant>
     where

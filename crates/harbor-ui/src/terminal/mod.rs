@@ -1,15 +1,5 @@
 //! Declarative terminal widget and its private visual projection.
 
-mod font;
-mod metrics;
-mod text;
-
-use std::sync::Arc;
-
-pub use font::{FontBook, load_system_fonts};
-pub use metrics::TextMetrics;
-pub use text::{AtlasGlyph, TextResources};
-
 use crate::{BoxConstraints, CustomPainter, Key, Rect, Widget, WidgetEventResult};
 use harbor_config::{
     SCROLLBAR_COLOR, SCROLLBAR_MARGIN, SCROLLBAR_MIN_THUMB_HEIGHT, SCROLLBAR_WIDTH,
@@ -22,6 +12,7 @@ use harbor_render::{
 use harbor_types::{
     CellAttrs, CursorShape, DirtyRange, RenderSnapshot, RgbaColor, SelectionBounds, TerminalSize,
 };
+use std::sync::Arc;
 
 /// Shell-owned transient state required to project terminal visuals.
 #[derive(Clone, Copy, Debug, Default)]
@@ -260,6 +251,22 @@ fn background_updates(
         .collect()
 }
 
+fn glyph_color(
+    foreground: harbor_types::Color,
+    background: harbor_types::Color,
+    attrs: CellAttrs,
+) -> [f32; 4] {
+    if attrs.contains(CellAttrs::INVERSE) {
+        if background == harbor_types::Color::Default {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            background.to_rgba()
+        }
+    } else {
+        foreground.to_rgba()
+    }
+}
+
 fn glyph_updates(
     snapshot: &RenderSnapshot,
     dirty_ranges: &[DirtyRange],
@@ -274,7 +281,7 @@ fn glyph_updates(
                 Glyph {
                     character: cell.ch,
                     bounds,
-                    color: RgbaColor(text::glyph_color(cell.fg, cell.bg, cell.attrs)),
+                    color: RgbaColor(glyph_color(cell.fg, cell.bg, cell.attrs)),
                 }
             });
             GlyphSlot {
@@ -429,7 +436,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{Terminal, TerminalVisualState};
-    use crate::{BoxConstraints, Key, Widget, WidgetRuntime};
+    use crate::{BoxConstraints, Key, WidgetRuntime};
     use harbor_render::{PaintCommand, PaintContext, RenderEnvironment};
     use harbor_types::{Cell, CursorShape, DirtyRange, RenderSnapshot};
 

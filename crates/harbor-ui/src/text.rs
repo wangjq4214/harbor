@@ -1,6 +1,5 @@
-use crate::{BoxConstraints, Color, LegacyPaintContext, PaintContext, Rect, Widget};
+use crate::{BoxConstraints, Color, PaintContext, Rect, Widget};
 use harbor_config::FONT_SIZE;
-use harbor_gpu::gpu::{self, TexturedVertex};
 use harbor_render::RenderEnvironment;
 use harbor_types::RgbaColor;
 
@@ -93,9 +92,6 @@ impl Text {
 }
 
 pub struct TextState {
-    vertex_buffer: Option<wgpu::Buffer>,
-    vertex_capacity: usize,
-    vertex_count: u32,
     content: String,
     columns: usize,
     wrap: bool,
@@ -107,9 +103,6 @@ impl<A> Widget<A> for Text {
 
     fn create_state(&self) -> Self::State {
         TextState {
-            vertex_buffer: None,
-            vertex_capacity: 0,
-            vertex_count: 0,
             content: String::new(),
             columns: 0,
             wrap: false,
@@ -158,80 +151,5 @@ impl<A> Widget<A> for Text {
                 self.style.bold,
             );
         }
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        context
-            .text
-            .ensure_glyphs(&self.content, context.gpu.device(), context.gpu.queue());
-        let metrics = *context.text.metrics();
-        let scale = self.style.size / FONT_SIZE;
-        let cell_width = metrics.cell_width * scale;
-        let ascent = metrics.ascent * scale;
-        let columns = if self.wrap {
-            (context.bounds.width / cell_width).floor().max(1.0) as usize
-        } else {
-            usize::MAX
-        };
-        self.sync_lines(state, columns);
-        let mut vertices = Vec::with_capacity(self.content.chars().count() * 6);
-
-        for (row, line) in state.lines.iter().enumerate() {
-            let baseline = context.bounds.y + row as f32 * self.style.line_height + ascent.ceil();
-            for (column, ch) in line.chars().enumerate() {
-                let Some(glyph) = context.text.glyph(ch).copied() else {
-                    continue;
-                };
-                if glyph.width == 0 || glyph.height == 0 {
-                    continue;
-                }
-                let left =
-                    context.bounds.x + column as f32 * cell_width + glyph.xmin as f32 * scale;
-                let bottom = baseline - glyph.ymin as f32 * scale;
-                let top = bottom - glyph.height as f32 * scale;
-                let right = left + glyph.width as f32 * scale;
-                vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    glyph.uv.left,
-                    glyph.uv.top,
-                    glyph.uv.right,
-                    glyph.uv.bottom,
-                    self.style.color.0,
-                    context.gpu.surface_size().0 as f32,
-                    context.gpu.surface_size().1 as f32,
-                ));
-            }
-        }
-
-        state.vertex_count = vertices.len() as u32;
-        if state.vertex_count == 0 {
-            return;
-        }
-        if vertices.len() > state.vertex_capacity {
-            state.vertex_buffer = Some(gpu::create_vertex_buffer(
-                context.gpu.device(),
-                &vec![TexturedVertex::default(); vertices.len()],
-            ));
-            state.vertex_capacity = vertices.len();
-        }
-        let Some(vertex_buffer) = state.vertex_buffer.as_ref() else {
-            return;
-        };
-        context
-            .gpu
-            .queue()
-            .write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-        pass.set_pipeline(context.text.text_pipeline());
-        pass.set_bind_group(0, context.text.text_bind_group(), &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.draw(0..state.vertex_count, 0..1);
     }
 }

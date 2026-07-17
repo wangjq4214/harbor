@@ -5,7 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-bytemuck = { workspace = true }
-tracing = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }

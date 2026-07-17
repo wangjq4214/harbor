@@ -61,7 +61,6 @@ harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
-harbor-gpu = { workspace = true }
 harbor-ui = { workspace = true }
 harbor-render = { workspace = true }
 
@@ -79,7 +78,6 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 unicode-width = { workspace = true }
-wgpu = { workspace = true }
 winit = { workspace = true }
 
 [target."cfg(windows)".dependencies]

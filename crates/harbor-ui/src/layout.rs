@@ -1,4 +1,4 @@
-use crate::{BoxConstraints, LegacyPaintContext, PaintContext, Rect, Widget, WidgetEventResult};
+use crate::{BoxConstraints, PaintContext, Rect, Widget, WidgetEventResult};
 use harbor_render::RenderEnvironment;
 
 fn translated(parent: Rect, child: Rect) -> Rect {
@@ -95,32 +95,6 @@ where
         context.with_bounds(translated(bounds, state.front_bounds), |context| {
             self.front.paint(&mut state.front, context);
         });
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        self.back.legacy_paint(
-            &mut state.back,
-            LegacyPaintContext {
-                gpu: context.gpu,
-                text: &mut *context.text,
-                bounds: translated(context.bounds, state.back_bounds),
-            },
-            pass,
-        );
-        self.front.legacy_paint(
-            &mut state.front,
-            LegacyPaintContext {
-                gpu: context.gpu,
-                text: &mut *context.text,
-                bounds: translated(context.bounds, state.front_bounds),
-            },
-            pass,
-        );
     }
 }
 
@@ -329,32 +303,6 @@ macro_rules! impl_linear {
                     self.$second.paint(&mut state.second, context);
                 });
             }
-
-            fn legacy_paint<'pass>(
-                &self,
-                state: &mut Self::State,
-                context: LegacyPaintContext<'_>,
-                pass: &mut wgpu::RenderPass<'pass>,
-            ) {
-                self.$first.legacy_paint(
-                    &mut state.first,
-                    LegacyPaintContext {
-                        gpu: context.gpu,
-                        text: &mut *context.text,
-                        bounds: translated(context.bounds, state.first_bounds),
-                    },
-                    pass,
-                );
-                self.$second.legacy_paint(
-                    &mut state.second,
-                    LegacyPaintContext {
-                        gpu: context.gpu,
-                        text: &mut *context.text,
-                        bounds: translated(context.bounds, state.second_bounds),
-                    },
-                    pass,
-                );
-            }
         }
     };
 }
@@ -418,15 +366,6 @@ where
 
     fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
         self.child.paint(&mut state.child, context);
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        self.child.legacy_paint(&mut state.child, context, pass);
     }
 }
 
@@ -528,46 +467,5 @@ where
                 self.child.paint(&mut state.child, context);
             });
         });
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        let surface = context.gpu.surface_size();
-        let left = context.bounds.x.max(0.0).floor() as u32;
-        let top = context.bounds.y.max(0.0).floor() as u32;
-        let width = context
-            .bounds
-            .width
-            .min(surface.0.saturating_sub(left) as f32)
-            .max(0.0)
-            .floor() as u32;
-        let height = context
-            .bounds
-            .height
-            .min(surface.1.saturating_sub(top) as f32)
-            .max(0.0)
-            .floor() as u32;
-        if width == 0 || height == 0 {
-            return;
-        }
-        pass.set_scissor_rect(left, top, width, height);
-        self.child.legacy_paint(
-            &mut state.child,
-            LegacyPaintContext {
-                gpu: context.gpu,
-                text: context.text,
-                bounds: Rect {
-                    x: context.bounds.x,
-                    y: context.bounds.y - state.offset,
-                    ..state.child_bounds
-                },
-            },
-            pass,
-        );
-        pass.set_scissor_rect(0, 0, surface.0, surface.1);
     }
 }

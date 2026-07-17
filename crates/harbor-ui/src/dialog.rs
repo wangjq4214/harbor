@@ -1,12 +1,8 @@
-use crate::{
-    BoxConstraints, Button, ButtonState, Key, LegacyPaintContext, Rect, Text, Widget,
-    WidgetEventResult,
-};
+use crate::{BoxConstraints, Button, ButtonState, Key, Rect, Text, Widget, WidgetEventResult};
 use crate::{
     button::{ButtonRuntime, button_color},
     text::TextState,
 };
-use harbor_gpu::gpu::{self, ColoredVertex};
 use harbor_render::{PaintContext, RenderEnvironment};
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -76,7 +72,6 @@ pub struct DialogWidgetState<A, S> {
     body_bounds: Rect,
     action_bounds: Vec<Rect>,
     actions: Vec<ButtonRuntime<TextState>>,
-    background_buffer: Option<wgpu::Buffer>,
 }
 
 impl<A, W> Widget<A> for Dialog<A, W>
@@ -97,7 +92,6 @@ where
             body_bounds: Rect::default(),
             action_bounds: vec![Rect::default(); self.actions.len()],
             actions: self.actions.iter().map(Widget::create_state).collect(),
-            background_buffer: None,
         }
     }
 
@@ -265,77 +259,6 @@ where
                         action.child.style.bold,
                     );
                 },
-            );
-        }
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        let vertices = ColoredVertex::from_pixel_rect(
-            context.bounds.x,
-            context.bounds.y,
-            context.bounds.x + context.bounds.width,
-            context.bounds.y + context.bounds.height,
-            [0.08, 0.08, 0.08, 1.0],
-            context.gpu.surface_size().0 as f32,
-            context.gpu.surface_size().1 as f32,
-        );
-        let buffer = state.background_buffer.get_or_insert_with(|| {
-            gpu::create_colored_vertex_buffer(context.gpu.device(), &[ColoredVertex::default(); 6])
-        });
-        context
-            .gpu
-            .queue()
-            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-        pass.set_pipeline(&context.gpu.colored_quad_pipeline());
-        pass.set_vertex_buffer(0, buffer.slice(..));
-        pass.draw(0..6, 0..1);
-        if let (Some(title), Some(title_state)) = (&self.title, &mut state.title) {
-            <Text as Widget<A>>::legacy_paint(
-                title,
-                title_state,
-                LegacyPaintContext {
-                    gpu: context.gpu,
-                    text: &mut *context.text,
-                    bounds: Rect {
-                        x: context.bounds.x + state.title_bounds.x,
-                        y: context.bounds.y + state.title_bounds.y,
-                        ..state.title_bounds
-                    },
-                },
-                pass,
-            );
-        }
-        self.body.legacy_paint(
-            &mut state.body,
-            LegacyPaintContext {
-                gpu: context.gpu,
-                text: &mut *context.text,
-                bounds: Rect {
-                    x: context.bounds.x + state.body_bounds.x,
-                    y: context.bounds.y + state.body_bounds.y,
-                    ..state.body_bounds
-                },
-            },
-            pass,
-        );
-        for (index, action) in self.actions.iter().enumerate() {
-            action.legacy_paint(
-                &mut state.actions[index],
-                LegacyPaintContext {
-                    gpu: context.gpu,
-                    text: &mut *context.text,
-                    bounds: Rect {
-                        x: context.bounds.x + state.action_bounds[index].x,
-                        y: context.bounds.y + state.action_bounds[index].y,
-                        ..state.action_bounds[index]
-                    },
-                },
-                pass,
             );
         }
     }

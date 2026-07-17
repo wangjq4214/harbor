@@ -66,22 +66,6 @@ impl GpuRuntime {
         Ok(self.configure_surface(surface, (size.width, size.height)))
     }
 
-    pub(crate) fn create_unconfigured_surface(
-        &self,
-        window: Arc<Window>,
-    ) -> Result<wgpu::Surface<'static>> {
-        self.instance
-            .create_surface(window)
-            .context("create surface")
-    }
-
-    pub(crate) fn surface_capabilities(
-        &self,
-        surface: &wgpu::Surface,
-    ) -> wgpu::SurfaceCapabilities {
-        surface.get_capabilities(&self.adapter)
-    }
-
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }

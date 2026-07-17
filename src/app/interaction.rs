@@ -10,10 +10,9 @@ use super::{
     scrollbar::Scrollbar,
     selection::Selection,
 };
-use harbor_gpu::GpuContext;
 use harbor_pty::Pty;
-use harbor_terminal::{Screen, Terminal};
-use harbor_ui::{TerminalVisualState, TextMetrics};
+use harbor_terminal::Terminal;
+use harbor_ui::TerminalVisualState;
 use winit::{event::WindowEvent, keyboard::ModifiersState, window::Window};
 
 /// Shell-owned terminal interaction state and event dispatch.
@@ -24,11 +23,11 @@ pub(crate) struct TerminalInteraction {
 }
 
 impl TerminalInteraction {
-    pub(crate) fn new(gpu: &GpuContext, screen: &Screen, metrics: TextMetrics) -> Self {
+    pub(crate) fn new(cell_width: f32, line_height: f32) -> Self {
         Self {
-            selection: Selection::new(metrics.cell_width, metrics.line_height),
-            cursor: Cursor::new(gpu, metrics),
-            scrollbar: Scrollbar::new(gpu, &screen.snapshot()),
+            selection: Selection::new(cell_width, line_height),
+            cursor: Cursor::new(),
+            scrollbar: Scrollbar::new(),
         }
     }
 
@@ -40,18 +39,11 @@ impl TerminalInteraction {
         }
     }
 
-    pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
-        let snapshot = screen.snapshot();
-        self.cursor.prepare(gpu, Some(&snapshot));
-        self.scrollbar.prepare(gpu, Some(&snapshot));
-    }
-
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
         terminal: &mut Terminal,
         window: &Window,
-        gpu: &GpuContext,
         pty: &mut Pty,
         modifiers: ModifiersState,
     ) -> EventResult {
@@ -67,22 +59,14 @@ impl TerminalInteraction {
         if selection != EventResult::Continue {
             return selection;
         }
-        if self.scrollbar.handle_event(
-            event,
-            &ScrollbarContext {
-                terminal,
-                gpu,
-                window,
-            },
-        ) == EventResult::Handled
+        if self
+            .scrollbar
+            .handle_event(event, &ScrollbarContext { terminal, window })
+            == EventResult::Handled
         {
             return EventResult::Handled;
         }
-        if self
-            .cursor
-            .handle_event(event, &CursorContext { terminal, gpu })
-            == EventResult::Handled
-        {
+        if self.cursor.handle_event(event, &CursorContext { terminal }) == EventResult::Handled {
             return EventResult::Handled;
         }
         EventResult::Continue

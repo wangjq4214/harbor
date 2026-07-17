@@ -750,7 +750,6 @@ dependencies = [
  "fontdb",
  "fontdue",
  "harbor-config",
- "harbor-gpu",
  "harbor-parser",
  "harbor-pty",
  "harbor-render",
@@ -764,7 +763,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-width",
- "wgpu",
  "windows",
  "winit",
 ]
@@ -778,8 +776,6 @@ name = "harbor-gpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytemuck",
- "tracing",
  "wgpu",
  "winit",
 ]
@@ -835,19 +831,13 @@ version = "0.1.0"
 name = "harbor-ui"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "bytemuck",
- "fontdb",
- "fontdue",
  "harbor-config",
- "harbor-gpu",
  "harbor-render",
  "harbor-terminal",
  "harbor-types",
  "hashbrown 0.17.1",
  "tracing",
  "unicode-width",
- "wgpu",
  "winit",
 ]
 

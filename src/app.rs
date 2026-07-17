@@ -23,12 +23,10 @@ use crate::{
     pty::{Pty, PtyWakeHandler},
     terminal::Terminal,
 };
-use harbor_gpu::GpuContext;
 use harbor_render::{FrameOutcome, RenderTarget, UiRenderer};
 use harbor_types::TerminalSize;
 use harbor_ui::{
-    Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, TextMetrics,
-    TextResources, WidgetRuntime, load_system_fonts,
+    Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, WidgetRuntime,
 };
 use interaction::TerminalInteraction;
 use paste_dialog::{PasteDialog, PasteDialogResult};
@@ -75,10 +73,8 @@ fn scrollback_navigation(
 
 /// Application state holding the window and its renderer.
 pub(crate) struct App {
-    /// The primary window, wrapped in `Arc` so the GPU context can share ownership.
+    /// The primary window, wrapped in `Arc` so the renderer can share ownership.
     window: Option<Arc<Window>>,
-    /// GPU context (surface / device / queue).
-    gpu: Option<GpuContext>,
     /// Renderer-owned resources for the main terminal window.
     renderer: Option<UiRenderer>,
     /// Render target that records and presents the main widget tree.
@@ -87,8 +83,6 @@ pub(crate) struct App {
     ui: Option<UiTerminal>,
     /// Retained state for the terminal's static widget tree.
     ui_runtime: Option<WidgetRuntime<UiTerminal, harbor_ui::TerminalIntent>>,
-    /// Shared glyph atlas and text pipeline for every widget in this window.
-    text: Option<TextResources>,
     /// Shell-owned terminal interaction state.
     interaction: Option<TerminalInteraction>,
     /// Terminal model: byte-stream parser plus visible screen.
@@ -128,12 +122,7 @@ impl ApplicationHandler<AppEvent> for App {
     /// Handles PTY output events from the background reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::PtyOutputReady = event;
-        let (Some(gpu), Some(interaction), Some(terminal), Some(window)) = (
-            self.gpu.as_mut(),
-            self.interaction.as_mut(),
-            self.terminal.as_mut(),
-            self.window.as_ref(),
-        ) else {
+        let (Some(terminal), Some(window)) = (self.terminal.as_mut(), self.window.as_ref()) else {
             return;
         };
         let output = self.pty.drain_output();
@@ -142,18 +131,15 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
         terminal.process_output(&output);
-        interaction.prepare(gpu, terminal.screen());
         window.request_redraw();
     }
 
     /// Called when the event loop is about to block. Applies pending resize,
     /// then drives component deadlines (cursor blink, scrollbar auto-hide).
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (Some(gpu), Some(interaction), Some(terminal), Some(pty), Some(window)) = (
-            self.gpu.as_mut(),
+        let (Some(interaction), Some(terminal), Some(window)) = (
             self.interaction.as_mut(),
             self.terminal.as_mut(),
-            Some(&mut self.pty),
             self.window.as_ref(),
         ) else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -164,8 +150,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(new_size) = self.pending_resize.take()
             && terminal.resize_terminal_if_changed(new_size)
         {
-            interaction.prepare(gpu, terminal.screen());
-            pty.resize(new_size);
+            self.pty.resize(new_size);
         }
 
         let deadline = interaction.deadline(terminal, window);
@@ -225,18 +210,16 @@ impl ApplicationHandler<AppEvent> for App {
 
         let (
             Some(ui),
-            Some(gpu),
+            Some(ui_runtime),
             Some(renderer),
-            Some(text),
             Some(interaction),
             Some(terminal),
             Some(pty),
             Some(window),
         ) = (
             self.ui.as_ref(),
-            self.gpu.as_mut(),
+            self.ui_runtime.as_mut(),
             self.renderer.as_ref(),
-            self.text.as_mut(),
             self.interaction.as_mut(),
             self.terminal.as_mut(),
             Some(&mut self.pty),
@@ -262,8 +245,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         // Interactive layers first — each gets only the rights it needs.
-        // Scope so gpu/terminal borrows are released before prepare-on-Handled.
-        let handled = interaction.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
+        let handled = interaction.handle_event(&event, terminal, window, pty, self.modifiers);
 
         // Multi-line paste confirmation: create dialog instead of sending to PTY.
         // Duplicate paste while dialog is open is a no-op.
@@ -276,7 +258,6 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(window),
                 ));
             }
-            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -299,11 +280,9 @@ impl ApplicationHandler<AppEvent> for App {
             terminal.scroll_viewport_to_bottom();
         }
 
-        // Handled events (copy, paste): prepare + redraw so the GPU
-        // vertex buffer reflects the cleared selection, then return
-        // early to avoid forwarding the key to the PTY.
+        // Handled events (copy, paste) redraw the terminal projection before
+        // returning early to avoid forwarding the key to the PTY.
         if handled == EventResult::Handled {
-            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
@@ -322,17 +301,15 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
             }
-            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
             return;
         }
 
-        // Unhandled keyboard: prepare + redraw so the cleared
-        // selection is rendered before the PTY output arrives.
+        // Unhandled keyboard redraws the terminal projection so selection state
+        // is visible before PTY output arrives.
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
         {
-            interaction.prepare(gpu, terminal.screen());
             window.request_redraw();
         }
 
@@ -346,19 +323,31 @@ impl ApplicationHandler<AppEvent> for App {
                 self.modifiers = modifiers.state();
             }
 
-            // Resize: update surface config immediately, defer terminal grid
-            // resize to `about_to_wait` to coalesce bounce.
+            // Resize the renderer target immediately, then defer terminal-grid resize
+            // to `about_to_wait` to coalesce bounce.
             WindowEvent::Resized(size) => {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                gpu.resize(size.width, size.height);
                 if let Some(render_target) = self.render_target.as_mut() {
                     render_target.resize(size.width, size.height, window.scale_factor());
+                    let environment = render_target.environment();
+                    let (width, height) = environment.logical_size();
+                    let metrics = environment.text_metrics();
+                    if let TerminalIntent::Resize(new_size) = ui.resize_intent(
+                        harbor_ui::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width,
+                            height,
+                        },
+                        metrics.cell_width,
+                        metrics.line_height,
+                    ) {
+                        self.pending_resize = Some(new_size);
+                    }
                 }
-                let new_size = text.terminal_size(gpu);
-                self.pending_resize = Some(new_size);
                 window.request_redraw();
             }
 
@@ -371,15 +360,30 @@ impl ApplicationHandler<AppEvent> for App {
             // Terminal owns wheel interpretation and emits a semantic intent;
             // the shell applies the resulting viewport transition.
             WindowEvent::MouseWheel { .. } => {
-                if let Some(TerminalIntent::Scroll(TerminalScroll::Lines(lines))) =
-                    ui.event_intent(&event)
-                {
+                let intent = self.render_target.as_ref().and_then(|target| {
+                    let environment = target.environment();
+                    let (width, height) = environment.logical_size();
+                    match ui_runtime.event(
+                        ui,
+                        &event,
+                        harbor_ui::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width,
+                            height,
+                        },
+                    ) {
+                        harbor_ui::WidgetEventResult::Intent(intent) => Some(intent),
+                        harbor_ui::WidgetEventResult::Ignored
+                        | harbor_ui::WidgetEventResult::Handled => None,
+                    }
+                });
+                if let Some(TerminalIntent::Scroll(TerminalScroll::Lines(lines))) = intent {
                     if lines > 0 {
                         terminal.scroll_viewport_up(lines as usize);
                     } else {
                         terminal.scroll_viewport_down((-lines) as usize);
                     }
-                    interaction.prepare(gpu, terminal.screen());
                     window.request_redraw();
                 }
             }
@@ -415,12 +419,10 @@ impl App {
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             window: None,
-            gpu: None,
             renderer: None,
             render_target: None,
             ui: None,
             ui_runtime: None,
-            text: None,
             interaction: None,
             terminal: None,
             pty: Pty::new(PtyWakeHandler::new(event_proxy)),
@@ -430,7 +432,7 @@ impl App {
         }
     }
 
-    /// Creates the main window, GPU context, font atlas, and component tree.
+    /// Creates the main window, renderer target, and terminal widget tree.
     /// Keeps existing state on repeated resumes (e.g. after suspend/resume).
     fn try_resume(&mut self, event_loop: &ActiveEventLoop) -> std::result::Result<(), AppError> {
         if self.window.is_some() {
@@ -441,67 +443,40 @@ impl App {
         let window =
             Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
 
-        // Phase 1: paint the terminal background color via GDI immediately after
-        // window creation. The GPU surface isn't ready yet, so this prevents
-        // the OS from showing a white window during the ~1.5s GPU init period.
+        // Paint the terminal background immediately so the OS does not show a white window
+        // while the renderer initializes.
         #[cfg(target_os = "windows")]
         paint_gdi_background(&window);
 
-        // Start font loading on a background thread so it overlaps with the
-        // GPU context initialisation (both are IO/compute heavy).
-        // On Windows, lower the thread priority so font IO+parse yields CPU
-        // to the DX12 driver during request_adapter/request_device.
-        let font_handle = std::thread::Builder::new()
-            .name("font-loader".into())
-            .spawn(|| {
-                #[cfg(target_os = "windows")]
-                {
-                    use windows::Win32::System::Threading::{
-                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-                    };
-                    // SAFETY: GetCurrentThread returns a pseudo-handle that is always valid.
-                    unsafe {
-                        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    }
-                }
-                load_system_fonts()
-            })
-            .expect("failed to spawn font-loader thread");
-
-        let gpu =
-            pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
-        // Phase 2: submit one clear frame immediately after GPU init, before
-        // waiting for fonts. Replaces the white window with the terminal
-        // background color during the ~400ms font join wait.
-        gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
         let (renderer, render_target) =
             pollster::block_on(UiRenderer::new(window.clone())).map_err(AppError::Renderer)?;
-
-        let fonts = font_handle
-            .join()
-            .map_err(|_| AppError::Renderer(anyhow::anyhow!("font loader thread panicked")))?
-            .map_err(AppError::Renderer)?;
-        let metrics = TextMetrics::new(&fonts);
-
-        // Bootstrap with a 1×1 terminal so shared text resources can compute
-        // the surface grid before the PTY starts.
+        let environment = render_target.environment();
+        let (width, height) = environment.logical_size();
+        let metrics = environment.text_metrics();
         let mut terminal = Terminal::new(1, 1);
-        let initial_snapshot = terminal.screen().snapshot();
-        let text = TextResources::new(&gpu, fonts, metrics, &initial_snapshot)
-            .map_err(AppError::Renderer)?;
-        let size = text.terminal_size(&gpu);
+        let size = match UiTerminal::new(UiKey(0)).resize_intent(
+            harbor_ui::Rect {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+            },
+            metrics.cell_width,
+            metrics.line_height,
+        ) {
+            TerminalIntent::Resize(size) => size,
+            TerminalIntent::Scroll(_) => unreachable!("terminal size intent must resize"),
+        };
         terminal.resize(size.rows, size.cols);
         let ui = UiTerminal::with_snapshot(UiKey(0), Arc::new(terminal.screen().snapshot()));
         let ui_runtime = WidgetRuntime::new(&ui);
-        let interaction = TerminalInteraction::new(&gpu, terminal.screen(), metrics);
+        let interaction = TerminalInteraction::new(metrics.cell_width, metrics.line_height);
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
 
-        self.gpu = Some(gpu);
         self.renderer = Some(renderer);
         self.render_target = Some(render_target);
         self.ui = Some(ui);
         self.ui_runtime = Some(ui_runtime);
-        self.text = Some(text);
         self.interaction = Some(interaction);
         self.terminal = Some(terminal);
         self.window = Some(window.clone());
@@ -547,19 +522,8 @@ impl App {
     }
 }
 
-/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`.
-fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
-    wgpu::Color {
-        r: c[0] as f64,
-        g: c[1] as f64,
-        b: c[2] as f64,
-        a: c[3] as f64,
-    }
-}
-
-/// Paints the terminal background color into the window using GDI, before the
-/// wgpu surface is ready. Prevents the OS from showing a white window during
-/// the GPU initialisation period.
+/// Paints the terminal background color into the window before the renderer
+/// is ready, preventing the OS from showing a white window during startup.
 ///
 /// The linear-light BACKGROUND values (0.36, 0.20, 0.08) are converted to
 /// sRGB bytes (162, 124, 80) for GDI. COLORREF format is 0x00BBGGRR.

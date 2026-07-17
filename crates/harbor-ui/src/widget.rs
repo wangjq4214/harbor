@@ -1,4 +1,4 @@
-use crate::{BoxConstraints, Key, LegacyPaintContext, Rect};
+use crate::{BoxConstraints, Key, Rect};
 use harbor_render::{PaintContext, RenderEnvironment};
 
 /// Result of routing one window event through a widget tree.
@@ -60,15 +60,6 @@ pub trait Widget<A> {
 
     /// Records ordered renderer commands inside the bounds returned by `layout`.
     fn paint<'a>(&'a self, _state: &'a mut Self::State, _context: &mut PaintContext<'a>) {}
-
-    /// Draws through the temporary legacy GPU path during the expand phase.
-    fn legacy_paint<'pass>(
-        &self,
-        _state: &mut Self::State,
-        _context: LegacyPaintContext<'_>,
-        _pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-    }
 }
 
 /// Retains state for a statically composed widget tree.
@@ -119,15 +110,6 @@ where
 
     pub fn paint<'a>(&'a mut self, widget: &'a W, context: &mut PaintContext<'a>) {
         widget.paint(&mut self.state, context);
-    }
-
-    pub fn legacy_paint<'pass>(
-        &mut self,
-        widget: &W,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        widget.legacy_paint(&mut self.state, context, pass);
     }
 }
 
@@ -183,14 +165,5 @@ where
 
     fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
         self.child.paint(state, context);
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        self.child.legacy_paint(state, context, pass);
     }
 }

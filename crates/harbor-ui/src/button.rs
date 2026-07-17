@@ -1,7 +1,4 @@
-use crate::{
-    BoxConstraints, Key, LegacyPaintContext, PaintContext, Rect, Widget, WidgetEventResult,
-};
-use harbor_gpu::gpu::{self, ColoredVertex};
+use crate::{BoxConstraints, Key, PaintContext, Rect, Widget, WidgetEventResult};
 use harbor_render::RenderEnvironment;
 use harbor_types::RgbaColor;
 
@@ -58,7 +55,6 @@ pub struct ButtonRuntime<S> {
     child: S,
     child_bounds: Rect,
     pointer: Option<(f32, f32)>,
-    background_buffer: Option<wgpu::Buffer>,
 }
 
 impl<S> ButtonRuntime<S> {
@@ -84,7 +80,6 @@ where
             child: self.child.create_state(),
             child_bounds: Rect::default(),
             pointer: None,
-            background_buffer: None,
         }
     }
 
@@ -189,46 +184,5 @@ where
         context.with_bounds(child_bounds, |context| {
             self.child.paint(&mut state.child, context);
         });
-    }
-
-    fn legacy_paint<'pass>(
-        &self,
-        state: &mut Self::State,
-        context: LegacyPaintContext<'_>,
-        pass: &mut wgpu::RenderPass<'pass>,
-    ) {
-        let color = button_color(state.state);
-        let vertices = ColoredVertex::from_pixel_rect(
-            context.bounds.x,
-            context.bounds.y,
-            context.bounds.x + context.bounds.width,
-            context.bounds.y + context.bounds.height,
-            color,
-            context.gpu.surface_size().0 as f32,
-            context.gpu.surface_size().1 as f32,
-        );
-        let buffer = state.background_buffer.get_or_insert_with(|| {
-            gpu::create_colored_vertex_buffer(context.gpu.device(), &[ColoredVertex::default(); 6])
-        });
-        context
-            .gpu
-            .queue()
-            .write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-        pass.set_pipeline(&context.gpu.colored_quad_pipeline());
-        pass.set_vertex_buffer(0, buffer.slice(..));
-        pass.draw(0..6, 0..1);
-        self.child.legacy_paint(
-            &mut state.child,
-            LegacyPaintContext {
-                gpu: context.gpu,
-                text: context.text,
-                bounds: Rect {
-                    x: context.bounds.x + state.child_bounds.x,
-                    y: context.bounds.y + state.child_bounds.y,
-                    ..state.child_bounds
-                },
-            },
-            pass,
-        );
     }
 }

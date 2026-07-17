@@ -15,15 +15,12 @@ mod widget;
 
 pub use button::{Button, ButtonState};
 pub use container::{Alignment, Container};
-pub use custom_paint::{CustomPaint, CustomPainter, LegacyPaintContext, PaintContext};
+pub use custom_paint::{CustomPaint, CustomPainter, PaintContext};
 pub use dialog::{Dialog, DialogEvent, DialogRuntime, WindowSpec};
 pub use harbor_render::RenderEnvironment;
 pub use layout::{Column, Expanded, Row, ScrollView, Stack};
 pub use primitives::{BoxConstraints, Color, EdgeInsets, Key, Rect};
-pub use terminal::{
-    AtlasGlyph, FontBook, Terminal, TerminalIntent, TerminalScroll, TerminalVisualState,
-    TextMetrics, TextResources, load_system_fonts,
-};
+pub use terminal::{Terminal, TerminalIntent, TerminalScroll, TerminalVisualState};
 pub use text::{Text, TextStyle};
 pub use widget::{EventResult as WidgetEventResult, Map, Widget, WidgetRuntime};
 

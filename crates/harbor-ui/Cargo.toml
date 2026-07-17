@@ -4,17 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-bytemuck = { workspace = true }
-fontdb = { workspace = true }
-fontdue = { workspace = true }
 harbor-config = { workspace = true }
-harbor-gpu = { workspace = true }
 harbor-render = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
 hashbrown = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
-wgpu = { workspace = true }
 winit = { workspace = true }
