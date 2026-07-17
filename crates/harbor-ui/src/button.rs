@@ -14,7 +14,7 @@ pub enum ButtonState {
     Disabled,
 }
 
-fn button_color(state: ButtonState) -> [f32; 4] {
+pub(crate) fn button_color(state: ButtonState) -> [f32; 4] {
     match state {
         ButtonState::Normal => [0.15, 0.15, 0.15, 1.0],
         ButtonState::Hover => [0.2, 0.2, 0.2, 1.0],
@@ -59,6 +59,12 @@ pub struct ButtonRuntime<S> {
     child_bounds: Rect,
     pointer: Option<(f32, f32)>,
     background_buffer: Option<wgpu::Buffer>,
+}
+
+impl<S> ButtonRuntime<S> {
+    pub(crate) const fn child_bounds(&self) -> Rect {
+        self.child_bounds
+    }
 }
 
 impl<A, W> Widget<A> for Button<A, W>

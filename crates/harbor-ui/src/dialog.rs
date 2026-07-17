@@ -2,9 +2,12 @@ use crate::{
     BoxConstraints, Button, ButtonState, Key, LegacyPaintContext, Rect, Text, Widget,
     WidgetEventResult,
 };
-use crate::{button::ButtonRuntime, text::TextState};
+use crate::{
+    button::{ButtonRuntime, button_color},
+    text::TextState,
+};
 use harbor_gpu::gpu::{self, ColoredVertex};
-use harbor_render::RenderEnvironment;
+use harbor_render::{PaintContext, RenderEnvironment};
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{Key as WinitKey, NamedKey},
@@ -214,6 +217,56 @@ where
                 ..state.body_bounds
             },
         )
+    }
+
+    fn paint<'a>(&'a self, state: &'a mut Self::State, context: &mut PaintContext<'a>) {
+        context.fill_rect(
+            context.bounds(),
+            harbor_types::RgbaColor([0.08, 0.08, 0.08, 1.0]),
+        );
+        let bounds = context.bounds();
+        if let (Some(title), Some(title_state)) = (&self.title, &mut state.title) {
+            context.with_bounds(
+                Rect {
+                    x: bounds.x + state.title_bounds.x,
+                    y: bounds.y + state.title_bounds.y,
+                    ..state.title_bounds
+                },
+                |context| <Text as Widget<A>>::paint(title, title_state, context),
+            );
+        }
+        context.with_bounds(
+            Rect {
+                x: bounds.x + state.body_bounds.x,
+                y: bounds.y + state.body_bounds.y,
+                ..state.body_bounds
+            },
+            |context| self.body.paint(&mut state.body, context),
+        );
+        for (index, action) in self.actions.iter().enumerate() {
+            let action_bounds = state.action_bounds[index];
+            let child_bounds = state.actions[index].child_bounds();
+            let color = harbor_types::RgbaColor(button_color(state.actions[index].state));
+            context.with_bounds(
+                Rect {
+                    x: bounds.x + action_bounds.x,
+                    y: bounds.y + action_bounds.y,
+                    ..action_bounds
+                },
+                |context| {
+                    context.fill_rect(context.bounds(), color);
+                    let bounds = context.bounds();
+                    context.draw_text(
+                        (bounds.x + child_bounds.x, bounds.y + child_bounds.y),
+                        &action.child.content,
+                        harbor_types::RgbaColor(action.child.style.color.0),
+                        action.child.style.size,
+                        action.child.style.line_height,
+                        action.child.style.bold,
+                    );
+                },
+            );
+        }
     }
 
     fn legacy_paint<'pass>(
@@ -523,6 +576,39 @@ mod tests {
             Button::new(Text::new("Cancel"), Intent::Cancel).key(Key(2)),
         ])
         .initial_focus(Key(2))
+    }
+
+    #[test]
+    fn dialog_paint_emits_background_and_all_visible_content() {
+        use crate::WidgetRuntime;
+        use harbor_render::{PaintCommand, PaintContext};
+
+        let dialog = dialog().title(Text::new("Paste confirmation"));
+        let environment = RenderEnvironment::new(600.0, 400.0, 1.0);
+        let mut runtime = WidgetRuntime::new(&dialog);
+        runtime.layout(&dialog, environment, BoxConstraints::tight(600.0, 400.0));
+        let mut context = PaintContext::new(
+            environment,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 600.0,
+                height: 400.0,
+            },
+        );
+
+        runtime.paint(&dialog, &mut context);
+
+        let commands = context.finish();
+        assert!(matches!(
+            commands.first(),
+            Some(PaintCommand::FillRect { .. })
+        ));
+        for text in ["Paste confirmation", "preview", "Paste", "Cancel"] {
+            assert!(commands
+                .iter()
+                .any(|command| matches!(command, PaintCommand::Text { text: command_text, .. } if *command_text == text)));
+        }
     }
 
     #[test]
