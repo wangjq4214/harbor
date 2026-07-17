@@ -1,8 +1,6 @@
 use crate::{BoxConstraints, Button, ButtonState, Key, Rect, Text, Widget, WidgetEventResult};
-use crate::{
-    button::{ButtonRuntime, button_color},
-    text::TextState,
-};
+use crate::button::ButtonRuntime;
+use crate::text::TextState;
 use harbor_render::{PaintContext, RenderEnvironment};
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -239,37 +237,28 @@ where
         );
         for (index, action) in self.actions.iter().enumerate() {
             let action_bounds = state.action_bounds[index];
-            let child_bounds = state.actions[index].child_bounds();
-            let color = harbor_types::RgbaColor(button_color(state.actions[index].state));
+            let action_state = &raw mut state.actions[index];
             context.with_bounds(
                 Rect {
                     x: bounds.x + action_bounds.x,
                     y: bounds.y + action_bounds.y,
                     ..action_bounds
                 },
-                |context| {
-                    context.fill_rect(context.bounds(), color);
-                    let bounds = context.bounds();
-                    context.draw_text(
-                        (bounds.x + child_bounds.x, bounds.y + child_bounds.y),
-                        &action.child.content,
-                        harbor_types::RgbaColor(action.child.style.color.0),
-                        action.child.style.size,
-                        action.child.style.line_height,
-                        action.child.style.bold,
-                    );
-                },
+                // SAFETY: each loop iteration visits a unique index;
+                // the closure is FnOnce and consumed before the next iteration.
+                |context| action.paint(unsafe { &mut *action_state }, context),
             );
         }
     }
 }
 
+
+/// Events emitted by the dialog runtime during interaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DialogEvent {
     None,
     ScrollChanged,
 }
-
 /// Retained dialog interaction state. The host owns the dialog's business data.
 pub struct DialogRuntime<A> {
     focused: Option<usize>,

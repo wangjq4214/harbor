@@ -57,11 +57,6 @@ pub struct ButtonRuntime<S> {
     pointer: Option<(f32, f32)>,
 }
 
-impl<S> ButtonRuntime<S> {
-    pub(crate) const fn child_bounds(&self) -> Rect {
-        self.child_bounds
-    }
-}
 
 impl<A, W> Widget<A> for Button<A, W>
 where
