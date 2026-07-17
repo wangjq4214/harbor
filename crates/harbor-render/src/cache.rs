@@ -5,8 +5,8 @@
 //! This module provides the shared `HashMap` lifecycle so cache-eviction
 //! logic lives in one place.
 
-use std::collections::{HashMap, HashSet};
 use crate::RenderIdentity;
+use std::collections::{HashMap, HashSet};
 
 /// One retained vertex buffer for a particular renderer identity.
 pub(crate) struct CachedGrid {
@@ -36,7 +36,6 @@ impl GridCache {
 
     /// Drops every grid whose identity was not visited during the last frame.
     pub(crate) fn retain(&mut self, visited: &HashSet<RenderIdentity>) {
-        self.grids
-            .retain(|identity, _| visited.contains(identity));
+        self.grids.retain(|identity, _| visited.contains(identity));
     }
 }

@@ -39,7 +39,6 @@ pub(super) enum EventResult {
     ConfirmPaste(String),
 }
 
-
 /// Application state holding the window and its renderer.
 pub(crate) struct App {
     /// The primary window, wrapped in `Arc` so the renderer can share ownership.
@@ -506,7 +505,7 @@ fn paint_gdi_background(window: &Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::keyboard::{scrollback_navigation, ScrollbackNavigation};
+    use super::keyboard::{ScrollbackNavigation, scrollback_navigation};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn key(name: NamedKey) -> Key {

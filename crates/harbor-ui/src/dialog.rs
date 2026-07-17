@@ -1,6 +1,6 @@
-use crate::{BoxConstraints, Button, ButtonState, Key, Rect, Text, Widget, WidgetEventResult};
 use crate::button::ButtonRuntime;
 use crate::text::TextState;
+use crate::{BoxConstraints, Button, ButtonState, Key, Rect, Text, Widget, WidgetEventResult};
 use harbor_render::{PaintContext, RenderEnvironment};
 use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -251,7 +251,6 @@ where
         }
     }
 }
-
 
 /// Events emitted by the dialog runtime during interaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

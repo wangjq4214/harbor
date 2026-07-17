@@ -72,16 +72,31 @@ impl KeyboardDispatch {
             text.is_some() && !(*interaction_result == EventResult::Handled && is_copy);
         let needs_redraw = true;
         if *interaction_result == EventResult::Handled {
-            return Self { scroll_to_bottom, scrollback: None, pty_bytes: None, needs_redraw };
+            return Self {
+                scroll_to_bottom,
+                scrollback: None,
+                pty_bytes: None,
+                needs_redraw,
+            };
         }
         let scrollback = scrollback_navigation(logical_key, modifiers, is_alt_screen);
         if scrollback.is_some() {
-            return Self { scroll_to_bottom, scrollback, pty_bytes: None, needs_redraw };
+            return Self {
+                scroll_to_bottom,
+                scrollback,
+                pty_bytes: None,
+                needs_redraw,
+            };
         }
         let is_numpad = location == KeyLocation::Numpad;
         let pty_bytes = InputEncoder::key(logical_key, text, modifiers, input_modes, is_numpad)
             .map(|cow| cow.into_owned());
-        Self { scroll_to_bottom, scrollback: None, pty_bytes, needs_redraw }
+        Self {
+            scroll_to_bottom,
+            scrollback: None,
+            pty_bytes,
+            needs_redraw,
+        }
     }
 
     pub(super) fn apply(self, terminal: &mut Terminal, pty: &mut Pty, window: &Window) {

@@ -194,11 +194,29 @@ fn vertices(rect: Rect, color: [f32; 4], environment: RenderEnvironment) -> [Ver
     let y0 = 1.0 - rect.y / height * 2.0;
     let y1 = 1.0 - (rect.y + rect.height) / height * 2.0;
     [
-        Vertex { position: [x0, y0], color },
-        Vertex { position: [x0, y1], color },
-        Vertex { position: [x1, y1], color },
-        Vertex { position: [x0, y0], color },
-        Vertex { position: [x1, y1], color },
-        Vertex { position: [x1, y0], color },
+        Vertex {
+            position: [x0, y0],
+            color,
+        },
+        Vertex {
+            position: [x0, y1],
+            color,
+        },
+        Vertex {
+            position: [x1, y1],
+            color,
+        },
+        Vertex {
+            position: [x0, y0],
+            color,
+        },
+        Vertex {
+            position: [x1, y1],
+            color,
+        },
+        Vertex {
+            position: [x1, y0],
+            color,
+        },
     ]
 }

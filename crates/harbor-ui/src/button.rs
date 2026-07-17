@@ -57,7 +57,6 @@ pub struct ButtonRuntime<S> {
     pointer: Option<(f32, f32)>,
 }
 
-
 impl<A, W> Widget<A> for Button<A, W>
 where
     A: Clone,

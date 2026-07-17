@@ -5,8 +5,8 @@ use fontdue::{Font, FontSettings};
 use std::collections::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
 
-use crate::{Glyph as PaintGlyph, GlyphPatch, PaintCommand, RenderEnvironment, RenderIdentity};
 use crate::cache::{CachedGrid, GridCache};
+use crate::{Glyph as PaintGlyph, GlyphPatch, PaintCommand, RenderEnvironment, RenderIdentity};
 const ATLAS_SIZE: u32 = 2048;
 const ATLAS_PADDING: u32 = 1;
 
@@ -134,7 +134,6 @@ struct Shelf {
     height: u32,
     next_x: u32,
 }
-
 
 /// Renderer-owned font fallback set, glyph atlas, and text GPU resources.
 pub(crate) struct TextRenderer {
