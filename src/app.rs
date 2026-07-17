@@ -514,10 +514,10 @@ impl App {
             harbor_ui::BoxConstraints::tight(width, height),
         );
         let outcome = render_target.render(|context| ui_runtime.paint(ui, context));
-        if outcome == FrameOutcome::Presented {
-            if let Some(terminal) = self.terminal.as_mut() {
-                terminal.clear_screen_dirty();
-            }
+        if outcome == FrameOutcome::Presented
+            && let Some(terminal) = self.terminal.as_mut()
+        {
+            terminal.clear_screen_dirty();
         }
     }
 }
