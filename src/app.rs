@@ -4,6 +4,7 @@ mod caps;
 mod cursor;
 mod input;
 mod interaction;
+mod keyboard;
 mod paste_dialog;
 mod scrollbar;
 mod selection;
@@ -13,12 +14,11 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    keyboard::{Key, ModifiersState, NamedKey},
+    keyboard::ModifiersState,
     window::{Window, WindowId},
 };
 
 use crate::{
-    app::input::InputEncoder,
     event::AppEvent,
     pty::{Pty, PtyWakeHandler},
     terminal::Terminal,
@@ -28,8 +28,8 @@ use harbor_ui::{
     Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, WidgetRuntime,
 };
 use interaction::TerminalInteraction;
+use keyboard::KeyboardDispatch;
 use paste_dialog::{PasteDialog, PasteDialogResult};
-
 /// Result of a shell-owned terminal interaction event.
 #[must_use]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,36 +39,6 @@ pub(super) enum EventResult {
     ConfirmPaste(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScrollbackNavigation {
-    PageUp,
-    PageDown,
-    Top,
-    Bottom,
-}
-
-fn scrollback_navigation(
-    logical_key: &Key,
-    modifiers: ModifiersState,
-    is_alt_screen: bool,
-) -> Option<ScrollbackNavigation> {
-    if is_alt_screen
-        || modifiers.shift_key()
-        || modifiers.control_key()
-        || modifiers.alt_key()
-        || modifiers.super_key()
-    {
-        return None;
-    }
-
-    match logical_key {
-        Key::Named(NamedKey::PageUp) => Some(ScrollbackNavigation::PageUp),
-        Key::Named(NamedKey::PageDown) => Some(ScrollbackNavigation::PageDown),
-        Key::Named(NamedKey::Home) => Some(ScrollbackNavigation::Top),
-        Key::Named(NamedKey::End) => Some(ScrollbackNavigation::Bottom),
-        _ => None,
-    }
-}
 
 /// Application state holding the window and its renderer.
 pub(crate) struct App {
@@ -280,55 +250,30 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        // Detect Ctrl+C copy — the only keyboard event that should NOT
-        // scroll to bottom (user is reading scrollback while copying).
-        let is_copy = self.modifiers.control_key()
-            && matches!(&event, WindowEvent::KeyboardInput { event: kbd, .. }
-                if kbd.state == ElementState::Pressed
-                && matches!(&kbd.logical_key, Key::Character(ch) if ch == "c" || ch == "C")
-            );
-
-        // Scroll to bottom on keyboard input that produces visible text.
-        // Bare modifiers, arrow keys, F-keys, and Ctrl+C copy don't scroll.
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-            && kbd.text.is_some()
-            && !(handled == EventResult::Handled && is_copy)
-        {
-            terminal.scroll_viewport_to_bottom();
-        }
-
-        // Handled events (copy, paste) redraw the terminal projection before
-        // returning early to avoid forwarding the key to the PTY.
-        if handled == EventResult::Handled {
-            window.request_redraw();
-            return;
-        }
-
-        // Bare navigation keys own the normal-screen scrollback viewport.
-        // Selection has already observed the press and cancelled itself.
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-            && let Some(navigation) =
-                scrollback_navigation(&kbd.logical_key, self.modifiers, terminal.is_alt_screen())
-        {
-            let page_rows = terminal.screen().rows();
-            match navigation {
-                ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(page_rows),
-                ScrollbackNavigation::PageDown => terminal.scroll_viewport_down(page_rows),
-                ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
-                ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
+        // Keyboard dispatch: pure decision + ordered side effects
+        // (scroll-to-bottom, scrollback nav, redraw, PTY forward).
+        // Keyboard events go through dispatch even when Handled
+        // (e.g. paste scrolls to bottom, copy needs redraw).
+        let dispatch = match &event {
+            WindowEvent::KeyboardInput { event: kbd, .. } if kbd.state == ElementState::Pressed => {
+                KeyboardDispatch::decide(
+                    &kbd.logical_key,
+                    kbd.text.as_deref(),
+                    kbd.location,
+                    self.modifiers,
+                    terminal.is_alt_screen(),
+                    terminal.screen().input_modes(),
+                    &handled,
+                )
             }
+            _ => KeyboardDispatch::none(),
+        };
+        if dispatch.needs_redraw {
+            dispatch.apply(terminal, pty, window);
+        } else if handled == EventResult::Handled {
+            // Non-keyboard Handled event (e.g. scrollbar consumed mouse)
             window.request_redraw();
             return;
-        }
-
-        // Unhandled keyboard redraws the terminal projection so selection state
-        // is visible before PTY output arrives.
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-        {
-            window.request_redraw();
         }
 
         match event {
@@ -387,25 +332,6 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     window.request_redraw();
                 }
-            }
-
-            // Keyboard press → forward the key event to the PTY stdin pipe.
-            WindowEvent::KeyboardInput {
-                device_id: _,
-                event,
-                is_synthetic: _,
-            } if event.state == ElementState::Pressed && !dialog_active => {
-                let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
-                let Some(bytes) = InputEncoder::key(
-                    &event.logical_key,
-                    event.text.as_deref(),
-                    self.modifiers,
-                    terminal.screen().input_modes(),
-                    is_numpad,
-                ) else {
-                    return;
-                };
-                pty.write(&bytes);
             }
             _ => {}
         }
@@ -580,7 +506,7 @@ fn paint_gdi_background(window: &Window) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::keyboard::{scrollback_navigation, ScrollbackNavigation};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn key(name: NamedKey) -> Key {
