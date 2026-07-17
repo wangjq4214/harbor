@@ -24,7 +24,6 @@ use crate::{
     terminal::Terminal,
 };
 use harbor_render::{FrameOutcome, RenderTarget, UiRenderer};
-use harbor_types::TerminalSize;
 use harbor_ui::{
     Key as UiKey, Terminal as UiTerminal, TerminalIntent, TerminalScroll, WidgetRuntime,
 };
@@ -89,8 +88,8 @@ pub(crate) struct App {
     terminal: Option<Terminal>,
     /// Shell process with background output reader.
     pty: Pty,
-    /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
-    pending_resize: Option<TerminalSize>,
+    /// Coalesced pending resize (raw pixel dims); applied in `about_to_wait`.
+    pending_resize: Option<(u32, u32, f64)>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
     /// Active paste confirmation dialog (None when no confirmation is pending).
@@ -147,12 +146,28 @@ impl ApplicationHandler<AppEvent> for App {
         };
 
         // Apply coalesced resize before blocking.
-        if let Some(new_size) = self.pending_resize.take()
-            && terminal.resize_terminal_if_changed(new_size)
-        {
-            self.pty.resize(new_size);
-            // Redraw immediately with the resized grid (preserved old content)
-            // instead of waiting for the shell to produce output after SIGWINCH.
+        if let Some((width, height, scale)) = self.pending_resize.take() {
+            if let Some(render_target) = self.render_target.as_mut() {
+                render_target.resize(width, height, scale);
+                let environment = render_target.environment();
+                let (logical_w, logical_h) = environment.logical_size();
+                let metrics = environment.text_metrics();
+                if let Some(ui) = self.ui.as_ref()
+                    && let TerminalIntent::Resize(new_size) = ui.resize_intent(
+                        harbor_ui::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: logical_w,
+                            height: logical_h,
+                        },
+                        metrics.cell_width,
+                        metrics.line_height,
+                    )
+                    && terminal.resize_terminal_if_changed(new_size)
+                {
+                    self.pty.resize(new_size);
+                }
+            }
             window.request_redraw();
         }
 
@@ -326,32 +341,15 @@ impl ApplicationHandler<AppEvent> for App {
                 self.modifiers = modifiers.state();
             }
 
-            // Resize the renderer target immediately, then defer terminal-grid resize
-            // to `about_to_wait` to coalesce bounce.
+            // Resize the renderer target and terminal grid in `about_to_wait`
+            // to coalesce rapid resize events.  Calling surface.configure and
+            // render_frame on every Resized during a drag causes visible stutter.
             WindowEvent::Resized(size) => {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                if let Some(render_target) = self.render_target.as_mut() {
-                    render_target.resize(size.width, size.height, window.scale_factor());
-                    let environment = render_target.environment();
-                    let (width, height) = environment.logical_size();
-                    let metrics = environment.text_metrics();
-                    if let TerminalIntent::Resize(new_size) = ui.resize_intent(
-                        harbor_ui::Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            width,
-                            height,
-                        },
-                        metrics.cell_width,
-                        metrics.line_height,
-                    ) {
-                        self.pending_resize = Some(new_size);
-                    }
-                }
-                window.request_redraw();
+                self.pending_resize = Some((size.width, size.height, window.scale_factor()));
             }
 
             // Redraw: draw a frame and present it.
