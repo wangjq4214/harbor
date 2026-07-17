@@ -1,10 +1,10 @@
 //! Renderer-owned UI frame and paint command contracts.
 
+mod gpu;
 mod solid;
 mod text;
-
+use crate::gpu::runtime::{GpuRuntime, GpuSurface};
 use anyhow::Result;
-use harbor_gpu::{GpuRuntime, GpuSurface};
 use harbor_types::{Rect, RgbaColor};
 use solid::SolidRenderer;
 use std::{collections::HashSet, sync::Arc};

@@ -772,15 +772,6 @@ name = "harbor-config"
 version = "0.1.0"
 
 [[package]]
-name = "harbor-gpu"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "wgpu",
- "winit",
-]
-
-[[package]]
 name = "harbor-parser"
 version = "0.1.0"
 
@@ -804,7 +795,6 @@ dependencies = [
  "fontdb",
  "fontdue",
  "harbor-config",
- "harbor-gpu",
  "harbor-types",
  "pollster",
  "tracing",

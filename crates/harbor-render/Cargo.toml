@@ -9,7 +9,6 @@ fontdb = { workspace = true }
 fontdue = { workspace = true }
 harbor-config = { workspace = true }
 anyhow = { workspace = true }
-harbor-gpu = { workspace = true }
 harbor-types = { workspace = true }
 tracing = { workspace = true }
 wgpu = { workspace = true }

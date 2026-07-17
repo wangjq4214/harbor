@@ -3,30 +3,30 @@ use std::sync::Arc;
 use winit::window::Window;
 
 /// Domain-neutral GPU device runtime shared by renderer targets.
-pub struct GpuRuntime {
-    instance: Arc<wgpu::Instance>,
+pub(crate) struct GpuRuntime {
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
 
 /// One configured surface owned by a renderer target.
-pub struct GpuSurface {
+pub(crate) struct GpuSurface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
 }
 
 impl GpuRuntime {
     /// Creates a device compatible with `window` and returns its first surface.
-    pub async fn new(window: Arc<Window>) -> Result<(Self, GpuSurface)> {
+    pub(crate) async fn new(window: Arc<Window>) -> Result<(Self, GpuSurface)> {
         let size = window.inner_size();
-        let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             #[cfg(target_os = "windows")]
             backends: wgpu::Backends::DX12,
             #[cfg(not(target_os = "windows"))]
             backends: wgpu::Backends::all(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
-        }));
+        });
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -57,7 +57,7 @@ impl GpuRuntime {
     }
 
     /// Creates and configures an additional surface for a host-owned window.
-    pub fn create_surface(&self, window: Arc<Window>) -> Result<GpuSurface> {
+    pub(crate) fn create_surface(&self, window: Arc<Window>) -> Result<GpuSurface> {
         let size = window.inner_size();
         let surface = self
             .instance
@@ -66,11 +66,11 @@ impl GpuRuntime {
         Ok(self.configure_surface(surface, (size.width, size.height)))
     }
 
-    pub fn device(&self) -> &wgpu::Device {
+    pub(crate) fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    pub fn queue(&self) -> &wgpu::Queue {
+    pub(crate) fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
 
@@ -99,7 +99,7 @@ impl GpuRuntime {
 }
 
 impl GpuSurface {
-    pub fn resize(&mut self, runtime: &GpuRuntime, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, runtime: &GpuRuntime, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
         }
@@ -108,15 +108,15 @@ impl GpuSurface {
         self.surface.configure(runtime.device(), &self.config);
     }
 
-    pub fn size(&self) -> (u32, u32) {
+    pub(crate) fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
     }
 
-    pub fn format(&self) -> wgpu::TextureFormat {
+    pub(crate) fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
-    pub fn acquire(&self) -> wgpu::CurrentSurfaceTexture {
+    pub(crate) fn acquire(&self) -> wgpu::CurrentSurfaceTexture {
         self.surface.get_current_texture()
     }
 }
