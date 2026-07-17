@@ -248,20 +248,28 @@ impl NormalBuf {
 
     /// Scroll the viewport up by `n` rows (toward older history).
     pub fn scroll_up(&mut self, n: usize) {
+        let old = self.view_offset;
         self.view_offset = (self.view_offset + n).min(self.scroll_count);
-        self.mark_all_dirty();
+        if self.view_offset != old {
+            self.mark_all_dirty();
+        }
     }
 
     /// Scroll the viewport down by `n` rows (toward live content).
     pub fn scroll_down(&mut self, n: usize) {
+        let old = self.view_offset;
         self.view_offset = self.view_offset.saturating_sub(n);
-        self.mark_all_dirty();
+        if self.view_offset != old {
+            self.mark_all_dirty();
+        }
     }
 
     /// Snap the viewport back to the live bottom.
     pub fn scroll_to_bottom(&mut self) {
-        self.view_offset = 0;
-        self.mark_all_dirty();
+        if self.view_offset != 0 {
+            self.view_offset = 0;
+            self.mark_all_dirty();
+        }
     }
 
     // ── full-screen scroll (O(1) ring-buffer advance) ───────────────
