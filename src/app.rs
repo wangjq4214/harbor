@@ -465,6 +465,15 @@ impl App {
         if let Some(worker) = self.worker.as_ref() {
             let status = worker.status();
             if status != self.worker_status {
+                match &status {
+                    WorkerStatus::Failed { .. } => {
+                        tracing::error!(status = ?status, "terminal worker failed");
+                    }
+                    WorkerStatus::Stopped => {
+                        tracing::info!(status = ?status, "terminal worker stopped");
+                    }
+                    WorkerStatus::Ready | WorkerStatus::Processing | WorkerStatus::Idle => {}
+                }
                 self.worker_status = status;
                 changed = true;
             }

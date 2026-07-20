@@ -60,7 +60,7 @@ impl TerminalWorkerClient {
             status: WorkerStatus::Ready,
         }));
         let worker_mailbox = Arc::clone(&mailbox);
-        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<anyhow::Result<()>>(0);
         let panic_mailbox = Arc::clone(&mailbox);
         let notifier: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = event_proxy.send_event(AppEvent::WorkerUpdateReady);
@@ -84,9 +84,10 @@ impl TerminalWorkerClient {
                     )
                 });
             })?;
-        ready_rx
+        let startup = ready_rx
             .recv()
             .map_err(|_| anyhow::anyhow!("terminal worker exited during startup"))?;
+        startup?;
 
         Ok(Self {
             control_tx,
@@ -149,12 +150,12 @@ fn worker_main(
     pty_rx: Receiver<PtyMessage>,
     pty_tx: Sender<PtyMessage>,
     mailbox: Arc<Mutex<Mailbox>>,
-    ready_tx: mpsc::SyncSender<()>,
+    ready_tx: mpsc::SyncSender<anyhow::Result<()>>,
 ) {
     let mut terminal = Terminal::new(size.rows, size.cols);
     let mut revision = 0;
     publish_snapshot(&mut terminal, &mailbox, notifier.as_ref(), revision, false);
-    let _ = ready_tx.send(());
+    // Readiness is acknowledged only after the PTY has started successfully.
 
     let mut pty = Pty::new(NoopWake);
     if start_pty {
@@ -179,8 +180,11 @@ fn worker_main(
                 },
             );
             notify(notifier.as_ref());
+            let _ = ready_tx.send(Err(anyhow::anyhow!("failed to start pty: {error:#}")));
+            return;
         }
     }
+    let _ = ready_tx.send(Ok(()));
 
     let mut control_closed = false;
     let mut pty_closed = false;
@@ -221,14 +225,15 @@ fn worker_main(
                 set_status(&mailbox, WorkerStatus::Idle);
                 notify(notifier.as_ref());
             }
-            Ok(PtyMessage::Status(status)) => {
+            Ok(PtyMessage::Status(PtyReaderStatus::Eof)) => {
                 progressed = true;
-                set_status(
-                    &mailbox,
-                    WorkerStatus::Failed {
-                        message: status.to_string(),
-                    },
-                );
+                set_status(&mailbox, WorkerStatus::Stopped);
+                notify(notifier.as_ref());
+                break;
+            }
+            Ok(PtyMessage::Status(PtyReaderStatus::Error(error))) => {
+                progressed = true;
+                set_status(&mailbox, WorkerStatus::Failed { message: error });
                 notify(notifier.as_ref());
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
@@ -526,7 +531,7 @@ mod tests {
         let notifier: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.send(());
         });
-        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<anyhow::Result<()>>(0);
         let worker_mailbox = Arc::clone(&mailbox);
         let thread = std::thread::spawn(move || {
             worker_main(
@@ -545,7 +550,8 @@ mod tests {
 
         ready_rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("worker publishes the initial snapshot");
+            .expect("worker publishes the initial snapshot")
+            .expect("worker startup succeeds");
         let initial = lock(&mailbox)
             .update
             .take()
