@@ -4,6 +4,6 @@
 
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
-    /// Lightweight wake: PTY reader has appended bytes to the shared buffer.
-    PtyOutputReady,
+    /// The terminal worker published a new snapshot or status.
+    WorkerUpdateReady,
 }

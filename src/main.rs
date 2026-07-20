@@ -5,7 +5,6 @@
 
 mod app;
 mod event;
-mod pty;
 mod terminal;
 mod terminal_worker;
 
