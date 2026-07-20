@@ -269,8 +269,7 @@ impl CursorInput for Cursor {
     {
         match event {
             winit::event::WindowEvent::RedrawRequested => {
-                let screen = caps.terminal().screen();
-                let snap = screen.snapshot();
+                let snap = caps.terminal().render_snapshot();
                 let visible = should_render_cursor(&snap, self.blink_visible());
                 self.set_visible(visible, &snap);
                 self.prepare(caps.gpu(), Some(&snap));
@@ -285,8 +284,8 @@ impl CursorInput for Cursor {
     where
         C: TerminalAccess + RedrawAccess,
     {
-        let screen = caps.terminal().screen();
-        if !screen.cursor_visible() || !screen.cursor_blink() {
+        let view = caps.terminal().view();
+        if !view.cursor_visible() || !view.cursor_blink() {
             return None;
         }
         let visible = self.blink_visible();

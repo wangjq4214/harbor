@@ -9,7 +9,7 @@ use crate::{
 };
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
-use harbor_terminal::{self, PasteDisposition, Screen};
+use harbor_terminal::{self, PasteDisposition};
 use winit::keyboard::{Key, NamedKey};
 
 use harbor_terminal::{AutoScroll, SelectionModel, SelectionOutcome};
@@ -154,16 +154,6 @@ impl Selection {
         verts
     }
 
-    /// Returns the currently selected text, or `None` when there is no active selection.
-    fn selected_text(&self, screen: &Screen) -> Option<String> {
-        if self.model.is_range_empty() {
-            return None;
-        }
-        let bounds = self.model.bounds()?;
-        let text = screen.selected_text(bounds);
-        if text.is_empty() { None } else { Some(text) }
-    }
-
     /// Intercepts Ctrl+C (copy selection) and Ctrl+V (paste). Returns
     /// `None` when the event is not a keyboard shortcut we handle.
     fn try_handle_keyboard<C>(
@@ -201,9 +191,16 @@ impl Selection {
         if ctrl {
             match &kbd.logical_key {
                 winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
-                    let Some(text) = self.selected_text(caps.terminal().screen()) else {
+                    if self.model.is_range_empty() {
+                        return Some(EventResult::Continue);
+                    }
+                    let Some(bounds) = self.model.bounds() else {
                         return Some(EventResult::Continue);
                     };
+                    let text = caps.terminal().selected_text(bounds);
+                    if text.is_empty() {
+                        return Some(EventResult::Continue);
+                    }
                     if let Some(clipboard) = self.clipboard.as_mut()
                         && let Err(e) = clipboard.set_text(text)
                     {
@@ -213,7 +210,7 @@ impl Selection {
                 }
                 winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
                     if let Some(text) = read_paste_text(&mut self.clipboard) {
-                        let modes = caps.terminal().screen().input_modes();
+                        let modes = caps.terminal().view().input_modes();
                         match PasteDisposition::decide(modes, &text) {
                             PasteDisposition::SendDirect => {
                                 caps.pty().write(&modes.paste(text.as_bytes()));
@@ -234,7 +231,7 @@ impl Selection {
             && let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Insert) = &kbd.logical_key
         {
             if let Some(text) = read_paste_text(&mut self.clipboard) {
-                let modes = caps.terminal().screen().input_modes();
+                let modes = caps.terminal().view().input_modes();
                 match PasteDisposition::decide(modes, &text) {
                     PasteDisposition::SendDirect => {
                         caps.pty().write(&modes.paste(text.as_bytes()));
@@ -282,7 +279,7 @@ impl Selection {
             return EventResult::Continue;
         }
 
-        let snap = caps.terminal().screen();
+        let snap = caps.terminal().view();
         let (g, col) = self.pixel_to_cell(
             position.x,
             position.y,
@@ -313,7 +310,7 @@ impl Selection {
         match state {
             winit::event::ElementState::Pressed => {
                 if let Some((x, y)) = self.last_cursor_pos {
-                    let snap = caps.terminal().screen();
+                    let snap = caps.terminal().view();
                     let (g, col) = self.pixel_to_cell(
                         x,
                         y,
@@ -414,7 +411,7 @@ impl SelectionInput for Selection {
             return Some(deadline);
         }
 
-        let snap = caps.terminal().screen();
+        let snap = caps.terminal().view();
         let (direction, new_cursor) = self.model.compute_auto_scroll_cursor(now, snap)?;
 
         // Execute the viewport scroll.

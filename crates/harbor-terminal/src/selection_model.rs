@@ -4,8 +4,7 @@
 //! auto-scroll scheduling.  No GPU or window dependencies — testable without
 //! a rendering context.
 
-use crate::screen::Screen;
-use harbor_types::SelectionBounds;
+use harbor_types::{SelectionBounds, TerminalView};
 use std::time::{Duration, Instant};
 
 /// Characters that delimit words for double-click word selection.
@@ -143,7 +142,12 @@ impl SelectionModel {
     ///
     /// Detects click chains (double/triple-click) and sets the selection range
     /// and granularity accordingly.
-    pub fn press(&mut self, cell: (u64, usize), now: Instant, screen: &Screen) -> SelectionOutcome {
+    pub fn press(
+        &mut self,
+        cell: (u64, usize),
+        now: Instant,
+        screen: &(impl TerminalView + ?Sized),
+    ) -> SelectionOutcome {
         // ── Click chain detection ──────────────────────────
         let in_timeout = self
             .last_click_at
@@ -193,7 +197,7 @@ impl SelectionModel {
 
     /// Mouse drag to `cell` during an active selection.
     /// Returns true if the cursor position changed.
-    pub fn drag_to(&mut self, cell: (u64, usize), screen: &Screen) -> bool {
+    pub fn drag_to(&mut self, cell: (u64, usize), screen: &(impl TerminalView + ?Sized)) -> bool {
         let Some(ref mut sel) = self.range else {
             return false;
         };
@@ -324,7 +328,7 @@ impl SelectionModel {
     pub fn compute_auto_scroll_cursor(
         &mut self,
         now: Instant,
-        screen: &Screen,
+        screen: &(impl TerminalView + ?Sized),
     ) -> Option<(AutoScroll, (u64, usize))> {
         let scroll = self.auto_scroll?;
         if !self.dragging {
@@ -378,7 +382,7 @@ impl SelectionModel {
     /// at `(generation, col)`.  When the clicked cell is a separator, the word
     /// range is zero-width (just that cell).
     pub fn find_word_range(
-        screen: &Screen,
+        screen: &(impl TerminalView + ?Sized),
         generation: u64,
         col: usize,
     ) -> ((u64, usize), (u64, usize)) {
@@ -440,7 +444,7 @@ impl SelectionModel {
     }
 
     pub fn snap_word_cursor(
-        screen: &Screen,
+        screen: &(impl TerminalView + ?Sized),
         generation: u64,
         col: usize,
         anchor: (u64, usize),
@@ -516,7 +520,7 @@ impl SelectionModel {
 
     /// Snap cursor column for line-wise drag.
     pub fn snap_line_cursor(
-        screen: &Screen,
+        screen: &(impl TerminalView + ?Sized),
         generation: u64,
         col: usize,
         anchor: (u64, usize),

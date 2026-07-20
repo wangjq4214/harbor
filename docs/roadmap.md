@@ -67,7 +67,7 @@ Snapshot date: **2026-07-15**.
 | v0.2      | Terminal core             | SGR, grid editing, scroll regions, alt screen, cursor state done; parser/runtime gaps remain          |
 | v0.3      | Cell-based renderer       | Color, decorations, cursor shapes, scrollback rendering done; combining marks and box drawing remain  |
 | v0.4      | Interactive features      | Selection, clipboard, scrollback, scrollbar done; IME, mouse protocol, keybindings, hyperlinks remain |
-| v0.5      | Performance and stability | Damage tracking and batching done; latency, benchmarks, backpressure, diagnostics remain              |
+| v0.5      | Performance and stability | Damage tracking and batching done; U1 UI façade and revisioned snapshot contract established; latency, benchmarks, backpressure, diagnostics remain |
 | v0.6      | Daily usable release      | Config, themes, search, packaging, dogfood not started                                                |
 
 ### 3.3 Recommended Critical Path

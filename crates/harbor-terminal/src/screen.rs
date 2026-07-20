@@ -416,6 +416,27 @@ impl Screen {
         }
     }
 
+    /// Produces the GPU-independent terminal state exchanged with the UI.
+    pub fn terminal_snapshot(&self) -> harbor_types::TerminalSnapshot {
+        let render = self.snapshot();
+        harbor_types::TerminalSnapshot {
+            rows: render.rows,
+            cols: render.cols,
+            cells: render.cells,
+            cursor_x: render.cursor_x,
+            cursor_y: render.cursor_y,
+            cursor_visible: render.cursor_visible,
+            cursor_blink: render.cursor_blink,
+            cursor_shape: render.cursor_shape,
+            scroll_count: render.scroll_count,
+            view_offset: render.view_offset,
+            history_start: render.history_start,
+            is_alt: render.is_alt,
+            input_modes: self.input_modes(),
+            dirty_ranges: render.dirty_ranges,
+        }
+    }
+
     /// Extracts the selected text for the given generation-coordinate bounds.
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
         let SelectionBounds {

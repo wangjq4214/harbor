@@ -189,7 +189,7 @@ pub enum CursorShape {
 
 /// Display-coordinate bounds of a text selection, row-major, inclusive.
 /// `start_row` / `end_row` are **generations** (stable scrollback coordinates).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelectionBounds {
     pub start_row: u64,
     pub start_col: usize,
@@ -383,5 +383,239 @@ impl RenderSnapshot {
     #[inline]
     pub fn cell_char(&self, row: usize, col: usize) -> char {
         self.cells[row * self.cols + col].ch
+    }
+}
+
+// ── Terminal worker contract ────────────────────────────────────────────────
+
+/// Complete terminal state exchanged between the terminal model and the UI.
+///
+/// This is intentionally a domain snapshot. It contains no GPU handles, UVs,
+/// or buffer offsets; the renderer derives its own projection from this data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalSnapshot {
+    pub rows: usize,
+    pub cols: usize,
+    pub cells: Vec<Cell>,
+    pub cursor_x: usize,
+    pub cursor_y: usize,
+    pub cursor_visible: bool,
+    pub cursor_blink: bool,
+    pub cursor_shape: CursorShape,
+    pub scroll_count: usize,
+    pub view_offset: usize,
+    pub history_start: u64,
+    pub is_alt: bool,
+    pub input_modes: InputModes,
+    pub dirty_ranges: Vec<DirtyRange>,
+}
+
+impl TerminalSnapshot {
+    /// Builds the renderer-only projection at the UI/GPU boundary.
+    pub fn render_snapshot(&self) -> RenderSnapshot {
+        RenderSnapshot {
+            rows: self.rows,
+            cols: self.cols,
+            cells: self.cells.clone(),
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            cursor_visible: self.cursor_visible,
+            cursor_blink: self.cursor_blink,
+            cursor_shape: self.cursor_shape,
+            scroll_count: self.scroll_count,
+            view_offset: self.view_offset,
+            history_start: self.history_start,
+
+            is_alt: self.is_alt,
+            dirty_ranges: self.dirty_ranges.clone(),
+        }
+    }
+}
+
+/// Read-only terminal view required by selection and cursor UI logic.
+///
+/// The trait keeps UI code independent from the mutable `Terminal` model.
+pub trait TerminalView {
+    fn rows(&self) -> usize;
+    fn cols(&self) -> usize;
+    fn scroll_count(&self) -> usize;
+    fn view_offset(&self) -> usize;
+    fn history_start(&self) -> u64;
+    fn cursor_visible(&self) -> bool;
+    fn cursor_blink(&self) -> bool;
+    fn input_modes(&self) -> InputModes;
+    fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell>;
+}
+
+/// Damage carried by a complete update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateDamage {
+    /// The listed ranges are sufficient for an incremental renderer upload.
+    Ranges(Vec<DirtyRange>),
+    /// The renderer must upload the complete visible grid.
+    FullUpload,
+}
+
+/// Ordered commands accepted by a synchronous facade or a future worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalCommand {
+    /// Raw PTY output. Bytes must be consumed in this exact order.
+    PtyOutputBytes(Vec<u8>),
+    /// Already encoded bytes destined for PTY input.
+    WritePtyInput(Vec<u8>),
+    Resize(TerminalSize),
+    ScrollViewport {
+        rows: isize,
+    },
+    ScrollToTop,
+    ScrollToBottom,
+    SetSelectionDragActive(bool),
+    CopySelection {
+        request_id: u64,
+        bounds: SelectionBounds,
+    },
+    RequestSnapshot {
+        request_id: u64,
+    },
+    Shutdown,
+}
+
+/// Worker health visible to the UI without exposing worker internals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerStatus {
+    Ready,
+    Processing,
+    Idle,
+    Failed { message: String },
+    Stopped,
+}
+
+/// Complete, revisioned state published by the terminal worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalUpdate {
+    pub revision: u64,
+    pub snapshot: TerminalSnapshot,
+    pub damage: UpdateDamage,
+}
+
+impl TerminalUpdate {
+    pub fn from_snapshot(revision: u64, snapshot: TerminalSnapshot) -> Self {
+        Self {
+            revision,
+            damage: UpdateDamage::Ranges(snapshot.dirty_ranges.clone()),
+            snapshot,
+        }
+    }
+}
+
+/// Accepts monotonically increasing updates and converts revision gaps into
+/// an explicit full-upload requirement.
+#[derive(Debug, Default)]
+pub struct RevisionedUpdateReceiver {
+    last_revision: Option<u64>,
+}
+
+impl RevisionedUpdateReceiver {
+    pub fn last_revision(&self) -> Option<u64> {
+        self.last_revision
+    }
+
+    pub fn accept(&mut self, mut update: TerminalUpdate) -> Option<TerminalUpdate> {
+        if self
+            .last_revision
+            .is_some_and(|last| update.revision <= last)
+        {
+            return None;
+        }
+        if self
+            .last_revision
+            .is_some_and(|last| update.revision > last.saturating_add(1))
+        {
+            update.damage = UpdateDamage::FullUpload;
+        }
+        self.last_revision = Some(update.revision);
+        Some(update)
+    }
+}
+
+#[cfg(test)]
+mod worker_contract_tests {
+    use super::*;
+
+    fn snapshot(dirty_ranges: Vec<DirtyRange>) -> TerminalSnapshot {
+        TerminalSnapshot {
+            rows: 1,
+            cols: 2,
+            cells: vec![Cell::default(); 2],
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_visible: true,
+            cursor_blink: false,
+            cursor_shape: CursorShape::default(),
+            scroll_count: 0,
+            view_offset: 0,
+            history_start: 0,
+            is_alt: false,
+            input_modes: InputModes::default(),
+            dirty_ranges,
+        }
+    }
+
+    #[test]
+    fn stale_updates_cannot_replace_newer_state() {
+        let mut receiver = RevisionedUpdateReceiver::default();
+        let current = TerminalUpdate::from_snapshot(2, snapshot(Vec::new()));
+        assert!(receiver.accept(current).is_some());
+        assert!(
+            receiver
+                .accept(TerminalUpdate::from_snapshot(1, snapshot(Vec::new())))
+                .is_none()
+        );
+        assert_eq!(receiver.last_revision(), Some(2));
+    }
+
+    #[test]
+    fn skipped_revision_requires_full_upload() {
+        let mut receiver = RevisionedUpdateReceiver::default();
+        assert!(
+            receiver
+                .accept(TerminalUpdate::from_snapshot(
+                    4,
+                    snapshot(vec![DirtyRange {
+                        row: 0,
+                        start_col: 1,
+                        end_col: 2,
+                    }])
+                ))
+                .is_some()
+        );
+
+        let accepted = receiver
+            .accept(TerminalUpdate::from_snapshot(
+                6,
+                snapshot(vec![DirtyRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 1,
+                }]),
+            ))
+            .expect("new revision is accepted");
+        assert_eq!(accepted.damage, UpdateDamage::FullUpload);
+    }
+
+    #[test]
+    fn output_command_preserves_raw_ordered_bytes() {
+        let commands = [
+            TerminalCommand::PtyOutputBytes(vec![0x1b, b'[']),
+            TerminalCommand::PtyOutputBytes(vec![b'2', b'J']),
+        ];
+        let mut bytes = Vec::new();
+        for command in commands {
+            let TerminalCommand::PtyOutputBytes(chunk) = command else {
+                unreachable!("test only contains output commands");
+            };
+            bytes.extend(chunk);
+        }
+        assert_eq!(bytes, b"\x1b[2J");
     }
 }

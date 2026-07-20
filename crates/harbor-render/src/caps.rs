@@ -5,8 +5,7 @@
 //! are bounded on exactly those traits — a missing bound is a compile error,
 //! and an over-broad context would have to implement rights it should not have.
 
-use harbor_pty::Pty;
-use harbor_terminal::Terminal;
+use harbor_types::{RenderSnapshot, SelectionBounds, TerminalView};
 use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::keyboard::ModifiersState;
@@ -14,10 +13,34 @@ use winit::window::Window;
 
 use crate::{EventResult, GpuContext};
 
+/// Read-only terminal state exposed to UI layers.
+pub trait TerminalFacade {
+    fn view(&self) -> &dyn TerminalView;
+    fn render_snapshot(&self) -> RenderSnapshot;
+    fn selected_text(&self, bounds: SelectionBounds) -> String;
+    fn scroll_viewport_up(&mut self, n: usize);
+    fn scroll_viewport_down(&mut self, n: usize);
+    fn scroll_viewport_to_top(&mut self);
+    fn scroll_viewport_to_bottom(&mut self);
+    fn set_suppress_scroll_snap(&mut self, active: bool);
+    fn is_alt_screen(&self) -> bool;
+}
+
+/// PTY write capability exposed to UI layers.
+pub trait PtyFacade {
+    fn write(&mut self, bytes: &[u8]);
+}
+
+/// Replaceable UI backend. U1 uses a synchronous adapter; U2 can implement
+/// the same boundary with a worker mailbox.
+pub trait UiFacade: TerminalFacade + PtyFacade {}
+
+impl<T> UiFacade for T where T: TerminalFacade + PtyFacade {}
+
 // ── Access traits (resources a handler may request) ─────────────────────────
 
 pub trait TerminalAccess {
-    fn terminal(&self) -> &Terminal;
+    fn terminal(&self) -> &dyn TerminalFacade;
 }
 
 /// Redraw-only window right. Prefer this over handing out a full `&Window`.
@@ -30,7 +53,7 @@ pub trait GpuAccess {
 }
 
 pub trait PtyAccess {
-    fn pty(&mut self) -> &mut Pty;
+    fn pty(&mut self) -> &mut dyn PtyFacade;
 }
 
 pub trait ModifiersAccess {
@@ -48,14 +71,13 @@ pub trait ScrollAccess {
 // ── Layer contexts (grant only their own rights) ────────────────────────────
 
 pub struct SelectionContext<'a> {
-    pub terminal: &'a mut Terminal,
+    pub terminal: &'a mut dyn UiFacade,
     pub window: &'a Window,
-    pub pty: &'a mut Pty,
     pub modifiers: ModifiersState,
 }
 
 impl TerminalAccess for SelectionContext<'_> {
-    fn terminal(&self) -> &Terminal {
+    fn terminal(&self) -> &dyn TerminalFacade {
         self.terminal
     }
 }
@@ -67,8 +89,8 @@ impl RedrawAccess for SelectionContext<'_> {
 }
 
 impl PtyAccess for SelectionContext<'_> {
-    fn pty(&mut self) -> &mut Pty {
-        self.pty
+    fn pty(&mut self) -> &mut dyn PtyFacade {
+        self.terminal
     }
 }
 
@@ -94,12 +116,12 @@ impl ScrollAccess for SelectionContext<'_> {
 
 /// Timer context for selection auto-scroll — grants scroll + read + redraw.
 pub struct SelectionWaitContext<'a> {
-    pub terminal: &'a mut Terminal,
+    pub terminal: &'a mut dyn UiFacade,
     pub window: &'a Window,
 }
 
 impl TerminalAccess for SelectionWaitContext<'_> {
-    fn terminal(&self) -> &Terminal {
+    fn terminal(&self) -> &dyn TerminalFacade {
         self.terminal
     }
 }
@@ -125,13 +147,13 @@ impl ScrollAccess for SelectionWaitContext<'_> {
 }
 
 pub struct ScrollbarContext<'a> {
-    pub terminal: &'a Terminal,
+    pub terminal: &'a dyn TerminalFacade,
     pub gpu: &'a GpuContext,
     pub window: &'a Window,
 }
 
 impl TerminalAccess for ScrollbarContext<'_> {
-    fn terminal(&self) -> &Terminal {
+    fn terminal(&self) -> &dyn TerminalFacade {
         self.terminal
     }
 }
@@ -158,12 +180,12 @@ impl RedrawAccess for ScrollbarWaitContext<'_> {
 }
 
 pub struct CursorContext<'a> {
-    pub terminal: &'a Terminal,
+    pub terminal: &'a dyn TerminalFacade,
     pub gpu: &'a GpuContext,
 }
 
 impl TerminalAccess for CursorContext<'_> {
-    fn terminal(&self) -> &Terminal {
+    fn terminal(&self) -> &dyn TerminalFacade {
         self.terminal
     }
 }
@@ -174,12 +196,12 @@ impl GpuAccess for CursorContext<'_> {
 }
 
 pub struct CursorWaitContext<'a> {
-    pub terminal: &'a Terminal,
+    pub terminal: &'a dyn TerminalFacade,
     pub window: &'a Window,
 }
 
 impl TerminalAccess for CursorWaitContext<'_> {
-    fn terminal(&self) -> &Terminal {
+    fn terminal(&self) -> &dyn TerminalFacade {
         self.terminal
     }
 }

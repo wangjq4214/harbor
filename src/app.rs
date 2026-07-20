@@ -18,8 +18,9 @@ use crate::{
     event::AppEvent,
     pty::{Pty, PtyWakeHandler},
     terminal::Terminal,
+    terminal_worker::SyncUiFacade,
 };
-use harbor_render::{EventResult, GpuContext, TextMetrics, load_system_fonts};
+use harbor_render::{EventResult, GpuContext, TerminalFacade, TextMetrics, load_system_fonts};
 use harbor_types::TerminalSize;
 use harbor_ui::DialogResult;
 use paste_dialog::PasteDialog;
@@ -114,8 +115,11 @@ impl ApplicationHandler<AppEvent> for App {
         if output.is_empty() {
             return;
         }
-        terminal.process_output(&output);
-        ui.prepare(gpu, terminal.screen());
+        {
+            let mut facade = SyncUiFacade::new(terminal, &mut self.pty);
+            facade.dispatch(harbor_types::TerminalCommand::PtyOutputBytes(output));
+        }
+        ui.prepare(gpu, &terminal.snapshot());
         terminal.clear_screen_dirty();
         window.request_redraw();
     }
@@ -134,16 +138,22 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         };
 
-        // Apply coalesced resize before blocking.
-        if let Some(new_size) = self.pending_resize.take()
-            && terminal.resize_terminal_if_changed(new_size)
-        {
-            ui.prepare(gpu, terminal.screen());
-            terminal.clear_screen_dirty();
-            pty.resize(new_size);
+        // Apply coalesced resize before blocking through the replaceable facade.
+        if let Some(new_size) = self.pending_resize.take() {
+            let changed = {
+                let mut facade = SyncUiFacade::new(terminal, pty);
+                facade.resize(new_size)
+            };
+            if changed {
+                ui.prepare(gpu, &terminal.snapshot());
+                terminal.clear_screen_dirty();
+            }
         }
 
-        let deadline = ui.compact_deadline(terminal, window);
+        let deadline = {
+            let mut facade = SyncUiFacade::new(terminal, pty);
+            ui.compact_deadline(&mut facade, window)
+        };
 
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
@@ -169,7 +179,11 @@ impl ApplicationHandler<AppEvent> for App {
                             .as_ref()
                             .map(|t| t.screen().input_modes())
                             .unwrap_or_default();
-                        crate::terminal::send_paste(modes, &text, &mut self.pty);
+                        if let Some(terminal) = self.terminal.as_mut() {
+                            let mut facade = SyncUiFacade::new(terminal, &mut self.pty);
+                            let bytes = modes.paste(text.as_bytes());
+                            facade.write_input(&bytes);
+                        }
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
@@ -234,9 +248,11 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        // Interactive layers first — each gets only the rights it needs.
-        // Scope so gpu/terminal borrows are released before prepare-on-Handled.
-        let handled = ui.handle_event(&event, terminal, window, gpu, pty, self.modifiers);
+        // Interactive layers use the replaceable terminal/PTY facade.
+        let handled = {
+            let mut facade = SyncUiFacade::new(terminal, pty);
+            ui.handle_event(&event, &mut facade, window, gpu, self.modifiers)
+        };
 
         // Multi-line paste confirmation: create dialog instead of sending to PTY.
         // Duplicate paste while dialog is open is a no-op.
@@ -255,7 +271,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(window),
                 ));
             }
-            ui.prepare(gpu, terminal.screen());
+            ui.prepare(gpu, &terminal.snapshot());
             window.request_redraw();
             return;
         }
@@ -275,14 +291,15 @@ impl ApplicationHandler<AppEvent> for App {
             && kbd.text.is_some()
             && !(handled == EventResult::Handled && is_copy)
         {
-            terminal.scroll_viewport_to_bottom();
+            let mut facade = SyncUiFacade::new(terminal, pty);
+            facade.scroll_viewport_to_bottom();
         }
 
         // Handled events (copy, paste): prepare + redraw so the GPU
         // vertex buffer reflects the cleared selection, then return
         // early to avoid forwarding the key to the PTY.
         if handled == EventResult::Handled {
-            ui.prepare(gpu, terminal.screen());
+            ui.prepare(gpu, &terminal.snapshot());
             window.request_redraw();
             return;
         }
@@ -295,13 +312,14 @@ impl ApplicationHandler<AppEvent> for App {
                 scrollback_navigation(&kbd.logical_key, self.modifiers, terminal.is_alt_screen())
         {
             let page_rows = terminal.screen().rows();
+            let mut facade = SyncUiFacade::new(terminal, pty);
             match navigation {
-                ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(page_rows),
-                ScrollbackNavigation::PageDown => terminal.scroll_viewport_down(page_rows),
-                ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
-                ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
+                ScrollbackNavigation::PageUp => facade.scroll_viewport_up(page_rows),
+                ScrollbackNavigation::PageDown => facade.scroll_viewport_down(page_rows),
+                ScrollbackNavigation::Top => facade.scroll_viewport_to_top(),
+                ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
             }
-            ui.prepare(gpu, terminal.screen());
+            ui.prepare(gpu, &terminal.snapshot());
             terminal.clear_screen_dirty();
             window.request_redraw();
             return;
@@ -312,7 +330,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
         {
-            ui.prepare(gpu, terminal.screen());
+            ui.prepare(gpu, &terminal.snapshot());
             window.request_redraw();
         }
 
@@ -355,12 +373,13 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
                 };
+                let mut facade = SyncUiFacade::new(terminal, pty);
                 if lines > 0 {
-                    terminal.scroll_viewport_up(lines as usize);
+                    facade.scroll_viewport_up(lines as usize);
                 } else if lines < 0 {
-                    terminal.scroll_viewport_down((-lines) as usize);
+                    facade.scroll_viewport_down((-lines) as usize);
                 }
-                ui.prepare(gpu, terminal.screen());
+                ui.prepare(gpu, &terminal.snapshot());
                 terminal.clear_screen_dirty();
                 window.request_redraw();
             }
@@ -381,7 +400,8 @@ impl ApplicationHandler<AppEvent> for App {
                 ) else {
                     return;
                 };
-                pty.write(&bytes);
+                let mut facade = SyncUiFacade::new(terminal, pty);
+                facade.write_input(&bytes);
             }
             _ => {}
         }
@@ -461,7 +481,7 @@ impl App {
         // build from. UiRoot computes the real grid size from font metrics.
         let mut terminal = Terminal::new(1, 1);
         let ui =
-            UiRoot::new(&gpu, terminal.screen(), fonts, metrics).map_err(AppError::Renderer)?;
+            UiRoot::new(&gpu, &terminal.snapshot(), fonts, metrics).map_err(AppError::Renderer)?;
         let size = ui.terminal_size(&gpu);
         terminal.resize(size.rows, size.cols);
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");

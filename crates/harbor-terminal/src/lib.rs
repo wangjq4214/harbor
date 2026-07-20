@@ -18,7 +18,10 @@ pub use selection_model::{
 };
 
 pub use harbor_types::should_confirm_multiline;
-pub use harbor_types::{InputModes, PasteDisposition, TerminalSize, safe_preview_line};
+pub use harbor_types::{
+    InputModes, PasteDisposition, RevisionedUpdateReceiver, TerminalCommand, TerminalSize,
+    TerminalSnapshot, TerminalUpdate, UpdateDamage, WorkerStatus, safe_preview_line,
+};
 
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.
 pub struct Terminal {
@@ -95,6 +98,11 @@ impl Terminal {
         &self.normal
     }
 
+    /// Returns the GPU-independent terminal state for the UI/update contract.
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        self.normal.terminal_snapshot()
+    }
+
     /// Mutable screen access for tests.
     pub fn screen_mut(&mut self) -> &mut Screen {
         &mut self.normal
@@ -151,5 +159,43 @@ impl Terminal {
     /// Suppress or re-enable the scroll-to-bottom snap on PTY output (used during selection drag).
     pub fn set_suppress_scroll_snap(&mut self, suppress: bool) {
         self.suppress_scroll_snap = suppress;
+    }
+}
+
+impl harbor_types::TerminalView for Screen {
+    fn rows(&self) -> usize {
+        self.rows()
+    }
+
+    fn cols(&self) -> usize {
+        self.cols()
+    }
+
+    fn scroll_count(&self) -> usize {
+        self.scroll_count()
+    }
+
+    fn view_offset(&self) -> usize {
+        self.view_offset()
+    }
+
+    fn history_start(&self) -> u64 {
+        self.history_start()
+    }
+
+    fn cursor_visible(&self) -> bool {
+        self.cursor_visible()
+    }
+
+    fn cursor_blink(&self) -> bool {
+        self.cursor_blink()
+    }
+
+    fn input_modes(&self) -> InputModes {
+        self.input_modes()
+    }
+
+    fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
+        self.cell_at_generation(generation, col)
     }
 }
