@@ -1,6 +1,6 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
-mod input;
+pub(crate) mod input;
 mod paste_dialog;
 mod ui;
 
@@ -75,6 +75,8 @@ pub(crate) struct App {
     event_proxy: EventLoopProxy<AppEvent>,
     /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
     pending_resize: Option<TerminalSize>,
+    /// Number of snapshot-producing commands awaiting a worker revision.
+    pending_snapshot_commands: usize,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
     /// Active paste confirmation dialog (None when no confirmation is pending).
@@ -129,12 +131,19 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         };
 
-        if let Some(new_size) = self.pending_resize.take() {
-            let _ = worker.send(harbor_types::TerminalCommand::Resize(new_size));
+        if let Some(new_size) = self.pending_resize.take()
+            && worker.send(harbor_types::TerminalCommand::Resize(new_size))
+        {
+            self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
         }
 
-        let mut facade = WorkerUiFacade::new(snapshot, worker);
-        let deadline = ui.compact_deadline(&mut facade, window);
+        if self.pending_snapshot_commands > 0 {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+
+        let facade = WorkerUiFacade::new(snapshot, worker);
+        let deadline = ui.compact_deadline(&facade, window);
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
@@ -158,16 +167,11 @@ impl ApplicationHandler<AppEvent> for App {
                 match result {
                     DialogResult::Confirmed => {
                         let text = dialog.raw_text.clone();
-                        let modes = self
-                            .latest_snapshot
-                            .as_ref()
-                            .map(|snapshot| snapshot.input_modes)
-                            .unwrap_or_default();
-                        if let Some(worker) = self.worker.as_ref() {
-                            let bytes = modes.paste(text.as_bytes());
-                            let _ = worker.send(harbor_types::TerminalCommand::WritePtyInput(
-                                bytes.into_owned(),
-                            ));
+                        if let (Some(snapshot), Some(worker)) =
+                            (self.latest_snapshot.as_ref(), self.worker.as_ref())
+                        {
+                            let facade = WorkerUiFacade::new(snapshot, worker);
+                            facade.send_paste(text);
                         }
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
@@ -226,10 +230,8 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        let handled = {
-            let mut facade = WorkerUiFacade::new(snapshot, worker);
-            ui.handle_event(&event, &mut facade, window, gpu, self.modifiers)
-        };
+        let facade = WorkerUiFacade::new(snapshot, worker);
+        let handled = ui.handle_event(&event, &facade, window, gpu, self.modifiers);
 
         if let EventResult::ConfirmPaste(raw_text) = &handled {
             if self.paste_dialog.is_none() {
@@ -261,7 +263,7 @@ impl ApplicationHandler<AppEvent> for App {
             && kbd.text.is_some()
             && !(handled == EventResult::Handled && is_copy)
         {
-            let mut facade = WorkerUiFacade::new(snapshot, worker);
+            let facade = WorkerUiFacade::new(snapshot, worker);
             facade.scroll_viewport_to_bottom();
         }
 
@@ -277,14 +279,14 @@ impl ApplicationHandler<AppEvent> for App {
                 scrollback_navigation(&kbd.logical_key, self.modifiers, snapshot.is_alt)
         {
             let page_rows = snapshot.rows;
-            let mut facade = WorkerUiFacade::new(snapshot, worker);
+            let facade = WorkerUiFacade::new(snapshot, worker);
             match navigation {
                 ScrollbackNavigation::PageUp => facade.scroll_viewport_up(page_rows),
                 ScrollbackNavigation::PageDown => facade.scroll_viewport_down(page_rows),
                 ScrollbackNavigation::Top => facade.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
             }
-            ui.prepare(gpu, snapshot);
+            self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
             window.request_redraw();
             return;
         }
@@ -327,14 +329,17 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
                 };
-                let mut facade = WorkerUiFacade::new(snapshot, worker);
-                if lines > 0 {
-                    facade.scroll_viewport_up(lines as usize);
-                } else if lines < 0 {
-                    facade.scroll_viewport_down((-lines) as usize);
+                if lines != 0 {
+                    let facade = WorkerUiFacade::new(snapshot, worker);
+                    if lines > 0 {
+                        facade.scroll_viewport_up(lines as usize);
+                    } else {
+                        facade.scroll_viewport_down((-lines) as usize);
+                    }
+                    self.pending_snapshot_commands =
+                        self.pending_snapshot_commands.saturating_add(1);
+                    window.request_redraw();
                 }
-                ui.prepare(gpu, snapshot);
-                window.request_redraw();
             }
             WindowEvent::KeyboardInput {
                 device_id: _,
@@ -342,18 +347,16 @@ impl ApplicationHandler<AppEvent> for App {
                 is_synthetic: _,
             } if event.state == ElementState::Pressed && !dialog_active => {
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
-                let Some(bytes) = InputEncoder::key(
+                let Some(request) = InputEncoder::request(
                     &event.logical_key,
                     event.text.as_deref(),
                     self.modifiers,
-                    snapshot.input_modes,
                     is_numpad,
                 ) else {
                     return;
                 };
-                let _ = worker.send(harbor_types::TerminalCommand::WritePtyInput(
-                    bytes.into_owned(),
-                ));
+                let facade = WorkerUiFacade::new(snapshot, worker);
+                facade.send_input(request);
             }
             _ => {}
         }
@@ -375,6 +378,7 @@ impl App {
             worker_status: WorkerStatus::Ready,
             event_proxy,
             pending_resize: None,
+            pending_snapshot_commands: 0,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
         }
@@ -457,10 +461,25 @@ impl App {
                 continue;
             };
             self.latest_snapshot = Some(update.snapshot.clone());
+            self.pending_snapshot_commands = 0;
             if let (Some(gpu), Some(ui)) = (self.gpu.as_mut(), self.ui.as_mut()) {
                 ui.prepare_update(gpu, &update);
             }
             changed = true;
+        }
+        loop {
+            let result = self
+                .worker
+                .as_ref()
+                .and_then(TerminalWorkerClient::take_copy_result);
+            let Some(result) = result else {
+                break;
+            };
+            if let Some(ui) = self.ui.as_mut()
+                && ui.apply_copy_result(result)
+            {
+                changed = true;
+            }
         }
         if let Some(worker) = self.worker.as_ref() {
             let status = worker.status();

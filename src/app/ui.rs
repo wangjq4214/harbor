@@ -3,11 +3,13 @@
 use harbor_render::{
     AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
     Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
-    TextMetrics, UiFacade,
+    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext,
+    TerminalFacade, Text, TextMetrics,
 };
 use harbor_terminal::TerminalSize;
-use harbor_types::{DirtyRange, TerminalSnapshot, TerminalUpdate, UpdateDamage};
+use harbor_types::{
+    CopySelectionResult, DirtyRange, TerminalSnapshot, TerminalUpdate, UpdateDamage,
+};
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
@@ -142,13 +144,17 @@ impl UiRoot {
         Component::resize(&mut self.scrollbar, gpu, size);
     }
 
+    pub(crate) fn apply_copy_result(&mut self, result: CopySelectionResult) -> bool {
+        self.selection.apply_copy_result(result)
+    }
+
     /// Dispatches to interactive layers only, each with the rights it needs.
     /// Selection first — scrollbar always returns Handled on CursorMoved,
     /// which would block selection drag updates.
     pub(crate) fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        facade: &mut dyn UiFacade,
+        facade: &dyn TerminalFacade,
         window: &Window,
         gpu: &GpuContext,
         modifiers: ModifiersState,
@@ -194,7 +200,7 @@ impl UiRoot {
     /// (cursor blink, scrollbar auto-hide, or selection auto-scroll).
     pub(crate) fn compact_deadline(
         &mut self,
-        facade: &mut dyn UiFacade,
+        facade: &dyn TerminalFacade,
         window: &Window,
     ) -> Option<std::time::Instant> {
         let mut deadline: Option<std::time::Instant> = None;

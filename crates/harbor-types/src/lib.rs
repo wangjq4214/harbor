@@ -455,14 +455,91 @@ pub enum UpdateDamage {
     /// The renderer must upload the complete visible grid.
     FullUpload,
 }
+/// Logical key data sent to the terminal worker for mode-sensitive encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InputKey {
+    Character(String),
+    Enter,
+    Backspace,
+    Tab,
+    Escape,
+    Space,
+    ArrowUp,
+    ArrowDown,
+    ArrowRight,
+    ArrowLeft,
+    Home,
+    End,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Insert,
+    Delete,
+    PageUp,
+    PageDown,
+}
 
-/// Ordered commands accepted by a synchronous facade or a future worker.
+/// Modifier state captured by the UI and interpreted by the worker.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InputModifiers(pub u8);
+
+impl InputModifiers {
+    pub const SHIFT: u8 = 1;
+    pub const ALT: u8 = 2;
+    pub const CONTROL: u8 = 4;
+    pub const SUPER: u8 = 8;
+
+    pub fn shift(self) -> bool {
+        self.0 & Self::SHIFT != 0
+    }
+
+    pub fn alt(self) -> bool {
+        self.0 & Self::ALT != 0
+    }
+
+    pub fn control(self) -> bool {
+        self.0 & Self::CONTROL != 0
+    }
+
+    pub fn super_key(self) -> bool {
+        self.0 & Self::SUPER != 0
+    }
+}
+
+/// A logical keyboard event whose bytes are encoded against worker-owned modes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputRequest {
+    pub key: InputKey,
+    pub text: Option<String>,
+    pub modifiers: InputModifiers,
+    pub is_numpad: bool,
+}
+
+/// Result of an asynchronous selection-copy request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopySelectionResult {
+    pub request_id: u64,
+    pub text: String,
+}
+
+/// Commands accepted by the terminal worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalCommand {
     /// Raw PTY output. Bytes must be consumed in this exact order.
     PtyOutputBytes(Vec<u8>),
-    /// Already encoded bytes destined for PTY input.
-    WritePtyInput(Vec<u8>),
+    /// Logical keyboard input; the worker encodes it using authoritative modes.
+    Input(InputRequest),
+    /// Raw paste text; the worker applies bracketed-paste framing from its modes.
+    PasteText(String),
     Resize(TerminalSize),
     ScrollViewport {
         rows: isize,

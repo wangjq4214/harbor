@@ -19,8 +19,9 @@ pub use selection_model::{
 
 pub use harbor_types::should_confirm_multiline;
 pub use harbor_types::{
-    InputModes, PasteDisposition, RevisionedUpdateReceiver, TerminalCommand, TerminalSize,
-    TerminalSnapshot, TerminalUpdate, UpdateDamage, WorkerStatus, safe_preview_line,
+    CopySelectionResult, InputKey, InputModes, InputModifiers, InputRequest, PasteDisposition,
+    RevisionedUpdateReceiver, TerminalCommand, TerminalSize, TerminalSnapshot, TerminalUpdate,
+    UpdateDamage, WorkerStatus, safe_preview_line,
 };
 
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.

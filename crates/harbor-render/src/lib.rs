@@ -11,9 +11,8 @@ mod text;
 
 pub use background::Background;
 pub use caps::{
-    CursorContext, CursorInput, CursorWaitContext, PtyFacade, ScrollbarContext, ScrollbarInput,
+    CursorContext, CursorInput, CursorWaitContext, ScrollbarContext, ScrollbarInput,
     ScrollbarWaitContext, SelectionContext, SelectionInput, SelectionWaitContext, TerminalFacade,
-    UiFacade,
 };
 pub use cursor::Cursor;
 pub use decoration::Decoration;

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::{
     Component, EventResult, SelectionInput,
-    caps::{ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, TerminalAccess},
+    caps::{ModifiersAccess, RedrawAccess, ScrollAccess, TerminalAccess},
     gpu::{self, ColoredVertex, GpuContext},
 };
 use arboard::Clipboard;
@@ -26,7 +26,9 @@ pub struct Selection {
     vertex_cap: usize,
     /// Cached from the most recent CursorMoved event (physical pixels).
     /// Needed because winit 0.30 MouseInput does not carry a position.
+    /// Request id awaiting an asynchronous worker copy response.
     last_cursor_pos: Option<(f64, f64)>,
+    pending_copy: Option<u64>,
     cell_width: f32,
     line_height: f32,
     /// Whether vertex buffer needs re-upload.
@@ -46,6 +48,7 @@ impl Selection {
             vertex_count: 0,
             vertex_cap: 0,
             last_cursor_pos: None,
+            pending_copy: None,
             cell_width,
             line_height,
             dirty: false,
@@ -57,6 +60,23 @@ impl Selection {
                 cb.ok()
             },
         }
+    }
+
+    /// Completes a worker copy request and updates the UI-owned clipboard.
+    pub fn apply_copy_result(&mut self, result: harbor_types::CopySelectionResult) -> bool {
+        if self.pending_copy != Some(result.request_id) {
+            return false;
+        }
+        self.pending_copy = None;
+        if result.text.is_empty() {
+            return true;
+        }
+        if let Some(clipboard) = self.clipboard.as_mut()
+            && let Err(error) = clipboard.set_text(result.text)
+        {
+            tracing::warn!(%error, "failed to set clipboard text");
+        }
+        true
     }
 
     /// Convert a physical-pixel cursor position to a generation+col.
@@ -162,7 +182,7 @@ impl Selection {
         caps: &mut C,
     ) -> Option<EventResult>
     where
-        C: TerminalAccess + PtyAccess + ModifiersAccess,
+        C: TerminalAccess + ModifiersAccess,
     {
         let winit::event::WindowEvent::KeyboardInput { event: kbd, .. } = event else {
             return None;
@@ -176,7 +196,6 @@ impl Selection {
             return None;
         }
 
-        /// Reads clipboard and returns the paste disposition or None on error.
         fn read_paste_text(clipboard: &mut Option<arboard::Clipboard>) -> Option<String> {
             clipboard.as_mut().and_then(|cb| match cb.get_text() {
                 Ok(t) => Some(t),
@@ -187,25 +206,22 @@ impl Selection {
             })
         }
 
-        // Ctrl+V paste
         if ctrl {
             match &kbd.logical_key {
                 winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
+                    if self.pending_copy.is_some() {
+                        return Some(EventResult::Handled);
+                    }
                     if self.model.is_range_empty() {
                         return Some(EventResult::Continue);
                     }
                     let Some(bounds) = self.model.bounds() else {
                         return Some(EventResult::Continue);
                     };
-                    let text = caps.terminal().selected_text(bounds);
-                    if text.is_empty() {
-                        return Some(EventResult::Continue);
-                    }
-                    if let Some(clipboard) = self.clipboard.as_mut()
-                        && let Err(e) = clipboard.set_text(text)
-                    {
-                        tracing::warn!(error = %e, "failed to set clipboard text");
-                    }
+                    let Some(request_id) = caps.terminal().request_copy(bounds) else {
+                        return Some(EventResult::Handled);
+                    };
+                    self.pending_copy = Some(request_id);
                     return Some(EventResult::Handled);
                 }
                 winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
@@ -213,7 +229,7 @@ impl Selection {
                         let modes = caps.terminal().view().input_modes();
                         match PasteDisposition::decide(modes, &text) {
                             PasteDisposition::SendDirect => {
-                                caps.pty().write(&modes.paste(text.as_bytes()));
+                                caps.terminal().send_paste(text);
                             }
                             PasteDisposition::Confirm { raw_text } => {
                                 return Some(EventResult::ConfirmPaste(raw_text));
@@ -226,7 +242,6 @@ impl Selection {
             }
         }
 
-        // Shift+Insert paste
         if shift
             && let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Insert) = &kbd.logical_key
         {
@@ -234,7 +249,7 @@ impl Selection {
                 let modes = caps.terminal().view().input_modes();
                 match PasteDisposition::decide(modes, &text) {
                     PasteDisposition::SendDirect => {
-                        caps.pty().write(&modes.paste(text.as_bytes()));
+                        caps.terminal().send_paste(text);
                     }
                     PasteDisposition::Confirm { raw_text } => {
                         return Some(EventResult::ConfirmPaste(raw_text));
@@ -340,7 +355,7 @@ impl Selection {
 impl SelectionInput for Selection {
     fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &mut C) -> EventResult
     where
-        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess + ScrollAccess,
+        C: TerminalAccess + RedrawAccess + ModifiersAccess + ScrollAccess,
     {
         match event {
             // Keyboard press: try copy/paste first, then clear selection state.

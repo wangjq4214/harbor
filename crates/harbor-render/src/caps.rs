@@ -5,7 +5,7 @@
 //! are bounded on exactly those traits — a missing bound is a compile error,
 //! and an over-broad context would have to implement rights it should not have.
 
-use harbor_types::{RenderSnapshot, SelectionBounds, TerminalView};
+use harbor_types::{InputRequest, RenderSnapshot, SelectionBounds, TerminalView};
 use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::keyboard::ModifiersState;
@@ -13,29 +13,20 @@ use winit::window::Window;
 
 use crate::{EventResult, GpuContext};
 
-/// Read-only terminal state exposed to UI layers.
+/// Read-only terminal state plus asynchronous commands exposed to UI layers.
 pub trait TerminalFacade {
     fn view(&self) -> &dyn TerminalView;
     fn render_snapshot(&self) -> RenderSnapshot;
-    fn selected_text(&self, bounds: SelectionBounds) -> String;
-    fn scroll_viewport_up(&mut self, n: usize);
-    fn scroll_viewport_down(&mut self, n: usize);
-    fn scroll_viewport_to_top(&mut self);
-    fn scroll_viewport_to_bottom(&mut self);
-    fn set_suppress_scroll_snap(&mut self, active: bool);
+    fn request_copy(&self, bounds: SelectionBounds) -> Option<u64>;
+    fn send_input(&self, request: InputRequest);
+    fn send_paste(&self, text: String);
+    fn scroll_viewport_up(&self, n: usize);
+    fn scroll_viewport_down(&self, n: usize);
+    fn scroll_viewport_to_top(&self);
+    fn scroll_viewport_to_bottom(&self);
+    fn set_suppress_scroll_snap(&self, active: bool);
     fn is_alt_screen(&self) -> bool;
 }
-
-/// PTY write capability exposed to UI layers.
-pub trait PtyFacade {
-    fn write(&mut self, bytes: &[u8]);
-}
-
-/// Replaceable UI backend. U1 uses a synchronous adapter; U2 can implement
-/// the same boundary with a worker mailbox.
-pub trait UiFacade: TerminalFacade + PtyFacade {}
-
-impl<T> UiFacade for T where T: TerminalFacade + PtyFacade {}
 
 // ── Access traits (resources a handler may request) ─────────────────────────
 
@@ -50,10 +41,6 @@ pub trait RedrawAccess {
 
 pub trait GpuAccess {
     fn gpu(&self) -> &GpuContext;
-}
-
-pub trait PtyAccess {
-    fn pty(&mut self) -> &mut dyn PtyFacade;
 }
 
 pub trait ModifiersAccess {
@@ -71,7 +58,7 @@ pub trait ScrollAccess {
 // ── Layer contexts (grant only their own rights) ────────────────────────────
 
 pub struct SelectionContext<'a> {
-    pub terminal: &'a mut dyn UiFacade,
+    pub terminal: &'a dyn TerminalFacade,
     pub window: &'a Window,
     pub modifiers: ModifiersState,
 }
@@ -85,12 +72,6 @@ impl TerminalAccess for SelectionContext<'_> {
 impl RedrawAccess for SelectionContext<'_> {
     fn request_redraw(&self) {
         self.window.request_redraw();
-    }
-}
-
-impl PtyAccess for SelectionContext<'_> {
-    fn pty(&mut self) -> &mut dyn PtyFacade {
-        self.terminal
     }
 }
 
@@ -112,11 +93,9 @@ impl ScrollAccess for SelectionContext<'_> {
     }
 }
 
-// ── SelectionWaitContext ──────────────────────────────────────
-
 /// Timer context for selection auto-scroll — grants scroll + read + redraw.
 pub struct SelectionWaitContext<'a> {
-    pub terminal: &'a mut dyn UiFacade,
+    pub terminal: &'a dyn TerminalFacade,
     pub window: &'a Window,
 }
 
@@ -214,11 +193,11 @@ impl RedrawAccess for CursorWaitContext<'_> {
 
 // ── Layer handler traits (exact rights, no more) ────────────────────────────
 
-/// Selection: terminal + redraw + PTY write + modifiers + scroll.
+/// Selection: terminal + redraw + modifiers + scroll.
 pub trait SelectionInput {
     fn handle_event<C>(&mut self, event: &WindowEvent, caps: &mut C) -> EventResult
     where
-        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess + ScrollAccess;
+        C: TerminalAccess + RedrawAccess + ModifiersAccess + ScrollAccess;
 
     fn on_about_to_wait<C>(&mut self, caps: &mut C) -> Option<Instant>
     where

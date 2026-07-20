@@ -250,6 +250,70 @@ fn render_csi_key(
 pub(crate) struct InputEncoder;
 
 impl InputEncoder {
+    /// Captures a logical input request without consulting terminal modes.
+    pub(crate) fn request(
+        logical_key: &Key,
+        text: Option<&str>,
+        modifiers: ModifiersState,
+        is_numpad: bool,
+    ) -> Option<harbor_types::InputRequest> {
+        use harbor_types::{InputKey, InputModifiers};
+
+        let key = match logical_key {
+            Key::Character(ch) => InputKey::Character(ch.to_string()),
+            Key::Named(name) => match name {
+                NamedKey::Enter => InputKey::Enter,
+                NamedKey::Backspace => InputKey::Backspace,
+                NamedKey::Tab => InputKey::Tab,
+                NamedKey::Escape => InputKey::Escape,
+                NamedKey::Space => InputKey::Space,
+                NamedKey::ArrowUp => InputKey::ArrowUp,
+                NamedKey::ArrowDown => InputKey::ArrowDown,
+                NamedKey::ArrowRight => InputKey::ArrowRight,
+                NamedKey::ArrowLeft => InputKey::ArrowLeft,
+                NamedKey::Home => InputKey::Home,
+                NamedKey::End => InputKey::End,
+                NamedKey::F1 => InputKey::F1,
+                NamedKey::F2 => InputKey::F2,
+                NamedKey::F3 => InputKey::F3,
+                NamedKey::F4 => InputKey::F4,
+                NamedKey::F5 => InputKey::F5,
+                NamedKey::F6 => InputKey::F6,
+                NamedKey::F7 => InputKey::F7,
+                NamedKey::F8 => InputKey::F8,
+                NamedKey::F9 => InputKey::F9,
+                NamedKey::F10 => InputKey::F10,
+                NamedKey::F11 => InputKey::F11,
+                NamedKey::F12 => InputKey::F12,
+                NamedKey::Insert => InputKey::Insert,
+                NamedKey::Delete => InputKey::Delete,
+                NamedKey::PageUp => InputKey::PageUp,
+                NamedKey::PageDown => InputKey::PageDown,
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        let mut modifier_bits = 0;
+        if modifiers.shift_key() {
+            modifier_bits |= InputModifiers::SHIFT;
+        }
+        if modifiers.alt_key() {
+            modifier_bits |= InputModifiers::ALT;
+        }
+        if modifiers.control_key() {
+            modifier_bits |= InputModifiers::CONTROL;
+        }
+        if modifiers.super_key() {
+            modifier_bits |= InputModifiers::SUPER;
+        }
+        Some(harbor_types::InputRequest {
+            key,
+            text: text.map(str::to_owned),
+            modifiers: InputModifiers(modifier_bits),
+            is_numpad,
+        })
+    }
     /// Maps a logical key + optional text + modifier state to the byte sequence
     /// to write to the PTY. Named control/navigation keys are dispatched by
     /// `logical_key` first. When Ctrl is held and the key is a single ASCII

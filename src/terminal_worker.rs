@@ -1,24 +1,26 @@
 //! Background owner of the PTY, parser, and mutable terminal model.
 
 use std::{
+    collections::VecDeque,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread::JoinHandle,
 };
 
 use harbor_pty::{Pty, PtyReaderStatus, WakeHandler};
-use harbor_render::{PtyFacade, TerminalFacade};
+use harbor_render::TerminalFacade;
 use harbor_terminal::Terminal;
 use harbor_types::{
-    Cell, CursorShape, InputModes, SelectionBounds, TerminalCommand, TerminalSize,
-    TerminalSnapshot, TerminalUpdate, TerminalView, UpdateDamage, WorkerStatus,
+    Cell, CopySelectionResult, CursorShape, InputModes, SelectionBounds, TerminalCommand,
+    TerminalSize, TerminalSnapshot, TerminalUpdate, TerminalView, UpdateDamage, WorkerStatus,
 };
 use winit::event_loop::EventLoopProxy;
 
-use crate::event::AppEvent;
+use crate::{app::input::InputEncoder, event::AppEvent};
 
 enum PtyMessage {
     Bytes(Vec<u8>),
@@ -27,14 +29,15 @@ enum PtyMessage {
 
 struct Mailbox {
     update: Option<TerminalUpdate>,
+    copy_results: VecDeque<CopySelectionResult>,
     status: WorkerStatus,
 }
 
-/// Main-thread handle for the terminal worker.
 pub(crate) struct TerminalWorkerClient {
     control_tx: Sender<TerminalCommand>,
     signal_tx: Sender<()>,
     mailbox: Arc<Mutex<Mailbox>>,
+    next_request_id: AtomicU64,
     _thread: Option<JoinHandle<()>>,
 }
 
@@ -57,6 +60,7 @@ impl TerminalWorkerClient {
         let pty_signal_tx = signal_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
         let worker_mailbox = Arc::clone(&mailbox);
@@ -93,6 +97,7 @@ impl TerminalWorkerClient {
             control_tx,
             signal_tx,
             mailbox,
+            next_request_id: AtomicU64::new(1),
             _thread: Some(thread),
         })
     }
@@ -110,6 +115,16 @@ impl TerminalWorkerClient {
 
     pub(crate) fn take_update(&self) -> Option<TerminalUpdate> {
         lock(&self.mailbox).update.take()
+    }
+
+    pub(crate) fn request_copy(&self, bounds: SelectionBounds) -> Option<u64> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.send(TerminalCommand::CopySelection { request_id, bounds })
+            .then_some(request_id)
+    }
+
+    pub(crate) fn take_copy_result(&self) -> Option<CopySelectionResult> {
+        lock(&self.mailbox).copy_results.pop_front()
     }
 
     pub(crate) fn status(&self) -> WorkerStatus {
@@ -256,6 +271,65 @@ fn worker_main(
     notify(notifier.as_ref());
 }
 
+fn encode_input(
+    request: &harbor_types::InputRequest,
+    modes: harbor_types::InputModes,
+) -> Option<std::borrow::Cow<'static, [u8]>> {
+    use harbor_types::InputKey;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    let key = match &request.key {
+        InputKey::Character(ch) => Key::Character(ch.clone().into()),
+        InputKey::Enter => Key::Named(NamedKey::Enter),
+        InputKey::Backspace => Key::Named(NamedKey::Backspace),
+        InputKey::Tab => Key::Named(NamedKey::Tab),
+        InputKey::Escape => Key::Named(NamedKey::Escape),
+        InputKey::Space => Key::Named(NamedKey::Space),
+        InputKey::ArrowUp => Key::Named(NamedKey::ArrowUp),
+        InputKey::ArrowDown => Key::Named(NamedKey::ArrowDown),
+        InputKey::ArrowRight => Key::Named(NamedKey::ArrowRight),
+        InputKey::ArrowLeft => Key::Named(NamedKey::ArrowLeft),
+        InputKey::Home => Key::Named(NamedKey::Home),
+        InputKey::End => Key::Named(NamedKey::End),
+        InputKey::F1 => Key::Named(NamedKey::F1),
+        InputKey::F2 => Key::Named(NamedKey::F2),
+        InputKey::F3 => Key::Named(NamedKey::F3),
+        InputKey::F4 => Key::Named(NamedKey::F4),
+        InputKey::F5 => Key::Named(NamedKey::F5),
+        InputKey::F6 => Key::Named(NamedKey::F6),
+        InputKey::F7 => Key::Named(NamedKey::F7),
+        InputKey::F8 => Key::Named(NamedKey::F8),
+        InputKey::F9 => Key::Named(NamedKey::F9),
+        InputKey::F10 => Key::Named(NamedKey::F10),
+        InputKey::F11 => Key::Named(NamedKey::F11),
+        InputKey::F12 => Key::Named(NamedKey::F12),
+        InputKey::Insert => Key::Named(NamedKey::Insert),
+        InputKey::Delete => Key::Named(NamedKey::Delete),
+        InputKey::PageUp => Key::Named(NamedKey::PageUp),
+        InputKey::PageDown => Key::Named(NamedKey::PageDown),
+    };
+    let mut modifiers = ModifiersState::default();
+    if request.modifiers.shift() {
+        modifiers.insert(ModifiersState::SHIFT);
+    }
+    if request.modifiers.alt() {
+        modifiers.insert(ModifiersState::ALT);
+    }
+    if request.modifiers.control() {
+        modifiers.insert(ModifiersState::CONTROL);
+    }
+    if request.modifiers.super_key() {
+        modifiers.insert(ModifiersState::SUPER);
+    }
+    InputEncoder::key(
+        &key,
+        request.text.as_deref(),
+        modifiers,
+        modes,
+        request.is_numpad,
+    )
+}
+
 fn apply_command(
     command: TerminalCommand,
     terminal: &mut Terminal,
@@ -273,7 +347,17 @@ fn apply_command(
             set_status(mailbox, WorkerStatus::Idle);
             notify(notifier);
         }
-        TerminalCommand::WritePtyInput(bytes) => pty.write(&bytes),
+        TerminalCommand::Input(request) => {
+            if let Some(bytes) = encode_input(&request, terminal.screen().input_modes()) {
+                pty.write(&bytes);
+            }
+            notify(notifier);
+        }
+        TerminalCommand::PasteText(text) => {
+            let modes = terminal.screen().input_modes();
+            pty.write(&modes.paste(text.as_bytes()));
+            notify(notifier);
+        }
         TerminalCommand::Resize(size) => {
             if terminal.resize_terminal_if_changed(size) {
                 pty.resize(size);
@@ -307,7 +391,15 @@ fn apply_command(
         TerminalCommand::SetSelectionDragActive(active) => {
             terminal.set_suppress_scroll_snap(active);
         }
-        TerminalCommand::CopySelection { .. } | TerminalCommand::RequestSnapshot { .. } => {}
+        TerminalCommand::CopySelection { request_id, bounds } => {
+            let result = CopySelectionResult {
+                request_id,
+                text: terminal.screen().selected_text(bounds),
+            };
+            lock(mailbox).copy_results.push_back(result);
+            notify(notifier);
+        }
+        TerminalCommand::RequestSnapshot { .. } => {}
         TerminalCommand::Shutdown => return true,
     }
     false
@@ -442,57 +534,38 @@ impl TerminalFacade for WorkerUiFacade<'_> {
         self.snapshot.render_snapshot()
     }
 
-    fn selected_text(&self, bounds: SelectionBounds) -> String {
-        let mut text = String::new();
-        for generation in bounds.start_row..=bounds.end_row {
-            let start = if generation == bounds.start_row {
-                bounds.start_col
-            } else {
-                0
-            };
-            let end = if generation == bounds.end_row {
-                bounds.end_col
-            } else {
-                self.snapshot.cols.saturating_sub(1)
-            };
-            let row_start = text.len();
-            for col in start..=end {
-                if let Some(cell) = self.view.cell_at_generation(generation, col)
-                    && !cell.wide_continuation
-                {
-                    text.push(cell.ch);
-                }
-            }
-            let trimmed = text[row_start..].trim_end().len();
-            text.truncate(row_start + trimmed);
-            if generation < bounds.end_row {
-                text.push('\n');
-            }
-        }
-        text
+    fn request_copy(&self, bounds: SelectionBounds) -> Option<u64> {
+        self.worker.request_copy(bounds)
     }
 
-    fn scroll_viewport_up(&mut self, n: usize) {
+    fn send_input(&self, request: harbor_types::InputRequest) {
+        let _ = self.worker.send(TerminalCommand::Input(request));
+    }
+
+    fn send_paste(&self, text: String) {
+        let _ = self.worker.send(TerminalCommand::PasteText(text));
+    }
+
+    fn scroll_viewport_up(&self, n: usize) {
         let _ = self.worker.send(TerminalCommand::ScrollViewport {
             rows: -(n as isize),
         });
     }
-
-    fn scroll_viewport_down(&mut self, n: usize) {
+    fn scroll_viewport_down(&self, n: usize) {
         let _ = self
             .worker
             .send(TerminalCommand::ScrollViewport { rows: n as isize });
     }
 
-    fn scroll_viewport_to_top(&mut self) {
+    fn scroll_viewport_to_top(&self) {
         let _ = self.worker.send(TerminalCommand::ScrollToTop);
     }
 
-    fn scroll_viewport_to_bottom(&mut self) {
+    fn scroll_viewport_to_bottom(&self) {
         let _ = self.worker.send(TerminalCommand::ScrollToBottom);
     }
 
-    fn set_suppress_scroll_snap(&mut self, active: bool) {
+    fn set_suppress_scroll_snap(&self, active: bool) {
         let _ = self
             .worker
             .send(TerminalCommand::SetSelectionDragActive(active));
@@ -500,14 +573,6 @@ impl TerminalFacade for WorkerUiFacade<'_> {
 
     fn is_alt_screen(&self) -> bool {
         self.snapshot.is_alt
-    }
-}
-
-impl PtyFacade for WorkerUiFacade<'_> {
-    fn write(&mut self, bytes: &[u8]) {
-        let _ = self
-            .worker
-            .send(TerminalCommand::WritePtyInput(bytes.to_vec()));
     }
 }
 
@@ -525,6 +590,7 @@ mod tests {
         let test_pty_tx = pty_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
         let (wake_tx, wake_rx) = mpsc::channel();
@@ -599,11 +665,68 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(lock(&mailbox).status, WorkerStatus::Stopped);
     }
+    #[test]
+    fn worker_input_encoding_uses_authoritative_modes() {
+        let request = harbor_types::InputRequest {
+            key: harbor_types::InputKey::ArrowUp,
+            text: None,
+            modifiers: harbor_types::InputModifiers::default(),
+            is_numpad: false,
+        };
+        assert_eq!(
+            encode_input(
+                &request,
+                harbor_types::InputModes {
+                    application_cursor: true,
+                    ..Default::default()
+                }
+            )
+            .as_deref(),
+            Some(b"\x1bOA".as_slice())
+        );
+    }
+
+    #[test]
+    fn worker_copy_selection_returns_async_result() {
+        let mut terminal = Terminal::new(1, 4);
+        terminal.put_str("ab");
+        let mailbox = Arc::new(Mutex::new(Mailbox {
+            update: None,
+            copy_results: VecDeque::new(),
+            status: WorkerStatus::Ready,
+        }));
+        let mut revision = 0;
+        let mut pty = Pty::new(NoopWake);
+        apply_command(
+            TerminalCommand::CopySelection {
+                request_id: 7,
+                bounds: SelectionBounds {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 0,
+                    end_col: 1,
+                },
+            },
+            &mut terminal,
+            &mut pty,
+            &mailbox,
+            &|| {},
+            &mut revision,
+        );
+        assert_eq!(
+            lock(&mailbox).copy_results.pop_front(),
+            Some(CopySelectionResult {
+                request_id: 7,
+                text: "ab".to_owned(),
+            })
+        );
+    }
 
     #[test]
     fn worker_panic_is_reported_without_rethrowing_to_caller() {
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
         let notifier = || {};
