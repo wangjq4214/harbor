@@ -630,6 +630,30 @@ impl GpuGlyphAtlas {
         }
     }
 
+    /// Re-uploads the CPU atlas into the existing texture after a terminal resize.
+    fn update_full(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas) -> usize {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self._texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &atlas.pixels,
+            wgpu::TexelCopyBufferLayout {
+                bytes_per_row: Some(MAX_ATLAS_SIZE),
+                rows_per_image: Some(MAX_ATLAS_SIZE),
+                offset: 0,
+            },
+            wgpu::Extent3d {
+                width: MAX_ATLAS_SIZE,
+                height: MAX_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        atlas.pixels.len()
+    }
+
     /// Uploads new glyph tiles into the pre-allocated 2048×2048 texture.
     fn update_glyphs(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas, new_chars: &[char]) -> usize {
         let mut uploaded = 0usize;
@@ -742,14 +766,14 @@ impl Text {
         tracing::info!(glyphs = atlas.glyphs.len(), "glyph atlas initialized");
         let gpu_atlas = GpuGlyphAtlas::new(gpu.device(), gpu.queue(), &bind_group_layout, &atlas);
 
-        // Pre-allocate vertex buffer for the full grid (rows * cols * 6 vertices).
+        // Pre-allocate vertex buffer for the full grid without a CPU-side zeroed copy.
         let rows = snap.rows;
         let cols = snap.cols;
-        let max_vertices = rows * cols * 6;
-        let vertex_buffer = gpu::create_vertex_buffer(
-            gpu.device(),
-            &vec![TexturedVertex::default(); max_vertices.max(1)],
-        );
+        let max_vertices = rows
+            .checked_mul(cols)
+            .and_then(|cells| cells.checked_mul(6))
+            .expect("text vertex count overflow");
+        let vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), max_vertices);
 
         let mut layer = Self {
             fonts,
@@ -971,19 +995,25 @@ impl Text {
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
             self.atlas.full_update(&self.fonts, snap);
-            self.gpu_atlas = GpuGlyphAtlas::new(
-                gpu.device(),
-                gpu.queue(),
-                &self.bind_group_layout,
-                &self.atlas,
-            );
-            let new_cap = snap.rows * snap.cols * 6;
-            let old_cap = self.rows * self.cols * 6;
+            let atlas_upload = self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
+            gpu.record_upload(RenderLayer::Text, atlas_upload);
+            gpu.metrics().record_glyph_upload(atlas_upload);
+
+            let new_cap = snap
+                .rows
+                .checked_mul(snap.cols)
+                .and_then(|cells| cells.checked_mul(6))
+                .expect("text vertex count overflow");
+            let old_cap = self
+                .rows
+                .checked_mul(self.cols)
+                .and_then(|cells| cells.checked_mul(6))
+                .expect("text vertex count overflow");
             if new_cap > old_cap {
-                self.vertex_buffer = gpu::create_vertex_buffer(
-                    gpu.device(),
-                    &vec![TexturedVertex::default(); new_cap.max(1)],
-                );
+                let placeholder = gpu::create_vertex_buffer_sized(gpu.device(), 0);
+                let old_buffer = std::mem::replace(&mut self.vertex_buffer, placeholder);
+                drop(old_buffer);
+                self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
             let plan = gpu.upload_plan(
                 RenderLayer::Text,

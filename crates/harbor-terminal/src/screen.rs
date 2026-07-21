@@ -279,8 +279,8 @@ struct Rect {
 
 impl Screen {
     pub fn new(rows: usize, cols: usize) -> Self {
-        assert!(rows > 0, "terminal rows must be non-zero");
-        assert!(cols > 0, "terminal cols must be non-zero");
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         Self {
             normal: NormalBuf::new(rows, cols),
             in_alt: false,
@@ -630,18 +630,20 @@ impl Screen {
     /// Resize does not touch parser state. Newly exposed cells are blank, and the cursor is
     /// clamped into the new bounds.
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         self.normal.resize(rows, cols);
-        self.cursor.y = self.cursor.y.min(rows.saturating_sub(1));
-        self.cursor.x = self.cursor.x.min(cols.saturating_sub(1));
+        self.cursor.y = self.cursor.y.min(rows - 1);
+        self.cursor.x = self.cursor.x.min(cols - 1);
         self.margins.clamp(cols);
         self.tab_stops.resize(cols);
         self.scroll_region = ScrollRegion::full(rows);
         if let Some(saved) = &mut self.alt_saved {
             saved.resize(rows, cols);
         }
-        if let Some(ref mut saved) = self.cursor.saved {
-            saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
-            saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
+        if let Some(saved) = &mut self.cursor.saved {
+            saved.cursor_x = saved.cursor_x.min(cols - 1);
+            saved.cursor_y = saved.cursor_y.min(rows - 1);
         }
     }
 

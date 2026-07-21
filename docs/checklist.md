@@ -532,6 +532,7 @@
 * [x] IND does not unconditionally perform CR
 * [x] RI does not exceed the scrolling region
 
+* [x] Main-screen scrollback viewport and generation coordinates survive terminal resize
 ---
 
 ## 12. Scrolling Region

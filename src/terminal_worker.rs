@@ -6,7 +6,7 @@ use std::{
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
     },
     thread::JoinHandle,
     time::Instant,
@@ -59,7 +59,7 @@ impl TerminalWorkerClient {
     ) -> anyhow::Result<Self> {
         let (control_tx, control_rx) = mpsc::channel();
         let (signal_tx, signal_rx) = mpsc::channel();
-        let (pty_tx, pty_rx) = mpsc::channel();
+        let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let pty_signal_tx = signal_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
@@ -197,7 +197,7 @@ fn worker_main(
     signal_rx: Receiver<()>,
     pty_signal_tx: Sender<()>,
     pty_rx: Receiver<PtyMessage>,
-    pty_tx: Sender<PtyMessage>,
+    pty_tx: SyncSender<PtyMessage>,
     mailbox: Arc<Mutex<Mailbox>>,
     ready_tx: mpsc::SyncSender<anyhow::Result<()>>,
 ) {
@@ -272,6 +272,24 @@ fn worker_main(
                 progressed = true;
                 set_status(&mailbox, WorkerStatus::Processing);
                 terminal.process_output(&bytes);
+
+                // Bound parser work per wake so control commands and shutdown remain observable.
+                let mut terminal_status = None;
+                for _ in 1..64 {
+                    match pty_rx.try_recv() {
+                        Ok(PtyMessage::Bytes(bytes)) => terminal.process_output(&bytes),
+                        Ok(PtyMessage::Status(status)) => {
+                            terminal_status = Some(status);
+                            break;
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            pty_closed = true;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                    }
+                }
+
                 publish_snapshot(
                     &mut terminal,
                     &mailbox,
@@ -284,16 +302,16 @@ fn worker_main(
                 revision = revision.saturating_add(1);
                 set_status(&mailbox, WorkerStatus::Idle);
                 notify(notifier.as_ref());
+                if let Some(status) = terminal_status
+                    && apply_pty_status(status, &mailbox, notifier.as_ref())
+                {
+                    break;
+                }
             }
-            Ok(PtyMessage::Status(PtyReaderStatus::Eof)) => {
-                set_status(&mailbox, WorkerStatus::Stopped);
-                notify(notifier.as_ref());
-                break;
-            }
-            Ok(PtyMessage::Status(PtyReaderStatus::Error(error))) => {
-                set_status(&mailbox, WorkerStatus::Failed { message: error });
-                notify(notifier.as_ref());
-                break;
+            Ok(PtyMessage::Status(status)) => {
+                if apply_pty_status(status, &mailbox, notifier.as_ref()) {
+                    break;
+                }
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
             Err(TryRecvError::Empty) => {}
@@ -311,12 +329,34 @@ fn worker_main(
         }
     }
 
+    // Release the receiver before dropping the PTY so a blocked bounded callback can exit.
+    drop(pty_rx);
+    drop(pty);
+
     if !matches!(
         lock(&mailbox).status,
         WorkerStatus::Failed { .. } | WorkerStatus::Stopped
     ) {
         set_status(&mailbox, WorkerStatus::Stopped);
         notify(notifier.as_ref());
+    }
+}
+fn apply_pty_status(
+    status: PtyReaderStatus,
+    mailbox: &Arc<Mutex<Mailbox>>,
+    notifier: &dyn Fn(),
+) -> bool {
+    match status {
+        PtyReaderStatus::Eof => {
+            set_status(mailbox, WorkerStatus::Stopped);
+            notify(notifier);
+            true
+        }
+        PtyReaderStatus::Error(error) => {
+            set_status(mailbox, WorkerStatus::Failed { message: error });
+            notify(notifier);
+            true
+        }
     }
 }
 
@@ -675,7 +715,7 @@ mod tests {
         let (control_tx, control_rx) = mpsc::channel();
         let metrics = Arc::new(RenderMetrics::default());
         let (signal_tx, signal_rx) = mpsc::channel();
-        let (pty_tx, pty_rx) = mpsc::channel();
+        let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let pty_signal_tx = signal_tx.clone();
         let test_pty_tx = pty_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
@@ -724,11 +764,15 @@ mod tests {
         let latest = {
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             loop {
-                if lock(&mailbox)
-                    .update
-                    .as_ref()
-                    .is_some_and(|update| update.revision >= 2)
-                {
+                if lock(&mailbox).update.as_ref().is_some_and(|update| {
+                    update
+                        .snapshot
+                        .cells
+                        .iter()
+                        .map(|cell| cell.ch)
+                        .collect::<String>()
+                        == "abcd"
+                }) {
                     break lock(&mailbox)
                         .update
                         .take()
@@ -736,11 +780,12 @@ mod tests {
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "worker did not publish the second revision"
+                    "worker did not publish the coalesced revision"
                 );
                 let _ = wake_rx.recv_timeout(Duration::from_millis(10));
             }
         };
+        assert!((1..=2).contains(&latest.revision));
         assert_eq!(
             latest
                 .snapshot
@@ -750,13 +795,26 @@ mod tests {
                 .collect::<String>(),
             "abcd"
         );
-        assert_eq!(latest.damage, UpdateDamage::FullUpload);
+        assert!(matches!(
+            latest.damage,
+            UpdateDamage::Ranges(_) | UpdateDamage::FullUpload
+        ));
 
         control_tx.send(TerminalCommand::Shutdown).unwrap();
         signal_tx.send(()).unwrap();
         thread.join().unwrap();
         assert_eq!(lock(&mailbox).status, WorkerStatus::Stopped);
     }
+    #[test]
+    fn bounded_pty_queue_unblocks_when_receiver_is_dropped() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(PtyMessage::Bytes(vec![0])).unwrap();
+        let sender = std::thread::spawn(move || tx.send(PtyMessage::Bytes(vec![1])));
+
+        drop(rx);
+        assert!(sender.join().unwrap().is_err());
+    }
+
     #[test]
     fn worker_input_encoding_uses_authoritative_modes() {
         let request = harbor_types::InputRequest {
@@ -876,7 +934,7 @@ mod tests {
     fn worker_preserves_failed_status_after_pty_error() {
         let (control_tx, control_rx) = mpsc::channel();
         let (signal_tx, signal_rx) = mpsc::channel();
-        let (pty_tx, pty_rx) = mpsc::channel();
+        let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
             acknowledgements: VecDeque::new(),

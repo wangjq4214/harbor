@@ -36,11 +36,20 @@ pub struct NormalBuf {
 
 impl NormalBuf {
     const DEFAULT_MAX_SCROLLBACK: usize = 1000;
+
     pub fn new(rows: usize, cols: usize) -> Self {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         let max_scrollback = Self::DEFAULT_MAX_SCROLLBACK;
+        let total_rows = max_scrollback
+            .checked_add(rows)
+            .expect("terminal row count overflow");
+        let cell_count = total_rows
+            .checked_mul(cols)
+            .expect("terminal cell count overflow");
         Self {
-            total_rows: max_scrollback + rows,
-            cells: vec![Cell::default(); (max_scrollback + rows) * cols],
+            total_rows,
+            cells: vec![Cell::default(); cell_count],
             visible_rows: rows,
             cols,
             visible_start: max_scrollback,
@@ -305,11 +314,13 @@ impl NormalBuf {
     }
     // ── resize ──────────────────────────────────────────────────────
 
-    /// Rebuilds the ring buffer for a new viewport size.
+    /// Rebuilds the ring buffer for a new viewport size while retaining available scrollback.
     ///
-    /// Preserves the top-left visible rectangle.  Scrollback is discarded
-    /// when column count changes (standard terminal behaviour).
+    /// Rows are copied without reflow.  When the viewport is scrolled back, the existing
+    /// generation coordinates and displayed history remain valid up to the new capacity.
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         if self.visible_rows == rows && self.cols == cols {
             return;
         }
@@ -325,31 +336,66 @@ impl NormalBuf {
             "resize: rebuilding ring buffer"
         );
 
-        let new_total = self.max_scrollback + rows;
-        let mut new_cells = vec![Cell::default(); new_total * cols];
-        // Copy the overlapping top-left rectangle from the current viewport.
-        let copied_rows = self.visible_rows.min(rows);
-        let copied_cols = self.cols.min(cols);
-        for d_row in 0..copied_rows {
-            let ring_row = (self.visible_start + d_row) % self.total_rows;
-            let old_start = ring_row * self.cols;
-            let new_start = (self.max_scrollback + d_row) * cols;
+        let old_rows = self.visible_rows;
+        let old_cols = self.cols;
+        let old_total = self.total_rows;
+        let old_visible_start = self.visible_start;
+        let old_scroll_count = self.scroll_count;
+        let old_history_start = self.history_start;
+        let keep_history = old_scroll_count.min(self.max_scrollback);
+        let copied_live_rows = old_rows.min(rows);
+        let copied_cols = old_cols.min(cols);
+        let new_total = self
+            .max_scrollback
+            .checked_add(rows)
+            .expect("terminal row count overflow");
+        let new_cell_count = new_total
+            .checked_mul(cols)
+            .expect("terminal cell count overflow");
+        let old_cells = std::mem::take(&mut self.cells);
+        let mut new_cells = vec![Cell::default(); new_cell_count];
+
+        // Copy the retained history in generation order immediately before the live viewport.
+        for history_index in 0..keep_history {
+            let old_sequence_index = old_scroll_count - keep_history + history_index;
+            let old_ring_row =
+                (old_visible_start + old_total - old_scroll_count + old_sequence_index) % old_total;
+            let new_ring_row = (self.max_scrollback - keep_history + history_index) % new_total;
+            let old_start = old_ring_row * old_cols;
+            let new_start = new_ring_row * cols;
             new_cells[new_start..new_start + copied_cols]
-                .copy_from_slice(&self.cells[old_start..old_start + copied_cols]);
+                .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
         }
+
+        // Preserve the top-left rectangle of the live viewport; newly exposed rows are blank.
+        for live_row in 0..copied_live_rows {
+            let old_ring_row =
+                (old_visible_start + old_total - old_scroll_count + old_scroll_count + live_row)
+                    % old_total;
+            let new_ring_row = (self.max_scrollback + live_row) % new_total;
+            let old_start = old_ring_row * old_cols;
+            let new_start = new_ring_row * cols;
+            new_cells[new_start..new_start + copied_cols]
+                .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
+        }
+
         self.total_rows = new_total;
         self.cells = new_cells;
         self.visible_rows = rows;
         self.cols = cols;
         self.visible_start = self.max_scrollback;
-        self.scroll_count = 0;
-        self.view_offset = 0;
-        self.history_start = 0;
+        self.scroll_count = keep_history;
+        self.view_offset = self.view_offset.min(keep_history);
+        self.history_start =
+            old_history_start.saturating_add((old_scroll_count - keep_history) as u64);
         self.damage_tracker.resize(rows, cols);
 
         tracing::debug!(
             new_visible_start = self.visible_start,
             new_total_rows = self.total_rows,
+            scroll_count = self.scroll_count,
+            view_offset = self.view_offset,
+            history_start = self.history_start,
             "resize: done"
         );
     }
@@ -517,16 +563,38 @@ mod tests {
     }
 
     #[test]
-    fn resize_discards_scrollback() {
+    fn resize_preserves_scrollback_generations() {
         let mut buf = NormalBuf::new(2, 3);
-        buf.visible_start = (buf.visible_start + 5) % buf.total_rows;
-        buf.scroll_count = 5;
-        buf.resize(4, 5);
-        assert_eq!(buf.rows(), 4);
+        for ch in ['A', 'B', 'C'] {
+            buf.live_cell_mut(0, 0).ch = ch;
+            buf.scroll_up_full_screen(1, Cell::default());
+        }
+        buf.live_cell_mut(0, 0).ch = 'D';
+        buf.scroll_up(2);
+        let displayed = buf.row_text(0);
+        let history_start = buf.history_start();
+
+        buf.resize(3, 5);
+
+        assert_eq!(buf.rows(), 3);
         assert_eq!(buf.cols(), 5);
-        assert_eq!(buf.scroll_count, 0, "scrollback discarded");
-        assert_eq!(buf.view_offset, 0);
-        assert_eq!(buf.dirty_rows().len(), 4);
+        assert_eq!(buf.scroll_count, 3);
+        assert_eq!(buf.view_offset, 2);
+        assert_eq!(buf.history_start, history_start);
+        assert_eq!(buf.row_text(0), format!("{displayed}  "));
+        assert_eq!(
+            buf.cell_at_generation(history_start, 0)
+                .expect("oldest retained generation")
+                .ch,
+            'A'
+        );
+        assert_eq!(
+            buf.cell_at_generation(history_start + 2, 0)
+                .expect("latest retained history generation")
+                .ch,
+            'C'
+        );
+        assert_eq!(buf.dirty_rows().len(), 3);
     }
 
     #[test]
@@ -554,6 +622,33 @@ mod tests {
         }
         assert_eq!(buf.history_start(), 10);
         assert_eq!(buf.scroll_count(), max);
+    }
+
+    #[test]
+    fn resize_after_ring_wrap_preserves_generation_coordinates() {
+        let mut buf = NormalBuf::new(2, 2);
+        let max = buf.max_scrollback();
+        for index in 0..max + 7 {
+            buf.live_cell_mut(0, 0).ch = (b'a' + (index % 26) as u8) as char;
+            buf.scroll_up_full_screen(1, Cell::default());
+        }
+        buf.scroll_up(1);
+        let displayed = buf.row_text(0);
+        let history_start = buf.history_start();
+
+        buf.resize(2, 4);
+
+        assert_eq!(buf.history_start(), history_start);
+        assert_eq!(buf.scroll_count(), max);
+        assert_eq!(buf.view_offset(), 1);
+        assert_eq!(buf.row_text(0), format!("{displayed}  "));
+        assert_eq!(
+            buf.cell_at_generation(history_start, 0)
+                .expect("oldest retained generation")
+                .ch,
+            (b'a' + 7) as char
+        );
+        assert!(buf.cell_at_generation(history_start - 1, 0).is_none());
     }
 
     #[test]

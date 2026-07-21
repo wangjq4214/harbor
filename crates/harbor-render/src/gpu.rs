@@ -669,3 +669,17 @@ pub fn create_vertex_buffer(device: &wgpu::Device, vertices: &[TexturedVertex]) 
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     })
 }
+/// Creates an uninitialized vertex buffer of exactly `vertex_count` vertices.
+///
+/// This avoids allocating a temporary zero-filled CPU vertex array during resize.
+pub fn create_vertex_buffer_sized(device: &wgpu::Device, vertex_count: usize) -> wgpu::Buffer {
+    let byte_len = vertex_count
+        .checked_mul(std::mem::size_of::<TexturedVertex>())
+        .expect("vertex buffer size overflow");
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("vertex buffer"),
+        size: byte_len.max(std::mem::size_of::<TexturedVertex>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
