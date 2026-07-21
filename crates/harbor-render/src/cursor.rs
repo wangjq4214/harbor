@@ -2,7 +2,7 @@ use harbor_types::RenderSnapshot;
 use std::time::Instant;
 
 use crate::{
-    Component, CursorInput, EventResult,
+    Component, CursorInput, EventResult, RenderLayer,
     caps::{GpuAccess, RedrawAccess, TerminalAccess},
     gpu::{self, GpuContext, TexturedVertex},
     metrics::TextMetrics,
@@ -231,8 +231,12 @@ impl Component for Cursor {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            gpu.write_buffer(
+                RenderLayer::Cursor,
+                &self.vertex_buffer,
+                0,
+                bytemuck::cast_slice(&vertices),
+            );
             self.vertex_count = 6;
             self.last_cursor = Some(LastCursorState {
                 visible: self.visible,

@@ -4,6 +4,8 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use crate::metrics::{RenderLayer, RenderMetrics, RenderMetricsSnapshot, UploadPlan, UploadPolicy};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfaceStatus {
     Success,
@@ -87,6 +89,10 @@ pub struct GpuContext {
     device: wgpu::Device,
     /// Command submission queue.
     queue: wgpu::Queue,
+    /// Runtime render and upload metrics shared with the terminal worker.
+    metrics: Arc<RenderMetrics>,
+    /// Fixed adaptive policy used by cell-grid upload paths.
+    upload_policy: UploadPolicy,
     /// Surface configuration (format, size, present mode).
     config: wgpu::SurfaceConfiguration,
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
@@ -97,6 +103,13 @@ impl GpuContext {
     /// Creates the GPU surface, device, queue, surface configuration, and the
     /// shared colored-quad pipeline from the window.
     pub async fn new(window: Arc<Window>) -> Result<Self> {
+        Self::new_with_metrics(window, Arc::new(RenderMetrics::default())).await
+    }
+
+    pub async fn new_with_metrics(
+        window: Arc<Window>,
+        metrics: Arc<RenderMetrics>,
+    ) -> Result<Self> {
         let size = window.inner_size();
         tracing::info!(
             width = size.width,
@@ -165,6 +178,12 @@ impl GpuContext {
             "gpu context configured"
         );
 
+        let adapter_info = adapter.get_info();
+        metrics.set_backend_hardware(
+            format!("{:?}", adapter_info.backend),
+            format!("{:?}:{}", adapter_info.device_type, adapter_info.name),
+        );
+
         let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
             &device,
             config.format,
@@ -177,6 +196,8 @@ impl GpuContext {
             surface,
             device,
             queue,
+            metrics,
+            upload_policy: UploadPolicy::default(),
             config,
             colored_quad_pipeline,
         })
@@ -214,6 +235,44 @@ impl GpuContext {
         (self.config.width, self.config.height)
     }
 
+    pub fn metrics(&self) -> &RenderMetrics {
+        &self.metrics
+    }
+
+    pub fn metrics_snapshot(&self) -> RenderMetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
+    pub fn upload_plan(
+        &self,
+        layer: RenderLayer,
+        rows: usize,
+        cols: usize,
+        bytes_per_cell: usize,
+        dirty_ranges: &[harbor_types::DirtyRange],
+        force_full: bool,
+    ) -> UploadPlan {
+        let plan = self
+            .upload_policy
+            .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full);
+        self.metrics.record_upload_plan(layer, plan);
+        plan
+    }
+
+    pub fn write_buffer(
+        &self,
+        layer: RenderLayer,
+        buffer: &wgpu::Buffer,
+        offset: wgpu::BufferAddress,
+        data: &[u8],
+    ) {
+        self.queue.write_buffer(buffer, offset, data);
+        self.metrics.record_upload(layer, data.len());
+    }
+
+    pub fn record_upload(&self, layer: RenderLayer, bytes: usize) {
+        self.metrics.record_upload(layer, bytes);
+    }
     /// Logical GPU device reference.
     pub fn device(&self) -> &wgpu::Device {
         &self.device

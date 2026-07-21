@@ -2,7 +2,7 @@ use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 
 use crate::{
-    Component,
+    Component, RenderLayer,
     gpu::{self, ColoredVertex, GpuContext},
     metrics::TextMetrics,
 };
@@ -145,10 +145,18 @@ impl Decoration {
             surf_w as f32,
             surf_h as f32,
         );
-        gpu.queue()
-            .write_buffer(&layer.underline_buffer, 0, bytemuck::cast_slice(&u));
-        gpu.queue()
-            .write_buffer(&layer.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+        gpu.write_buffer(
+            RenderLayer::Decoration,
+            &layer.underline_buffer,
+            0,
+            bytemuck::cast_slice(&u),
+        );
+        gpu.write_buffer(
+            RenderLayer::Decoration,
+            &layer.strikethrough_buffer,
+            0,
+            bytemuck::cast_slice(&s),
+        );
         layer.dirty = false;
 
         layer
@@ -163,9 +171,19 @@ impl Decoration {
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
+        let resized = snap.rows != self.rows || snap.cols != self.cols;
+        let bytes_per_cell = 12 * std::mem::size_of::<ColoredVertex>();
+        let plan = gpu.upload_plan(
+            RenderLayer::Decoration,
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            resized || self.dirty,
+        );
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
-        if snap.rows != self.rows || snap.cols != self.cols {
+        if resized {
             tracing::trace!(
                 rows = snap.rows,
                 cols = snap.cols,
@@ -196,21 +214,29 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.queue()
-                .write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
-            gpu.queue()
-                .write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+            gpu.write_buffer(
+                RenderLayer::Decoration,
+                &self.underline_buffer,
+                0,
+                bytemuck::cast_slice(&u),
+            );
+            gpu.write_buffer(
+                RenderLayer::Decoration,
+                &self.strikethrough_buffer,
+                0,
+                bytemuck::cast_slice(&s),
+            );
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
             return;
         }
 
-        if !self.dirty && dirty_ranges.is_empty() {
+        if plan.mode == crate::UploadMode::None {
             return;
         }
 
-        if self.dirty {
+        if plan.mode == crate::UploadMode::Full {
             tracing::trace!("rebuilding decoration draw batch (full)");
             let u = build_underline_vertices(
                 self.cell_width,
@@ -230,10 +256,18 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.queue()
-                .write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
-            gpu.queue()
-                .write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+            gpu.write_buffer(
+                RenderLayer::Decoration,
+                &self.underline_buffer,
+                0,
+                bytemuck::cast_slice(&u),
+            );
+            gpu.write_buffer(
+                RenderLayer::Decoration,
+                &self.strikethrough_buffer,
+                0,
+                bytemuck::cast_slice(&s),
+            );
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
@@ -285,12 +319,14 @@ impl Decoration {
                 let offset = ((range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<ColoredVertex>()) as u64;
-                gpu.queue().write_buffer(
+                gpu.write_buffer(
+                    RenderLayer::Decoration,
                     &self.underline_buffer,
                     offset,
                     bytemuck::cast_slice(&u_row),
                 );
-                gpu.queue().write_buffer(
+                gpu.write_buffer(
+                    RenderLayer::Decoration,
                     &self.strikethrough_buffer,
                     offset,
                     bytemuck::cast_slice(&s_row),

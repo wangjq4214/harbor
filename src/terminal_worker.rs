@@ -9,10 +9,11 @@ use std::{
         mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread::JoinHandle,
+    time::Instant,
 };
 
 use harbor_pty::{Pty, PtyReaderStatus, WakeHandler};
-use harbor_render::TerminalFacade;
+use harbor_render::{RenderMetrics, TerminalFacade};
 use harbor_terminal::Terminal;
 use harbor_types::{
     Cell, CopySelectionResult, CursorShape, InputModes, SelectionBounds, TerminalCommand,
@@ -53,6 +54,7 @@ impl TerminalWorkerClient {
     pub(crate) fn start(
         size: TerminalSize,
         event_proxy: EventLoopProxy<AppEvent>,
+        metrics: Arc<RenderMetrics>,
     ) -> anyhow::Result<Self> {
         let (control_tx, control_rx) = mpsc::channel();
         let (signal_tx, signal_rx) = mpsc::channel();
@@ -76,6 +78,7 @@ impl TerminalWorkerClient {
                 run_worker_catching_panic(&panic_mailbox, panic_notifier.as_ref(), || {
                     worker_main(
                         size,
+                        metrics,
                         true,
                         notifier,
                         control_rx,
@@ -157,6 +160,7 @@ where
 }
 fn worker_main(
     size: TerminalSize,
+    metrics: Arc<RenderMetrics>,
     start_pty: bool,
     notifier: Arc<dyn Fn() + Send + Sync>,
     control_rx: Receiver<TerminalCommand>,
@@ -169,7 +173,14 @@ fn worker_main(
 ) {
     let mut terminal = Terminal::new(size.rows, size.cols);
     let mut revision = 0;
-    publish_snapshot(&mut terminal, &mailbox, notifier.as_ref(), revision, false);
+    publish_snapshot(
+        &mut terminal,
+        &mailbox,
+        &metrics,
+        notifier.as_ref(),
+        revision,
+        false,
+    );
     // Readiness is acknowledged only after the PTY has started successfully.
 
     let mut pty = Pty::new(NoopWake);
@@ -214,6 +225,7 @@ fn worker_main(
                     &mut terminal,
                     &mut pty,
                     &mailbox,
+                    &metrics,
                     notifier.as_ref(),
                     &mut revision,
                 ) {
@@ -232,6 +244,7 @@ fn worker_main(
                 publish_snapshot(
                     &mut terminal,
                     &mailbox,
+                    &metrics,
                     notifier.as_ref(),
                     revision.saturating_add(1),
                     true,
@@ -339,6 +352,7 @@ fn apply_command(
     terminal: &mut Terminal,
     pty: &mut Pty,
     mailbox: &Arc<Mutex<Mailbox>>,
+    metrics: &RenderMetrics,
     notifier: &dyn Fn(),
     revision: &mut u64,
 ) -> bool {
@@ -347,7 +361,7 @@ fn apply_command(
             set_status(mailbox, WorkerStatus::Processing);
             terminal.process_output(&bytes);
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier, *revision, true);
+            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
             set_status(mailbox, WorkerStatus::Idle);
             notify(notifier);
         }
@@ -366,7 +380,7 @@ fn apply_command(
             if terminal.resize_terminal_if_changed(size) {
                 pty.resize(size);
                 *revision = revision.saturating_add(1);
-                publish_snapshot(terminal, mailbox, notifier, *revision, true);
+                publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
                 notify(notifier);
             }
         }
@@ -377,19 +391,19 @@ fn apply_command(
                 terminal.scroll_viewport_up(rows.unsigned_abs());
             }
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier, *revision, true);
+            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
             notify(notifier);
         }
         TerminalCommand::ScrollToTop => {
             terminal.scroll_viewport_to_top();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier, *revision, true);
+            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
             notify(notifier);
         }
         TerminalCommand::ScrollToBottom => {
             terminal.scroll_viewport_to_bottom();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier, *revision, true);
+            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
             notify(notifier);
         }
         TerminalCommand::SetSelectionDragActive(active) => {
@@ -412,18 +426,23 @@ fn apply_command(
 fn publish_snapshot(
     terminal: &mut Terminal,
     mailbox: &Arc<Mutex<Mailbox>>,
+    metrics: &RenderMetrics,
     notifier: &dyn Fn(),
     revision: u64,
     overwrite_is_gap: bool,
 ) {
+    let started = Instant::now();
     let snapshot = terminal.snapshot();
+    metrics.record_snapshot_build(started.elapsed());
     let mut update = TerminalUpdate::from_snapshot(revision, snapshot);
     let mut state = lock(mailbox);
-    if overwrite_is_gap && state.update.is_some() {
+    let overwritten = overwrite_is_gap && state.update.is_some();
+    if overwritten {
         update.damage = UpdateDamage::FullUpload;
     }
     state.update = Some(update);
     drop(state);
+    metrics.record_mailbox(overwritten, 0);
     terminal.clear_screen_dirty();
     notify(notifier);
 }
@@ -588,6 +607,7 @@ mod tests {
     #[test]
     fn worker_consumes_ordered_output_and_publishes_revisioned_state() {
         let (control_tx, control_rx) = mpsc::channel();
+        let metrics = Arc::new(RenderMetrics::default());
         let (signal_tx, signal_rx) = mpsc::channel();
         let (pty_tx, pty_rx) = mpsc::channel();
         let pty_signal_tx = signal_tx.clone();
@@ -606,6 +626,7 @@ mod tests {
         let thread = std::thread::spawn(move || {
             worker_main(
                 TerminalSize { rows: 1, cols: 4 },
+                metrics,
                 false,
                 notifier,
                 control_rx,
@@ -701,6 +722,7 @@ mod tests {
         }));
         let mut revision = 0;
         let mut pty = Pty::new(NoopWake);
+        let metrics = RenderMetrics::default();
         apply_command(
             TerminalCommand::CopySelection {
                 request_id: 7,
@@ -714,6 +736,7 @@ mod tests {
             &mut terminal,
             &mut pty,
             &mailbox,
+            &metrics,
             &|| {},
             &mut revision,
         );
@@ -740,9 +763,11 @@ mod tests {
         let test_pty_tx = pty_tx.clone();
         let test_signal_tx = signal_tx.clone();
         let worker_mailbox = Arc::clone(&mailbox);
+        let metrics = Arc::new(RenderMetrics::default());
         let thread = std::thread::spawn(move || {
             worker_main(
                 TerminalSize { rows: 1, cols: 4 },
+                metrics,
                 false,
                 Arc::new(|| {}),
                 control_rx,

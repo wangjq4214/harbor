@@ -18,7 +18,10 @@ pub use cursor::Cursor;
 pub use decoration::Decoration;
 pub use font::{FontBook, load_system_fonts};
 pub use gpu::{GpuContext, SurfaceDisposition, SurfaceStatus, surface_disposition};
-pub use metrics::TextMetrics;
+pub use metrics::{
+    LayerMetrics, RenderLayer, RenderMetrics, RenderMetricsSnapshot, TextMetrics, UploadMode,
+    UploadPlan, UploadPolicy,
+};
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
 pub use text::{AtlasGlyph, Text};

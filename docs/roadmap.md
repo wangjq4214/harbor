@@ -67,7 +67,7 @@ Snapshot date: **2026-07-15**.
 | v0.2      | Terminal core             | SGR, grid editing, scroll regions, alt screen, cursor state done; parser/runtime gaps remain          |
 | v0.3      | Cell-based renderer       | Color, decorations, cursor shapes, scrollback rendering done; combining marks and box drawing remain  |
 | v0.4      | Interactive features      | Selection, clipboard, scrollback, scrollbar done; IME, mouse protocol, keybindings, hyperlinks remain |
-| v0.5      | Performance and stability | Damage tracking and batching done; U1 UI facade, revisioned snapshot contract, U2 background PTY/parser/model worker, U3 read-only UI/async command paths, and U4 Surface recovery with dynamic Wait/WaitUntil/Poll scheduling landed; runtime latency, backpressure, diagnostics, and profiling remain |
+| v0.5      | Performance and stability | Damage tracking and batching done; U1 UI facade, revisioned snapshot contract, U2 background PTY/parser/model worker, U3 read-only UI/async command paths, U4 Surface recovery with dynamic Wait/WaitUntil/Poll scheduling, and U5 render metrics with adaptive incremental/full upload decisions landed; reproducible runtime latency/profile evidence and U6 gate remain deferred |
 | v0.6      | Daily usable release      | Config, themes, search, packaging, dogfood not started                                                |
 
 ### 3.3 Recommended Critical Path
@@ -302,6 +302,7 @@ For each phase, use the same loop:
 - [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
 - [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
 - [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
+- [x] Add render metrics for snapshot build, prepare, upload, atlas misses, mailbox lag, command acknowledgements, encode, present intervals, and p95/p99 frame latency; adaptive upload decisions remain profile-gated.
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
 - [ ] Promote only evidence-backed items in `checklist.md` and update the release table.

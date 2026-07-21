@@ -4,7 +4,7 @@ pub(crate) mod input;
 mod paste_dialog;
 mod ui;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
@@ -19,8 +19,8 @@ use crate::{
     terminal_worker::{TerminalWorkerClient, WorkerUiFacade, empty_snapshot},
 };
 use harbor_render::{
-    EventResult, GpuContext, SurfaceDisposition, SurfaceStatus, TerminalFacade, TextMetrics,
-    load_system_fonts, surface_disposition,
+    EventResult, GpuContext, RenderMetrics, SurfaceDisposition, SurfaceStatus, TerminalFacade,
+    TextMetrics, load_system_fonts, surface_disposition,
 };
 use harbor_types::{RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, WorkerStatus};
 use harbor_ui::DialogResult;
@@ -84,6 +84,12 @@ pub(crate) struct App {
     pending_resize: Option<TerminalSize>,
     /// Number of snapshot-producing commands awaiting a worker revision.
     pending_snapshot_commands: usize,
+    /// Shared U5 collector for worker, prepare, upload, encode, and present timings.
+    metrics: Arc<RenderMetrics>,
+    /// Timestamp of the first pending command acknowledgement.
+    pending_snapshot_sent_at: Option<Instant>,
+    /// Timestamp of the previous successful present.
+    last_present: Option<Instant>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
     /// Active paste confirmation dialog (None when no confirmation is pending).
@@ -140,6 +146,9 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(new_size) = self.pending_resize.take()
             && worker.send(harbor_types::TerminalCommand::Resize(new_size))
         {
+            if self.pending_snapshot_commands == 0 {
+                self.pending_snapshot_sent_at = Some(Instant::now());
+            }
             self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
         }
 
@@ -318,6 +327,9 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Top => facade.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
             }
+            if self.pending_snapshot_commands == 0 {
+                self.pending_snapshot_sent_at = Some(Instant::now());
+            }
             self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
             Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
@@ -370,6 +382,9 @@ impl ApplicationHandler<AppEvent> for App {
                     } else {
                         facade.scroll_viewport_down((-lines) as usize);
                     }
+                    if self.pending_snapshot_commands == 0 {
+                        self.pending_snapshot_sent_at = Some(Instant::now());
+                    }
                     self.pending_snapshot_commands =
                         self.pending_snapshot_commands.saturating_add(1);
                     Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
@@ -415,6 +430,9 @@ impl App {
             pending_resize: None,
             surface_recovery_attempted: false,
             pending_snapshot_commands: 0,
+            metrics: Arc::new(RenderMetrics::default()),
+            pending_snapshot_sent_at: None,
+            last_present: None,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
         }
@@ -450,8 +468,11 @@ impl App {
             })
             .expect("failed to spawn font-loader thread");
 
-        let gpu =
-            pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
+        let gpu = pollster::block_on(GpuContext::new_with_metrics(
+            window.clone(),
+            Arc::clone(&self.metrics),
+        ))
+        .map_err(AppError::Renderer)?;
         gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
         let fonts = font_handle
@@ -463,8 +484,9 @@ impl App {
         let bootstrap = empty_snapshot(1, 1);
         let ui = UiRoot::new(&gpu, &bootstrap, fonts, metrics).map_err(AppError::Renderer)?;
         let size = ui.terminal_size(&gpu);
-        let worker = TerminalWorkerClient::start(size, self.event_proxy.clone())
-            .map_err(AppError::Worker)?;
+        let worker =
+            TerminalWorkerClient::start(size, self.event_proxy.clone(), Arc::clone(&self.metrics))
+                .map_err(AppError::Worker)?;
         let initial = worker.take_update().ok_or_else(|| {
             AppError::Worker(anyhow::anyhow!("worker did not publish initial snapshot"))
         })?;
@@ -516,10 +538,18 @@ impl App {
             let Some(update) = update else {
                 break;
             };
+            let previous_revision = self.updates.last_revision();
+            let revision_lag = previous_revision
+                .map(|previous| update.revision.saturating_sub(previous.saturating_add(1)))
+                .unwrap_or(0);
+            self.metrics.record_mailbox(false, revision_lag);
             let Some(update) = self.updates.accept(update) else {
                 continue;
             };
             self.latest_snapshot = Some(update.snapshot.clone());
+            if let Some(sent_at) = self.pending_snapshot_sent_at.take() {
+                self.metrics.record_command_ack(sent_at.elapsed());
+            }
             self.pending_snapshot_commands = 0;
             if let (Some(gpu), Some(ui)) = (self.gpu.as_mut(), self.ui.as_mut()) {
                 ui.prepare_update(gpu, &update);
@@ -547,10 +577,12 @@ impl App {
                     WorkerStatus::Failed { .. } => {
                         tracing::error!(status = ?status, "terminal worker failed");
                         self.pending_snapshot_commands = 0;
+                        self.pending_snapshot_sent_at = None;
                     }
                     WorkerStatus::Stopped => {
                         tracing::info!(status = ?status, "terminal worker stopped");
                         self.pending_snapshot_commands = 0;
+                        self.pending_snapshot_sent_at = None;
                     }
                     WorkerStatus::Ready | WorkerStatus::Processing | WorkerStatus::Idle => {}
                 }
@@ -564,6 +596,7 @@ impl App {
     /// Acquires the surface texture, draws all components, and presents.
     /// Callers are responsible for calling `UiRoot::prepare` before this.
     fn render_frame(&mut self) {
+        let frame_started = Instant::now();
         let Some((ui, gpu)) = self.ui.as_mut().zip(self.gpu.as_mut()) else {
             return;
         };
@@ -611,6 +644,7 @@ impl App {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let encode_started = Instant::now();
         let mut encoder = gpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -636,8 +670,21 @@ impl App {
             ui.draw(&mut render_pass);
         }
 
-        gpu.queue().submit(Some(encoder.finish()));
+        let command_buffer = encoder.finish();
+        let encode_elapsed = encode_started.elapsed();
+        gpu.queue().submit(Some(command_buffer));
         gpu.present(output);
+        let presented_at = Instant::now();
+        let present_interval = self
+            .last_present
+            .replace(presented_at)
+            .map(|previous| presented_at.duration_since(previous));
+        gpu.metrics()
+            .record_frame(frame_started.elapsed(), encode_elapsed, present_interval);
+        let profile = gpu.metrics_snapshot();
+        if profile.frame_count.is_multiple_of(120) {
+            tracing::info!(profile = %gpu.metrics().profile_report(), "render profile checkpoint");
+        }
         tracing::trace!(?status, "surface frame presented");
         if reconfigure_after_present && !self.surface_recovery_attempted {
             self.surface_recovery_attempted = true;

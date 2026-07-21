@@ -8,7 +8,7 @@ use harbor_config::{
 };
 
 use crate::{
-    Component, EventResult, ScrollbarInput,
+    Component, EventResult, RenderLayer, ScrollbarInput,
     caps::{GpuAccess, RedrawAccess, TerminalAccess},
     gpu::{self, ColoredVertex, GpuContext},
 };
@@ -179,8 +179,12 @@ impl Scrollbar {
 
         // Upload initial (degenerate) vertices.
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        gpu.write_buffer(
+            RenderLayer::Scrollbar,
+            &vertex_buffer,
+            0,
+            bytemuck::cast_slice(&vertices),
+        );
 
         Self {
             pipeline,
@@ -279,12 +283,20 @@ impl Component for Scrollbar {
         let (surf_w, surf_h) = gpu.surface_size();
 
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        gpu.write_buffer(
+            RenderLayer::Scrollbar,
+            &self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&vertices),
+        );
 
         let uniform = compute_uniform(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        gpu.write_buffer(
+            RenderLayer::Scrollbar,
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&uniform),
+        );
     }
 
     /// Draw the scrollbar thumb (no-op when hidden).

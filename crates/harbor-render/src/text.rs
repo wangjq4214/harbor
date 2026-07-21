@@ -6,7 +6,7 @@ use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Component,
+    Component, RenderLayer, UploadMode,
     font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
     metrics::TextMetrics,
@@ -631,7 +631,8 @@ impl GpuGlyphAtlas {
     }
 
     /// Uploads new glyph tiles into the pre-allocated 2048×2048 texture.
-    fn update_glyphs(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas, new_chars: &[char]) {
+    fn update_glyphs(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas, new_chars: &[char]) -> usize {
+        let mut uploaded = 0usize;
         for ch in new_chars {
             let Some(glyph) = atlas.glyph(*ch) else {
                 continue;
@@ -639,8 +640,6 @@ impl GpuGlyphAtlas {
             if glyph.width == 0 || glyph.height == 0 {
                 continue;
             }
-            // Extract glyph bitmap from the atlas pixels, padding each row
-            // to COPY_BYTES_PER_ROW_ALIGNMENT (256).
             let padded_bytes_per_row = glyph.width.div_ceil(256) * 256;
             let mut tile_data = vec![0u8; (padded_bytes_per_row * glyph.height) as usize];
             for row in 0..glyph.height {
@@ -673,7 +672,9 @@ impl GpuGlyphAtlas {
                     depth_or_array_layers: 1,
                 },
             );
+            uploaded = uploaded.saturating_add(tile_data.len());
         }
+        uploaded
     }
 }
 
@@ -764,8 +765,12 @@ impl Text {
         };
         // Build initial vertex data and upload via write_buffer.
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        gpu.write_buffer(
+            RenderLayer::Text,
+            &layer.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&verts),
+        );
         layer.dirty = false;
 
         Ok(layer)
@@ -956,9 +961,10 @@ impl Text {
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
+        let resized = snap.rows != self.rows || snap.cols != self.cols;
+        let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
-        // Detect resize: dimensions changed → full rebuild.
-        if snap.rows != self.rows || snap.cols != self.cols {
+        if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
             self.atlas.full_update(&self.fonts, snap);
             self.gpu_atlas = GpuGlyphAtlas::new(
@@ -975,45 +981,68 @@ impl Text {
                     &vec![TexturedVertex::default(); new_cap.max(1)],
                 );
             }
+            let plan = gpu.upload_plan(
+                RenderLayer::Text,
+                snap.rows,
+                snap.cols,
+                bytes_per_cell,
+                dirty_ranges,
+                true,
+            );
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            debug_assert_eq!(plan.mode, UploadMode::Full);
+            gpu.write_buffer(
+                RenderLayer::Text,
+                &self.vertex_buffer,
+                0,
+                bytemuck::cast_slice(&verts),
+            );
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
             return;
         }
 
-        // Atlas update: incremental rasterization of new glyphs.
         let (new_glyphs, evicted) = self
             .atlas
             .update_with_dirty(&self.fonts, snap, dirty_ranges);
+        gpu.metrics().record_glyphs(new_glyphs.len(), evicted);
         if !new_glyphs.is_empty() {
             tracing::debug!(
                 new_glyphs = new_glyphs.len(),
                 total_glyphs = self.atlas.glyphs.len(),
                 "uploading new glyph tiles"
             );
-            self.gpu_atlas
+            let uploaded = self
+                .gpu_atlas
                 .update_glyphs(gpu.queue(), &self.atlas, &new_glyphs);
-
-            // Incremental addition: new UVs only affect dirty rows,
-            // which already rebuild via build_row_vertices below.
-            if evicted {
-                self.dirty = true; // atlas cleared → all UVs invalidated
-            }
+            gpu.record_upload(RenderLayer::Text, uploaded);
+        }
+        if evicted {
+            self.dirty = true;
         }
 
-        // Dirty check: skip upload if nothing changed.
-        if !self.dirty && dirty_ranges.is_empty() {
+        let plan = gpu.upload_plan(
+            RenderLayer::Text,
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            self.dirty,
+        );
+        if plan.mode == UploadMode::None {
             return;
         }
 
-        if self.dirty {
+        if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding text draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            gpu.write_buffer(
+                RenderLayer::Text,
+                &self.vertex_buffer,
+                0,
+                bytemuck::cast_slice(&verts),
+            );
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
@@ -1022,7 +1051,8 @@ impl Text {
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
-                gpu.queue().write_buffer(
+                gpu.write_buffer(
+                    RenderLayer::Text,
                     &self.vertex_buffer,
                     offset as u64,
                     bytemuck::cast_slice(&range_verts),
