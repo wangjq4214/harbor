@@ -302,7 +302,7 @@ For each phase, use the same loop:
 - [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
 - [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
 - [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
-- [x] Add render metrics for snapshot build, prepare, upload, atlas misses, mailbox lag, command acknowledgements, encode, present intervals, and p95/p99 frame latency; adaptive upload decisions remain profile-gated.
+- [x] Add render metrics for snapshot build, prepare, upload, glyph-atlas uploads and misses, mailbox lag, command acknowledgements, encode, present duration/intervals, and p95/p99 frame/input latency; adaptive upload decisions remain profile-gated and the workload matrix remains explicitly unqualified until runtime evidence is collected.
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
 - [ ] Promote only evidence-backed items in `checklist.md` and update the release table.
