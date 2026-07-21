@@ -22,7 +22,9 @@ use harbor_render::{
     EventResult, GpuContext, RenderMetrics, SurfaceDisposition, SurfaceStatus, TerminalFacade,
     TextMetrics, load_system_fonts, surface_disposition,
 };
-use harbor_types::{RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, WorkerStatus};
+use harbor_types::{
+    RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
+};
 use harbor_ui::DialogResult;
 use paste_dialog::PasteDialog;
 use ui::UiRoot;
@@ -521,8 +523,18 @@ impl App {
         }
     }
 
+    fn damage_after_coalescing(damage: UpdateDamage, accepted_updates: usize) -> UpdateDamage {
+        if accepted_updates > 1 {
+            UpdateDamage::FullUpload
+        } else {
+            damage
+        }
+    }
+
     fn consume_worker_updates(&mut self) -> bool {
         let mut changed = false;
+        let mut latest_update = None;
+        let mut accepted_updates = 0usize;
         loop {
             let update = self
                 .worker
@@ -539,6 +551,12 @@ impl App {
             let Some(update) = self.updates.accept(update) else {
                 continue;
             };
+            accepted_updates = accepted_updates.saturating_add(1);
+            latest_update = Some(update);
+        }
+        self.metrics.record_coalesced_updates(accepted_updates);
+        if let Some(mut update) = latest_update {
+            update.damage = Self::damage_after_coalescing(update.damage, accepted_updates);
             self.latest_snapshot = Some(update.snapshot.clone());
             if let (Some(gpu), Some(ui)) = (self.gpu.as_mut(), self.ui.as_mut()) {
                 ui.prepare_update(gpu, &update);
@@ -809,6 +827,22 @@ mod tests {
         assert_eq!(
             scrollback_navigation(&key(NamedKey::End), ModifiersState::default(), true),
             None
+        );
+    }
+    #[test]
+    fn coalesced_updates_require_full_upload_but_single_update_keeps_damage() {
+        let ranges = vec![harbor_terminal::DirtyRange {
+            row: 0,
+            start_col: 1,
+            end_col: 2,
+        }];
+        assert_eq!(
+            App::damage_after_coalescing(UpdateDamage::Ranges(ranges.clone()), 1),
+            UpdateDamage::Ranges(ranges)
+        );
+        assert_eq!(
+            App::damage_after_coalescing(UpdateDamage::Ranges(Vec::new()), 2),
+            UpdateDamage::FullUpload
         );
     }
 }

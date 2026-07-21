@@ -154,6 +154,7 @@ pub struct RenderMetricsSnapshot {
     pub frame_count: u64,
     pub frame_budget_misses: u64,
     pub mailbox_overwrites: u64,
+    pub coalesced_updates: u64,
     pub revision_lag_total: u64,
     pub revision_lag_max: u64,
     pub snapshot_build_count: u64,
@@ -177,6 +178,7 @@ struct MetricsState {
     frame_count: u64,
     frame_budget_misses: u64,
     mailbox_overwrites: u64,
+    coalesced_updates: u64,
     revision_lag_total: u64,
     revision_lag_max: u64,
     snapshot_build_count: u64,
@@ -303,6 +305,13 @@ impl RenderMetrics {
         state.revision_lag_total = state.revision_lag_total.saturating_add(revision_lag);
         state.revision_lag_max = state.revision_lag_max.max(revision_lag);
     }
+    pub fn record_coalesced_updates(&self, count: usize) {
+        if !self.enabled || count <= 1 {
+            return;
+        }
+        let mut state = self.lock();
+        state.coalesced_updates = state.coalesced_updates.saturating_add((count - 1) as u64);
+    }
 
     pub fn record_command_ack(&self, elapsed: Duration) {
         if !self.enabled {
@@ -357,6 +366,7 @@ impl RenderMetrics {
             mailbox_overwrites: state.mailbox_overwrites,
             revision_lag_total: state.revision_lag_total,
             revision_lag_max: state.revision_lag_max,
+            coalesced_updates: state.coalesced_updates,
             snapshot_build_count: state.snapshot_build_count,
             command_ack_count: state.command_ack_count,
             frame_p95: percentile(&state.frame_samples, 0.95),
@@ -408,7 +418,7 @@ impl RenderMetrics {
             "render_profile backend={} hardware={} workload_matrix=unqualified \
 frame_count={} frame_budget_misses={} frame_p95_ms={:.3} frame_p99_ms={:.3} \
 snapshot_build_count={} snapshot_build_p95_ms={:.3} prepare_p95_ms={:.3} encode_p95_ms={:.3} \
-present_p95_ms={:.3} present_interval_p95_ms={:.3} mailbox_overwrites={} revision_lag_total={} revision_lag_max={} \
+present_p95_ms={:.3} present_interval_p95_ms={:.3} mailbox_overwrites={} coalesced_updates={} revision_lag_total={} revision_lag_max={} \
 command_ack_count={} input_ack_p95_ms={:.3} input_ack_p99_ms={:.3} layers={} gate_decision=deferred",
             snapshot.backend,
             snapshot.hardware_class,
@@ -423,6 +433,7 @@ command_ack_count={} input_ack_p95_ms={:.3} input_ack_p99_ms={:.3} layers={} gat
             millis(snapshot.present_p95),
             millis(snapshot.present_interval_p95),
             snapshot.mailbox_overwrites,
+            snapshot.coalesced_updates,
             snapshot.revision_lag_total,
             snapshot.revision_lag_max,
             snapshot.command_ack_count,
@@ -599,6 +610,7 @@ mod tests {
         metrics.record_upload(RenderLayer::Text, 16);
         metrics.record_glyphs(3, true);
         metrics.record_mailbox(true, 2);
+        metrics.record_coalesced_updates(3);
         metrics.record_command_ack(Duration::from_millis(4));
         let snapshot = metrics.snapshot();
         let text = &snapshot.layers[RenderLayer::Text.index()];
@@ -613,8 +625,10 @@ mod tests {
         assert_eq!(text.atlas_evictions, 1);
         assert_eq!(snapshot.mailbox_overwrites, 1);
         assert_eq!(snapshot.revision_lag_max, 2);
+        assert_eq!(snapshot.coalesced_updates, 2);
         assert_eq!(snapshot.command_ack_count, 1);
         assert!(metrics.profile_report().contains("gate_decision=deferred"));
         assert!(metrics.profile_report().contains("glyph_uploads=1"));
+        assert!(metrics.profile_report().contains("coalesced_updates=2"));
     }
 }
