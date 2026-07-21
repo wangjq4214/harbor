@@ -78,6 +78,8 @@ pub(crate) struct App {
     event_proxy: EventLoopProxy<AppEvent>,
     /// Coalesces worker/input/surface wakes into one redraw request.
     scheduler: FrameScheduler,
+    /// Prevents repeated surface recovery redraws without an external wake.
+    surface_recovery_attempted: bool,
     /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
     pending_resize: Option<TerminalSize>,
     /// Number of snapshot-producing commands awaiting a worker revision.
@@ -150,7 +152,11 @@ impl ApplicationHandler<AppEvent> for App {
 
         if self.pending_snapshot_commands > 0 {
             self.scheduler.set_deadline(None);
-            self.set_control_flow(event_loop);
+            if self.scheduler.control_flow() == FrameControlFlow::Poll {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                self.set_control_flow(event_loop);
+            }
             return;
         }
 
@@ -241,18 +247,23 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
+        if matches!(&event, WindowEvent::Focused(false)) {
+            self.scheduler.set_active(false);
+        }
+
+        let facade = WorkerUiFacade::new(snapshot, worker);
+        let handled = ui.handle_event(&event, &facade, window, gpu, self.modifiers);
+
         match &event {
             WindowEvent::MouseInput {
                 state,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => self.scheduler.set_active(*state == ElementState::Pressed),
-            WindowEvent::Focused(false) => self.scheduler.set_active(false),
+            } => self
+                .scheduler
+                .set_active(*state == ElementState::Pressed && handled == EventResult::Handled),
             _ => {}
         }
-
-        let facade = WorkerUiFacade::new(snapshot, worker);
-        let handled = ui.handle_event(&event, &facade, window, gpu, self.modifiers);
 
         if let EventResult::ConfirmPaste(raw_text) = &handled {
             if self.paste_dialog.is_none() {
@@ -269,9 +280,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ));
             }
             ui.prepare(gpu, snapshot);
-            if self.scheduler.wake(RedrawReason::Input) {
-                window.request_redraw();
-            }
+            Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
 
@@ -292,9 +301,7 @@ impl ApplicationHandler<AppEvent> for App {
 
         if handled == EventResult::Handled {
             ui.prepare(gpu, snapshot);
-            if self.scheduler.wake(RedrawReason::Input) {
-                window.request_redraw();
-            }
+            Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
 
@@ -312,9 +319,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
             }
             self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
-            if self.scheduler.wake(RedrawReason::Input) {
-                window.request_redraw();
-            }
+            Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
 
@@ -322,9 +327,7 @@ impl ApplicationHandler<AppEvent> for App {
             && kbd.state == ElementState::Pressed
         {
             ui.prepare(gpu, snapshot);
-            if self.scheduler.wake(RedrawReason::Input) {
-                window.request_redraw();
-            }
+            Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
         }
 
         match event {
@@ -341,12 +344,11 @@ impl ApplicationHandler<AppEvent> for App {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
+                self.surface_recovery_attempted = false;
                 gpu.resize(size.width, size.height);
                 ui.resize(gpu, (size.width, size.height));
                 self.pending_resize = Some(ui.terminal_size(gpu));
-                if self.scheduler.wake(RedrawReason::Resize) {
-                    window.request_redraw();
-                }
+                Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
@@ -370,9 +372,7 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     self.pending_snapshot_commands =
                         self.pending_snapshot_commands.saturating_add(1);
-                    if self.scheduler.wake(RedrawReason::Input) {
-                        window.request_redraw();
-                    }
+                    Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -413,6 +413,7 @@ impl App {
             event_proxy,
             scheduler: FrameScheduler::default(),
             pending_resize: None,
+            surface_recovery_attempted: false,
             pending_snapshot_commands: 0,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
@@ -483,9 +484,13 @@ impl App {
     }
 
     fn request_redraw(&mut self, reason: RedrawReason) {
-        if self.scheduler.wake(reason)
-            && let Some(window) = self.window.as_ref()
-        {
+        if let Some(window) = self.window.as_ref() {
+            Self::wake_redraw(&mut self.scheduler, window, reason);
+        }
+    }
+
+    fn wake_redraw(scheduler: &mut FrameScheduler, window: &Window, reason: RedrawReason) {
+        if scheduler.wake(reason) {
             tracing::trace!(?reason, "requesting redraw");
             window.request_redraw();
         }
@@ -587,8 +592,13 @@ impl App {
             }
             (_, SurfaceDisposition::ReconfigureAndRedraw) => {
                 tracing::warn!(?status, "surface requires reconfiguration");
-                gpu.reconfigure();
-                self.request_redraw(RedrawReason::SurfaceRecovery);
+                if !self.surface_recovery_attempted {
+                    self.surface_recovery_attempted = true;
+                    gpu.reconfigure();
+                    self.request_redraw(RedrawReason::SurfaceRecovery);
+                } else {
+                    tracing::warn!(?status, "surface recovery deferred until external wake");
+                }
                 return;
             }
             (_, SurfaceDisposition::Skip) => {
@@ -628,11 +638,13 @@ impl App {
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
-        if reconfigure_after_present {
+        tracing::trace!(?status, "surface frame presented");
+        if reconfigure_after_present && !self.surface_recovery_attempted {
+            self.surface_recovery_attempted = true;
             gpu.reconfigure();
-        }
-        if reconfigure_after_present {
             self.request_redraw(RedrawReason::SurfaceSuboptimal);
+        } else if status == SurfaceStatus::Success {
+            self.surface_recovery_attempted = false;
         }
     }
 }
