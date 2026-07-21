@@ -241,15 +241,14 @@ fn worker_main(
                 notify(notifier.as_ref());
             }
             Ok(PtyMessage::Status(PtyReaderStatus::Eof)) => {
-                progressed = true;
                 set_status(&mailbox, WorkerStatus::Stopped);
                 notify(notifier.as_ref());
                 break;
             }
             Ok(PtyMessage::Status(PtyReaderStatus::Error(error))) => {
-                progressed = true;
                 set_status(&mailbox, WorkerStatus::Failed { message: error });
                 notify(notifier.as_ref());
+                break;
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
             Err(TryRecvError::Empty) => {}
@@ -267,8 +266,13 @@ fn worker_main(
         }
     }
 
-    set_status(&mailbox, WorkerStatus::Stopped);
-    notify(notifier.as_ref());
+    if !matches!(
+        lock(&mailbox).status,
+        WorkerStatus::Failed { .. } | WorkerStatus::Stopped
+    ) {
+        set_status(&mailbox, WorkerStatus::Stopped);
+        notify(notifier.as_ref());
+    }
 }
 
 fn encode_input(
@@ -719,6 +723,56 @@ mod tests {
                 request_id: 7,
                 text: "ab".to_owned(),
             })
+        );
+    }
+
+    #[test]
+    fn worker_preserves_failed_status_after_pty_error() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (signal_tx, signal_rx) = mpsc::channel();
+        let (pty_tx, pty_rx) = mpsc::channel();
+        let mailbox = Arc::new(Mutex::new(Mailbox {
+            update: None,
+            copy_results: VecDeque::new(),
+            status: WorkerStatus::Ready,
+        }));
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<anyhow::Result<()>>(0);
+        let test_pty_tx = pty_tx.clone();
+        let test_signal_tx = signal_tx.clone();
+        let worker_mailbox = Arc::clone(&mailbox);
+        let thread = std::thread::spawn(move || {
+            worker_main(
+                TerminalSize { rows: 1, cols: 4 },
+                false,
+                Arc::new(|| {}),
+                control_rx,
+                signal_rx,
+                test_signal_tx,
+                pty_rx,
+                pty_tx,
+                worker_mailbox,
+                ready_tx,
+            );
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker publishes the initial snapshot")
+            .expect("worker startup succeeds");
+        test_pty_tx
+            .send(PtyMessage::Status(PtyReaderStatus::Error(
+                "read failed".to_owned(),
+            )))
+            .unwrap();
+        signal_tx.send(()).unwrap();
+        drop(control_tx);
+        thread.join().unwrap();
+
+        assert_eq!(
+            lock(&mailbox).status,
+            WorkerStatus::Failed {
+                message: "read failed".to_owned()
+            }
         );
     }
 

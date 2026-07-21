@@ -137,6 +137,13 @@ impl ApplicationHandler<AppEvent> for App {
             self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
         }
 
+        if matches!(
+            self.worker_status,
+            WorkerStatus::Failed { .. } | WorkerStatus::Stopped
+        ) {
+            self.pending_snapshot_commands = 0;
+        }
+
         if self.pending_snapshot_commands > 0 {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
@@ -487,9 +494,11 @@ impl App {
                 match &status {
                     WorkerStatus::Failed { .. } => {
                         tracing::error!(status = ?status, "terminal worker failed");
+                        self.pending_snapshot_commands = 0;
                     }
                     WorkerStatus::Stopped => {
                         tracing::info!(status = ?status, "terminal worker stopped");
+                        self.pending_snapshot_commands = 0;
                     }
                     WorkerStatus::Ready | WorkerStatus::Processing | WorkerStatus::Idle => {}
                 }
