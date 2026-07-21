@@ -28,6 +28,13 @@ enum PtyMessage {
     Status(PtyReaderStatus),
 }
 
+/// Owns the PTY receiver before the PTY so receiver teardown precedes reader joins,
+/// including panic unwinding from the worker loop.
+struct PtyResources {
+    pty_rx: Receiver<PtyMessage>,
+    pty: Pty,
+}
+
 struct Mailbox {
     update: Option<TerminalUpdate>,
     acknowledgements: VecDeque<u64>,
@@ -214,7 +221,12 @@ fn worker_main(
     );
     // Readiness is acknowledged only after the PTY has started successfully.
 
-    let mut pty = Pty::new(NoopWake);
+    let mut resources = PtyResources {
+        pty_rx,
+        pty: Pty::new(NoopWake),
+    };
+    let pty = &mut resources.pty;
+    let pty_rx = &resources.pty_rx;
     if start_pty {
         let output_tx = pty_tx.clone();
         let status_tx = pty_tx;
@@ -254,7 +266,7 @@ fn worker_main(
                 if apply_command(
                     command,
                     &mut terminal,
-                    &mut pty,
+                    pty,
                     &mailbox,
                     &metrics,
                     notifier.as_ref(),
@@ -328,10 +340,6 @@ fn worker_main(
             Err(_) => break,
         }
     }
-
-    // Release the receiver before dropping the PTY so a blocked bounded callback can exit.
-    drop(pty_rx);
-    drop(pty);
 
     if !matches!(
         lock(&mailbox).status,
