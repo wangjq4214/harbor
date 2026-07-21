@@ -17,7 +17,7 @@ pub use caps::{
 pub use cursor::Cursor;
 pub use decoration::Decoration;
 pub use font::{FontBook, load_system_fonts};
-pub use gpu::GpuContext;
+pub use gpu::{GpuContext, SurfaceDisposition, SurfaceStatus, surface_disposition};
 pub use metrics::TextMetrics;
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;

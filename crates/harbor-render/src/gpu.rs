@@ -4,6 +4,73 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceStatus {
+    Success,
+    Suboptimal,
+    Lost,
+    Outdated,
+    Timeout,
+    Occluded,
+    Validation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceDisposition {
+    Present,
+    PresentAndReconfigure,
+    ReconfigureAndRedraw,
+    Skip,
+}
+
+pub fn surface_disposition(status: SurfaceStatus) -> SurfaceDisposition {
+    match status {
+        SurfaceStatus::Success => SurfaceDisposition::Present,
+        SurfaceStatus::Suboptimal => SurfaceDisposition::PresentAndReconfigure,
+        SurfaceStatus::Lost | SurfaceStatus::Outdated => SurfaceDisposition::ReconfigureAndRedraw,
+        SurfaceStatus::Timeout | SurfaceStatus::Occluded | SurfaceStatus::Validation => {
+            SurfaceDisposition::Skip
+        }
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    #[test]
+    fn surface_statuses_have_non_blocking_dispositions() {
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Success),
+            SurfaceDisposition::Present
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Suboptimal),
+            SurfaceDisposition::PresentAndReconfigure
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Lost),
+            SurfaceDisposition::ReconfigureAndRedraw
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Outdated),
+            SurfaceDisposition::ReconfigureAndRedraw
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Timeout),
+            SurfaceDisposition::Skip
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Occluded),
+            SurfaceDisposition::Skip
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Validation),
+            SurfaceDisposition::Skip
+        );
+    }
+}
+
 // ── GpuContext ────────────────────────────────────────────────────────────
 
 /// Shared GPU handles for layers to create and upload resources.
@@ -115,6 +182,16 @@ impl GpuContext {
         })
     }
 
+    /// Reconfigures the surface with its current dimensions.
+    pub fn reconfigure(&mut self) {
+        tracing::debug!(
+            width = self.config.width,
+            height = self.config.height,
+            "reconfiguring surface"
+        );
+        self.surface.configure(&self.device, &self.config);
+    }
+
     /// Reconfigures the surface for a new window size.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
@@ -124,7 +201,7 @@ impl GpuContext {
         self.config.width = width;
         self.config.height = height;
         tracing::trace!(width, height, "gpu context resized");
-        self.surface.configure(&self.device, &self.config);
+        self.reconfigure();
     }
 
     /// Surface pixel format.

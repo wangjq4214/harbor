@@ -15,10 +15,13 @@ use winit::{
 
 use crate::{
     app::input::InputEncoder,
-    event::AppEvent,
+    event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason},
     terminal_worker::{TerminalWorkerClient, WorkerUiFacade, empty_snapshot},
 };
-use harbor_render::{EventResult, GpuContext, TerminalFacade, TextMetrics, load_system_fonts};
+use harbor_render::{
+    EventResult, GpuContext, SurfaceDisposition, SurfaceStatus, TerminalFacade, TextMetrics,
+    load_system_fonts, surface_disposition,
+};
 use harbor_types::{RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, WorkerStatus};
 use harbor_ui::DialogResult;
 use paste_dialog::PasteDialog;
@@ -73,6 +76,8 @@ pub(crate) struct App {
     worker_status: WorkerStatus,
     /// Proxy used by the worker to wake the winit event loop.
     event_proxy: EventLoopProxy<AppEvent>,
+    /// Coalesces worker/input/surface wakes into one redraw request.
+    scheduler: FrameScheduler,
     /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
     pending_resize: Option<TerminalSize>,
     /// Number of snapshot-producing commands awaiting a worker revision.
@@ -108,18 +113,16 @@ impl ApplicationHandler<AppEvent> for App {
     /// Handles terminal-worker update wakes without touching the worker model.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::WorkerUpdateReady = event;
-        let changed = self.consume_worker_updates();
-        if changed && let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if self.consume_worker_updates() {
+            self.request_redraw(RedrawReason::WorkerUpdate);
         }
     }
 
     /// Called when the event loop is about to block. Applies pending resize,
     /// then drives component deadlines (cursor blink, scrollbar auto-hide).
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let changed = self.consume_worker_updates();
-        if changed && let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if self.consume_worker_updates() {
+            self.request_redraw(RedrawReason::WorkerUpdate);
         }
         let (Some(ui), Some(snapshot), Some(worker), Some(window)) = (
             self.ui.as_mut(),
@@ -127,7 +130,8 @@ impl ApplicationHandler<AppEvent> for App {
             self.worker.as_ref(),
             self.window.as_ref(),
         ) else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            self.scheduler.set_deadline(None);
+            self.set_control_flow(event_loop);
             return;
         };
 
@@ -145,13 +149,18 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         if self.pending_snapshot_commands > 0 {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            self.scheduler.set_deadline(None);
+            self.set_control_flow(event_loop);
             return;
         }
 
         let facade = WorkerUiFacade::new(snapshot, worker);
         let deadline = ui.compact_deadline(&facade, window);
-        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        self.scheduler.set_deadline(deadline);
+        if self.scheduler.should_request_continuous_redraw() {
+            self.request_redraw(RedrawReason::Active);
+        }
+        self.set_control_flow(event_loop);
     }
 
     /// Dispatches window-level events: resize, redraw, close, keyboard input.
@@ -161,9 +170,8 @@ impl ApplicationHandler<AppEvent> for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let changed = self.consume_worker_updates();
-        if changed && let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if self.consume_worker_updates() {
+            self.request_redraw(RedrawReason::WorkerUpdate);
         }
 
         // ── Dialog window handling ──────────────────────────────────────
@@ -180,15 +188,11 @@ impl ApplicationHandler<AppEvent> for App {
                             let facade = WorkerUiFacade::new(snapshot, worker);
                             facade.send_paste(text);
                         }
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
+                        self.request_redraw(RedrawReason::Input);
                         return;
                     }
                     DialogResult::Cancelled => {
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
+                        self.request_redraw(RedrawReason::Input);
                         return;
                     }
                     DialogResult::None => {
@@ -237,6 +241,16 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
+        match &event {
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => self.scheduler.set_active(*state == ElementState::Pressed),
+            WindowEvent::Focused(false) => self.scheduler.set_active(false),
+            _ => {}
+        }
+
         let facade = WorkerUiFacade::new(snapshot, worker);
         let handled = ui.handle_event(&event, &facade, window, gpu, self.modifiers);
 
@@ -255,7 +269,9 @@ impl ApplicationHandler<AppEvent> for App {
                 ));
             }
             ui.prepare(gpu, snapshot);
-            window.request_redraw();
+            if self.scheduler.wake(RedrawReason::Input) {
+                window.request_redraw();
+            }
             return;
         }
 
@@ -276,7 +292,9 @@ impl ApplicationHandler<AppEvent> for App {
 
         if handled == EventResult::Handled {
             ui.prepare(gpu, snapshot);
-            window.request_redraw();
+            if self.scheduler.wake(RedrawReason::Input) {
+                window.request_redraw();
+            }
             return;
         }
 
@@ -294,7 +312,9 @@ impl ApplicationHandler<AppEvent> for App {
                 ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
             }
             self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
-            window.request_redraw();
+            if self.scheduler.wake(RedrawReason::Input) {
+                window.request_redraw();
+            }
             return;
         }
 
@@ -302,7 +322,9 @@ impl ApplicationHandler<AppEvent> for App {
             && kbd.state == ElementState::Pressed
         {
             ui.prepare(gpu, snapshot);
-            window.request_redraw();
+            if self.scheduler.wake(RedrawReason::Input) {
+                window.request_redraw();
+            }
         }
 
         match event {
@@ -322,10 +344,13 @@ impl ApplicationHandler<AppEvent> for App {
                 gpu.resize(size.width, size.height);
                 ui.resize(gpu, (size.width, size.height));
                 self.pending_resize = Some(ui.terminal_size(gpu));
-                window.request_redraw();
+                if self.scheduler.wake(RedrawReason::Resize) {
+                    window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
+                self.scheduler.redraw_requested();
                 self.render_frame();
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -345,7 +370,9 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     self.pending_snapshot_commands =
                         self.pending_snapshot_commands.saturating_add(1);
-                    window.request_redraw();
+                    if self.scheduler.wake(RedrawReason::Input) {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -384,6 +411,7 @@ impl App {
             worker: None,
             worker_status: WorkerStatus::Ready,
             event_proxy,
+            scheduler: FrameScheduler::default(),
             pending_resize: None,
             pending_snapshot_commands: 0,
             modifiers: ModifiersState::default(),
@@ -450,8 +478,27 @@ impl App {
         self.worker_status = worker.status();
         self.worker = Some(worker);
         self.window = Some(window.clone());
-        window.request_redraw();
+        self.request_redraw(RedrawReason::Input);
         Ok(())
+    }
+
+    fn request_redraw(&mut self, reason: RedrawReason) {
+        if self.scheduler.wake(reason)
+            && let Some(window) = self.window.as_ref()
+        {
+            tracing::trace!(?reason, "requesting redraw");
+            window.request_redraw();
+        }
+    }
+
+    fn set_control_flow(&self, event_loop: &ActiveEventLoop) {
+        match self.scheduler.control_flow() {
+            FrameControlFlow::Wait => event_loop.set_control_flow(ControlFlow::Wait),
+            FrameControlFlow::WaitUntil(deadline) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+            FrameControlFlow::Poll => event_loop.set_control_flow(ControlFlow::Poll),
+        }
     }
 
     fn consume_worker_updates(&mut self) -> bool {
@@ -516,38 +563,39 @@ impl App {
             return;
         };
 
-        // wgpu surface acquisition: handle transient failures by reconfiguring
-        // or skipping the frame (the event loop will re-request a redraw).
-        let output = match gpu.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => output,
-            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
-                tracing::warn!("surface texture suboptimal");
-                output
+        let frame = gpu.get_current_texture();
+        let status = match &frame {
+            wgpu::CurrentSurfaceTexture::Success(_) => SurfaceStatus::Success,
+            wgpu::CurrentSurfaceTexture::Suboptimal(_) => SurfaceStatus::Suboptimal,
+            wgpu::CurrentSurfaceTexture::Lost => SurfaceStatus::Lost,
+            wgpu::CurrentSurfaceTexture::Outdated => SurfaceStatus::Outdated,
+            wgpu::CurrentSurfaceTexture::Timeout => SurfaceStatus::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => SurfaceStatus::Occluded,
+            wgpu::CurrentSurfaceTexture::Validation => SurfaceStatus::Validation,
+        };
+        let disposition = surface_disposition(status);
+        let (output, reconfigure_after_present) = match (frame, disposition) {
+            (wgpu::CurrentSurfaceTexture::Success(output), SurfaceDisposition::Present) => {
+                (output, false)
             }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                tracing::warn!("surface lost; reconfiguring");
-                let (w, h) = gpu.surface_size();
-                gpu.resize(w, h);
+            (
+                wgpu::CurrentSurfaceTexture::Suboptimal(output),
+                SurfaceDisposition::PresentAndReconfigure,
+            ) => {
+                tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
+                (output, true)
+            }
+            (_, SurfaceDisposition::ReconfigureAndRedraw) => {
+                tracing::warn!(?status, "surface requires reconfiguration");
+                gpu.reconfigure();
+                self.request_redraw(RedrawReason::SurfaceRecovery);
                 return;
             }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                tracing::warn!("surface outdated; reconfiguring");
-                let (w, h) = gpu.surface_size();
-                gpu.resize(w, h);
+            (_, SurfaceDisposition::Skip) => {
+                tracing::debug!(?status, "surface frame skipped");
                 return;
             }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                tracing::trace!("surface texture timeout");
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                tracing::trace!("surface occluded");
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                tracing::warn!("surface validation failed");
-                return;
-            }
+            _ => unreachable!("surface disposition must match texture status"),
         };
 
         let view = output
@@ -580,6 +628,12 @@ impl App {
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+        if reconfigure_after_present {
+            gpu.reconfigure();
+        }
+        if reconfigure_after_present {
+            self.request_redraw(RedrawReason::SurfaceSuboptimal);
+        }
     }
 }
 
