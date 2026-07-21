@@ -30,6 +30,7 @@ enum PtyMessage {
 
 struct Mailbox {
     update: Option<TerminalUpdate>,
+    acknowledgements: VecDeque<u64>,
     copy_results: VecDeque<CopySelectionResult>,
     status: WorkerStatus,
 }
@@ -62,6 +63,7 @@ impl TerminalWorkerClient {
         let pty_signal_tx = signal_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
@@ -120,9 +122,37 @@ impl TerminalWorkerClient {
         lock(&self.mailbox).update.take()
     }
 
+    pub(crate) fn take_acknowledgement(&self) -> Option<u64> {
+        lock(&self.mailbox).acknowledgements.pop_front()
+    }
+
     pub(crate) fn request_copy(&self, bounds: SelectionBounds) -> Option<u64> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.send(TerminalCommand::CopySelection { request_id, bounds })
+            .then_some(request_id)
+    }
+
+    pub(crate) fn request_resize(&self, size: TerminalSize) -> Option<u64> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.send(TerminalCommand::Resize { request_id, size })
+            .then_some(request_id)
+    }
+
+    pub(crate) fn request_scroll_viewport(&self, rows: isize) -> Option<u64> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.send(TerminalCommand::ScrollViewport { request_id, rows })
+            .then_some(request_id)
+    }
+
+    pub(crate) fn request_scroll_to_top(&self) -> Option<u64> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.send(TerminalCommand::ScrollToTop { request_id })
+            .then_some(request_id)
+    }
+
+    pub(crate) fn request_scroll_to_bottom(&self) -> Option<u64> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.send(TerminalCommand::ScrollToBottom { request_id })
             .then_some(request_id)
     }
 
@@ -180,6 +210,7 @@ fn worker_main(
         notifier.as_ref(),
         revision,
         false,
+        None,
     );
     // Readiness is acknowledged only after the PTY has started successfully.
 
@@ -248,6 +279,7 @@ fn worker_main(
                     notifier.as_ref(),
                     revision.saturating_add(1),
                     true,
+                    None,
                 );
                 revision = revision.saturating_add(1);
                 set_status(&mailbox, WorkerStatus::Idle);
@@ -361,7 +393,7 @@ fn apply_command(
             set_status(mailbox, WorkerStatus::Processing);
             terminal.process_output(&bytes);
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
+            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true, None);
             set_status(mailbox, WorkerStatus::Idle);
             notify(notifier);
         }
@@ -376,34 +408,66 @@ fn apply_command(
             pty.write(&modes.paste(text.as_bytes()));
             notify(notifier);
         }
-        TerminalCommand::Resize(size) => {
+        TerminalCommand::Resize { request_id, size } => {
             if terminal.resize_terminal_if_changed(size) {
                 pty.resize(size);
                 *revision = revision.saturating_add(1);
-                publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
-                notify(notifier);
             }
+            publish_snapshot(
+                terminal,
+                mailbox,
+                metrics,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
+            notify(notifier);
         }
-        TerminalCommand::ScrollViewport { rows } => {
+        TerminalCommand::ScrollViewport { request_id, rows } => {
             if rows >= 0 {
                 terminal.scroll_viewport_down(rows as usize);
             } else {
                 terminal.scroll_viewport_up(rows.unsigned_abs());
             }
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                metrics,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
             notify(notifier);
         }
-        TerminalCommand::ScrollToTop => {
+        TerminalCommand::ScrollToTop { request_id } => {
             terminal.scroll_viewport_to_top();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                metrics,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
             notify(notifier);
         }
-        TerminalCommand::ScrollToBottom => {
+        TerminalCommand::ScrollToBottom { request_id } => {
             terminal.scroll_viewport_to_bottom();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                metrics,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
             notify(notifier);
         }
         TerminalCommand::SetSelectionDragActive(active) => {
@@ -430,15 +494,20 @@ fn publish_snapshot(
     notifier: &dyn Fn(),
     revision: u64,
     overwrite_is_gap: bool,
+    acknowledged_request_id: Option<u64>,
 ) {
     let started = Instant::now();
     let snapshot = terminal.snapshot();
     metrics.record_snapshot_build(started.elapsed());
-    let mut update = TerminalUpdate::from_snapshot(revision, snapshot);
+    let mut update =
+        TerminalUpdate::with_acknowledgement(revision, snapshot, acknowledged_request_id);
     let mut state = lock(mailbox);
     let overwritten = overwrite_is_gap && state.update.is_some();
     if overwritten {
         update.damage = UpdateDamage::FullUpload;
+    }
+    if let Some(request_id) = acknowledged_request_id {
+        state.acknowledgements.push_back(request_id);
     }
     state.update = Some(update);
     drop(state);
@@ -569,23 +638,20 @@ impl TerminalFacade for WorkerUiFacade<'_> {
         let _ = self.worker.send(TerminalCommand::PasteText(text));
     }
 
-    fn scroll_viewport_up(&self, n: usize) {
-        let _ = self.worker.send(TerminalCommand::ScrollViewport {
-            rows: -(n as isize),
-        });
-    }
-    fn scroll_viewport_down(&self, n: usize) {
-        let _ = self
-            .worker
-            .send(TerminalCommand::ScrollViewport { rows: n as isize });
+    fn scroll_viewport_up(&self, n: usize) -> Option<u64> {
+        self.worker.request_scroll_viewport(-(n as isize))
     }
 
-    fn scroll_viewport_to_top(&self) {
-        let _ = self.worker.send(TerminalCommand::ScrollToTop);
+    fn scroll_viewport_down(&self, n: usize) -> Option<u64> {
+        self.worker.request_scroll_viewport(n as isize)
     }
 
-    fn scroll_viewport_to_bottom(&self) {
-        let _ = self.worker.send(TerminalCommand::ScrollToBottom);
+    fn scroll_viewport_to_top(&self) -> Option<u64> {
+        self.worker.request_scroll_to_top()
+    }
+
+    fn scroll_viewport_to_bottom(&self) -> Option<u64> {
+        self.worker.request_scroll_to_bottom()
     }
 
     fn set_suppress_scroll_snap(&self, active: bool) {
@@ -614,6 +680,7 @@ mod tests {
         let test_pty_tx = pty_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
@@ -717,6 +784,7 @@ mod tests {
         terminal.put_str("ab");
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
@@ -750,12 +818,68 @@ mod tests {
     }
 
     #[test]
+    fn worker_acknowledges_the_snapshot_command_request_id() {
+        let mut terminal = Terminal::new(1, 4);
+        let mailbox = Arc::new(Mutex::new(Mailbox {
+            update: None,
+            acknowledgements: VecDeque::new(),
+            copy_results: VecDeque::new(),
+            status: WorkerStatus::Ready,
+        }));
+        let mut revision = 0;
+        let mut pty = Pty::new(NoopWake);
+        let metrics = RenderMetrics::default();
+
+        apply_command(
+            TerminalCommand::ScrollViewport {
+                request_id: 42,
+                rows: 1,
+            },
+            &mut terminal,
+            &mut pty,
+            &mailbox,
+            &metrics,
+            &|| {},
+            &mut revision,
+        );
+
+        assert_eq!(
+            lock(&mailbox)
+                .update
+                .as_ref()
+                .and_then(|update| update.acknowledged_request_id),
+            Some(42)
+        );
+
+        apply_command(
+            TerminalCommand::ScrollViewport {
+                request_id: 43,
+                rows: -1,
+            },
+            &mut terminal,
+            &mut pty,
+            &mailbox,
+            &metrics,
+            &|| {},
+            &mut revision,
+        );
+        let mut state = lock(&mailbox);
+        assert_eq!(
+            state.acknowledgements.iter().copied().collect::<Vec<_>>(),
+            vec![42, 43]
+        );
+        assert_eq!(state.acknowledgements.pop_front(), Some(42));
+        assert_eq!(state.acknowledgements.pop_front(), Some(43));
+        assert!(state.acknowledgements.is_empty());
+    }
+    #[test]
     fn worker_preserves_failed_status_after_pty_error() {
         let (control_tx, control_rx) = mpsc::channel();
         let (signal_tx, signal_rx) = mpsc::channel();
         let (pty_tx, pty_rx) = mpsc::channel();
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
@@ -805,6 +929,7 @@ mod tests {
     fn worker_panic_is_reported_without_rethrowing_to_caller() {
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update: None,
+            acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));

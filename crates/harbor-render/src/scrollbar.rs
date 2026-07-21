@@ -154,6 +154,8 @@ pub struct Scrollbar {
     cursor_inside: bool,
     /// Timestamp of the last mouse move or scroll wheel activity (for auto-hide timeout).
     last_activity: std::time::Instant,
+    /// Inputs used for the last scrollbar buffer upload.
+    last_upload_key: Option<(usize, usize, usize, usize, bool, u32, u32)>,
 }
 
 impl Scrollbar {
@@ -194,6 +196,7 @@ impl Scrollbar {
             visible: false,
             cursor_inside: false,
             last_activity: std::time::Instant::now(),
+            last_upload_key: None,
         }
     }
 
@@ -275,12 +278,24 @@ impl Scrollbar {
 }
 
 impl Component for Scrollbar {
-    /// Upload scrollbar vertices and uniform data for the current snap state.
     fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
         let Some(snap) = snap else {
             return;
         };
         let (surf_w, surf_h) = gpu.surface_size();
+        let key = (
+            snap.rows,
+            snap.cols,
+            snap.scroll_count,
+            snap.view_offset,
+            snap.is_alt,
+            surf_w,
+            surf_h,
+        );
+        if self.last_upload_key == Some(key) {
+            return;
+        }
+        self.last_upload_key = Some(key);
 
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
         gpu.write_buffer(

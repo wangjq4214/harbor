@@ -20,10 +20,10 @@ pub trait TerminalFacade {
     fn request_copy(&self, bounds: SelectionBounds) -> Option<u64>;
     fn send_input(&self, request: InputRequest);
     fn send_paste(&self, text: String);
-    fn scroll_viewport_up(&self, n: usize);
-    fn scroll_viewport_down(&self, n: usize);
-    fn scroll_viewport_to_top(&self);
-    fn scroll_viewport_to_bottom(&self);
+    fn scroll_viewport_up(&self, n: usize) -> Option<u64>;
+    fn scroll_viewport_down(&self, n: usize) -> Option<u64>;
+    fn scroll_viewport_to_top(&self) -> Option<u64>;
+    fn scroll_viewport_to_bottom(&self) -> Option<u64>;
     fn set_suppress_scroll_snap(&self, active: bool);
     fn is_alt_screen(&self) -> bool;
 }

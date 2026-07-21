@@ -78,8 +78,8 @@ impl UiRoot {
     }
 
     /// Ensures dialog text characters are rasterized.
-    pub(crate) fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.text.ensure_glyphs(text, device, queue);
+    pub(crate) fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
+        self.text.ensure_glyphs(text, gpu);
     }
 
     /// Uploads dirty GPU resources for all five components.

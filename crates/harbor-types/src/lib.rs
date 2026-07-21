@@ -540,12 +540,20 @@ pub enum TerminalCommand {
     Input(InputRequest),
     /// Raw paste text; the worker applies bracketed-paste framing from its modes.
     PasteText(String),
-    Resize(TerminalSize),
+    Resize {
+        request_id: u64,
+        size: TerminalSize,
+    },
     ScrollViewport {
+        request_id: u64,
         rows: isize,
     },
-    ScrollToTop,
-    ScrollToBottom,
+    ScrollToTop {
+        request_id: u64,
+    },
+    ScrollToBottom {
+        request_id: u64,
+    },
     SetSelectionDragActive(bool),
     CopySelection {
         request_id: u64,
@@ -573,14 +581,25 @@ pub struct TerminalUpdate {
     pub revision: u64,
     pub snapshot: TerminalSnapshot,
     pub damage: UpdateDamage,
+    /// Snapshot-producing command request acknowledged by this update.
+    pub acknowledged_request_id: Option<u64>,
 }
 
 impl TerminalUpdate {
     pub fn from_snapshot(revision: u64, snapshot: TerminalSnapshot) -> Self {
+        Self::with_acknowledgement(revision, snapshot, None)
+    }
+
+    pub fn with_acknowledgement(
+        revision: u64,
+        snapshot: TerminalSnapshot,
+        acknowledged_request_id: Option<u64>,
+    ) -> Self {
         Self {
             revision,
             damage: UpdateDamage::Ranges(snapshot.dirty_ranges.clone()),
             snapshot,
+            acknowledged_request_id,
         }
     }
 }

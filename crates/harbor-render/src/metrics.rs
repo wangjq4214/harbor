@@ -141,6 +141,8 @@ pub struct LayerMetrics {
     pub full_rebuilds: u64,
     pub incremental_rebuilds: u64,
     pub glyph_misses: u64,
+    pub glyph_upload_calls: u64,
+    pub glyph_upload_bytes: u64,
     pub atlas_evictions: u64,
 }
 
@@ -163,6 +165,7 @@ pub struct RenderMetricsSnapshot {
     pub snapshot_build_p95: Duration,
     pub prepare_p95: Duration,
     pub encode_p95: Duration,
+    pub present_p95: Duration,
     pub present_interval_p95: Duration,
     pub layers: [LayerMetrics; RenderLayer::COUNT],
 }
@@ -183,6 +186,7 @@ struct MetricsState {
     snapshot_build_samples: Vec<Duration>,
     prepare_samples: Vec<Duration>,
     encode_samples: Vec<Duration>,
+    present_samples: Vec<Duration>,
     present_interval_samples: Vec<Duration>,
     layers: [LayerMetrics; RenderLayer::COUNT],
 }
@@ -259,6 +263,15 @@ impl RenderMetrics {
         layer.upload_bytes = layer.upload_bytes.saturating_add(bytes as u64);
     }
 
+    pub fn record_glyph_upload(&self, bytes: usize) {
+        if !self.enabled {
+            return;
+        }
+        let layer = &mut self.lock().layers[RenderLayer::Text.index()];
+        layer.glyph_upload_calls = layer.glyph_upload_calls.saturating_add(1);
+        layer.glyph_upload_bytes = layer.glyph_upload_bytes.saturating_add(bytes as u64);
+    }
+
     pub fn record_glyphs(&self, misses: usize, evicted: bool) {
         if !self.enabled {
             return;
@@ -305,9 +318,9 @@ impl RenderMetrics {
         frame: Duration,
         encode: Duration,
         present_interval: Option<Duration>,
-    ) {
+    ) -> u64 {
         if !self.enabled {
-            return;
+            return 0;
         }
         let mut state = self.lock();
         state.frame_count += 1;
@@ -319,8 +332,14 @@ impl RenderMetrics {
         if let Some(interval) = present_interval {
             push_sample(&mut state.present_interval_samples, interval);
         }
+        state.frame_count
     }
 
+    pub fn record_present(&self, elapsed: Duration) {
+        if self.enabled {
+            push_sample(&mut self.lock().present_samples, elapsed);
+        }
+    }
     pub fn record_prepare(&self, elapsed: Duration) {
         if self.enabled {
             push_sample(&mut self.lock().prepare_samples, elapsed);
@@ -347,6 +366,7 @@ impl RenderMetrics {
             snapshot_build_p95: percentile(&state.snapshot_build_samples, 0.95),
             prepare_p95: percentile(&state.prepare_samples, 0.95),
             encode_p95: percentile(&state.encode_samples, 0.95),
+            present_p95: percentile(&state.present_samples, 0.95),
             present_interval_p95: percentile(&state.present_interval_samples, 0.95),
             layers: state.layers.clone(),
         }
@@ -367,7 +387,7 @@ impl RenderMetrics {
         .map(|layer| {
             let metrics = &snapshot.layers[layer.index()];
             format!(
-                "{}:ranges={},dirty_bytes={},max_dirty_ratio_milli={},uploads={},upload_bytes={},full={},incremental={},glyph_misses={},atlas_evictions={}",
+                "{}:ranges={},dirty_bytes={},max_dirty_ratio_milli={},uploads={},upload_bytes={},full={},incremental={},glyph_misses={},atlas_evictions={},glyph_uploads={},glyph_upload_bytes={}",
                 layer.name(),
                 metrics.dirty_ranges,
                 metrics.dirty_bytes,
@@ -378,15 +398,17 @@ impl RenderMetrics {
                 metrics.incremental_rebuilds,
                 metrics.glyph_misses,
                 metrics.atlas_evictions,
+                metrics.glyph_upload_calls,
+                metrics.glyph_upload_bytes,
             )
         })
         .collect::<Vec<_>>()
         .join(";");
         format!(
-            "render_profile backend={} hardware={} workload_matrix=pty-burst,input,scrollback,resize,glyph-miss-atlas-eviction \
+            "render_profile backend={} hardware={} workload_matrix=unqualified \
 frame_count={} frame_budget_misses={} frame_p95_ms={:.3} frame_p99_ms={:.3} \
 snapshot_build_count={} snapshot_build_p95_ms={:.3} prepare_p95_ms={:.3} encode_p95_ms={:.3} \
-present_interval_p95_ms={:.3} mailbox_overwrites={} revision_lag_total={} revision_lag_max={} \
+present_p95_ms={:.3} present_interval_p95_ms={:.3} mailbox_overwrites={} revision_lag_total={} revision_lag_max={} \
 command_ack_count={} input_ack_p95_ms={:.3} input_ack_p99_ms={:.3} layers={} gate_decision=deferred",
             snapshot.backend,
             snapshot.hardware_class,
@@ -398,6 +420,7 @@ command_ack_count={} input_ack_p95_ms={:.3} input_ack_p99_ms={:.3} layers={} gat
             millis(snapshot.snapshot_build_p95),
             millis(snapshot.prepare_p95),
             millis(snapshot.encode_p95),
+            millis(snapshot.present_p95),
             millis(snapshot.present_interval_p95),
             snapshot.mailbox_overwrites,
             snapshot.revision_lag_total,
@@ -553,6 +576,7 @@ mod tests {
         let metrics = RenderMetrics::default();
         metrics.record_snapshot_build(Duration::from_millis(3));
         metrics.record_prepare(Duration::from_millis(7));
+        metrics.record_present(Duration::from_millis(1));
         metrics.record_frame(
             Duration::from_millis(8),
             Duration::from_millis(2),
@@ -563,6 +587,7 @@ mod tests {
         assert_eq!(snapshot.snapshot_build_p95, Duration::from_millis(3));
         assert_eq!(snapshot.prepare_p95, Duration::from_millis(7));
         assert_eq!(snapshot.frame_p95, Duration::from_millis(8));
+        assert_eq!(snapshot.present_p95, Duration::from_millis(1));
         assert_eq!(snapshot.present_interval_p95, Duration::from_millis(16));
     }
     #[test]
@@ -570,12 +595,15 @@ mod tests {
         let metrics = RenderMetrics::default();
         let plan = UploadPolicy::default().decide(2, 2, 16, &[range(0, 0, 1)], false);
         metrics.record_upload_plan(RenderLayer::Text, plan);
+        metrics.record_glyph_upload(24);
         metrics.record_upload(RenderLayer::Text, 16);
         metrics.record_glyphs(3, true);
         metrics.record_mailbox(true, 2);
         metrics.record_command_ack(Duration::from_millis(4));
         let snapshot = metrics.snapshot();
         let text = &snapshot.layers[RenderLayer::Text.index()];
+        assert_eq!(text.glyph_upload_calls, 1);
+        assert_eq!(text.glyph_upload_bytes, 24);
         assert_eq!(text.dirty_ranges, 1);
         assert_eq!(text.dirty_bytes, 16);
         assert_eq!(text.max_dirty_ratio_milli, 250);
@@ -587,5 +615,6 @@ mod tests {
         assert_eq!(snapshot.revision_lag_max, 2);
         assert_eq!(snapshot.command_ack_count, 1);
         assert!(metrics.profile_report().contains("gate_decision=deferred"));
+        assert!(metrics.profile_report().contains("glyph_uploads=1"));
     }
 }

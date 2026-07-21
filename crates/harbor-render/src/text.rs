@@ -804,13 +804,17 @@ impl Text {
 
     /// Ensures all characters in `text` are rasterized and uploaded to the GPU atlas.
     /// Call before building text vertices for dialog labels that reference the atlas.
-    pub fn ensure_glyphs(&mut self, text: &str, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
         let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
         chars.sort_unstable();
         chars.dedup();
         let new_chars = self.atlas.ensure_chars(&chars, &self.fonts);
         if !new_chars.is_empty() {
-            self.gpu_atlas.update_glyphs(queue, &self.atlas, &new_chars);
+            let uploaded = self
+                .gpu_atlas
+                .update_glyphs(gpu.queue(), &self.atlas, &new_chars);
+            gpu.record_upload(RenderLayer::Text, uploaded);
+            gpu.metrics().record_glyph_upload(uploaded);
         }
     }
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
@@ -1017,6 +1021,7 @@ impl Text {
                 .gpu_atlas
                 .update_glyphs(gpu.queue(), &self.atlas, &new_glyphs);
             gpu.record_upload(RenderLayer::Text, uploaded);
+            gpu.metrics().record_glyph_upload(uploaded);
         }
         if evicted {
             self.dirty = true;

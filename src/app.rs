@@ -4,7 +4,7 @@ pub(crate) mod input;
 mod paste_dialog;
 mod ui;
 
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
@@ -82,12 +82,10 @@ pub(crate) struct App {
     surface_recovery_attempted: bool,
     /// Coalesced pending resize; applied in `about_to_wait` to avoid bounce.
     pending_resize: Option<TerminalSize>,
-    /// Number of snapshot-producing commands awaiting a worker revision.
-    pending_snapshot_commands: usize,
+    /// Snapshot-producing commands awaiting their matching worker acknowledgement.
+    pending_snapshot_commands: HashMap<u64, Instant>,
     /// Shared U5 collector for worker, prepare, upload, encode, and present timings.
     metrics: Arc<RenderMetrics>,
-    /// Timestamp of the first pending command acknowledgement.
-    pending_snapshot_sent_at: Option<Instant>,
     /// Timestamp of the previous successful present.
     last_present: Option<Instant>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
@@ -144,22 +142,20 @@ impl ApplicationHandler<AppEvent> for App {
         };
 
         if let Some(new_size) = self.pending_resize.take()
-            && worker.send(harbor_types::TerminalCommand::Resize(new_size))
+            && let Some(request_id) = worker.request_resize(new_size)
         {
-            if self.pending_snapshot_commands == 0 {
-                self.pending_snapshot_sent_at = Some(Instant::now());
-            }
-            self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
+            self.pending_snapshot_commands
+                .insert(request_id, Instant::now());
         }
 
         if matches!(
             self.worker_status,
             WorkerStatus::Failed { .. } | WorkerStatus::Stopped
         ) {
-            self.pending_snapshot_commands = 0;
+            self.pending_snapshot_commands.clear();
         }
 
-        if self.pending_snapshot_commands > 0 {
+        if !self.pending_snapshot_commands.is_empty() {
             self.scheduler.set_deadline(None);
             if self.scheduler.control_flow() == FrameControlFlow::Poll {
                 event_loop.set_control_flow(ControlFlow::Wait);
@@ -217,7 +213,7 @@ impl ApplicationHandler<AppEvent> for App {
                                     "[ Paste ][ Cancel ]Paste {} lines?",
                                     dialog.raw_text.lines().count()
                                 );
-                                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
+                                ui.ensure_glyphs(&ensure_text, gpu);
                             }
                             if let (Some(gpu), Some(ui)) = (self.gpu.as_ref(), self.ui.as_ref()) {
                                 let metrics = ui.text_metrics();
@@ -280,7 +276,7 @@ impl ApplicationHandler<AppEvent> for App {
                     "[ Paste ][ Cancel ]Paste {} lines?0123456789",
                     raw_text.lines().count()
                 );
-                ui.ensure_glyphs(&ensure_text, gpu.device(), gpu.queue());
+                ui.ensure_glyphs(&ensure_text, gpu);
                 self.paste_dialog = Some(PasteDialog::new(
                     raw_text.clone(),
                     event_loop,
@@ -321,16 +317,16 @@ impl ApplicationHandler<AppEvent> for App {
         {
             let page_rows = snapshot.rows;
             let facade = WorkerUiFacade::new(snapshot, worker);
-            match navigation {
+            let request_id = match navigation {
                 ScrollbackNavigation::PageUp => facade.scroll_viewport_up(page_rows),
                 ScrollbackNavigation::PageDown => facade.scroll_viewport_down(page_rows),
                 ScrollbackNavigation::Top => facade.scroll_viewport_to_top(),
                 ScrollbackNavigation::Bottom => facade.scroll_viewport_to_bottom(),
+            };
+            if let Some(request_id) = request_id {
+                self.pending_snapshot_commands
+                    .insert(request_id, Instant::now());
             }
-            if self.pending_snapshot_commands == 0 {
-                self.pending_snapshot_sent_at = Some(Instant::now());
-            }
-            self.pending_snapshot_commands = self.pending_snapshot_commands.saturating_add(1);
             Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
@@ -376,17 +372,15 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
                 };
                 if lines != 0 {
-                    let facade = WorkerUiFacade::new(snapshot, worker);
-                    if lines > 0 {
-                        facade.scroll_viewport_up(lines as usize);
+                    let request_id = if lines > 0 {
+                        facade.scroll_viewport_up(lines as usize)
                     } else {
-                        facade.scroll_viewport_down((-lines) as usize);
+                        facade.scroll_viewport_down((-lines) as usize)
+                    };
+                    if let Some(request_id) = request_id {
+                        self.pending_snapshot_commands
+                            .insert(request_id, Instant::now());
                     }
-                    if self.pending_snapshot_commands == 0 {
-                        self.pending_snapshot_sent_at = Some(Instant::now());
-                    }
-                    self.pending_snapshot_commands =
-                        self.pending_snapshot_commands.saturating_add(1);
                     Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
                 }
             }
@@ -429,9 +423,8 @@ impl App {
             scheduler: FrameScheduler::default(),
             pending_resize: None,
             surface_recovery_attempted: false,
-            pending_snapshot_commands: 0,
+            pending_snapshot_commands: HashMap::new(),
             metrics: Arc::new(RenderMetrics::default()),
-            pending_snapshot_sent_at: None,
             last_present: None,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
@@ -547,14 +540,22 @@ impl App {
                 continue;
             };
             self.latest_snapshot = Some(update.snapshot.clone());
-            if let Some(sent_at) = self.pending_snapshot_sent_at.take() {
-                self.metrics.record_command_ack(sent_at.elapsed());
-            }
-            self.pending_snapshot_commands = 0;
             if let (Some(gpu), Some(ui)) = (self.gpu.as_mut(), self.ui.as_mut()) {
                 ui.prepare_update(gpu, &update);
             }
             changed = true;
+        }
+        loop {
+            let request_id = self
+                .worker
+                .as_ref()
+                .and_then(TerminalWorkerClient::take_acknowledgement);
+            let Some(request_id) = request_id else {
+                break;
+            };
+            if let Some(sent_at) = self.pending_snapshot_commands.remove(&request_id) {
+                self.metrics.record_command_ack(sent_at.elapsed());
+            }
         }
         loop {
             let result = self
@@ -576,13 +577,11 @@ impl App {
                 match &status {
                     WorkerStatus::Failed { .. } => {
                         tracing::error!(status = ?status, "terminal worker failed");
-                        self.pending_snapshot_commands = 0;
-                        self.pending_snapshot_sent_at = None;
+                        self.pending_snapshot_commands.clear();
                     }
                     WorkerStatus::Stopped => {
                         tracing::info!(status = ?status, "terminal worker stopped");
-                        self.pending_snapshot_commands = 0;
-                        self.pending_snapshot_sent_at = None;
+                        self.pending_snapshot_commands.clear();
                     }
                     WorkerStatus::Ready | WorkerStatus::Processing | WorkerStatus::Idle => {}
                 }
@@ -673,17 +672,23 @@ impl App {
         let command_buffer = encoder.finish();
         let encode_elapsed = encode_started.elapsed();
         gpu.queue().submit(Some(command_buffer));
+        let present_started = Instant::now();
         gpu.present(output);
+        let present_elapsed = present_started.elapsed();
         let presented_at = Instant::now();
         let present_interval = self
             .last_present
             .replace(presented_at)
             .map(|previous| presented_at.duration_since(previous));
-        gpu.metrics()
-            .record_frame(frame_started.elapsed(), encode_elapsed, present_interval);
-        let profile = gpu.metrics_snapshot();
-        if profile.frame_count.is_multiple_of(120) {
-            tracing::info!(profile = %gpu.metrics().profile_report(), "render profile checkpoint");
+        gpu.metrics().record_present(present_elapsed);
+        let frame_count =
+            gpu.metrics()
+                .record_frame(frame_started.elapsed(), encode_elapsed, present_interval);
+        if frame_count != 0 && frame_count.is_multiple_of(120) {
+            tracing::info!(
+                profile = %gpu.metrics().profile_report(),
+                "render profile checkpoint"
+            );
         }
         tracing::trace!(?status, "surface frame presented");
         if reconfigure_after_present && !self.surface_recovery_attempted {
