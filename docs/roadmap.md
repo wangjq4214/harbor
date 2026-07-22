@@ -301,7 +301,7 @@ For each phase, use the same loop:
 - [ ] Align DEC Special Graphics and box-drawing glyphs for continuous joins.
 - [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
 - [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
-- [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
+- [x] Add formal `DamageTracker` struct with cell-level damage granularity; coalesce worker update notifications and retain the latest revision during heavy PTY output (GPU layout migration remains profile-gated).
 - [x] Add render metrics for snapshot build, prepare, upload, glyph-atlas uploads and misses, mailbox lag, command acknowledgements, encode, present duration/intervals, and p95/p99 frame/input latency; adaptive upload decisions remain profile-gated, the workload matrix remains explicitly unqualified until runtime evidence is collected, and U6 (#49) is not authorized by the current startup-only smoke evidence.
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.

@@ -36,6 +36,7 @@ struct PtyResources {
 }
 
 struct Mailbox {
+    update_notification_pending: bool,
     update: Option<TerminalUpdate>,
     acknowledgements: VecDeque<u64>,
     copy_results: VecDeque<CopySelectionResult>,
@@ -44,7 +45,7 @@ struct Mailbox {
 
 pub(crate) struct TerminalWorkerClient {
     control_tx: Sender<TerminalCommand>,
-    signal_tx: Sender<()>,
+    signal_tx: SyncSender<()>,
     mailbox: Arc<Mutex<Mailbox>>,
     next_request_id: AtomicU64,
     _thread: Option<JoinHandle<()>>,
@@ -65,10 +66,11 @@ impl TerminalWorkerClient {
         metrics: Arc<RenderMetrics>,
     ) -> anyhow::Result<Self> {
         let (control_tx, control_rx) = mpsc::channel();
-        let (signal_tx, signal_rx) = mpsc::channel();
+        let (signal_tx, signal_rx) = mpsc::sync_channel(1);
         let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let pty_signal_tx = signal_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
@@ -118,7 +120,7 @@ impl TerminalWorkerClient {
         if self.control_tx.send(command).is_err() {
             return false;
         }
-        self.signal_tx.send(()).is_ok()
+        signal_wake(&self.signal_tx)
     }
 
     pub(crate) fn shutdown(&self) {
@@ -126,7 +128,10 @@ impl TerminalWorkerClient {
     }
 
     pub(crate) fn take_update(&self) -> Option<TerminalUpdate> {
-        lock(&self.mailbox).update.take()
+        let mut state = lock(&self.mailbox);
+        let update = state.update.take();
+        state.update_notification_pending = false;
+        update
     }
 
     pub(crate) fn take_acknowledgement(&self) -> Option<u64> {
@@ -202,7 +207,7 @@ fn worker_main(
     notifier: Arc<dyn Fn() + Send + Sync>,
     control_rx: Receiver<TerminalCommand>,
     signal_rx: Receiver<()>,
-    pty_signal_tx: Sender<()>,
+    pty_signal_tx: SyncSender<()>,
     pty_rx: Receiver<PtyMessage>,
     pty_tx: SyncSender<PtyMessage>,
     mailbox: Arc<Mutex<Mailbox>>,
@@ -235,11 +240,11 @@ fn worker_main(
         if let Err(error) = pty.start_with_handlers(
             size,
             move |bytes| {
-                output_tx.send(PtyMessage::Bytes(bytes)).is_ok() && output_signal.send(()).is_ok()
+                output_tx.send(PtyMessage::Bytes(bytes)).is_ok() && signal_wake(&output_signal)
             },
             move |status| {
                 let _ = status_tx.send(PtyMessage::Status(status));
-                let _ = status_signal.send(());
+                let _ = signal_wake(&status_signal);
             },
         ) {
             set_status(
@@ -313,7 +318,6 @@ fn worker_main(
                 );
                 revision = revision.saturating_add(1);
                 set_status(&mailbox, WorkerStatus::Idle);
-                notify(notifier.as_ref());
                 if let Some(status) = terminal_status
                     && apply_pty_status(status, &mailbox, notifier.as_ref())
                 {
@@ -443,7 +447,6 @@ fn apply_command(
             *revision = revision.saturating_add(1);
             publish_snapshot(terminal, mailbox, metrics, notifier, *revision, true, None);
             set_status(mailbox, WorkerStatus::Idle);
-            notify(notifier);
         }
         TerminalCommand::Input(request) => {
             if let Some(bytes) = encode_input(&request, terminal.screen().input_modes()) {
@@ -470,7 +473,6 @@ fn apply_command(
                 true,
                 Some(request_id),
             );
-            notify(notifier);
         }
         TerminalCommand::ScrollViewport { request_id, rows } => {
             if rows >= 0 {
@@ -488,7 +490,6 @@ fn apply_command(
                 true,
                 Some(request_id),
             );
-            notify(notifier);
         }
         TerminalCommand::ScrollToTop { request_id } => {
             terminal.scroll_viewport_to_top();
@@ -502,7 +503,6 @@ fn apply_command(
                 true,
                 Some(request_id),
             );
-            notify(notifier);
         }
         TerminalCommand::ScrollToBottom { request_id } => {
             terminal.scroll_viewport_to_bottom();
@@ -516,7 +516,6 @@ fn apply_command(
                 true,
                 Some(request_id),
             );
-            notify(notifier);
         }
         TerminalCommand::SetSelectionDragActive(active) => {
             terminal.set_suppress_scroll_snap(active);
@@ -549,19 +548,24 @@ fn publish_snapshot(
     metrics.record_snapshot_build(started.elapsed());
     let mut update =
         TerminalUpdate::with_acknowledgement(revision, snapshot, acknowledged_request_id);
-    let mut state = lock(mailbox);
-    let overwritten = overwrite_is_gap && state.update.is_some();
-    if overwritten {
-        update.damage = UpdateDamage::FullUpload;
-    }
-    if let Some(request_id) = acknowledged_request_id {
-        state.acknowledgements.push_back(request_id);
-    }
-    state.update = Some(update);
-    drop(state);
+    let (overwritten, should_notify) = {
+        let mut state = lock(mailbox);
+        let overwritten = overwrite_is_gap && state.update.is_some();
+        if overwritten {
+            update.damage = UpdateDamage::FullUpload;
+        }
+        if let Some(request_id) = acknowledged_request_id {
+            state.acknowledgements.push_back(request_id);
+        }
+        state.update = Some(update);
+        let should_notify = mark_update_notification_pending(&mut state);
+        (overwritten, should_notify)
+    };
     metrics.record_mailbox(overwritten, 0);
     terminal.clear_screen_dirty();
-    notify(notifier);
+    if should_notify {
+        notify(notifier);
+    }
 }
 
 fn set_status(mailbox: &Arc<Mutex<Mailbox>>, status: WorkerStatus) {
@@ -570,6 +574,19 @@ fn set_status(mailbox: &Arc<Mutex<Mailbox>>, status: WorkerStatus) {
 
 fn notify(notifier: &dyn Fn()) {
     notifier();
+}
+
+fn mark_update_notification_pending(state: &mut Mailbox) -> bool {
+    let should_notify = !state.update_notification_pending;
+    state.update_notification_pending = true;
+    should_notify
+}
+
+fn signal_wake(signal: &SyncSender<()>) -> bool {
+    match signal.try_send(()) {
+        Ok(()) | Err(mpsc::TrySendError::Full(())) => true,
+        Err(mpsc::TrySendError::Disconnected(())) => false,
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -719,14 +736,41 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn update_notifications_coalesce_until_mailbox_is_consumed() {
+        let mut mailbox = Mailbox {
+            update_notification_pending: false,
+            update: None,
+            acknowledgements: VecDeque::new(),
+            copy_results: VecDeque::new(),
+            status: WorkerStatus::Ready,
+        };
+
+        assert!(mark_update_notification_pending(&mut mailbox));
+        assert!(!mark_update_notification_pending(&mut mailbox));
+        mailbox.update_notification_pending = false;
+        assert!(mark_update_notification_pending(&mut mailbox));
+    }
+
+    #[test]
+    fn signal_wake_is_bounded_and_nonblocking() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        assert!(signal_wake(&tx));
+        assert!(signal_wake(&tx));
+        assert!(rx.try_recv().is_ok());
+        drop(rx);
+        assert!(!signal_wake(&tx));
+    }
+
+    #[test]
     fn worker_consumes_ordered_output_and_publishes_revisioned_state() {
         let (control_tx, control_rx) = mpsc::channel();
         let metrics = Arc::new(RenderMetrics::default());
-        let (signal_tx, signal_rx) = mpsc::channel();
+        let (signal_tx, signal_rx) = mpsc::sync_channel(1);
         let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let pty_signal_tx = signal_tx.clone();
         let test_pty_tx = pty_tx.clone();
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
@@ -758,20 +802,39 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("worker publishes the initial snapshot")
             .expect("worker startup succeeds");
-        let initial = lock(&mailbox)
-            .update
-            .take()
-            .expect("initial snapshot is available");
+        let initial = {
+            let mut state = lock(&mailbox);
+            state.update_notification_pending = false;
+            state.update.take().expect("initial snapshot is available")
+        };
         assert_eq!(initial.revision, 0);
+        while wake_rx.try_recv().is_ok() {}
 
         test_pty_tx.send(PtyMessage::Bytes(b"ab".to_vec())).unwrap();
-        signal_tx.send(()).unwrap();
+        signal_wake(&signal_tx);
+        let first_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !lock(&mailbox).update.as_ref().is_some_and(|update| {
+            update
+                .snapshot
+                .cells
+                .iter()
+                .map(|cell| cell.ch)
+                .collect::<String>()
+                .starts_with("ab")
+        }) {
+            assert!(std::time::Instant::now() < first_deadline);
+            std::thread::yield_now();
+        }
         test_pty_tx.send(PtyMessage::Bytes(b"cd".to_vec())).unwrap();
-        signal_tx.send(()).unwrap();
+        signal_wake(&signal_tx);
 
-        let latest = {
+        let (latest, wake_count) = {
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            let mut wake_count = 0;
             loop {
+                if wake_count == 0 && wake_rx.recv_timeout(Duration::from_millis(10)).is_ok() {
+                    wake_count += 1;
+                }
                 if lock(&mailbox).update.as_ref().is_some_and(|update| {
                     update
                         .snapshot
@@ -781,18 +844,27 @@ mod tests {
                         .collect::<String>()
                         == "abcd"
                 }) {
-                    break lock(&mailbox)
-                        .update
-                        .take()
-                        .expect("latest update remains in mailbox");
+                    let mut state = lock(&mailbox);
+                    state.update_notification_pending = false;
+                    break (
+                        state
+                            .update
+                            .take()
+                            .expect("latest update remains in mailbox"),
+                        wake_count,
+                    );
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
                     "worker did not publish the coalesced revision"
                 );
-                let _ = wake_rx.recv_timeout(Duration::from_millis(10));
             }
         };
+        assert!(
+            wake_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+            "burst enqueued duplicate update wakes"
+        );
+        assert_eq!(wake_count, 1, "burst should enqueue one update wake");
         assert!((1..=2).contains(&latest.revision));
         assert_eq!(
             latest
@@ -809,7 +881,7 @@ mod tests {
         ));
 
         control_tx.send(TerminalCommand::Shutdown).unwrap();
-        signal_tx.send(()).unwrap();
+        signal_wake(&signal_tx);
         thread.join().unwrap();
         assert_eq!(lock(&mailbox).status, WorkerStatus::Stopped);
     }
@@ -849,6 +921,7 @@ mod tests {
         let mut terminal = Terminal::new(1, 4);
         terminal.put_str("ab");
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
@@ -887,6 +960,7 @@ mod tests {
     fn worker_acknowledges_the_snapshot_command_request_id() {
         let mut terminal = Terminal::new(1, 4);
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
@@ -940,10 +1014,11 @@ mod tests {
     }
     #[test]
     fn worker_preserves_failed_status_after_pty_error() {
+        let (signal_tx, signal_rx) = mpsc::sync_channel(1);
         let (control_tx, control_rx) = mpsc::channel();
-        let (signal_tx, signal_rx) = mpsc::channel();
         let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
@@ -979,7 +1054,7 @@ mod tests {
                 "read failed".to_owned(),
             )))
             .unwrap();
-        signal_tx.send(()).unwrap();
+        signal_wake(&signal_tx);
         drop(control_tx);
         thread.join().unwrap();
 
@@ -994,6 +1069,7 @@ mod tests {
     #[test]
     fn worker_panic_is_reported_without_rethrowing_to_caller() {
         let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
             update: None,
             acknowledgements: VecDeque::new(),
             copy_results: VecDeque::new(),
