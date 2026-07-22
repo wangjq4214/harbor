@@ -128,9 +128,16 @@ impl TerminalWorkerClient {
     }
 
     pub(crate) fn take_update(&self) -> Option<TerminalUpdate> {
-        let mut state = lock(&self.mailbox);
-        let update = state.update.take();
-        state.update_notification_pending = false;
+        let update = {
+            let mut state = lock(&self.mailbox);
+            let update = state.update.take();
+            state.update_notification_pending = false;
+            update
+        };
+        if update.is_some() {
+            // Let the worker publish a snapshot deferred while this update was pending.
+            let _ = signal_wake(&self.signal_tx);
+        }
         update
     }
 
@@ -215,6 +222,7 @@ fn worker_main(
 ) {
     let mut terminal = Terminal::new(size.rows, size.cols);
     let mut revision = 0;
+    let mut snapshot_dirty = false;
     publish_snapshot(
         &mut terminal,
         &mailbox,
@@ -262,12 +270,21 @@ fn worker_main(
 
     let mut control_closed = false;
     let mut pty_closed = false;
+    let mut pending_pty_status = None;
     loop {
         let mut progressed = false;
 
         match control_rx.try_recv() {
             Ok(command) => {
                 progressed = true;
+                let publishes_snapshot = matches!(
+                    &command,
+                    TerminalCommand::PtyOutputBytes(_)
+                        | TerminalCommand::Resize { .. }
+                        | TerminalCommand::ScrollViewport { .. }
+                        | TerminalCommand::ScrollToTop { .. }
+                        | TerminalCommand::ScrollToBottom { .. }
+                );
                 if apply_command(
                     command,
                     &mut terminal,
@@ -279,6 +296,9 @@ fn worker_main(
                 ) {
                     break;
                 }
+                if publishes_snapshot {
+                    snapshot_dirty = false;
+                }
             }
             Err(TryRecvError::Disconnected) => control_closed = true,
             Err(TryRecvError::Empty) => {}
@@ -289,12 +309,16 @@ fn worker_main(
                 progressed = true;
                 set_status(&mailbox, WorkerStatus::Processing);
                 terminal.process_output(&bytes);
+                snapshot_dirty = true;
 
                 // Bound parser work per wake so control commands and shutdown remain observable.
                 let mut terminal_status = None;
                 for _ in 1..64 {
                     match pty_rx.try_recv() {
-                        Ok(PtyMessage::Bytes(bytes)) => terminal.process_output(&bytes),
+                        Ok(PtyMessage::Bytes(bytes)) => {
+                            terminal.process_output(&bytes);
+                            snapshot_dirty = true;
+                        }
                         Ok(PtyMessage::Status(status)) => {
                             terminal_status = Some(status);
                             break;
@@ -307,34 +331,84 @@ fn worker_main(
                     }
                 }
 
-                publish_snapshot(
-                    &mut terminal,
-                    &mailbox,
-                    &metrics,
-                    notifier.as_ref(),
-                    revision.saturating_add(1),
-                    true,
-                    None,
-                );
                 revision = revision.saturating_add(1);
-                set_status(&mailbox, WorkerStatus::Idle);
-                if let Some(status) = terminal_status
-                    && apply_pty_status(status, &mailbox, notifier.as_ref())
-                {
-                    break;
+                if !mailbox_has_update(&mailbox) {
+                    publish_snapshot(
+                        &mut terminal,
+                        &mailbox,
+                        &metrics,
+                        notifier.as_ref(),
+                        revision,
+                        true,
+                        None,
+                    );
+                    snapshot_dirty = false;
                 }
+                set_status(&mailbox, WorkerStatus::Idle);
+                pending_pty_status = terminal_status;
             }
             Ok(PtyMessage::Status(status)) => {
+                progressed = true;
+                pending_pty_status = Some(status);
+            }
+            Err(TryRecvError::Disconnected) => pty_closed = true,
+            Err(TryRecvError::Empty) => {
+                if snapshot_dirty && !mailbox_has_update(&mailbox) {
+                    publish_snapshot(
+                        &mut terminal,
+                        &mailbox,
+                        &metrics,
+                        notifier.as_ref(),
+                        revision,
+                        true,
+                        None,
+                    );
+                    snapshot_dirty = false;
+                    progressed = true;
+                }
+            }
+        }
+
+        if let Some(status) = pending_pty_status.take() {
+            if snapshot_dirty && mailbox_has_update(&mailbox) {
+                pending_pty_status = Some(status);
+            } else {
+                if snapshot_dirty {
+                    publish_snapshot(
+                        &mut terminal,
+                        &mailbox,
+                        &metrics,
+                        notifier.as_ref(),
+                        revision,
+                        true,
+                        None,
+                    );
+                    snapshot_dirty = false;
+                }
                 if apply_pty_status(status, &mailbox, notifier.as_ref()) {
                     break;
                 }
             }
-            Err(TryRecvError::Disconnected) => pty_closed = true,
-            Err(TryRecvError::Empty) => {}
         }
 
-        if control_closed && pty_closed {
-            break;
+        if control_closed && pty_closed && pending_pty_status.is_none() {
+            if snapshot_dirty && mailbox_has_update(&mailbox) {
+                // Wait for the UI to consume the pending update before flushing.
+            } else {
+                if snapshot_dirty {
+                    publish_snapshot(
+                        &mut terminal,
+                        &mailbox,
+                        &metrics,
+                        notifier.as_ref(),
+                        revision,
+                        true,
+                        None,
+                    );
+                    snapshot_dirty = false;
+                }
+                break;
+            }
         }
         if progressed {
             continue;
@@ -532,6 +606,10 @@ fn apply_command(
         TerminalCommand::Shutdown => return true,
     }
     false
+}
+
+fn mailbox_has_update(mailbox: &Arc<Mutex<Mailbox>>) -> bool {
+    lock(mailbox).update.is_some()
 }
 
 fn publish_snapshot(
@@ -765,6 +843,7 @@ mod tests {
     fn worker_consumes_ordered_output_and_publishes_revisioned_state() {
         let (control_tx, control_rx) = mpsc::channel();
         let metrics = Arc::new(RenderMetrics::default());
+        let observed_metrics = Arc::clone(&metrics);
         let (signal_tx, signal_rx) = mpsc::sync_channel(1);
         let (pty_tx, pty_rx) = mpsc::sync_channel(64);
         let pty_signal_tx = signal_tx.clone();
@@ -825,16 +904,47 @@ mod tests {
             assert!(std::time::Instant::now() < first_deadline);
             std::thread::yield_now();
         }
+        assert!(
+            wake_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "worker did not notify the first snapshot"
+        );
+        let first_idle_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while lock(&mailbox).status != WorkerStatus::Idle {
+            assert!(std::time::Instant::now() < first_idle_deadline);
+            std::thread::yield_now();
+        }
+        {
+            lock(&mailbox).status = WorkerStatus::Ready;
+        }
         test_pty_tx.send(PtyMessage::Bytes(b"cd".to_vec())).unwrap();
         signal_wake(&signal_tx);
+        let processing_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while lock(&mailbox).status != WorkerStatus::Idle {
+            assert!(std::time::Instant::now() < processing_deadline);
+            std::thread::yield_now();
+        }
+        {
+            let mut state = lock(&mailbox);
+            let first = state
+                .update
+                .take()
+                .expect("first update remains in mailbox");
+            assert!(
+                first
+                    .snapshot
+                    .cells
+                    .iter()
+                    .map(|cell| cell.ch)
+                    .collect::<String>()
+                    .starts_with("ab")
+            );
+            state.update_notification_pending = false;
+        }
+        signal_wake(&signal_tx);
 
-        let (latest, wake_count) = {
+        let latest = {
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
-            let mut wake_count = 0;
             loop {
-                if wake_count == 0 && wake_rx.recv_timeout(Duration::from_millis(10)).is_ok() {
-                    wake_count += 1;
-                }
                 if lock(&mailbox).update.as_ref().is_some_and(|update| {
                     update
                         .snapshot
@@ -844,27 +954,26 @@ mod tests {
                         .collect::<String>()
                         == "abcd"
                 }) {
-                    let mut state = lock(&mailbox);
-                    state.update_notification_pending = false;
-                    break (
-                        state
-                            .update
-                            .take()
-                            .expect("latest update remains in mailbox"),
-                        wake_count,
-                    );
+                    break lock(&mailbox)
+                        .update
+                        .take()
+                        .expect("latest update remains in mailbox");
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "worker did not publish the coalesced revision"
+                    "worker did not publish the deferred revision"
                 );
+                std::thread::yield_now();
             }
         };
+        assert!(
+            wake_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "worker did not notify the deferred snapshot"
+        );
         assert!(
             wake_rx.recv_timeout(Duration::from_millis(20)).is_err(),
             "burst enqueued duplicate update wakes"
         );
-        assert_eq!(wake_count, 1, "burst should enqueue one update wake");
         assert!((1..=2).contains(&latest.revision));
         assert_eq!(
             latest
@@ -879,6 +988,7 @@ mod tests {
             latest.damage,
             UpdateDamage::Ranges(_) | UpdateDamage::FullUpload
         ));
+        assert_eq!(observed_metrics.snapshot().snapshot_build_count, 3);
 
         control_tx.send(TerminalCommand::Shutdown).unwrap();
         signal_wake(&signal_tx);
