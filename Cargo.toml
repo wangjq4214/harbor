@@ -16,6 +16,7 @@ harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-types = { path = "crates/harbor-types" }
 harbor-render = { path = "crates/harbor-render" }
 harbor-ui = { path = "crates/harbor-ui" }
+harbor-widget = { path = "crates/harbor-widget" }
 
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
 anyhow = "1.0"
@@ -45,6 +46,7 @@ fontdue = "0.9"
 hashbrown = "0.17"
 parking_lot = "0.12"
 pollster = "0.4"
+slotmap = "1"
 thiserror = "2.0"
 tracing-appender = "0.2"
 tracing-subscriber = {

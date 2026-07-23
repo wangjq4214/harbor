@@ -1,0 +1,394 @@
+use crate::fiber::FiberId;
+use crate::layout::{BoxConstraints, Size};
+use crate::signal::{Hook, Signal};
+use std::any::TypeId;
+
+// ── Key ─────────────────────────────────────────────────────────────────────
+
+/// A stable identity marker for list reconciliation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Key(String);
+
+impl Key {
+    pub fn new(s: impl Into<String>) -> Self {
+        Key(s.into())
+    }
+}
+
+// ── BuildCx ─────────────────────────────────────────────────────────────────
+
+/// Per-build context for hook creation and Signal tracking.
+pub struct BuildCx {
+    pub(crate) current_fiber: Option<FiberId>,
+    pub(crate) hooks: Vec<Box<dyn Hook>>,
+    pub(crate) hook_index: usize,
+}
+
+impl BuildCx {
+    /// Creates a stub BuildCx for pre-building Views outside the Runtime.
+    ///
+    /// Views built with a stub context cannot use hooks.
+    pub fn stub() -> Self {
+        BuildCx {
+            current_fiber: None,
+            hooks: Vec::new(),
+            hook_index: 0,
+        }
+    }
+
+    /// Returns a Signal for state of type `T`.
+    ///
+    /// On first call (for a given hook index), creates a new Signal
+    /// initialized with `init()`. On subsequent rebuilds, returns the
+    /// existing Signal at the same hook index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called with a different `T` than the previous build for
+    /// the same hook index.
+    pub fn use_state<T: Clone + 'static>(&mut self, init: impl FnOnce() -> T) -> Signal<T> {
+        let signal = if self.hook_index < self.hooks.len() {
+            let hook = &self.hooks[self.hook_index];
+            if let Some(s) = hook.as_any_ref().downcast_ref::<Signal<T>>() {
+                s.clone()
+            } else {
+                panic!(
+                    "hook type mismatch at index {} (expected {})",
+                    self.hook_index,
+                    std::any::type_name::<T>(),
+                );
+            }
+        } else {
+            let s = Signal::new(init());
+            self.hooks.push(Box::new(s.clone()));
+            s
+        };
+        self.hook_index += 1;
+        // Subscribe current fiber to this signal so it is marked dirty on writes
+        if let Some(fid) = self.current_fiber {
+            signal.subscribe(fid);
+        }
+        signal
+    }
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+
+/// A user-facing builder of immutable Views.
+///
+/// Implementations produce a `View` tree describing the widget's appearance.
+/// State is managed via `BuildCx::use_state` and stored in Fibers, not in
+/// the Component struct itself.
+pub trait Component {
+    fn build(&self, cx: &mut BuildCx) -> View;
+}
+
+// ── AnyView ─────────────────────────────────────────────────────────────────
+
+/// Internal type-erased View capability.
+///
+/// Each concrete widget type provides an AnyView implementation that stores
+/// configuration and can be used for layout and rebuild.
+#[allow(dead_code)]
+pub(crate) trait AnyView: 'static {
+    /// Optional key for list reconciliation.
+    fn key(&self) -> Option<&Key>;
+
+    /// The TypeId of the concrete implementation, used for reconciliation.
+    fn widget_type(&self) -> TypeId;
+
+    /// Rebuilds this view, returning a new View with potentially updated
+    /// children. The returned children are reconciled against existing
+    /// child Fibers by the runtime.
+    fn build(self: Box<Self>, cx: &mut BuildCx) -> View;
+
+    /// Computes the intrinsic size given layout constraints.
+    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size;
+}
+
+// ── View ────────────────────────────────────────────────────────────────────
+
+/// An opaque, discardable UI description with optional Key.
+///
+/// Produced by `Component::build` and consumed by the reconciliation system.
+pub struct View {
+    pub(crate) inner: Box<dyn AnyView>,
+    explicit_key: Option<Key>,
+    pub(crate) children: Vec<View>,
+}
+
+impl View {
+    /// Creates a new View wrapping the given AnyView implementation.
+    #[allow(private_bounds)]
+    pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
+        View {
+            inner: Box::new(inner),
+            explicit_key: key,
+            children,
+        }
+    }
+
+    /// Returns the key for this view, checking the explicit key first,
+    /// then falling back to the inner view's key.
+    pub fn key(&self) -> Option<&Key> {
+        self.explicit_key.as_ref().or_else(|| self.inner.key())
+    }
+
+    /// Returns the TypeId of the widget that produced this view.
+    pub fn widget_type(&self) -> TypeId {
+        self.inner.widget_type()
+    }
+
+    /// Consumes the View and returns its components.
+    pub(crate) fn decompose(self) -> (Box<dyn AnyView>, Vec<View>, Option<Key>) {
+        (self.inner, self.children, self.explicit_key)
+    }
+}
+
+// ── SizedBox (test widget) ──────────────────────────────────────────────────
+
+/// AnyView implementation for SizedBox (public for integration tests).
+pub struct SizedBoxState {
+    pub size: Size,
+}
+
+impl AnyView for SizedBoxState {
+    fn key(&self) -> Option<&Key> {
+        None
+    }
+
+    fn widget_type(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+
+    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
+        View::new(SizedBoxState { size: self.size }, vec![], None)
+    }
+
+    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(self.size)
+    }
+}
+
+/// A simple fixed-size widget for testing the render pipeline.
+pub struct SizedBox {
+    size: Size,
+}
+
+impl SizedBox {
+    pub fn new(size: Size) -> Self {
+        SizedBox { size }
+    }
+}
+
+impl Component for SizedBox {
+    fn build(&self, _cx: &mut BuildCx) -> View {
+        View::new(SizedBoxState { size: self.size }, vec![], None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::any::TypeId;
+
+    #[derive(Clone)]
+    struct KeyedTestView {
+        inner_key: Option<Key>,
+    }
+
+    impl AnyView for KeyedTestView {
+        fn key(&self) -> Option<&Key> {
+            self.inner_key.as_ref()
+        }
+
+        fn widget_type(&self) -> TypeId {
+            TypeId::of::<Self>()
+        }
+
+        fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
+            View::new(
+                KeyedTestView {
+                    inner_key: self.inner_key.clone(),
+                },
+                vec![],
+                None,
+            )
+        }
+
+        fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+            constraints.constrain(Size::new(1.0, 1.0))
+        }
+    }
+
+    #[test]
+    fn key_equality() {
+        let k1 = Key::new("foo");
+        let k2 = Key::new("foo");
+        let k3 = Key::new("bar");
+        assert_eq!(k1, k2);
+        assert_ne!(k1, k3);
+    }
+
+    #[test]
+    fn view_key_explicit() {
+        let view = View::new(
+            SizedBoxState {
+                size: Size::new(10.0, 10.0),
+            },
+            vec![],
+            Some(Key::new("my_key")),
+        );
+        assert_eq!(view.key(), Some(&Key::new("my_key")));
+    }
+
+    #[test]
+    fn view_key_fallback_to_inner() {
+        // SizedBoxState has no key, so no fallback
+        let view = View::new(
+            SizedBoxState {
+                size: Size::new(10.0, 10.0),
+            },
+            vec![],
+            None,
+        );
+        assert_eq!(view.key(), None);
+    }
+
+    #[test]
+    fn view_key_prefers_explicit_over_inner_key() {
+        let explicit = Key::new("explicit");
+        let inner = Key::new("inner");
+        let view = View::new(
+            KeyedTestView {
+                inner_key: Some(inner),
+            },
+            vec![],
+            Some(explicit.clone()),
+        );
+        assert_eq!(view.key(), Some(&explicit));
+    }
+
+    #[test]
+    fn view_key_falls_back_to_inner_key() {
+        let inner = Key::new("inner");
+        let view = View::new(
+            KeyedTestView {
+                inner_key: Some(inner.clone()),
+            },
+            vec![],
+            None,
+        );
+        assert_eq!(view.key(), Some(&inner));
+    }
+
+    #[test]
+    fn view_widget_type() {
+        let view1 = View::new(
+            SizedBoxState {
+                size: Size::new(10.0, 10.0),
+            },
+            vec![],
+            None,
+        );
+        let view2 = View::new(
+            SizedBoxState {
+                size: Size::new(20.0, 20.0),
+            },
+            vec![],
+            None,
+        );
+        // Same widget type
+        assert_eq!(view1.widget_type(), view2.widget_type());
+    }
+
+    #[test]
+    fn use_state_persists_across_rebuilds() {
+        let hooks: Vec<Box<dyn Hook>> = vec![];
+        let mut cx = BuildCx {
+            current_fiber: None,
+            hooks,
+            hook_index: 0,
+        };
+
+        // First build: creates a new signal
+        let s1 = cx.use_state(|| 42u32);
+        assert_eq!(*s1.read(), 42);
+        s1.set(100);
+
+        // Second build (simulated): hooks are preserved
+        let mut cx2 = BuildCx {
+            current_fiber: None,
+            hooks: cx.hooks,
+            hook_index: 0,
+        };
+        let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
+        assert_eq!(*s2.read(), 100); // preserved value
+        assert_eq!(cx2.hook_index, 1);
+    }
+
+    #[test]
+    fn use_state_multiple_hooks() {
+        let mut cx = BuildCx {
+            current_fiber: None,
+            hooks: vec![],
+            hook_index: 0,
+        };
+
+        let s1 = cx.use_state(|| "hello".to_string());
+        let s2 = cx.use_state(|| 42u32);
+        assert_eq!(*s1.read(), "hello");
+        assert_eq!(*s2.read(), 42);
+        assert_eq!(cx.hook_index, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "hook type mismatch")]
+    fn use_state_type_mismatch_panics() {
+        let mut cx = BuildCx {
+            current_fiber: None,
+            hooks: vec![],
+            hook_index: 0,
+        };
+
+        // First build with u32
+        let _s1 = cx.use_state(|| 42u32);
+
+        // Second build tries to read it as String
+        let mut cx2 = BuildCx {
+            current_fiber: None,
+            hooks: cx.hooks,
+            hook_index: 0,
+        };
+        let _s2 = cx2.use_state(|| "oops".to_string());
+    }
+
+    #[test]
+    fn sized_box_build() {
+        let sized_box = SizedBox::new(Size::new(100.0, 50.0));
+        let mut cx = BuildCx::stub();
+        let view = sized_box.build(&mut cx);
+        assert_eq!(view.children.len(), 0);
+    }
+
+    #[test]
+    fn anyview_intrinsic_size() {
+        let state = SizedBoxState {
+            size: Size::new(100.0, 50.0),
+        };
+        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
+        let size = state.intrinsic_size(constraints);
+        assert_eq!(size, Size::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn anyview_intrinsic_size_clamped() {
+        let state = SizedBoxState {
+            size: Size::new(1000.0, 50.0),
+        };
+        let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
+        let size = state.intrinsic_size(constraints);
+        // Both dimensions clamped to tight 500x500 constraint
+        assert_eq!(size, Size::new(500.0, 500.0));
+    }
+}

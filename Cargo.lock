@@ -832,6 +832,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "harbor-widget"
+version = "0.1.0"
+dependencies = [
+ "slotmap",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
