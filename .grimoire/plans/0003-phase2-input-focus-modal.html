@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phase 2: Input, Focus &amp; Modal Interaction</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card-bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #555;
+    --border: #e0e0e0;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --code-bg: #f5f5f5;
+    --tag-bg: #f0f0f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .plan {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  header h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  header .meta { color: var(--text-muted); font-size: 0.9rem; display: flex; gap: 2rem; flex-wrap: wrap; }
+  .meta-item { display: flex; gap: 0.35rem; }
+  .meta-item strong { font-weight: 600; }
+
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  section h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  section h2 .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700;
+  }
+  section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; color: #333; }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  .table-wrap table { border: none; }
+  .table-wrap th:first-child, .table-wrap td:first-child { padding-left: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--accent-light); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #f8fafd; }
+
+  .mermaid-wrap {
+    background: #fcfcfc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1rem 0;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+  pre.mermaid {
+    background: transparent;
+    color: inherit;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; }
+  :not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #e8e8e8;
+  }
+
+  .step {
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    background: var(--accent-light);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .step h4 { font-size: 0.95rem; margin-bottom: 0.4rem; color: var(--accent); }
+  .step p, .step ul { font-size: 0.9rem; margin: 0.25rem 0; }
+  .step ul { padding-left: 1.25rem; }
+  .step .outcome { margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: #e6f4ea; border-radius: 4px; font-size: 0.85rem; color: #137333; }
+  .step .files { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--tag-bg);
+    color: var(--text-muted);
+  }
+  .badge.create { background: #e6f4ea; color: #137333; }
+  .badge.modify { background: #fef3c7; color: #92400e; }
+
+  .decision-list { list-style: none; }
+  .decision-list li { padding: 0.4rem 0; padding-left: 1.2rem; position: relative; }
+  .decision-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  .test-grid { display: grid; gap: 1rem; }
+  .test-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .test-card h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: #333;
+  }
+  .test-card h3 code { font-weight: 700; color: var(--accent); background: none; border: none; padding: 0; }
+  .test-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .test-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: right;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .test-card ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+    color: #444;
+  }
+  .test-card ul li { margin-bottom: 0.2rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border: 1px solid #ccc; }
+    .step { background: #f9f9f9; }
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.5rem; }
+    section { padding: 1.25rem; }
+    header { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="plan">
+
+<header>
+  <h1>Phase 2: Input, Focus &amp; Modal Interaction</h1>
+  <div class="meta">
+    <div class="meta-item"><strong>Input:</strong> <span>Conversation: implement Phase 2 of widget-runtime-design.md</span></div>
+    <div class="meta-item"><strong>Date:</strong> <span>2025-07-24</span></div>
+  </div>
+</header>
+
+<!-- ── Section 1: Type Design ── -->
+<section>
+  <h2><span class="num">1</span> Type Design</h2>
+
+  <h3>Modified Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Change</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td><code>AnyView</code></td><td>view.rs</td><td>Type-erased widget capability</td><td>Add default methods: <code>hit_test</code>, <code>handle_event</code>, <code>is_focusable</code></td><td>Event handling is a widget-level concern; follows same pattern as paint_primitives and layout_children. No new trait or indirection needed for Phase 2.</td></tr>
+      <tr><td><code>Runtime</code></td><td>runtime.rs</td><td>Top-level widget tree scheduler</td><td>Add <code>input: InputState</code> field; add <code>dispatch</code> method; add private <code>route_event</code> and <code>hit_test</code> methods</td><td>Runtime already owns the FiberArena and coordinates all tree walks (layout, paint). Event routing is the next walk in that same pattern.</td></tr>
+      <tr><td><code>lib.rs</code></td><td>lib.rs</td><td>Crate root</td><td>Add <code>pub mod input;</code></td><td>New module, standard Rust convention.</td></tr>
+      <tr><td><code>widgets/mod.rs</code></td><td>widgets/mod.rs</td><td>Widget module index</td><td>Add <code>pub mod button;</code> and <code>pub mod focus_scope;</code></td><td>New widgets, standard module registration.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>New Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Responsibility</th><th>Relationships</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td><code>UiEvent</code></td><td>input/event.rs</td><td>Input event enum</td><td>Represents all input: Pointer, Keyboard, Focus variants</td><td>Consumed by Runtime::dispatch; passed to AnyView::handle_event</td><td>Single enum avoids dispatch-order ambiguity. Variants carry only Phase-2-relevant fields.</td></tr>
+      <tr><td><code>PointerEvent</code></td><td>input/event.rs</td><td>Pointer input data</td><td>Holds position, phase (Down/Move/Up/Cancel/Wheel), button, pointer_id</td><td>Variant of UiEvent</td><td>Grouped under UiEvent; separate struct for clarity.</td></tr>
+      <tr><td><code>KeyboardEvent</code></td><td>input/event.rs</td><td>Keyboard input data</td><td>Holds key, modifiers, action (KeyDown/KeyUp/Ime)</td><td>Variant of UiEvent</td><td>Sufficient for Tab/Shift+Tab, Enter/Space activation, Escape cancel.</td></tr>
+      <tr><td><code>EventCtx</code></td><td>input/event_ctx.rs</td><td>Handler command buffer</td><td>Accumulates RequestFocus, CapturePointer, ReleasePointer, InvalidatePaint, StopPropagation</td><td>Produced by event routing; consumed by InputState::apply</td><td>Separate from event types — commands are mutable side-effects, events are immutable data.</td></tr>
+      <tr><td><code>EventHandled</code></td><td>input/event_ctx.rs</td><td>Handler result enum</td><td>Ignored or Handled; controls whether propagation continues</td><td>Returned by AnyView::handle_event</td><td>Distinct from StopPropagation — Handled means "I consumed this"; StopPropagation means "stop the walk even if others might handle."</td></tr>
+      <tr><td><code>InputState</code></td><td>input/state.rs</td><td>Per-Runtime input state</td><td>Holds focused FiberId, hovered FiberId, pointer_captures map; applies EventCtx commands</td><td>Composed by Runtime; mutated by EventCtx commands after event walk</td><td>Extracted from Runtime to keep Runtime focused on scheduling. Independently testable.</td></tr>
+      <tr><td><code>FocusScope</code></td><td>widgets/focus_scope.rs</td><td>Tab-order container with optional modal</td><td>Wraps children; intercepts Tab/Shift+Tab for DFS focus traversal; modal flag blocks events escaping subtree</td><td>Implements AnyView; composes child Views</td><td>Widget rather than separate tree concept — participates in layout, paint, and hit testing without special paths.</td></tr>
+      <tr><td><code>Button</code></td><td>widgets/button.rs</td><td>Clickable labeled widget</td><td>Stores onClick callback; has hover/pressed/focused visual states; focusable</td><td>Implements AnyView; uses Color for visual states</td><td>Minimal Phase 2 scope — enough for paste confirmation confirm/cancel buttons.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Design Decisions</h3>
+  <ul class="decision-list">
+    <li><strong>Event handlers on AnyView, not Fiber callback table.</strong> Keeps widget behavior local to the widget struct. Avoids introducing a generic callback registration system for a single use case (Button). Consistent with existing paint_primitives / layout_children pattern.</li>
+    <li><strong>InputState extracted from Runtime.</strong> Focus/hover/capture state has its own lifecycle (mutated by events) separate from Runtime's scheduling lifecycle. Independently testable without a full Runtime.</li>
+    <li><strong>FocusScope as widget, not separate tree.</strong> Participates in layout and paint — zero special paths. Modal interception is a capture-phase early-exit check against FocusScope.modal.</li>
+    <li><strong>EventHandled vs StopPropagation are distinct.</strong> EventHandled::Handled signals "I consumed this event" (for future potential use). StopPropagation in EventCtx forces the walk to stop regardless of Handled status. Follows DOM event model precedent.</li>
+    <li><strong>Hit test uses reverse paint order (DFS, children reversed).</strong> Matches design doc §8 specification. Stack children painted later (on top) get first chance at hit testing.</li>
+    <li><strong>Modal blocks at capture phase, before target phase.</strong> If a modal FocusScope is in the ancestor chain and the target is not in its subtree, the event is silently consumed. This blocks keyboard events to the terminal while allowing modal buttons to work.</li>
+  </ul>
+</section>
+
+<!-- ── Section 2: Type Relationship Diagram ── -->
+<section>
+  <h2><span class="num">2</span> Type Relationship Diagram</h2>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+classDiagram
+    class UiEvent {
+        &lt;&lt;enumeration&gt;&gt;
+    }
+    class PointerEvent {
+        +Point position
+        +int pointer_id
+    }
+    class KeyboardEvent {
+        &lt;&lt;enumeration&gt;&gt;
+    }
+    class EventCtx {
+        +request_focus()
+        +capture_pointer()
+        +release_pointer()
+        +invalidate_paint()
+        +stop_propagation()
+    }
+    class EventHandled {
+        &lt;&lt;enumeration&gt;&gt;
+    }
+    class InputState {
+        +focused
+        +hovered
+        +pointer_captures
+        +apply()
+    }
+    class AnyView {
+        &lt;&lt;interface&gt;&gt;
+        +hit_test()
+        +handle_event()
+        +is_focusable()
+    }
+    class Runtime {
+        +input
+        +arena
+        +dispatch()
+        +route_event()
+        +hit_test()
+    }
+    class FocusScope {
+        +modal
+    }
+    class Button {
+        +on_click
+    }
+
+    Runtime *-- InputState : owns
+    Runtime --> UiEvent : dispatches
+    Runtime --> AnyView : walks
+    EventCtx --> InputState : commands
+    AnyView <|.. FocusScope : implements
+    AnyView <|.. Button : implements
+    UiEvent --> EventCtx : passed to
+    FocusScope o-- AnyView : wraps
+    Button --> EventCtx : uses
+    </pre>
+  </div>
+</section>
+
+<!-- ── Section 3: Implementation Steps ── -->
+<section>
+  <h2><span class="num">3</span> Implementation Steps</h2>
+
+  <!-- Step 1 -->
+  <div class="step">
+    <h4>Step 1: Create input/event.rs — UiEvent and related types</h4>
+    <div class="files">Files: crates/harbor-widget/src/input/event.rs (create), crates/harbor-widget/src/input/mod.rs (create)</div>
+    <p><strong>Action:</strong> Define <code>UiEvent</code> enum, <code>PointerEvent</code> struct, <code>KeyboardEvent</code> enum, <code>FocusEvent</code> enum, and supporting enums (<code>PointerPhase</code>, <code>PointerButton</code>, <code>Key</code>, <code>Modifiers</code>).</p>
+    <pre>pub enum UiEvent {
+    Pointer(PointerEvent),
+    Keyboard(KeyboardEvent),
+    Focus(FocusEvent),
+}
+
+pub struct PointerEvent {
+    pub position: Point,
+    pub phase: PointerPhase,
+    pub button: PointerButton,
+    pub pointer_id: u64,
+}
+
+pub enum PointerPhase { Down, Move, Up, Cancel, Wheel(f32, f32) }
+
+pub enum PointerButton { Left, Right, Middle }
+
+pub enum KeyboardEvent {
+    KeyDown { key: Key, modifiers: Modifiers },
+    KeyUp { key: Key, modifiers: Modifiers },
+    Ime(String),
+}
+
+pub enum FocusEvent { Gained, Lost }
+
+pub enum Key { Tab, Enter, Space, Escape, Character(char), ... }
+pub struct Modifiers { pub shift: bool, pub ctrl: bool, pub alt: bool, pub meta: bool }</pre>
+    <div class="outcome"><strong>Outcome:</strong> All input types defined and importable. No behavior yet — pure data structs/enums.</div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="step">
+    <h4>Step 2: Create input/event_ctx.rs — EventCtx and EventHandled</h4>
+    <div class="files">Files: crates/harbor-widget/src/input/event_ctx.rs (create)</div>
+    <p><strong>Action:</strong> Define <code>EventCtx</code> with internal command queue and public methods. Define <code>EventHandled</code> enum.</p>
+    <pre>pub enum EventHandled { Ignored, Handled }
+
+enum EventCommand {
+    RequestFocus(FiberId),
+    CapturePointer(u64),
+    ReleasePointer(u64),
+    InvalidatePaint,
+    StopPropagation,
+}
+
+pub struct EventCtx {
+    commands: Vec&lt;EventCommand&gt;,
+    propagation_stopped: bool,
+    needs_paint: bool,
+}
+
+impl EventCtx {
+    pub fn new() -> Self { ... }
+    pub fn request_focus(&amp;mut self, id: FiberId) { ... }
+    pub fn capture_pointer(&amp;mut self, pointer_id: u64) { ... }
+    pub fn release_pointer(&amp;mut self, pointer_id: u64) { ... }
+    pub fn invalidate_paint(&amp;mut self) { ... }
+    pub fn stop_propagation(&amp;mut self) { ... }
+    pub(crate) fn take_commands(&amp;mut self) -&gt; Vec&lt;EventCommand&gt; { ... }
+    pub(crate) fn is_propagation_stopped(&amp;self) -&gt; bool { ... }
+    pub(crate) fn needs_paint(&amp;self) -&gt; bool { ... }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> EventCtx ready for AnyView::handle_event. Commands are accumulated during walk, applied after.</div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="step">
+    <h4>Step 3: Create input/state.rs — InputState</h4>
+    <div class="files">Files: crates/harbor-widget/src/input/state.rs (create)</div>
+    <p><strong>Action:</strong> Define <code>InputState</code> struct with focus, hover, pointer_captures fields and <code>apply</code> method.</p>
+    <pre>use std::collections::HashMap;
+use crate::fiber::FiberId;
+
+pub struct InputState {
+    pub focused: Option&lt;FiberId&gt;,
+    pub hovered: Option&lt;FiberId&gt;,
+    pub pointer_captures: HashMap&lt;u64, FiberId&gt;,
+}
+
+impl InputState {
+    pub fn new() -> Self { ... }
+    pub(crate) fn apply(&amp;mut self, commands: Vec&lt;EventCommand&gt;) -> bool {
+        // returns true if paint invalidation was requested
+    }
+    pub(crate) fn clear_focus_if_dead(&amp;mut self, arena: &amp;FiberArena) { ... }
+    pub(crate) fn clear_capture_if_dead(&amp;mut self, arena: &amp;FiberArena) { ... }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> InputState is independently testable. apply() processes commands correctly. Dead-fiber cleanup is available for reconciliation to call.</div>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="step">
+    <h4>Step 4: Extend AnyView with hit_test, handle_event, is_focusable</h4>
+    <div class="files">Files: crates/harbor-widget/src/view.rs (modify)</div>
+    <p><strong>Action:</strong> Add three default methods to the <code>AnyView</code> trait. All existing widgets get default behavior (not focusable, no event handling, rect hit test).</p>
+    <pre>pub(crate) trait AnyView: 'static {
+    // ... existing methods ...
+
+    /// Returns true if point (in local coordinates) is inside the widget.
+    /// Default: rect.contains(point).
+    fn hit_test(&amp;self, point: Point, rect: Rect) -&gt; bool {
+        rect.contains(point)
+    }
+
+    /// Handles an input event. Returns EventHandled::Handled if consumed.
+    /// Default: ignores all events.
+    fn handle_event(&amp;self, event: &amp;UiEvent, ctx: &amp;mut EventCtx, rect: Rect) -&gt; EventHandled {
+        let _ = (event, ctx, rect);
+        EventHandled::Ignored
+    }
+
+    /// Whether this widget can receive focus via Tab navigation.
+    /// Default: false.
+    fn is_focusable(&amp;self) -&gt; bool {
+        false
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> All existing widgets compile without changes. New widgets (Button, FocusScope) override these methods.</div>
+  </div>
+
+  <!-- Step 5 -->
+  <div class="step">
+    <h4>Step 5: Implement hit testing and event routing in Runtime</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs (modify)</div>
+    <p><strong>Action:</strong> Add <code>input: InputState</code> to Runtime::new(). Add private <code>hit_test</code> and <code>route_event</code> methods. Add public <code>dispatch</code> method.</p>
+    <pre>// Hit test: reverse paint order DFS walk
+fn hit_test(&amp;self, fiber_id: FiberId, point: Point) -&gt; Option&lt;FiberId&gt; {
+    let fiber = self.arena.get(fiber_id)?;
+    let rect = fiber.layout_rect?;
+    if !rect.contains(point) { return None; }
+
+    // Children in reverse order (topmost first)
+    for &amp;child_id in fiber.children.iter().rev() {
+        if let Some(hit) = self.hit_test(child_id, point) {
+            return Some(hit);
+        }
+    }
+
+    // Check self
+    let local_point = Point::new(point.x - rect.min.x, point.y - rect.min.y);
+    if fiber.view.as_ref().map_or(false, |v| v.hit_test(local_point, rect)) {
+        return Some(fiber_id);
+    }
+    None
+}
+
+// Event routing: capture → target → bubble → apply commands
+fn route_event(&amp;mut self, event: &amp;UiEvent) -&gt; bool {
+    let Some(root_id) = self.root_id else { return false; };
+
+    // 1. Determine target
+    let target = match event {
+        UiEvent::Pointer(pe) =&gt; {
+            self.input.pointer_captures.get(&amp;pe.pointer_id).copied()
+                .or_else(|| self.hit_test(root_id, pe.position))
+        }
+        UiEvent::Keyboard(_) | UiEvent::Focus(_) =&gt; self.input.focused,
+    };
+
+    // 2. Build ancestor path
+    let path = self.build_ancestor_path(target);
+
+    // 3. Run capture → target → bubble
+    let mut ctx = EventCtx::new();
+    self.walk_capture(&amp;path, target, event, &amp;mut ctx);
+    if !ctx.is_propagation_stopped() {
+        self.walk_target(target, event, &amp;mut ctx);
+    }
+    if !ctx.is_propagation_stopped() {
+        self.walk_bubble(&amp;path, target, event, &amp;mut ctx);
+    }
+
+    // 4. Apply commands
+    let needs_paint = self.input.apply(ctx.take_commands()) || ctx.needs_paint();
+    needs_paint
+}
+
+pub fn dispatch(&amp;mut self, event: UiEvent, _now: Instant) -&gt; FrameRequest {
+    let needs_redraw = self.route_event(&amp;event);
+    if needs_redraw {
+        if let Some(root_id) = self.root_id {
+            crate::signal::mark_dirty(root_id);
+        }
+    }
+    FrameRequest { needs_redraw }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Events route through the tree correctly. Hit test finds topmost widget. Pointer capture bypasses hit test. Modal blocks events. Commands applied after walk.</div>
+  </div>
+
+  <!-- Step 6 -->
+  <div class="step">
+    <h4>Step 6: Implement FocusScope widget</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/focus_scope.rs (create)</div>
+    <p><strong>Action:</strong> Implement <code>FocusScope</code> as a Component + AnyView. Override <code>handle_event</code> to intercept Tab/Shift+Tab for DFS focus traversal within subtree. Respect <code>modal</code> flag.</p>
+    <pre>pub struct FocusScope {
+    children: Vec&lt;View&gt;,
+    pub modal: bool,
+}
+
+impl AnyView for FocusScope {
+    fn handle_event(&amp;self, event: &amp;UiEvent, ctx: &amp;mut EventCtx, rect: Rect) -&gt; EventHandled {
+        match event {
+            UiEvent::Keyboard(KeyboardEvent::KeyDown { key: Key::Tab, modifiers }) =&gt; {
+                // DFS search for next/prev focusable in subtree
+                let direction = if modifiers.shift { -1 } else { 1 };
+                // move_focus is a free fn that walks the FiberArena subtree
+                // and requests focus on the next focusable fiber
+                ...
+                EventHandled::Handled
+            }
+            _ =&gt; EventHandled::Ignored,
+        }
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Tab / Shift+Tab cycles focus within FocusScope. Modal flag checkable by event routing for blocking.</div>
+  </div>
+
+  <!-- Step 7 -->
+  <div class="step">
+    <h4>Step 7: Implement Button widget</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/button.rs (create)</div>
+    <p><strong>Action:</strong> Implement <code>Button</code> as Component + AnyView. Store label, onClick closure, and visual state. Override <code>handle_event</code> for pointer/focus. Override <code>is_focusable</code> to return true. Paint primitives for background with state-dependent color.</p>
+    <pre>pub struct Button {
+    label: String,
+    on_click: Option&lt;Box&lt;dyn Fn(&amp;mut EventCtx)&gt;&gt;,
+    // Visual state tracked here, mutated via handle_event
+    state: ButtonVisualState, // Normal, Hovered, Pressed, Focused
+}
+
+impl AnyView for Button {
+    fn is_focusable(&amp;self) -&gt; bool { true }
+
+    fn handle_event(&amp;self, event: &amp;UiEvent, ctx: &amp;mut EventCtx, _rect: Rect) -&gt; EventHandled {
+        match event {
+            UiEvent::Pointer(PointerEvent { phase: PointerPhase::Up, .. }) =&gt; {
+                if let Some(ref cb) = self.on_click { cb(ctx); }
+                EventHandled::Handled
+            }
+            UiEvent::Pointer(PointerEvent { phase: PointerPhase::Down, .. }) =&gt; {
+                ctx.capture_pointer(event.pointer_id());
+                EventHandled::Handled
+            }
+            UiEvent::Keyboard(KeyboardEvent::KeyDown { key: Key::Enter | Key::Space, .. }) =&gt; {
+                if let Some(ref cb) = self.on_click { cb(ctx); }
+                EventHandled::Handled
+            }
+            _ =&gt; EventHandled::Ignored,
+        }
+    }
+
+    fn paint_primitives(&amp;self, rect: Rect) -&gt; Vec&lt;Primitive&gt; {
+        let color = self.state.background_color();
+        vec![Primitive::Quad { rect, color, corner_radius: 4.0 }]
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Clickable, focusable button with visual state. Sufficient for paste confirmation confirm/cancel.</div>
+  </div>
+
+  <!-- Step 8 -->
+  <div class="step">
+    <h4>Step 8: Wire modal interception into event routing</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs (modify)</div>
+    <p><strong>Action:</strong> During capture phase walk, check each ancestor: if it's a FocusScope with <code>modal: true</code> and the target is not in its subtree, stop the event walk.</p>
+    <pre>fn is_descendant_of(&amp;self, descendant: Option&lt;FiberId&gt;, ancestor: FiberId) -&gt; bool {
+    let mut current = descendant;
+    while let Some(id) = current {
+        if id == ancestor { return true; }
+        current = self.arena.get(id).and_then(|f| f.parent);
+    }
+    false
+}
+
+// In walk_capture:
+for &amp;ancestor_id in &amp;path {
+    // Check modal barrier
+    if let Some(fiber) = self.arena.get(ancestor_id) {
+        if let Some(view) = &amp;fiber.view {
+            if view.is_modal_scope() &amp;&amp; !self.is_descendant_of(target, ancestor_id) {
+                return; // Event blocked by modal
+            }
+        }
+    }
+    // Call handle_event...
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Modal FocusScope blocks events from reaching widgets outside its subtree. paste events blocked from terminal.</div>
+  </div>
+
+  <!-- Step 9 -->
+  <div class="step">
+    <h4>Step 9: Wire module into lib.rs and widgets/mod.rs</h4>
+    <div class="files">Files: crates/harbor-widget/src/lib.rs (modify), crates/harbor-widget/src/widgets/mod.rs (modify)</div>
+    <p><strong>Action:</strong> Add <code>pub mod input;</code> to lib.rs. Add <code>pub mod button;</code> and <code>pub mod focus_scope;</code> to widgets/mod.rs.</p>
+    <div class="outcome"><strong>Outcome:</strong> All new types are publicly accessible. Crate compiles.</div>
+  </div>
+</section>
+
+<!-- ── Section 4: Edge Cases ── -->
+<section>
+  <h2><span class="num">4</span> Edge Cases</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Condition</th><th>Expected Behavior</th><th>Owning Step</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Click on empty space (no widget at pointer position)</td><td>hit_test returns None; event walk exits early with no side effects; FrameRequest.needs_redraw = false</td><td>Step 5</td></tr>
+      <tr><td>2</td><td>Pointer down on widget, drag outside, release</td><td>Captor receives all Move and Up events regardless of position; Up releases capture; no other widget receives the pointer events</td><td>Step 5, Step 7</td></tr>
+      <tr><td>3</td><td>Multiple pointers active simultaneously (e.g., two fingers on touchscreen)</td><td>Separate capture per pointer_id; each pointer routes independently</td><td>Step 3, Step 5</td></tr>
+      <tr><td>4</td><td>Fiber unmounted while it holds focus</td><td>InputState::clear_focus_if_dead called after reconciliation clears focused to None; next Tab picks first focusable</td><td>Step 3, Step 5</td></tr>
+      <tr><td>5</td><td>Fiber unmounted while it holds pointer capture</td><td>InputState::clear_capture_if_dead releases the capture; subsequent pointer events do normal hit test</td><td>Step 3, Step 5</td></tr>
+      <tr><td>6</td><td>Tab with no focusable widget in FocusScope</td><td>Event is handled (Handled) but focus stays None — no crash, no error; keyboard events go nowhere</td><td>Step 6</td></tr>
+      <tr><td>7</td><td>Modal FocusScope open; click on widget behind modal</td><td>Capture phase encounters modal ancestor, target check fails (target not in modal subtree), event walk returns without dispatching to any handler</td><td>Step 8</td></tr>
+      <tr><td>8</td><td>Widget calls stop_propagation during capture phase</td><td>Remaining capture handlers skipped; target and bubble phases skipped; EventCtx commands still applied</td><td>Step 5</td></tr>
+      <tr><td>9</td><td>Keyboard event with no focused widget</td><td>target is None; capture/bubble walk against root path with no target; FocusScope can still intercept Tab in capture phase</td><td>Step 5, Step 6</td></tr>
+      <tr><td>10</td><td>Pointer Cancel event received</td><td>Capture for that pointer_id released; no widget receives the event as "consumed" — it's informational termination</td><td>Step 5</td></tr>
+      <tr><td>11</td><td>FocusScope nested inside another FocusScope; Tab pressed</td><td>Innermost FocusScope (closest to target in capture) handles Tab first; if it cycles past last focusable, outer FocusScope's handler (in bubble) can take over — or innermost wraps around</td><td>Step 6</td></tr>
+      <tr><td>12</td><td>Button onClick callback invokes stop_propagation</td><td>Propagation stops at Button; no bubble handlers receive the event; commands (including request_focus) still applied</td><td>Step 7</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ── Section 5: Test Strategy ── -->
+<section>
+  <h2><span class="num">5</span> Test Strategy</h2>
+  <div class="test-grid">
+
+  <div class="test-card">
+    <h3><code>UiEvent / PointerEvent / KeyboardEvent / FocusEvent</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>All enum variants construct correctly; PointerPhase::Wheel carries delta; Modifiers bit flags compose; Key variants cover Tab, Enter, Space, Escape, character</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>None — pure data types</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Pointer down with modifiers vs without</li>
+        <li>Keyboard KeyDown vs KeyUp with same key</li>
+        <li>FocusEvent Gained vs Lost</li>
+        <li>Wheel with positive vs negative delta</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>EventCtx</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>Commands accumulate in order; take_commands drains and returns them; stop_propagation flag is queryable; needs_paint tracks InvalidatePaint</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>None — no external dependencies</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Empty ctx (no commands) → take_commands returns empty vec</li>
+        <li>Multiple commands in sequence → returned in order</li>
+        <li>stop_propagation + subsequent commands still recorded</li>
+        <li>capture_pointer(0) then release_pointer(0)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>InputState</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>apply() sets focused, updates hovered, inserts/removes pointer captures, returns true for InvalidatePaint; clear_focus_if_dead removes dead fiber references; clear_capture_if_dead releases dead captures</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>FiberArena with known live/dead FiberIds</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>RequestFocus on live fiber → focused updated</li>
+        <li>RequestFocus on dead fiber → applied, then cleared by clear_focus_if_dead</li>
+        <li>Capture then Release same pointer → map empty</li>
+        <li>CapturePointer on same pointer_id twice → last writer wins</li>
+        <li>apply with empty commands → no change, returns false</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>AnyView::hit_test</code> (default + overrides)</h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>Default returns rect.contains(point); SizedBox uses default; Button uses default (rectangular hit region)</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>Widget instances created with BuildCx::stub()</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Point inside rect → true</li>
+        <li>Point on left/top edge → true (inclusive)</li>
+        <li>Point on right/bottom edge → false (exclusive)</li>
+        <li>Point outside rect → false</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>Runtime event routing</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>hit_test finds topmost widget in Stack; capture walks root→target; target receives event; bubble walks target→root; stop_propagation halts walk; modal blocks events; dispatch returns FrameRequest</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>Test widgets implementing AnyView that record received events in a Vec; FiberArena with known layout_rects</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Pointer click on SizedBox → hit_test finds it, target phase delivers event</li>
+        <li>Pointer click on empty area → no handler called</li>
+        <li>Stack with two overlapping children → topmost receives hit</li>
+        <li>Capture phase handler calls stop_propagation → target and bubble skipped</li>
+        <li>Modal FocusScope blocks pointer to widget behind it</li>
+        <li>Pointer capture: down on A, move over B → A still receives move</li>
+        <li>Keyboard event routes to focused widget</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>FocusScope</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>Tab moves focus to next focusable in DFS order; Shift+Tab moves to previous; wrapping from last to first; modal flag blocks events in Runtime routing</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>FiberArena with FocusScope wrapping Button children; InputState tracking focused</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Tab with one focusable child → focus stays (no change)</li>
+        <li>Tab with three buttons → cycles 1→2→3→1</li>
+        <li>Shift+Tab with three buttons → cycles 3→2→1→3</li>
+        <li>No focusable children → event handled but focus unchanged</li>
+        <li>Nested FocusScope: inner handles Tab within its subtree</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="test-card">
+    <h3><code>Button</code></h3>
+    <div class="test-row">
+      <span class="test-label">Verify</span>
+      <span>onClick fires on PointerUp and Enter/Space key; captures pointer on Down; is_focusable returns true; visual state changes with hover/pressed/focused</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Mock</span>
+      <span>EventCtx for callback; BuildCx::stub() for build</span>
+    </div>
+    <div class="test-row">
+      <span class="test-label">Variations</span>
+      <ul>
+        <li>Pointer down → capture_pointer called; pointer up → onClick called</li>
+        <li>Enter key when focused → onClick called</li>
+        <li>Space key when focused → onClick called</li>
+        <li>Button without onClick → no crash, event ignored</li>
+        <li>Hover state changes on pointer enter/leave</li>
+        <li>Paint produces Primitive::Quad with state-dependent color</li>
+      </ul>
+    </div>
+  </div>
+
+  </div>
+</section>
+
+<!-- ── Section 6: Affected Files ── -->
+<section>
+  <h2><span class="num">6</span> Affected Files</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Action</th><th>Referenced By</th></tr></thead>
+    <tbody>
+      <tr><td>crates/harbor-widget/src/input/mod.rs</td><td><span class="badge create">Create</span></td><td>Step 1</td></tr>
+      <tr><td>crates/harbor-widget/src/input/event.rs</td><td><span class="badge create">Create</span></td><td>Step 1, Test Strategy</td></tr>
+      <tr><td>crates/harbor-widget/src/input/event_ctx.rs</td><td><span class="badge create">Create</span></td><td>Step 2, Test Strategy</td></tr>
+      <tr><td>crates/harbor-widget/src/input/state.rs</td><td><span class="badge create">Create</span></td><td>Step 3, Test Strategy</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/focus_scope.rs</td><td><span class="badge create">Create</span></td><td>Step 6, Test Strategy</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/button.rs</td><td><span class="badge create">Create</span></td><td>Step 7, Test Strategy</td></tr>
+      <tr><td>crates/harbor-widget/src/view.rs</td><td><span class="badge modify">Modify</span></td><td>Step 4</td></tr>
+      <tr><td>crates/harbor-widget/src/runtime.rs</td><td><span class="badge modify">Modify</span></td><td>Step 5, Step 8</td></tr>
+      <tr><td>crates/harbor-widget/src/lib.rs</td><td><span class="badge modify">Modify</span></td><td>Step 9</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/mod.rs</td><td><span class="badge modify">Modify</span></td><td>Step 9</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

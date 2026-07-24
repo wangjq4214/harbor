@@ -1,21 +1,17 @@
 use harbor_types::RenderSnapshot;
-use hashbrown::HashMap;
 
 use anyhow::Result;
-use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
     Component,
-    font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
 };
-use harbor_config::{FONT_SIZE, TEXT_PADDING};
+use harbor_config::TEXT_PADDING;
 use harbor_terminal::{CellAttrs, Color, DirtyRange, TerminalSize};
+use harbor_text::atlas::MAX_ATLAS_SIZE;
+use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, TextMetrics};
 
-const ATLAS_PADDING: u32 = 1;
-const MAX_ATLAS_SIZE: u32 = 2048;
 const SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -44,525 +40,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-// ── CPU-side glyph atlas ──────────────────────────────────────────────────
-
-/// Atlas placement and metrics for one rasterized glyph.
-#[derive(Clone, Copy)]
-pub struct AtlasGlyph {
-    /// UV sub-region (unit texture coordinates).
-    pub uv: AtlasUv,
-    /// Glyph pixel width.
-    pub width: u32,
-    /// Glyph pixel height.
-    pub height: u32,
-    /// fontdue horizontal offset (sub-pixel).
-    pub xmin: i32,
-    /// fontdue vertical offset (sub-pixel).
-    pub ymin: i32,
-    /// Pixel x position within the fixed-size atlas.
-    pub atlas_x: u32,
-    /// Pixel y position within the fixed-size atlas.
-    pub atlas_y: u32,
-}
-
-/// UV rectangle within the atlas texture.
-#[derive(Clone, Copy)]
-pub struct AtlasUv {
-    /// Left UV boundary [0, 1].
-    pub left: f32,
-    /// Top UV boundary [0, 1].
-    pub top: f32,
-    /// Right UV boundary [0, 1].
-    pub right: f32,
-    /// Bottom UV boundary [0, 1].
-    pub bottom: f32,
-}
-
-/// One rasterised glyph (used for repacking).
-struct RasterizedGlyph {
-    /// Source character.
-    ch: char,
-    /// fontdue metrics.
-    metrics: Metrics,
-    /// Greyscale bitmap (1 byte/pixel, 0 = transparent, 255 = opaque).
-    bitmap: Vec<u8>,
-}
-
-/// One shelf row in the atlas packing layout.
-#[derive(Clone, Copy, Debug)]
-struct Shelf {
-    /// Top pixel y-coordinate of this shelf.
-    y: u32,
-    /// Height of this shelf (max glyph height on the shelf).
-    height: u32,
-    /// Next free x position on this shelf.
-    next_x: u32,
-}
-
-/// CPU-side glyph atlas plus enough metrics to build cell quads.
-struct GlyphAtlas {
-    /// Atlas texture height (pixels, for reporting/test assert).
-    height: u32,
-    /// Flattened greyscale pixel data (always MAX_ATLAS_SIZE^2 bytes).
-    pixels: Vec<u8>,
-    /// Character → atlas placement / UV lookup (persistent cache).
-    glyphs: HashMap<char, AtlasGlyph>,
-    /// Cell width derived from font metrics.
-    cell_width: f32,
-    /// Line height.
-    line_height: f32,
-    /// Baseline ascent.
-    ascent: f32,
-    /// Ordered top-to-bottom shelves for multi-row packing.
-    shelves: Vec<Shelf>,
-}
-
-impl GlyphAtlas {
-    /// Creates an empty atlas with a zero-filled 2048×2048 pixel buffer.
-    fn new(text_metrics: TextMetrics) -> Self {
-        Self {
-            height: MAX_ATLAS_SIZE,
-            pixels: vec![0; (MAX_ATLAS_SIZE * MAX_ATLAS_SIZE) as usize],
-            glyphs: HashMap::new(),
-            cell_width: text_metrics.cell_width,
-            line_height: text_metrics.line_height,
-            ascent: text_metrics.ascent,
-            shelves: Vec::new(),
+/// Computes the glyph color for a terminal cell based on its attributes.
+/// Inverse swaps fg↔bg. Bold is rendered via the glyph's rasterised weight;
+/// it does not change the foreground color.
+pub fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
+    if attrs.contains(CellAttrs::INVERSE) {
+        if bg == Color::Default {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            bg.to_rgba()
         }
-    }
-
-    /// Incrementally rasterises new glyphs from dirty rows.
-    ///
-    /// Returns `(new_chars, evicted)` where `evicted` indicates the atlas was
-    /// fully cleared and all UVs changed (atlas overflow → full rebuild).
-    fn update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> (Vec<char>, bool) {
-        self.update_with_dirty(fonts, snap, &snap.dirty_ranges)
-    }
-
-    fn update_with_dirty(
-        &mut self,
-        fonts: &FontBook,
-        snap: &RenderSnapshot,
-        dirty_ranges: &[DirtyRange],
-    ) -> (Vec<char>, bool) {
-        // Collect unique non-space chars from dirty rows only.
-        let mut chars: Vec<char> = dirty_ranges
-            .iter()
-            .flat_map(|range| {
-                (range.start_col..range.end_col).filter_map(move |col| {
-                    let ch = snap.cell_char(range.row, col);
-                    if ch != ' ' { Some(ch) } else { None }
-                })
-            })
-            .collect();
-
-        chars.sort_unstable();
-        chars.dedup();
-
-        // Rasterise only new glyphs (not yet in the persistent cache).
-        let mut new_glyphs: Vec<RasterizedGlyph> = Vec::new();
-        for ch in &chars {
-            if !self.glyphs.contains_key(ch) {
-                let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
-                new_glyphs.push(RasterizedGlyph {
-                    ch: *ch,
-                    metrics,
-                    bitmap,
-                });
-            }
-        }
-
-        if new_glyphs.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        tracing::debug!(
-            new_glyphs = new_glyphs.len(),
-            total_glyphs = self.glyphs.len() + new_glyphs.len(),
-            "rasterizing new glyphs"
-        );
-
-        let new_chars: Vec<char> = new_glyphs.iter().map(|g| g.ch).collect();
-
-        // Try to pack each new glyph into existing shelves; create new shelf as needed.
-        'pack: for glyph in &new_glyphs {
-            let gw = glyph.metrics.width as u32 + ATLAS_PADDING;
-            let gh = glyph.metrics.height as u32;
-
-            for s_idx in 0..self.shelves.len() {
-                let shelf = &mut self.shelves[s_idx];
-                if shelf.height >= gh && shelf.next_x + gw <= MAX_ATLAS_SIZE {
-                    // Inline placement on this shelf
-                    let x = shelf.next_x;
-                    let y = shelf.y;
-                    for row in 0..glyph.metrics.height {
-                        let dst_start = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                        let src_start = row * glyph.metrics.width;
-                        self.pixels[dst_start..dst_start + glyph.metrics.width].copy_from_slice(
-                            &glyph.bitmap[src_start..src_start + glyph.metrics.width],
-                        );
-                    }
-                    let left = x as f32 / MAX_ATLAS_SIZE as f32;
-                    let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    let top = y as f32 / MAX_ATLAS_SIZE as f32;
-                    let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    self.glyphs.insert(
-                        glyph.ch,
-                        AtlasGlyph {
-                            uv: AtlasUv {
-                                left,
-                                top,
-                                right,
-                                bottom,
-                            },
-                            width: glyph.metrics.width as u32,
-                            height: glyph.metrics.height as u32,
-                            xmin: glyph.metrics.xmin,
-                            ymin: glyph.metrics.ymin,
-                            atlas_x: x,
-                            atlas_y: y,
-                        },
-                    );
-                    shelf.next_x += glyph.metrics.width as u32 + ATLAS_PADDING;
-                    continue 'pack;
-                }
-            }
-
-            // No existing shelf fits — start a new shelf.
-            let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
-            if shelf_y + gh > MAX_ATLAS_SIZE {
-                tracing::debug!("atlas full; evicting and rebuilding");
-                return (self.full_update(fonts, snap), true);
-            }
-
-            let x = 0u32;
-            let y = shelf_y;
-            for row in 0..glyph.metrics.height {
-                let dst_start = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                let src_start = row * glyph.metrics.width;
-                self.pixels[dst_start..dst_start + glyph.metrics.width]
-                    .copy_from_slice(&glyph.bitmap[src_start..src_start + glyph.metrics.width]);
-            }
-            let left = x as f32 / MAX_ATLAS_SIZE as f32;
-            let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-            let top = y as f32 / MAX_ATLAS_SIZE as f32;
-            let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-            self.glyphs.insert(
-                glyph.ch,
-                AtlasGlyph {
-                    uv: AtlasUv {
-                        left,
-                        top,
-                        right,
-                        bottom,
-                    },
-                    width: glyph.metrics.width as u32,
-                    height: glyph.metrics.height as u32,
-                    xmin: glyph.metrics.xmin,
-                    ymin: glyph.metrics.ymin,
-                    atlas_x: x,
-                    atlas_y: y,
-                },
-            );
-            self.shelves.push(Shelf {
-                y: shelf_y,
-                height: gh,
-                next_x: glyph.metrics.width as u32 + ATLAS_PADDING,
-            });
-        }
-
-        self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
-        (new_chars, false)
-    }
-
-    /// Full rebuild from all visible characters (used on resize and eviction).
-    fn full_update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> Vec<char> {
-        // Collect unique non-space chars from the full snap.
-        let mut chars: Vec<char> = snap
-            .cells
-            .iter()
-            .filter_map(|cell| if cell.ch != ' ' { Some(cell.ch) } else { None })
-            .collect();
-        chars.sort_unstable();
-        chars.dedup();
-
-        self.glyphs.clear();
-        self.pixels.fill(0);
-        self.shelves.clear();
-
-        let mut new_rasterized: Vec<RasterizedGlyph> = Vec::new();
-        for ch in &chars {
-            let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
-            new_rasterized.push(RasterizedGlyph {
-                ch: *ch,
-                metrics,
-                bitmap,
-            });
-        }
-
-        // Sort by height descending for better packing.
-        use std::cmp::Reverse;
-        new_rasterized.sort_by_key(|g| Reverse(g.metrics.height));
-        let mut new_chars: Vec<char> = Vec::new();
-        'pack: for glyph in &new_rasterized {
-            let gw = glyph.metrics.width as u32 + ATLAS_PADDING;
-            let gh = glyph.metrics.height as u32;
-
-            for s_idx in 0..self.shelves.len() {
-                let shelf = &mut self.shelves[s_idx];
-                if shelf.height >= gh && shelf.next_x + gw <= MAX_ATLAS_SIZE {
-                    let x = shelf.next_x;
-                    let y = shelf.y;
-                    for row in 0..glyph.metrics.height {
-                        let dst_start = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                        let src_start = row * glyph.metrics.width;
-                        self.pixels[dst_start..dst_start + glyph.metrics.width].copy_from_slice(
-                            &glyph.bitmap[src_start..src_start + glyph.metrics.width],
-                        );
-                    }
-                    let left = x as f32 / MAX_ATLAS_SIZE as f32;
-                    let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    let top = y as f32 / MAX_ATLAS_SIZE as f32;
-                    let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    self.glyphs.insert(
-                        glyph.ch,
-                        AtlasGlyph {
-                            uv: AtlasUv {
-                                left,
-                                top,
-                                right,
-                                bottom,
-                            },
-                            width: glyph.metrics.width as u32,
-                            height: glyph.metrics.height as u32,
-                            xmin: glyph.metrics.xmin,
-                            ymin: glyph.metrics.ymin,
-                            atlas_x: x,
-                            atlas_y: y,
-                        },
-                    );
-                    shelf.next_x += glyph.metrics.width as u32 + ATLAS_PADDING;
-                    new_chars.push(glyph.ch);
-                    continue 'pack;
-                }
-            }
-
-            // No existing shelf fits — start a new shelf.
-            let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
-            if shelf_y + gh > MAX_ATLAS_SIZE {
-                tracing::warn!("atlas full during full rebuild; dropping glyphs");
-                break;
-            }
-            let x = 0u32;
-            let y = shelf_y;
-            for row in 0..glyph.metrics.height {
-                let dst_start = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                let src_start = row * glyph.metrics.width;
-                self.pixels[dst_start..dst_start + glyph.metrics.width]
-                    .copy_from_slice(&glyph.bitmap[src_start..src_start + glyph.metrics.width]);
-            }
-            let left = x as f32 / MAX_ATLAS_SIZE as f32;
-            let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-            let top = y as f32 / MAX_ATLAS_SIZE as f32;
-            let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-            self.glyphs.insert(
-                glyph.ch,
-                AtlasGlyph {
-                    uv: AtlasUv {
-                        left,
-                        top,
-                        right,
-                        bottom,
-                    },
-                    width: glyph.metrics.width as u32,
-                    height: glyph.metrics.height as u32,
-                    xmin: glyph.metrics.xmin,
-                    ymin: glyph.metrics.ymin,
-                    atlas_x: x,
-                    atlas_y: y,
-                },
-            );
-            self.shelves.push(Shelf {
-                y: shelf_y,
-                height: gh,
-                next_x: glyph.metrics.width as u32 + ATLAS_PADDING,
-            });
-            new_chars.push(glyph.ch);
-        }
-
-        self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
-
-        tracing::debug!(
-            glyphs = self.glyphs.len(),
-            atlas_height = self.height,
-            shelves = self.shelves.len(),
-            "glyph atlas full rebuild"
-        );
-        new_chars
-    }
-
-    /// Returns the atlas placement for a character, if present.
-    pub fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.glyphs.get(&ch)
-    }
-
-    /// Ensures the given characters are rasterized and packed into the atlas.
-    /// Returns the list of newly added characters (empty if all were already cached).
-    /// Returns `None` if the atlas is full and a rebuild would be needed
-    /// (dialog chars are skipped — not worth evicting the snap atlas).
-    pub fn ensure_chars(&mut self, chars: &[char], fonts: &FontBook) -> Vec<char> {
-        // Rasterize only new glyphs
-        let mut new_glyphs: Vec<RasterizedGlyph> = Vec::new();
-        for ch in chars {
-            if !self.glyphs.contains_key(ch) && *ch != ' ' {
-                let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
-                new_glyphs.push(RasterizedGlyph {
-                    ch: *ch,
-                    metrics,
-                    bitmap,
-                });
-            }
-        }
-        if new_glyphs.is_empty() {
-            return Vec::new();
-        }
-        let new_chars: Vec<char> = new_glyphs.iter().map(|g| g.ch).collect();
-        // Pack into shelves
-        for glyph in &new_glyphs {
-            let gw = glyph.metrics.width as u32 + ATLAS_PADDING;
-            let gh = glyph.metrics.height as u32;
-            let mut placed = false;
-            for shelf in &mut self.shelves {
-                if shelf.height >= gh && shelf.next_x + gw <= MAX_ATLAS_SIZE {
-                    let x = shelf.next_x;
-                    let y = shelf.y;
-                    for row in 0..glyph.metrics.height {
-                        let dst = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                        let src = row * glyph.metrics.width;
-                        self.pixels[dst..dst + glyph.metrics.width]
-                            .copy_from_slice(&glyph.bitmap[src..src + glyph.metrics.width]);
-                    }
-                    let left = x as f32 / MAX_ATLAS_SIZE as f32;
-                    let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    let top = y as f32 / MAX_ATLAS_SIZE as f32;
-                    let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                    self.glyphs.insert(
-                        glyph.ch,
-                        AtlasGlyph {
-                            uv: AtlasUv {
-                                left,
-                                top,
-                                right,
-                                bottom,
-                            },
-                            width: glyph.metrics.width as u32,
-                            height: glyph.metrics.height as u32,
-                            xmin: glyph.metrics.xmin,
-                            ymin: glyph.metrics.ymin,
-                            atlas_x: x,
-                            atlas_y: y,
-                        },
-                    );
-                    shelf.next_x += glyph.metrics.width as u32 + ATLAS_PADDING;
-                    placed = true;
-                    break;
-                }
-            }
-            if !placed {
-                let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
-                if shelf_y + gh > MAX_ATLAS_SIZE {
-                    tracing::warn!("glyph atlas full; skipping dialog chars");
-                    break;
-                }
-                let x = 0u32;
-                let y = shelf_y;
-                for row in 0..glyph.metrics.height {
-                    let dst = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-                    let src = row * glyph.metrics.width;
-                    self.pixels[dst..dst + glyph.metrics.width]
-                        .copy_from_slice(&glyph.bitmap[src..src + glyph.metrics.width]);
-                }
-                let left = x as f32 / MAX_ATLAS_SIZE as f32;
-                let right = (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                let top = y as f32 / MAX_ATLAS_SIZE as f32;
-                let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
-                self.glyphs.insert(
-                    glyph.ch,
-                    AtlasGlyph {
-                        uv: AtlasUv {
-                            left,
-                            top,
-                            right,
-                            bottom,
-                        },
-                        width: glyph.metrics.width as u32,
-                        height: glyph.metrics.height as u32,
-                        xmin: glyph.metrics.xmin,
-                        ymin: glyph.metrics.ymin,
-                        atlas_x: x,
-                        atlas_y: y,
-                    },
-                );
-                self.shelves.push(Shelf {
-                    y: shelf_y,
-                    height: gh,
-                    next_x: glyph.metrics.width as u32 + ATLAS_PADDING,
-                });
-            }
-        }
-        self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
-        new_chars
-    }
-
-    /// Generates vertices for non-empty cells using atlas UVs.
-    /// Only used in tests; TextLayer uses `build_all_vertices` instead.
-    #[cfg(test)]
-    fn vertices(
-        &self,
-        snap: &RenderSnapshot,
-        surface_width: f32,
-        surface_height: f32,
-    ) -> Vec<TexturedVertex> {
-        let mut vertices = Vec::new();
-
-        for (idx, cell) in snap.cells.iter().enumerate() {
-            if cell.ch == ' ' {
-                continue;
-            }
-            let row = idx / snap.cols;
-            let col = idx % snap.cols;
-            let ch = cell.ch;
-            let Some(glyph) = self.glyphs.get(&ch) else {
-                continue;
-            };
-            if glyph.width == 0 || glyph.height == 0 {
-                continue;
-            }
-
-            // Pixel coordinate: padding + column offset, adjusted by glyph xmin/ymin.
-            let cell_x = TEXT_PADDING + col as f32 * self.cell_width;
-            let baseline = TEXT_PADDING + self.ascent.ceil() + row as f32 * self.line_height;
-            let glyph_left = cell_x + glyph.xmin as f32;
-            let glyph_bottom = baseline - glyph.ymin as f32;
-            let glyph_top = glyph_bottom - glyph.height as f32;
-            let glyph_right = glyph_left + glyph.width as f32;
-
-            vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                glyph_left,
-                glyph_top,
-                glyph_right,
-                glyph_bottom,
-                glyph.uv.left,
-                glyph.uv.top,
-                glyph.uv.right,
-                glyph.uv.bottom,
-                [1.0; 4],
-                surface_width,
-                surface_height,
-            ));
-        }
-
-        vertices
+    } else {
+        fg.to_rgba()
     }
 }
 
@@ -600,7 +89,7 @@ impl GpuGlyphAtlas {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            &atlas.pixels,
+            atlas.pixels(),
         );
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -643,11 +132,12 @@ impl GpuGlyphAtlas {
             // to COPY_BYTES_PER_ROW_ALIGNMENT (256).
             let padded_bytes_per_row = glyph.width.div_ceil(256) * 256;
             let mut tile_data = vec![0u8; (padded_bytes_per_row * glyph.height) as usize];
+            let pixels = atlas.pixels();
             for row in 0..glyph.height {
                 let src_offset = ((glyph.atlas_y + row) * MAX_ATLAS_SIZE + glyph.atlas_x) as usize;
                 let dst_offset = (row * padded_bytes_per_row) as usize;
                 tile_data[dst_offset..dst_offset + glyph.width as usize]
-                    .copy_from_slice(&atlas.pixels[src_offset..src_offset + glyph.width as usize]);
+                    .copy_from_slice(&pixels[src_offset..src_offset + glyph.width as usize]);
             }
 
             queue.write_texture(
@@ -674,21 +164,6 @@ impl GpuGlyphAtlas {
                 },
             );
         }
-    }
-}
-
-/// Computes the glyph color for a terminal cell based on its attributes.
-/// Inverse swaps fg↔bg. Bold is rendered via the glyph's rasterised weight;
-/// it does not change the foreground color.
-pub fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
-    if attrs.contains(CellAttrs::INVERSE) {
-        if bg == Color::Default {
-            [1.0, 1.0, 1.0, 1.0]
-        } else {
-            bg.to_rgba()
-        }
-    } else {
-        fg.to_rgba()
     }
 }
 
@@ -736,9 +211,11 @@ impl Text {
         );
         let bind_group_layout = gpu::create_texture_bind_group_layout(gpu.device());
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format(), &bind_group_layout);
-        let mut atlas = GlyphAtlas::new(metrics);
-        let _ = atlas.update(&fonts, snap);
-        tracing::info!(glyphs = atlas.glyphs.len(), "glyph atlas initialized");
+
+        let mut atlas = GlyphAtlas::new();
+        let all_chars = Self::collect_all_chars(snap);
+        atlas.rebuild(&fonts, &all_chars);
+        tracing::info!(glyphs = atlas.len(), "glyph atlas initialized");
         let gpu_atlas = GpuGlyphAtlas::new(gpu.device(), gpu.queue(), &bind_group_layout, &atlas);
 
         // Pre-allocate vertex buffer for the full grid (rows * cols * 6 vertices).
@@ -803,11 +280,44 @@ impl Text {
         let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
         chars.sort_unstable();
         chars.dedup();
-        let new_chars = self.atlas.ensure_chars(&chars, &self.fonts);
-        if !new_chars.is_empty() {
-            self.gpu_atlas.update_glyphs(queue, &self.atlas, &new_chars);
+        let result = self.atlas.rasterize_new(&self.fonts, &chars);
+        if !result.new_chars.is_empty() {
+            self.gpu_atlas
+                .update_glyphs(queue, &self.atlas, &result.new_chars);
         }
     }
+
+    /// Collects unique non-space characters from dirty ranges.
+    fn collect_unique_chars_from_dirty(
+        snap: &RenderSnapshot,
+        dirty_ranges: &[DirtyRange],
+    ) -> Vec<char> {
+        let mut chars: Vec<char> = dirty_ranges
+            .iter()
+            .flat_map(|range| {
+                (range.start_col..range.end_col).filter_map(move |col| {
+                    let ch = snap.cell_char(range.row, col);
+                    if ch != ' ' { Some(ch) } else { None }
+                })
+            })
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        chars
+    }
+
+    /// Collects unique non-space characters from the entire visible snapshot.
+    fn collect_all_chars(snap: &RenderSnapshot) -> Vec<char> {
+        let mut chars: Vec<char> = snap
+            .cells
+            .iter()
+            .filter_map(|cell| if cell.ch != ' ' { Some(cell.ch) } else { None })
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        chars
+    }
+
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
     fn build_row_vertices(
         &self,
@@ -843,10 +353,10 @@ impl Text {
                 && glyph.width > 0
                 && glyph.height > 0
             {
-                let cell_x = TEXT_PADDING + col as f32 * self.atlas.cell_width;
+                let cell_x = TEXT_PADDING + col as f32 * self.metrics.cell_width;
                 let baseline = TEXT_PADDING
-                    + self.atlas.ascent.ceil()
-                    + range.row as f32 * self.atlas.line_height;
+                    + self.metrics.ascent.ceil()
+                    + range.row as f32 * self.metrics.line_height;
                 let mut glyph_left = cell_x + glyph.xmin as f32;
                 let glyph_bottom = baseline - glyph.ymin as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -854,7 +364,7 @@ impl Text {
 
                 // Italic: shift glyph right for a subtle lean.
                 if cell.attrs.contains(CellAttrs::ITALIC) {
-                    let offset = self.atlas.cell_width * 0.15;
+                    let offset = self.metrics.cell_width * 0.15;
                     glyph_left += offset;
                     glyph_right += offset;
                 }
@@ -960,7 +470,8 @@ impl Text {
         // Detect resize: dimensions changed → full rebuild.
         if snap.rows != self.rows || snap.cols != self.cols {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
-            self.atlas.full_update(&self.fonts, snap);
+            let all_chars = Self::collect_all_chars(snap);
+            self.atlas.rebuild(&self.fonts, &all_chars);
             self.gpu_atlas = GpuGlyphAtlas::new(
                 gpu.device(),
                 gpu.queue(),
@@ -985,21 +496,20 @@ impl Text {
         }
 
         // Atlas update: incremental rasterization of new glyphs.
-        let (new_glyphs, evicted) = self
-            .atlas
-            .update_with_dirty(&self.fonts, snap, dirty_ranges);
-        if !new_glyphs.is_empty() {
+        let unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
+        let result = self.atlas.rasterize_new(&self.fonts, &unique);
+        if !result.new_chars.is_empty() {
             tracing::debug!(
-                new_glyphs = new_glyphs.len(),
-                total_glyphs = self.atlas.glyphs.len(),
+                new_glyphs = result.new_chars.len(),
+                total_glyphs = self.atlas.len(),
                 "uploading new glyph tiles"
             );
             self.gpu_atlas
-                .update_glyphs(gpu.queue(), &self.atlas, &new_glyphs);
+                .update_glyphs(gpu.queue(), &self.atlas, &result.new_chars);
 
             // Incremental addition: new UVs only affect dirty rows,
-            // which already rebuild via build_row_vertices below.
-            if evicted {
+            // which already rebuild via build_range_vertices below.
+            if result.evicted {
                 self.dirty = true; // atlas cleared → all UVs invalidated
             }
         }
@@ -1058,275 +568,10 @@ impl Component for Text {
 
 #[cfg(test)]
 mod tests {
-    use super::{GlyphAtlas, MAX_ATLAS_SIZE, TextMetrics, glyph_color};
-    use harbor_terminal::{CellAttrs, Color, Terminal};
-
-    fn test_font_book() -> crate::font::FontBook {
-        crate::font::load_system_fonts().expect("load test font")
-    }
-
-    fn test_atlas(fonts: &crate::font::FontBook) -> GlyphAtlas {
-        GlyphAtlas::new(TextMetrics::new(fonts))
-    }
-
-    #[test]
-    fn atlas_contains_each_visible_glyph_once() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(2, 5);
-
-        terminal.put_str("aa b\r\nc a");
-        let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-
-        assert_eq!(atlas.glyphs.len(), 3);
-        assert!(atlas.glyphs.contains_key(&'a'));
-        assert!(atlas.glyphs.contains_key(&'b'));
-        assert!(atlas.glyphs.contains_key(&'c'));
-        assert!(!atlas.glyphs.contains_key(&' '));
-    }
-
-    #[test]
-    fn vertices_emit_one_quad_per_visible_cell() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(2, 4);
-
-        terminal.put_str("a b\r\n c ");
-        let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
-
-        assert_eq!(vertices.len(), 18);
-        assert!(vertices.iter().all(|vertex| {
-            vertex.position[0] >= -1.0
-                && vertex.position[0] <= 1.0
-                && vertex.position[1] >= -1.0
-                && vertex.position[1] <= 1.0
-        }));
-        assert!(vertices.iter().all(|vertex| {
-            vertex.tex_coords[0] >= 0.0
-                && vertex.tex_coords[0] <= 1.0
-                && vertex.tex_coords[1] >= 0.0
-                && vertex.tex_coords[1] <= 1.0
-        }));
-    }
-
-    #[test]
-    fn atlas_rasterizes_cjk_glyph_from_fallback_font() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(1, 4);
-
-        terminal.put_str("中");
-        let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-
-        let glyph = atlas.glyphs.get(&'中').expect("CJK glyph in atlas");
-        assert!(glyph.width > 0);
-        assert!(glyph.height > 0);
-    }
-
-    #[test]
-    fn empty_grid_builds_empty_draw_batch() {
-        let fonts = test_font_book();
-        let terminal = Terminal::new(2, 4);
-
-        let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
-
-        assert!(atlas.glyphs.is_empty());
-        assert_eq!(
-            atlas.pixels.len(),
-            (MAX_ATLAS_SIZE * MAX_ATLAS_SIZE) as usize
-        );
-        assert!(vertices.is_empty());
-    }
-
-    #[test]
-    fn cached_atlas_reuses_existing_glyphs() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(1, 4);
-        let mut atlas = test_atlas(&fonts);
-
-        terminal.put_str("aa");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(atlas.glyphs.len(), 1);
-
-        terminal.put_str("\x1b[1;1Ha ");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(atlas.glyphs.len(), 1);
-
-        terminal.put_str("\x1b[1;1Hab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(atlas.glyphs.len(), 2);
-    }
-
-    #[test]
-    fn update_returns_empty_when_no_new_chars() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(1, 4);
-        let mut atlas = test_atlas(&fonts);
-
-        terminal.put_str("abc");
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(new_chars.len(), 3);
-
-        // Second update with same chars: no new glyphs.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert!(new_chars.is_empty(), "no new glyphs expected");
-    }
-
-    #[test]
-    fn full_update_rebuilds_all_shelves() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(2, 4);
-
-        terminal.put_str("ab cd");
-        let mut atlas = test_atlas(&fonts);
-
-        let new_chars = atlas.full_update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(new_chars.len(), 4, "a,b,c,d");
-        assert!(atlas.glyphs.contains_key(&'a'));
-        assert!(atlas.glyphs.contains_key(&'b'));
-        assert!(atlas.glyphs.contains_key(&'c'));
-        assert!(atlas.glyphs.contains_key(&'d'));
-        // Shelves should be populated after full_update.
-        assert!(
-            !atlas.shelves.is_empty(),
-            "full_update should create shelves"
-        );
-    }
-
-    #[test]
-    fn shelf_packing_places_glyphs() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(2, 10);
-
-        terminal.put_str("hel lo!");
-        let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-
-        // All visible chars should be in glyphs.
-        for ch in "helo!".chars() {
-            assert!(
-                atlas.glyphs.contains_key(&ch),
-                "glyph '{}' should exist",
-                ch
-            );
-        }
-        // At least one shelf should exist.
-        assert!(!atlas.shelves.is_empty(), "should have at least one shelf");
-    }
-
-    #[test]
-    fn new_glyph_lands_on_existing_shelf() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(1, 10);
-        let mut atlas = test_atlas(&fonts);
-
-        terminal.put_str("abc");
-        let (first, _) = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(first.len(), 3);
-        let shelves_before = atlas.shelves.len();
-
-        // Add a new char that should fit on same shelf.
-        terminal.put_str("d");
-        let (second, _) = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(second, vec!['d'], "only 'd' is new");
-        // Shelf count should not increase for small glyph.
-        assert!(
-            atlas.shelves.len() <= shelves_before + 1,
-            "should not create many new shelves"
-        );
-    }
-
-    #[test]
-    fn atlas_creates_multiple_shelves_when_row_overflows() {
-        let fonts = test_font_book();
-        let mut atlas = test_atlas(&fonts);
-        // ~22px with ATLAS_PADDING per glyph → ~2500px > 2048 row limit → forces 2nd shelf.
-        let mut terminal = Terminal::new(2, 200);
-        use unicode_width::UnicodeWidthChar;
-        let chars: String = ('!'..='~')
-            .chain('¡'..='ÿ')
-            .filter(|c| UnicodeWidthChar::width(*c).unwrap_or(0) > 0)
-            .take(130)
-            .collect();
-        assert!(
-            chars.len() >= 115,
-            "need ~115+ chars to overflow 2048px row, got {}",
-            chars.len()
-        );
-        terminal.put_str(&chars);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        // Must have overflowed onto a second shelf.
-        assert!(
-            atlas.shelves.len() > 1,
-            "140 unique glyphs should overflow one 2048px row (shelves: {})",
-            atlas.shelves.len()
-        );
-        // At least one glyph should be on a non-zero y shelf.
-        let on_second_shelf = atlas.glyphs.values().any(|g| g.atlas_y > 0);
-        assert!(
-            on_second_shelf,
-            "at least one glyph should be on a second shelf"
-        );
-        // All chars should still be in the atlas.
-        for ch in chars.chars() {
-            assert!(
-                atlas.glyphs.contains_key(&ch),
-                "glyph '{}' should exist",
-                ch
-            );
-        }
-    }
-
-    #[test]
-    fn atlas_persistent_cache_across_clears() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(1, 4);
-        let mut atlas = test_atlas(&fonts);
-
-        terminal.put_str("ab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(atlas.glyphs.len(), 2);
-
-        // "Clear" snap and add new content overlapping old.
-        terminal.put_str("\x1b[2Jxy");
-        // After the clear, dirty rows are marked, so update scans dirty rows.
-        // 'a' and 'b' are no longer visible, 'x' and 'y' are new.
-        // But cache keeps 'a' and 'b' (no eviction unless atlas is full).
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(
-            atlas.glyphs.len(),
-            4,
-            "cache retains old glyphs even after clear"
-        );
-        assert!(atlas.glyphs.contains_key(&'x'));
-        assert!(atlas.glyphs.contains_key(&'y'));
-    }
-
-    #[test]
-    fn update_from_dirty_rows_scoped() {
-        let fonts = test_font_book();
-        let mut terminal = Terminal::new(3, 4);
-        let mut atlas = test_atlas(&fonts);
-
-        // Populate row 0
-        terminal.put_str("abcd");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(atlas.glyphs.len(), 4);
-
-        // Now dirty rows are cleared by the caller (simulated).
-        // Clear dirty and modify only row 1.
-        terminal.screen_mut().clear_dirty();
-        terminal.screen_mut().cursor_down(1);
-        terminal.screen_mut().carriage_return();
-        terminal.put_str("ef");
-        // Now only row 1 is dirty.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
-        assert_eq!(new_chars, vec!['e', 'f'], "only new chars from dirty row");
-        assert_eq!(atlas.glyphs.len(), 6, "old glyphs still cached");
-    }
+    use super::Text;
+    use super::glyph_color;
+    use harbor_terminal::{CellAttrs, Color};
+    use harbor_types::{Cell, CursorShape, DirtyRange, RenderSnapshot};
 
     #[test]
     fn glyph_color_bold_uses_fg_color() {
@@ -1383,5 +628,129 @@ mod tests {
             bg.to_rgba(),
             "bold+inverse: inverse applies (bg wins)"
         );
+    }
+
+    // ── char collection helpers ────────────────────────────────────────────
+
+    fn make_cell(ch: char) -> Cell {
+        Cell {
+            ch,
+            wide_continuation: false,
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: CellAttrs::default(),
+            protected: false,
+        }
+    }
+
+    fn make_snapshot(rows: usize, cols: usize, chars: &[char]) -> RenderSnapshot {
+        let cells: Vec<Cell> = chars.iter().map(|&ch| make_cell(ch)).collect();
+        assert_eq!(cells.len(), rows * cols);
+        RenderSnapshot {
+            rows,
+            cols,
+            cells,
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_visible: false,
+            cursor_blink: false,
+            cursor_shape: CursorShape::default(),
+            scroll_count: 0,
+            view_offset: 0,
+            history_start: 0,
+            is_alt: false,
+            dirty_ranges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collect_all_chars_filters_spaces() {
+        let snap = make_snapshot(1, 4, &['a', ' ', 'b', ' ']);
+        let chars = Text::collect_all_chars(&snap);
+        assert_eq!(chars, vec!['a', 'b']);
+    }
+
+    #[test]
+    fn collect_all_chars_deduplicates() {
+        let snap = make_snapshot(2, 2, &['a', 'b', 'a', 'c']);
+        let chars = Text::collect_all_chars(&snap);
+        assert_eq!(chars, vec!['a', 'b', 'c']);
+    }
+
+    #[test]
+    fn collect_all_chars_all_spaces_returns_empty() {
+        let snap = make_snapshot(1, 3, &[' ', ' ', ' ']);
+        let chars = Text::collect_all_chars(&snap);
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn collect_unique_chars_from_dirty_filters_spaces() {
+        let snap = make_snapshot(2, 4, &['a', ' ', 'b', ' ', ' ', 'c', ' ', 'd']);
+        let dirty = vec![
+            DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 4,
+            },
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 4,
+            },
+        ];
+        let chars = Text::collect_unique_chars_from_dirty(&snap, &dirty);
+        assert_eq!(chars, vec!['a', 'b', 'c', 'd']);
+    }
+
+    #[test]
+    fn collect_unique_chars_from_dirty_deduplicates_across_ranges() {
+        let snap = make_snapshot(2, 3, &['a', 'b', 'c', 'a', 'b', 'd']);
+        let dirty = vec![
+            DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 3,
+            },
+            DirtyRange {
+                row: 1,
+                start_col: 0,
+                end_col: 3,
+            },
+        ];
+        let chars = Text::collect_unique_chars_from_dirty(&snap, &dirty);
+        assert_eq!(chars, vec!['a', 'b', 'c', 'd']);
+    }
+
+    #[test]
+    fn collect_unique_chars_from_dirty_subset_range() {
+        let snap = make_snapshot(1, 5, &['x', 'y', 'a', 'z', 'y']);
+        let dirty = vec![DirtyRange {
+            row: 0,
+            start_col: 1,
+            end_col: 4,
+        }];
+        // Only 'y', 'a', 'z' are in the dirty range.
+        let chars = Text::collect_unique_chars_from_dirty(&snap, &dirty);
+        assert_eq!(chars, vec!['a', 'y', 'z']);
+    }
+
+    #[test]
+    fn collect_unique_chars_from_dirty_empty_ranges_returns_empty() {
+        let snap = make_snapshot(1, 3, &['a', 'b', 'c']);
+        let chars = Text::collect_unique_chars_from_dirty(&snap, &[]);
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn collect_unique_chars_from_dirty_all_spaces_returns_empty() {
+        let snap = make_snapshot(1, 4, &[' ', ' ', ' ', ' ']);
+        let dirty = vec![DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 4,
+        }];
+        let chars = Text::collect_unique_chars_from_dirty(&snap, &dirty);
+        assert!(chars.is_empty());
     }
 }

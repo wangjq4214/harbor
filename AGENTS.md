@@ -56,65 +56,7 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5. Incremental Commits
-
-**Commit measurable progress continuously. Do not wait until an entire module or feature is complete.**
-
-- Split implementation into small, independently understandable, and verifiable tasks.
-- Commit whenever a measurable task is complete and verified.
-- Do not accumulate unrelated tasks into one large commit.
-- Each commit should represent one coherent change with a clear purpose.
-- Do not create meaningless checkpoint commits for incomplete or broken code.
-- Before committing, run the verification relevant to that task, such as targeted tests, compilation, linting, or a focused manual check.
-- Keep the working tree changes in each commit limited to that commit's stated purpose.
-- Commit only isolated, verified changes you own; never include pre-existing or user-owned work.
-
-Examples of measurable commit units:
-
-- Add a regression test for a bug together with its fix.
-- Implement one API endpoint.
-- Add one validation rule and its tests.
-- Complete one database migration.
-- Update one caller after changing an interface.
-- Add the documentation required by an implemented behavior.
-
-Use the following commit message format:
-
-```text
-<gitmoji> <type>(<scope>): <summary>
-
-<body>
-```
-
-Requirements:
-
-- Start the subject with an appropriate Gitmoji.
-- Use a Conventional Commit type such as `feat`, `fix`, `test`, `docs`, `refactor`, `perf`, `build`, `ci`, or `chore`.
-- Use a concise scope that identifies the affected component.
-- Write the summary in the imperative mood and describe the result.
-- Keep the summary focused on one change.
-- Use a commit body when the subject line cannot fully explain the change, rationale, verification, or limitations:
-
-  - What changed.
-  - Why the change was needed.
-  - How the implementation works when that is not obvious.
-  - What verification was performed.
-  - Any limitations or follow-up work that remains.
-
-Example:
-
-```text
-✨ feat(auth): add token expiration validation
-
-Reject expired access tokens before loading the authenticated user.
-
-- Add expiration checks to the token validation path.
-- Return the existing unauthorized error for expired tokens.
-- Add tests for valid, expired, and malformed tokens.
-- Verify with the targeted authentication test suite.
-```
-
-## 6. Roadmap and Checklist Synchronization
+## 5. Roadmap and Checklist Synchronization
 
 **When a requirement or complete feature is finished, synchronize its implementation status with the project documentation.**
 
@@ -161,3 +103,16 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
 <!-- CODEGRAPH_END -->
+
+<!-- GRIMOIRE:START -->
+## Grimoire
+
+This project maintains a grimoire at `.grimoire/`:
+
+- `CONTEXT.md` — domain concepts and terminology (may split into `CONTEXT-[domain].md`)
+- `adr/` — architecture decision records
+- `spec/` — requirements specifications
+- `ticket/` — implementation plans
+
+Consult relevant grimoire files before making design decisions that affect project concepts, architecture, or requirements.
+<!-- GRIMOIRE:END -->

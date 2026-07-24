@@ -12,14 +12,19 @@ members = [".", "crates/*"]
 harbor-config = { path = "crates/harbor-config" }
 harbor-parser = { path = "crates/harbor-parser" }
 harbor-pty = { path = "crates/harbor-pty" }
+harbor-render = { path = "crates/harbor-render" }
 harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-types = { path = "crates/harbor-types" }
-harbor-render = { path = "crates/harbor-render" }
 harbor-ui = { path = "crates/harbor-ui" }
+harbor-widget = { path = "crates/harbor-widget" }
+harbor-text = { path = "crates/harbor-text" }
 
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
 anyhow = "1.0"
 arboard = "3.6"
+fontdb = "0.23.0"
+fontdue = "0.9"
+hashbrown = "0.17"
 tracing = "0.1"
 unicode-width = "0.2"
 windows = {
@@ -38,13 +43,11 @@ windows = {
 
 # ── single-crate deps (centralized version management) ────────────────────────
 bitvec = "1.0"
-bytemuck = { version = "1.21", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 dirs = "6.0"
-fontdb = "0.23.0"
-fontdue = "0.9"
-hashbrown = "0.17"
 parking_lot = "0.12"
-pollster = "0.4"
+pollster = "1.0"
+slotmap = "1"
 thiserror = "2.0"
 tracing-appender = "0.2"
 tracing-subscriber = {
@@ -59,18 +62,18 @@ winit = { version = "0.30", features = ["rwh_06"] }
 harbor-config = { workspace = true }
 harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
+harbor-render = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
-harbor-render = { workspace = true }
 harbor-ui = { workspace = true }
+harbor-widget = { workspace = true }
+harbor-text = { workspace = true }
 
 # external
 anyhow = { workspace = true }
 arboard = { workspace = true }
 bytemuck = { workspace = true }
 dirs = { workspace = true }
-fontdb = { workspace = true }
-fontdue = { workspace = true }
 hashbrown = { workspace = true }
 pollster = { workspace = true }
 thiserror = { workspace = true }

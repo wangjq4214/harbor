@@ -1,0 +1,11 @@
+[package]
+name = "harbor-widget"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { workspace = true }
+hashbrown = { workspace = true }
+slotmap = { workspace = true }
+harbor-text = { workspace = true }
+wgpu = { workspace = true }

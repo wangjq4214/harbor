@@ -64,6 +64,8 @@ pub(crate) struct App {
     gpu: Option<GpuContext>,
     /// Component tree (owns all rendering state + handles events).
     ui: Option<UiRoot>,
+    /// Widget framework runtime (Phase 1: layout + quad rendering).
+    widget_runtime: Option<harbor_widget::runtime::Runtime>,
     /// Terminal model: byte-stream parser plus visible screen.
     terminal: Option<Terminal>,
     /// Shell process with background output reader.
@@ -337,6 +339,15 @@ impl ApplicationHandler<AppEvent> for App {
                 ui.resize(gpu, (size.width, size.height));
                 let new_size = ui.terminal_size(gpu);
                 self.pending_resize = Some(new_size);
+
+                // Update widget runtime viewport on resize
+                if let Some(ref mut wr) = self.widget_runtime {
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(size.width, size.height, 1.0);
+                    wr.set_viewport(viewport);
+                    wr.update(std::time::Instant::now());
+                }
+
                 window.request_redraw();
             }
 
@@ -398,6 +409,7 @@ impl App {
             window: None,
             gpu: None,
             ui: None,
+            widget_runtime: None,
             terminal: None,
             pty: Pty::new(PtyWakeHandler::new(event_proxy)),
             pending_resize: None,
@@ -471,6 +483,10 @@ impl App {
         self.terminal = Some(terminal);
         self.window = Some(window.clone());
         self.pty.start(size).map_err(AppError::Pty)?;
+
+        // Initialize widget runtime with a simple demo scene
+        self.init_widget_runtime();
+
         window.request_redraw();
         Ok(())
     }
@@ -542,10 +558,36 @@ impl App {
             });
 
             ui.draw(&mut render_pass);
+
+            // Encode widget quads after terminal content
+            if let Some(ref mut wr) = self.widget_runtime {
+                let (physical_w, physical_h) = gpu.surface_size();
+                let viewport = harbor_widget::renderer::Viewport::new(physical_w, physical_h, 1.0);
+                wr.encode(gpu.queue(), &mut render_pass, viewport);
+            }
         }
 
         gpu.queue().submit(Some(encoder.finish()));
         gpu.present(output);
+    }
+
+    /// Initializes the widget runtime with a simple demo scene.
+    fn init_widget_runtime(&mut self) {
+        let gpu = self.gpu.as_ref().unwrap();
+        let mut rt = harbor_widget::runtime::Runtime::new();
+
+        // Build a simple demo: colored quads via SizedBox
+        use harbor_widget::layout::Size;
+        use harbor_widget::scene::primitive::Color;
+        use harbor_widget::widgets::sized_box::SizedBox;
+
+        rt.set_root(SizedBox::new(Size::new(200.0, 100.0)).color(Color::RED));
+        rt.init_renderer(gpu.device(), gpu.format());
+
+        // Run one update to produce initial scene delta
+        rt.update(std::time::Instant::now());
+
+        self.widget_runtime = Some(rt);
     }
 }
 

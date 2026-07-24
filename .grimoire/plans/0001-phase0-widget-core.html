@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phase 0: Retained Tree &amp; Pure CPU Core</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card-bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #555;
+    --border: #e0e0e0;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --code-bg: #f5f5f5;
+    --tag-bg: #f0f0f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .plan {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  header h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  header .meta { color: var(--text-muted); font-size: 0.9rem; display: flex; gap: 2rem; flex-wrap: wrap; }
+  .meta-item { display: flex; gap: 0.35rem; }
+  .meta-item strong { font-weight: 600; }
+
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  section h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  section h2 .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700;
+  }
+  section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; color: #333; }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  .table-wrap table { border: none; }
+  .table-wrap th:first-child, .table-wrap td:first-child { padding-left: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--accent-light); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #f8fafd; }
+
+  .mermaid-wrap {
+    background: #fcfcfc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1rem 0;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+  pre.mermaid {
+    background: transparent;
+    color: inherit;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; }
+  :not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #e8e8e8;
+  }
+
+  .step {
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    background: var(--accent-light);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .step h4 { font-size: 0.95rem; margin-bottom: 0.4rem; color: var(--accent); }
+  .step p, .step ul { font-size: 0.9rem; margin: 0.25rem 0; }
+  .step ul { padding-left: 1.25rem; }
+  .step .outcome { margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: #e6f4ea; border-radius: 4px; font-size: 0.85rem; color: #137333; }
+  .step .files { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--tag-bg);
+    color: var(--text-muted);
+  }
+  .badge.create { background: #e6f4ea; color: #137333; }
+  .badge.modify { background: #fef3c7; color: #92400e; }
+
+  .decision-list { list-style: none; }
+  .decision-list li { padding: 0.4rem 0; padding-left: 1.2rem; position: relative; }
+  .decision-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  .test-grid { display: grid; gap: 1rem; }
+  .test-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .test-card h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: #333;
+  }
+  .test-card h3 code { font-weight: 700; color: var(--accent); background: none; border: none; padding: 0; }
+  .test-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .test-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: right;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .test-card ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+    color: #444;
+  }
+  .test-card ul li { margin-bottom: 0.2rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border: 1px solid #ccc; }
+    .step { background: #f9f9f9; }
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.5rem; }
+    section { padding: 1.25rem; }
+    header { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="plan">
+
+<header>
+  <h1>Phase 0: Retained Tree &amp; Pure CPU Core</h1>
+  <div class="meta">
+    <div class="meta-item"><strong>Input:</strong> <span>docs/widget-runtime-design.md — Phase 0 + Conversation refinement</span></div>
+    <div class="meta-item"><strong>Date:</strong> <span>2025-07-16</span></div>
+  </div>
+</header>
+
+<!-- ── Section 1: Type Design ── -->
+<section>
+  <h2><span class="num">1</span> Type Design</h2>
+
+  <h3>New Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Responsibility</th><th>Relationships</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td><code>Point</code></td><td>layout/geometry.rs</td><td>2D position in logical pixels, top-left origin</td><td>Owns x, y coordinates; provides offset and distance helpers</td><td>Used by Rect, RenderNode layout</td><td>Self-contained — no external math crate needed for two fields</td></tr>
+      <tr><td><code>Size</code></td><td>layout/geometry.rs</td><td>2D extent in logical pixels</td><td>Owns width, height; provides area and zero checks</td><td>Used by Rect, BoxConstraints, RenderNode layout</td><td>Separate from Point — different concept, different operations</td></tr>
+      <tr><td><code>Rect</code></td><td>layout/geometry.rs</td><td>Axis-aligned rectangle with min/max representation</td><td>Owns min (top-left) and max (bottom-right) points; provides size, contains, intersection</td><td>Composes Point and Size; output of layout</td><td>Min/max representation avoids ambiguous origin+size semantics</td></tr>
+      <tr><td><code>BoxConstraints</code></td><td>layout/constraints.rs</td><td>Parent-imposed min/max size bounds</td><td>Owns min Size and max Size; provides constrain, loosen, tighten</td><td>Input to layout; consumed by RenderNode size calculation</td><td>Core layout primitive; independent of any specific widget</td></tr>
+      <tr><td><code>Signal&lt;T&gt;</code></td><td>signal.rs</td><td>Fine-grained pull-based reactive state cell</td><td>Owns value + version; tracks subscribers; notifies dirty on write</td><td>Subscribed by Fiber; read during build, written in handlers</td><td>Pull-based model aligns with dirty-flag architecture; distinct from hook storage</td></tr>
+      <tr><td><code>Key</code></td><td>view.rs</td><td>Stable identity marker for list reconciliation</td><td>Wraps a comparable identifier (string or integer)</td><td>Attached to View; read by Fiber reconciliation</td><td>Identity is a separate concept from the View itself</td></tr>
+      <tr><td><code>AnyView</code> (trait)</td><td>view.rs</td><td>Type-erased View capability</td><td>Exposes <code>key()</code> and <code>build(Box&lt;Self&gt;, &amp;mut BuildCx) -&gt; View</code></td><td>Implemented by every widget builder; wrapped by View</td><td>Trait enables open widget set without enum; matches Component pattern</td></tr>
+      <tr><td><code>View</code></td><td>view.rs</td><td>Opaque, discardable UI description with optional Key</td><td>Wraps <code>Box&lt;dyn AnyView&gt;</code> + <code>Option&lt;Key&gt;</code>; provides accessors for reconciler</td><td>Produced by Component::build; consumed by reconciliation</td><td>Type-erased struct avoids closed enum; each widget type is independent</td></tr>
+      <tr><td><code>Component</code> (trait)</td><td>view.rs</td><td>User-facing builder of immutable Views</td><td>Single method: <code>build(&amp;self, cx: &amp;mut BuildCx) -&gt; View</code></td><td>Implemented by user widgets; called by Runtime during reconciliation</td><td>Single-method trait — lifecycle belongs to Fiber, not Component</td></tr>
+      <tr><td><code>BuildCx</code></td><td>view.rs</td><td>Per-build context for hook creation and Signal tracking</td><td>Holds current FiberId; provides <code>use_state&lt;T&gt;() -&gt; Signal&lt;T&gt;</code>; records Signal reads</td><td>Created by Runtime; passed to Component::build</td><td>Hook addressing via direct Fiber reference, not thread-local</td></tr>
+      <tr><td><code>DirtyFlags</code></td><td>fiber.rs</td><td>Bitflags for incremental update targeting</td><td>BUILD_DIRTY, LAYOUT_DIRTY, PAINT_DIRTY, HIT_TEST_DIRTY</td><td>Stored on Fiber; queried by Runtime update phases</td><td>Own concept — flags drive the update lifecycle independent of any single phase</td></tr>
+      <tr><td><code>FiberId</code></td><td>fiber.rs</td><td>Generation-checked node handle</td><td>Wraps slotmap key; stale access detected by generation mismatch</td><td>Stored in Signal subscriptions, pointer capture; validated on use</td><td>Required for stale-reference safety; distinct from index-only IDs</td></tr>
+      <tr><td><code>Fiber</code></td><td>fiber.rs</td><td>Long-lived component instance with hooks, state, and children</td><td>Owns FiberId, Key, View type identity, hook slots (Vec of Signals), child FiberIds, DirtyFlags, and optional RenderNode handle</td><td>Composes Signal hooks; references child Fibers; referenced by FiberArena</td><td>Central node — owns identity, state, and dirty tracking; RenderNode is a separate concept</td></tr>
+      <tr><td><code>FiberArena</code></td><td>fiber.rs</td><td>Generation-checked fiber storage</td><td>Wraps <code>slotmap::SlotMap&lt;FiberId, Fiber&gt;</code>; provides insert, get, remove with generation check</td><td>Owns all Fibers; queried by Runtime during reconciliation and update</td><td>SlotMap proven generation arena — building custom would duplicate</td></tr>
+      <tr><td><code>Runtime</code></td><td>runtime.rs</td><td>Top-level widget tree scheduler</td><td>Owns FiberArena, root FiberId, dirty queue; provides <code>set_root</code>, <code>update</code>; orchestrates reconcile → layout</td><td>Composes FiberArena; exposes public API to App</td><td>Single coordinator — no other type should own the full lifecycle</td></tr>
+      <tr><td><code>FrameRequest</code></td><td>runtime.rs</td><td>Post-update redraw signal</td><td>Boolean flag indicating whether GPU encoding is needed</td><td>Returned by Runtime::update and Runtime::dispatch</td><td>Trivial now; will expand in later phases to include animation deadlines</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Design Decisions</h3>
+  <ul class="decision-list">
+    <li><code>View</code> uses type-erased <code>Box&lt;dyn AnyView&gt;</code> — enables open widget set without modifying View for each new widget type.</li>
+    <li><code>FiberArena</code> wraps <code>slotmap::SlotMap</code> — leverages a proven generation-checked arena instead of hand-rolling index+generation pairs.</li>
+    <li><code>Signal&lt;T&gt;</code> uses pull-based version tracking with dirty-flag notification — aligns with the design document's explicit dirty-flag taxonomy (BUILD_DIRTY, LAYOUT_DIRTY, etc).</li>
+    <li><code>BuildCx</code> holds a direct <code>FiberId</code> reference for hook addressing — simpler and more predictable than thread-local context.</li>
+    <li>Geometry types are self-contained with no external math crate — Phase 0 needs only Point, Size, Rect, BoxConstraints; no transforms or complex geometry.</li>
+    <li><code>Component</code> trait has a single <code>build</code> method — lifecycle hooks (mount, unmount) belong to Fiber management, not user code.</li>
+    <li>Top-left coordinate origin — matches screen/UI convention (wgpu, Flutter, SwiftUI, browsers); avoids confusion when RenderNodes later map to GPU scissor rects.</li>
+  </ul>
+</section>
+
+<!-- ── Section 2: Type Relationship Diagram ── -->
+<section>
+  <h2><span class="num">2</span> Type Relationship Diagram</h2>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+classDiagram
+    class Runtime {
+        +set_root(Component)
+        +update(Instant) FrameRequest
+        -Vec dirty_queue
+        -FiberId root_id
+    }
+    class FrameRequest {
+        +bool needs_redraw
+    }
+    class FiberArena {
+        +insert(Fiber) FiberId
+        +get(FiberId) Fiber?
+        +remove(FiberId) Fiber?
+    }
+    class Fiber {
+        +FiberId id
+        +Key key
+        +Vec children
+        +Vec hooks
+        +DirtyFlags flags
+        +Rect layout_rect
+    }
+    class FiberId {
+        +u32 index
+        +u32 generation
+    }
+    class DirtyFlags {
+        +BUILD_DIRTY
+        +LAYOUT_DIRTY
+        +PAINT_DIRTY
+        +HIT_TEST_DIRTY
+    }
+    class View {
+        +Key key
+        +TypeId widget_type
+        -AnyView inner
+    }
+    class AnyView {
+        &lt;&lt;trait&gt;&gt;
+        +key() Key
+        +build() View
+    }
+    class Component {
+        &lt;&lt;trait&gt;&gt;
+        +build(BuildCx) View
+    }
+    class BuildCx {
+        +use_state() Signal
+        -FiberId current_fiber
+    }
+    class Key {
+        +String value
+    }
+    class Signal {
+        +read() T
+        +set(T)
+        -u64 version
+        -Vec subscribers
+    }
+    class BoxConstraints {
+        +Size min
+        +Size max
+        +constrain(Size) Size
+    }
+    class Rect {
+        +Point min
+        +Point max
+        +size() Size
+    }
+    class Point {
+        +f32 x
+        +f32 y
+    }
+    class Size {
+        +f32 width
+        +f32 height
+    }
+
+    Runtime *-- FiberArena : owns
+    Runtime --> FrameRequest : returns
+    FiberArena *-- Fiber : stores
+    Fiber o-- FiberId : identified by
+    Fiber o-- DirtyFlags : has
+    Fiber o-- Signal : hooks store
+    Fiber o-- Rect : layout result
+    View *-- AnyView : wraps
+    View o-- Key : optionally has
+    Component --> View : produces
+    Component --> BuildCx : receives
+    BuildCx --> Signal : creates
+    BuildCx --> FiberId : references
+    Signal --> FiberId : notifies
+    Rect *-- Point : composed of
+    Rect --> Size : derives
+    BoxConstraints *-- Size : composed of
+    </pre>
+  </div>
+</section>
+
+<!-- ── Section 3: Implementation Steps ── -->
+<section>
+  <h2><span class="num">3</span> Implementation Steps</h2>
+
+  <h3>Group A: Crate Scaffold</h3>
+
+  <div class="step">
+    <h4>Step 1: Create harbow-widget crate and wire into workspace</h4>
+    <div class="files">Files: crates/harbor-widget/Cargo.toml, crates/harbor-widget/src/lib.rs, Cargo.toml</div>
+    <p><strong>Action:</strong></p>
+    <ul>
+      <li>Create <code>crates/harbor-widget/Cargo.toml</code> with package name <code>harbor-widget</code>, edition 2024, dependency on <code>slotmap</code> only.</li>
+      <li>Create <code>crates/harbor-widget/src/lib.rs</code> with module declarations: <code>pub mod geometry; pub mod constraints; pub mod signal; pub mod view; pub mod fiber; pub mod runtime;</code>.</li>
+      <li>Add <code>harbor-widget = { path = "crates/harbor-widget" }</code> to workspace <code>[workspace.dependencies]</code> in root <code>Cargo.toml</code>.</li>
+    </ul>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-widget</code> succeeds with empty modules. No existing code broken.</div>
+  </div>
+
+  <h3>Group B: Layout Primitives (zero dependencies)</h3>
+
+  <div class="step">
+    <h4>Step 2: Implement geometry types — Point, Size, Rect</h4>
+    <div class="files">Files: crates/harbor-widget/src/layout/geometry.rs</div>
+    <p><strong>Action:</strong> Define three plain-data structs with <code>derive(Copy, Clone, Debug, PartialEq)</code>:</p>
+    <pre>pub struct Point { pub x: f32, pub y: f32 }
+
+pub struct Size { pub width: f32, pub height: f32 }
+
+pub struct Rect { pub min: Point, pub max: Point }</pre>
+    <ul>
+      <li><code>Point</code>: add <code>fn new(x: f32, y: f32) -&gt; Self</code> and <code>const ZERO: Self</code>.</li>
+      <li><code>Size</code>: add <code>fn new(w: f32, h: f32) -&gt; Self</code>, <code>const ZERO: Self</code>, <code>fn is_empty(&amp;self) -&gt; bool</code>.</li>
+      <li><code>Rect</code>: add <code>fn from_min_size(min: Point, size: Size) -&gt; Self</code>, <code>fn size(&amp;self) -&gt; Size</code>, <code>fn contains(&amp;self, p: Point) -&gt; bool</code>.</li>
+    </ul>
+    <div class="outcome"><strong>Outcome:</strong> Unit tests pass for size calculation, point equality, rect containment.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 3: Implement BoxConstraints</h4>
+    <div class="files">Files: crates/harbor-widget/src/layout/constraints.rs</div>
+    <p><strong>Action:</strong></p>
+    <pre>pub struct BoxConstraints { pub min: Size, pub max: Size }
+
+impl BoxConstraints {
+    pub fn tight(size: Size) -&gt; Self { /* min == max == size */ }
+    pub fn loose(max: Size) -&gt; Self { /* min = zero, max = max */ }
+    pub fn constrain(&amp;self, size: Size) -&gt; Size {
+        Size::new(
+            size.width.clamp(self.min.width, self.max.width),
+            size.height.clamp(self.min.height, self.max.height),
+        )
+    }
+    pub fn is_tight(&amp;self) -&gt; bool { self.min == self.max }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> <code>constrain</code> clamps correctly; <code>tight(Size::new(100, 50))</code> produces min == max.</div>
+  </div>
+
+  <h3>Group C: Signal System</h3>
+
+  <div class="step">
+    <h4>Step 4: Implement Signal&lt;T&gt;</h4>
+    <div class="files">Files: crates/harbor-widget/src/signal.rs</div>
+    <p><strong>Action:</strong> Pull-based reactive cell with subscriber tracking:</p>
+    <pre>pub struct Signal&lt;T&gt; {
+    value: T,
+    version: u64,
+    subscribers: Vec&lt;FiberId&gt;,
+}
+
+impl&lt;T&gt; Signal&lt;T&gt; {
+    pub fn new(value: T) -&gt; Self { /* version = 0, empty subscribers */ }
+    pub fn read(&amp;self) -&gt; &amp;T { &amp;self.value }
+    pub fn set(&amp;mut self, value: T) {
+        self.value = value;
+        self.version += 1;
+        // Mark all subscribers BUILD_DIRTY via a callback or direct arena access.
+        // Deferred: in Step 8, Runtime will provide the marking callback.
+    }
+    pub fn version(&amp;self) -&gt; u64 { self.version }
+    pub fn subscribe(&amp;mut self, id: FiberId) { /* add to subscribers */ }
+    pub fn unsubscribe(&amp;mut self, id: FiberId) { /* remove from subscribers */ }
+}</pre>
+    <p><code>Clone</code> is derived so <code>Signal&lt;T&gt;</code> can be captured in closures; <code>T: Clone</code> for read access.</p>
+    <div class="outcome"><strong>Outcome:</strong> Signal created, read, written; version increments on set; subscribers added/removed.</div>
+  </div>
+
+  <h3>Group D: View System</h3>
+
+  <div class="step">
+    <h4>Step 5: Implement Key, AnyView, View, Component, BuildCx</h4>
+    <div class="files">Files: crates/harbor-widget/src/view.rs</div>
+    <p><strong>Action:</strong></p>
+    <pre>// Key — stable identity
+pub struct Key(String);
+impl Key {
+    pub fn new(s: impl Into&lt;String&gt;) -&gt; Self { Key(s.into()) }
+}
+
+// BuildCx — per-build context
+pub struct BuildCx {
+    current_fiber: FiberId,
+    hook_index: usize,
+    subscriptions: Vec&lt;SignalHandle&gt;, // opaque handle for recording reads
+}
+impl BuildCx {
+    pub fn use_state&lt;T: Clone + 'static&gt;(&amp;mut self, init: impl FnOnce() -&gt; T) -&gt; Signal&lt;T&gt; {
+        // Look up in current fiber's hook list at hook_index, or create new one.
+        // Increment hook_index.
+        // Record subscription.
+    }
+}
+
+// Component trait
+pub trait Component {
+    fn build(&amp;self, cx: &amp;mut BuildCx) -&gt; View;
+}
+
+// AnyView — internal type-erasure trait
+trait AnyView {
+    fn key(&amp;self) -&gt; Option&lt;&amp;Key&gt;;
+    fn widget_type(&amp;self) -&gt; std::any::TypeId;
+    fn build(self: Box&lt;Self&gt;, cx: &amp;mut BuildCx) -&gt; View;
+}
+
+// View — opaque public wrapper
+pub struct View {
+    inner: Box&lt;dyn AnyView&gt;,
+    explicit_key: Option&lt;Key&gt;,
+}
+impl View {
+    pub fn key(&amp;self) -&gt; Option&lt;&amp;Key&gt; { self.explicit_key.as_ref().or_else(|| self.inner.key()) }
+    pub fn widget_type(&amp;self) -&gt; std::any::TypeId { self.inner.widget_type() }
+    pub(crate) fn into_inner(self) -&gt; Box&lt;dyn AnyView&gt; { self.inner }
+}</pre>
+    <p>Each widget type (e.g., SizedBox) implements <code>AnyView</code> via a blanket impl or manual impl on its builder struct. The builder struct <code>into()</code> conversion creates the <code>View</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> View created from a widget builder; key accessible; type identity preserved for reconciliation matching.</div>
+  </div>
+
+  <h3>Group E: Fiber Tree</h3>
+
+  <div class="step">
+    <h4>Step 6: Implement DirtyFlags, FiberId, Fiber, FiberArena</h4>
+    <div class="files">Files: crates/harbor-widget/src/fiber.rs</div>
+    <p><strong>Action:</strong></p>
+    <pre>use bitflags::bitflags;
+use slotmap::{SlotMap, new_key_type};
+
+new_key_type! {
+    pub struct FiberId;
+}
+
+bitflags! {
+    pub struct DirtyFlags: u8 {
+        const BUILD_DIRTY    = 0b0001;
+        const LAYOUT_DIRTY   = 0b0010;
+        const PAINT_DIRTY    = 0b0100;
+        const HIT_TEST_DIRTY = 0b1000;
+    }
+}
+
+pub struct Fiber {
+    pub id: FiberId,
+    pub key: Option&lt;Key&gt;,
+    pub widget_type: TypeId,
+    pub hooks: Vec&lt;Box&lt;dyn Any&gt;&gt;,  // type-erased Signal&lt;T&gt; values
+    pub children: Vec&lt;FiberId&gt;,
+    pub parent: Option&lt;FiberId&gt;,
+    pub flags: DirtyFlags,
+    pub layout_rect: Option&lt;Rect&gt;,
+}
+
+pub struct FiberArena {
+    fibers: SlotMap&lt;FiberId, Fiber&gt;,
+}
+impl FiberArena {
+    pub fn insert(&amp;mut self, fiber: Fiber) -&gt; FiberId { self.fibers.insert(fiber) }
+    pub fn get(&amp;self, id: FiberId) -&gt; Option&lt;&amp;Fiber&gt; { self.fibers.get(id) }
+    pub fn get_mut(&amp;mut self, id: FiberId) -&gt; Option&lt;&amp;mut Fiber&gt; { self.fibers.get_mut(id) }
+    pub fn remove(&amp;mut self, id: FiberId) -&gt; Option&lt;Fiber&gt; { self.fibers.remove(id) }
+    pub fn contains(&amp;self, id: FiberId) -&gt; bool { self.fibers.contains_key(id) }
+}</pre>
+    <p>Add <code>slotmap</code> to <code>Cargo.toml</code> deps. Add <code>bitflags</code> or hand-roll DirtyFlags bit ops (hand-roll preferred to avoid extra dep).</p>
+    <div class="outcome"><strong>Outcome:</strong> Fibers inserted into arena; retrieved by FiberId; stale IDs (generation mismatch) return None; DirtyFlags bit operations correct.</div>
+  </div>
+
+  <h3>Group F: Reconciliation</h3>
+
+  <div class="step">
+    <h4>Step 7: Implement reconciliation logic on FiberArena</h4>
+    <div class="files">Files: crates/harbor-widget/src/fiber.rs</div>
+    <p><strong>Action:</strong> Add <code>reconcile</code> method to FiberArena (or as a free function):</p>
+    <pre>impl FiberArena {
+    /// Reconcile a child list against new Views. Returns (new_child_ids, dirty flags set).
+    pub fn reconcile_children(
+        &amp;mut self,
+        parent_id: FiberId,
+        old_children: &amp;[FiberId],
+        new_views: Vec&lt;View&gt;,
+        cx: &amp;mut BuildCx,
+    ) -&gt; Vec&lt;FiberId&gt;;
+}</pre>
+    <p>Algorithm matches design doc rules:</p>
+    <ol>
+      <li>Walk both old children and new views by position.</li>
+      <li>If same position, same <code>widget_type()</code>, same <code>key()</code> → reuse Fiber (preserve hooks, state).</li>
+      <li>If type or key differs → unmount old subtree (clear subscriptions, remove children recursively), then create new Fiber via <code>View::into_inner().build(cx)</code>.</li>
+      <li>No-key items match by position only.</li>
+      <li>Unmount on mismatch: walk children recursively, unsubscribe from Signals, remove from arena.</li>
+    </ol>
+    <div class="outcome"><strong>Outcome:</strong> Same type+key → hook state preserved across rebuilds. Key change → old fiber destroyed, new created. Stale FiberId rejected.</div>
+  </div>
+
+  <h3>Group G: Runtime Assembly</h3>
+
+  <div class="step">
+    <h4>Step 8: Implement Runtime with set_root, update, dirty queue</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong></p>
+    <pre>pub struct Runtime {
+    arena: FiberArena,
+    root_id: Option&lt;FiberId&gt;,
+    dirty_queue: Vec&lt;FiberId&gt;,
+}
+
+impl Runtime {
+    pub fn new() -&gt; Self { /* empty */ }
+
+    pub fn set_root(&amp;mut self, root: impl Component + 'static) {
+        // 1. Build initial View from component.
+        // 2. If root_id exists, unmount old root subtree.
+        // 3. Reconcile: create new Fiber from View.
+        // 4. Set root_id.
+        // 5. Mark root BUILD_DIRTY | LAYOUT_DIRTY.
+        // 6. Push root_id to dirty queue.
+    }
+
+    pub fn update(&amp;mut self, _now: Instant) -&gt; FrameRequest {
+        // Process dirty queue:
+        //   1. Pop each dirty fiber.
+        //   2. If BUILD_DIRTY: build component → reconcile children.
+        //   3. If LAYOUT_DIRTY: run layout pass from this fiber down.
+        //   4. Clear flags.
+        // Return FrameRequest { needs_redraw: !dirty_queue.is_empty() } in Phase 0.
+    }
+}
+
+pub struct FrameRequest {
+    pub needs_redraw: bool,
+}</pre>
+    <p>Layout pass in Phase 0: walk the tree top-down, pass <code>BoxConstraints</code> to each node, each node computes its <code>Rect</code> and stores in <code>Fiber.layout_rect</code>. For now, a default tight constraint flow.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>set_root</code> + <code>update</code> produces a Fiber tree with layout rects. Empty tree → no crash. Multiple <code>update</code> calls without changes → no re-layout (dirty queue empty).</div>
+  </div>
+
+  <h3>Group H: Test Widget &amp; Integration</h3>
+
+  <div class="step">
+    <h4>Step 9: Implement SizedBox test widget</h4>
+    <div class="files">Files: crates/harbor-widget/src/view.rs (or tests/sized_box.rs)</div>
+    <p><strong>Action:</strong> Minimal concrete widget to exercise the pipeline:</p>
+    <pre>pub struct SizedBox {
+    size: Size,
+    child: Option&lt;View&gt;,
+}
+impl SizedBox {
+    pub fn new(size: Size) -&gt; Self { Self { size, child: None } }
+    pub fn child(mut self, child: impl Component + 'static) -&gt; Self {
+        let mut cx = BuildCx::stub(); // or take via method
+        self.child = Some(child.build(&amp;mut cx));
+        self
+    }
+}
+impl Component for SizedBox {
+    fn build(&amp;self, cx: &amp;mut BuildCx) -&gt; View { /* produce View with self.size */ }
+}</pre>
+    <p>In Phase 0, SizedBox can live in a <code>#[cfg(test)]</code> module or as a public test utility.</p>
+    <div class="outcome"><strong>Outcome:</strong> A SizedBox with fixed 100x50 produces the correct layout rect in the Fiber tree after update.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 10: Write unit and integration tests</h4>
+    <div class="files">Files: crates/harbor-widget/src/signal.rs, fiber.rs, layout/constraints.rs, runtime.rs, tests/integration.rs</div>
+    <p><strong>Action:</strong> See Section 5 (Test Strategy) for detailed test cases. Integration test:</p>
+    <pre>#[test]
+fn sized_box_layout_integration() {
+    let mut rt = Runtime::new();
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    let req = rt.update(Instant::now());
+    assert!(req.needs_redraw); // first build is dirty
+    // Verify root fiber has layout_rect with size 100x50 (at origin).
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> All unit tests pass. Integration test proves set_root → update pipeline works end-to-end.</div>
+  </div>
+</section>
+
+<!-- ── Section 4: Edge Cases ── -->
+<section>
+  <h2><span class="num">4</span> Edge Cases</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Condition</th><th>Expected Behavior</th><th>Owning Step</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Empty View tree (root component returns a View with no children)</td><td>Root Fiber created with empty children; no crash; update is a no-op.</td><td>Step 8</td></tr>
+      <tr><td>2</td><td>Same position, different <code>Key</code> between builds</td><td>Old Fiber and its subtree are unmounted (subscriptions cleared); new Fiber created from scratch.</td><td>Step 7</td></tr>
+      <tr><td>3</td><td>Signal.set() with zero subscribers</td><td>No panic; version increments; dirty queue unchanged.</td><td>Step 4</td></tr>
+      <tr><td>4</td><td>Stale FiberId access (slot reused after removal)</td><td><code>FiberArena::get(stale_id)</code> returns <code>None</code> due to generation mismatch in SlotMap.</td><td>Step 6</td></tr>
+      <tr><td>5</td><td>Multiple Signal writes before <code>update()</code></td><td>Fiber pushed to dirty queue only once; deduplication prevents redundant rebuilds.</td><td>Step 8</td></tr>
+      <tr><td>6</td><td><code>Component::build</code> reads no Signals</td><td>No subscriptions recorded for that Fiber; subsequent Signal writes don't mark it dirty.</td><td>Step 5</td></tr>
+      <tr><td>7</td><td><code>BoxConstraints</code> where <code>min &gt; max</code> in one axis</td><td><code>constrain</code> clamps to <code>min</code> (the stronger constraint wins); no panic.</td><td>Step 3</td></tr>
+      <tr><td>8</td><td>Nested reconciliation — child list length changes (more or fewer children)</td><td>Extra old Fibers unmounted; extra new Views create new Fibers. Tree shape matches View tree exactly.</td><td>Step 7</td></tr>
+      <tr><td>9</td><td><code>set_root</code> called multiple times (replacing the entire tree)</td><td>Old root unmounted recursively; new root created. No leaked Fibers or Signal subscriptions.</td><td>Step 8</td></tr>
+      <tr><td>10</td><td><code>update</code> called when dirty queue is empty (stationary UI)</td><td>Return <code>FrameRequest { needs_redraw: false }</code> — no work, no redraw requested.</td><td>Step 8</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ── Section 5: Test Strategy ── -->
+<section>
+  <h2><span class="num">5</span> Test Strategy</h2>
+
+  <div class="test-grid">
+
+    <div class="test-card">
+      <h3><code>Signal&lt;T&gt;</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>Value reads correctly after set; version increments; subscribers added/removed; set with no subscribers is a no-op (no panic).</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>FiberId uses SlotMap's DefaultKey — no mock needed; FiberId created from a test arena.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Initial value accessible via <code>read()</code></li>
+          <li><code>set()</code> updates value and increments version</li>
+          <li>Multiple subscribers receive dirty notification</li>
+          <li>Unsubscribed fiber not notified on subsequent sets</li>
+          <li>Same fiber subscribed twice → idempotent</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>BoxConstraints</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>tight() produces min == max; loose() produces min == zero; constrain clamps within bounds.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>None — pure data, no dependencies.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Size within bounds → returned unchanged</li>
+          <li>Size below min → clamped to min</li>
+          <li>Size above max → clamped to max</li>
+          <li>min &gt; max in one axis → constrain uses min (no panic)</li>
+          <li>Zero-size constraints</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Rect / Point / Size</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>Rect::from_min_size correct; Rect::size accurate; Rect::contains works for inside/boundary/outside points.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>None — pure data.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Zero-size rect (min == max)</li>
+          <li>Point at rect boundary → contains is true</li>
+          <li>Point outside rect → contains is false</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>FiberArena</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>Insert returns valid FiberId; get with valid id returns Fiber; get with stale id (removed slot) returns None; remove returns Fiber and invalidates id.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>None — SlotMap behavior is deterministic and fast.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Insert → get → remove → get (stale) returns None</li>
+          <li>Bulk insert and iteration</li>
+          <li>Removing a parent does not implicitly remove children (caller responsibility)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Reconciliation</code> (fiber.rs)</h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>Same type+key → Fiber reused, hooks preserved. Key change → old unmounted, new created. Type change → same. Position match for no-key items. Nested children reconcile correctly.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>Test widgets with predictable View output. Signal subscriptions can be verified by checking subscriber count after unmount.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Static tree (no changes) → all fibers reused, no new hooks</li>
+          <li>Key change at position 1 of 3 → only position 1 Fiber replaced</li>
+          <li>Widget type change → old unmounted, new created</li>
+          <li>Child list grows (3 → 5) → old 3 reused, 2 new created</li>
+          <li>Child list shrinks (5 → 2) → first 2 reused, last 3 unmounted</li>
+          <li>Unmount clears Signal subscriptions</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Runtime</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>set_root initializes tree; update processes dirty queue; FrameRequest.needs_redraw is true after first build, false on subsequent empty update; multiple set_root calls don't leak.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>Use SizedBox as concrete Component. No GPU/external deps.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>set_root → update (needs_redraw = true) → update (needs_redraw = false)</li>
+          <li>set_root twice → second call unmounts first tree</li>
+          <li>Signal write → update → fiber rebuilt</li>
+          <li>Nested SizedBoxes produce correct layout rects</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>BuildCx + use_state</code></h3>
+      <div class="test-row"><span class="test-label">Verify</span><span>First call to use_state creates Signal; second call on same Fiber returns existing Signal; hook order is stable across rebuilds.</span></div>
+      <div class="test-row"><span class="test-label">Mock</span><span>Fiber with pre-allocated hooks slot; BuildCx with known FiberId.</span></div>
+      <div class="test-row"><span class="test-label">Variations</span>
+        <ul>
+          <li>Single use_state → returned Signal persists across rebuilds</li>
+          <li>Multiple use_state calls → order-preserving, each returns distinct Signal</li>
+          <li>Conditional use_state (called in one build, skipped in next) → hook index mismatch; Phase 0 can panic (consistent with React rules of hooks)</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Section 6: Affected Files ── -->
+<section>
+  <h2><span class="num">6</span> Affected Files</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Action</th><th>Referenced By</th></tr></thead>
+    <tbody>
+      <tr><td><code>crates/harbor-widget/Cargo.toml</code></td><td><span class="badge create">Create</span></td><td>Step 1</td></tr>
+      <tr><td><code>crates/harbor-widget/src/lib.rs</code></td><td><span class="badge create">Create</span></td><td>Step 1, 10</td></tr>
+      <tr><td><code>crates/harbor-widget/src/layout/geometry.rs</code></td><td><span class="badge create">Create</span></td><td>Step 2, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/layout/constraints.rs</code></td><td><span class="badge create">Create</span></td><td>Step 3, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/signal.rs</code></td><td><span class="badge create">Create</span></td><td>Step 4, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/view.rs</code></td><td><span class="badge create">Create</span></td><td>Step 5, 9, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/fiber.rs</code></td><td><span class="badge create">Create</span></td><td>Step 6, 7, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/runtime.rs</code></td><td><span class="badge create">Create</span></td><td>Step 8, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/tests/integration.rs</code></td><td><span class="badge create">Create</span></td><td>Step 10</td></tr>
+      <tr><td><code>Cargo.toml</code> (workspace root)</td><td><span class="badge modify">Modify</span></td><td>Step 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
