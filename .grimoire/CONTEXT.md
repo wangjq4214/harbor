@@ -86,3 +86,49 @@ Project domain concepts and terminology.
 - **Relationships:**
   - stored in Fiber
   - accessed by BuildCx
+
+### Primitive
+- **Definition:** A standardized draw input produced by RenderNode, describing a single GPU draw call: Quad (colored rect with optional corner radius), Text, Border, or External delegate.
+- **Relationships:**
+  - produced by RenderNode
+  - consumed by Scene Graph
+
+### SceneItem
+- **Definition:** A retained GPU-visible draw item in the scene graph with a Primitive, local transform, clip region, and paint order index.
+- **Relationships:**
+  - contains Primitive
+  - belongs to Scene Graph
+
+### SceneDelta
+- **Definition:** An incremental update describing added, removed, or modified SceneItems since the last frame; consumed by the widget renderer to update GPU buffers.
+- **Relationships:**
+  - references SceneItem
+  - consumed by Widget Renderer
+
+### Scene Graph
+- **Definition:** A retained flat ordered list of SceneItems sorted by paint order, enabling incremental GPU updates without rebuilding vertex buffers every frame.
+- **Synonyms:** Retained Scene
+- **Relationships:**
+  - contains SceneItem
+  - consumes Primitive
+  - belongs to Harbor Widget Runtime
+
+### Widget Renderer
+- **Definition:** The wgpu-based instanced quad renderer inside harbor-widget that owns its own pipelines, vertex/index buffers, and processes SceneDelta to encode draw calls into a shared RenderPass.
+- **Relationships:**
+  - consumes SceneDelta
+  - uses wgpu
+  - belongs to Harbor Widget Runtime
+
+### Layout Container
+- **Definition:** A widget that positions child widgets according to a layout algorithm: Padding (inset), Row (horizontal flex), Column (vertical flex), Stack (overlay), Align (position within parent).
+- **Synonyms:** Container Widget
+- **Relationships:**
+  - produces View
+  - implemented by AnyView
+
+### Viewport
+- **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
+- **Relationships:**
+  - consumed by Widget Renderer
+  - provided by Host
