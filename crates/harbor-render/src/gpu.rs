@@ -4,7 +4,95 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::metrics::{RenderLayer, RenderMetrics, RenderMetricsSnapshot, UploadPlan, UploadPolicy};
+use harbor_types::DirtyRange;
+
+/// Upload operation selected for a dirty grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UploadMode {
+    None,
+    Incremental,
+    Full,
+}
+
+/// Pure upload decision, separated from wgpu so it can be tested headlessly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UploadPlan {
+    pub mode: UploadMode,
+    pub dirty_range_count: usize,
+    pub dirty_cells: usize,
+    pub dirty_bytes: usize,
+    pub full_bytes: usize,
+}
+
+/// Chooses full writes when fragmented or broad damage makes them cheaper.
+#[derive(Clone, Copy, Debug)]
+pub struct UploadPolicy {
+    full_upload_ratio: f64,
+    max_incremental_ranges: usize,
+}
+
+impl Default for UploadPolicy {
+    fn default() -> Self {
+        Self {
+            full_upload_ratio: 0.5,
+            max_incremental_ranges: 64,
+        }
+    }
+}
+
+impl UploadPolicy {
+    pub fn decide(
+        self,
+        rows: usize,
+        cols: usize,
+        bytes_per_cell: usize,
+        dirty_ranges: &[DirtyRange],
+        force_full: bool,
+    ) -> UploadPlan {
+        let dirty_cells = dirty_ranges.iter().fold(0usize, |total, range| {
+            total.saturating_add(range.end_col.saturating_sub(range.start_col))
+        });
+        let dirty_bytes = dirty_cells.saturating_mul(bytes_per_cell);
+        let full_bytes = rows.saturating_mul(cols).saturating_mul(bytes_per_cell);
+        if force_full {
+            return UploadPlan {
+                mode: UploadMode::Full,
+                dirty_range_count: dirty_ranges.len(),
+                dirty_cells,
+                dirty_bytes,
+                full_bytes,
+            };
+        }
+        if dirty_ranges.is_empty() {
+            return UploadPlan {
+                mode: UploadMode::None,
+                dirty_range_count: 0,
+                dirty_cells,
+                dirty_bytes,
+                full_bytes,
+            };
+        }
+        let ratio = if full_bytes == 0 {
+            1.0
+        } else {
+            dirty_bytes as f64 / full_bytes as f64
+        };
+        let mode = if ratio >= self.full_upload_ratio
+            || dirty_ranges.len() > self.max_incremental_ranges
+        {
+            UploadMode::Full
+        } else {
+            UploadMode::Incremental
+        };
+        UploadPlan {
+            mode,
+            dirty_range_count: dirty_ranges.len(),
+            dirty_cells,
+            dirty_bytes,
+            full_bytes,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfaceStatus {
@@ -71,6 +159,44 @@ mod surface_tests {
             SurfaceDisposition::Skip
         );
     }
+
+    fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
+        DirtyRange {
+            row,
+            start_col,
+            end_col,
+        }
+    }
+
+    #[test]
+    fn upload_policy_selects_none_incremental_and_full_uploads() {
+        let policy = UploadPolicy::default();
+        assert_eq!(policy.decide(2, 2, 4, &[], false).mode, UploadMode::None);
+        assert_eq!(
+            policy.decide(10, 10, 4, &[range(2, 1, 2)], false).mode,
+            UploadMode::Incremental
+        );
+        assert_eq!(
+            policy
+                .decide(10, 10, 4, &[range(0, 0, 10), range(1, 0, 10), range(2, 0, 10), range(3, 0, 10), range(4, 0, 10)], false)
+                .mode,
+            UploadMode::Full
+        );
+    }
+
+    #[test]
+    fn upload_policy_uses_full_upload_for_fragmented_or_forced_damage() {
+        let policy = UploadPolicy::default();
+        let fragmented = (0..65).map(|row| range(row, 0, 1)).collect::<Vec<_>>();
+        assert_eq!(
+            policy.decide(100, 100, 4, &fragmented, false).mode,
+            UploadMode::Full
+        );
+        assert_eq!(
+            policy.decide(2, 2, 8, &[range(1, 1, 2)], true).mode,
+            UploadMode::Full
+        );
+    }
 }
 
 // ── GpuContext ────────────────────────────────────────────────────────────
@@ -89,8 +215,6 @@ pub struct GpuContext {
     device: wgpu::Device,
     /// Command submission queue.
     queue: wgpu::Queue,
-    /// Runtime render and upload metrics shared with the terminal worker.
-    metrics: Arc<RenderMetrics>,
     /// Fixed adaptive policy used by cell-grid upload paths.
     upload_policy: UploadPolicy,
     /// Surface configuration (format, size, present mode).
@@ -103,13 +227,6 @@ impl GpuContext {
     /// Creates the GPU surface, device, queue, surface configuration, and the
     /// shared colored-quad pipeline from the window.
     pub async fn new(window: Arc<Window>) -> Result<Self> {
-        Self::new_with_metrics(window, Arc::new(RenderMetrics::default())).await
-    }
-
-    pub async fn new_with_metrics(
-        window: Arc<Window>,
-        metrics: Arc<RenderMetrics>,
-    ) -> Result<Self> {
         let size = window.inner_size();
         tracing::info!(
             width = size.width,
@@ -203,11 +320,6 @@ impl GpuContext {
             "gpu context configured"
         );
 
-        let adapter_info = adapter.get_info();
-        metrics.set_backend_hardware(
-            format!("{:?}", adapter_info.backend),
-            format!("{:?}:{}", adapter_info.device_type, adapter_info.name),
-        );
 
         let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
             &device,
@@ -221,7 +333,6 @@ impl GpuContext {
             surface,
             device,
             queue,
-            metrics,
             upload_policy: UploadPolicy::default(),
             config,
             colored_quad_pipeline,
@@ -260,43 +371,25 @@ impl GpuContext {
         (self.config.width, self.config.height)
     }
 
-    pub fn metrics(&self) -> &RenderMetrics {
-        &self.metrics
-    }
-
-    pub fn metrics_snapshot(&self) -> RenderMetricsSnapshot {
-        self.metrics.snapshot()
-    }
-
     pub fn upload_plan(
         &self,
-        layer: RenderLayer,
         rows: usize,
         cols: usize,
         bytes_per_cell: usize,
-        dirty_ranges: &[harbor_types::DirtyRange],
+        dirty_ranges: &[DirtyRange],
         force_full: bool,
     ) -> UploadPlan {
-        let plan = self
-            .upload_policy
-            .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full);
-        self.metrics.record_upload_plan(layer, plan);
-        plan
+        self.upload_policy
+            .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
     }
 
     pub fn write_buffer(
         &self,
-        layer: RenderLayer,
         buffer: &wgpu::Buffer,
         offset: wgpu::BufferAddress,
         data: &[u8],
     ) {
         self.queue.write_buffer(buffer, offset, data);
-        self.metrics.record_upload(layer, data.len());
-    }
-
-    pub fn record_upload(&self, layer: RenderLayer, bytes: usize) {
-        self.metrics.record_upload(layer, bytes);
     }
     /// Logical GPU device reference.
     pub fn device(&self) -> &wgpu::Device {

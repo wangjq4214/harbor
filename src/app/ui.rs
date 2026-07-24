@@ -1,5 +1,4 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
-use std::time::Instant;
 
 use harbor_render::{
     AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
@@ -133,7 +132,6 @@ impl UiRoot {
         if dirty_ranges.is_empty() && !self.is_dirty() {
             return;
         }
-        let started = Instant::now();
         let snap = state.render_snapshot();
         self.background.prepare_with_dirty(gpu, &snap, dirty_ranges);
         self.text.prepare_with_dirty(gpu, &snap, dirty_ranges);
@@ -141,7 +139,6 @@ impl UiRoot {
         self.selection.prepare(gpu, Some(&snap));
         self.cursor.prepare(gpu, Some(&snap));
         self.scrollbar.prepare(gpu, Some(&snap));
-        gpu.metrics().record_prepare(started.elapsed());
     }
 
     /// Issues draw calls for all five components in z-order (back to front).

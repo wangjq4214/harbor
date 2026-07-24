@@ -19,8 +19,8 @@ use crate::{
     terminal_worker::{TerminalWorkerClient, WorkerUiFacade, empty_snapshot},
 };
 use harbor_render::{
-    EventResult, GpuContext, RenderMetrics, SurfaceDisposition, SurfaceStatus, TerminalFacade,
-    TextMetrics, load_system_fonts, surface_disposition,
+    EventResult, GpuContext, SurfaceDisposition, SurfaceStatus, TerminalFacade, TextMetrics,
+    load_system_fonts, surface_disposition,
 };
 use harbor_types::{
     RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
@@ -89,10 +89,6 @@ pub(crate) struct App {
     pending_resize: Option<TerminalSize>,
     /// Snapshot-producing commands awaiting their matching worker acknowledgement.
     pending_snapshot_commands: HashMap<u64, Instant>,
-    /// Shared U5 collector for worker, prepare, upload, encode, and present timings.
-    metrics: Arc<RenderMetrics>,
-    /// Timestamp of the previous successful present.
-    last_present: Option<Instant>,
     /// Currently active keyboard modifiers (tracked via `ModifiersChanged`).
     modifiers: ModifiersState,
     /// Active paste confirmation dialog (None when no confirmation is pending).
@@ -432,8 +428,6 @@ impl App {
             pending_resize: None,
             surface_recovery_attempted: false,
             pending_snapshot_commands: HashMap::new(),
-            metrics: Arc::new(RenderMetrics::default()),
-            last_present: None,
             modifiers: ModifiersState::default(),
             paste_dialog: None,
         }
@@ -469,11 +463,8 @@ impl App {
             })
             .expect("failed to spawn font-loader thread");
 
-        let gpu = pollster::block_on(GpuContext::new_with_metrics(
-            window.clone(),
-            Arc::clone(&self.metrics),
-        ))
-        .map_err(AppError::Renderer)?;
+        let gpu = pollster::block_on(GpuContext::new(window.clone()))
+            .map_err(AppError::Renderer)?;
         gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
         let fonts = font_handle
@@ -485,9 +476,8 @@ impl App {
         let bootstrap = empty_snapshot(1, 1);
         let ui = UiRoot::new(&gpu, &bootstrap, fonts, metrics).map_err(AppError::Renderer)?;
         let size = ui.terminal_size(&gpu);
-        let worker =
-            TerminalWorkerClient::start(size, self.event_proxy.clone(), Arc::clone(&self.metrics))
-                .map_err(AppError::Worker)?;
+        let worker = TerminalWorkerClient::start(size, self.event_proxy.clone())
+            .map_err(AppError::Worker)?;
         let initial = worker.take_update().ok_or_else(|| {
             AppError::Worker(anyhow::anyhow!("worker did not publish initial snapshot"))
         })?;
@@ -550,18 +540,12 @@ impl App {
             let Some(update) = update else {
                 break;
             };
-            let previous_revision = self.updates.last_revision();
-            let revision_lag = previous_revision
-                .map(|previous| update.revision.saturating_sub(previous.saturating_add(1)))
-                .unwrap_or(0);
-            self.metrics.record_mailbox(false, revision_lag);
             let Some(update) = self.updates.accept(update) else {
                 continue;
             };
             accepted_updates = accepted_updates.saturating_add(1);
             latest_update = Some(update);
         }
-        self.metrics.record_coalesced_updates(accepted_updates);
         if let Some(update) = latest_update {
             let damage = Self::damage_after_coalescing(update.damage, accepted_updates);
             if let Some(existing) = self.pending_damage.as_mut() {
@@ -581,9 +565,7 @@ impl App {
             let Some(request_id) = request_id else {
                 break;
             };
-            if let Some(sent_at) = self.pending_snapshot_commands.remove(&request_id) {
-                self.metrics.record_command_ack(sent_at.elapsed());
-            }
+            self.pending_snapshot_commands.remove(&request_id);
         }
         loop {
             let result = self
@@ -621,7 +603,6 @@ impl App {
     }
 
     fn render_frame(&mut self) {
-        let frame_started = Instant::now();
         let (Some(gpu), Some(ui), Some(snapshot)) = (
             self.gpu.as_mut(),
             self.ui.as_mut(),
@@ -674,7 +655,6 @@ impl App {
         let render_dirty = std::mem::take(&mut self.render_dirty);
         if let Some(damage) = self.pending_damage.take() {
             ui.prepare_update_damage(gpu, snapshot, &damage);
-            crate::mem_tracker::record_ui_update_prepared();
         } else if render_dirty {
             ui.prepare(gpu, snapshot);
         }
@@ -682,7 +662,6 @@ impl App {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let encode_started = Instant::now();
         let mut encoder = gpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -709,31 +688,7 @@ impl App {
         }
 
         let command_buffer = encoder.finish();
-        let encode_elapsed = encode_started.elapsed();
         gpu.queue().submit(Some(command_buffer));
-        let present_started = Instant::now();
-        gpu.present(output);
-        crate::mem_tracker::record_frame_rendered();
-        let present_elapsed = present_started.elapsed();
-        let presented_at = Instant::now();
-        let present_interval = self
-            .last_present
-            .replace(presented_at)
-            .map(|previous| presented_at.duration_since(previous));
-        gpu.metrics().record_present(present_elapsed);
-        let frame_count =
-            gpu.metrics()
-                .record_frame(frame_started.elapsed(), encode_elapsed, present_interval);
-        if frame_count != 0 && frame_count.is_multiple_of(120) {
-            if std::env::var_os("HARBOR_TRACE_MEM").is_some() {
-                let snap = crate::mem_tracker::MemorySnapshot::capture();
-                tracing::info!(mem = %snap.report(), "memory trace checkpoint");
-            }
-            tracing::info!(
-                profile = %gpu.metrics().profile_report(),
-                "render profile checkpoint"
-            );
-        }
         tracing::trace!(?status, "surface frame presented");
         if reconfigure_after_present && !self.surface_recovery_attempted {
             self.surface_recovery_attempted = true;

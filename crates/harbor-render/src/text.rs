@@ -6,10 +6,9 @@ use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Component, RenderLayer, UploadMode,
+    Component, UploadMode,
     font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
 };
 use harbor_config::{FONT_SIZE, TEXT_PADDING};
 use harbor_terminal::{CellAttrs, Color, DirtyRange, TerminalSize};
@@ -43,6 +42,53 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 "#;
+
+/// Fixed measurements used to map window pixels to terminal cells.
+#[derive(Clone, Copy)]
+pub struct TextMetrics {
+    pub cell_width: f32,
+    pub line_height: f32,
+    pub ascent: f32,
+    /// Distance from cell top to underline top edge (px).
+    pub underline_position: f32,
+    pub underline_thickness: f32,
+    /// Distance from cell top to strikethrough center (px).
+    pub strikethrough_position: f32,
+    pub strikethrough_thickness: f32,
+}
+
+impl TextMetrics {
+    pub fn new(fonts: &FontBook) -> Self {
+        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
+        let (underline_position, strikethrough_position) = fonts
+            .primary_horizontal_line_metrics(harbor_config::FONT_SIZE)
+            .map(|lm| {
+                let descent = lm.descent.abs();
+                (line_height - descent + 1.0, (line_height - descent) * 0.45)
+            })
+            .unwrap_or((line_height * 0.8, line_height * 0.45));
+
+        Self {
+            cell_width,
+            line_height,
+            ascent,
+            underline_position,
+            underline_thickness: 1.5,
+            strikethrough_position,
+            strikethrough_thickness: 1.5,
+        }
+    }
+
+    pub fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
+        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(self.cell_width);
+        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(self.line_height);
+
+        TerminalSize {
+            rows: (text_height / self.line_height).floor().max(1.0) as usize,
+            cols: (text_width / self.cell_width).floor().max(1.0) as usize,
+        }
+    }
+}
 
 // ── CPU-side glyph atlas ──────────────────────────────────────────────────
 
@@ -793,12 +839,9 @@ impl Text {
         };
         // Build initial vertex data and upload via write_buffer.
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(
-            RenderLayer::Text,
-            &layer.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),
-        );
+        gpu.write_buffer(&layer.vertex_buffer,
+        0,
+        bytemuck::cast_slice(&verts),);
         layer.dirty = false;
 
         Ok(layer)
@@ -838,11 +881,8 @@ impl Text {
         chars.dedup();
         let new_chars = self.atlas.ensure_chars(&chars, &self.fonts);
         if !new_chars.is_empty() {
-            let uploaded = self
-                .gpu_atlas
+            self.gpu_atlas
                 .update_glyphs(gpu.queue(), &self.atlas, &new_chars);
-            gpu.record_upload(RenderLayer::Text, uploaded);
-            gpu.metrics().record_glyph_upload(uploaded);
         }
     }
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
@@ -999,9 +1039,7 @@ impl Text {
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
             self.atlas.full_update(&self.fonts, snap);
-            let atlas_upload = self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
-            gpu.record_upload(RenderLayer::Text, atlas_upload);
-            gpu.metrics().record_glyph_upload(atlas_upload);
+            self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
 
             let new_cap = snap
                 .rows
@@ -1019,22 +1057,16 @@ impl Text {
                 drop(old_buffer);
                 self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
-            let plan = gpu.upload_plan(
-                RenderLayer::Text,
-                snap.rows,
-                snap.cols,
-                bytes_per_cell,
-                dirty_ranges,
-                true,
-            );
+            let plan = gpu.upload_plan(snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            true,);
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
             debug_assert_eq!(plan.mode, UploadMode::Full);
-            gpu.write_buffer(
-                RenderLayer::Text,
-                &self.vertex_buffer,
-                0,
-                bytemuck::cast_slice(&verts),
-            );
+            gpu.write_buffer(&self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&verts),);
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
@@ -1044,31 +1076,24 @@ impl Text {
         let (new_glyphs, evicted) = self
             .atlas
             .update_with_dirty(&self.fonts, snap, dirty_ranges);
-        gpu.metrics().record_glyphs(new_glyphs.len(), evicted);
         if !new_glyphs.is_empty() {
             tracing::debug!(
                 new_glyphs = new_glyphs.len(),
                 total_glyphs = self.atlas.glyphs.len(),
                 "uploading new glyph tiles"
             );
-            let uploaded = self
-                .gpu_atlas
+            self.gpu_atlas
                 .update_glyphs(gpu.queue(), &self.atlas, &new_glyphs);
-            gpu.record_upload(RenderLayer::Text, uploaded);
-            gpu.metrics().record_glyph_upload(uploaded);
         }
         if evicted {
             self.dirty = true;
         }
 
-        let plan = gpu.upload_plan(
-            RenderLayer::Text,
-            snap.rows,
-            snap.cols,
-            bytes_per_cell,
-            dirty_ranges,
-            self.dirty,
-        );
+        let plan = gpu.upload_plan(snap.rows,
+        snap.cols,
+        bytes_per_cell,
+        dirty_ranges,
+        self.dirty,);
         if plan.mode == UploadMode::None {
             return;
         }
@@ -1076,12 +1101,9 @@ impl Text {
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding text draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(
-                RenderLayer::Text,
-                &self.vertex_buffer,
-                0,
-                bytemuck::cast_slice(&verts),
-            );
+            gpu.write_buffer(&self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&verts),);
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
@@ -1090,12 +1112,9 @@ impl Text {
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
-                gpu.write_buffer(
-                    RenderLayer::Text,
-                    &self.vertex_buffer,
-                    offset as u64,
-                    bytemuck::cast_slice(&range_verts),
-                );
+                gpu.write_buffer(&self.vertex_buffer,
+                offset as u64,
+                bytemuck::cast_slice(&range_verts),);
             }
         }
         self.dirty = false;

@@ -2,10 +2,10 @@ use harbor_types::RenderSnapshot;
 use std::time::Instant;
 
 use crate::{
-    Component, CursorInput, EventResult, RenderLayer,
+    Component, CursorInput, EventResult,
     caps::{GpuAccess, RedrawAccess, TerminalAccess},
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
+    text::TextMetrics,
 };
 use harbor_config::{BLINK_INTERVAL_MS, TEXT_PADDING};
 use harbor_terminal::CursorShape;
@@ -237,12 +237,9 @@ impl Component for Cursor {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.write_buffer(
-                RenderLayer::Cursor,
-                &self.vertex_buffer,
-                0,
-                bytemuck::cast_slice(&vertices),
-            );
+            gpu.write_buffer(&self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&vertices),);
             self.vertex_count = 6;
             self.last_cursor = Some(LastCursorState {
                 visible: self.visible,

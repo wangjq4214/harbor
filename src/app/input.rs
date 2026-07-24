@@ -1,6 +1,6 @@
 //! Keyboard → PTY byte mapping.
 
-use crate::terminal::InputModes;
+use harbor_terminal::InputModes;
 use std::borrow::Cow;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 

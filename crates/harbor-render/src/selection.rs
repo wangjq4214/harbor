@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::{
-    Component, EventResult, RenderLayer, SelectionInput,
+    Component, EventResult, SelectionInput,
     caps::{ModifiersAccess, RedrawAccess, ScrollAccess, TerminalAccess},
     gpu::{self, ColoredVertex, GpuContext},
 };
@@ -472,12 +472,9 @@ impl Component for Selection {
 
             let (surf_w, surf_h) = gpu.surface_size();
             let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(
-                RenderLayer::Selection,
-                &self.vertex_buffer,
-                0,
-                bytemuck::cast_slice(&verts),
-            );
+            gpu.write_buffer(&self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&verts),);
             self.vertex_count = verts.len() as u32;
         } else {
             self.vertex_count = 0;

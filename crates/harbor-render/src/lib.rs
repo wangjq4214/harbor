@@ -4,7 +4,6 @@ mod cursor;
 mod decoration;
 pub mod font;
 pub mod gpu;
-pub mod metrics;
 mod scrollbar;
 pub mod selection;
 mod text;
@@ -17,14 +16,13 @@ pub use caps::{
 pub use cursor::Cursor;
 pub use decoration::Decoration;
 pub use font::{FontBook, load_system_fonts};
-pub use gpu::{GpuContext, SurfaceDisposition, SurfaceStatus, surface_disposition};
-pub use metrics::{
-    LayerMetrics, RenderLayer, RenderMetrics, RenderMetricsSnapshot, TextMetrics, UploadMode,
-    UploadPlan, UploadPolicy,
+pub use gpu::{
+    GpuContext, SurfaceDisposition, SurfaceStatus, UploadMode, UploadPlan, UploadPolicy,
+    surface_disposition,
 };
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
-pub use text::{AtlasGlyph, Text};
+pub use text::{AtlasGlyph, Text, TextMetrics};
 
 use harbor_types::RenderSnapshot;
 

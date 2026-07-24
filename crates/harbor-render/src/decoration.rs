@@ -2,9 +2,9 @@ use harbor_types::RenderSnapshot;
 use std::sync::Arc;
 
 use crate::{
-    Component, RenderLayer,
+    Component,
     gpu::{self, ColoredVertex, GpuContext},
-    metrics::TextMetrics,
+    text::TextMetrics,
 };
 use harbor_config::TEXT_PADDING;
 use harbor_terminal::{CellAttrs, DirtyRange};
@@ -149,18 +149,12 @@ impl Decoration {
             surf_w as f32,
             surf_h as f32,
         );
-        gpu.write_buffer(
-            RenderLayer::Decoration,
-            &layer.underline_buffer,
-            0,
-            bytemuck::cast_slice(&u),
-        );
-        gpu.write_buffer(
-            RenderLayer::Decoration,
-            &layer.strikethrough_buffer,
-            0,
-            bytemuck::cast_slice(&s),
-        );
+        gpu.write_buffer(&layer.underline_buffer,
+        0,
+        bytemuck::cast_slice(&u),);
+        gpu.write_buffer(&layer.strikethrough_buffer,
+        0,
+        bytemuck::cast_slice(&s),);
         layer.dirty = false;
 
         layer
@@ -177,14 +171,11 @@ impl Decoration {
         let (surf_w, surf_h) = gpu.surface_size();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 12 * std::mem::size_of::<ColoredVertex>();
-        let plan = gpu.upload_plan(
-            RenderLayer::Decoration,
-            snap.rows,
-            snap.cols,
-            bytes_per_cell,
-            dirty_ranges,
-            resized || self.dirty,
-        );
+        let plan = gpu.upload_plan(snap.rows,
+        snap.cols,
+        bytes_per_cell,
+        dirty_ranges,
+        resized || self.dirty,);
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
         if resized {
@@ -218,18 +209,12 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.write_buffer(
-                RenderLayer::Decoration,
-                &self.underline_buffer,
-                0,
-                bytemuck::cast_slice(&u),
-            );
-            gpu.write_buffer(
-                RenderLayer::Decoration,
-                &self.strikethrough_buffer,
-                0,
-                bytemuck::cast_slice(&s),
-            );
+            gpu.write_buffer(&self.underline_buffer,
+            0,
+            bytemuck::cast_slice(&u),);
+            gpu.write_buffer(&self.strikethrough_buffer,
+            0,
+            bytemuck::cast_slice(&s),);
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
@@ -260,18 +245,12 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.write_buffer(
-                RenderLayer::Decoration,
-                &self.underline_buffer,
-                0,
-                bytemuck::cast_slice(&u),
-            );
-            gpu.write_buffer(
-                RenderLayer::Decoration,
-                &self.strikethrough_buffer,
-                0,
-                bytemuck::cast_slice(&s),
-            );
+            gpu.write_buffer(&self.underline_buffer,
+            0,
+            bytemuck::cast_slice(&u),);
+            gpu.write_buffer(&self.strikethrough_buffer,
+            0,
+            bytemuck::cast_slice(&s),);
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
@@ -323,18 +302,12 @@ impl Decoration {
                 let offset = ((range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<ColoredVertex>()) as u64;
-                gpu.write_buffer(
-                    RenderLayer::Decoration,
-                    &self.underline_buffer,
-                    offset,
-                    bytemuck::cast_slice(&u_row),
-                );
-                gpu.write_buffer(
-                    RenderLayer::Decoration,
-                    &self.strikethrough_buffer,
-                    offset,
-                    bytemuck::cast_slice(&s_row),
-                );
+                gpu.write_buffer(&self.underline_buffer,
+                offset,
+                bytemuck::cast_slice(&u_row),);
+                gpu.write_buffer(&self.strikethrough_buffer,
+                offset,
+                bytemuck::cast_slice(&s_row),);
             }
         }
 
