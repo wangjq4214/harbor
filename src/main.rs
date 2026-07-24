@@ -5,6 +5,7 @@
 
 mod app;
 mod event;
+mod mem_tracker;
 mod terminal;
 mod terminal_worker;
 

@@ -70,7 +70,10 @@ pub(crate) struct App {
     ui: Option<UiRoot>,
     /// Last complete terminal state accepted by the renderer.
     latest_snapshot: Option<TerminalSnapshot>,
-    /// Main-thread revision guard for the worker mailbox.
+    /// Pending damage for the next frame render.
+    pending_damage: Option<UpdateDamage>,
+    /// Whether UI components need preparation before the next frame render.
+    render_dirty: bool,
     updates: RevisionedUpdateReceiver,
     /// Background owner of PTY, parser, and mutable terminal model.
     worker: Option<TerminalWorkerClient>,
@@ -286,7 +289,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(window),
                 ));
             }
-            ui.prepare(gpu, snapshot);
+            self.render_dirty = true;
             Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
@@ -307,7 +310,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         if handled == EventResult::Handled {
-            ui.prepare(gpu, snapshot);
+            self.render_dirty = true;
             Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
             return;
         }
@@ -336,7 +339,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
         {
-            ui.prepare(gpu, snapshot);
+            self.render_dirty = true;
             Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Input);
         }
 
@@ -358,6 +361,7 @@ impl ApplicationHandler<AppEvent> for App {
                 gpu.resize(size.width, size.height);
                 ui.resize(gpu, (size.width, size.height));
                 self.pending_resize = Some(ui.terminal_size(gpu));
+                self.render_dirty = true;
                 Self::wake_redraw(&mut self.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
@@ -418,6 +422,8 @@ impl App {
             gpu: None,
             ui: None,
             latest_snapshot: None,
+            pending_damage: None,
+            render_dirty: false,
             updates: RevisionedUpdateReceiver::default(),
             worker: None,
             worker_status: WorkerStatus::Ready,
@@ -492,6 +498,7 @@ impl App {
         self.updates
             .accept(initial.clone())
             .expect("initial worker revision must be accepted");
+        self.pending_damage = Some(UpdateDamage::FullUpload);
         self.latest_snapshot = Some(initial.snapshot);
         self.worker_status = worker.status();
         self.worker = Some(worker);
@@ -555,12 +562,15 @@ impl App {
             latest_update = Some(update);
         }
         self.metrics.record_coalesced_updates(accepted_updates);
-        if let Some(mut update) = latest_update {
-            update.damage = Self::damage_after_coalescing(update.damage, accepted_updates);
-            self.latest_snapshot = Some(update.snapshot.clone());
-            if let (Some(gpu), Some(ui)) = (self.gpu.as_mut(), self.ui.as_mut()) {
-                ui.prepare_update(gpu, &update);
+        if let Some(update) = latest_update {
+            let damage = Self::damage_after_coalescing(update.damage, accepted_updates);
+            if let Some(existing) = self.pending_damage.as_mut() {
+                *existing = UpdateDamage::FullUpload;
+            } else {
+                self.pending_damage = Some(damage);
             }
+            self.latest_snapshot = Some(update.snapshot);
+            self.render_dirty = true;
             changed = true;
         }
         loop {
@@ -610,11 +620,13 @@ impl App {
         changed
     }
 
-    /// Acquires the surface texture, draws all components, and presents.
-    /// Callers are responsible for calling `UiRoot::prepare` before this.
     fn render_frame(&mut self) {
         let frame_started = Instant::now();
-        let Some((ui, gpu)) = self.ui.as_mut().zip(self.gpu.as_mut()) else {
+        let (Some(gpu), Some(ui), Some(snapshot)) = (
+            self.gpu.as_mut(),
+            self.ui.as_mut(),
+            self.latest_snapshot.as_ref(),
+        ) else {
             return;
         };
 
@@ -658,6 +670,15 @@ impl App {
             _ => unreachable!("surface disposition must match texture status"),
         };
 
+        // Surface texture acquired successfully — now prepare GPU buffers
+        let render_dirty = std::mem::take(&mut self.render_dirty);
+        if let Some(damage) = self.pending_damage.take() {
+            ui.prepare_update_damage(gpu, snapshot, &damage);
+            crate::mem_tracker::record_ui_update_prepared();
+        } else if render_dirty {
+            ui.prepare(gpu, snapshot);
+        }
+
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -692,6 +713,7 @@ impl App {
         gpu.queue().submit(Some(command_buffer));
         let present_started = Instant::now();
         gpu.present(output);
+        crate::mem_tracker::record_frame_rendered();
         let present_elapsed = present_started.elapsed();
         let presented_at = Instant::now();
         let present_interval = self
@@ -703,6 +725,10 @@ impl App {
             gpu.metrics()
                 .record_frame(frame_started.elapsed(), encode_elapsed, present_interval);
         if frame_count != 0 && frame_count.is_multiple_of(120) {
+            if std::env::var_os("HARBOR_TRACE_MEM").is_some() {
+                let snap = crate::mem_tracker::MemorySnapshot::capture();
+                tracing::info!(mem = %snap.report(), "memory trace checkpoint");
+            }
             tracing::info!(
                 profile = %gpu.metrics().profile_report(),
                 "render profile checkpoint"

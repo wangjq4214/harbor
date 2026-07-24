@@ -335,8 +335,6 @@ impl ScrollbarInput for Scrollbar {
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.cursor_inside = true;
                 self.show();
-                let snap = caps.terminal().render_snapshot();
-                self.prepare(caps.gpu(), Some(&snap));
                 caps.request_redraw();
                 EventResult::Handled
             }
@@ -344,8 +342,6 @@ impl ScrollbarInput for Scrollbar {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible && self.cursor_inside {
                     self.show();
-                    let snap = caps.terminal().render_snapshot();
-                    self.prepare(caps.gpu(), Some(&snap));
                     caps.request_redraw();
                 }
                 EventResult::Handled
@@ -358,8 +354,6 @@ impl ScrollbarInput for Scrollbar {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible {
                     self.show();
-                    let snap = caps.terminal().render_snapshot();
-                    self.prepare(caps.gpu(), Some(&snap));
                     caps.request_redraw();
                 }
                 EventResult::Continue

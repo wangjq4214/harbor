@@ -38,6 +38,10 @@ pub struct Selection {
 }
 
 impl Selection {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub fn new(gpu: &GpuContext, cell_width: f32, line_height: f32) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);

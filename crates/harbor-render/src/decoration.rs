@@ -98,6 +98,10 @@ pub struct Decoration {
 }
 
 impl Decoration {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the decoration render pipeline and pre-allocates vertex buffers
     /// for the full grid (rows × cols × 6 vertices each).
     pub fn new(gpu: &GpuContext, snap: &RenderSnapshot, metrics: TextMetrics) -> Self {

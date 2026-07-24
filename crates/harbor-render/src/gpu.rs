@@ -116,22 +116,47 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
+        let backend_env = std::env::var("HARBOR_WGPU_BACKEND")
+            .or_else(|_| std::env::var("WGPU_BACKEND"))
+            .unwrap_or_default()
+            .to_lowercase();
+
+        let backends = match backend_env.as_str() {
+            "vulkan" => wgpu::Backends::VULKAN,
+            "dx12" | "d3d12" => wgpu::Backends::DX12,
+            "gl" | "opengl" => wgpu::Backends::GL,
+            _ => {
+                #[cfg(target_os = "windows")]
+                {
+                    wgpu::Backends::DX12 | wgpu::Backends::VULKAN
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    wgpu::Backends::all()
+                }
+            }
+        };
+
         let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
-            #[cfg(target_os = "windows")]
-            backends: wgpu::Backends::DX12,
-            #[cfg(not(target_os = "windows"))]
-            backends: wgpu::Backends::all(),
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         }));
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })
             .await
             .context("request adapter")?;
-
+        let info = adapter.get_info();
+        tracing::info!(
+            name = %info.name,
+            backend = ?info.backend,
+            device_type = ?info.device_type,
+            "selected gpu adapter"
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,

@@ -743,6 +743,10 @@ pub struct Text {
 }
 
 impl Text {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the text render pipeline, bind group layout, initial glyph atlas,
     /// and pre-allocated vertex buffer from the given GPU context and snap.
     pub fn new(

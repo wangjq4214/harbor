@@ -25,6 +25,10 @@ pub struct Background {
 }
 
 impl Background {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices).
     pub fn new(gpu: &GpuContext, snap: &RenderSnapshot, cell_width: f32, line_height: f32) -> Self {

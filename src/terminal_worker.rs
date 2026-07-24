@@ -306,6 +306,7 @@ fn worker_main(
 
         match pty_rx.try_recv() {
             Ok(PtyMessage::Bytes(bytes)) => {
+                crate::mem_tracker::record_pty_read(bytes.len());
                 progressed = true;
                 set_status(&mailbox, WorkerStatus::Processing);
                 terminal.process_output(&bytes);
@@ -316,6 +317,7 @@ fn worker_main(
                 for _ in 1..64 {
                     match pty_rx.try_recv() {
                         Ok(PtyMessage::Bytes(bytes)) => {
+                            crate::mem_tracker::record_pty_read(bytes.len());
                             terminal.process_output(&bytes);
                             snapshot_dirty = true;
                         }
@@ -623,6 +625,7 @@ fn publish_snapshot(
 ) {
     let started = Instant::now();
     let snapshot = terminal.snapshot();
+    crate::mem_tracker::record_worker_snapshot();
     metrics.record_snapshot_build(started.elapsed());
     let mut update =
         TerminalUpdate::with_acknowledgement(revision, snapshot, acknowledged_request_id);
@@ -1192,6 +1195,148 @@ mod tests {
             WorkerStatus::Failed {
                 message: "terminal worker panicked".to_owned()
             }
+        );
+    }
+    /// Stress test: feed 50k lines through the worker and verify that
+    /// mailbox/queues stay bounded. Exercises the PTY output hot path.
+    ///
+    /// A single consumer thread drains updates (no race with main thread).
+    /// The main thread only feeds input and waits for completion.
+    #[test]
+    fn burst_output_queues_stay_bounded() {
+        const LINES: usize = 50_000;
+        const LINE: &[u8] = b"harbor-profile-burst 0123456789 abcdefghijklmnopqrstuvwxyz\r\n";
+
+        let (control_tx, control_rx) = mpsc::channel();
+        let metrics = Arc::new(RenderMetrics::new(false));
+        let (signal_tx, signal_rx) = mpsc::sync_channel(1);
+        let (pty_tx, pty_rx) = mpsc::sync_channel(64);
+        let pty_signal_tx = signal_tx.clone();
+        let test_pty_tx = pty_tx.clone();
+        let mailbox = Arc::new(Mutex::new(Mailbox {
+            update_notification_pending: false,
+            update: None,
+            acknowledgements: VecDeque::new(),
+            copy_results: VecDeque::new(),
+            status: WorkerStatus::Ready,
+        }));
+        let (wake_tx, _wake_rx) = mpsc::channel();
+        let notifier: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = wake_tx.send(());
+        });
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<anyhow::Result<()>>(0);
+        let worker_mailbox = Arc::clone(&mailbox);
+        let thread = std::thread::spawn(move || {
+            worker_main(
+                TerminalSize {
+                    rows: 30,
+                    cols: 120,
+                },
+                metrics,
+                false,
+                notifier,
+                control_rx,
+                signal_rx,
+                pty_signal_tx,
+                pty_rx,
+                pty_tx,
+                worker_mailbox,
+                ready_tx,
+            );
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker started")
+            .expect("startup ok");
+        // Consume initial snapshot.
+        {
+            let mut state = lock(&mailbox);
+            state.update.take();
+            state.update_notification_pending = false;
+        }
+
+        // Single consumer thread — the ONLY code that touches mailbox.update.
+        // Runs until the worker status becomes Stopped, then drains any final
+        // update and exits. This mirrors the real UI's consume_worker_updates.
+        let consumer_mailbox = Arc::clone(&mailbox);
+        let consumer_signal = signal_tx.clone();
+        let consumed_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let consumed_count2 = Arc::clone(&consumed_count);
+        let consumer = std::thread::spawn(move || {
+            loop {
+                let (taken, stopped) = {
+                    let mut state = lock(&consumer_mailbox);
+                    let update = state.update.take();
+                    if update.is_some() {
+                        state.update_notification_pending = false;
+                        state.acknowledgements.clear();
+                    }
+                    let stopped = state.status == WorkerStatus::Stopped;
+                    (update.is_some(), stopped)
+                };
+                if taken {
+                    consumed_count2.fetch_add(1, Ordering::Relaxed);
+                    // Signal the worker that the mailbox is free.
+                    let _ = signal_wake(&consumer_signal);
+                }
+                if stopped && !taken {
+                    // Worker stopped and no more updates — done.
+                    break;
+                }
+                if !taken {
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+            }
+        });
+
+        // Feed burst output: build 4 KB chunks like the real PTY pump.
+        let mut buf = Vec::with_capacity(4096);
+        for _ in 0..LINES {
+            if buf.len() + LINE.len() > 4096 {
+                test_pty_tx
+                    .send(PtyMessage::Bytes(std::mem::take(&mut buf)))
+                    .expect("pty channel open");
+                signal_wake(&signal_tx);
+                buf.reserve(4096);
+            }
+            buf.extend_from_slice(LINE);
+        }
+        if !buf.is_empty() {
+            test_pty_tx
+                .send(PtyMessage::Bytes(buf))
+                .expect("pty channel open");
+            signal_wake(&signal_tx);
+        }
+
+        // Signal end of PTY output.
+        test_pty_tx
+            .send(PtyMessage::Status(PtyReaderStatus::Eof))
+            .expect("pty channel open");
+        signal_wake(&signal_tx);
+
+        // Wait for the consumer to observe Stopped and finish draining.
+        consumer.join().expect("consumer thread panicked");
+        drop(control_tx);
+        thread.join().expect("worker thread panicked");
+
+        let total_consumed = consumed_count.load(Ordering::Relaxed);
+
+        // The worker coalesces many PTY chunks into far fewer snapshots.
+        assert!(
+            total_consumed > 0,
+            "consumer must receive at least one snapshot"
+        );
+        assert!(
+            total_consumed < LINES as u64,
+            "snapshots ({total_consumed}) must be fewer than input lines ({LINES})"
+        );
+        // Mailbox must be fully drained after shutdown.
+        let final_state = lock(&mailbox);
+        assert!(final_state.update.is_none(), "mailbox not empty after stop");
+        assert!(
+            final_state.acknowledgements.is_empty(),
+            "acks not drained after stop"
         );
     }
 }

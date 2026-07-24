@@ -84,15 +84,31 @@ impl UiRoot {
 
     /// Uploads dirty GPU resources for all five components.
     pub(crate) fn prepare(&mut self, gpu: &GpuContext, state: &TerminalSnapshot) {
-        self.prepare_snapshot(gpu, state, &state.dirty_ranges);
+        self.prepare_snapshot(gpu, state, &[]);
+    }
+
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.background.is_dirty()
+            || self.text.is_dirty()
+            || self.decoration.is_dirty()
+            || self.selection.is_dirty()
+            || self.cursor.is_dirty()
     }
 
     /// Applies a complete revisioned update. A revision gap's `FullUpload`
     /// cannot be reduced to the update's local dirty ranges.
     pub(crate) fn prepare_update(&mut self, gpu: &GpuContext, update: &TerminalUpdate) {
-        let state = &update.snapshot;
+        self.prepare_update_damage(gpu, &update.snapshot, &update.damage);
+    }
+
+    pub(crate) fn prepare_update_damage(
+        &mut self,
+        gpu: &GpuContext,
+        state: &TerminalSnapshot,
+        damage: &UpdateDamage,
+    ) {
         let full_ranges;
-        let dirty_ranges = match &update.damage {
+        let dirty_ranges = match damage {
             UpdateDamage::Ranges(ranges) => ranges,
             UpdateDamage::FullUpload => {
                 full_ranges = (0..state.rows)
@@ -114,6 +130,9 @@ impl UiRoot {
         state: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) {
+        if dirty_ranges.is_empty() && !self.is_dirty() {
+            return;
+        }
         let started = Instant::now();
         let snap = state.render_snapshot();
         self.background.prepare_with_dirty(gpu, &snap, dirty_ranges);

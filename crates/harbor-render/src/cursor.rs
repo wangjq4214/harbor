@@ -76,6 +76,10 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the cursor: pipeline, vertex buffer, and blink timer at `Instant::now`.
     pub fn new(gpu: &GpuContext, metrics: TextMetrics) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
@@ -175,17 +179,19 @@ impl Component for Cursor {
     /// If dirty, computes cell-aligned vertex quad for the current cursor
     /// shape and uploads it.
     fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
         let Some(snap) = snap else {
             self.vertex_count = 0;
             self.last_cursor = None;
             return;
         };
 
+        let visible = should_render_cursor(snap, self.blink_visible());
+        self.set_visible(visible, snap);
+
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
         if self.visible && snap.cursor_y < snap.rows && snap.cursor_x < snap.cols {
             let (surf_w, surf_h) = gpu.surface_size();
             let cell_x = TEXT_PADDING + snap.cursor_x as f32 * self.cell_width;
@@ -248,6 +254,7 @@ impl Component for Cursor {
             self.vertex_count = 0;
             self.last_cursor = None;
         }
+        self.commit_frame();
     }
 
     /// Sets the pipeline and issues the draw call. No-op when vertex_count is 0.
@@ -267,21 +274,11 @@ impl Component for Cursor {
 }
 
 impl CursorInput for Cursor {
-    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &C) -> EventResult
+    fn handle_event<C>(&mut self, _event: &winit::event::WindowEvent, _caps: &C) -> EventResult
     where
         C: TerminalAccess + GpuAccess,
     {
-        match event {
-            winit::event::WindowEvent::RedrawRequested => {
-                let snap = caps.terminal().render_snapshot();
-                let visible = should_render_cursor(&snap, self.blink_visible());
-                self.set_visible(visible, &snap);
-                self.prepare(caps.gpu(), Some(&snap));
-                self.commit_frame();
-                EventResult::Continue
-            }
-            _ => EventResult::Continue,
-        }
+        EventResult::Continue
     }
 
     fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<std::time::Instant>
@@ -294,6 +291,7 @@ impl CursorInput for Cursor {
         }
         let visible = self.blink_visible();
         if visible != self.last_rendered_visible {
+            self.dirty = true;
             caps.request_redraw();
         }
         let millis = self.blink_start.elapsed().as_millis() as u64;
