@@ -36,7 +36,7 @@ Dependency direction is strictly Layer 3 → 2 → 1 → 0. No cycles.
 
 - **send_paste** reversed dependency resolved: terminal provides `paste_bytes(modes, text) -> Vec<u8>`; app writes result to PTY.
 - **PTY→app coupling**: WakeHandler trait instead of direct `EventLoopProxy<AppEvent>`.
-- **Render→Terminal decoupling**: RenderSnapshot data projection; render never references `Screen`.
+- **Render→Terminal decoupling**: TerminalSnapshot data projection; render never references `Screen`.
 - **Selection ownership**: SelectionModel (word boundaries, click chains, range calculation) lives in `harbor-terminal`; only colored overlay rendering lives in `harbor-render`.
 - **Parser independence**: `harbor-parser` emits `ParseEvent` stream; zero dependencies.
 - **Config purity**: `harbor-config` uses `[f64; 4]` instead of `wgpu::Color` to remain dependency-free.
@@ -44,5 +44,5 @@ Dependency direction is strictly Layer 3 → 2 → 1 → 0. No cycles.
 ## Considered alternatives
 
 - **Fewer crates** (e.g. types+config merged, parser inside terminal): rejected to keep zero-dependency surface minimal and enable independent parser reuse.
-- **No RenderSnapshot — render depends on Screen directly**: rejected; couples render to terminal internals, preventing independent evolution.
+- **No TerminalSnapshot — render depends on Screen directly**: rejected; couples render to terminal internals, preventing independent evolution.
 - **PTY holds EventLoopProxy directly (current state)**: rejected; would force `harbor-pty` to depend on winit and the binary crate's event type.
