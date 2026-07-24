@@ -839,9 +839,7 @@ impl Text {
         };
         // Build initial vertex data and upload via write_buffer.
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(&layer.vertex_buffer,
-        0,
-        bytemuck::cast_slice(&verts),);
+        gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
 
         Ok(layer)
@@ -1057,16 +1055,10 @@ impl Text {
                 drop(old_buffer);
                 self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
-            let plan = gpu.upload_plan(snap.rows,
-            snap.cols,
-            bytes_per_cell,
-            dirty_ranges,
-            true,);
+            let plan = gpu.upload_plan(snap.rows, snap.cols, bytes_per_cell, dirty_ranges, true);
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
             debug_assert_eq!(plan.mode, UploadMode::Full);
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
@@ -1089,11 +1081,13 @@ impl Text {
             self.dirty = true;
         }
 
-        let plan = gpu.upload_plan(snap.rows,
-        snap.cols,
-        bytes_per_cell,
-        dirty_ranges,
-        self.dirty,);
+        let plan = gpu.upload_plan(
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            self.dirty,
+        );
         if plan.mode == UploadMode::None {
             return;
         }
@@ -1101,9 +1095,7 @@ impl Text {
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding text draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
@@ -1112,9 +1104,11 @@ impl Text {
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
-                gpu.write_buffer(&self.vertex_buffer,
-                offset as u64,
-                bytemuck::cast_slice(&range_verts),);
+                gpu.write_buffer(
+                    &self.vertex_buffer,
+                    offset as u64,
+                    bytemuck::cast_slice(&range_verts),
+                );
             }
         }
         self.dirty = false;

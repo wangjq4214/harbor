@@ -31,7 +31,12 @@ impl Background {
 
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices).
-    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, cell_width: f32, line_height: f32) -> Self {
+    pub fn new(
+        gpu: &GpuContext,
+        snap: &TerminalSnapshot,
+        cell_width: f32,
+        line_height: f32,
+    ) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
         let rows = snap.rows;
@@ -55,9 +60,7 @@ impl Background {
         // Build initial vertex data and upload.
         let (surf_w, surf_h) = gpu.surface_size();
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(&layer.vertex_buffer,
-        0,
-        bytemuck::cast_slice(&verts),);
+        gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
 
         layer
@@ -156,11 +159,13 @@ impl Background {
         let (surf_w, surf_h) = gpu.surface_size();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<ColoredVertex>();
-        let plan = gpu.upload_plan(snap.rows,
-        snap.cols,
-        bytes_per_cell,
-        dirty_ranges,
-        resized || self.dirty,);
+        let plan = gpu.upload_plan(
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            resized || self.dirty,
+        );
         if plan.mode == crate::UploadMode::None {
             return;
         }
@@ -180,17 +185,13 @@ impl Background {
                 );
             }
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
             self.cols = snap.cols;
         } else if plan.mode == crate::UploadMode::Full {
             tracing::trace!("rebuilding background draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
             for range in dirty_ranges {
@@ -207,9 +208,11 @@ impl Background {
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<ColoredVertex>();
-                gpu.write_buffer(&self.vertex_buffer,
-                offset as u64,
-                bytemuck::cast_slice(&range_verts),);
+                gpu.write_buffer(
+                    &self.vertex_buffer,
+                    offset as u64,
+                    bytemuck::cast_slice(&range_verts),
+                );
             }
         }
 

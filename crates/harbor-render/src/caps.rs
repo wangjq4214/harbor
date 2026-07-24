@@ -25,15 +25,24 @@ pub struct InteractionResult {
 
 impl InteractionResult {
     pub fn continue_() -> Self {
-        Self { event: EventResult::Continue, requests: Vec::new() }
+        Self {
+            event: EventResult::Continue,
+            requests: Vec::new(),
+        }
     }
 
     pub fn handled() -> Self {
-        Self { event: EventResult::Handled, requests: Vec::new() }
+        Self {
+            event: EventResult::Handled,
+            requests: Vec::new(),
+        }
     }
 
     pub fn with_request(event: EventResult, request: UiRequest) -> Self {
-        Self { event, requests: vec![request] }
+        Self {
+            event,
+            requests: vec![request],
+        }
     }
 }
 

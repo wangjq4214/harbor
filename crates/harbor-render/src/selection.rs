@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::{
+    Component, EventResult,
     caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, ColoredVertex, GpuContext},
-    Component, EventResult,
 };
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
@@ -185,67 +185,156 @@ impl Selection {
     fn outcome_requests(&mut self, outcome: SelectionOutcome, requests: &mut Vec<UiRequest>) {
         match outcome {
             SelectionOutcome::None => {}
-            SelectionOutcome::DragActive => { self.dirty = true; requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(true)]); }
-            SelectionOutcome::DragEnded => { self.dirty = true; requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(false)]); }
+            SelectionOutcome::DragActive => {
+                self.dirty = true;
+                requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(true)]);
+            }
+            SelectionOutcome::DragEnded => {
+                self.dirty = true;
+                requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(false)]);
+            }
         }
     }
 
-    pub fn handle_event(&mut self, event: &winit::event::WindowEvent, snapshot: &TerminalSnapshot, modifiers: winit::keyboard::ModifiersState) -> InteractionResult {
+    pub fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        snapshot: &TerminalSnapshot,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> InteractionResult {
         let mut requests = Vec::new();
         let event_result = match event {
-            winit::event::WindowEvent::KeyboardInput { event: key, .. } if key.state == winit::event::ElementState::Pressed => {
+            winit::event::WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed =>
+            {
                 let ctrl = modifiers.control_key();
                 let shift = modifiers.shift_key();
-                if ctrl && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("c")) {
+                if ctrl
+                    && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
+                {
                     if self.pending_copy.is_none() && !self.model.is_range_empty() {
-                        if let Some(bounds) = self.model.bounds() { requests.push(UiRequest::Copy(bounds)); }
+                        if let Some(bounds) = self.model.bounds() {
+                            requests.push(UiRequest::Copy(bounds));
+                        }
                     }
                     EventResult::Handled
-                } else if (ctrl && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("v"))) || (shift && matches!(&key.logical_key, Key::Named(NamedKey::Insert))) {
-                    if let Some(text) = self.clipboard.as_mut().and_then(|clipboard| clipboard.get_text().ok()) {
+                } else if (ctrl
+                    && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("v")))
+                    || (shift && matches!(&key.logical_key, Key::Named(NamedKey::Insert)))
+                {
+                    if let Some(text) = self
+                        .clipboard
+                        .as_mut()
+                        .and_then(|clipboard| clipboard.get_text().ok())
+                    {
                         match PasteDisposition::decide(snapshot.input_modes, &text) {
                             PasteDisposition::SendDirect => requests.push(UiRequest::Paste(text)),
-                            PasteDisposition::Confirm { raw_text } => return InteractionResult { event: EventResult::ConfirmPaste(raw_text), requests },
+                            PasteDisposition::Confirm { raw_text } => {
+                                return InteractionResult {
+                                    event: EventResult::ConfirmPaste(raw_text),
+                                    requests,
+                                };
+                            }
                         }
                     }
                     EventResult::Handled
                 } else {
-                    if !is_modifier_key(&key.logical_key) && self.model.on_key_press() { self.dirty = true; requests.push(UiRequest::Redraw); }
+                    if !is_modifier_key(&key.logical_key) && self.model.on_key_press() {
+                        self.dirty = true;
+                        requests.push(UiRequest::Redraw);
+                    }
                     EventResult::Continue
                 }
             }
-            _ if snapshot.is_alt => { let outcome = self.model.cancel(); self.outcome_requests(outcome, &mut requests); EventResult::Continue }
+            _ if snapshot.is_alt => {
+                let outcome = self.model.cancel();
+                self.outcome_requests(outcome, &mut requests);
+                EventResult::Continue
+            }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor_pos = Some((position.x, position.y));
-                if !self.model.is_dragging() { EventResult::Continue } else {
-                    let cell = self.pixel_to_cell(position.x, position.y, snapshot.history_start, snapshot.scroll_count, snapshot.view_offset, snapshot.rows, snapshot.cols);
-                    if self.model.drag_to(cell, snapshot) { self.dirty = true; requests.push(UiRequest::Redraw); }
+                if !self.model.is_dragging() {
+                    EventResult::Continue
+                } else {
+                    let cell = self.pixel_to_cell(
+                        position.x,
+                        position.y,
+                        snapshot.history_start,
+                        snapshot.scroll_count,
+                        snapshot.view_offset,
+                        snapshot.rows,
+                        snapshot.cols,
+                    );
+                    if self.model.drag_to(cell, snapshot) {
+                        self.dirty = true;
+                        requests.push(UiRequest::Redraw);
+                    }
                     EventResult::Handled
                 }
             }
-            winit::event::WindowEvent::MouseInput { state, button, .. } if *button == winit::event::MouseButton::Left => {
+            winit::event::WindowEvent::MouseInput { state, button, .. }
+                if *button == winit::event::MouseButton::Left =>
+            {
                 let outcome = match state {
-                    winit::event::ElementState::Pressed => self.last_cursor_pos.map(|(x,y)| { let cell=self.pixel_to_cell(x,y,snapshot.history_start,snapshot.scroll_count,snapshot.view_offset,snapshot.rows,snapshot.cols); self.model.press(cell, Instant::now(), snapshot) }).unwrap_or(SelectionOutcome::None),
+                    winit::event::ElementState::Pressed => self
+                        .last_cursor_pos
+                        .map(|(x, y)| {
+                            let cell = self.pixel_to_cell(
+                                x,
+                                y,
+                                snapshot.history_start,
+                                snapshot.scroll_count,
+                                snapshot.view_offset,
+                                snapshot.rows,
+                                snapshot.cols,
+                            );
+                            self.model.press(cell, Instant::now(), snapshot)
+                        })
+                        .unwrap_or(SelectionOutcome::None),
                     winit::event::ElementState::Released => self.model.release(),
                 };
-                self.outcome_requests(outcome, &mut requests); EventResult::Handled
+                self.outcome_requests(outcome, &mut requests);
+                EventResult::Handled
             }
-            winit::event::WindowEvent::Focused(false) | winit::event::WindowEvent::Resized(_) => { let outcome = self.model.cancel(); self.outcome_requests(outcome, &mut requests); EventResult::Continue }
+            winit::event::WindowEvent::Focused(false) | winit::event::WindowEvent::Resized(_) => {
+                let outcome = self.model.cancel();
+                self.outcome_requests(outcome, &mut requests);
+                EventResult::Continue
+            }
             _ => EventResult::Continue,
         };
-        InteractionResult { event: event_result, requests }
+        InteractionResult {
+            event: event_result,
+            requests,
+        }
     }
 
     pub fn on_about_to_wait(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
         let mut result = WaitResult::default();
-        if self.model.is_dragging() && snapshot.is_alt { let outcome = self.model.cancel(); self.outcome_requests(outcome, &mut result.requests); return result; }
+        if self.model.is_dragging() && snapshot.is_alt {
+            let outcome = self.model.cancel();
+            self.outcome_requests(outcome, &mut result.requests);
+            return result;
+        }
         self.model.auto_scroll_direction();
         let now = Instant::now();
-        if let Some(deadline) = self.model.auto_scroll_deadline() && deadline > now { result.deadline = Some(deadline); return result; }
+        if let Some(deadline) = self.model.auto_scroll_deadline()
+            && deadline > now
+        {
+            result.deadline = Some(deadline);
+            return result;
+        }
         if let Some((direction, cursor)) = self.model.compute_auto_scroll_cursor(now, snapshot) {
-            result.requests.push(UiRequest::Scroll(match direction { AutoScroll::Up => -1, AutoScroll::Down => 1 }));
-            if let Some(range) = self.model.range.as_mut() { range.cursor = cursor; }
-            self.dirty = true; result.requests.push(UiRequest::Redraw); result.deadline = self.model.auto_scroll_deadline();
+            result.requests.push(UiRequest::Scroll(match direction {
+                AutoScroll::Up => -1,
+                AutoScroll::Down => 1,
+            }));
+            if let Some(range) = self.model.range.as_mut() {
+                range.cursor = cursor;
+            }
+            self.dirty = true;
+            result.requests.push(UiRequest::Redraw);
+            result.deadline = self.model.auto_scroll_deadline();
         }
         result
     }
@@ -272,9 +361,7 @@ impl Component for Selection {
 
             let (surf_w, surf_h) = gpu.surface_size();
             let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&verts),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.vertex_count = verts.len() as u32;
         } else {
             self.vertex_count = 0;

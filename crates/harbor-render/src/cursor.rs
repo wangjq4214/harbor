@@ -2,8 +2,8 @@ use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
 use crate::{
-    caps::{InteractionResult, UiRequest, WaitResult},
     Component, EventResult,
+    caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, GpuContext, TexturedVertex},
     text::TextMetrics,
 };
@@ -237,9 +237,7 @@ impl Component for Cursor {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.write_buffer(&self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(&vertices),);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;
             self.last_cursor = Some(LastCursorState {
                 visible: self.visible,
@@ -271,15 +269,24 @@ impl Component for Cursor {
 }
 
 impl Cursor {
-    pub fn handle_event(&mut self, _event: &winit::event::WindowEvent, _snapshot: &TerminalSnapshot) -> InteractionResult {
+    pub fn handle_event(
+        &mut self,
+        _event: &winit::event::WindowEvent,
+        _snapshot: &TerminalSnapshot,
+    ) -> InteractionResult {
         InteractionResult::continue_()
     }
 
     pub fn on_about_to_wait(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
-        if !snapshot.cursor_visible || !snapshot.cursor_blink { return WaitResult::default(); }
+        if !snapshot.cursor_visible || !snapshot.cursor_blink {
+            return WaitResult::default();
+        }
         let visible = self.blink_visible();
         let mut result = WaitResult::default();
-        if visible != self.last_rendered_visible { self.dirty = true; result.requests.push(UiRequest::Redraw); }
+        if visible != self.last_rendered_visible {
+            self.dirty = true;
+            result.requests.push(UiRequest::Redraw);
+        }
         let millis = self.blink_start.elapsed().as_millis() as u64;
         let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
         result.deadline = Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms));

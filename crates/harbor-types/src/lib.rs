@@ -337,7 +337,6 @@ fn trim_trailing_newlines(text: &str) -> &str {
     &text[..end]
 }
 
-
 // ── Terminal worker contract ────────────────────────────────────────────────
 
 /// Complete terminal state exchanged between the terminal model and the UI.

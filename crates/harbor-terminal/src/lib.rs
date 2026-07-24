@@ -162,4 +162,3 @@ impl Terminal {
         self.suppress_scroll_snap = suppress;
     }
 }
-

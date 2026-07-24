@@ -145,7 +145,8 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(new_size) = self.session.pending_resize.take()
             && let Some(request_id) = worker.request_resize(new_size)
         {
-            self.session.pending_snapshot_commands
+            self.session
+                .pending_snapshot_commands
                 .insert(request_id, Instant::now());
         }
 
@@ -169,9 +170,17 @@ impl ApplicationHandler<AppEvent> for App {
         let wait = ui.compact_deadline(snapshot);
         for request in wait.requests {
             match request {
-                UiRequest::Scroll(amount) => { let _ = worker.request_scroll_viewport(amount); }
-                UiRequest::Redraw => Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Active),
-                UiRequest::SetSelectionDragActive(active) => { let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(active)); }
+                UiRequest::Scroll(amount) => {
+                    let _ = worker.request_scroll_viewport(amount);
+                }
+                UiRequest::Redraw => {
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Active)
+                }
+                UiRequest::SetSelectionDragActive(active) => {
+                    let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(
+                        active,
+                    ));
+                }
                 _ => {}
             }
         }
@@ -201,9 +210,10 @@ impl ApplicationHandler<AppEvent> for App {
                 match result {
                     DialogResult::Confirmed => {
                         let text = dialog.raw_text.clone();
-                        if let (Some(snapshot), Some(worker)) =
-                            (self.session.latest_snapshot.as_ref(), self.session.worker.as_ref())
-                        {
+                        if let (Some(snapshot), Some(worker)) = (
+                            self.session.latest_snapshot.as_ref(),
+                            self.session.worker.as_ref(),
+                        ) {
                             let _ = worker.send(harbor_types::TerminalCommand::PasteText(text));
                         }
                         self.request_redraw(RedrawReason::Input);
@@ -215,14 +225,18 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     DialogResult::None => {
                         if matches!(&event, WindowEvent::RedrawRequested) {
-                            if let (Some(gpu), Some(ui)) = (self.runtime.gpu.as_ref(), self.runtime.ui.as_mut()) {
+                            if let (Some(gpu), Some(ui)) =
+                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_mut())
+                            {
                                 let ensure_text = format!(
                                     "[ Paste ][ Cancel ]Paste {} lines?",
                                     dialog.raw_text.lines().count()
                                 );
                                 ui.ensure_glyphs(&ensure_text, gpu);
                             }
-                            if let (Some(gpu), Some(ui)) = (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref()) {
+                            if let (Some(gpu), Some(ui)) =
+                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref())
+                            {
                                 let metrics = ui.text_metrics();
                                 dialog.prepare(
                                     gpu,
@@ -232,7 +246,9 @@ impl ApplicationHandler<AppEvent> for App {
                                     ui.text_bind_group(),
                                 );
                             }
-                            if let (Some(gpu), Some(ui)) = (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref()) {
+                            if let (Some(gpu), Some(ui)) =
+                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref())
+                            {
                                 dialog.render(gpu, ui.text_pipeline(), ui.text_bind_group());
                             }
                         }
@@ -266,14 +282,34 @@ impl ApplicationHandler<AppEvent> for App {
         let mut handled = ui.handle_event(&event, snapshot, self.modifiers);
         for request in handled.requests.drain(..) {
             match request {
-                UiRequest::Copy(bounds) => if let Some(request_id) = worker.request_copy(bounds) { ui.set_copy_pending(request_id); },
-                UiRequest::Paste(text) => { let _ = worker.send(harbor_types::TerminalCommand::PasteText(text)); },
-                UiRequest::Scroll(amount) => { let _ = worker.request_scroll_viewport(amount); },
-                UiRequest::ScrollToTop => { let _ = worker.request_scroll_to_top(); },
-                UiRequest::ScrollToBottom => { let _ = worker.request_scroll_to_bottom(); },
-                UiRequest::SetSelectionDragActive(active) => { let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(active)); },
-                UiRequest::Input(input) => { let _ = worker.send(harbor_types::TerminalCommand::Input(input)); },
-                UiRequest::Redraw => Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input),
+                UiRequest::Copy(bounds) => {
+                    if let Some(request_id) = worker.request_copy(bounds) {
+                        ui.set_copy_pending(request_id);
+                    }
+                }
+                UiRequest::Paste(text) => {
+                    let _ = worker.send(harbor_types::TerminalCommand::PasteText(text));
+                }
+                UiRequest::Scroll(amount) => {
+                    let _ = worker.request_scroll_viewport(amount);
+                }
+                UiRequest::ScrollToTop => {
+                    let _ = worker.request_scroll_to_top();
+                }
+                UiRequest::ScrollToBottom => {
+                    let _ = worker.request_scroll_to_bottom();
+                }
+                UiRequest::SetSelectionDragActive(active) => {
+                    let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(
+                        active,
+                    ));
+                }
+                UiRequest::Input(input) => {
+                    let _ = worker.send(harbor_types::TerminalCommand::Input(input));
+                }
+                UiRequest::Redraw => {
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input)
+                }
             }
         }
         let handled = handled.event;
@@ -336,13 +372,18 @@ impl ApplicationHandler<AppEvent> for App {
         {
             let page_rows = snapshot.rows;
             let request_id = match navigation {
-                ScrollbackNavigation::PageUp => worker.request_scroll_viewport(-(page_rows as isize)),
-                ScrollbackNavigation::PageDown => worker.request_scroll_viewport(page_rows as isize),
+                ScrollbackNavigation::PageUp => {
+                    worker.request_scroll_viewport(-(page_rows as isize))
+                }
+                ScrollbackNavigation::PageDown => {
+                    worker.request_scroll_viewport(page_rows as isize)
+                }
                 ScrollbackNavigation::Top => worker.request_scroll_to_top(),
                 ScrollbackNavigation::Bottom => worker.request_scroll_to_bottom(),
             };
             if let Some(request_id) = request_id {
-                self.session.pending_snapshot_commands
+                self.session
+                    .pending_snapshot_commands
                     .insert(request_id, Instant::now());
             }
             Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
@@ -393,7 +434,8 @@ impl ApplicationHandler<AppEvent> for App {
                 if lines != 0 {
                     let request_id = worker.request_scroll_viewport(-lines);
                     if let Some(request_id) = request_id {
-                        self.session.pending_snapshot_commands
+                        self.session
+                            .pending_snapshot_commands
                             .insert(request_id, Instant::now());
                     }
                     Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
@@ -426,9 +468,26 @@ impl App {
     /// These are lazily initialised on the first `resumed` call.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
-            runtime: AppRuntime { window: None, gpu: None, ui: None, paste_dialog: None },
-            session: TerminalSession { latest_snapshot: None, updates: RevisionedUpdateReceiver::default(), worker: None, worker_status: WorkerStatus::Ready, pending_resize: None, pending_snapshot_commands: HashMap::new() },
-            frame: FrameState { pending_damage: None, render_dirty: false, scheduler: FrameScheduler::default(), surface_recovery_attempted: false },
+            runtime: AppRuntime {
+                window: None,
+                gpu: None,
+                ui: None,
+                paste_dialog: None,
+            },
+            session: TerminalSession {
+                latest_snapshot: None,
+                updates: RevisionedUpdateReceiver::default(),
+                worker: None,
+                worker_status: WorkerStatus::Ready,
+                pending_resize: None,
+                pending_snapshot_commands: HashMap::new(),
+            },
+            frame: FrameState {
+                pending_damage: None,
+                render_dirty: false,
+                scheduler: FrameScheduler::default(),
+                surface_recovery_attempted: false,
+            },
             event_proxy,
             modifiers: ModifiersState::default(),
         }
@@ -464,8 +523,8 @@ impl App {
             })
             .expect("failed to spawn font-loader thread");
 
-        let gpu = pollster::block_on(GpuContext::new(window.clone()))
-            .map_err(AppError::Renderer)?;
+        let gpu =
+            pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
         gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
         let fonts = font_handle
@@ -486,7 +545,8 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.ui = Some(ui);
-        self.session.updates
+        self.session
+            .updates
             .accept(initial.clone())
             .expect("initial worker revision must be accepted");
         self.frame.pending_damage = Some(UpdateDamage::FullUpload);

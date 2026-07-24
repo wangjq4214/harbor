@@ -8,8 +8,8 @@ use harbor_config::{
 };
 
 use crate::{
-    caps::{InteractionResult, UiRequest, WaitResult},
     Component, EventResult,
+    caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, ColoredVertex, GpuContext},
 };
 
@@ -181,9 +181,7 @@ impl Scrollbar {
 
         // Upload initial (degenerate) vertices.
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(&vertex_buffer,
-        0,
-        bytemuck::cast_slice(&vertices),);
+        gpu.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
         Self {
             pipeline,
@@ -295,14 +293,10 @@ impl Component for Scrollbar {
         self.last_upload_key = Some(key);
 
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(&self.vertex_buffer,
-        0,
-        bytemuck::cast_slice(&vertices),);
+        gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
         let uniform = compute_uniform(snap, surf_w as f32, surf_h as f32);
-        gpu.write_buffer(&self.uniform_buffer,
-        0,
-        bytemuck::bytes_of(&uniform),);
+        gpu.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     /// Draw the scrollbar thumb (no-op when hidden).
@@ -318,23 +312,56 @@ impl Component for Scrollbar {
 }
 
 impl Scrollbar {
-    pub fn handle_event(&mut self, event: &winit::event::WindowEvent, _snapshot: &TerminalSnapshot) -> InteractionResult {
+    pub fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        _snapshot: &TerminalSnapshot,
+    ) -> InteractionResult {
         let mut result = InteractionResult::continue_();
         match event {
-            winit::event::WindowEvent::CursorEntered { .. } => { self.cursor_inside = true; self.show(); result.event = EventResult::Handled; result.requests.push(UiRequest::Redraw); }
-            winit::event::WindowEvent::CursorMoved { .. } => { self.last_activity = std::time::Instant::now(); if !self.visible && self.cursor_inside { self.show(); result.requests.push(UiRequest::Redraw); } result.event = EventResult::Handled; }
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                self.cursor_inside = true;
+                self.show();
+                result.event = EventResult::Handled;
+                result.requests.push(UiRequest::Redraw);
+            }
+            winit::event::WindowEvent::CursorMoved { .. } => {
+                self.last_activity = std::time::Instant::now();
+                if !self.visible && self.cursor_inside {
+                    self.show();
+                    result.requests.push(UiRequest::Redraw);
+                }
+                result.event = EventResult::Handled;
+            }
             winit::event::WindowEvent::CursorLeft { .. } => self.cursor_inside = false,
-            winit::event::WindowEvent::MouseWheel { .. } => { self.last_activity = std::time::Instant::now(); if !self.visible { self.show(); result.requests.push(UiRequest::Redraw); } }
+            winit::event::WindowEvent::MouseWheel { .. } => {
+                self.last_activity = std::time::Instant::now();
+                if !self.visible {
+                    self.show();
+                    result.requests.push(UiRequest::Redraw);
+                }
+            }
             _ => {}
         }
         result
     }
 
     pub fn on_about_to_wait(&mut self) -> WaitResult {
-        if !self.visible { return WaitResult::default(); }
+        if !self.visible {
+            return WaitResult::default();
+        }
         let hide_delay = std::time::Duration::from_millis(harbor_config::SCROLLBAR_HIDE_DELAY_MS);
-        if self.last_activity.elapsed() >= hide_delay { self.visible = false; return WaitResult { deadline: None, requests: vec![UiRequest::Redraw] }; }
-        WaitResult { deadline: Some(self.last_activity + hide_delay), requests: Vec::new() }
+        if self.last_activity.elapsed() >= hide_delay {
+            self.visible = false;
+            return WaitResult {
+                deadline: None,
+                requests: vec![UiRequest::Redraw],
+            };
+        }
+        WaitResult {
+            deadline: Some(self.last_activity + hide_delay),
+            requests: Vec::new(),
+        }
     }
 }
 

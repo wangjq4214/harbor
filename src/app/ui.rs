@@ -172,10 +172,15 @@ impl UiRoot {
         modifiers: ModifiersState,
     ) -> InteractionResult {
         let mut result = self.selection.handle_event(event, snapshot, modifiers);
-        if result.event != EventResult::Continue { return result; }
+        if result.event != EventResult::Continue {
+            return result;
+        }
         let scrollbar = self.scrollbar.handle_event(event, snapshot);
         result.requests.extend(scrollbar.requests);
-        if scrollbar.event == EventResult::Handled { result.event = EventResult::Handled; return result; }
+        if scrollbar.event == EventResult::Handled {
+            result.event = EventResult::Handled;
+            return result;
+        }
         let cursor = self.cursor.handle_event(event, snapshot);
         result.requests.extend(cursor.requests);
         result.event = cursor.event;
@@ -185,11 +190,17 @@ impl UiRoot {
     /// Collects the earliest component wake deadline and associated requests.
     pub(crate) fn compact_deadline(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
         let mut result = self.selection.on_about_to_wait(snapshot);
-        for other in [self.cursor.on_about_to_wait(snapshot), self.scrollbar.on_about_to_wait()] {
-            result.deadline = match (result.deadline, other.deadline) { (Some(a), Some(b)) => Some(a.min(b)), (Some(a), None) => Some(a), (None, deadline) => deadline };
+        for other in [
+            self.cursor.on_about_to_wait(snapshot),
+            self.scrollbar.on_about_to_wait(),
+        ] {
+            result.deadline = match (result.deadline, other.deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, deadline) => deadline,
+            };
             result.requests.extend(other.requests);
         }
         result
     }
-
 }

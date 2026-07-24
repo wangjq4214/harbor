@@ -200,7 +200,19 @@ mod surface_tests {
         );
         assert_eq!(
             policy
-                .decide(10, 10, 4, &[range(0, 0, 10), range(1, 0, 10), range(2, 0, 10), range(3, 0, 10), range(4, 0, 10)], false)
+                .decide(
+                    10,
+                    10,
+                    4,
+                    &[
+                        range(0, 0, 10),
+                        range(1, 0, 10),
+                        range(2, 0, 10),
+                        range(3, 0, 10),
+                        range(4, 0, 10)
+                    ],
+                    false
+                )
                 .mode,
             UploadMode::Full
         );
@@ -323,7 +335,6 @@ impl GpuContext {
             "gpu context configured"
         );
 
-
         let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
             &device,
             config.format,
@@ -386,12 +397,7 @@ impl GpuContext {
             .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
     }
 
-    pub fn write_buffer(
-        &self,
-        buffer: &wgpu::Buffer,
-        offset: wgpu::BufferAddress,
-        data: &[u8],
-    ) {
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
         self.queue.write_buffer(buffer, offset, data);
     }
     /// Logical GPU device reference.

@@ -531,10 +531,14 @@ fn apply_command(
                 pty.resize(size);
                 *revision = revision.saturating_add(1);
             }
-            publish_snapshot(terminal, mailbox, notifier,
-            *revision,
-            true,
-            Some(request_id),);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
         }
         TerminalCommand::ScrollViewport { request_id, rows } => {
             if rows >= 0 {
@@ -543,26 +547,38 @@ fn apply_command(
                 terminal.scroll_viewport_up(rows.unsigned_abs());
             }
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier,
-            *revision,
-            true,
-            Some(request_id),);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
         }
         TerminalCommand::ScrollToTop { request_id } => {
             terminal.scroll_viewport_to_top();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier,
-            *revision,
-            true,
-            Some(request_id),);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
         }
         TerminalCommand::ScrollToBottom { request_id } => {
             terminal.scroll_viewport_to_bottom();
             *revision = revision.saturating_add(1);
-            publish_snapshot(terminal, mailbox, notifier,
-            *revision,
-            true,
-            Some(request_id),);
+            publish_snapshot(
+                terminal,
+                mailbox,
+                notifier,
+                *revision,
+                true,
+                Some(request_id),
+            );
         }
         TerminalCommand::SetSelectionDragActive(active) => {
             terminal.set_suppress_scroll_snap(active);
@@ -658,7 +674,6 @@ pub(crate) fn empty_snapshot(rows: usize, cols: usize) -> TerminalSnapshot {
         dirty_ranges: Vec::new(),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1143,9 +1158,7 @@ mod tests {
         }
 
         // Signal end of PTY output.
-        test_pty_tx
-            .send(PtyMessage::Eof)
-            .expect("pty channel open");
+        test_pty_tx.send(PtyMessage::Eof).expect("pty channel open");
         signal_wake(&signal_tx);
 
         // Wait for the consumer to observe Stopped and finish draining.
