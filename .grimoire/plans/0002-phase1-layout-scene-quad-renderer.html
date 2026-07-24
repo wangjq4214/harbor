@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phase 1: Layout, Scene Graph &amp; Quad Renderer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card-bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #555;
+    --border: #e0e0e0;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --code-bg: #f5f5f5;
+    --tag-bg: #f0f0f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .plan {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  header h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  header .meta { color: var(--text-muted); font-size: 0.9rem; display: flex; gap: 2rem; flex-wrap: wrap; }
+  .meta-item { display: flex; gap: 0.35rem; }
+  .meta-item strong { font-weight: 600; }
+
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  section h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  section h2 .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700;
+  }
+  section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; color: #333; }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  .table-wrap table { border: none; }
+  .table-wrap th:first-child, .table-wrap td:first-child { padding-left: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--accent-light); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #f8fafd; }
+
+  .mermaid-wrap {
+    background: #fcfcfc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1rem 0;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+  pre.mermaid {
+    background: transparent;
+    color: inherit;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; }
+  :not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #e8e8e8;
+  }
+
+  .step {
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    background: var(--accent-light);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .step h4 { font-size: 0.95rem; margin-bottom: 0.4rem; color: var(--accent); }
+  .step p, .step ul { font-size: 0.9rem; margin: 0.25rem 0; }
+  .step ul { padding-left: 1.25rem; }
+  .step .outcome { margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: #e6f4ea; border-radius: 4px; font-size: 0.85rem; color: #137333; }
+  .step .files { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--tag-bg);
+    color: var(--text-muted);
+  }
+  .badge.create { background: #e6f4ea; color: #137333; }
+  .badge.modify { background: #fef3c7; color: #92400e; }
+
+  .decision-list { list-style: none; }
+  .decision-list li { padding: 0.4rem 0; padding-left: 1.2rem; position: relative; }
+  .decision-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  .test-grid { display: grid; gap: 1rem; }
+  .test-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .test-card h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: #333;
+  }
+  .test-card h3 code { font-weight: 700; color: var(--accent); background: none; border: none; padding: 0; }
+  .test-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .test-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: right;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .test-card ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+    color: #444;
+  }
+  .test-card ul li { margin-bottom: 0.2rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border: 1px solid #ccc; }
+    .step { background: #f9f9f9; }
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.5rem; }
+    section { padding: 1.25rem; }
+    header { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="plan">
+
+<header>
+  <h1>Phase 1: Layout, Scene Graph &amp; Quad Renderer</h1>
+  <div class="meta">
+    <div class="meta-item"><strong>Input:</strong> <span>Conversation: implement Phase 1 from widget-runtime-design.md — layout containers, retained scene graph, instanced quad renderer, same-frame encoding seam</span></div>
+    <div class="meta-item"><strong>Date:</strong> <span>2025-07-23</span></div>
+  </div>
+</header>
+
+<!-- ── Section 1: Type Design ── -->
+<section>
+  <h2><span class="num">1</span> Type Design</h2>
+
+  <h3>Modified Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Change</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>AnyView</code></td>
+        <td>view.rs</td>
+        <td>Internal type-erased View capability</td>
+        <td>Add <code>layout_children()</code> and <code>paint_primitives()</code> methods; modify <code>build()</code> signature to separate View decomposition from boxing</td>
+        <td>Layout and paint are the same concept as View — they are phases of the same lifecycle. Adding methods extends the trait rather than splitting into separate traits.</td>
+      </tr>
+      <tr>
+        <td><code>Runtime</code></td>
+        <td>runtime.rs</td>
+        <td>Top-level widget tree scheduler</td>
+        <td>Add <code>SceneGraph</code> field, <code>QuadRenderer</code> field, <code>init_renderer()</code> and <code>encode()</code> methods; modify <code>set_root()</code> and <code>update()</code> to accept viewport constraints</td>
+        <td>These are the same Runtime concept — orchestrating the widget lifecycle into frame output.</td>
+      </tr>
+      <tr>
+        <td><code>Fiber</code></td>
+        <td>fiber.rs</td>
+        <td>Long-lived component instance</td>
+        <td>Add <code>scene_item_ids: Vec&lt;u64&gt;</code> field to track which SceneItems belong to this fiber</td>
+        <td>The fiber already holds layout_rect; tracking scene items is the same lifecycle concept.</td>
+      </tr>
+      <tr>
+        <td><code>DirtyFlags</code></td>
+        <td>fiber.rs</td>
+        <td>Incremental update bitflags</td>
+        <td>No structural change; begin actively setting PAINT_DIRTY on visual changes</td>
+        <td>Flags exist but are unused — this is activation, not redesign.</td>
+      </tr>
+      <tr>
+        <td><code>layout_fiber</code></td>
+        <td>fiber.rs</td>
+        <td>Layout tree walk</td>
+        <td>Replace simple stacking with container-aware layout via <code>AnyView::layout_children()</code>; add <code>paint_fiber</code> tree walk</td>
+        <td>Same concept (fiber lifecycle) — the existing function was a Phase 0 stub.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>New Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Responsibility</th><th>Relationships</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Color</code></td>
+        <td>scene/primitive.rs</td>
+        <td>RGBA color</td>
+        <td>Stores f32 rgba components; provides common color constants and conversions</td>
+        <td>composed by Primitive</td>
+        <td>Distinct concept from layout geometry — color is a visual property, not a spatial one.</td>
+      </tr>
+      <tr>
+        <td><code>Primitive</code></td>
+        <td>scene/primitive.rs</td>
+        <td>Standardized draw input</td>
+        <td>Enum with Quad/Text/Border/External variants; only Quad is active in Phase 1</td>
+        <td>contained by SceneItem</td>
+        <td>Separate from SceneItem: Primitive is the draw data; SceneItem adds spatial/ordering context.</td>
+      </tr>
+      <tr>
+        <td><code>SceneItem</code></td>
+        <td>scene/mod.rs</td>
+        <td>Retained GPU-visible draw item</td>
+        <td>Holds id, Primitive, optional transform/clip, paint_order; ordered in a flat Vec by paint order</td>
+        <td>contains Primitive; stored in SceneGraph</td>
+        <td>Distinct from Primitive: Primitive is a plain input; SceneItem has identity and ordering.</td>
+      </tr>
+      <tr>
+        <td><code>SceneDelta</code></td>
+        <td>scene/mod.rs</td>
+        <td>Incremental scene update</td>
+        <td>Vectors of added, removed, and modified SceneItems produced by diffing</td>
+        <td>references SceneItem; consumed by QuadRenderer</td>
+        <td>Distinct from SceneGraph: SceneGraph is the state; SceneDelta is the transition.</td>
+      </tr>
+      <tr>
+        <td><code>SceneGraph</code></td>
+        <td>scene/mod.rs</td>
+        <td>Retained ordered scene</td>
+        <td>Maintains sorted Vec&lt;SceneItem&gt;; diffs new items against retained items to produce SceneDelta</td>
+        <td>contains SceneItem; referenced by Runtime</td>
+        <td>Owns identity and diffing logic — this is the retained data structure promised by the design.</td>
+      </tr>
+      <tr>
+        <td><code>Alignment</code></td>
+        <td>layout/align.rs</td>
+        <td>Cross-axis alignment</td>
+        <td>Enum: Start, Center, End, Stretch; computes child offset within available space</td>
+        <td>used by Row, Column, Stack, Align</td>
+        <td>Pure layout concept — independent of any single widget.</td>
+      </tr>
+      <tr>
+        <td><code>Viewport</code></td>
+        <td>renderer/mod.rs</td>
+        <td>DPI-aware viewport descriptor</td>
+        <td>Stores logical_size, physical_size, scale_factor; provides dp-to-NDC transform helpers</td>
+        <td>consumed by QuadRenderer::update</td>
+        <td>Cross-cutting concept — used by renderer but not owned by it.</td>
+      </tr>
+      <tr>
+        <td><code>QuadRenderer</code></td>
+        <td>renderer/quad.rs</td>
+        <td>Instanced quad GPU renderer</td>
+        <td>Owns pipeline, vertex/index/instance buffers; applies SceneDelta to update instance buffer; encodes instanced draw calls into RenderPass</td>
+        <td>composes wgpu primitives; consumes SceneDelta and Viewport</td>
+        <td>Owns the GPU state for quad rendering — distinct lifecycle from scene data.</td>
+      </tr>
+      <tr>
+        <td><code>Padding</code></td>
+        <td>widgets/padding.rs</td>
+        <td>Padding layout widget</td>
+        <td>Insets a single child by top/right/bottom/left; optional background color; implements both Component and AnyView</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Own layout algorithm — distinct from SizedBox (fixed size) and Row (flex). Single struct, no State split.</td>
+      </tr>
+      <tr>
+        <td><code>Row</code></td>
+        <td>widgets/row.rs</td>
+        <td>Horizontal flex container</td>
+        <td>Stacks children left-to-right; supports cross_axis_alignment; optional background; implements both Component and AnyView</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Own layout algorithm. Single struct merges builder + layout + paint.</td>
+      </tr>
+      <tr>
+        <td><code>Column</code></td>
+        <td>widgets/column.rs</td>
+        <td>Vertical flex container</td>
+        <td>Stacks children top-to-bottom; supports cross_axis_alignment; optional background; implements both Component and AnyView</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Symmetric to Row but orthogonal axis — separate file for clarity despite symmetry.</td>
+      </tr>
+      <tr>
+        <td><code>Stack</code></td>
+        <td>widgets/stack.rs</td>
+        <td>Overlay container</td>
+        <td>Positions all children at same origin; optional background; implements both Component and AnyView</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Overlay semantics differ from Row/Column — children don't affect each other's positions.</td>
+      </tr>
+      <tr>
+        <td><code>Align</code></td>
+        <td>widgets/align.rs</td>
+        <td>Single-child positioner</td>
+        <td>Positions one child within parent bounds according to Alignment; optional background; implements both Component and AnyView</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Different from Padding (which insets) — Align positions without insetting.</td>
+      </tr>
+      <tr>
+        <td><code>SizedBox</code></td>
+        <td>widgets/sized_box.rs</td>
+        <td>Fixed-size widget</td>
+        <td>Fixed size + optional color; implements both Component and AnyView; extracted from view.rs</td>
+        <td>implements Component + AnyView; derives Clone</td>
+        <td>Merged from Phase 0's SizedBox+SizedBoxState split into single struct.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Design Decisions</h3>
+  <ul class="decision-list">
+    <li><strong>SceneItem is a flat Vec, not a tree.</strong> RenderNodes already carry the tree structure via Fiber. The scene graph only needs identity + paint order for GPU encoding.</li>
+    <li><strong>Phase 1 Primitive: Quad active, Text/Border/External are stubs.</strong> The full enum is defined now to stabilize the scene/ module API; unused variants are no-ops in the renderer.</li>
+    <li><strong>QuadRenderer uses instanced drawing.</strong> One 4-vertex unit quad + per-instance buffer (rect, color, corner_radius) → one instanced draw call per batch. This matches the design doc's "instanced quad pipeline" requirement.</li>
+    <li><strong>Layout is a two-pass algorithm.</strong> Pass 1: measure intrinsic sizes bottom-up. Pass 2: container calls <code>layout_children()</code> which produces its own Size and child origins.</li>
+    <li><strong>Containers have optional background color.</strong> Phase 1 verification needs visible output. Background is a <code>Option&lt;Color&gt;</code> field on container widgets.</li>
+    <li><strong>Widget runtime does its own DP→NDC transform.</strong> The QuadRenderer receives a Viewport and converts logical-pixel rects to NDC in the instance buffer, independent of harbor-render's vertex types.</li>
+    <li><strong>SizedBox builder extracted to widgets/.</strong> It lived in view.rs during Phase 0 as a test fixture; it now joins the proper widget module.</li>
+    <li><strong>Widgets merge Component + AnyView into one struct.</strong> Each widget (Row, Padding, SizedBox, etc.) is a single <code>#[derive(Clone)]</code> struct implementing both <code>Component</code> (pub API via <code>&amp;self</code>) and <code>AnyView</code> (pub(crate) via owned <code>self</code>). <code>build()</code> clones self into the View. This eliminates the XxxState middle layer from Phase 0 — the struct IS the configuration, no separate "state" snapshot needed.</li>
+  </ul>
+</section>
+
+<!-- ── Section 2: Type Relationship Diagram ── -->
+<section>
+  <h2><span class="num">2</span> Type Relationship Diagram</h2>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+classDiagram
+    namespace Widget_Runtime {
+        class Runtime {
+            +FiberArena arena
+            +SceneGraph scene_graph
+            +QuadRenderer renderer
+            +set_root(Component) void
+            +update(Instant, Viewport) FrameRequest
+            +init_renderer(Device, TextureFormat) void
+            +encode(Queue, RenderPass, Viewport) void
+        }
+        class Fiber {
+            +FiberId id
+            +Vec~FiberId~ children
+            +Option~Rect~ layout_rect
+            +Vec~u64~ scene_item_ids
+            +DirtyFlags flags
+        }
+        class SceneGraph {
+            +Vec~SceneItem~ items
+            +u64 next_id
+            +diff(Vec~SceneItem~) SceneDelta
+            +clear() void
+        }
+    }
+
+    namespace Scene {
+        class SceneItem {
+            +u64 id
+            +Primitive primitive
+            +Option~Transform~ transform
+            +Option~Rect~ clip
+            +u32 paint_order
+        }
+        class Primitive {
+            &lt;&lt;enum&gt;&gt;
+            Quad: Rect + Color + f32
+            Text: stub
+            Border: stub
+            External: stub
+        }
+        class SceneDelta {
+            +Vec~SceneItem~ added
+            +Vec~u64~ removed
+            +Vec~SceneItem~ modified
+        }
+    }
+
+    namespace Renderer {
+        class QuadRenderer {
+            +RenderPipeline pipeline
+            +Buffer vertex_buffer
+            +Buffer index_buffer
+            +Buffer instance_buffer
+            +update(Queue, SceneDelta, Viewport) void
+            +encode(RenderPass) void
+        }
+        class Viewport {
+            +Size logical_size
+            +(u32,u32) physical_size
+            +f32 scale_factor
+        }
+    }
+
+    namespace Widgets {
+        class AnyView {
+            &lt;&lt;trait&gt;&gt;
+            +intrinsic_size(BoxConstraints) Size
+            +layout_children(BoxConstraints,Vec~Size~) Size+Vec~Point~
+            +paint_primitives(Rect) Vec~Primitive~
+            +build(BuildCx) View
+        }
+        class Component {
+            &lt;&lt;trait&gt;&gt;
+            +build(BuildCx) View
+        }
+        class SizedBox
+        class Padding
+        class Row
+        class Column
+        class Stack
+        class Align
+    }
+
+    namespace Layout {
+        class Alignment {
+            &lt;&lt;enum&gt;&gt;
+            Start
+            Center
+            End
+            Stretch
+        }
+        class BoxConstraints
+        class Rect
+        class Point
+        class Size
+    }
+
+    Runtime *-- SceneGraph : owns
+    SceneGraph o-- SceneItem : ordered list
+    SceneItem *-- Primitive : contains
+    SceneDelta --> SceneItem : references
+    Runtime --> QuadRenderer : uses on encode
+    QuadRenderer --> SceneDelta : consumes
+    QuadRenderer --> Viewport : uses
+    AnyView <|-- SizedBox : implements
+    AnyView <|-- Padding : implements
+    AnyView <|-- Row : implements
+    AnyView <|-- Column : implements
+    AnyView <|-- Stack : implements
+    AnyView <|-- Align : implements
+    Component <|-- SizedBox : implements
+    Component <|-- Padding : implements
+    Component <|-- Row : implements
+    Component <|-- Column : implements
+    Component <|-- Stack : implements
+    Component <|-- Align : implements
+    AnyView --> Primitive : produces
+    AnyView --> Alignment : uses for layout
+    AnyView --> BoxConstraints : receives
+    AnyView --> Rect : receives layout result
+    </pre>
+  </div>
+</section>
+
+<!-- ── Section 3: Implementation Steps ── -->
+<section>
+  <h2><span class="num">3</span> Implementation Steps</h2>
+
+  <h3>Group A: Scene Graph Core</h3>
+
+  <div class="step">
+    <h4>Step 1: Add wgpu dependency to harbor-widget</h4>
+    <div class="files">Files: crates/harbor-widget/Cargo.toml</div>
+    <p><strong>Action:</strong> Add <code>wgpu = { workspace = true }</code> and <code>bytemuck = { workspace = true }</code> to harbor-widget's Cargo.toml dependencies.</p>
+    <div class="outcome"><strong>Outcome:</strong> harbor-widget compiles with wgpu available. No harbor-render dependency added.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 2: Create scene/ module with Color, Primitive, SceneItem, SceneDelta, SceneGraph</h4>
+    <div class="files">Files: crates/harbor-widget/src/scene/mod.rs, crates/harbor-widget/src/scene/primitive.rs</div>
+    <p><strong>Action:</strong> Create <code>scene/</code> module. Define <code>Color</code> struct (r, g, b, a: f32), <code>Primitive</code> enum with Quad/Text/Border/External variants, <code>SceneItem</code> struct (id: u64, primitive: Primitive, paint_order: u32), <code>SceneDelta</code> struct (added, removed, modified: Vec), and <code>SceneGraph</code> with <code>diff()</code> method. <code>TextRunId</code> and <code>ExternalDrawId</code> are type aliases to u64 stubs.</p>
+    <pre>// scene/primitive.rs
+pub struct Color { pub r: f32, pub g: f32, pub b: f32, pub a: f32 }
+
+impl Color {
+    pub const WHITE: Self = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    pub const BLACK: Self = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub const RED: Self = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub fn to_array(&self) -> [f32; 4] { [self.r, self.g, self.b, self.a] }
+}
+
+pub type TextRunId = u64;
+pub type ExternalDrawId = u64;
+
+pub enum Primitive {
+    Quad { rect: Rect, color: Color, corner_radius: f32 },
+    Text { run: TextRunId, origin: Point, color: Color },
+    Border { rect: Rect, width: f32, color: Color, corner_radius: f32 },
+    External { draw: ExternalDrawId },
+}
+
+// scene/mod.rs
+pub struct SceneItem {
+    pub id: u64,
+    pub primitive: Primitive,
+    pub paint_order: u32,
+}
+
+pub struct SceneDelta {
+    pub added: Vec&lt;SceneItem&gt;,
+    pub removed: Vec&lt;u64&gt;,
+    pub modified: Vec&lt;SceneItem&gt;,
+}
+
+pub struct SceneGraph {
+    items: Vec&lt;SceneItem&gt;,
+    next_id: u64,
+}
+
+impl SceneGraph {
+    pub fn new() -> Self { ... }
+    /// Diff incoming items by paint_order+rect+color against retained items.
+    /// Matches on id; creates new ids for unmatched items.
+    pub fn diff(&mut self, incoming: Vec&lt;SceneItem&gt;) -> SceneDelta { ... }
+    pub fn clear(&mut self) { ... }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Scene graph data types are defined. <code>cargo test -p harbor-widget</code> passes. SceneGraph::diff unit tests pass (added, removed, modified, unchanged items).</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 3: Add paint_primitives to AnyView trait and implement for SizedBox</h4>
+    <div class="files">Files: crates/harbor-widget/src/view.rs</div>
+    <p><strong>Action:</strong> Add <code>fn paint_primitives(&self, rect: Rect) -> Vec&lt;Primitive&gt;</code> to the AnyView trait. For <code>SizedBox</code>, return a single Quad primitive with <code>self.color.unwrap_or(Color::WHITE)</code>. Add <code>color: Option&lt;Color&gt;</code> field to SizedBox (if not already present).</p>
+    <div class="outcome"><strong>Outcome:</strong> SizedBox produces a Quad primitive. Unit test: paint_primitives on a 100x50 SizedBox returns one Quad with matching rect and color.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 4: Add paint_fiber tree walk in fiber.rs</h4>
+    <div class="files">Files: crates/harbor-widget/src/fiber.rs</div>
+    <p><strong>Action:</strong> Add <code>pub(crate) fn paint_fiber(arena: &amp;FiberArena, id: FiberId) -> Vec&lt;SceneItem&gt;</code>. Walks the fiber tree top-down, accumulates Primitives from each fiber via <code>AnyView::paint_primitives(rect)</code>, assigns incrementing paint_order and ids, returns flat Vec&lt;SceneItem&gt;.</p>
+    <pre>pub(crate) fn paint_fiber(arena: &amp;FiberArena, id: FiberId, base_order: u32) -> Vec&lt;SceneItem&gt; {
+    let mut items = Vec::new();
+    let mut order = base_order;
+    let fiber = arena.get(id).unwrap();
+    let rect = fiber.layout_rect;
+    // Collect self primitives
+    if let Some(ref view) = fiber.view {
+        if let Some(r) = rect {
+            for prim in view.paint_primitives(r) {
+                items.push(SceneItem { id: next_scene_id(), primitive: prim, paint_order: order });
+                order += 1;
+            }
+        }
+    }
+    // Collect children (in order)
+    for &amp;child_id in &amp;fiber.children {
+        let child_items = paint_fiber(arena, child_id, order);
+        order += child_items.len() as u32;
+        items.extend(child_items);
+    }
+    items
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Walking a SizedBox fiber tree produces a Vec of SceneItems. Unit test verifies correct paint order and item count for nested widgets.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 5: Integrate SceneGraph into Runtime::update</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Add <code>scene_graph: SceneGraph</code> field to Runtime. At the end of <code>update()</code>, call <code>paint_fiber()</code> on the root, pass the resulting Vec&lt;SceneItem&gt; to <code>scene_graph.diff()</code>, and store the SceneDelta for later encode. Add <code>pub fn pending_delta(&amp;self) -> &amp;SceneDelta</code> accessor.</p>
+    <div class="outcome"><strong>Outcome:</strong> After Runtime::update(), the SceneDelta reflects which items changed. Integration test: calling update twice with same root produces an empty delta on the second call.</div>
+  </div>
+
+  <h3>Group B: Layout &amp; Widgets</h3>
+
+  <div class="step">
+    <h4>Step 6: Add layout_children to AnyView trait and update layout_fiber</h4>
+    <div class="files">Files: crates/harbor-widget/src/view.rs, crates/harbor-widget/src/fiber.rs</div>
+    <p><strong>Action:</strong> Add <code>fn layout_children(&amp;self, constraints: BoxConstraints, child_sizes: &amp;[Size]) -> (Size, Vec&lt;Point&gt;)</code> to AnyView. Default implementation returns <code>(intrinsic_size(constraints), vec![])</code>. For SizedBox, delegate to intrinsic_size with empty positions. Rewrite <code>layout_fiber</code> to be a two-pass algorithm: (1) collect child intrinsic sizes bottom-up, (2) call <code>layout_children</code> on the parent, (3) recurse into children with computed positions.</p>
+    <pre>pub(crate) fn layout_fiber(
+    arena: &amp;mut FiberArena,
+    id: FiberId,
+    constraints: BoxConstraints,
+    origin: Point,
+) {
+    // Phase 1: collect child intrinsic sizes (bottom-up)
+    let child_specs: Vec&lt;(FiberId, Size)&gt; = {
+        let fiber = arena.get(id).unwrap();
+        fiber.children.iter().map(|&amp;cid| {
+            let child = arena.get(cid).unwrap();
+            // Use loose constraints for intrinsic measurement
+            let child_size = child.view.as_ref()
+                .map(|v| v.intrinsic_size(constraints))
+                .unwrap_or(Size::ZERO);
+            (cid, child_size)
+        }).collect()
+    };
+
+    // Phase 2: compute own size and child origins
+    let (own_size, child_origins) = {
+        let fiber = arena.get(id).unwrap();
+        let sizes: Vec&lt;Size&gt; = child_specs.iter().map(|(_, s)| *s).collect();
+        fiber.view.as_ref()
+            .map(|v| v.layout_children(constraints, &amp;sizes))
+            .unwrap_or((constraints.constrain(Size::ZERO), vec![]))
+    };
+
+    // Store own rect
+    arena.get_mut(id).unwrap().layout_rect = Some(Rect::from_min_size(origin, own_size));
+
+    // Phase 3: recurse into children with computed positions
+    for ((cid, _), child_pos) in child_specs.iter().zip(child_origins.iter()) {
+        let child_origin = Point::new(origin.x + child_pos.x, origin.y + child_pos.y);
+        let child_constraints = BoxConstraints::loose(own_size);
+        layout_fiber(arena, *cid, child_constraints, child_origin);
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Layout works with the new trait method. Existing SizedBox tests pass unchanged.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 7: Create Alignment type</h4>
+    <div class="files">Files: crates/harbor-widget/src/layout/align.rs</div>
+    <p><strong>Action:</strong> Create <code>Alignment</code> enum: Start, Center, End, Stretch. Add a method <code>fn position(&amp;self, child_size: f32, available: f32) -> f32</code> that returns the offset for a given axis. For Stretch, return 0.0 (stretch is handled by constraints, not positioning).</p>
+    <div class="outcome"><strong>Outcome:</strong> Alignment::Center.position(50, 200) → 75.0. Unit tests for each variant.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 8: Create Padding widget (single struct: Component + AnyView)</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/mod.rs, crates/harbor-widget/src/widgets/padding.rs</div>
+    <p><strong>Action:</strong> Create <code>Padding</code> struct with fields: top, right, bottom, left: f32, background: Option&lt;Color&gt;. Derive <code>Clone</code>. Implement <code>Component</code> (pub) — <code>build(&amp;self)</code> clones self via <code>View::new(self.clone(), children, None)</code>. Implement <code>AnyView</code> (pub(crate)) — layout_children, paint_primitives, intrinsic_size. Builder pattern: <code>Padding::new(top, right, bottom, left).background(Color)</code>.</p>
+    <pre>#[derive(Clone)]
+pub struct Padding {
+    pub top: f32, pub right: f32, pub bottom: f32, pub left: f32,
+    pub background: Option&lt;Color&gt;,
+    children: Vec&lt;View&gt;,
+}
+
+impl Component for Padding {
+    fn build(&amp;self, _cx: &amp;mut BuildCx) -> View {
+        View::new(self.clone(), self.children.clone(), None)
+    }
+}
+
+impl AnyView for Padding {
+    fn layout_children(&amp;self, constraints: BoxConstraints, child_sizes: &amp;[Size]) -> (Size, Vec&lt;Point&gt;) {
+        let child_size = child_sizes.first().copied().unwrap_or(Size::ZERO);
+        let own = Size::new(
+            (child_size.width + self.left + self.right).clamp(constraints.min.width, constraints.max.width),
+            (child_size.height + self.top + self.bottom).clamp(constraints.min.height, constraints.max.height),
+        );
+        (own, vec![Point::new(self.left, self.top)])
+    }
+
+    fn paint_primitives(&amp;self, rect: Rect) -> Vec&lt;Primitive&gt; {
+        match self.background {
+            Some(color) => vec![Primitive::Quad { rect, color, corner_radius: 0.0 }],
+            None => vec![],
+        }
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Padding widget correctly insets and positions its child. Unit test: a SizedBox(100,50) inside Padding(10 each) → layout_rect of 120x70, child at (10,10).</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 9: Create Row widget (single struct: Component + AnyView)</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/row.rs</div>
+    <p><strong>Action:</strong> Create <code>Row</code> struct with fields: cross_axis_alignment: Alignment, background: Option&lt;Color&gt;, children: Vec&lt;View&gt;. Derive <code>Clone</code>. Implement both Component (clone self in build) and AnyView. Layout algorithm: sum child widths, max child height, position children left-to-right with cross-axis alignment.</p>
+    <pre>#[derive(Clone)]
+pub struct Row {
+    pub cross_axis_alignment: Alignment,
+    pub background: Option&lt;Color&gt;,
+    children: Vec&lt;View&gt;,
+}
+
+impl Component for Row {
+    fn build(&amp;self, _cx: &amp;mut BuildCx) -> View {
+        View::new(self.clone(), self.children.clone(), None)
+    }
+}
+
+impl AnyView for Row {
+    fn layout_children(&amp;self, constraints: BoxConstraints, child_sizes: &amp;[Size]) -> (Size, Vec&lt;Point&gt;) {
+        let total_width: f32 = child_sizes.iter().map(|s| s.width).sum();
+        let max_height: f32 = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
+        let own = constraints.constrain(Size::new(total_width, max_height));
+        let mut x = 0.0;
+        let positions: Vec&lt;Point&gt; = child_sizes.iter().map(|s| {
+            let y = self.cross_axis_alignment.position(s.height, own.height);
+            let pos = Point::new(x, y);
+            x += s.width;
+            pos
+        }).collect();
+        (own, positions)
+    }
+
+    fn paint_primitives(&amp;self, rect: Rect) -> Vec&lt;Primitive&gt; {
+        self.background.map(|c| Primitive::Quad { rect, color: c, corner_radius: 0.0 }).into_iter().collect()
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Row correctly stacks children horizontally. Unit test: Row with three 50x50 children → size 150x50, children at x=0,50,100.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 10: Create Column widget (single struct: Component + AnyView)</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/column.rs</div>
+    <p><strong>Action:</strong> Create <code>Column</code> struct with same fields as Row, but layout stacks children top-to-bottom: sum child heights, max child width, cross-axis alignment on x-axis. Same Clone+Component+AnyView pattern as Row.</p>
+    <div class="outcome"><strong>Outcome:</strong> Column correctly stacks children vertically. Unit test: Column with three 50x50 children → size 50x150, children at y=0,50,100.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 11: Create Stack and Align widgets (single structs: Component + AnyView)</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/stack.rs, crates/harbor-widget/src/widgets/align.rs</div>
+    <p><strong>Action:</strong> <code>Stack</code>: all children at origin (0,0); own size = max(child_widths) × max(child_heights). <code>Align</code>: single child positioned within parent by Alignment on both axes; own size fills constraints. Both with optional background. Same Clone+Component+AnyView pattern.</p>
+    <div class="outcome"><strong>Outcome:</strong> Stack overlays children. Align positions child within bounds. Unit tests for both.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 12: Extract SizedBox to widgets/, merge into single struct, add color field</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/sized_box.rs, crates/harbor-widget/src/view.rs</div>
+    <p><strong>Action:</strong> Move <code>SizedBox</code> from view.rs to widgets/sized_box.rs. Merge existing <code>SizedBoxState</code> (AnyView impl) into <code>SizedBox</code> (now implements both Component + AnyView). Add <code>color: Option&lt;Color&gt;</code> field. <code>build()</code> clones self. Add <code>.color(Color)</code> builder method. Update view.rs to re-export from widgets.</p>
+    <div class="outcome"><strong>Outcome:</strong> SizedBox is now a single struct like all other widgets. Existing integration tests pass. <code>SizedBox::new(size).color(Color::RED)</code> renders a red quad.</div>
+  </div>
+
+  <h3>Group C: Renderer</h3>
+
+  <div class="step">
+    <h4>Step 13: Create Viewport struct</h4>
+    <div class="files">Files: crates/harbor-widget/src/renderer/mod.rs</div>
+    <p><strong>Action:</strong> Create <code>Viewport</code> struct with fields: logical_size: Size, physical_size: (u32, u32), scale_factor: f32. Add method <code>dp_rect_to_ndc(&amp;self, rect: &amp;Rect) -> [f32; 4]</code> that converts a dp Rect to NDC (x, y, w, h) for the vertex shader.</p>
+    <div class="outcome"><strong>Outcome:</strong> Viewport correctly transforms dp coordinates to NDC. Unit test: 100x50 rect at origin in 800x600 viewport @ 1x → NDC values verifiable.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 14: Create QuadRenderer with instanced quad pipeline</h4>
+    <div class="files">Files: crates/harbor-widget/src/renderer/quad.rs</div>
+    <p><strong>Action:</strong> Create <code>QuadRenderer</code> struct. Constructor creates: (a) vertex buffer with a unit quad [(-0.5,-0.5),(0.5,-0.5),(0.5,0.5),(-0.5,0.5)], (b) index buffer [0,1,2,0,2,3], (c) instanced quad pipeline with vertex layout: position:float32x2 + instance data: rect_ndc:float32x4, color:float32x4, corner_radius:float32. (d) instance buffer (empty, dynamic). WGSL shader: vertex transforms unit quad by instance rect_ndc, fragment outputs instance color.</p>
+    <pre>// WGSL vertex shader (quad.wgsl)
+struct VertexInput { @location(0) pos: vec2&lt;f32&gt;; }
+struct InstanceInput {
+    @location(1) rect: vec4&lt;f32&gt;;   // x, y, w, h in NDC
+    @location(2) color: vec4&lt;f32&gt;;  // rgba
+    @location(3) radius: f32;       // corner radius (unused until Phase 2)
+};
+struct VertexOutput { @builtin(position) pos: vec4&lt;f32&gt;; @location(0) color: vec4&lt;f32&gt;; }
+
+@vertex
+fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
+    // transform unit quad into rect
+    let x = inst.rect.x + (vert.pos.x + 0.5) * inst.rect.z;
+    let y = inst.rect.y + (vert.pos.y + 0.5) * inst.rect.w;
+    return VertexOutput(vec4(x, y, 0.0, 1.0), inst.color);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4&lt;f32&gt; {
+    return in.color;
+}</pre>
+    <p><strong>Action (continued):</strong> Add <code>update(&amp;mut self, queue, delta, viewport)</code> method: for added items, convert each Quad's dp Rect to NDC via Viewport, append to instance buffer; for removed items, mark slots as unused; for modified, update in place. Add <code>encode(&amp;self, pass: &amp;mut wgpu::RenderPass)</code>: set pipeline, vertex buffer, index buffer, instance buffer, call draw_indexed(6, instance_count).</p>
+    <div class="outcome"><strong>Outcome:</strong> QuadRenderer creates pipeline and buffers. Unit test: create with headless device, call update with one Quad, verify instance buffer contents.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 15: Wire QuadRenderer into Runtime</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Add <code>renderer: Option&lt;QuadRenderer&gt;</code> field to Runtime. Add <code>pub fn init_renderer(&amp;mut self, device: &amp;wgpu::Device, format: wgpu::TextureFormat)</code> — creates QuadRenderer. Add <code>pub fn encode(&amp;mut self, queue: &amp;wgpu::Queue, pass: &amp;mut wgpu::RenderPass, viewport: Viewport)</code> — applies pending SceneDelta to QuadRenderer, then calls renderer.encode(pass).</p>
+    <pre>impl Runtime {
+    pub fn init_renderer(&amp;mut self, device: &amp;wgpu::Device, format: wgpu::TextureFormat) {
+        self.renderer = Some(QuadRenderer::new(device, format));
+    }
+
+    pub fn encode(&amp;mut self, queue: &amp;wgpu::Queue, pass: &amp;mut wgpu::RenderPass, viewport: Viewport) {
+        if let Some(ref mut renderer) = self.renderer {
+            // Apply pending delta from last update()
+            if let Some(delta) = self.scene_graph.pending_delta() {
+                renderer.update(queue, delta, &amp;viewport);
+            }
+            renderer.encode(pass);
+        }
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> Runtime::encode() applies SceneDelta to GPU and issues draw calls. Integration test with mocked wgpu verifies no crash on encode.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 16: Update Runtime::update to use dynamic viewport constraints</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Change <code>update(&amp;mut self, now: Instant)</code> to accept an optional <code>viewport: Option&lt;Viewport&gt;</code> parameter. When viewport changes, mark root fiber LAYOUT_DIRTY. Use viewport's logical_size as root constraints (instead of hardcoded 800x600). Store the viewport for encode.</p>
+    <div class="outcome"><strong>Outcome:</strong> Runtime responds to viewport changes with re-layout. The hardcoded 800x600 is eliminated.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 17: Embed WGSL shader source in quad.rs</h4>
+    <div class="files">Files: crates/harbor-widget/src/renderer/quad.rs</div>
+    <p><strong>Action:</strong> Embed the quad shader as a Rust string constant in quad.rs. Use <code>device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("widget-quad"), source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(QUAD_SHADER)) })</code>. No external .wgsl files in Phase 1.</p>
+    <div class="outcome"><strong>Outcome:</strong> Pipeline creation uses embedded WGSL. No file I/O at runtime.</div>
+  </div>
+
+  <h3>Group D: Binary Integration</h3>
+
+  <div class="step">
+    <h4>Step 18: Add harbor-widget as dependency to the binary crate</h4>
+    <div class="files">Files: Cargo.toml (workspace root)</div>
+    <p><strong>Action:</strong> Add <code>harbor-widget = { workspace = true }</code> to the binary crate's dependencies in the workspace Cargo.toml.</p>
+    <div class="outcome"><strong>Outcome:</strong> Binary crate can <code>use harbor_widget::Runtime</code>.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 19: Wire Runtime into App's startup and render loop</h4>
+    <div class="files">Files: src/app.rs, src/app/ui.rs</div>
+    <p><strong>Action:</strong> In App::try_resume, after GpuContext creation, create a <code>harbor_widget::Runtime</code>, call <code>set_root()</code> with a simple static scene (e.g., Padding+Row+SizedBox colored quads), call <code>init_renderer(device, format)</code>. In App::render_frame, after the current UiRoot::draw, call <code>widget_runtime.encode(queue, &amp;mut render_pass, viewport)</code>. Compute Viewport from GpuContext's surface_size and a fixed scale_factor (start with 1.0). Call <code>widget_runtime.update(now, Some(viewport))</code> before render_frame when dirty.</p>
+    <div class="outcome"><strong>Outcome:</strong> Widget quads appear in the main window alongside terminal content. Resize propagates to widget layout.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 20: Resize handling</h4>
+    <div class="files">Files: src/app.rs</div>
+    <p><strong>Action:</strong> In the WindowEvent::Resized handler, after resizing the GpuContext surface, also call <code>widget_runtime.update(now, Some(new_viewport))</code> to trigger re-layout of the widget tree at the new logical size. The widget renderer's instance buffer will be updated on the next encode.</p>
+    <div class="outcome"><strong>Outcome:</strong> Resizing the window correctly re-lays out the widget tree. Verify: changing window size does not crash or leave artifacts.</div>
+  </div>
+</section>
+
+<!-- ── Section 4: Edge Cases ── -->
+<section>
+  <h2><span class="num">4</span> Edge Cases</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Condition</th><th>Expected Behavior</th><th>Owning Step</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Empty widget tree (no children in Row/Column)</td>
+        <td>Container returns Size::ZERO constrained by BoxConstraints. No crash, no SceneItems produced.</td>
+        <td>Step 9, 10</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>min constraints exceed child sizes in Row</td>
+        <td>Container expands to min constraints. Children positioned at Start with leftover space unallocated (Phase 1: no space distribution).</td>
+        <td>Step 9</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Viewport size of zero (window minimized or hidden)</td>
+        <td>SceneDelta is still produced but encode is skipped (0 instance count). No division by zero in DP→NDC math.</td>
+        <td>Step 13, 14</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Renderer not initialized when encode called</td>
+        <td>encode() is a no-op. Runtime tracks init state and skips GPU work gracefully.</td>
+        <td>Step 15</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Padding exceeds available space (padding > constraints.max)</td>
+        <td>Child size becomes zero. Container size = padding clamped by constraints. No negative child sizes.</td>
+        <td>Step 8</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>SceneItem id overflow (u64 wrapping after extremely long uptime)</td>
+        <td>Practical concern only after 2^64 scene item creations — not reachable in a terminal emulator. Ignored.</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ── Section 5: Test Strategy ── -->
+<section>
+  <h2><span class="num">5</span> Test Strategy</h2>
+
+  <div class="test-grid">
+
+    <div class="test-card">
+      <h3><code>SceneGraph</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>diff() correctly identifies added, removed, modified, and unchanged items based on id matching and primitive equality.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure data structure.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Empty → one item (all added)</li>
+          <li>Same items twice (all unchanged, empty delta)</li>
+          <li>Item removed from middle (one removed, later items shift)</li>
+          <li>Item color changes (one modified)</li>
+          <li>Complete clear and rebuild (removed + added)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Padding</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>layout_children correctly insets child by padding values; intrinsic_size adds padding to child size.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure CPU layout math.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Padding(10,10,10,10) around SizedBox(100,50) → child at (10,10), own 120x70</li>
+          <li>Padding with tight constraints → child clamped to available space</li>
+          <li>Padding(1000,0,0,0) with max constraint 500 → child width 0, padding clipped</li>
+          <li>Asymmetric padding: top=5, right=10, bottom=15, left=20</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Row</code> / <code>Column</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Children stacked along main axis; cross-axis alignment positions correctly; own size = sum of child extents on main axis, max on cross axis.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure CPU layout math.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Three fixed 50x50 children → Row: 150x50, Column: 50x150</li>
+          <li>Children with different sizes: 100x50 + 200x75 in Row → 300x75</li>
+          <li>CrossAxisAlignment::Center → child centered in cross axis</li>
+          <li>CrossAxisAlignment::End → child at bottom/right edge</li>
+          <li>Empty Row/Column → zero size</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Stack</code> / <code>Align</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Stack: all children at (0,0), own = max size. Align: child positioned by Alignment within full constraints.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure CPU layout math.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Stack with two 100x50 children → both at (0,0), own 100x50</li>
+          <li>Align::Center in 200x200 with 50x50 child → child at (75, 75)</li>
+          <li>Align with child larger than parent → child clamped by constraints</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Viewport</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>dp_rect_to_ndc produces correct NDC coordinates for a given dp Rect, logical size, and scale factor.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure math.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>100x50 rect at (0,0) in 800x600 @ 1x → NDC (0,0,w,h) verification</li>
+          <li>2x scale factor doubles pixel dimensions</li>
+          <li>Rect at nonzero origin (50, 30)</li>
+          <li>Zero-size viewport → guard against division by zero</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>QuadRenderer</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Pipeline creation succeeds. Instance buffer update correctly translates SceneDelta items into instance data. encode() produces valid draw calls.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>headless wgpu device via wgpu testing utilities; or validate buffer contents directly.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Single Quad → one instance in buffer</li>
+          <li>Multiple Quads → ordered by paint_order</li>
+          <li>Modified Quad (same id, different rect) → instance buffer entry updated</li>
+          <li>Removed Quad → slot marked for reuse or compacted</li>
+          <li>Empty delta → instance count stays at previous value</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Runtime</code> (integration)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Update→encode cycle: set_root with widget tree, update produces SceneDelta, encode passes delta to renderer. Idempotent updates produce empty deltas. Viewport changes trigger re-layout.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>SceneGraph internal state observable via pending_delta(). No GPU required for layout-only tests.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>set_root + update → pending_delta has items</li>
+          <li>Second update with no changes → pending_delta is empty</li>
+          <li>Viewport resize → re-layout, items updated</li>
+          <li>Empty tree → no crash, no items</li>
+          <li>Deeply nested tree (5+ levels) → paint order correct</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Section 6: Affected Files ── -->
+<section>
+  <h2><span class="num">6</span> Affected Files</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Action</th><th>Referenced By</th></tr></thead>
+    <tbody>
+      <tr><td>crates/harbor-widget/Cargo.toml</td><td><span class="badge modify">Modify</span></td><td>Step 1</td></tr>
+      <tr><td>crates/harbor-widget/src/scene/mod.rs</td><td><span class="badge create">Create</span></td><td>Step 2, Test Strategy (SceneGraph)</td></tr>
+      <tr><td>crates/harbor-widget/src/scene/primitive.rs</td><td><span class="badge create">Create</span></td><td>Step 2</td></tr>
+      <tr><td>crates/harbor-widget/src/view.rs</td><td><span class="badge modify">Modify</span></td><td>Step 3, 6, 12</td></tr>
+      <tr><td>crates/harbor-widget/src/fiber.rs</td><td><span class="badge modify">Modify</span></td><td>Step 4, 6</td></tr>
+      <tr><td>crates/harbor-widget/src/runtime.rs</td><td><span class="badge modify">Modify</span></td><td>Step 5, 15, 16, Test Strategy (Runtime)</td></tr>
+      <tr><td>crates/harbor-widget/src/layout/align.rs</td><td><span class="badge create">Create</span></td><td>Step 7</td></tr>
+      <tr><td>crates/harbor-widget/src/layout/mod.rs</td><td><span class="badge modify">Modify</span></td><td>Step 7 (add pub mod align)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/mod.rs</td><td><span class="badge create">Create</span></td><td>Step 8, 9, 10, 11, 12</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/padding.rs</td><td><span class="badge create">Create</span></td><td>Step 8, Test Strategy (Padding)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/row.rs</td><td><span class="badge create">Create</span></td><td>Step 9, Test Strategy (Row)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/column.rs</td><td><span class="badge create">Create</span></td><td>Step 10, Test Strategy (Column)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/stack.rs</td><td><span class="badge create">Create</span></td><td>Step 11, Test Strategy (Stack)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/align.rs</td><td><span class="badge create">Create</span></td><td>Step 11, Test Strategy (Align)</td></tr>
+      <tr><td>crates/harbor-widget/src/widgets/sized_box.rs</td><td><span class="badge create">Create</span></td><td>Step 12</td></tr>
+      <tr><td>crates/harbor-widget/src/renderer/mod.rs</td><td><span class="badge create">Create</span></td><td>Step 13</td></tr>
+      <tr><td>crates/harbor-widget/src/renderer/quad.rs</td><td><span class="badge create">Create</span></td><td>Step 14, 17, Test Strategy (QuadRenderer)</td></tr>
+      <tr><td>crates/harbor-widget/src/lib.rs</td><td><span class="badge modify">Modify</span></td><td>Step 2, 8, 13 (add pub mod scene, pub mod widgets, pub mod renderer)</td></tr>
+      <tr><td>Cargo.toml (root)</td><td><span class="badge modify">Modify</span></td><td>Step 18</td></tr>
+      <tr><td>src/app.rs</td><td><span class="badge modify">Modify</span></td><td>Step 19, 20</td></tr>
+      <tr><td>src/app/ui.rs</td><td><span class="badge modify">Modify</span></td><td>Step 19</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
