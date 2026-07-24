@@ -1,6 +1,7 @@
 # Separate `harbor-widget` Crate from `harbor-ui`
 
-**Status:** Proposed
+**Status:** Superseded
+**Superseded by:** [0007-retain-separate-paste-confirmation-window.md](./0007-retain-separate-paste-confirmation-window.md)
 **Date:** 2025-07-16
 
 ## Context
