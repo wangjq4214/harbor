@@ -124,6 +124,28 @@ pub fn surface_disposition(status: SurfaceStatus) -> SurfaceDisposition {
     }
 }
 
+#[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
+compile_error!("backend-dx12 and backend-vulkan cannot be enabled together");
+
+fn selected_backends() -> wgpu::Backends {
+    #[cfg(feature = "backend-dx12")]
+    {
+        return wgpu::Backends::DX12;
+    }
+    #[cfg(feature = "backend-vulkan")]
+    {
+        return wgpu::Backends::VULKAN;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return wgpu::Backends::GL;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        wgpu::Backends::all()
+    }
+}
+
 #[cfg(test)]
 mod surface_tests {
     use super::*;
@@ -233,26 +255,7 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
-        let backend_env = std::env::var("HARBOR_WGPU_BACKEND")
-            .or_else(|_| std::env::var("WGPU_BACKEND"))
-            .unwrap_or_default()
-            .to_lowercase();
-
-        let backends = match backend_env.as_str() {
-            "vulkan" => wgpu::Backends::VULKAN,
-            "dx12" | "d3d12" => wgpu::Backends::DX12,
-            "gl" | "opengl" => wgpu::Backends::GL,
-            _ => {
-                #[cfg(target_os = "windows")]
-                {
-                    wgpu::Backends::DX12 | wgpu::Backends::VULKAN
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    wgpu::Backends::all()
-                }
-            }
-        };
+        let backends = selected_backends();
 
         let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,

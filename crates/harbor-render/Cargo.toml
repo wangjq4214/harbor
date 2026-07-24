@@ -3,6 +3,11 @@ name = "harbor-render"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+backend-dx12 = []
+backend-vulkan = []
+
 [dependencies]
 harbor-types = { workspace = true }
 harbor-config = { workspace = true }
