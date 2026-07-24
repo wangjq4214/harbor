@@ -1,5 +1,6 @@
 pub mod primitive;
 
+use hashbrown::{HashMap, HashSet};
 use primitive::Primitive;
 
 // ── SceneItem ───────────────────────────────────────────────────────────────
@@ -58,22 +59,15 @@ impl SceneGraph {
         let mut removed = Vec::new();
         let mut modified = Vec::new();
 
-        // Build lookup of retained items by id (clone ids to avoid holding refs into self)
-        let old_ids: std::collections::BTreeSet<u64> = self.items.iter().map(|i| i.id).collect();
-        let old_items: Vec<SceneItem> = self.items.clone();
-        let mut old_by_id: std::collections::BTreeMap<u64, &SceneItem> =
-            std::collections::BTreeMap::new();
-        for item in &old_items {
-            old_by_id.insert(item.id, item);
-        }
+        let old_ids: HashSet<u64> = self.items.iter().map(|i| i.id).collect();
+        let old_by_id: HashMap<u64, &SceneItem> = self.items.iter().map(|i| (i.id, i)).collect();
 
         let mut new_items = Vec::new();
-        let mut seen_ids: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut seen_ids: HashSet<u64> = HashSet::new();
         let mut next_id = self.next_id;
 
         for mut item in incoming {
             if item.id != 0 && old_ids.contains(&item.id) {
-                // Try to reuse the id
                 let old = old_by_id[&item.id];
                 seen_ids.insert(item.id);
                 if old.paint_order != item.paint_order || old.primitive != item.primitive {
@@ -81,7 +75,6 @@ impl SceneGraph {
                 }
                 new_items.push(item);
             } else {
-                // New item — assign a fresh id
                 let new_id = next_id;
                 next_id += 1;
                 item.id = new_id;
@@ -93,14 +86,17 @@ impl SceneGraph {
 
         self.next_id = next_id;
 
-        // Any retained item not seen in incoming is removed
-        for old in &old_items {
+        // Collect removals while we still have an immutable borrow
+        for old in &self.items {
             if !seen_ids.contains(&old.id) {
                 removed.push(old.id);
             }
         }
 
-        // Update retained state
+        // Drop old_by_id to release immutable borrow on self.items
+        drop(old_by_id);
+        drop(old_ids);
+
         self.items = new_items;
 
         SceneDelta {

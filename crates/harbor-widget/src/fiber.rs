@@ -261,7 +261,7 @@ pub(crate) fn reconcile_children(
                 let new_id = create_fiber_from_view(arena, Some(parent_id), view);
                 new_child_ids.push(new_id);
             }
-            (None, None) => unreachable!(),
+            (None, None) => unreachable!("loop bound is max(old, new) so at least one is Some"),
         }
     }
 
@@ -333,7 +333,7 @@ pub(crate) fn layout_fiber(
 
 // ── Paint ────────────────────────────────────────────────────────────────────
 
-static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn next_scene_id() -> u64 {
     NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -427,6 +427,34 @@ mod tests {
         combined.insert(DirtyFlags::LAYOUT_DIRTY);
         combined.insert(DirtyFlags::PAINT_DIRTY);
         assert_eq!(combined.bits(), 0b0111);
+    }
+
+    #[test]
+    fn dirty_flags_all_set() {
+        let mut flags = DirtyFlags::NONE;
+        flags.insert(DirtyFlags::BUILD_DIRTY);
+        flags.insert(DirtyFlags::LAYOUT_DIRTY);
+        flags.insert(DirtyFlags::PAINT_DIRTY);
+        flags.insert(DirtyFlags::HIT_TEST_DIRTY);
+        assert_eq!(flags.bits(), 0b1111);
+        assert!(flags.contains(DirtyFlags::BUILD_DIRTY));
+        assert!(flags.contains(DirtyFlags::LAYOUT_DIRTY));
+        assert!(flags.contains(DirtyFlags::PAINT_DIRTY));
+        assert!(flags.contains(DirtyFlags::HIT_TEST_DIRTY));
+        // Contains should pass for subsets
+        assert!(flags.contains(DirtyFlags::BUILD_DIRTY));
+        assert!(!DirtyFlags::BUILD_DIRTY.contains(DirtyFlags::LAYOUT_DIRTY));
+    }
+
+    #[test]
+    fn dirty_flags_is_empty_after_remove_all() {
+        let mut flags = DirtyFlags::NONE;
+        flags.insert(DirtyFlags::BUILD_DIRTY);
+        flags.insert(DirtyFlags::LAYOUT_DIRTY);
+        assert!(!flags.is_empty());
+        flags.remove(DirtyFlags::BUILD_DIRTY);
+        flags.remove(DirtyFlags::LAYOUT_DIRTY);
+        assert!(flags.is_empty());
     }
 
     // ── FiberArena ──────────────────────────────────────────────────────
@@ -679,6 +707,17 @@ mod tests {
         assert_eq!(new_children[1], old_children[1]);
         // Third should be unmounted
         assert!(!arena.contains(old_children[2]));
+    }
+
+    #[test]
+    fn reconcile_empty_to_empty() {
+        let mut arena = FiberArena::new();
+        let parent = dummy_fiber();
+        let parent_id = arena.insert(parent);
+
+        // Both old children and new views are empty
+        let new_children = reconcile_children(&mut arena, parent_id, &[], vec![]);
+        assert!(new_children.is_empty());
     }
 
     #[test]
@@ -938,6 +977,57 @@ mod tests {
         assert_eq!(items[0].paint_order, 0);
         assert_eq!(items[1].paint_order, 1);
         assert_eq!(items[2].paint_order, 2);
+    }
+
+    #[test]
+    fn layout_fiber_with_no_children() {
+        let mut arena = FiberArena::new();
+
+        use crate::view::Component;
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(100.0, 50.0));
+        let mut cx = crate::view::BuildCx::stub();
+        let view = sb.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        // This tests that layout doesn't panic when children list is empty
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let fiber = arena.get(fiber_id).unwrap();
+        assert!(fiber.layout_rect.is_some());
+    }
+
+    #[test]
+    fn layout_fiber_with_dead_id() {
+        let mut arena = FiberArena::new();
+        let fiber = dummy_fiber();
+        let id = arena.insert(fiber);
+        arena.remove(id);
+
+        // Layout on dead fiber should be a no-op (no panic)
+        layout_fiber(
+            &mut arena,
+            id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+        // No panic = pass
+    }
+
+    #[test]
+    fn paint_fiber_with_dead_id() {
+        let mut arena = FiberArena::new();
+        let fiber = dummy_fiber();
+        let id = arena.insert(fiber);
+        arena.remove(id);
+
+        let items = paint_fiber(&arena, id, 0);
+        assert!(items.is_empty());
     }
 
     #[test]

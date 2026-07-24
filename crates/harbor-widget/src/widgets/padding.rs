@@ -57,14 +57,13 @@ impl AnyView for Padding {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+        // Child intrinsic sizes are computed bottom-up by layout_fiber;
+        // we report a best-effort estimate here. When no children exist,
+        // the padding insets themselves define the minimum size.
         let child_size = self
             .children
             .first()
-            .map(|_v| {
-                // Build the child view to get its AnyView for intrinsic_size
-                // Since children are pre-built Views, we use their AnyView directly
-                Size::ZERO // placeholder — intrinsic_size is computed bottom-up via layout_children
-            })
+            .map(|_v| Size::ZERO)
             .unwrap_or(Size::ZERO);
         let own = Size::new(
             (child_size.width + self.left + self.right)
@@ -87,7 +86,11 @@ impl AnyView for Padding {
             .clamp(constraints.min.height, constraints.max.height);
         let own = Size::new(own_width, own_height);
         let child_pos = Point::new(self.left, self.top);
-        (own, vec![child_pos])
+        if child_sizes.is_empty() {
+            (own, vec![])
+        } else {
+            (own, vec![child_pos])
+        }
     }
 
     fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
@@ -175,9 +178,8 @@ mod tests {
         // Own size is padding only (0 child + 10 + 10)
         assert_eq!(own.width, 20.0);
         assert_eq!(own.height, 20.0);
-        // Padding always returns one child position (Point::new(left, top))
-        assert_eq!(positions.len(), 1);
-        assert_eq!(positions[0], Point::new(10.0, 10.0));
+        // No children → no positions
+        assert_eq!(positions.len(), 0);
     }
 
     #[test]

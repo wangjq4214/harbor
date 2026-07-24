@@ -62,9 +62,9 @@ impl AnyView for Column {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        let total_height: f32 = 0.0;
-        let max_width: f32 = 0.0;
-        constraints.constrain(Size::new(max_width, total_height))
+        // Column fills available width; height is sum of children but unknown
+        // at intrinsic-time (children are laid out bottom-up by layout_fiber).
+        constraints.constrain(Size::new(constraints.max.width, constraints.max.height))
     }
 
     fn layout_children(
@@ -217,5 +217,29 @@ mod tests {
         let (own, _positions) = column.layout_children(constraints, &child_sizes);
         // Total height = 800, clamped to 500
         assert_eq!(own.height, 500.0);
+    }
+
+    #[test]
+    fn column_cross_axis_stretch() {
+        let column = Column::new()
+            .cross_axis_alignment(Alignment::Stretch)
+            .child(SizedBox::new(Size::new(20.0, 50.0)))
+            .child(SizedBox::new(Size::new(100.0, 50.0)));
+        let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
+        let child_sizes = vec![Size::new(20.0, 50.0), Size::new(100.0, 50.0)];
+        let (own, positions) = column.layout_children(constraints, &child_sizes);
+        assert_eq!(own, Size::new(200.0, 200.0)); // clamped to tight
+        // Stretch aligns at x=0 (offset is 0)
+        assert_eq!(positions[0].x, 0.0);
+        assert_eq!(positions[1].x, 0.0);
+    }
+
+    #[test]
+    fn column_intrinsic_size() {
+        let column = Column::new().child(SizedBox::new(Size::new(50.0, 50.0)));
+        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
+        let size = column.intrinsic_size(constraints);
+        // Column fills available max in loose mode
+        assert_eq!(size, Size::new(800.0, 600.0));
     }
 }
