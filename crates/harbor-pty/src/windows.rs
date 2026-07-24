@@ -28,8 +28,7 @@ use ::windows::{
                 DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread,
-                STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-                WaitForSingleObject,
+                STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     },
@@ -331,7 +330,6 @@ impl Drop for Pty {
 fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCESS_INFORMATION> {
     let mut startup_info = STARTUPINFOEXW::default();
     startup_info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-    startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
     let mut process_info = PROCESS_INFORMATION::default();
