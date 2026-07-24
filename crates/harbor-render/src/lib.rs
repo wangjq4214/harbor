@@ -4,26 +4,24 @@ mod cursor;
 mod decoration;
 pub mod font;
 pub mod gpu;
-pub mod metrics;
 mod scrollbar;
 pub mod selection;
 mod text;
 
 pub use background::Background;
-pub use caps::{
-    CursorContext, CursorInput, CursorWaitContext, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, SelectionContext, SelectionInput, SelectionWaitContext,
-};
+pub use caps::{InteractionResult, UiRequest, WaitResult};
 pub use cursor::Cursor;
 pub use decoration::Decoration;
 pub use font::{FontBook, load_system_fonts};
-pub use gpu::GpuContext;
-pub use metrics::TextMetrics;
+pub use gpu::{
+    GpuContext, SurfaceDisposition, SurfaceStatus, UploadMode, UploadPlan, UploadPolicy,
+    surface_disposition,
+};
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
-pub use text::{AtlasGlyph, Text};
+pub use text::{AtlasGlyph, Text, TextMetrics};
 
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 
 /// Result of an event handler — controls whether propagation continues.
 #[must_use]
@@ -37,11 +35,10 @@ pub enum EventResult {
 
 /// Every UI element: prepare + draw (+ optional resize).
 ///
-/// Interaction is not on this trait. Interactive layers implement the
-/// capability traits in [`caps`] and receive only the rights they need.
+/// Interaction is handled through concrete snapshot inputs and typed results.
 pub trait Component {
     /// Uploads dirty GPU resources. No-op when nothing changed.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>);
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>);
     /// Issues draw calls. Always lightweight, no GPU allocation.
     fn draw(&self, pass: &mut wgpu::RenderPass);
 

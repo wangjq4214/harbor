@@ -1,15 +1,15 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::{
-    Component, EventResult, SelectionInput,
-    caps::{ModifiersAccess, PtyAccess, RedrawAccess, ScrollAccess, TerminalAccess},
+    Component, EventResult,
+    caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, ColoredVertex, GpuContext},
 };
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
-use harbor_terminal::{self, PasteDisposition, Screen};
+use harbor_terminal::{self, PasteDisposition};
 use winit::keyboard::{Key, NamedKey};
 
 use harbor_terminal::{AutoScroll, SelectionModel, SelectionOutcome};
@@ -26,7 +26,9 @@ pub struct Selection {
     vertex_cap: usize,
     /// Cached from the most recent CursorMoved event (physical pixels).
     /// Needed because winit 0.30 MouseInput does not carry a position.
+    /// Request id awaiting an asynchronous worker copy response.
     last_cursor_pos: Option<(f64, f64)>,
+    pending_copy: Option<u64>,
     cell_width: f32,
     line_height: f32,
     /// Whether vertex buffer needs re-upload.
@@ -36,6 +38,10 @@ pub struct Selection {
 }
 
 impl Selection {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub fn new(gpu: &GpuContext, cell_width: f32, line_height: f32) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
@@ -46,6 +52,7 @@ impl Selection {
             vertex_count: 0,
             vertex_cap: 0,
             last_cursor_pos: None,
+            pending_copy: None,
             cell_width,
             line_height,
             dirty: false,
@@ -57,6 +64,27 @@ impl Selection {
                 cb.ok()
             },
         }
+    }
+
+    /// Completes a worker copy request and updates the UI-owned clipboard.
+    pub fn apply_copy_result(&mut self, result: harbor_types::CopySelectionResult) -> bool {
+        if self.pending_copy != Some(result.request_id) {
+            return false;
+        }
+        self.pending_copy = None;
+        if result.text.is_empty() {
+            return true;
+        }
+        if let Some(clipboard) = self.clipboard.as_mut()
+            && let Err(error) = clipboard.set_text(result.text)
+        {
+            tracing::warn!(%error, "failed to set clipboard text");
+        }
+        true
+    }
+
+    pub fn set_copy_pending(&mut self, request_id: u64) {
+        self.pending_copy = Some(request_id);
     }
 
     /// Convert a physical-pixel cursor position to a generation+col.
@@ -97,7 +125,7 @@ impl Selection {
     /// Renders only the intersection of the selection range with the current viewport.
     fn build_vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
@@ -154,291 +182,174 @@ impl Selection {
         verts
     }
 
-    /// Returns the currently selected text, or `None` when there is no active selection.
-    fn selected_text(&self, screen: &Screen) -> Option<String> {
-        if self.model.is_range_empty() {
-            return None;
-        }
-        let bounds = self.model.bounds()?;
-        let text = screen.selected_text(bounds);
-        if text.is_empty() { None } else { Some(text) }
-    }
-
-    /// Intercepts Ctrl+C (copy selection) and Ctrl+V (paste). Returns
-    /// `None` when the event is not a keyboard shortcut we handle.
-    fn try_handle_keyboard<C>(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        caps: &mut C,
-    ) -> Option<EventResult>
-    where
-        C: TerminalAccess + PtyAccess + ModifiersAccess,
-    {
-        let winit::event::WindowEvent::KeyboardInput { event: kbd, .. } = event else {
-            return None;
-        };
-        if kbd.state != winit::event::ElementState::Pressed {
-            return None;
-        }
-        let ctrl = caps.modifiers().control_key();
-        let shift = caps.modifiers().shift_key();
-        if !ctrl && !shift {
-            return None;
-        }
-
-        /// Reads clipboard and returns the paste disposition or None on error.
-        fn read_paste_text(clipboard: &mut Option<arboard::Clipboard>) -> Option<String> {
-            clipboard.as_mut().and_then(|cb| match cb.get_text() {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read clipboard text");
-                    None
-                }
-            })
-        }
-
-        // Ctrl+V paste
-        if ctrl {
-            match &kbd.logical_key {
-                winit::keyboard::Key::Character(ch) if ch == "c" || ch == "C" => {
-                    let Some(text) = self.selected_text(caps.terminal().screen()) else {
-                        return Some(EventResult::Continue);
-                    };
-                    if let Some(clipboard) = self.clipboard.as_mut()
-                        && let Err(e) = clipboard.set_text(text)
-                    {
-                        tracing::warn!(error = %e, "failed to set clipboard text");
-                    }
-                    return Some(EventResult::Handled);
-                }
-                winit::keyboard::Key::Character(ch) if ch == "v" || ch == "V" => {
-                    if let Some(text) = read_paste_text(&mut self.clipboard) {
-                        let modes = caps.terminal().screen().input_modes();
-                        match PasteDisposition::decide(modes, &text) {
-                            PasteDisposition::SendDirect => {
-                                caps.pty().write(&modes.paste(text.as_bytes()));
-                            }
-                            PasteDisposition::Confirm { raw_text } => {
-                                return Some(EventResult::ConfirmPaste(raw_text));
-                            }
-                        }
-                    }
-                    return Some(EventResult::Handled);
-                }
-                _ => {}
-            }
-        }
-
-        // Shift+Insert paste
-        if shift
-            && let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Insert) = &kbd.logical_key
-        {
-            if let Some(text) = read_paste_text(&mut self.clipboard) {
-                let modes = caps.terminal().screen().input_modes();
-                match PasteDisposition::decide(modes, &text) {
-                    PasteDisposition::SendDirect => {
-                        caps.pty().write(&modes.paste(text.as_bytes()));
-                    }
-                    PasteDisposition::Confirm { raw_text } => {
-                        return Some(EventResult::ConfirmPaste(raw_text));
-                    }
-                }
-            }
-            return Some(EventResult::Handled);
-        }
-
-        None
-    }
-
-    /// Apply [`SelectionOutcome`] — sets dirty flag on visual changes,
-    fn apply_outcome(
-        &mut self,
-        outcome: SelectionOutcome,
-        caps: &mut (impl ScrollAccess + RedrawAccess),
-    ) {
+    fn outcome_requests(&mut self, outcome: SelectionOutcome, requests: &mut Vec<UiRequest>) {
         match outcome {
             SelectionOutcome::None => {}
             SelectionOutcome::DragActive => {
                 self.dirty = true;
-                caps.request_redraw();
-                caps.set_auto_scrolling(true);
+                requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(true)]);
             }
             SelectionOutcome::DragEnded => {
                 self.dirty = true;
-                caps.request_redraw();
-                caps.set_auto_scrolling(false);
+                requests.extend([UiRequest::Redraw, UiRequest::SetSelectionDragActive(false)]);
             }
         }
     }
 
-    fn handle_cursor_moved(
+    pub fn handle_event(
         &mut self,
-        position: winit::dpi::PhysicalPosition<f64>,
-        caps: &mut (impl RedrawAccess + TerminalAccess),
-    ) -> EventResult {
-        self.last_cursor_pos = Some((position.x, position.y));
-
-        if !self.model.is_dragging() {
-            return EventResult::Continue;
-        }
-
-        let snap = caps.terminal().screen();
-        let (g, col) = self.pixel_to_cell(
-            position.x,
-            position.y,
-            snap.history_start(),
-            snap.scroll_count(),
-            snap.view_offset(),
-            snap.rows(),
-            snap.cols(),
-        );
-        if self.model.drag_to((g, col), snap) {
-            self.dirty = true;
-            caps.request_redraw();
-        }
-
-        EventResult::Handled
-    }
-
-    fn handle_mouse_input(
-        &mut self,
-        state: winit::event::ElementState,
-        button: winit::event::MouseButton,
-        caps: &mut (impl RedrawAccess + ScrollAccess + TerminalAccess),
-    ) -> EventResult {
-        if button != winit::event::MouseButton::Left {
-            return EventResult::Continue;
-        }
-
-        match state {
-            winit::event::ElementState::Pressed => {
-                if let Some((x, y)) = self.last_cursor_pos {
-                    let snap = caps.terminal().screen();
-                    let (g, col) = self.pixel_to_cell(
-                        x,
-                        y,
-                        snap.history_start(),
-                        snap.scroll_count(),
-                        snap.view_offset(),
-                        snap.rows(),
-                        snap.cols(),
-                    );
-                    let now = Instant::now();
-                    let outcome = self.model.press((g, col), now, snap);
-                    self.apply_outcome(outcome, caps);
-                }
-                EventResult::Handled
-            }
-            winit::event::ElementState::Released => {
-                let outcome = self.model.release();
-                self.apply_outcome(outcome, caps);
-                EventResult::Handled
-            }
-        }
-    }
-}
-
-// ── SelectionInput impl ──────────────────────────────────────────────────
-
-impl SelectionInput for Selection {
-    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &mut C) -> EventResult
-    where
-        C: TerminalAccess + RedrawAccess + PtyAccess + ModifiersAccess + ScrollAccess,
-    {
-        match event {
-            // Keyboard press: try copy/paste first, then clear selection state.
-            winit::event::WindowEvent::KeyboardInput { event: kbd, .. }
-                if kbd.state == winit::event::ElementState::Pressed =>
+        event: &winit::event::WindowEvent,
+        snapshot: &TerminalSnapshot,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> InteractionResult {
+        let mut requests = Vec::new();
+        let event_result = match event {
+            winit::event::WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed =>
             {
-                let kb_result = self.try_handle_keyboard(event, caps);
-                // Bare modifier keys (Ctrl, Shift, Alt, Super, etc.) are
-                // part of a chord — don't clear selection until the actual
-                // character key arrives.  Otherwise pressing Ctrl alone
-                // would destroy the selection before Ctrl+C can copy.
-                if !is_modifier_key(&kbd.logical_key) && self.model.on_key_press() {
-                    self.dirty = true;
-                    caps.request_redraw();
+                let ctrl = modifiers.control_key();
+                let shift = modifiers.shift_key();
+                if ctrl
+                    && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
+                {
+                    if self.model.has_selection() && !self.model.is_range_empty() {
+                        if self.pending_copy.is_none() {
+                            if let Some(bounds) = self.model.bounds() {
+                                requests.push(UiRequest::Copy(bounds));
+                            }
+                        }
+                        EventResult::Handled
+                    } else {
+                        EventResult::Continue
+                    }
+                } else if (ctrl
+                    && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("v")))
+                    || (shift && matches!(&key.logical_key, Key::Named(NamedKey::Insert)))
+                {
+                    if let Some(text) = self
+                        .clipboard
+                        .as_mut()
+                        .and_then(|clipboard| clipboard.get_text().ok())
+                    {
+                        match PasteDisposition::decide(snapshot.input_modes, &text) {
+                            PasteDisposition::SendDirect => requests.push(UiRequest::Paste(text)),
+                            PasteDisposition::Confirm { raw_text } => {
+                                return InteractionResult {
+                                    event: EventResult::ConfirmPaste(raw_text),
+                                    requests,
+                                };
+                            }
+                        }
+                        EventResult::Handled
+                    } else {
+                        EventResult::Continue
+                    }
+                } else {
+                    if !is_modifier_key(&key.logical_key) && self.model.on_key_press() {
+                        self.dirty = true;
+                        requests.push(UiRequest::Redraw);
+                    }
+                    EventResult::Continue
                 }
-                kb_result.unwrap_or(EventResult::Continue)
             }
-
-            // Alt-snap mode: cancel any in-flight drag, pass through to app.
-            _ if caps.terminal().is_alt_screen() => {
+            _ if snapshot.is_alt => {
                 let outcome = self.model.cancel();
-                self.apply_outcome(outcome, caps);
+                self.outcome_requests(outcome, &mut requests);
                 EventResult::Continue
             }
-
             winit::event::WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, caps)
+                self.last_cursor_pos = Some((position.x, position.y));
+                if !self.model.is_dragging() {
+                    EventResult::Continue
+                } else {
+                    let cell = self.pixel_to_cell(
+                        position.x,
+                        position.y,
+                        snapshot.history_start,
+                        snapshot.scroll_count,
+                        snapshot.view_offset,
+                        snapshot.rows,
+                        snapshot.cols,
+                    );
+                    if self.model.drag_to(cell, snapshot) {
+                        self.dirty = true;
+                        requests.push(UiRequest::Redraw);
+                    }
+                    EventResult::Handled
+                }
             }
-            winit::event::WindowEvent::MouseInput { state, button, .. } => {
-                self.handle_mouse_input(*state, *button, caps)
+            winit::event::WindowEvent::MouseInput { state, button, .. }
+                if *button == winit::event::MouseButton::Left =>
+            {
+                let outcome = match state {
+                    winit::event::ElementState::Pressed => self
+                        .last_cursor_pos
+                        .map(|(x, y)| {
+                            let cell = self.pixel_to_cell(
+                                x,
+                                y,
+                                snapshot.history_start,
+                                snapshot.scroll_count,
+                                snapshot.view_offset,
+                                snapshot.rows,
+                                snapshot.cols,
+                            );
+                            self.model.press(cell, Instant::now(), snapshot)
+                        })
+                        .unwrap_or(SelectionOutcome::None),
+                    winit::event::ElementState::Released => self.model.release(),
+                };
+                self.outcome_requests(outcome, &mut requests);
+                EventResult::Handled
             }
-            // Focus-loss mid-drag: release may go to another window.
-            winit::event::WindowEvent::Focused(false) => {
+            winit::event::WindowEvent::Focused(false) | winit::event::WindowEvent::Resized(_) => {
                 let outcome = self.model.cancel();
-                self.apply_outcome(outcome, caps);
+                self.outcome_requests(outcome, &mut requests);
                 EventResult::Continue
-            }
-            // Resize clears selection state — cancel any in-flight drag.
-            winit::event::WindowEvent::Resized(_) => {
-                let outcome = self.model.cancel();
-                self.apply_outcome(outcome, caps);
-                EventResult::Continue // don't consume — let UiRoot::resize fire
             }
             _ => EventResult::Continue,
+        };
+        InteractionResult {
+            event: event_result,
+            requests,
         }
     }
 
-    fn on_about_to_wait<C>(&mut self, caps: &mut C) -> Option<Instant>
-    where
-        C: TerminalAccess + ScrollAccess + RedrawAccess,
-    {
-        // Alt snap activated while dragging — cancel immediately.
-        if self.model.is_dragging() && caps.terminal().is_alt_screen() {
+    pub fn on_about_to_wait(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
+        let mut result = WaitResult::default();
+        if self.model.is_dragging() && snapshot.is_alt {
             let outcome = self.model.cancel();
-            self.apply_outcome(outcome, caps);
-            return None;
+            self.outcome_requests(outcome, &mut result.requests);
+            return result;
         }
-
-        // Early exit when no auto-scroll is active.
-        self.model.auto_scroll_direction()?;
-
+        self.model.auto_scroll_direction();
         let now = Instant::now();
-
-        // Rate-limit check — return existing deadline if not yet due.
         if let Some(deadline) = self.model.auto_scroll_deadline()
             && deadline > now
         {
-            return Some(deadline);
+            result.deadline = Some(deadline);
+            return result;
         }
-
-        let snap = caps.terminal().screen();
-        let (direction, new_cursor) = self.model.compute_auto_scroll_cursor(now, snap)?;
-
-        // Execute the viewport scroll.
-        match direction {
-            AutoScroll::Up => caps.scroll_viewport_up(1),
-            AutoScroll::Down => caps.scroll_viewport_down(1),
+        if let Some((direction, cursor)) = self.model.compute_auto_scroll_cursor(now, snapshot) {
+            result.requests.push(UiRequest::Scroll(match direction {
+                AutoScroll::Up => -1,
+                AutoScroll::Down => 1,
+            }));
+            if let Some(range) = self.model.range.as_mut() {
+                range.cursor = cursor;
+            }
+            self.dirty = true;
+            result.requests.push(UiRequest::Redraw);
+            result.deadline = self.model.auto_scroll_deadline();
         }
-
-        // Apply the new cursor position computed by the model.
-        if let Some(ref mut sel) = self.model.range {
-            sel.cursor = new_cursor;
-        }
-
-        self.dirty = true;
-        caps.request_redraw();
-
-        self.model.auto_scroll_deadline()
+        result
     }
 }
 
 // ── Component impl ───────────────────────────────────────────────────────
 
 impl Component for Selection {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if !self.dirty {
             return;
         }
@@ -456,8 +367,7 @@ impl Component for Selection {
 
             let (surf_w, surf_h) = gpu.surface_size();
             let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.vertex_count = verts.len() as u32;
         } else {
             self.vertex_count = 0;

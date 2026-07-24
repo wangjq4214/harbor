@@ -3,6 +3,12 @@ name = "harbor"
 version = "0.1.0"
 edition = "2024"
 
+
+[features]
+default = []
+backend-dx12 = ["harbor-render/backend-dx12"]
+backend-vulkan = ["harbor-render/backend-vulkan"]
+
 [workspace]
 resolver = "3"
 members = [".", "crates/*"]
@@ -83,3 +89,10 @@ winit = { workspace = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true

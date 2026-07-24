@@ -1,15 +1,14 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
-use harbor_pty::Pty;
 use harbor_render::{
-    AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
-    Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext, Text,
-    TextMetrics,
+    AtlasGlyph, Background, Component, Cursor, Decoration, EventResult, FontBook, GpuContext,
+    InteractionResult, Scrollbar, Selection, Text, TextMetrics, WaitResult,
 };
-use harbor_terminal::{Screen, Terminal, TerminalSize};
+use harbor_terminal::TerminalSize;
+use harbor_types::{
+    CopySelectionResult, DirtyRange, TerminalSnapshot, TerminalUpdate, UpdateDamage,
+};
 use winit::keyboard::ModifiersState;
-use winit::window::Window;
 
 /// Container for all UI components. Owns GPU resources and delegates
 /// render / event calls to each component in z-order.
@@ -34,18 +33,17 @@ impl UiRoot {
     /// `_fonts` is consumed by `Text::new`.
     pub(crate) fn new(
         gpu: &GpuContext,
-        screen: &Screen,
+        state: &TerminalSnapshot,
         _fonts: FontBook,
         metrics: TextMetrics,
     ) -> anyhow::Result<Self> {
-        let snap = screen.snapshot();
         Ok(Self {
-            background: Background::new(gpu, &snap, metrics.cell_width, metrics.line_height),
-            text: Text::new(gpu, _fonts, metrics, &snap)?,
-            decoration: Decoration::new(gpu, &snap, metrics),
+            background: Background::new(gpu, state, metrics.cell_width, metrics.line_height),
+            text: Text::new(gpu, _fonts, metrics, state)?,
+            decoration: Decoration::new(gpu, state, metrics),
             selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),
-            scrollbar: Scrollbar::new(gpu, &snap),
+            scrollbar: Scrollbar::new(gpu, state),
         })
     }
 
@@ -75,22 +73,67 @@ impl UiRoot {
     }
 
     /// Ensures dialog text characters are rasterized.
-    pub(crate) fn ensure_glyphs(&mut self, text: &str, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.text.ensure_glyphs(text, device, queue);
+    pub(crate) fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
+        self.text.ensure_glyphs(text, gpu);
     }
 
     /// Uploads dirty GPU resources for all five components.
-    pub(crate) fn prepare(&mut self, gpu: &GpuContext, screen: &Screen) {
-        let snap = screen.snapshot();
-        let dirty_ranges = snap.dirty_ranges.clone();
-        self.background
-            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
-        self.text.prepare_with_dirty(gpu, &snap, &dirty_ranges);
-        self.decoration
-            .prepare_with_dirty(gpu, &snap, &dirty_ranges);
-        self.selection.prepare(gpu, Some(&snap));
-        self.cursor.prepare(gpu, Some(&snap));
-        self.scrollbar.prepare(gpu, Some(&snap));
+    pub(crate) fn prepare(&mut self, gpu: &GpuContext, state: &TerminalSnapshot) {
+        self.prepare_snapshot(gpu, state, &[]);
+    }
+
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.background.is_dirty()
+            || self.text.is_dirty()
+            || self.decoration.is_dirty()
+            || self.selection.is_dirty()
+            || self.cursor.is_dirty()
+    }
+
+    /// Applies a complete revisioned update. A revision gap's `FullUpload`
+    /// cannot be reduced to the update's local dirty ranges.
+    pub(crate) fn prepare_update(&mut self, gpu: &GpuContext, update: &TerminalUpdate) {
+        self.prepare_update_damage(gpu, &update.snapshot, &update.damage);
+    }
+
+    pub(crate) fn prepare_update_damage(
+        &mut self,
+        gpu: &GpuContext,
+        state: &TerminalSnapshot,
+        damage: &UpdateDamage,
+    ) {
+        let full_ranges;
+        let dirty_ranges = match damage {
+            UpdateDamage::Ranges(ranges) => ranges,
+            UpdateDamage::FullUpload => {
+                full_ranges = (0..state.rows)
+                    .map(|row| DirtyRange {
+                        row,
+                        start_col: 0,
+                        end_col: state.cols,
+                    })
+                    .collect::<Vec<_>>();
+                &full_ranges
+            }
+        };
+        self.prepare_snapshot(gpu, state, dirty_ranges);
+    }
+
+    fn prepare_snapshot(
+        &mut self,
+        gpu: &GpuContext,
+        state: &TerminalSnapshot,
+        dirty_ranges: &[DirtyRange],
+    ) {
+        if dirty_ranges.is_empty() && !self.is_dirty() {
+            return;
+        }
+        self.background.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.text.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.decoration.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.selection.prepare(gpu, Some(state));
+        self.cursor.prepare(gpu, Some(state));
+        self.scrollbar.prepare(gpu, Some(state));
     }
 
     /// Issues draw calls for all five components in z-order (back to front).
@@ -115,83 +158,49 @@ impl UiRoot {
         Component::resize(&mut self.scrollbar, gpu, size);
     }
 
-    /// Dispatches to interactive layers only, each with the rights it needs.
-    /// Selection first — scrollbar always returns Handled on CursorMoved,
-    /// which would block selection drag updates.
+    pub(crate) fn apply_copy_result(&mut self, result: CopySelectionResult) -> bool {
+        self.selection.apply_copy_result(result)
+    }
+    pub(crate) fn set_copy_pending(&mut self, request_id: u64) {
+        self.selection.set_copy_pending(request_id);
+    }
+    /// Dispatches interaction using the published snapshot and returns concrete app requests.
     pub(crate) fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        terminal: &mut Terminal,
-        window: &Window,
-        gpu: &GpuContext,
-        pty: &mut Pty,
+        snapshot: &TerminalSnapshot,
         modifiers: ModifiersState,
-    ) -> EventResult {
-        let sel_result = self.selection.handle_event(
-            event,
-            &mut SelectionContext {
-                terminal: &mut *terminal,
-                window,
-                pty,
-                modifiers,
-            },
-        );
-        // Propagate Handled or ConfirmPaste; only Continue falls through.
-        if sel_result != EventResult::Continue {
-            return sel_result;
+    ) -> InteractionResult {
+        let mut result = self.selection.handle_event(event, snapshot, modifiers);
+        if result.event != EventResult::Continue {
+            return result;
         }
-        // After SelectionContext is dropped, terminal reborrow is released.
-        if self.scrollbar.handle_event(
-            event,
-            &ScrollbarContext {
-                terminal, // &mut Terminal auto-reborrows to &Terminal
-                gpu,
-                window,
-            },
-        ) == EventResult::Handled
-        {
-            return EventResult::Handled;
+        let scrollbar = self.scrollbar.handle_event(event, snapshot);
+        result.requests.extend(scrollbar.requests);
+        if scrollbar.event == EventResult::Handled {
+            result.event = EventResult::Handled;
+            return result;
         }
-        if self
-            .cursor
-            .handle_event(event, &CursorContext { terminal, gpu })
-            == EventResult::Handled
-        {
-            return EventResult::Handled;
-        }
-        EventResult::Continue
+        let cursor = self.cursor.handle_event(event, snapshot);
+        result.requests.extend(cursor.requests);
+        result.event = cursor.event;
+        result
     }
 
-    /// Collects the next wake deadline from interactive components
-    /// (cursor blink, scrollbar auto-hide, or selection auto-scroll).
-    pub(crate) fn compact_deadline(
-        &mut self,
-        terminal: &mut Terminal,
-        window: &Window,
-    ) -> Option<std::time::Instant> {
-        let mut deadline: Option<std::time::Instant> = None;
-
-        // Selection auto-scroll — needs &mut Terminal for ScrollAccess.
-        if let Some(d) = self.selection.on_about_to_wait(&mut SelectionWaitContext {
-            terminal: &mut *terminal,
-            window,
-        }) {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
+    /// Collects the earliest component wake deadline and associated requests.
+    pub(crate) fn compact_deadline(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
+        let mut result = self.selection.on_about_to_wait(snapshot);
+        for other in [
+            self.cursor.on_about_to_wait(snapshot),
+            self.scrollbar.on_about_to_wait(),
+        ] {
+            result.deadline = match (result.deadline, other.deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, deadline) => deadline,
+            };
+            result.requests.extend(other.requests);
         }
-
-        // Cursor blink — reborrows terminal as &Terminal (no conflict after selection).
-        if let Some(d) = self
-            .cursor
-            .on_about_to_wait(&CursorWaitContext { terminal, window })
-        {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
-        }
-        if let Some(d) = self
-            .scrollbar
-            .on_about_to_wait(&ScrollbarWaitContext { window })
-        {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
-        }
-        deadline
+        result
     }
 }

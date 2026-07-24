@@ -4,6 +4,235 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use harbor_types::DirtyRange;
+
+/// Upload operation selected for a dirty grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UploadMode {
+    None,
+    Incremental,
+    Full,
+}
+
+/// Pure upload decision, separated from wgpu so it can be tested headlessly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UploadPlan {
+    pub mode: UploadMode,
+    pub dirty_range_count: usize,
+    pub dirty_cells: usize,
+    pub dirty_bytes: usize,
+    pub full_bytes: usize,
+}
+
+/// Chooses full writes when fragmented or broad damage makes them cheaper.
+#[derive(Clone, Copy, Debug)]
+pub struct UploadPolicy {
+    full_upload_ratio: f64,
+    max_incremental_ranges: usize,
+}
+
+impl Default for UploadPolicy {
+    fn default() -> Self {
+        Self {
+            full_upload_ratio: 0.5,
+            max_incremental_ranges: 64,
+        }
+    }
+}
+
+impl UploadPolicy {
+    pub fn decide(
+        self,
+        rows: usize,
+        cols: usize,
+        bytes_per_cell: usize,
+        dirty_ranges: &[DirtyRange],
+        force_full: bool,
+    ) -> UploadPlan {
+        let dirty_cells = dirty_ranges.iter().fold(0usize, |total, range| {
+            total.saturating_add(range.end_col.saturating_sub(range.start_col))
+        });
+        let dirty_bytes = dirty_cells.saturating_mul(bytes_per_cell);
+        let full_bytes = rows.saturating_mul(cols).saturating_mul(bytes_per_cell);
+        if force_full {
+            return UploadPlan {
+                mode: UploadMode::Full,
+                dirty_range_count: dirty_ranges.len(),
+                dirty_cells,
+                dirty_bytes,
+                full_bytes,
+            };
+        }
+        if dirty_ranges.is_empty() {
+            return UploadPlan {
+                mode: UploadMode::None,
+                dirty_range_count: 0,
+                dirty_cells,
+                dirty_bytes,
+                full_bytes,
+            };
+        }
+        let ratio = if full_bytes == 0 {
+            1.0
+        } else {
+            dirty_bytes as f64 / full_bytes as f64
+        };
+        let mode = if ratio >= self.full_upload_ratio
+            || dirty_ranges.len() > self.max_incremental_ranges
+        {
+            UploadMode::Full
+        } else {
+            UploadMode::Incremental
+        };
+        UploadPlan {
+            mode,
+            dirty_range_count: dirty_ranges.len(),
+            dirty_cells,
+            dirty_bytes,
+            full_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceStatus {
+    Success,
+    Suboptimal,
+    Lost,
+    Outdated,
+    Timeout,
+    Occluded,
+    Validation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceDisposition {
+    Present,
+    PresentAndReconfigure,
+    ReconfigureAndRedraw,
+    Skip,
+}
+
+pub fn surface_disposition(status: SurfaceStatus) -> SurfaceDisposition {
+    match status {
+        SurfaceStatus::Success => SurfaceDisposition::Present,
+        SurfaceStatus::Suboptimal => SurfaceDisposition::PresentAndReconfigure,
+        SurfaceStatus::Lost | SurfaceStatus::Outdated => SurfaceDisposition::ReconfigureAndRedraw,
+        SurfaceStatus::Timeout | SurfaceStatus::Occluded | SurfaceStatus::Validation => {
+            SurfaceDisposition::Skip
+        }
+    }
+}
+
+#[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
+compile_error!("backend-dx12 and backend-vulkan cannot be enabled together");
+
+fn selected_backends() -> wgpu::Backends {
+    #[cfg(feature = "backend-dx12")]
+    {
+        return wgpu::Backends::DX12;
+    }
+    #[cfg(feature = "backend-vulkan")]
+    {
+        return wgpu::Backends::VULKAN;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return wgpu::Backends::GL;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        wgpu::Backends::all()
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    #[test]
+    fn surface_statuses_have_non_blocking_dispositions() {
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Success),
+            SurfaceDisposition::Present
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Suboptimal),
+            SurfaceDisposition::PresentAndReconfigure
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Lost),
+            SurfaceDisposition::ReconfigureAndRedraw
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Outdated),
+            SurfaceDisposition::ReconfigureAndRedraw
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Timeout),
+            SurfaceDisposition::Skip
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Occluded),
+            SurfaceDisposition::Skip
+        );
+        assert_eq!(
+            surface_disposition(SurfaceStatus::Validation),
+            SurfaceDisposition::Skip
+        );
+    }
+
+    fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
+        DirtyRange {
+            row,
+            start_col,
+            end_col,
+        }
+    }
+
+    #[test]
+    fn upload_policy_selects_none_incremental_and_full_uploads() {
+        let policy = UploadPolicy::default();
+        assert_eq!(policy.decide(2, 2, 4, &[], false).mode, UploadMode::None);
+        assert_eq!(
+            policy.decide(10, 10, 4, &[range(2, 1, 2)], false).mode,
+            UploadMode::Incremental
+        );
+        assert_eq!(
+            policy
+                .decide(
+                    10,
+                    10,
+                    4,
+                    &[
+                        range(0, 0, 10),
+                        range(1, 0, 10),
+                        range(2, 0, 10),
+                        range(3, 0, 10),
+                        range(4, 0, 10)
+                    ],
+                    false
+                )
+                .mode,
+            UploadMode::Full
+        );
+    }
+
+    #[test]
+    fn upload_policy_uses_full_upload_for_fragmented_or_forced_damage() {
+        let policy = UploadPolicy::default();
+        let fragmented = (0..65).map(|row| range(row, 0, 1)).collect::<Vec<_>>();
+        assert_eq!(
+            policy.decide(100, 100, 4, &fragmented, false).mode,
+            UploadMode::Full
+        );
+        assert_eq!(
+            policy.decide(2, 2, 8, &[range(1, 1, 2)], true).mode,
+            UploadMode::Full
+        );
+    }
+}
+
 // ── GpuContext ────────────────────────────────────────────────────────────
 
 /// Shared GPU handles for layers to create and upload resources.
@@ -20,6 +249,8 @@ pub struct GpuContext {
     device: wgpu::Device,
     /// Command submission queue.
     queue: wgpu::Queue,
+    /// Fixed adaptive policy used by cell-grid upload paths.
+    upload_policy: UploadPolicy,
     /// Surface configuration (format, size, present mode).
     config: wgpu::SurfaceConfiguration,
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
@@ -36,22 +267,28 @@ impl GpuContext {
             height = size.height,
             "creating gpu context"
         );
+        let backends = selected_backends();
+
         let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
-            #[cfg(target_os = "windows")]
-            backends: wgpu::Backends::DX12,
-            #[cfg(not(target_os = "windows"))]
-            backends: wgpu::Backends::all(),
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         }));
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })
             .await
             .context("request adapter")?;
-
+        let info = adapter.get_info();
+        tracing::info!(
+            name = %info.name,
+            backend = ?info.backend,
+            device_type = ?info.device_type,
+            "selected gpu adapter"
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -110,9 +347,20 @@ impl GpuContext {
             surface,
             device,
             queue,
+            upload_policy: UploadPolicy::default(),
             config,
             colored_quad_pipeline,
         })
+    }
+
+    /// Reconfigures the surface with its current dimensions.
+    pub fn reconfigure(&mut self) {
+        tracing::debug!(
+            width = self.config.width,
+            height = self.config.height,
+            "reconfiguring surface"
+        );
+        self.surface.configure(&self.device, &self.config);
     }
 
     /// Reconfigures the surface for a new window size.
@@ -124,7 +372,7 @@ impl GpuContext {
         self.config.width = width;
         self.config.height = height;
         tracing::trace!(width, height, "gpu context resized");
-        self.surface.configure(&self.device, &self.config);
+        self.reconfigure();
     }
 
     /// Surface pixel format.
@@ -137,6 +385,21 @@ impl GpuContext {
         (self.config.width, self.config.height)
     }
 
+    pub fn upload_plan(
+        &self,
+        rows: usize,
+        cols: usize,
+        bytes_per_cell: usize,
+        dirty_ranges: &[DirtyRange],
+        force_full: bool,
+    ) -> UploadPlan {
+        self.upload_policy
+            .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
+    }
+
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        self.queue.write_buffer(buffer, offset, data);
+    }
     /// Logical GPU device reference.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
@@ -531,5 +794,19 @@ pub fn create_vertex_buffer(device: &wgpu::Device, vertices: &[TexturedVertex]) 
         contents: bytemuck::cast_slice(vertices),
         // COPY_DST lets CursorLayer use queue.write_buffer for partial updates.
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
+}
+/// Creates an uninitialized vertex buffer of exactly `vertex_count` vertices.
+///
+/// This avoids allocating a temporary zero-filled CPU vertex array during resize.
+pub fn create_vertex_buffer_sized(device: &wgpu::Device, vertex_count: usize) -> wgpu::Buffer {
+    let byte_len = vertex_count
+        .checked_mul(std::mem::size_of::<TexturedVertex>())
+        .expect("vertex buffer size overflow");
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("vertex buffer"),
+        size: byte_len.max(std::mem::size_of::<TexturedVertex>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     })
 }

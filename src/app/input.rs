@@ -1,6 +1,6 @@
 //! Keyboard → PTY byte mapping.
 
-use crate::terminal::InputModes;
+use harbor_terminal::InputModes;
 use std::borrow::Cow;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -250,6 +250,70 @@ fn render_csi_key(
 pub(crate) struct InputEncoder;
 
 impl InputEncoder {
+    /// Captures a logical input request without consulting terminal modes.
+    pub(crate) fn request(
+        logical_key: &Key,
+        text: Option<&str>,
+        modifiers: ModifiersState,
+        is_numpad: bool,
+    ) -> Option<harbor_types::InputRequest> {
+        use harbor_types::{InputKey, InputModifiers};
+
+        let key = match logical_key {
+            Key::Character(ch) => InputKey::Character(ch.to_string()),
+            Key::Named(name) => match name {
+                NamedKey::Enter => InputKey::Enter,
+                NamedKey::Backspace => InputKey::Backspace,
+                NamedKey::Tab => InputKey::Tab,
+                NamedKey::Escape => InputKey::Escape,
+                NamedKey::Space => InputKey::Space,
+                NamedKey::ArrowUp => InputKey::ArrowUp,
+                NamedKey::ArrowDown => InputKey::ArrowDown,
+                NamedKey::ArrowRight => InputKey::ArrowRight,
+                NamedKey::ArrowLeft => InputKey::ArrowLeft,
+                NamedKey::Home => InputKey::Home,
+                NamedKey::End => InputKey::End,
+                NamedKey::F1 => InputKey::F1,
+                NamedKey::F2 => InputKey::F2,
+                NamedKey::F3 => InputKey::F3,
+                NamedKey::F4 => InputKey::F4,
+                NamedKey::F5 => InputKey::F5,
+                NamedKey::F6 => InputKey::F6,
+                NamedKey::F7 => InputKey::F7,
+                NamedKey::F8 => InputKey::F8,
+                NamedKey::F9 => InputKey::F9,
+                NamedKey::F10 => InputKey::F10,
+                NamedKey::F11 => InputKey::F11,
+                NamedKey::F12 => InputKey::F12,
+                NamedKey::Insert => InputKey::Insert,
+                NamedKey::Delete => InputKey::Delete,
+                NamedKey::PageUp => InputKey::PageUp,
+                NamedKey::PageDown => InputKey::PageDown,
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        let mut modifier_bits = 0;
+        if modifiers.shift_key() {
+            modifier_bits |= InputModifiers::SHIFT;
+        }
+        if modifiers.alt_key() {
+            modifier_bits |= InputModifiers::ALT;
+        }
+        if modifiers.control_key() {
+            modifier_bits |= InputModifiers::CONTROL;
+        }
+        if modifiers.super_key() {
+            modifier_bits |= InputModifiers::SUPER;
+        }
+        Some(harbor_types::InputRequest {
+            key,
+            text: text.map(str::to_owned),
+            modifiers: InputModifiers(modifier_bits),
+            is_numpad,
+        })
+    }
     /// Maps a logical key + optional text + modifier state to the byte sequence
     /// to write to the PTY. Named control/navigation keys are dispatched by
     /// `logical_key` first. When Ctrl is held and the key is a single ASCII
@@ -282,7 +346,7 @@ impl InputEncoder {
         // Prepend ESC (0x1b) if Alt is also pressed.
         if modifiers.control_key()
             && let Key::Character(ch) = logical_key
-            && let Some(ctrl_byte) = ctrl_letter_to_byte(ch)
+            && let Some(ctrl_byte) = ctrl_key_to_byte(ch)
         {
             if modifiers.alt_key() {
                 return Some(Cow::Owned(vec![0x1b, ctrl_byte]));
@@ -313,18 +377,19 @@ impl InputEncoder {
     }
 }
 
-/// Converts a single-character `SmolStr` to its control-character byte
-/// (`letter & 0x1F`).  Returns `None` for multi-codepoint strings or
-/// non-ASCII letters.
-fn ctrl_letter_to_byte(ch: &str) -> Option<u8> {
+/// Converts a logical key character under Ctrl to its C0 control byte value.
+/// Handles both ASCII letters ('a'..='z', 'A'..='Z') and pre-encoded ASCII C0 control
+/// characters ('\x00'..='\x1F') that some window/platform setups map directly.
+fn ctrl_key_to_byte(ch: &str) -> Option<u8> {
     let mut chars = ch.chars();
     let c = chars.next()?;
     if chars.next().is_some() {
-        return None; // more than one codepoint — not a simple letter
+        return None;
     }
     match c {
         'a'..='z' => Some((c as u8) - b'a' + 1),
         'A'..='Z' => Some((c as u8) - b'A' + 1),
+        '\x00'..='\x1F' => Some(c as u8),
         _ => None,
     }
 }
@@ -332,7 +397,7 @@ fn ctrl_letter_to_byte(ch: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{InputModes, Terminal};
+    use harbor_terminal::{InputModes, Terminal};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn k(name: NamedKey) -> Key {
@@ -439,6 +504,30 @@ mod tests {
         assert_eq!(
             test_bytes(&Key::Character("c".into()), None, ctrl()).as_deref(),
             Some(b"\x03".as_slice())
+        );
+    }
+
+    #[test]
+    fn ctrl_c_with_etx_char_and_no_text() {
+        assert_eq!(
+            test_bytes(&Key::Character("\u{3}".into()), None, ctrl()).as_deref(),
+            Some(b"\x03".as_slice())
+        );
+    }
+
+    #[test]
+    fn ctrl_a_with_soh_char_and_no_text() {
+        assert_eq!(
+            test_bytes(&Key::Character("\x01".into()), None, ctrl()).as_deref(),
+            Some(b"\x01".as_slice())
+        );
+    }
+
+    #[test]
+    fn ctrl_d_with_eot_char_and_no_text() {
+        assert_eq!(
+            test_bytes(&Key::Character("\x04".into()), None, ctrl()).as_deref(),
+            Some(b"\x04".as_slice())
         );
     }
 

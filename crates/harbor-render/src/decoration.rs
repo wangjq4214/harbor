@@ -1,10 +1,10 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
 use crate::{
     Component,
     gpu::{self, ColoredVertex, GpuContext},
-    metrics::TextMetrics,
+    text::TextMetrics,
 };
 use harbor_config::TEXT_PADDING;
 use harbor_terminal::{CellAttrs, DirtyRange};
@@ -18,7 +18,7 @@ pub fn build_underline_vertices(
     line_height: f32,
     underline_pos: f32,
     underline_thickness: f32,
-    snap: &RenderSnapshot,
+    snap: &TerminalSnapshot,
     surf_w: f32,
     surf_h: f32,
 ) -> Vec<ColoredVertex> {
@@ -51,7 +51,7 @@ pub fn build_strikethrough_vertices(
     line_height: f32,
     strikethrough_pos: f32,
     strikethrough_thickness: f32,
-    snap: &RenderSnapshot,
+    snap: &TerminalSnapshot,
     surf_w: f32,
     surf_h: f32,
 ) -> Vec<ColoredVertex> {
@@ -98,9 +98,13 @@ pub struct Decoration {
 }
 
 impl Decoration {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the decoration render pipeline and pre-allocates vertex buffers
     /// for the full grid (rows × cols × 6 vertices each).
-    pub fn new(gpu: &GpuContext, snap: &RenderSnapshot, metrics: TextMetrics) -> Self {
+    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, metrics: TextMetrics) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
         let rows = snap.rows;
@@ -145,10 +149,8 @@ impl Decoration {
             surf_w as f32,
             surf_h as f32,
         );
-        gpu.queue()
-            .write_buffer(&layer.underline_buffer, 0, bytemuck::cast_slice(&u));
-        gpu.queue()
-            .write_buffer(&layer.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+        gpu.write_buffer(&layer.underline_buffer, 0, bytemuck::cast_slice(&u));
+        gpu.write_buffer(&layer.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
         layer.dirty = false;
 
         layer
@@ -159,13 +161,22 @@ impl Decoration {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
+        let resized = snap.rows != self.rows || snap.cols != self.cols;
+        let bytes_per_cell = 12 * std::mem::size_of::<ColoredVertex>();
+        let plan = gpu.upload_plan(
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            resized || self.dirty,
+        );
 
         // Detect resize: dimensions changed → reallocate and full rebuild.
-        if snap.rows != self.rows || snap.cols != self.cols {
+        if resized {
             tracing::trace!(
                 rows = snap.rows,
                 cols = snap.cols,
@@ -196,21 +207,19 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.queue()
-                .write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
-            gpu.queue()
-                .write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+            gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
+            gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
             return;
         }
 
-        if !self.dirty && dirty_ranges.is_empty() {
+        if plan.mode == crate::UploadMode::None {
             return;
         }
 
-        if self.dirty {
+        if plan.mode == crate::UploadMode::Full {
             tracing::trace!("rebuilding decoration draw batch (full)");
             let u = build_underline_vertices(
                 self.cell_width,
@@ -230,10 +239,8 @@ impl Decoration {
                 surf_w as f32,
                 surf_h as f32,
             );
-            gpu.queue()
-                .write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
-            gpu.queue()
-                .write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+            gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
+            gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
@@ -285,12 +292,8 @@ impl Decoration {
                 let offset = ((range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<ColoredVertex>()) as u64;
-                gpu.queue().write_buffer(
-                    &self.underline_buffer,
-                    offset,
-                    bytemuck::cast_slice(&u_row),
-                );
-                gpu.queue().write_buffer(
+                gpu.write_buffer(&self.underline_buffer, offset, bytemuck::cast_slice(&u_row));
+                gpu.write_buffer(
                     &self.strikethrough_buffer,
                     offset,
                     bytemuck::cast_slice(&s_row),
@@ -303,7 +306,7 @@ impl Decoration {
 }
 
 impl Component for Decoration {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
@@ -347,7 +350,15 @@ mod tests {
         snap.write_char(' ');
         snap.write_char(' ');
 
-        let verts = build_underline_vertices(10.0, 20.0, 18.0, 1.5, &snap.snapshot(), 800.0, 600.0);
+        let verts = build_underline_vertices(
+            10.0,
+            20.0,
+            18.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
 
         // Cell 0 (underline) should have non-zero color matching fg.
         assert_ne!(
@@ -373,8 +384,15 @@ mod tests {
         snap.set_sgr_slice(&[Some(0)]); // reset
         snap.write_char(' ');
 
-        let verts =
-            build_strikethrough_vertices(10.0, 20.0, 9.0, 1.5, &snap.snapshot(), 800.0, 600.0);
+        let verts = build_strikethrough_vertices(
+            10.0,
+            20.0,
+            9.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
 
         assert_ne!(
             verts[0].color, [0.0; 4],
@@ -393,8 +411,24 @@ mod tests {
     fn no_decoration_for_default_cell() {
         let snap = test_snap(1, 3);
 
-        let u = build_underline_vertices(10.0, 20.0, 18.0, 1.5, &snap.snapshot(), 800.0, 600.0);
-        let s = build_strikethrough_vertices(10.0, 20.0, 9.0, 1.5, &snap.snapshot(), 800.0, 600.0);
+        let u = build_underline_vertices(
+            10.0,
+            20.0,
+            18.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
+        let s = build_strikethrough_vertices(
+            10.0,
+            20.0,
+            9.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
 
         for (i, v) in u.iter().enumerate() {
             assert_eq!(
@@ -421,8 +455,24 @@ mod tests {
         snap.set_sgr_slice(&[Some(9)]);
         snap.write_char(' ');
 
-        let u = build_underline_vertices(10.0, 20.0, 18.0, 1.5, &snap.snapshot(), 800.0, 600.0);
-        let s = build_strikethrough_vertices(10.0, 20.0, 9.0, 1.5, &snap.snapshot(), 800.0, 600.0);
+        let u = build_underline_vertices(
+            10.0,
+            20.0,
+            18.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
+        let s = build_strikethrough_vertices(
+            10.0,
+            20.0,
+            9.0,
+            1.5,
+            &snap.terminal_snapshot(),
+            800.0,
+            600.0,
+        );
 
         for v in &u {
             assert_eq!(

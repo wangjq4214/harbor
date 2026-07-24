@@ -67,7 +67,7 @@ Snapshot date: **2026-07-15**.
 | v0.2      | Terminal core             | SGR, grid editing, scroll regions, alt screen, cursor state done; parser/runtime gaps remain          |
 | v0.3      | Cell-based renderer       | Color, decorations, cursor shapes, scrollback rendering done; combining marks and box drawing remain  |
 | v0.4      | Interactive features      | Selection, clipboard, scrollback, scrollbar done; IME, mouse protocol, keybindings, hyperlinks remain |
-| v0.5      | Performance and stability | Damage tracking and batching done; latency, benchmarks, backpressure, diagnostics remain              |
+| v0.5      | Performance and stability | Damage tracking and batching done; U1 UI facade, revisioned snapshot contract, U2 background PTY/parser/model worker, U3 read-only UI/async command paths, U4 Surface recovery with dynamic Wait/WaitUntil/Poll scheduling, and U5 render metrics with adaptive incremental/full upload decisions landed; reproducible runtime latency/profile evidence is unavailable in the current environment, so U6 (#49) remains deferred |
 | v0.6      | Daily usable release      | Config, themes, search, packaging, dogfood not started                                                |
 
 ### 3.3 Recommended Critical Path
@@ -301,7 +301,8 @@ For each phase, use the same loop:
 - [ ] Align DEC Special Graphics and box-drawing glyphs for continuous joins.
 - [ ] Add text/UI tests for OSC 8 spans, protected cells, wide cells, and alternate-screen rendering.
 - [ ] Add throughput and latency benchmarks for `yes`, large `cat`, colored `git log`, `vim` redraw, and heavy scrollback.
-- [x] Add formal `DamageTracker` struct with cell-level damage granularity; limit redraw frequency during heavy PTY output (backpressure strategy remains).
+- [x] Add formal `DamageTracker` struct with cell-level damage granularity; coalesce worker update notifications and defer PTY snapshots while the mailbox is pending, retaining the latest revision during heavy output (GPU layout migration remains profile-gated).
+- [x] Add render metrics for snapshot build, prepare, upload, glyph-atlas uploads and misses, mailbox lag, command acknowledgements, encode, present duration/intervals, and p95/p99 frame/input latency; adaptive upload decisions remain profile-gated, the workload matrix remains explicitly unqualified until runtime evidence is collected, and U6 (#49) is not authorized by the current startup-only smoke evidence.
 - [ ] Add shell-crash handling, panic-hook logging, device-loss handling, and bounded memory diagnostics.
 - [ ] Run Windows and Unix dogfood sessions with `nvim`, `tmux`, `less`, `top`, `htop`, `fzf`, `lazygit`, and `cargo build`.
 - [ ] Promote only evidence-backed items in `checklist.md` and update the release table.
@@ -327,7 +328,7 @@ The product milestones below retain the existing implementation notes, task list
 
 **Terminal Grid.** `Terminal` + `Cell`, rows/cols tracking, cursor position, character write with automatic wrap, `\n`/`\r`/`\x08` handling, `scroll_up` on overflow, `clear`, `resize`, renderer reads grid row-by-row.
 
-**PTY (Windows).** Custom ConPTY wrapper, default shell (`cmd`/`powershell`/`pwsh`), background reader thread, MPSC channel to main thread, keyboard input forwarded to PTY.
+**PTY (Windows).** Custom ConPTY wrapper, default shell (`cmd`/`powershell`/`pwsh`), worker-owned reader/parser/model lifecycle, revisioned snapshots to the UI, keyboard input forwarded through the worker.
 
 **Input.** Normal text, Enter→`\r`, Backspace→`0x7f`, Tab→`\t`, Escape→`0x1b`, Ctrl+letter→control char, arrow keys→CSI sequences.
 

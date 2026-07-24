@@ -134,6 +134,18 @@ impl PtySession {
     where
         F: Fn(Vec<u8>) -> bool + Send + 'static,
     {
+        Self::start_shell_reader_with_status(size, output_handler, |_| {})
+    }
+
+    pub fn start_shell_reader_with_status<F, S>(
+        size: TerminalSize,
+        output_handler: F,
+        status_handler: S,
+    ) -> anyhow::Result<Self>
+    where
+        F: Fn(Vec<u8>) -> bool + Send + 'static,
+        S: Fn(Result<(), String>) + Send + 'static,
+    {
         // Convert once at the boundary so platform modules only deal with API-sized values.
         tracing::info!(
             rows = size.rows,
@@ -147,7 +159,7 @@ impl PtySession {
         let stopping = reader_shutdown.stopping();
         let reader = std::thread::spawn(move || {
             let _reader_completion = reader_completion;
-            pump_pty_output(reader, output_handler, &stopping);
+            pump_pty_output(reader, output_handler, status_handler, &stopping);
         });
 
         Ok(Self {
@@ -230,28 +242,44 @@ impl Pty {
         }
     }
 
-    /// Starts the PTY session with a shell reader thread.
-    ///
-    /// The reader appends bytes to the shared `PendingState` buffer and calls
-    /// `wake_handler.wake()` if no wake is already pending. Bulk processing
-    /// happens on the main thread via [`drain_output`](Self::drain_output).
+    /// Starts the PTY session with the legacy coalescing reader.
     pub fn start(&mut self, size: TerminalSize) -> anyhow::Result<()> {
         let wake_handler = Arc::clone(&self.wake_handler);
         let pending = self.pending.clone();
 
-        tracing::info!(rows = size.rows, cols = size.cols, "starting pty");
-        let pty = PtySession::start_shell_reader(size, move |output| {
-            {
-                let mut state = pending.lock();
-                state.buffer.extend_from_slice(&output);
-                if state.wake_pending {
-                    return true;
+        self.start_with_handlers(
+            size,
+            move |output| {
+                {
+                    let mut state = pending.lock();
+                    state.buffer.extend_from_slice(&output);
+                    if state.wake_pending {
+                        return true;
+                    }
+                    state.wake_pending = true;
                 }
-                state.wake_pending = true;
-            }
-            wake_handler.wake()
-        })?;
+                wake_handler.wake()
+            },
+            |_| {},
+        )
+    }
 
+    /// Starts the PTY session with caller-owned output and status channels.
+    ///
+    /// The callbacks run on the reader thread. Returning `false` from the
+    /// output callback cancels output delivery and lets the reader terminate.
+    pub fn start_with_handlers<F, S>(
+        &mut self,
+        size: TerminalSize,
+        output_handler: F,
+        status_handler: S,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(Vec<u8>) -> bool + Send + 'static,
+        S: Fn(Result<(), String>) + Send + 'static,
+    {
+        tracing::info!(rows = size.rows, cols = size.cols, "starting pty");
+        let pty = PtySession::start_shell_reader_with_status(size, output_handler, status_handler)?;
         self.session = Some(pty);
         Ok(())
     }
@@ -302,9 +330,14 @@ impl Pty {
 
 // ── pump_pty_output ──────────────────────────────────────────────────────────
 
-fn pump_pty_output<F>(mut reader: PtyReader, output_handler: F, stopping: &AtomicBool)
-where
+fn pump_pty_output<F, S>(
+    mut reader: PtyReader,
+    output_handler: F,
+    status_handler: S,
+    stopping: &AtomicBool,
+) where
     F: Fn(Vec<u8>) -> bool,
+    S: Fn(Result<(), String>),
 {
     let mut buffer = [0_u8; 4096];
     tracing::info!("pty output pump started");
@@ -319,6 +352,7 @@ where
         match reader.read(&mut buffer) {
             Ok(0) => {
                 tracing::info!("pty output stream reached eof");
+                status_handler(Ok(()));
                 break;
             }
             Ok(bytes) => {
@@ -339,6 +373,7 @@ where
                 }
 
                 tracing::error!(error = %format_args!("{error:#}"), "failed to read pty output");
+                status_handler(Err(format!("{error:#}")));
                 break;
             }
         }

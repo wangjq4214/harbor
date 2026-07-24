@@ -5,8 +5,7 @@
 
 mod app;
 mod event;
-mod pty;
-mod terminal;
+mod terminal_worker;
 
 use anyhow::{Context as _, Result};
 use app::App;

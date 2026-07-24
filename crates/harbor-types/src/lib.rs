@@ -189,7 +189,7 @@ pub enum CursorShape {
 
 /// Display-coordinate bounds of a text selection, row-major, inclusive.
 /// `start_row` / `end_row` are **generations** (stable scrollback coordinates).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelectionBounds {
     pub start_row: u64,
     pub start_col: usize,
@@ -337,42 +337,31 @@ fn trim_trailing_newlines(text: &str) -> &str {
     &text[..end]
 }
 
-// ── RenderSnapshot ─────────────────────────────────────────────────────────────
+// ── Terminal worker contract ────────────────────────────────────────────────
 
-/// Owned read-only projection of terminal state for rendering.
+/// Complete terminal state exchanged between the terminal model and the UI.
 ///
-/// Snapshot from [`Screen`] that the GPU layers consume without depending on
-/// the full terminal model. All visible cells are copied once per frame.
-pub struct RenderSnapshot {
-    /// Visible grid rows.
+/// This is intentionally a domain snapshot. It contains no GPU handles, UVs,
+/// or buffer offsets; the renderer derives its own projection from this data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalSnapshot {
     pub rows: usize,
-    /// Visible grid columns.
     pub cols: usize,
-    /// Flattened visible cells: `cells[row * cols + col]`.
     pub cells: Vec<Cell>,
-    /// Cursor column (0-based).
     pub cursor_x: usize,
-    /// Cursor row (0-based display row; set to `rows` when scrolled back).
     pub cursor_y: usize,
-    /// Whether the cursor should be drawn.
     pub cursor_visible: bool,
-    /// Whether the cursor blinks.
     pub cursor_blink: bool,
-    /// Cursor visual style.
     pub cursor_shape: CursorShape,
-    /// Total scrollback rows retained.
     pub scroll_count: usize,
-    /// Viewport offset from live bottom (0 = at bottom).
     pub view_offset: usize,
-    /// Monotonically increasing base generation for scrollback coordinate space.
     pub history_start: u64,
-    /// True when alternate screen is active.
     pub is_alt: bool,
-    /// Damaged cell ranges for incremental upload.
+    pub input_modes: InputModes,
     pub dirty_ranges: Vec<DirtyRange>,
 }
 
-impl RenderSnapshot {
+impl TerminalSnapshot {
     /// Returns a reference to the cell at `(row, col)` in display coordinates.
     #[inline]
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
@@ -383,5 +372,286 @@ impl RenderSnapshot {
     #[inline]
     pub fn cell_char(&self, row: usize, col: usize) -> char {
         self.cells[row * self.cols + col].ch
+    }
+
+    /// Returns the cell at the given scrollback generation and column.
+    #[inline]
+    pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
+        let visible_start =
+            self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64;
+        let row = generation.checked_sub(visible_start)? as usize;
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        self.cells.get(row * self.cols + col)
+    }
+}
+
+/// Damage carried by a complete update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateDamage {
+    /// The listed ranges are sufficient for an incremental renderer upload.
+    Ranges(Vec<DirtyRange>),
+    /// The renderer must upload the complete visible grid.
+    FullUpload,
+}
+/// Logical key data sent to the terminal worker for mode-sensitive encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InputKey {
+    Character(String),
+    Enter,
+    Backspace,
+    Tab,
+    Escape,
+    Space,
+    ArrowUp,
+    ArrowDown,
+    ArrowRight,
+    ArrowLeft,
+    Home,
+    End,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Insert,
+    Delete,
+    PageUp,
+    PageDown,
+}
+
+/// Modifier state captured by the UI and interpreted by the worker.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InputModifiers(pub u8);
+
+impl InputModifiers {
+    pub const SHIFT: u8 = 1;
+    pub const ALT: u8 = 2;
+    pub const CONTROL: u8 = 4;
+    pub const SUPER: u8 = 8;
+
+    pub fn shift(self) -> bool {
+        self.0 & Self::SHIFT != 0
+    }
+
+    pub fn alt(self) -> bool {
+        self.0 & Self::ALT != 0
+    }
+
+    pub fn control(self) -> bool {
+        self.0 & Self::CONTROL != 0
+    }
+
+    pub fn super_key(self) -> bool {
+        self.0 & Self::SUPER != 0
+    }
+}
+
+/// A logical keyboard event whose bytes are encoded against worker-owned modes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputRequest {
+    pub key: InputKey,
+    pub text: Option<String>,
+    pub modifiers: InputModifiers,
+    pub is_numpad: bool,
+}
+
+/// Result of an asynchronous selection-copy request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopySelectionResult {
+    pub request_id: u64,
+    pub text: String,
+}
+
+/// Commands accepted by the terminal worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalCommand {
+    /// Raw PTY output. Bytes must be consumed in this exact order.
+    PtyOutputBytes(Vec<u8>),
+    /// Logical keyboard input; the worker encodes it using authoritative modes.
+    Input(InputRequest),
+    /// Raw paste text; the worker applies bracketed-paste framing from its modes.
+    PasteText(String),
+    Resize {
+        request_id: u64,
+        size: TerminalSize,
+    },
+    ScrollViewport {
+        request_id: u64,
+        rows: isize,
+    },
+    ScrollToTop {
+        request_id: u64,
+    },
+    ScrollToBottom {
+        request_id: u64,
+    },
+    SetSelectionDragActive(bool),
+    CopySelection {
+        request_id: u64,
+        bounds: SelectionBounds,
+    },
+    RequestSnapshot {
+        request_id: u64,
+    },
+    Shutdown,
+}
+
+/// Worker health visible to the UI without exposing worker internals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerStatus {
+    Ready,
+    Processing,
+    Idle,
+    Failed { message: String },
+    Stopped,
+}
+
+/// Complete, revisioned state published by the terminal worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalUpdate {
+    pub revision: u64,
+    pub snapshot: TerminalSnapshot,
+    pub damage: UpdateDamage,
+    /// Snapshot-producing command request acknowledged by this update.
+    pub acknowledged_request_id: Option<u64>,
+}
+
+impl TerminalUpdate {
+    pub fn from_snapshot(revision: u64, snapshot: TerminalSnapshot) -> Self {
+        Self::with_acknowledgement(revision, snapshot, None)
+    }
+
+    pub fn with_acknowledgement(
+        revision: u64,
+        snapshot: TerminalSnapshot,
+        acknowledged_request_id: Option<u64>,
+    ) -> Self {
+        Self {
+            revision,
+            damage: UpdateDamage::Ranges(snapshot.dirty_ranges.clone()),
+            snapshot,
+            acknowledged_request_id,
+        }
+    }
+}
+
+/// Accepts monotonically increasing updates and converts revision gaps into
+/// an explicit full-upload requirement.
+#[derive(Debug, Default)]
+pub struct RevisionedUpdateReceiver {
+    last_revision: Option<u64>,
+}
+
+impl RevisionedUpdateReceiver {
+    pub fn last_revision(&self) -> Option<u64> {
+        self.last_revision
+    }
+
+    pub fn accept(&mut self, mut update: TerminalUpdate) -> Option<TerminalUpdate> {
+        if self
+            .last_revision
+            .is_some_and(|last| update.revision <= last)
+        {
+            return None;
+        }
+        if self
+            .last_revision
+            .is_some_and(|last| update.revision > last.saturating_add(1))
+        {
+            update.damage = UpdateDamage::FullUpload;
+        }
+        self.last_revision = Some(update.revision);
+        Some(update)
+    }
+}
+
+#[cfg(test)]
+mod worker_contract_tests {
+    use super::*;
+
+    fn snapshot(dirty_ranges: Vec<DirtyRange>) -> TerminalSnapshot {
+        TerminalSnapshot {
+            rows: 1,
+            cols: 2,
+            cells: vec![Cell::default(); 2],
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_visible: true,
+            cursor_blink: false,
+            cursor_shape: CursorShape::default(),
+            scroll_count: 0,
+            view_offset: 0,
+            history_start: 0,
+            is_alt: false,
+            input_modes: InputModes::default(),
+            dirty_ranges,
+        }
+    }
+
+    #[test]
+    fn stale_updates_cannot_replace_newer_state() {
+        let mut receiver = RevisionedUpdateReceiver::default();
+        let current = TerminalUpdate::from_snapshot(2, snapshot(Vec::new()));
+        assert!(receiver.accept(current).is_some());
+        assert!(
+            receiver
+                .accept(TerminalUpdate::from_snapshot(1, snapshot(Vec::new())))
+                .is_none()
+        );
+        assert_eq!(receiver.last_revision(), Some(2));
+    }
+
+    #[test]
+    fn skipped_revision_requires_full_upload() {
+        let mut receiver = RevisionedUpdateReceiver::default();
+        assert!(
+            receiver
+                .accept(TerminalUpdate::from_snapshot(
+                    4,
+                    snapshot(vec![DirtyRange {
+                        row: 0,
+                        start_col: 1,
+                        end_col: 2,
+                    }])
+                ))
+                .is_some()
+        );
+
+        let accepted = receiver
+            .accept(TerminalUpdate::from_snapshot(
+                6,
+                snapshot(vec![DirtyRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 1,
+                }]),
+            ))
+            .expect("new revision is accepted");
+        assert_eq!(accepted.damage, UpdateDamage::FullUpload);
+    }
+
+    #[test]
+    fn output_command_preserves_raw_ordered_bytes() {
+        let commands = [
+            TerminalCommand::PtyOutputBytes(vec![0x1b, b'[']),
+            TerminalCommand::PtyOutputBytes(vec![b'2', b'J']),
+        ];
+        let mut bytes = Vec::new();
+        for command in commands {
+            let TerminalCommand::PtyOutputBytes(chunk) = command else {
+                unreachable!("test only contains output commands");
+            };
+            bytes.extend(chunk);
+        }
+        assert_eq!(bytes, b"\x1b[2J");
     }
 }

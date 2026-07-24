@@ -279,8 +279,8 @@ struct Rect {
 
 impl Screen {
     pub fn new(rows: usize, cols: usize) -> Self {
-        assert!(rows > 0, "terminal rows must be non-zero");
-        assert!(cols > 0, "terminal cols must be non-zero");
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         Self {
             normal: NormalBuf::new(rows, cols),
             in_alt: false,
@@ -388,9 +388,9 @@ impl Screen {
         self.normal.cell_at_generation(generation, col)
     }
 
-    /// Produces a self-contained [`RenderSnapshot`] for GPU layers.
+    /// Produces the GPU-independent terminal state exchanged with the UI.
     /// Copies all visible cells — call once per frame.
-    pub fn snapshot(&self) -> harbor_types::RenderSnapshot {
+    pub fn terminal_snapshot(&self) -> harbor_types::TerminalSnapshot {
         let rows = self.rows();
         let cols = self.cols();
         let mut cells = Vec::with_capacity(rows * cols);
@@ -399,7 +399,7 @@ impl Screen {
                 cells.push(*self.cell(r, c));
             }
         }
-        harbor_types::RenderSnapshot {
+        harbor_types::TerminalSnapshot {
             rows,
             cols,
             cells,
@@ -412,6 +412,7 @@ impl Screen {
             view_offset: self.view_offset(),
             history_start: self.history_start(),
             is_alt: self.is_alt(),
+            input_modes: self.input_modes(),
             dirty_ranges: self.dirty_ranges(),
         }
     }
@@ -609,18 +610,20 @@ impl Screen {
     /// Resize does not touch parser state. Newly exposed cells are blank, and the cursor is
     /// clamped into the new bounds.
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         self.normal.resize(rows, cols);
-        self.cursor.y = self.cursor.y.min(rows.saturating_sub(1));
-        self.cursor.x = self.cursor.x.min(cols.saturating_sub(1));
+        self.cursor.y = self.cursor.y.min(rows - 1);
+        self.cursor.x = self.cursor.x.min(cols - 1);
         self.margins.clamp(cols);
         self.tab_stops.resize(cols);
         self.scroll_region = ScrollRegion::full(rows);
         if let Some(saved) = &mut self.alt_saved {
             saved.resize(rows, cols);
         }
-        if let Some(ref mut saved) = self.cursor.saved {
-            saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
-            saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
+        if let Some(saved) = &mut self.cursor.saved {
+            saved.cursor_x = saved.cursor_x.min(cols - 1);
+            saved.cursor_y = saved.cursor_y.min(rows - 1);
         }
     }
 

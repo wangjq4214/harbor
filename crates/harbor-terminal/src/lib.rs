@@ -18,7 +18,11 @@ pub use selection_model::{
 };
 
 pub use harbor_types::should_confirm_multiline;
-pub use harbor_types::{InputModes, PasteDisposition, TerminalSize, safe_preview_line};
+pub use harbor_types::{
+    CopySelectionResult, InputKey, InputModes, InputModifiers, InputRequest, PasteDisposition,
+    RevisionedUpdateReceiver, TerminalCommand, TerminalSize, TerminalSnapshot, TerminalUpdate,
+    UpdateDamage, WorkerStatus, safe_preview_line,
+};
 
 /// Stateful terminal model: a byte-stream parser plus the visible screen it mutates.
 pub struct Terminal {
@@ -93,6 +97,11 @@ impl Terminal {
     /// Returns the renderable screen snapshot owned by this terminal.
     pub fn screen(&self) -> &Screen {
         &self.normal
+    }
+
+    /// Returns the GPU-independent terminal state for the UI/update contract.
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        self.normal.terminal_snapshot()
     }
 
     /// Mutable screen access for tests.

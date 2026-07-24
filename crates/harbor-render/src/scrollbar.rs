@@ -1,5 +1,5 @@
 use bytemuck::Zeroable;
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use wgpu::util::DeviceExt;
 
 use harbor_config::{
@@ -8,8 +8,8 @@ use harbor_config::{
 };
 
 use crate::{
-    Component, EventResult, ScrollbarInput,
-    caps::{GpuAccess, RedrawAccess, TerminalAccess},
+    Component, EventResult,
+    caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, ColoredVertex, GpuContext},
 };
 
@@ -73,7 +73,7 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 /// Builds 6 vertices for the scrollbar thumb quad.
 /// Returns degenerate (all-zero) vertices when scrollbar should be hidden
 /// (alt snap or no scrollback history).
-fn build_vertices(snap: &RenderSnapshot, surf_w: f32, surf_h: f32) -> [ColoredVertex; 6] {
+fn build_vertices(snap: &TerminalSnapshot, surf_w: f32, surf_h: f32) -> [ColoredVertex; 6] {
     // No scrollback or alt snap → no thumb to show.
     if snap.is_alt || snap.scroll_count == 0 {
         return [ColoredVertex::default(); 6];
@@ -109,7 +109,7 @@ fn build_vertices(snap: &RenderSnapshot, surf_w: f32, surf_h: f32) -> [ColoredVe
 }
 
 /// Computes the pixel-space rect and corner radius for the uniform buffer.
-fn compute_uniform(snap: &RenderSnapshot, surf_w: f32, surf_h: f32) -> ScrollbarUniform {
+fn compute_uniform(snap: &TerminalSnapshot, surf_w: f32, surf_h: f32) -> ScrollbarUniform {
     // Same early-exit and geometry as `build_vertices` — returns zeroed uniform
     // when the scrollbar should be hidden.
     if snap.is_alt || snap.scroll_count == 0 {
@@ -154,13 +154,15 @@ pub struct Scrollbar {
     cursor_inside: bool,
     /// Timestamp of the last mouse move or scroll wheel activity (for auto-hide timeout).
     last_activity: std::time::Instant,
+    /// Inputs used for the last scrollbar buffer upload.
+    last_upload_key: Option<(usize, usize, usize, usize, bool, u32, u32)>,
 }
 
 impl Scrollbar {
     /// Creates the scrollbar: allocates pipeline, vertex buffer, uniform buffer,
     /// and bind group. Uploads initial (degenerate) vertices — the scrollbar
     /// starts hidden until mouse activity triggers `show()`.
-    pub fn new(gpu: &GpuContext, snap: &RenderSnapshot) -> Self {
+    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let empty = [ColoredVertex::default(); 6];
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
@@ -179,8 +181,7 @@ impl Scrollbar {
 
         // Upload initial (degenerate) vertices.
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        gpu.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
         Self {
             pipeline,
@@ -190,6 +191,7 @@ impl Scrollbar {
             visible: false,
             cursor_inside: false,
             last_activity: std::time::Instant::now(),
+            last_upload_key: None,
         }
     }
 
@@ -271,20 +273,30 @@ impl Scrollbar {
 }
 
 impl Component for Scrollbar {
-    /// Upload scrollbar vertices and uniform data for the current snap state.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         let Some(snap) = snap else {
             return;
         };
         let (surf_w, surf_h) = gpu.surface_size();
+        let key = (
+            snap.rows,
+            snap.cols,
+            snap.scroll_count,
+            snap.view_offset,
+            snap.is_alt,
+            surf_w,
+            surf_h,
+        );
+        if self.last_upload_key == Some(key) {
+            return;
+        }
+        self.last_upload_key = Some(key);
 
         let vertices = build_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
         let uniform = compute_uniform(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        gpu.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     /// Draw the scrollbar thumb (no-op when hidden).
@@ -299,63 +311,57 @@ impl Component for Scrollbar {
     }
 }
 
-impl ScrollbarInput for Scrollbar {
-    fn handle_event<C>(&mut self, event: &winit::event::WindowEvent, caps: &C) -> EventResult
-    where
-        C: TerminalAccess + GpuAccess + RedrawAccess,
-    {
+impl Scrollbar {
+    pub fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        _snapshot: &TerminalSnapshot,
+    ) -> InteractionResult {
+        let mut result = InteractionResult::continue_();
         match event {
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.cursor_inside = true;
                 self.show();
-                let snap = caps.terminal().screen().snapshot();
-                self.prepare(caps.gpu(), Some(&snap));
-                caps.request_redraw();
-                EventResult::Handled
+                result.event = EventResult::Handled;
+                result.requests.push(UiRequest::Redraw);
             }
             winit::event::WindowEvent::CursorMoved { .. } => {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible && self.cursor_inside {
                     self.show();
-                    let snap = caps.terminal().screen().snapshot();
-                    self.prepare(caps.gpu(), Some(&snap));
-                    caps.request_redraw();
+                    result.requests.push(UiRequest::Redraw);
                 }
-                EventResult::Handled
+                result.event = EventResult::Handled;
             }
-            winit::event::WindowEvent::CursorLeft { .. } => {
-                self.cursor_inside = false;
-                EventResult::Continue
-            }
+            winit::event::WindowEvent::CursorLeft { .. } => self.cursor_inside = false,
             winit::event::WindowEvent::MouseWheel { .. } => {
                 self.last_activity = std::time::Instant::now();
                 if !self.visible {
                     self.show();
-                    let snap = caps.terminal().screen().snapshot();
-                    self.prepare(caps.gpu(), Some(&snap));
-                    caps.request_redraw();
+                    result.requests.push(UiRequest::Redraw);
                 }
-                EventResult::Continue
             }
-            _ => EventResult::Continue,
+            _ => {}
         }
+        result
     }
 
-    fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<std::time::Instant>
-    where
-        C: RedrawAccess,
-    {
+    pub fn on_about_to_wait(&mut self) -> WaitResult {
         if !self.visible {
-            return None;
+            return WaitResult::default();
         }
-        let elapsed = self.last_activity.elapsed();
         let hide_delay = std::time::Duration::from_millis(harbor_config::SCROLLBAR_HIDE_DELAY_MS);
-        if elapsed >= hide_delay {
+        if self.last_activity.elapsed() >= hide_delay {
             self.visible = false;
-            caps.request_redraw();
-            return None;
+            return WaitResult {
+                deadline: None,
+                requests: vec![UiRequest::Redraw],
+            };
         }
-        Some(self.last_activity + hide_delay)
+        WaitResult {
+            deadline: Some(self.last_activity + hide_delay),
+            requests: Vec::new(),
+        }
     }
 }
 
@@ -368,7 +374,7 @@ mod tests {
     fn build_vertices_returns_degenerate_when_no_scrollback() {
         let term = Terminal::new(24, 80);
         // scroll_count == 0 by default
-        let vertices = build_vertices(&term.screen().snapshot(), 800.0, 600.0);
+        let vertices = build_vertices(&term.snapshot(), 800.0, 600.0);
         // All 6 vertices should be degenerate (position is [0, 0])
         for v in &vertices {
             assert_eq!(v.position, [0.0, 0.0], "expected degenerate vertex");
@@ -385,7 +391,7 @@ mod tests {
         // Move viewport up by scrolling.
         term.scroll_viewport_up(10);
 
-        let vertices = build_vertices(&term.screen().snapshot(), 800.0, 600.0);
+        let vertices = build_vertices(&term.snapshot(), 800.0, 600.0);
         // At least one vertex should have a non-zero position.
         let has_non_degenerate = vertices.iter().any(|v| v.position != [0.0, 0.0]);
         assert!(

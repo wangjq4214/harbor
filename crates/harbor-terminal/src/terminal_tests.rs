@@ -102,6 +102,32 @@ fn resize_preserves_visible_cells_and_clamps_cursor() {
 }
 
 #[test]
+fn resize_preserves_scrollback_viewport() {
+    let mut terminal = Terminal::new(2, 4);
+    for line in ["A", "B", "C", "D"] {
+        terminal.process_output(format!("{line}\r\n").as_bytes());
+    }
+    terminal.scroll_viewport_up(1);
+    let displayed = terminal.row_text(0);
+    let history_start = terminal.screen().history_start();
+
+    terminal.resize(3, 6);
+
+    assert_eq!(terminal.screen().view_offset(), 1);
+    assert!(terminal.screen().scroll_count() > 0);
+    assert_eq!(terminal.row_text(0), format!("{displayed}  "));
+    assert_eq!(terminal.screen().history_start(), history_start);
+}
+
+#[test]
+fn resize_zero_dimensions_uses_safe_terminal_size() {
+    let mut terminal = Terminal::new(2, 4);
+    terminal.resize(0, 0);
+
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 1));
+}
+
+#[test]
 fn sgr_sets_fg_color_on_written_cells() {
     let mut terminal = Terminal::new(1, 8);
 

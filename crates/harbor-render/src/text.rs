@@ -1,4 +1,4 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use hashbrown::HashMap;
 
 use anyhow::Result;
@@ -6,10 +6,9 @@ use fontdue::Metrics;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Component,
+    Component, UploadMode,
     font::FontBook,
     gpu::{self, GpuContext, TexturedVertex},
-    metrics::TextMetrics,
 };
 use harbor_config::{FONT_SIZE, TEXT_PADDING};
 use harbor_terminal::{CellAttrs, Color, DirtyRange, TerminalSize};
@@ -43,6 +42,53 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 "#;
+
+/// Fixed measurements used to map window pixels to terminal cells.
+#[derive(Clone, Copy)]
+pub struct TextMetrics {
+    pub cell_width: f32,
+    pub line_height: f32,
+    pub ascent: f32,
+    /// Distance from cell top to underline top edge (px).
+    pub underline_position: f32,
+    pub underline_thickness: f32,
+    /// Distance from cell top to strikethrough center (px).
+    pub strikethrough_position: f32,
+    pub strikethrough_thickness: f32,
+}
+
+impl TextMetrics {
+    pub fn new(fonts: &FontBook) -> Self {
+        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
+        let (underline_position, strikethrough_position) = fonts
+            .primary_horizontal_line_metrics(harbor_config::FONT_SIZE)
+            .map(|lm| {
+                let descent = lm.descent.abs();
+                (line_height - descent + 1.0, (line_height - descent) * 0.45)
+            })
+            .unwrap_or((line_height * 0.8, line_height * 0.45));
+
+        Self {
+            cell_width,
+            line_height,
+            ascent,
+            underline_position,
+            underline_thickness: 1.5,
+            strikethrough_position,
+            strikethrough_thickness: 1.5,
+        }
+    }
+
+    pub fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
+        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(self.cell_width);
+        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(self.line_height);
+
+        TerminalSize {
+            rows: (text_height / self.line_height).floor().max(1.0) as usize,
+            cols: (text_width / self.cell_width).floor().max(1.0) as usize,
+        }
+    }
+}
 
 // ── CPU-side glyph atlas ──────────────────────────────────────────────────
 
@@ -135,14 +181,14 @@ impl GlyphAtlas {
     ///
     /// Returns `(new_chars, evicted)` where `evicted` indicates the atlas was
     /// fully cleared and all UVs changed (atlas overflow → full rebuild).
-    fn update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> (Vec<char>, bool) {
+    fn update(&mut self, fonts: &FontBook, snap: &TerminalSnapshot) -> (Vec<char>, bool) {
         self.update_with_dirty(fonts, snap, &snap.dirty_ranges)
     }
 
     fn update_with_dirty(
         &mut self,
         fonts: &FontBook,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) -> (Vec<char>, bool) {
         // Collect unique non-space chars from dirty rows only.
@@ -276,7 +322,7 @@ impl GlyphAtlas {
     }
 
     /// Full rebuild from all visible characters (used on resize and eviction).
-    fn full_update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> Vec<char> {
+    fn full_update(&mut self, fonts: &FontBook, snap: &TerminalSnapshot) -> Vec<char> {
         // Collect unique non-space chars from the full snap.
         let mut chars: Vec<char> = snap
             .cells
@@ -519,7 +565,7 @@ impl GlyphAtlas {
     #[cfg(test)]
     fn vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surface_width: f32,
         surface_height: f32,
     ) -> Vec<TexturedVertex> {
@@ -630,8 +676,33 @@ impl GpuGlyphAtlas {
         }
     }
 
+    /// Re-uploads the CPU atlas into the existing texture after a terminal resize.
+    fn update_full(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas) -> usize {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self._texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &atlas.pixels,
+            wgpu::TexelCopyBufferLayout {
+                bytes_per_row: Some(MAX_ATLAS_SIZE),
+                rows_per_image: Some(MAX_ATLAS_SIZE),
+                offset: 0,
+            },
+            wgpu::Extent3d {
+                width: MAX_ATLAS_SIZE,
+                height: MAX_ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        atlas.pixels.len()
+    }
+
     /// Uploads new glyph tiles into the pre-allocated 2048×2048 texture.
-    fn update_glyphs(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas, new_chars: &[char]) {
+    fn update_glyphs(&self, queue: &wgpu::Queue, atlas: &GlyphAtlas, new_chars: &[char]) -> usize {
+        let mut uploaded = 0usize;
         for ch in new_chars {
             let Some(glyph) = atlas.glyph(*ch) else {
                 continue;
@@ -639,8 +710,6 @@ impl GpuGlyphAtlas {
             if glyph.width == 0 || glyph.height == 0 {
                 continue;
             }
-            // Extract glyph bitmap from the atlas pixels, padding each row
-            // to COPY_BYTES_PER_ROW_ALIGNMENT (256).
             let padded_bytes_per_row = glyph.width.div_ceil(256) * 256;
             let mut tile_data = vec![0u8; (padded_bytes_per_row * glyph.height) as usize];
             for row in 0..glyph.height {
@@ -673,7 +742,9 @@ impl GpuGlyphAtlas {
                     depth_or_array_layers: 1,
                 },
             );
+            uploaded = uploaded.saturating_add(tile_data.len());
         }
+        uploaded
     }
 }
 
@@ -718,13 +789,17 @@ pub struct Text {
 }
 
 impl Text {
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Creates the text render pipeline, bind group layout, initial glyph atlas,
     /// and pre-allocated vertex buffer from the given GPU context and snap.
     pub fn new(
         gpu: &GpuContext,
         fonts: FontBook,
         metrics: TextMetrics,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
     ) -> Result<Self> {
         let (surf_w, surf_h) = gpu.surface_size();
         tracing::info!(
@@ -741,14 +816,14 @@ impl Text {
         tracing::info!(glyphs = atlas.glyphs.len(), "glyph atlas initialized");
         let gpu_atlas = GpuGlyphAtlas::new(gpu.device(), gpu.queue(), &bind_group_layout, &atlas);
 
-        // Pre-allocate vertex buffer for the full grid (rows * cols * 6 vertices).
+        // Pre-allocate vertex buffer for the full grid without a CPU-side zeroed copy.
         let rows = snap.rows;
         let cols = snap.cols;
-        let max_vertices = rows * cols * 6;
-        let vertex_buffer = gpu::create_vertex_buffer(
-            gpu.device(),
-            &vec![TexturedVertex::default(); max_vertices.max(1)],
-        );
+        let max_vertices = rows
+            .checked_mul(cols)
+            .and_then(|cells| cells.checked_mul(6))
+            .expect("text vertex count overflow");
+        let vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), max_vertices);
 
         let mut layer = Self {
             fonts,
@@ -764,8 +839,7 @@ impl Text {
         };
         // Build initial vertex data and upload via write_buffer.
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-        gpu.queue()
-            .write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
 
         Ok(layer)
@@ -799,20 +873,21 @@ impl Text {
 
     /// Ensures all characters in `text` are rasterized and uploaded to the GPU atlas.
     /// Call before building text vertices for dialog labels that reference the atlas.
-    pub fn ensure_glyphs(&mut self, text: &str, _device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
         let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
         chars.sort_unstable();
         chars.dedup();
         let new_chars = self.atlas.ensure_chars(&chars, &self.fonts);
         if !new_chars.is_empty() {
-            self.gpu_atlas.update_glyphs(queue, &self.atlas, &new_chars);
+            self.gpu_atlas
+                .update_glyphs(gpu.queue(), &self.atlas, &new_chars);
         }
     }
     /// Builds the 6 * cols vertices for one row at fixed offsets. Blank cells → degenerate quad.
     fn build_row_vertices(
         &self,
         row: usize,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -831,7 +906,7 @@ impl Text {
     fn build_range_vertices(
         &self,
         range: &DirtyRange,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -891,7 +966,7 @@ impl Text {
     /// Builds vertices for every row in the full grid.
     fn build_all_vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -952,39 +1027,44 @@ impl Text {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
+        let resized = snap.rows != self.rows || snap.cols != self.cols;
+        let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
-        // Detect resize: dimensions changed → full rebuild.
-        if snap.rows != self.rows || snap.cols != self.cols {
+        if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
             self.atlas.full_update(&self.fonts, snap);
-            self.gpu_atlas = GpuGlyphAtlas::new(
-                gpu.device(),
-                gpu.queue(),
-                &self.bind_group_layout,
-                &self.atlas,
-            );
-            let new_cap = snap.rows * snap.cols * 6;
-            let old_cap = self.rows * self.cols * 6;
+            self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
+
+            let new_cap = snap
+                .rows
+                .checked_mul(snap.cols)
+                .and_then(|cells| cells.checked_mul(6))
+                .expect("text vertex count overflow");
+            let old_cap = self
+                .rows
+                .checked_mul(self.cols)
+                .and_then(|cells| cells.checked_mul(6))
+                .expect("text vertex count overflow");
             if new_cap > old_cap {
-                self.vertex_buffer = gpu::create_vertex_buffer(
-                    gpu.device(),
-                    &vec![TexturedVertex::default(); new_cap.max(1)],
-                );
+                let placeholder = gpu::create_vertex_buffer_sized(gpu.device(), 0);
+                let old_buffer = std::mem::replace(&mut self.vertex_buffer, placeholder);
+                drop(old_buffer);
+                self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
+            let plan = gpu.upload_plan(snap.rows, snap.cols, bytes_per_cell, dirty_ranges, true);
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            debug_assert_eq!(plan.mode, UploadMode::Full);
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
             return;
         }
 
-        // Atlas update: incremental rasterization of new glyphs.
         let (new_glyphs, evicted) = self
             .atlas
             .update_with_dirty(&self.fonts, snap, dirty_ranges);
@@ -996,24 +1076,26 @@ impl Text {
             );
             self.gpu_atlas
                 .update_glyphs(gpu.queue(), &self.atlas, &new_glyphs);
-
-            // Incremental addition: new UVs only affect dirty rows,
-            // which already rebuild via build_row_vertices below.
-            if evicted {
-                self.dirty = true; // atlas cleared → all UVs invalidated
-            }
+        }
+        if evicted {
+            self.dirty = true;
         }
 
-        // Dirty check: skip upload if nothing changed.
-        if !self.dirty && dirty_ranges.is_empty() {
+        let plan = gpu.upload_plan(
+            snap.rows,
+            snap.cols,
+            bytes_per_cell,
+            dirty_ranges,
+            self.dirty,
+        );
+        if plan.mode == UploadMode::None {
             return;
         }
 
-        if self.dirty {
+        if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding text draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
-            gpu.queue()
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
@@ -1022,7 +1104,7 @@ impl Text {
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
-                gpu.queue().write_buffer(
+                gpu.write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
                     bytemuck::cast_slice(&range_verts),
@@ -1034,7 +1116,7 @@ impl Text {
 }
 
 impl Component for Text {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
@@ -1076,7 +1158,7 @@ mod tests {
 
         terminal.put_str("aa b\r\nc a");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         assert_eq!(atlas.glyphs.len(), 3);
         assert!(atlas.glyphs.contains_key(&'a'));
@@ -1092,8 +1174,8 @@ mod tests {
 
         terminal.put_str("a b\r\n c ");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
+        let _ = atlas.update(&fonts, &terminal.snapshot());
+        let vertices = atlas.vertices(&terminal.snapshot(), 800.0, 600.0);
 
         assert_eq!(vertices.len(), 18);
         assert!(vertices.iter().all(|vertex| {
@@ -1117,7 +1199,7 @@ mod tests {
 
         terminal.put_str("中");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         let glyph = atlas.glyphs.get(&'中').expect("CJK glyph in atlas");
         assert!(glyph.width > 0);
@@ -1130,8 +1212,8 @@ mod tests {
         let terminal = Terminal::new(2, 4);
 
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
+        let _ = atlas.update(&fonts, &terminal.snapshot());
+        let vertices = atlas.vertices(&terminal.snapshot(), 800.0, 600.0);
 
         assert!(atlas.glyphs.is_empty());
         assert_eq!(
@@ -1148,15 +1230,15 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("aa");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 1);
 
         terminal.put_str("\x1b[1;1Ha ");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 1);
 
         terminal.put_str("\x1b[1;1Hab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 2);
     }
 
@@ -1167,11 +1249,11 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("abc");
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars.len(), 3);
 
         // Second update with same chars: no new glyphs.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert!(new_chars.is_empty(), "no new glyphs expected");
     }
 
@@ -1183,7 +1265,7 @@ mod tests {
         terminal.put_str("ab cd");
         let mut atlas = test_atlas(&fonts);
 
-        let new_chars = atlas.full_update(&fonts, &terminal.screen().snapshot());
+        let new_chars = atlas.full_update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars.len(), 4, "a,b,c,d");
         assert!(atlas.glyphs.contains_key(&'a'));
         assert!(atlas.glyphs.contains_key(&'b'));
@@ -1203,7 +1285,7 @@ mod tests {
 
         terminal.put_str("hel lo!");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         // All visible chars should be in glyphs.
         for ch in "helo!".chars() {
@@ -1224,13 +1306,13 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("abc");
-        let (first, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (first, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(first.len(), 3);
         let shelves_before = atlas.shelves.len();
 
         // Add a new char that should fit on same shelf.
         terminal.put_str("d");
-        let (second, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (second, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(second, vec!['d'], "only 'd' is new");
         // Shelf count should not increase for small glyph.
         assert!(
@@ -1257,7 +1339,7 @@ mod tests {
             chars.len()
         );
         terminal.put_str(&chars);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         // Must have overflowed onto a second shelf.
         assert!(
             atlas.shelves.len() > 1,
@@ -1287,7 +1369,7 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("ab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 2);
 
         // "Clear" snap and add new content overlapping old.
@@ -1295,7 +1377,7 @@ mod tests {
         // After the clear, dirty rows are marked, so update scans dirty rows.
         // 'a' and 'b' are no longer visible, 'x' and 'y' are new.
         // But cache keeps 'a' and 'b' (no eviction unless atlas is full).
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(
             atlas.glyphs.len(),
             4,
@@ -1313,7 +1395,7 @@ mod tests {
 
         // Populate row 0
         terminal.put_str("abcd");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 4);
 
         // Now dirty rows are cleared by the caller (simulated).
@@ -1323,7 +1405,7 @@ mod tests {
         terminal.screen_mut().carriage_return();
         terminal.put_str("ef");
         // Now only row 1 is dirty.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars, vec!['e', 'f'], "only new chars from dirty row");
         assert_eq!(atlas.glyphs.len(), 6, "old glyphs still cached");
     }
