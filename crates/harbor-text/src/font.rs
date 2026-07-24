@@ -380,3 +380,57 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
     .map(PathBuf::from)
     .collect()
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_font_book() -> FontBook {
+        load_system_fonts().expect("load test font")
+    }
+
+    #[test]
+    fn rasterize_regular_char_returns_bitmap() {
+        let fonts = test_font_book();
+        let (metrics, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+        assert!(metrics.width > 0, "glyph width should be > 0");
+        assert!(metrics.height > 0, "glyph height should be > 0");
+        assert!(!bitmap.is_empty(), "bitmap should not be empty");
+    }
+
+    #[test]
+    fn rasterize_space_has_zero_dimensions() {
+        let fonts = test_font_book();
+        let (metrics, _bitmap) = fonts.rasterize(' ', harbor_config::FONT_SIZE);
+        assert_eq!(metrics.width, 0);
+        assert_eq!(metrics.height, 0);
+    }
+
+    #[test]
+    fn terminal_metrics_are_positive() {
+        let fonts = test_font_book();
+        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
+        assert!(cell_width > 0.0, "cell_width should be positive");
+        assert!(line_height > 0.0, "line_height should be positive");
+        assert!(ascent > 0.0, "ascent should be positive");
+    }
+
+    #[test]
+    fn has_horizontal_line_metrics() {
+        let fonts = test_font_book();
+        let lm = fonts.primary_horizontal_line_metrics(harbor_config::FONT_SIZE);
+        assert!(lm.is_some(), "primary font should have line metrics");
+    }
+
+    #[test]
+    fn rasterize_cjk_fallback() {
+        let fonts = test_font_book();
+        let (metrics, bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
+        // CJK glyph should rasterize (via fallback if primary doesn't have it).
+        assert!(metrics.width > 0, "CJK glyph width should be > 0");
+        assert!(metrics.height > 0, "CJK glyph height should be > 0");
+        assert!(!bitmap.is_empty(), "CJK bitmap should not be empty");
+    }
+}

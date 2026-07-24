@@ -2,7 +2,6 @@ mod background;
 pub mod caps;
 mod cursor;
 mod decoration;
-pub mod font;
 pub mod gpu;
 mod scrollbar;
 pub mod selection;
@@ -12,14 +11,14 @@ pub use background::Background;
 pub use caps::{InteractionResult, UiRequest, WaitResult};
 pub use cursor::Cursor;
 pub use decoration::Decoration;
-pub use font::{FontBook, load_system_fonts};
 pub use gpu::{
     GpuContext, SurfaceDisposition, SurfaceStatus, UploadMode, UploadPlan, UploadPolicy,
     surface_disposition,
 };
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
-pub use text::{AtlasGlyph, Text, TextMetrics};
+pub use text::Text;
 
 use harbor_types::TerminalSnapshot;
 

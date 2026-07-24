@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shared Text Foundation</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card-bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #555;
+    --border: #e0e0e0;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --code-bg: #f5f5f5;
+    --tag-bg: #f0f0f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .plan {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  header h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  header .meta { color: var(--text-muted); font-size: 0.9rem; display: flex; gap: 2rem; flex-wrap: wrap; }
+  .meta-item { display: flex; gap: 0.35rem; }
+  .meta-item strong { font-weight: 600; }
+
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  section h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  section h2 .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700;
+  }
+  section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; color: #333; }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  .table-wrap table { border: none; }
+  .table-wrap th:first-child, .table-wrap td:first-child { padding-left: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--accent-light); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #f8fafd; }
+
+  .mermaid-wrap {
+    background: #fcfcfc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1rem 0;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+  pre.mermaid {
+    background: transparent;
+    color: inherit;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; }
+  :not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #e8e8e8;
+  }
+
+  .step {
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    background: var(--accent-light);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .step h4 { font-size: 0.95rem; margin-bottom: 0.4rem; color: var(--accent); }
+  .step p, .step ul { font-size: 0.9rem; margin: 0.25rem 0; }
+  .step ul { padding-left: 1.25rem; }
+  .step .outcome { margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: #e6f4ea; border-radius: 4px; font-size: 0.85rem; color: #137333; }
+  .step .files { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--tag-bg);
+    color: var(--text-muted);
+  }
+  .badge.create { background: #e6f4ea; color: #137333; }
+  .badge.modify { background: #fef3c7; color: #92400e; }
+
+  .decision-list { list-style: none; }
+  .decision-list li { padding: 0.4rem 0; padding-left: 1.2rem; position: relative; }
+  .decision-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  .test-grid { display: grid; gap: 1rem; }
+  .test-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .test-card h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: #333;
+  }
+  .test-card h3 code { font-weight: 700; color: var(--accent); background: none; border: none; padding: 0; }
+  .test-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .test-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: right;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .test-card ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+    color: #444;
+  }
+  .test-card ul li { margin-bottom: 0.2rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border: 1px solid #ccc; }
+    .step { background: #f9f9f9; }
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.5rem; }
+    section { padding: 1.25rem; }
+    header { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="plan">
+
+<header>
+  <h1>Shared Text Foundation</h1>
+  <div class="meta">
+    <div class="meta-item"><strong>Input:</strong> <span>.grimoire/ticket/0001-phase-3-widget-runtime-integration/T0001-shared-text-foundation.md</span></div>
+    <div class="meta-item"><strong>Date:</strong> <span>2026-07-24</span></div>
+  </div>
+</header>
+
+<!-- ── Section 1: Type Design ── -->
+<section>
+  <h2><span class="num">1</span> Type Design</h2>
+
+  <h3>Modified Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Change</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Text</code></td>
+        <td>crates/harbor-render/src/text.rs</td>
+        <td>Terminal-specific GPU text render pipeline</td>
+        <td>Replace local <code>FontBook</code>, <code>TextMetrics</code>, <code>GlyphAtlas</code> ownership with <code>harbor-text</code> imports. Move char-collection logic out of <code>GlyphAtlas</code> into <code>Text</code> methods. Access cell metrics via <code>self.metrics</code> instead of <code>self.atlas</code>.</td>
+        <td>The GPU pipeline and WGSL shader remain terminal-specific; the CPU text data now comes from the shared crate. Extending <code>Text</code> is simpler than splitting it into two types when the GPU/CPU boundary already exists.</td>
+      </tr>
+      <tr>
+        <td><code>harbor-render</code> lib</td>
+        <td>crates/harbor-render/src/lib.rs</td>
+        <td>Crate public API surface</td>
+        <td>Remove <code>pub mod font</code> and <code>pub mod metrics</code>. Re-export <code>FontBook</code>, <code>load_system_fonts</code>, <code>TextMetrics</code>, <code>AtlasGlyph</code> from <code>harbor-text</code> for backward compatibility.</td>
+        <td>Minimizes call-site churn in <code>src/app.rs</code> and tests while moving the canonical definitions to <code>harbor-text</code>.</td>
+      </tr>
+      <tr>
+        <td>App host</td>
+        <td>src/app.rs</td>
+        <td>Application bootstrap wiring</td>
+        <td>Update imports: <code>load_system_fonts</code> and <code>TextMetrics</code> now come from <code>harbor-text</code> (or through <code>harbor-render</code> re-exports).</td>
+        <td>These types now live in <code>harbor-text</code>; the app must import them from the canonical crate.</td>
+      </tr>
+      <tr>
+        <td>Workspace Cargo.toml</td>
+        <td>Cargo.toml</td>
+        <td>Workspace member and dependency registry</td>
+        <td>Add <code>crates/harbor-text</code> to workspace members. Add <code>harbor-text</code> workspace dependency entry. Add <code>fontdb</code> and <code>fontdue</code> to workspace-level dependency list.</td>
+        <td>New crate must be part of the workspace. <code>fontdb</code> and <code>fontdue</code> move from being single-crate deps to workspace deps shared by <code>harbor-text</code> and <code>harbor-render</code>.</td>
+      </tr>
+      <tr>
+        <td><code>harbor-render</code> Cargo.toml</td>
+        <td>crates/harbor-render/Cargo.toml</td>
+        <td>Crate dependency manifest</td>
+        <td>Add <code>harbor-text = { workspace = true }</code>. Remove <code>fontdb</code> (moved to workspace). Keep <code>fontdue</code> as workspace dep.</td>
+        <td><code>harbor-render</code> now sources CPU text types through <code>harbor-text</code>.</td>
+      </tr>
+      <tr>
+        <td><code>harbor-widget</code> Cargo.toml</td>
+        <td>crates/harbor-widget/Cargo.toml</td>
+        <td>Crate dependency manifest</td>
+        <td>Add <code>harbor-text = { workspace = true }</code>.</td>
+        <td>Widget crate needs shared text types for future Text primitives (T0003–T0005).</td>
+      </tr>
+      <tr>
+        <td>App Cargo.toml (root)</td>
+        <td>Cargo.toml</td>
+        <td>Binary crate dependency manifest</td>
+        <td>Add <code>harbor-text = { workspace = true }</code>. Remove direct <code>fontdb</code> and <code>fontdue</code> dependencies if only used transitively through <code>harbor-text</code>.</td>
+        <td>The app accesses <code>load_system_fonts</code> and <code>TextMetrics</code> directly; it should depend on <code>harbor-text</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>New Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Responsibility</th><th>Relationships</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>FontBook</code></td>
+        <td>crates/harbor-text/src/font.rs</td>
+        <td>System terminal font set with primary monospace face and glyph fallbacks</td>
+        <td>Font discovery (platform fast-path + fontdb fallback), glyph rasterization via <code>rasterize(ch, px)</code>, terminal cell metrics, horizontal line metrics</td>
+        <td>Composes <code>fontdue::Font</code> instances. Used by <code>GlyphAtlas</code> for rasterization and by <code>TextMetrics</code> for metric derivation.</td>
+        <td>Pure CPU font operations. Both terminal and widget consumers need font discovery and rasterization. Extracted from <code>harbor-render::font</code> — no wgpu or winit dependency.</td>
+      </tr>
+      <tr>
+        <td><code>TextMetrics</code></td>
+        <td>crates/harbor-text/src/metrics.rs</td>
+        <td>Fixed measurements mapping window pixels to terminal cells</td>
+        <td>Compute <code>cell_width</code>, <code>line_height</code>, <code>ascent</code>, underline/strikethrough positions from a <code>FontBook</code>. Derive <code>TerminalSize</code> from pixel dimensions.</td>
+        <td>Uses <code>FontBook</code>. Depends on <code>harbor-types::TerminalSize</code> and <code>harbor-config</code> constants.</td>
+        <td>Derived from font metrics, needed by both terminal (<code>Text::build_row_vertices</code>) and widget layout code. Extracted from <code>harbor-render::metrics</code>.</td>
+      </tr>
+      <tr>
+        <td><code>GlyphAtlas</code></td>
+        <td>crates/harbor-text/src/atlas.rs</td>
+        <td>CPU-side shelf-packing glyph atlas with persistent character-to-glyph cache</td>
+        <td>Rasterize glyphs via <code>FontBook</code>, pack into fixed-size pixel buffer using shelf algorithm, provide <code>glyph(ch) -&gt; Option&lt;&amp;AtlasGlyph&gt;</code> lookup, manage cache eviction on overflow</td>
+        <td>Composes <code>FontBook</code> (for rasterization), produces <code>AtlasGlyph</code> entries. Does NOT reference <code>RenderSnapshot</code> or <code>DirtyRange</code> — accepts <code>&amp;[char]</code> slices.</td>
+        <td>CPU-only caching and packing. Previously embedded in <code>harbor-render::text</code> and tightly coupled to <code>RenderSnapshot</code>. Extracted and decoupled so widget text runs can reuse the same cache.</td>
+      </tr>
+      <tr>
+        <td><code>AtlasGlyph</code></td>
+        <td>crates/harbor-text/src/atlas.rs</td>
+        <td>Atlas placement and metrics for one rasterized glyph</td>
+        <td>Stores UV sub-region, pixel dimensions, fontdue offsets, and atlas pixel position</td>
+        <td>Pure data struct. Referenced by <code>GlyphAtlas</code> and consumed by GPU upload code in <code>harbor-render::text</code>.</td>
+        <td>Shared data contract between CPU atlas and GPU uploader. Extracted from <code>harbor-render::text</code>.</td>
+      </tr>
+      <tr>
+        <td><code>AtlasUv</code></td>
+        <td>crates/harbor-text/src/atlas.rs</td>
+        <td>UV rectangle within the atlas texture</td>
+        <td>Stores <code>left</code>, <code>top</code>, <code>right</code>, <code>bottom</code> unit texture coordinates</td>
+        <td>Embedded in <code>AtlasGlyph</code>. Pure data.</td>
+        <td>Extracted alongside <code>AtlasGlyph</code>.</td>
+      </tr>
+      <tr>
+        <td><code>text_run</code> module (stub)</td>
+        <td>crates/harbor-widget/src/text.rs</td>
+        <td>Widget-side text-run concept consuming shared text types</td>
+        <td>Declares a <code>TextRun</code> type re-exporting/referencing <code>harbor-text</code> types for later T0003–T0005 consumption</td>
+        <td>Imports <code>harbor_text::TextMetrics</code>, <code>harbor_text::AtlasGlyph</code>. No rendering yet.</td>
+        <td>Wires the dependency boundary now so T0003 can build on it. Minimal surface — a type alias and use statements.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Design Decisions</h3>
+  <ul class="decision-list">
+    <li><strong>Decouple <code>GlyphAtlas</code> from <code>RenderSnapshot</code>.</strong> The atlas now accepts <code>&amp;[char]</code> slices. Character collection (scanning dirty ranges, filtering spaces) stays in <code>harbor-render::Text</code> which owns terminal-domain knowledge. This keeps <code>harbor-text</code> free of Harbor domain types beyond <code>harbor-types</code>.</li>
+    <li><strong>Remove <code>cell_width</code>, <code>line_height</code>, <code>ascent</code> from <code>GlyphAtlas</code>.</strong> These are used only for vertex building in the GPU layer. They now come from <code>TextMetrics</code> directly, keeping the atlas focused on rasterization and packing.</li>
+    <li><strong>Keep <code>GpuGlyphAtlas</code> and <code>Text</code> in <code>harbor-render</code>.</strong> The GPU pipeline, WGSL shader, vertex buffer, and wgpu texture/bind-group management are terminal-specific rendering concerns. The shared text core provides only CPU data.</li>
+    <li><strong>Re-export shared types through <code>harbor-render</code>.</strong> <code>pub use harbor_text::{FontBook, load_system_fonts, TextMetrics, AtlasGlyph};</code> minimizes import churn in the app host. Only the crate manifest and deleted files change visibly.</li>
+    <li><strong>Keep <code>harbor-text</code> dependency on <code>harbor-types</code> minimal.</strong> <code>TextMetrics::terminal_size()</code> returns <code>harbor_types::TerminalSize</code>; this is the only coupling point. <code>harbor-types</code> is a zero-dependency crate so the cost is negligible.</li>
+    <li><strong>Depend on <code>harbor-config</code> for constants.</strong> <code>FONT_SIZE</code> and <code>TEXT_PADDING</code> are needed by <code>TextMetrics</code> and <code>FontBook</code>. <code>harbor-config</code> is a zero-dependency constants crate — compatible with the "no wgpu, no winit" constraint.</li>
+  </ul>
+</section>
+
+<!-- ── Section 2: Type Relationship Diagram ── -->
+<section>
+  <h2><span class="num">2</span> Type Relationship Diagram</h2>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+classDiagram
+    namespace harbor-text {
+        class FontBook {
+            +rasterize(ch, px) (Metrics, Vec~u8~)
+            +terminal_metrics() (f32, f32, f32)
+            +primary_horizontal_line_metrics(size) Option~LineMetrics~
+        }
+        class TextMetrics {
+            +cell_width: f32
+            +line_height: f32
+            +ascent: f32
+            +underline_position: f32
+            +underline_thickness: f32
+            +strikethrough_position: f32
+            +strikethrough_thickness: f32
+            +new(fonts) TextMetrics
+            +terminal_size(w, h) TerminalSize
+        }
+        class GlyphAtlas {
+            +pixels: Vec~u8~
+            +glyphs: HashMap~char, AtlasGlyph~
+            +shelves: Vec~Shelf~
+            +new() GlyphAtlas
+            +rasterize_new(fonts, chars) RasterizeResult
+            +rebuild(fonts, chars)
+            +glyph(ch) Option~&AtlasGlyph~
+        }
+        class AtlasGlyph {
+            +uv: AtlasUv
+            +width: u32
+            +height: u32
+            +xmin: i32
+            +ymin: i32
+            +atlas_x: u32
+            +atlas_y: u32
+        }
+        class AtlasUv {
+            +left: f32
+            +top: f32
+            +right: f32
+            +bottom: f32
+        }
+    }
+
+    namespace harbor-render {
+        class Text {
+            +fonts: FontBook
+            +metrics: TextMetrics
+            +atlas: GlyphAtlas
+            +pipeline: wgpu::RenderPipeline
+            +vertex_buffer: wgpu::Buffer
+            +gpu_atlas: GpuGlyphAtlas
+            +prepare_with_dirty(gpu, snap, dirty_ranges)
+            +draw(pass)
+            +metrics() &TextMetrics
+            +glyph(ch) Option~&AtlasGlyph~
+        }
+        class GpuGlyphAtlas {
+            +_texture: wgpu::Texture
+            +bind_group: wgpu::BindGroup
+            +update_glyphs(queue, atlas, new_chars)
+        }
+    }
+
+    namespace harbor-widget {
+        class TextRun {
+            +metrics: TextMetrics
+        }
+    }
+
+    namespace harbor-types {
+        class TerminalSize {
+            +rows: usize
+            +cols: usize
+        }
+        class RenderSnapshot
+        class DirtyRange
+    }
+
+    namespace harbor-config {
+        class constants {
+            +FONT_SIZE
+            +TEXT_PADDING
+        }
+    }
+
+    FontBook --> fontdue.Font : composes
+    TextMetrics --> FontBook : uses
+    TextMetrics --> TerminalSize : produces
+    TextMetrics --> constants : reads
+    GlyphAtlas --> FontBook : uses
+    GlyphAtlas *-- AtlasGlyph : contains
+    AtlasGlyph *-- AtlasUv : contains
+    Text *-- FontBook : owns
+    Text *-- TextMetrics : owns
+    Text *-- GlyphAtlas : owns
+    Text *-- GpuGlyphAtlas : owns
+    Text --> RenderSnapshot : reads
+    Text --> DirtyRange : reads
+    GpuGlyphAtlas --> GlyphAtlas : reads pixels
+    TextRun --> TextMetrics : imports
+    </pre>
+  </div>
+</section>
+
+<!-- ── Section 3: Implementation Steps ── -->
+<section>
+  <h2><span class="num">3</span> Implementation Steps</h2>
+
+  <h3>A. Create <code>harbor-text</code> crate</h3>
+
+  <div class="step">
+    <h4>Step 1: Scaffold crate and Cargo.toml</h4>
+    <div class="files">Files: crates/harbor-text/Cargo.toml</div>
+    <p><strong>Action:</strong> Create <code>crates/harbor-text/Cargo.toml</code> with dependencies on <code>harbor-types</code>, <code>harbor-config</code>, <code>fontdb</code>, <code>fontdue</code>, <code>hashbrown</code>, <code>anyhow</code>, <code>tracing</code>. No wgpu, winit, harbor-render, or harbor-widget.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-text</code> succeeds (empty crate). Workspace recognizes the new member.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 2: Move <code>font.rs</code> — FontBook and system font loading</h4>
+    <div class="files">Files: crates/harbor-text/src/font.rs (create), crates/harbor-render/src/font.rs (delete)</div>
+    <p><strong>Action:</strong> Copy <code>crates/harbor-render/src/font.rs</code> to <code>crates/harbor-text/src/font.rs</code> verbatim. Remove the file from <code>harbor-render</code>. Fix imports: <code>harbor_config::FONT_SIZE</code> stays (now through <code>harbor-text</code>'s own dependency). No logic changes.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-text</code> compiles <code>font.rs</code>. All existing font loading logic lives in <code>harbor-text</code>.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 3: Move <code>metrics.rs</code> — TextMetrics</h4>
+    <div class="files">Files: crates/harbor-text/src/metrics.rs (create), crates/harbor-render/src/metrics.rs (delete)</div>
+    <p><strong>Action:</strong> Copy <code>crates/harbor-render/src/metrics.rs</code> to <code>crates/harbor-text/src/metrics.rs</code> verbatim. Remove the file from <code>harbor-render</code>. The <code>use crate::font::FontBook</code> becomes <code>use crate::font::FontBook</code> (same crate now). <code>harbor_config</code> and <code>harbor_types</code> are already dependencies.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-text</code> compiles both <code>font.rs</code> and <code>metrics.rs</code>.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 4: Extract <code>atlas.rs</code> — decoupled GlyphAtlas, AtlasGlyph, AtlasUv</h4>
+    <div class="files">Files: crates/harbor-text/src/atlas.rs (create)</div>
+    <p><strong>Action:</strong> Create <code>atlas.rs</code> with <code>AtlasUv</code>, <code>AtlasGlyph</code>, <code>Shelf</code>, <code>GlyphAtlas</code>, and <code>RasterizeResult</code>. Copy the shelf-packing algorithm and pixel buffer management from <code>harbor-render::text</code>, but refactor the API to accept <code>&amp;[char]</code> instead of <code>&amp;RenderSnapshot</code>.</p>
+    <pre>pub struct AtlasUv { pub left: f32, pub top: f32, pub right: f32, pub bottom: f32 }
+
+pub struct AtlasGlyph {
+    pub uv: AtlasUv,
+    pub width: u32, pub height: u32,
+    pub xmin: i32, pub ymin: i32,
+    pub atlas_x: u32, pub atlas_y: u32,
+}
+
+pub struct RasterizeResult {
+    pub new_chars: Vec&lt;char&gt;,
+    /// True when the atlas overflowed and was fully rebuilt.
+    /// Caller must rebuild all GPU vertices.
+    pub evicted: bool,
+}
+
+pub struct GlyphAtlas {
+    pixels: Vec&lt;u8&gt;,
+    height: u32,
+    glyphs: HashMap&lt;char, AtlasGlyph&gt;,
+    shelves: Vec&lt;Shelf&gt;,
+}
+
+impl GlyphAtlas {
+    /// Creates an empty atlas with a zero-filled MAX_ATLAS_SIZE^2 pixel buffer.
+    pub fn new() -&gt; Self;
+
+    /// Given a deduplicated &amp; sorted slice of chars, rasterizes any not yet cached.
+    /// Returns new chars and eviction flag.
+    /// Sort-deduplicates internally if caller hasn't already.
+    pub fn rasterize_new(&amp;mut self, fonts: &amp;FontBook, chars: &amp;[char]) -&gt; RasterizeResult;
+
+    /// Drops all cached glyphs and rebuilds from the given unique char set.
+    pub fn rebuild(&amp;mut self, fonts: &amp;FontBook, chars: &amp;[char]);
+
+    /// Looks up a cached AtlasGlyph. Returns None if the glyph hasn't been rasterized.
+    pub fn glyph(&amp;self, ch: char) -&gt; Option&lt;&amp;AtlasGlyph&gt;;
+
+    /// Number of cached glyphs.
+    pub fn len(&amp;self) -&gt; usize;
+
+    /// Access the raw pixel buffer for GPU upload.
+    pub fn pixels(&amp;self) -&gt; &amp;[u8];
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-text</code> succeeds. <code>GlyphAtlas</code> is testable without any terminal domain types.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 5: Write <code>harbor-text</code> lib.rs</h4>
+    <div class="files">Files: crates/harbor-text/src/lib.rs (create)</div>
+    <p><strong>Action:</strong> Declare modules <code>pub mod font</code>, <code>pub mod metrics</code>, <code>pub mod atlas</code>. Re-export key types: <code>FontBook</code>, <code>load_system_fonts</code>, <code>TextMetrics</code>, <code>GlyphAtlas</code>, <code>AtlasGlyph</code>, <code>AtlasUv</code>, <code>RasterizeResult</code>.</p>
+    <pre>pub mod atlas;
+pub mod font;
+pub mod metrics;
+
+pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, RasterizeResult};
+pub use font::{FontBook, load_system_fonts};
+pub use metrics::TextMetrics;</pre>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-text</code> compiles cleanly. Crate public API is defined.</div>
+  </div>
+
+  <h3>B. Adapt <code>harbor-render</code></h3>
+
+  <div class="step">
+    <h4>Step 6: Update <code>harbor-render</code> Cargo.toml and lib.rs</h4>
+    <div class="files">Files: crates/harbor-render/Cargo.toml, crates/harbor-render/src/lib.rs</div>
+    <p><strong>Action:</strong> Add <code>harbor-text = { workspace = true }</code> to <code>harbor-render</code> dependencies. Remove <code>pub mod font;</code> and <code>pub mod metrics;</code> from lib.rs. Add re-exports: <code>pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};</code>. Delete the <code>font.rs</code> and <code>metrics.rs</code> source files.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-render</code> fails on <code>text.rs</code> (still references removed types). This is expected; next step fixes it.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 7: Refactor <code>Text</code> to use <code>harbor-text</code> types</h4>
+    <div class="files">Files: crates/harbor-render/src/text.rs</div>
+    <p><strong>Action:</strong> Remove <code>AtlasUv</code>, <code>AtlasGlyph</code>, <code>RasterizedGlyph</code>, <code>Shelf</code>, and <code>GlyphAtlas</code> definitions from <code>text.rs</code>. Import them from <code>harbor_text</code>. Keep <code>GpuGlyphAtlas</code>, WGSL shader, <code>Text</code> struct, <code>glyph_color()</code>, vertex-building methods, and the <code>Component</code> impl. Update <code>Text</code> to use <code>harbor_text::GlyphAtlas</code> with the new decoupled API.</p>
+    <p><strong>Action detail — char collection moves into <code>Text</code>:</strong></p>
+    <pre>// In Text::prepare_with_dirty — dirty-range char collection
+fn collect_unique_chars_from_dirty(
+    snap: &amp;RenderSnapshot,
+    dirty_ranges: &amp;[DirtyRange],
+) -&gt; Vec&lt;char&gt; {
+    let mut chars: Vec&lt;char&gt; = dirty_ranges.iter()
+        .flat_map(|range| {
+            (range.start_col..range.end_col).filter_map(|col| {
+                let ch = snap.cell_char(range.row, col);
+                if ch != ' ' { Some(ch) } else { None }
+            })
+        })
+        .collect();
+    chars.sort_unstable();
+    chars.dedup();
+    chars
+}
+
+// In Text::prepare_with_dirty — atlas update
+let unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
+let result = self.atlas.rasterize_new(&amp;self.fonts, &amp;unique);
+if !result.new_chars.is_empty() {
+    self.gpu_atlas.update_glyphs(gpu.queue(), &amp;self.atlas, &amp;result.new_chars);
+}
+if result.evicted {
+    self.dirty = true;
+}</pre>
+    <p><strong>Action detail — vertex building uses <code>self.metrics</code>:</strong> Replace <code>self.atlas.cell_width</code> → <code>self.metrics.cell_width</code>, <code>self.atlas.line_height</code> → <code>self.metrics.line_height</code>, <code>self.atlas.ascent</code> → <code>self.metrics.ascent</code> throughout <code>build_row_vertices</code>, <code>build_range_vertices</code>, and <code>build_all_vertices</code>.</p>
+    <p><strong>Action detail — <code>ensure_glyphs</code> uses new API:</strong></p>
+    <pre>pub fn ensure_glyphs(&amp;mut self, text: &amp;str, _device: &amp;wgpu::Device, queue: &amp;wgpu::Queue) {
+    let mut chars: Vec&lt;char&gt; = text.chars().filter(|&amp;c| c != ' ').collect();
+    chars.sort_unstable();
+    chars.dedup();
+    let new_chars = self.atlas.rasterize_new(&amp;self.fonts, &amp;chars).new_chars;
+    if !new_chars.is_empty() {
+        self.gpu_atlas.update_glyphs(queue, &amp;self.atlas, &amp;new_chars);
+    }
+}</pre>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-render</code> compiles. <code>Text</code> uses <code>harbor-text</code> types throughout. No duplicated CPU text code remains.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 8: Move <code>GlyphAtlas</code> tests to <code>harbor-text</code></h4>
+    <div class="files">Files: crates/harbor-text/src/atlas.rs (tests), crates/harbor-render/src/text.rs (remove tests)</div>
+    <p><strong>Action:</strong> Move CPU atlas tests (<code>atlas_contains_each_visible_glyph_once</code>, <code>cached_atlas_reuses_existing_glyphs</code>, <code>update_returns_empty_when_no_new_chars</code>, <code>full_update_rebuilds_all_shelves</code>, <code>shelf_packing_places_glyphs</code>, etc.) from <code>harbor-render::text::tests</code> to <code>harbor-text::atlas::tests</code>. Adapt to new <code>&amp;[char]</code> API. Keep <code>glyph_color</code> tests in <code>harbor-render</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo test -p harbor-text</code> passes all moved tests. <code>cargo test -p harbor-render</code> passes remaining terminal-specific tests.</div>
+  </div>
+
+  <h3>C. Wire <code>harbor-widget</code></h3>
+
+  <div class="step">
+    <h4>Step 9: Add <code>harbor-text</code> dependency and stub <code>text</code> module</h4>
+    <div class="files">Files: crates/harbor-widget/Cargo.toml, crates/harbor-widget/src/text.rs (create), crates/harbor-widget/src/lib.rs</div>
+    <p><strong>Action:</strong> Add <code>harbor-text = { workspace = true }</code> to <code>harbor-widget</code> dependencies. Create <code>crates/harbor-widget/src/text.rs</code> with minimal re-exports:</p>
+    <pre>//! Shared text types consumed by Widget text primitives.
+//! Stub module — rendering is added in T0003–T0005.
+
+pub use harbor_text::{AtlasGlyph, AtlasUv, TextMetrics};</pre>
+    <p>Add <code>pub mod text;</code> to <code>harbor-widget/src/lib.rs</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check -p harbor-widget</code> compiles. Widget crate has a compiled dependency on <code>harbor-text</code> with no rendering changes.</div>
+  </div>
+
+  <h3>D. Adapt App host and workspace</h3>
+
+  <div class="step">
+    <h4>Step 10: Update workspace <code>Cargo.toml</code></h4>
+    <div class="files">Files: Cargo.toml</div>
+    <p><strong>Action:</strong> Add <code>"crates/harbor-text"</code> to workspace members. Add <code>harbor-text = { path = "crates/harbor-text" }</code> to <code>[workspace.dependencies]</code>. Move <code>fontdb</code> and <code>fontdue</code> from single-crate deps to workspace deps (since both <code>harbor-text</code> and <code>harbor-render</code> need them). Add <code>harbor-text = { workspace = true }</code> to root <code>[dependencies]</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check</code> resolves all workspace dependencies. Full crate graph is consistent.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 11: Update app host imports</h4>
+    <div class="files">Files: src/app.rs, src/terminal.rs (if applicable)</div>
+    <p><strong>Action:</strong> <code>src/app.rs</code> line <code>use harbor_render::{EventResult, GpuContext, TextMetrics, load_system_fonts};</code> — these imports continue working through <code>harbor-render</code>'s re-exports. No import changes required if step 6 re-exports are in place. Optionally, switch to <code>use harbor_text::{load_system_fonts, TextMetrics};</code> for clarity.</p>
+    <div class="outcome"><strong>Outcome:</strong> <code>cargo check</code> compiles the binary. App behavior is unchanged — same font loading, same metrics, same rendering.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 12: Run full test suite</h4>
+    <div class="files">Files: all</div>
+    <p><strong>Action:</strong> Run <code>cargo test --workspace</code>. Verify all existing tests pass, including terminal-render regression tests and the newly moved <code>harbor-text</code> atlas tests.</p>
+    <div class="outcome"><strong>Outcome:</strong> All workspace tests pass. Terminal rendering retains its existing glyph metrics and visible output under regression coverage. Repeated lookup of an already-cached <code>(font, glyph)</code> causes no additional CPU rasterization (verified by <code>cached_atlas_reuses_existing_glyphs</code> and <code>update_returns_empty_when_no_new_chars</code>).</div>
+  </div>
+</section>
+
+<!-- ── Section 4: Edge Cases ── -->
+<section>
+  <h2><span class="num">4</span> Edge Cases</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Condition</th><th>Expected Behavior</th><th>Owning Step</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Atlas overflows (new shelf would exceed <code>MAX_ATLAS_SIZE</code>) during incremental update in <code>rasterize_new</code></td>
+        <td><code>GlyphAtlas</code> triggers an internal full rebuild, clears all shelves and pixels, and returns <code>RasterizeResult { evicted: true, new_chars: all_chars }</code>. The caller in <code>Text::prepare_with_dirty</code> sets <code>self.dirty = true</code>, causing a full vertex buffer rebuild with the new UVs.</td>
+        <td>Step 7</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Empty char slice passed to <code>rasterize_new</code> or <code>rebuild</code></td>
+        <td>Returns <code>RasterizeResult { new_chars: vec![], evicted: false }</code> immediately with no allocation. The caller skips GPU upload and vertex rebuild.</td>
+        <td>Step 4</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Char slice contains only space characters after filtering</td>
+        <td>The caller (<code>Text</code>) is responsible for filtering spaces before calling <code>rasterize_new</code>. If spaces leak through (e.g., <code>' '</code> is explicitly passed), <code>fontdue::Font::rasterize(' ', px)</code> returns a zero-width glyph which would create a degenerate shelf entry. <code>GlyphAtlas</code> skips chars where the rasterized glyph width is 0.</td>
+        <td>Step 7</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><code>Text</code> resize (grid rows/cols change) while atlas has cached glyphs</td>
+        <td><code>Text::prepare_with_dirty</code> detects dimension mismatch, calls <code>atlas.rebuild(fonts, &amp;all_chars)</code> to flush stale UVs, recreates the GPU atlas texture, reallocates the vertex buffer if capacity increased, and rebuilds all vertices. The old pixel data is replaced; the persistent glyph-to-UV cache is only as large as the new visible character set.</td>
+        <td>Step 7</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Font loading fails entirely (no system fonts, empty fontdb)</td>
+        <td><code>load_system_fonts()</code> returns <code>Err(anyhow!("no system fonts found"))</code>. The app fails to start with a clear error — unchanged from current behavior.</td>
+        <td>Step 2</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>CJK probe char not found in any font (primary has CJK but no fallback is needed, or fallback loading fails)</td>
+        <td><code>FontBook</code> is created with only the primary font. CJK chars rasterize as tofu (empty glyph) — the same degradation behavior as today. A warning is logged.</td>
+        <td>Step 2</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ── Section 5: Test Strategy ── -->
+<section>
+  <h2><span class="num">5</span> Test Strategy</h2>
+
+  <div class="test-grid">
+
+    <div class="test-card">
+      <h3><code>FontBook</code> (harbor-text)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Font discovery loads a valid primary monospace font on each platform. <code>rasterize(ch, px)</code> returns non-empty bitmaps for printable ASCII and CJK characters. <code>terminal_metrics()</code> returns positive <code>cell_width</code> and <code>line_height</code>. <code>primary_horizontal_line_metrics()</code> returns valid line metrics for the primary face.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>Filesystem font loading — tests use real system fonts. No mocking needed.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Primary font has CJK glyph (fast path loads one font)</li>
+          <li>Primary font lacks CJK (fast path loads primary + fallback)</li>
+          <li>Fast-path candidates missing; falls back to full fontdb scan</li>
+          <li><code>HARBOR_FONT</code> env var points to a specific font file</li>
+          <li>Custom font file is invalid or unreadable → clear error</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>TextMetrics</code> (harbor-text)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span><code>new(fonts)</code> returns positive <code>cell_width</code>, <code>line_height</code>, <code>ascent</code>. <code>terminal_size(w, h)</code> returns a grid that fits within pixel dimensions after accounting for padding. Underline and strikethrough positions are within the line height.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>Real <code>FontBook</code> from system fonts.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Font with horizontal line metrics → underline/strikethrough positions from font</li>
+          <li>Font without horizontal line metrics → fallback positions from ascent/bounds</li>
+          <li>Very small surface (e.g., 50×50 px) → still returns at least 1 row and 1 column</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>GlyphAtlas</code> (harbor-text)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Shelf-packing places all glyphs without overlap. <code>rasterize_new</code> returns only genuinely new chars. Re-requesting an already-cached char causes zero additional rasterization (pixels unchanged, no new entry returned). Atlas overflow triggers eviction and full rebuild. Empty input returns empty result. <code>rebuild</code> clears and repopulates the atlas.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>Real <code>FontBook</code> from system fonts. No mocking needed — <code>GlyphAtlas</code> takes <code>&amp;[char]</code> so no terminal types needed.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Small char set (3 chars) → one shelf, all packed</li>
+          <li>Overflow set (~130 chars) → multiple shelves created</li>
+          <li>Incremental add to existing shelf → no new shelf created</li>
+          <li>Cache retention across clears → old glyphs persist after new content appears</li>
+          <li>CJK glyph from fallback font → rasterized and packed correctly</li>
+          <li>Empty grid → no glyphs cached, pixels are zero-filled</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Text</code> (harbor-render)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Terminal rendering retains existing glyph metrics and visible output. Incremental dirty-range updates produce correct vertices. Resize triggers full rebuild. <code>glyph_color</code> returns correct colors for normal, bold, inverse, and bold+inverse cells.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>Real <code>FontBook</code>, <code>TextMetrics</code>, <code>GlyphAtlas</code> from <code>harbor-text</code>. GPU operations are not unit-tested (wgpu fixtures not feasible).</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Dirty-range scoped update → only dirty rows regenerate vertices</li>
+          <li>Atlas eviction during dirty update → full vertex rebuild triggered</li>
+          <li>Resize to larger grid → vertex buffer reallocated</li>
+          <li>Resize to smaller grid → atlas rebuilt, vertices rebuilt</li>
+          <li>Terminal with CJK and italic/bold attributes → correct glyph offsets and colors</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>harbor-widget</code> text module</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span><code>harbor-widget</code> compiles against <code>harbor-text</code>. Re-exported types resolve correctly. No cyclic dependency: <code>harbor-widget</code> → <code>harbor-text</code> is the only edge; <code>harbor-widget</code> does not depend on <code>harbor-render</code>.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — compile-time verification.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Import <code>harbor_widget::text::TextMetrics</code> → resolves to <code>harbor_text::TextMetrics</code></li>
+          <li>Import <code>harbor_widget::text::AtlasGlyph</code> → resolves to <code>harbor_text::AtlasGlyph</code></li>
+          <li>No rendering module depends on <code>harbor-render</code> types</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Section 6: Affected Files ── -->
+<section>
+  <h2><span class="num">6</span> Affected Files</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Action</th><th>Referenced By</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>crates/harbor-text/Cargo.toml</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Step 1</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-text/src/lib.rs</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Step 5</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-text/src/font.rs</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Step 2, Test Strategy</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-text/src/metrics.rs</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Step 3, Test Strategy</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-text/src/atlas.rs</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Steps 4, 8, Test Strategy</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-render/Cargo.toml</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 6</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-render/src/lib.rs</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 6</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-render/src/font.rs</td>
+        <td><span class="badge modify">Delete</span></td>
+        <td>Step 2</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-render/src/metrics.rs</td>
+        <td><span class="badge modify">Delete</span></td>
+        <td>Step 3</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-render/src/text.rs</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Steps 7, 8, Test Strategy</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-widget/Cargo.toml</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 9</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-widget/src/lib.rs</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 9</td>
+      </tr>
+      <tr>
+        <td>crates/harbor-widget/src/text.rs</td>
+        <td><span class="badge create">Create</span></td>
+        <td>Step 9, Test Strategy</td>
+      </tr>
+      <tr>
+        <td>Cargo.toml (workspace root)</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 10</td>
+      </tr>
+      <tr>
+        <td>src/app.rs</td>
+        <td><span class="badge modify">Modify</span></td>
+        <td>Step 11</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

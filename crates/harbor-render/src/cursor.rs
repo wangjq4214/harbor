@@ -2,10 +2,9 @@ use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
 use crate::{
-    Component, EventResult,
+    Component, EventResult, TextMetrics,
     caps::{InteractionResult, UiRequest, WaitResult},
     gpu::{self, GpuContext, TexturedVertex},
-    text::TextMetrics,
 };
 use harbor_config::{BLINK_INTERVAL_MS, TEXT_PADDING};
 use harbor_terminal::CursorShape;

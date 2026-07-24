@@ -2,9 +2,8 @@ use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
 use crate::{
-    Component,
+    Component, TextMetrics,
     gpu::{self, ColoredVertex, GpuContext},
-    text::TextMetrics,
 };
 use harbor_config::TEXT_PADDING;
 use harbor_terminal::{CellAttrs, DirtyRange};
