@@ -1,9 +1,9 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
 use crate::{
-    Component, CursorInput, EventResult,
-    caps::{GpuAccess, RedrawAccess, TerminalAccess},
+    caps::{InteractionResult, UiRequest, WaitResult},
+    Component, EventResult,
     gpu::{self, GpuContext, TexturedVertex},
     text::TextMetrics,
 };
@@ -42,7 +42,7 @@ struct LastCursorState {
     shape: CursorShape,
 }
 
-fn should_render_cursor(snap: &RenderSnapshot, blink_visible: bool) -> bool {
+fn should_render_cursor(snap: &TerminalSnapshot, blink_visible: bool) -> bool {
     snap.cursor_visible && (!snap.cursor_blink || blink_visible)
 }
 
@@ -151,7 +151,7 @@ impl Cursor {
     fn commit_frame(&mut self) {
         self.last_rendered_visible = self.blink_visible();
     }
-    fn set_visible(&mut self, visible: bool, snap: &RenderSnapshot) {
+    fn set_visible(&mut self, visible: bool, snap: &TerminalSnapshot) {
         self.visible = visible;
         self.shape = snap.cursor_shape;
         let current = if visible && snap.cursor_y < snap.rows && snap.cursor_x < snap.cols {
@@ -178,7 +178,7 @@ impl Cursor {
 impl Component for Cursor {
     /// If dirty, computes cell-aligned vertex quad for the current cursor
     /// shape and uploads it.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
             self.last_cursor = None;
@@ -270,30 +270,20 @@ impl Component for Cursor {
     }
 }
 
-impl CursorInput for Cursor {
-    fn handle_event<C>(&mut self, _event: &winit::event::WindowEvent, _caps: &C) -> EventResult
-    where
-        C: TerminalAccess + GpuAccess,
-    {
-        EventResult::Continue
+impl Cursor {
+    pub fn handle_event(&mut self, _event: &winit::event::WindowEvent, _snapshot: &TerminalSnapshot) -> InteractionResult {
+        InteractionResult::continue_()
     }
 
-    fn on_about_to_wait<C>(&mut self, caps: &C) -> Option<std::time::Instant>
-    where
-        C: TerminalAccess + RedrawAccess,
-    {
-        let view = caps.terminal().view();
-        if !view.cursor_visible() || !view.cursor_blink() {
-            return None;
-        }
+    pub fn on_about_to_wait(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
+        if !snapshot.cursor_visible || !snapshot.cursor_blink { return WaitResult::default(); }
         let visible = self.blink_visible();
-        if visible != self.last_rendered_visible {
-            self.dirty = true;
-            caps.request_redraw();
-        }
+        let mut result = WaitResult::default();
+        if visible != self.last_rendered_visible { self.dirty = true; result.requests.push(UiRequest::Redraw); }
         let millis = self.blink_start.elapsed().as_millis() as u64;
         let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
-        Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms))
+        result.deadline = Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms));
+        result
     }
 }
 
@@ -305,16 +295,16 @@ mod tests {
     #[test]
     fn dectcem_controls_rendered_cursor_visibility() {
         let mut terminal = Terminal::new(3, 3);
-        assert!(should_render_cursor(&terminal.screen().snapshot(), true));
-        assert!(!should_render_cursor(&terminal.screen().snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), true));
+        assert!(!should_render_cursor(&terminal.snapshot(), false));
 
         terminal.put_bytes(b"\x1b[2 q");
-        assert!(should_render_cursor(&terminal.screen().snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), false));
 
         terminal.put_bytes(b"\x1b[?25l");
-        assert!(!should_render_cursor(&terminal.screen().snapshot(), true));
+        assert!(!should_render_cursor(&terminal.snapshot(), true));
 
         terminal.put_bytes(b"\x1b[?25h");
-        assert!(should_render_cursor(&terminal.screen().snapshot(), true));
+        assert!(should_render_cursor(&terminal.snapshot(), true));
     }
 }

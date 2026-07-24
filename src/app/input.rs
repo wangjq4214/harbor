@@ -396,7 +396,7 @@ fn ctrl_letter_to_byte(ch: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{InputModes, Terminal};
+    use harbor_terminal::{InputModes, Terminal};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn k(name: NamedKey) -> Key {

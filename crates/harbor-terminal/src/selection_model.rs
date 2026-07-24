@@ -4,7 +4,7 @@
 //! auto-scroll scheduling.  No GPU or window dependencies — testable without
 //! a rendering context.
 
-use harbor_types::{SelectionBounds, TerminalView};
+use harbor_types::{SelectionBounds, TerminalSnapshot};
 use std::time::{Duration, Instant};
 
 /// Characters that delimit words for double-click word selection.
@@ -146,7 +146,7 @@ impl SelectionModel {
         &mut self,
         cell: (u64, usize),
         now: Instant,
-        screen: &(impl TerminalView + ?Sized),
+        screen: &TerminalSnapshot,
     ) -> SelectionOutcome {
         // ── Click chain detection ──────────────────────────
         let in_timeout = self
@@ -163,7 +163,7 @@ impl SelectionModel {
         self.last_click_cell = Some(cell);
 
         // ── Set selection range by click count ─────────────
-        let cols = screen.cols();
+        let cols = screen.cols;
         match self.click_count {
             1 => {
                 self.granularity = SelectionGranularity::Character;
@@ -197,7 +197,7 @@ impl SelectionModel {
 
     /// Mouse drag to `cell` during an active selection.
     /// Returns true if the cursor position changed.
-    pub fn drag_to(&mut self, cell: (u64, usize), screen: &(impl TerminalView + ?Sized)) -> bool {
+    pub fn drag_to(&mut self, cell: (u64, usize), screen: &TerminalSnapshot) -> bool {
         let Some(ref mut sel) = self.range else {
             return false;
         };
@@ -214,10 +214,10 @@ impl SelectionModel {
         sel.cursor = new_cursor;
 
         // ── Auto-scroll direction detection ────────────────
-        let rows = screen.rows();
-        let view_offset = screen.view_offset();
-        let scroll_count = screen.scroll_count();
-        let display_row = ((cell.0 - screen.history_start()) as usize + view_offset)
+        let rows = screen.rows;
+        let view_offset = screen.view_offset;
+        let scroll_count = screen.scroll_count;
+        let display_row = ((cell.0 - screen.history_start) as usize + view_offset)
             .saturating_sub(scroll_count)
             .min(rows - 1);
         let new_auto_scroll = if display_row < AUTO_SCROLL_MARGIN && view_offset < scroll_count {
@@ -322,13 +322,12 @@ impl SelectionModel {
     /// Compute the new cursor position after one auto-scroll tick.
     ///
     /// Returns `(direction, new_cursor)` if auto-scroll should proceed.
-    /// The caller is responsible for actually scrolling the viewport via
-    /// [`ScrollAccess`] — this method only calculates what the cursor would
-    /// become.
+    /// The caller executes the returned scroll direction; this method only
+    /// calculates what the cursor would become.
     pub fn compute_auto_scroll_cursor(
         &mut self,
         now: Instant,
-        screen: &(impl TerminalView + ?Sized),
+        screen: &TerminalSnapshot,
     ) -> Option<(AutoScroll, (u64, usize))> {
         let scroll = self.auto_scroll?;
         if !self.dragging {
@@ -343,8 +342,8 @@ impl SelectionModel {
             return None;
         }
 
-        let can_scroll_up = screen.view_offset() < screen.scroll_count();
-        let can_scroll_down = screen.view_offset() > 0;
+        let can_scroll_up = screen.view_offset < screen.scroll_count;
+        let can_scroll_down = screen.view_offset > 0;
 
         let (direction, new_gen) = match scroll {
             AutoScroll::Up if can_scroll_up => {
@@ -382,11 +381,11 @@ impl SelectionModel {
     /// at `(generation, col)`.  When the clicked cell is a separator, the word
     /// range is zero-width (just that cell).
     pub fn find_word_range(
-        screen: &(impl TerminalView + ?Sized),
+        screen: &TerminalSnapshot,
         generation: u64,
         col: usize,
     ) -> ((u64, usize), (u64, usize)) {
-        let cols = screen.cols();
+        let cols = screen.cols;
         let cell_at = |c: usize| screen.cell_at_generation(generation, c);
         let cell_ch = |c: usize| cell_at(c).map(|cell| cell.ch);
 
@@ -444,7 +443,7 @@ impl SelectionModel {
     }
 
     pub fn snap_word_cursor(
-        screen: &(impl TerminalView + ?Sized),
+        screen: &TerminalSnapshot,
         generation: u64,
         col: usize,
         anchor: (u64, usize),
@@ -458,7 +457,7 @@ impl SelectionModel {
         // True CJK char cell (not wide_continuation).
         let is_cjk_cell =
             |c: usize| cell_at(c).is_some_and(|cell| !cell.wide_continuation && is_cjk(cell.ch));
-        let cols = screen.cols();
+        let cols = screen.cols;
         // True word boundary: separator, CJK char, or wide_continuation cell.
         let is_boundary = |c: usize| {
             cell_at(c).is_none_or(|cell| {
@@ -520,12 +519,12 @@ impl SelectionModel {
 
     /// Snap cursor column for line-wise drag.
     pub fn snap_line_cursor(
-        screen: &(impl TerminalView + ?Sized),
+        screen: &TerminalSnapshot,
         generation: u64,
         col: usize,
         anchor: (u64, usize),
     ) -> (u64, usize) {
-        let last_col = screen.cols().saturating_sub(1);
+        let last_col = screen.cols.saturating_sub(1);
         if (generation, col) >= anchor {
             (generation, last_col)
         } else {
@@ -540,7 +539,7 @@ mod tests {
     use crate::screen::Screen;
     use std::time::Instant;
 
-    /// Helper: create a tiny screen with known content.
+    /// Helper: create a tiny snapshot with known content.
     fn test_screen(rows: usize, cols: usize) -> Screen {
         let mut s = Screen::new(rows, cols);
         // Fill row 0 with "abcd...".
@@ -561,7 +560,7 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        let outcome = model.press((0, 3), now, &screen);
+        let outcome = model.press((0, 3), now, &screen.terminal_snapshot());
 
         assert_eq!(outcome, SelectionOutcome::DragActive);
         assert!(model.is_dragging());
@@ -577,11 +576,11 @@ mod tests {
         let now = Instant::now();
 
         // First click.
-        model.press((0, 3), now, &screen);
+        model.press((0, 3), now, &screen.terminal_snapshot());
         model.release();
 
         // Second click (within timeout) at same cell.
-        let outcome = model.press((0, 3), now, &screen);
+        let outcome = model.press((0, 3), now, &screen.terminal_snapshot());
 
         assert_eq!(outcome, SelectionOutcome::DragActive);
         assert_eq!(model.granularity, SelectionGranularity::Word);
@@ -598,13 +597,13 @@ mod tests {
         let now = Instant::now();
 
         // Click 1.
-        model.press((0, 3), now, &screen);
+        model.press((0, 3), now, &screen.terminal_snapshot());
         model.release();
         // Click 2.
-        model.press((0, 3), now, &screen);
+        model.press((0, 3), now, &screen.terminal_snapshot());
         model.release();
         // Click 3.
-        let outcome = model.press((0, 3), now, &screen);
+        let outcome = model.press((0, 3), now, &screen.terminal_snapshot());
 
         assert_eq!(outcome, SelectionOutcome::DragActive);
         assert_eq!(model.granularity, SelectionGranularity::Line);
@@ -619,11 +618,11 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 3), now, &screen);
+        model.press((0, 3), now, &screen.terminal_snapshot());
         model.release();
 
         // Different cell — should reset to single click.
-        let outcome = model.press((1, 5), now, &screen);
+        let outcome = model.press((1, 5), now, &screen.terminal_snapshot());
         assert_eq!(model.click_count, 1);
         assert_eq!(outcome, SelectionOutcome::DragActive);
         let bounds = model.bounds().unwrap();
@@ -636,7 +635,7 @@ mod tests {
         let screen = test_screen(3, 10);
         let mut model = SelectionModel::new();
 
-        let changed = model.drag_to((0, 5), &screen);
+        let changed = model.drag_to((0, 5), &screen.terminal_snapshot());
         assert!(!changed);
         assert!(!model.has_selection());
     }
@@ -647,9 +646,9 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
 
-        let changed = model.drag_to((0, 7), &screen);
+        let changed = model.drag_to((0, 7), &screen.terminal_snapshot());
         assert!(changed);
 
         let bounds = model.bounds().unwrap();
@@ -665,8 +664,8 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
-        let changed = model.drag_to((0, 2), &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
+        let changed = model.drag_to((0, 2), &screen.terminal_snapshot());
         assert!(!changed);
     }
 
@@ -677,8 +676,8 @@ mod tests {
         let now = Instant::now();
 
         // Press at col 7, drag left to col 2.
-        model.press((0, 7), now, &screen);
-        model.drag_to((0, 2), &screen);
+        model.press((0, 7), now, &screen.terminal_snapshot());
+        model.drag_to((0, 2), &screen.terminal_snapshot());
 
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 2);
@@ -691,9 +690,9 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         assert!(model.is_dragging());
-        model.drag_to((0, 5), &screen); // extend to non-zero-width
+        model.drag_to((0, 5), &screen.terminal_snapshot()); // extend to non-zero-width
 
         let outcome = model.release();
         assert_eq!(outcome, SelectionOutcome::DragEnded);
@@ -713,7 +712,7 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         // Zero-width (anchor == cursor) — release should clear.
         let outcome = model.release();
         assert_eq!(outcome, SelectionOutcome::DragEnded);
@@ -726,7 +725,7 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         assert!(model.is_dragging());
 
         let outcome = model.cancel();
@@ -747,8 +746,8 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
-        model.drag_to((0, 5), &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
+        model.drag_to((0, 5), &screen.terminal_snapshot());
         assert!(model.has_selection());
         assert!(model.is_dragging());
 
@@ -765,7 +764,7 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         assert!(model.on_key_press());
         assert!(!model.has_selection());
         assert!(!model.is_dragging());
@@ -789,7 +788,7 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         assert!(model.is_range_empty());
     }
 
@@ -799,8 +798,8 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen);
-        model.drag_to((0, 5), &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
+        model.drag_to((0, 5), &screen.terminal_snapshot());
         assert!(!model.is_range_empty());
     }
 
@@ -808,7 +807,7 @@ mod tests {
     fn find_word_range_middle_of_word() {
         let screen = test_screen(3, 10);
         // "abcdefghij" — clicking 'd' (col 3) spans 0..9.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 3);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 9));
     }
@@ -818,7 +817,7 @@ mod tests {
         let mut screen = test_screen(3, 10);
         screen.cell_mut(0, 3).ch = ' ';
         // Clicking a space at col 3 gives zero-width word.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 3);
         assert_eq!(start, (0, 3));
         assert_eq!(end, (0, 3));
     }
@@ -828,7 +827,7 @@ mod tests {
         let screen = test_screen(3, 10);
         // "abcdefghij" — anchor at 2, cursor moving to 5.
         // Forward (>= anchor): lands at the end of the word (col 9).
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 5, (0, 2));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 5, (0, 2));
         assert_eq!(snapped, (0, 9));
     }
 
@@ -837,21 +836,21 @@ mod tests {
         let screen = test_screen(3, 10);
         // "abcdefghij" — anchor at 5, cursor moving to 2.
         // Backward (< anchor): lands at start of word (col 0).
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 5));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 2, (0, 5));
         assert_eq!(snapped, (0, 0));
     }
 
     #[test]
     fn snap_line_cursor_forward_lands_at_last_col() {
         let screen = test_screen(3, 10);
-        let snapped = SelectionModel::snap_line_cursor(&screen, 0, 5, (0, 2));
+        let snapped = SelectionModel::snap_line_cursor(&screen.terminal_snapshot(), 0, 5, (0, 2));
         assert_eq!(snapped, (0, 9));
     }
 
     #[test]
     fn snap_line_cursor_backward_lands_at_col_zero() {
         let screen = test_screen(3, 10);
-        let snapped = SelectionModel::snap_line_cursor(&screen, 0, 2, (0, 5));
+        let snapped = SelectionModel::snap_line_cursor(&screen.terminal_snapshot(), 0, 2, (0, 5));
         assert_eq!(snapped, (0, 0));
     }
 
@@ -901,7 +900,7 @@ mod tests {
     fn find_word_range_cjk_groups_consecutive() {
         // "你好世界" — all CJK, should select entire run.
         let screen = screen_with_text("你好世界");
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 1); // click '好'
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 1); // click '好'
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 3));
     }
@@ -911,7 +910,7 @@ mod tests {
         // "你好 世界" — space at col 2.
         let screen = screen_with_text("你好 世界");
         // Click '好' (col 1) — should select only "你好" (cols 0-1).
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 1);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 1);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 1));
     }
@@ -921,11 +920,11 @@ mod tests {
         // "hello世界" — Latin then CJK.
         let screen = screen_with_text("hello世界");
         // Click '世' (col 5) — CJK group: only cols 5-6.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 5);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 5);
         assert_eq!(start, (0, 5));
         assert_eq!(end, (0, 6));
         // Click 'o' (col 4) — Latin group: cols 0-4.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 4);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 4);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 4));
     }
@@ -935,11 +934,11 @@ mod tests {
         // "你好world" — CJK then Latin.
         let screen = screen_with_text("你好world");
         // Click '你' (col 0) — CJK group: cols 0-1.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 0);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 0);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 1));
         // Click 'w' (col 2) — Latin group: cols 2-6.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 2);
         assert_eq!(start, (0, 2));
         assert_eq!(end, (0, 6));
     }
@@ -949,7 +948,7 @@ mod tests {
         // CJK punctuation is in WORD_SEPARATORS, not in is_cjk.
         let screen = screen_with_text("你好，世界");
         // Click '，' (col 2) — separator → zero-width.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 2);
         assert_eq!(start, (0, 2));
         assert_eq!(end, (0, 2));
     }
@@ -959,7 +958,7 @@ mod tests {
         // "你好世界abcdef"
         let screen = screen_with_text("你好世界abcdef");
         // anchor at 0, cursor dragged to col 2 (世) → should stay at 2.
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 2, (0, 0));
         assert_eq!(snapped, (0, 2));
     }
 
@@ -969,7 +968,7 @@ mod tests {
         let screen = screen_with_text("你好 世界");
         // anchor at 0, cursor dragged to col 2 (space) →
         // forward snap skips space, lands on 世 (col 3), CJK → stay.
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 2, (0, 0));
         assert_eq!(snapped, (0, 3));
     }
 
@@ -979,7 +978,7 @@ mod tests {
         let screen = screen_with_text("你好world");
         // anchor at 0, cursor dragged to col 2 (w) →
         // skip seps? none. w is Latin → expand to end of "world".
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 2, (0, 0));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 2, (0, 0));
         assert_eq!(snapped, (0, 6));
     }
 
@@ -988,7 +987,7 @@ mod tests {
         // "你好世界"
         let screen = screen_with_text("你好世界");
         // anchor at 3, cursor dragged to col 1 (好) backward.
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 1, (0, 3));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 1, (0, 3));
         assert_eq!(snapped, (0, 1));
     }
 
@@ -1000,10 +999,10 @@ mod tests {
         let now = Instant::now();
 
         // First click: char selection.
-        model.press((0, 1), now, &screen); // click '好'
+        model.press((0, 1), now, &screen.terminal_snapshot()); // click '好'
         // Second click within timeout at same cell → double-click → Word mode.
         let now2 = now + Duration::from_millis(200);
-        let outcome = model.press((0, 1), now2, &screen);
+        let outcome = model.press((0, 1), now2, &screen.terminal_snapshot());
         assert_eq!(outcome, SelectionOutcome::DragActive);
 
         let bounds = model.bounds().unwrap();
@@ -1022,28 +1021,28 @@ mod tests {
         let now = Instant::now();
 
         // Double-click '好' (col 1).
-        model.press((0, 1), now, &screen);
+        model.press((0, 1), now, &screen.terminal_snapshot());
         let now2 = now + Duration::from_millis(200);
-        model.press((0, 1), now2, &screen);
+        model.press((0, 1), now2, &screen.terminal_snapshot());
 
         // Initial: entire "你好世界" (0..3).
         assert_eq!(model.bounds().unwrap().start_col, 0);
         assert_eq!(model.bounds().unwrap().end_col, 3);
 
         // Drag to col 2 (世) — forward snap, CJK stays at 2.
-        model.drag_to((0, 2), &screen);
+        model.drag_to((0, 2), &screen.terminal_snapshot());
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 2);
 
         // Drag to col 1 (好) — selection should be 0..1.
-        model.drag_to((0, 1), &screen);
+        model.drag_to((0, 1), &screen.terminal_snapshot());
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 1);
 
         // Drag to col 0 (你) — zero-width (anchor == cursor).
-        model.drag_to((0, 0), &screen);
+        model.drag_to((0, 0), &screen.terminal_snapshot());
         assert!(model.is_range_empty());
     }
 
@@ -1090,7 +1089,7 @@ mod tests {
         // "你好世界" as 8 wide cells.
         let screen = screen_with_wide_text("你好世界");
         // Click '好' at col 2 (real char cell).
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 2);
         assert_eq!(start, (0, 0)); // 你
         assert_eq!(end, (0, 7)); // 界's wide_continuation
     }
@@ -1099,7 +1098,7 @@ mod tests {
     fn find_word_range_wide_cjk_click_on_continuation_redirects() {
         // Click on wide_continuation cell of '好' (col 3).
         let screen = screen_with_wide_text("你好世界");
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 3);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 3);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 7));
     }
@@ -1109,7 +1108,7 @@ mod tests {
         // "你好 世界" — space at cols 4-4, then 世界 at 5-8.
         let screen = screen_with_wide_text("你好 世界");
         // Click '好' (col 2) → should select "你好" (cols 0-3).
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 2);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 2);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 3)); // includes 好's wide_continuation
     }
@@ -1119,11 +1118,11 @@ mod tests {
         // "hello世" — "hello" cols 0-4, "世" cols 5-6.
         let screen = screen_with_wide_text("hello世");
         // Click '世' (col 5) → CJK group: cols 5-6 only.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 5);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 5);
         assert_eq!(start, (0, 5));
         assert_eq!(end, (0, 6));
         // Click 'o' (col 4) → Latin group: cols 0-4.
-        let (start, end) = SelectionModel::find_word_range(&screen, 0, 4);
+        let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 4);
         assert_eq!(start, (0, 0));
         assert_eq!(end, (0, 4));
     }
@@ -1134,7 +1133,7 @@ mod tests {
         let screen = screen_with_wide_text("你好世界");
         // anchor at 0, cursor dragged to col 4 (世's real cell)
         // → CJK: advance to wide_continuation at col 5.
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 4, (0, 0));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 4, (0, 0));
         assert_eq!(snapped, (0, 5));
     }
 
@@ -1143,7 +1142,7 @@ mod tests {
         let screen = screen_with_wide_text("你好世界");
         // anchor at 7 (界's wc), cursor dragged to col 3 (好's wc).
         // backward: skip seps, step off wc to col 2 (好), CJK → stay.
-        let snapped = SelectionModel::snap_word_cursor(&screen, 0, 3, (0, 7));
+        let snapped = SelectionModel::snap_word_cursor(&screen.terminal_snapshot(), 0, 3, (0, 7));
         assert_eq!(snapped, (0, 2));
     }
 
@@ -1153,9 +1152,9 @@ mod tests {
         let mut model = SelectionModel::new();
         let now = Instant::now();
 
-        model.press((0, 2), now, &screen); // click '好' at col 2
+        model.press((0, 2), now, &screen.terminal_snapshot()); // click '好' at col 2
         let now2 = now + Duration::from_millis(200);
-        let outcome = model.press((0, 2), now2, &screen);
+        let outcome = model.press((0, 2), now2, &screen.terminal_snapshot());
         assert_eq!(outcome, SelectionOutcome::DragActive);
 
         let bounds = model.bounds().unwrap();
@@ -1171,28 +1170,28 @@ mod tests {
         let now = Instant::now();
 
         // Double-click '好' (col 2).
-        model.press((0, 2), now, &screen);
+        model.press((0, 2), now, &screen.terminal_snapshot());
         let now2 = now + Duration::from_millis(200);
-        model.press((0, 2), now2, &screen);
+        model.press((0, 2), now2, &screen.terminal_snapshot());
 
         // Initial: entire run (0..7).
         assert_eq!(model.bounds().unwrap().start_col, 0);
         assert_eq!(model.bounds().unwrap().end_col, 7);
 
         // Drag to col 4 (世) → snaps to col 5 (wc).
-        model.drag_to((0, 4), &screen);
+        model.drag_to((0, 4), &screen.terminal_snapshot());
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 5); // 你好世
 
         // Drag to col 2 (好) → snaps to col 3 (wc).
-        model.drag_to((0, 2), &screen);
+        model.drag_to((0, 2), &screen.terminal_snapshot());
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 3); // 你好
 
         // Drag to col 0 (你) → snaps to col 1 (wc).
-        model.drag_to((0, 0), &screen);
+        model.drag_to((0, 0), &screen.terminal_snapshot());
         let bounds = model.bounds().unwrap();
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 1); // 你

@@ -1,4 +1,4 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
 use harbor_config::TEXT_PADDING;
@@ -31,7 +31,7 @@ impl Background {
 
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices).
-    pub fn new(gpu: &GpuContext, snap: &RenderSnapshot, cell_width: f32, line_height: f32) -> Self {
+    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, cell_width: f32, line_height: f32) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
         let rows = snap.rows;
@@ -71,7 +71,7 @@ impl Background {
         cell_width: f32,
         line_height: f32,
         row: usize,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
@@ -93,7 +93,7 @@ impl Background {
         row: usize,
         start_col: usize,
         end_col: usize,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
@@ -127,7 +127,7 @@ impl Background {
     /// Builds vertices for every row in the full grid.
     fn build_all_vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
@@ -150,7 +150,7 @@ impl Background {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
@@ -218,7 +218,7 @@ impl Background {
 }
 
 impl Component for Background {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
@@ -256,7 +256,7 @@ mod tests {
         );
         assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
 
-        let snap = screen.snapshot();
+        let snap = screen.terminal_snapshot();
         let verts = Background::build_background_row_vertices(10.0, 20.0, 0, &snap, 800.0, 600.0);
 
         let expected = Color::Named(1).to_rgba();

@@ -37,21 +37,6 @@ pub trait WakeHandler: Send + Sync + 'static {
     /// the event loop has been dropped and the reader should terminate.
     fn wake(&self) -> bool;
 }
-/// Result of the PTY output reader reaching a terminal condition.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PtyReaderStatus {
-    Eof,
-    Error(String),
-}
-
-impl std::fmt::Display for PtyReaderStatus {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Eof => formatter.write_str("pty output reached EOF"),
-            Self::Error(message) => formatter.write_str(message),
-        }
-    }
-}
 
 // ── PtySize ──────────────────────────────────────────────────────────────────
 
@@ -159,7 +144,7 @@ impl PtySession {
     ) -> anyhow::Result<Self>
     where
         F: Fn(Vec<u8>) -> bool + Send + 'static,
-        S: Fn(PtyReaderStatus) + Send + 'static,
+        S: Fn(Result<(), String>) + Send + 'static,
     {
         // Convert once at the boundary so platform modules only deal with API-sized values.
         tracing::info!(
@@ -291,7 +276,7 @@ impl Pty {
     ) -> anyhow::Result<()>
     where
         F: Fn(Vec<u8>) -> bool + Send + 'static,
-        S: Fn(PtyReaderStatus) + Send + 'static,
+        S: Fn(Result<(), String>) + Send + 'static,
     {
         tracing::info!(rows = size.rows, cols = size.cols, "starting pty");
         let pty = PtySession::start_shell_reader_with_status(size, output_handler, status_handler)?;
@@ -352,7 +337,7 @@ fn pump_pty_output<F, S>(
     stopping: &AtomicBool,
 ) where
     F: Fn(Vec<u8>) -> bool,
-    S: Fn(PtyReaderStatus),
+    S: Fn(Result<(), String>),
 {
     let mut buffer = [0_u8; 4096];
     tracing::info!("pty output pump started");
@@ -367,7 +352,7 @@ fn pump_pty_output<F, S>(
         match reader.read(&mut buffer) {
             Ok(0) => {
                 tracing::info!("pty output stream reached eof");
-                status_handler(PtyReaderStatus::Eof);
+                status_handler(Ok(()));
                 break;
             }
             Ok(bytes) => {
@@ -388,7 +373,7 @@ fn pump_pty_output<F, S>(
                 }
 
                 tracing::error!(error = %format_args!("{error:#}"), "failed to read pty output");
-                status_handler(PtyReaderStatus::Error(format!("{error:#}")));
+                status_handler(Err(format!("{error:#}")));
                 break;
             }
         }

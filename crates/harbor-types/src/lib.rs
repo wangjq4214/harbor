@@ -337,54 +337,6 @@ fn trim_trailing_newlines(text: &str) -> &str {
     &text[..end]
 }
 
-// ── RenderSnapshot ─────────────────────────────────────────────────────────────
-
-/// Owned read-only projection of terminal state for rendering.
-///
-/// Snapshot from [`Screen`] that the GPU layers consume without depending on
-/// the full terminal model. All visible cells are copied once per frame.
-pub struct RenderSnapshot {
-    /// Visible grid rows.
-    pub rows: usize,
-    /// Visible grid columns.
-    pub cols: usize,
-    /// Flattened visible cells: `cells[row * cols + col]`.
-    pub cells: Vec<Cell>,
-    /// Cursor column (0-based).
-    pub cursor_x: usize,
-    /// Cursor row (0-based display row; set to `rows` when scrolled back).
-    pub cursor_y: usize,
-    /// Whether the cursor should be drawn.
-    pub cursor_visible: bool,
-    /// Whether the cursor blinks.
-    pub cursor_blink: bool,
-    /// Cursor visual style.
-    pub cursor_shape: CursorShape,
-    /// Total scrollback rows retained.
-    pub scroll_count: usize,
-    /// Viewport offset from live bottom (0 = at bottom).
-    pub view_offset: usize,
-    /// Monotonically increasing base generation for scrollback coordinate space.
-    pub history_start: u64,
-    /// True when alternate screen is active.
-    pub is_alt: bool,
-    /// Damaged cell ranges for incremental upload.
-    pub dirty_ranges: Vec<DirtyRange>,
-}
-
-impl RenderSnapshot {
-    /// Returns a reference to the cell at `(row, col)` in display coordinates.
-    #[inline]
-    pub fn cell(&self, row: usize, col: usize) -> &Cell {
-        &self.cells[row * self.cols + col]
-    }
-
-    /// Returns the character at `(row, col)` in display coordinates.
-    #[inline]
-    pub fn cell_char(&self, row: usize, col: usize) -> char {
-        self.cells[row * self.cols + col].ch
-    }
-}
 
 // ── Terminal worker contract ────────────────────────────────────────────────
 
@@ -411,40 +363,29 @@ pub struct TerminalSnapshot {
 }
 
 impl TerminalSnapshot {
-    /// Builds the renderer-only projection at the UI/GPU boundary.
-    pub fn render_snapshot(&self) -> RenderSnapshot {
-        RenderSnapshot {
-            rows: self.rows,
-            cols: self.cols,
-            cells: self.cells.clone(),
-            cursor_x: self.cursor_x,
-            cursor_y: self.cursor_y,
-            cursor_visible: self.cursor_visible,
-            cursor_blink: self.cursor_blink,
-            cursor_shape: self.cursor_shape,
-            scroll_count: self.scroll_count,
-            view_offset: self.view_offset,
-            history_start: self.history_start,
-
-            is_alt: self.is_alt,
-            dirty_ranges: self.dirty_ranges.clone(),
-        }
+    /// Returns a reference to the cell at `(row, col)` in display coordinates.
+    #[inline]
+    pub fn cell(&self, row: usize, col: usize) -> &Cell {
+        &self.cells[row * self.cols + col]
     }
-}
 
-/// Read-only terminal view required by selection and cursor UI logic.
-///
-/// The trait keeps UI code independent from the mutable `Terminal` model.
-pub trait TerminalView {
-    fn rows(&self) -> usize;
-    fn cols(&self) -> usize;
-    fn scroll_count(&self) -> usize;
-    fn view_offset(&self) -> usize;
-    fn history_start(&self) -> u64;
-    fn cursor_visible(&self) -> bool;
-    fn cursor_blink(&self) -> bool;
-    fn input_modes(&self) -> InputModes;
-    fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell>;
+    /// Returns the character at `(row, col)` in display coordinates.
+    #[inline]
+    pub fn cell_char(&self, row: usize, col: usize) -> char {
+        self.cells[row * self.cols + col].ch
+    }
+
+    /// Returns the cell at the given scrollback generation and column.
+    #[inline]
+    pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
+        let visible_start =
+            self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64;
+        let row = generation.checked_sub(visible_start)? as usize;
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        self.cells.get(row * self.cols + col)
+    }
 }
 
 /// Damage carried by a complete update.

@@ -1,4 +1,4 @@
-use harbor_types::RenderSnapshot;
+use harbor_types::TerminalSnapshot;
 use hashbrown::HashMap;
 
 use anyhow::Result;
@@ -181,14 +181,14 @@ impl GlyphAtlas {
     ///
     /// Returns `(new_chars, evicted)` where `evicted` indicates the atlas was
     /// fully cleared and all UVs changed (atlas overflow → full rebuild).
-    fn update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> (Vec<char>, bool) {
+    fn update(&mut self, fonts: &FontBook, snap: &TerminalSnapshot) -> (Vec<char>, bool) {
         self.update_with_dirty(fonts, snap, &snap.dirty_ranges)
     }
 
     fn update_with_dirty(
         &mut self,
         fonts: &FontBook,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) -> (Vec<char>, bool) {
         // Collect unique non-space chars from dirty rows only.
@@ -322,7 +322,7 @@ impl GlyphAtlas {
     }
 
     /// Full rebuild from all visible characters (used on resize and eviction).
-    fn full_update(&mut self, fonts: &FontBook, snap: &RenderSnapshot) -> Vec<char> {
+    fn full_update(&mut self, fonts: &FontBook, snap: &TerminalSnapshot) -> Vec<char> {
         // Collect unique non-space chars from the full snap.
         let mut chars: Vec<char> = snap
             .cells
@@ -565,7 +565,7 @@ impl GlyphAtlas {
     #[cfg(test)]
     fn vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surface_width: f32,
         surface_height: f32,
     ) -> Vec<TexturedVertex> {
@@ -799,7 +799,7 @@ impl Text {
         gpu: &GpuContext,
         fonts: FontBook,
         metrics: TextMetrics,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
     ) -> Result<Self> {
         let (surf_w, surf_h) = gpu.surface_size();
         tracing::info!(
@@ -889,7 +889,7 @@ impl Text {
     fn build_row_vertices(
         &self,
         row: usize,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -908,7 +908,7 @@ impl Text {
     fn build_range_vertices(
         &self,
         range: &DirtyRange,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -968,7 +968,7 @@ impl Text {
     /// Builds vertices for every row in the full grid.
     fn build_all_vertices(
         &self,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<TexturedVertex> {
@@ -1029,7 +1029,7 @@ impl Text {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
-        snap: &RenderSnapshot,
+        snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
@@ -1122,7 +1122,7 @@ impl Text {
 }
 
 impl Component for Text {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&RenderSnapshot>) {
+    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
@@ -1164,7 +1164,7 @@ mod tests {
 
         terminal.put_str("aa b\r\nc a");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         assert_eq!(atlas.glyphs.len(), 3);
         assert!(atlas.glyphs.contains_key(&'a'));
@@ -1180,8 +1180,8 @@ mod tests {
 
         terminal.put_str("a b\r\n c ");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
+        let _ = atlas.update(&fonts, &terminal.snapshot());
+        let vertices = atlas.vertices(&terminal.snapshot(), 800.0, 600.0);
 
         assert_eq!(vertices.len(), 18);
         assert!(vertices.iter().all(|vertex| {
@@ -1205,7 +1205,7 @@ mod tests {
 
         terminal.put_str("中");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         let glyph = atlas.glyphs.get(&'中').expect("CJK glyph in atlas");
         assert!(glyph.width > 0);
@@ -1218,8 +1218,8 @@ mod tests {
         let terminal = Terminal::new(2, 4);
 
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
-        let vertices = atlas.vertices(&terminal.screen().snapshot(), 800.0, 600.0);
+        let _ = atlas.update(&fonts, &terminal.snapshot());
+        let vertices = atlas.vertices(&terminal.snapshot(), 800.0, 600.0);
 
         assert!(atlas.glyphs.is_empty());
         assert_eq!(
@@ -1236,15 +1236,15 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("aa");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 1);
 
         terminal.put_str("\x1b[1;1Ha ");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 1);
 
         terminal.put_str("\x1b[1;1Hab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 2);
     }
 
@@ -1255,11 +1255,11 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("abc");
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars.len(), 3);
 
         // Second update with same chars: no new glyphs.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert!(new_chars.is_empty(), "no new glyphs expected");
     }
 
@@ -1271,7 +1271,7 @@ mod tests {
         terminal.put_str("ab cd");
         let mut atlas = test_atlas(&fonts);
 
-        let new_chars = atlas.full_update(&fonts, &terminal.screen().snapshot());
+        let new_chars = atlas.full_update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars.len(), 4, "a,b,c,d");
         assert!(atlas.glyphs.contains_key(&'a'));
         assert!(atlas.glyphs.contains_key(&'b'));
@@ -1291,7 +1291,7 @@ mod tests {
 
         terminal.put_str("hel lo!");
         let mut atlas = test_atlas(&fonts);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
 
         // All visible chars should be in glyphs.
         for ch in "helo!".chars() {
@@ -1312,13 +1312,13 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("abc");
-        let (first, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (first, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(first.len(), 3);
         let shelves_before = atlas.shelves.len();
 
         // Add a new char that should fit on same shelf.
         terminal.put_str("d");
-        let (second, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (second, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(second, vec!['d'], "only 'd' is new");
         // Shelf count should not increase for small glyph.
         assert!(
@@ -1345,7 +1345,7 @@ mod tests {
             chars.len()
         );
         terminal.put_str(&chars);
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         // Must have overflowed onto a second shelf.
         assert!(
             atlas.shelves.len() > 1,
@@ -1375,7 +1375,7 @@ mod tests {
         let mut atlas = test_atlas(&fonts);
 
         terminal.put_str("ab");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 2);
 
         // "Clear" snap and add new content overlapping old.
@@ -1383,7 +1383,7 @@ mod tests {
         // After the clear, dirty rows are marked, so update scans dirty rows.
         // 'a' and 'b' are no longer visible, 'x' and 'y' are new.
         // But cache keeps 'a' and 'b' (no eviction unless atlas is full).
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(
             atlas.glyphs.len(),
             4,
@@ -1401,7 +1401,7 @@ mod tests {
 
         // Populate row 0
         terminal.put_str("abcd");
-        let _ = atlas.update(&fonts, &terminal.screen().snapshot());
+        let _ = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(atlas.glyphs.len(), 4);
 
         // Now dirty rows are cleared by the caller (simulated).
@@ -1411,7 +1411,7 @@ mod tests {
         terminal.screen_mut().carriage_return();
         terminal.put_str("ef");
         // Now only row 1 is dirty.
-        let (new_chars, _) = atlas.update(&fonts, &terminal.screen().snapshot());
+        let (new_chars, _) = atlas.update(&fonts, &terminal.snapshot());
         assert_eq!(new_chars, vec!['e', 'f'], "only new chars from dirty row");
         assert_eq!(atlas.glyphs.len(), 6, "old glyphs still cached");
     }

@@ -1,17 +1,14 @@
 //! Component tree: owns GPU layers and dispatches events in z-order.
 
 use harbor_render::{
-    AtlasGlyph, Background, Component, Cursor, CursorContext, CursorInput, CursorWaitContext,
-    Decoration, EventResult, FontBook, GpuContext, Scrollbar, ScrollbarContext, ScrollbarInput,
-    ScrollbarWaitContext, Selection, SelectionContext, SelectionInput, SelectionWaitContext,
-    TerminalFacade, Text, TextMetrics,
+    AtlasGlyph, Background, Component, Cursor, Decoration, EventResult, FontBook, GpuContext,
+    InteractionResult, Scrollbar, Selection, Text, TextMetrics, WaitResult,
 };
 use harbor_terminal::TerminalSize;
 use harbor_types::{
     CopySelectionResult, DirtyRange, TerminalSnapshot, TerminalUpdate, UpdateDamage,
 };
 use winit::keyboard::ModifiersState;
-use winit::window::Window;
 
 /// Container for all UI components. Owns GPU resources and delegates
 /// render / event calls to each component in z-order.
@@ -40,14 +37,13 @@ impl UiRoot {
         _fonts: FontBook,
         metrics: TextMetrics,
     ) -> anyhow::Result<Self> {
-        let snap = state.render_snapshot();
         Ok(Self {
-            background: Background::new(gpu, &snap, metrics.cell_width, metrics.line_height),
-            text: Text::new(gpu, _fonts, metrics, &snap)?,
-            decoration: Decoration::new(gpu, &snap, metrics),
+            background: Background::new(gpu, state, metrics.cell_width, metrics.line_height),
+            text: Text::new(gpu, _fonts, metrics, state)?,
+            decoration: Decoration::new(gpu, state, metrics),
             selection: Selection::new(gpu, metrics.cell_width, metrics.line_height),
             cursor: Cursor::new(gpu, metrics),
-            scrollbar: Scrollbar::new(gpu, &snap),
+            scrollbar: Scrollbar::new(gpu, state),
         })
     }
 
@@ -132,13 +128,12 @@ impl UiRoot {
         if dirty_ranges.is_empty() && !self.is_dirty() {
             return;
         }
-        let snap = state.render_snapshot();
-        self.background.prepare_with_dirty(gpu, &snap, dirty_ranges);
-        self.text.prepare_with_dirty(gpu, &snap, dirty_ranges);
-        self.decoration.prepare_with_dirty(gpu, &snap, dirty_ranges);
-        self.selection.prepare(gpu, Some(&snap));
-        self.cursor.prepare(gpu, Some(&snap));
-        self.scrollbar.prepare(gpu, Some(&snap));
+        self.background.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.text.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.decoration.prepare_with_dirty(gpu, state, dirty_ranges);
+        self.selection.prepare(gpu, Some(state));
+        self.cursor.prepare(gpu, Some(state));
+        self.scrollbar.prepare(gpu, Some(state));
     }
 
     /// Issues draw calls for all five components in z-order (back to front).
@@ -166,85 +161,35 @@ impl UiRoot {
     pub(crate) fn apply_copy_result(&mut self, result: CopySelectionResult) -> bool {
         self.selection.apply_copy_result(result)
     }
-
-    /// Dispatches to interactive layers only, each with the rights it needs.
-    /// Selection first — scrollbar always returns Handled on CursorMoved,
-    /// which would block selection drag updates.
+    pub(crate) fn set_copy_pending(&mut self, request_id: u64) {
+        self.selection.set_copy_pending(request_id);
+    }
+    /// Dispatches interaction using the published snapshot and returns concrete app requests.
     pub(crate) fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        facade: &dyn TerminalFacade,
-        window: &Window,
-        gpu: &GpuContext,
+        snapshot: &TerminalSnapshot,
         modifiers: ModifiersState,
-    ) -> EventResult {
-        let sel_result = self.selection.handle_event(
-            event,
-            &mut SelectionContext {
-                terminal: facade,
-                window,
-                modifiers,
-            },
-        );
-        // Propagate Handled or ConfirmPaste; only Continue falls through.
-        if sel_result != EventResult::Continue {
-            return sel_result;
-        }
-        // After SelectionContext is dropped, terminal reborrow is released.
-        if self.scrollbar.handle_event(
-            event,
-            &ScrollbarContext {
-                terminal: facade,
-                gpu,
-                window,
-            },
-        ) == EventResult::Handled
-        {
-            return EventResult::Handled;
-        }
-        if self.cursor.handle_event(
-            event,
-            &CursorContext {
-                terminal: facade,
-                gpu,
-            },
-        ) == EventResult::Handled
-        {
-            return EventResult::Handled;
-        }
-        EventResult::Continue
+    ) -> InteractionResult {
+        let mut result = self.selection.handle_event(event, snapshot, modifiers);
+        if result.event != EventResult::Continue { return result; }
+        let scrollbar = self.scrollbar.handle_event(event, snapshot);
+        result.requests.extend(scrollbar.requests);
+        if scrollbar.event == EventResult::Handled { result.event = EventResult::Handled; return result; }
+        let cursor = self.cursor.handle_event(event, snapshot);
+        result.requests.extend(cursor.requests);
+        result.event = cursor.event;
+        result
     }
 
-    /// Collects the next wake deadline from interactive components
-    /// (cursor blink, scrollbar auto-hide, or selection auto-scroll).
-    pub(crate) fn compact_deadline(
-        &mut self,
-        facade: &dyn TerminalFacade,
-        window: &Window,
-    ) -> Option<std::time::Instant> {
-        let mut deadline: Option<std::time::Instant> = None;
-
-        // Selection auto-scroll — needs &mut Terminal for ScrollAccess.
-        if let Some(d) = self.selection.on_about_to_wait(&mut SelectionWaitContext {
-            terminal: facade,
-            window,
-        }) {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
+    /// Collects the earliest component wake deadline and associated requests.
+    pub(crate) fn compact_deadline(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
+        let mut result = self.selection.on_about_to_wait(snapshot);
+        for other in [self.cursor.on_about_to_wait(snapshot), self.scrollbar.on_about_to_wait()] {
+            result.deadline = match (result.deadline, other.deadline) { (Some(a), Some(b)) => Some(a.min(b)), (Some(a), None) => Some(a), (None, deadline) => deadline };
+            result.requests.extend(other.requests);
         }
-
-        // Cursor blink — reborrows the facade after selection auto-scroll.
-        if let Some(d) = self.cursor.on_about_to_wait(&CursorWaitContext {
-            terminal: facade,
-            window,
-        }) {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
-        }
-        if let Some(d) = self
-            .scrollbar
-            .on_about_to_wait(&ScrollbarWaitContext { window })
-        {
-            deadline = Some(deadline.map_or(d, |cur| cur.min(d)));
-        }
-        deadline
+        result
     }
+
 }

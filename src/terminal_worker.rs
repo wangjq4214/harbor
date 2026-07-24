@@ -11,12 +11,11 @@ use std::{
     thread::JoinHandle,
 };
 
-use harbor_pty::{Pty, PtyReaderStatus, WakeHandler};
-use harbor_render::TerminalFacade;
+use harbor_pty::{Pty, WakeHandler};
 use harbor_terminal::Terminal;
 use harbor_types::{
     Cell, CopySelectionResult, CursorShape, InputModes, SelectionBounds, TerminalCommand,
-    TerminalSize, TerminalSnapshot, TerminalUpdate, TerminalView, UpdateDamage, WorkerStatus,
+    TerminalSize, TerminalSnapshot, TerminalUpdate, UpdateDamage, WorkerStatus,
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -24,7 +23,8 @@ use crate::{app::input::InputEncoder, event::AppEvent};
 
 enum PtyMessage {
     Bytes(Vec<u8>),
-    Status(PtyReaderStatus),
+    Eof,
+    Error(String),
 }
 
 /// Owns the PTY receiver before the PTY so receiver teardown precedes reader joins,
@@ -246,7 +246,11 @@ fn worker_main(
                 output_tx.send(PtyMessage::Bytes(bytes)).is_ok() && signal_wake(&output_signal)
             },
             move |status| {
-                let _ = status_tx.send(PtyMessage::Status(status));
+                let message = match status {
+                    Ok(()) => PtyMessage::Eof,
+                    Err(error) => PtyMessage::Error(error),
+                };
+                let _ = status_tx.send(message);
                 let _ = signal_wake(&status_signal);
             },
         ) {
@@ -313,8 +317,8 @@ fn worker_main(
                             terminal.process_output(&bytes);
                             snapshot_dirty = true;
                         }
-                        Ok(PtyMessage::Status(status)) => {
-                            terminal_status = Some(status);
+                        Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
+                            terminal_status = Some(message);
                             break;
                         }
                         Err(TryRecvError::Disconnected) => {
@@ -340,9 +344,9 @@ fn worker_main(
                 set_status(&mailbox, WorkerStatus::Idle);
                 pending_pty_status = terminal_status;
             }
-            Ok(PtyMessage::Status(status)) => {
+            Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
                 progressed = true;
-                pending_pty_status = Some(status);
+                pending_pty_status = Some(message);
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
             Err(TryRecvError::Empty) => {
@@ -417,21 +421,22 @@ fn worker_main(
     }
 }
 fn apply_pty_status(
-    status: PtyReaderStatus,
+    status: PtyMessage,
     mailbox: &Arc<Mutex<Mailbox>>,
     notifier: &dyn Fn(),
 ) -> bool {
     match status {
-        PtyReaderStatus::Eof => {
+        PtyMessage::Eof => {
             set_status(mailbox, WorkerStatus::Stopped);
             notify(notifier);
             true
         }
-        PtyReaderStatus::Error(error) => {
+        PtyMessage::Error(error) => {
             set_status(mailbox, WorkerStatus::Failed { message: error });
             notify(notifier);
             true
         }
+        PtyMessage::Bytes(_) => false,
     }
 }
 
@@ -654,121 +659,6 @@ pub(crate) fn empty_snapshot(rows: usize, cols: usize) -> TerminalSnapshot {
     }
 }
 
-/// UI-side read-only view over the most recently published worker snapshot.
-pub(crate) struct WorkerUiFacade<'a> {
-    snapshot: &'a TerminalSnapshot,
-    worker: &'a TerminalWorkerClient,
-    view: SnapshotView<'a>,
-}
-
-struct SnapshotView<'a> {
-    snapshot: &'a TerminalSnapshot,
-}
-
-impl<'a> WorkerUiFacade<'a> {
-    pub(crate) fn new(snapshot: &'a TerminalSnapshot, worker: &'a TerminalWorkerClient) -> Self {
-        Self {
-            snapshot,
-            worker,
-            view: SnapshotView { snapshot },
-        }
-    }
-}
-
-impl TerminalView for SnapshotView<'_> {
-    fn rows(&self) -> usize {
-        self.snapshot.rows
-    }
-
-    fn cols(&self) -> usize {
-        self.snapshot.cols
-    }
-
-    fn scroll_count(&self) -> usize {
-        self.snapshot.scroll_count
-    }
-
-    fn view_offset(&self) -> usize {
-        self.snapshot.view_offset
-    }
-
-    fn history_start(&self) -> u64 {
-        self.snapshot.history_start
-    }
-
-    fn cursor_visible(&self) -> bool {
-        self.snapshot.cursor_visible
-    }
-
-    fn cursor_blink(&self) -> bool {
-        self.snapshot.cursor_blink
-    }
-
-    fn input_modes(&self) -> InputModes {
-        self.snapshot.input_modes
-    }
-
-    fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
-        let visible_start = self.snapshot.history_start
-            + self
-                .snapshot
-                .scroll_count
-                .saturating_sub(self.snapshot.view_offset) as u64;
-        let row = generation.checked_sub(visible_start)? as usize;
-        if row >= self.snapshot.rows || col >= self.snapshot.cols {
-            return None;
-        }
-        self.snapshot.cells.get(row * self.snapshot.cols + col)
-    }
-}
-
-impl TerminalFacade for WorkerUiFacade<'_> {
-    fn view(&self) -> &dyn TerminalView {
-        &self.view
-    }
-
-    fn render_snapshot(&self) -> harbor_types::RenderSnapshot {
-        self.snapshot.render_snapshot()
-    }
-
-    fn request_copy(&self, bounds: SelectionBounds) -> Option<u64> {
-        self.worker.request_copy(bounds)
-    }
-
-    fn send_input(&self, request: harbor_types::InputRequest) {
-        let _ = self.worker.send(TerminalCommand::Input(request));
-    }
-
-    fn send_paste(&self, text: String) {
-        let _ = self.worker.send(TerminalCommand::PasteText(text));
-    }
-
-    fn scroll_viewport_up(&self, n: usize) -> Option<u64> {
-        self.worker.request_scroll_viewport(-(n as isize))
-    }
-
-    fn scroll_viewport_down(&self, n: usize) -> Option<u64> {
-        self.worker.request_scroll_viewport(n as isize)
-    }
-
-    fn scroll_viewport_to_top(&self) -> Option<u64> {
-        self.worker.request_scroll_to_top()
-    }
-
-    fn scroll_viewport_to_bottom(&self) -> Option<u64> {
-        self.worker.request_scroll_to_bottom()
-    }
-
-    fn set_suppress_scroll_snap(&self, active: bool) {
-        let _ = self
-            .worker
-            .send(TerminalCommand::SetSelectionDragActive(active));
-    }
-
-    fn is_alt_screen(&self) -> bool {
-        self.snapshot.is_alt
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1110,9 +1000,7 @@ mod tests {
             .expect("worker publishes the initial snapshot")
             .expect("worker startup succeeds");
         test_pty_tx
-            .send(PtyMessage::Status(PtyReaderStatus::Error(
-                "read failed".to_owned(),
-            )))
+            .send(PtyMessage::Error("read failed".to_owned()))
             .unwrap();
         signal_wake(&signal_tx);
         drop(control_tx);
@@ -1166,6 +1054,7 @@ mod tests {
             copy_results: VecDeque::new(),
             status: WorkerStatus::Ready,
         }));
+        let worker_mailbox = Arc::clone(&mailbox);
         let (wake_tx, _wake_rx) = mpsc::channel();
         let notifier: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.send(());
@@ -1255,7 +1144,7 @@ mod tests {
 
         // Signal end of PTY output.
         test_pty_tx
-            .send(PtyMessage::Status(PtyReaderStatus::Eof))
+            .send(PtyMessage::Eof)
             .expect("pty channel open");
         signal_wake(&signal_tx);
 
