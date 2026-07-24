@@ -1185,4 +1185,75 @@ mod tests {
             "acks not drained after stop"
         );
     }
+
+    #[test]
+    fn test_encode_input_round_trip() {
+        use harbor_types::{InputKey, InputModifiers, InputRequest};
+
+        let modes = harbor_types::InputModes::default();
+
+        // 0. Full round-trip test from GUI winit types to worker bytes
+        {
+            use winit::keyboard::{Key, ModifiersState};
+            let logical_key = Key::Character("c".into());
+            let text = None;
+            let mut m = ModifiersState::default();
+            m.insert(ModifiersState::CONTROL);
+
+            let req = InputEncoder::request(&logical_key, text, m, false).unwrap();
+            assert_eq!(req.modifiers.control(), true);
+            assert_eq!(
+                encode_input(&req, modes).as_deref(),
+                Some(b"\x03".as_slice())
+            );
+        }
+
+        // 1. Ctrl+C with 'c' key and no text
+        let req = InputRequest {
+            key: InputKey::Character("c".to_string()),
+            text: None,
+            modifiers: InputModifiers(InputModifiers::CONTROL),
+            is_numpad: false,
+        };
+        assert_eq!(
+            encode_input(&req, modes).as_deref(),
+            Some(b"\x03".as_slice())
+        );
+
+        // 2. Ctrl+C with pre-encoded '\x03' key and no text
+        let req = InputRequest {
+            key: InputKey::Character("\x03".to_string()),
+            text: None,
+            modifiers: InputModifiers(InputModifiers::CONTROL),
+            is_numpad: false,
+        };
+        assert_eq!(
+            encode_input(&req, modes).as_deref(),
+            Some(b"\x03".as_slice())
+        );
+
+        // 3. Ctrl+A with 'a' key and no text
+        let req = InputRequest {
+            key: InputKey::Character("a".to_string()),
+            text: None,
+            modifiers: InputModifiers(InputModifiers::CONTROL),
+            is_numpad: false,
+        };
+        assert_eq!(
+            encode_input(&req, modes).as_deref(),
+            Some(b"\x01".as_slice())
+        );
+
+        // 4. Ctrl+D with 'd' key and no text
+        let req = InputRequest {
+            key: InputKey::Character("d".to_string()),
+            text: None,
+            modifiers: InputModifiers(InputModifiers::CONTROL),
+            is_numpad: false,
+        };
+        assert_eq!(
+            encode_input(&req, modes).as_deref(),
+            Some(b"\x04".as_slice())
+        );
+    }
 }

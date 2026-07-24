@@ -1196,4 +1196,26 @@ mod tests {
         assert_eq!(bounds.start_col, 0);
         assert_eq!(bounds.end_col, 1); // 你
     }
+
+    #[test]
+    fn test_selection_model_states() {
+        let screen = test_screen(3, 10);
+        let mut model = SelectionModel::new();
+        let now = Instant::now();
+        let snapshot = screen.terminal_snapshot();
+
+        // 1. Initially (range = None)
+        assert!(!model.has_selection());
+        assert!(!model.is_range_empty()); // range is None, so is_range_empty returns false!
+
+        // 2. Pressed but not dragged (range is Some and empty)
+        model.press((0, 2), now, &snapshot);
+        assert!(model.has_selection());
+        assert!(model.is_range_empty());
+
+        // 3. Dragged (range is Some and not empty)
+        model.drag_to((0, 5), &snapshot);
+        assert!(model.has_selection());
+        assert!(!model.is_range_empty());
+    }
 }

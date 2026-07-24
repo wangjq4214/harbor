@@ -753,6 +753,7 @@ impl App {
 
         let command_buffer = encoder.finish();
         gpu.queue().submit(Some(command_buffer));
+        gpu.present(output);
         tracing::trace!(?status, "surface frame presented");
         if reconfigure_after_present && !self.frame.surface_recovery_attempted {
             self.frame.surface_recovery_attempted = true;

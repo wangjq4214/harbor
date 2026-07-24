@@ -212,12 +212,16 @@ impl Selection {
                 if ctrl
                     && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
                 {
-                    if self.pending_copy.is_none() && !self.model.is_range_empty() {
-                        if let Some(bounds) = self.model.bounds() {
-                            requests.push(UiRequest::Copy(bounds));
+                    if self.model.has_selection() && !self.model.is_range_empty() {
+                        if self.pending_copy.is_none() {
+                            if let Some(bounds) = self.model.bounds() {
+                                requests.push(UiRequest::Copy(bounds));
+                            }
                         }
+                        EventResult::Handled
+                    } else {
+                        EventResult::Continue
                     }
-                    EventResult::Handled
                 } else if (ctrl
                     && matches!(&key.logical_key, Key::Character(ch) if ch.eq_ignore_ascii_case("v")))
                     || (shift && matches!(&key.logical_key, Key::Named(NamedKey::Insert)))
@@ -236,8 +240,10 @@ impl Selection {
                                 };
                             }
                         }
+                        EventResult::Handled
+                    } else {
+                        EventResult::Continue
                     }
-                    EventResult::Handled
                 } else {
                     if !is_modifier_key(&key.logical_key) && self.model.on_key_press() {
                         self.dirty = true;
