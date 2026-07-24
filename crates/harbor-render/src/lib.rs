@@ -2,9 +2,7 @@ mod background;
 pub mod caps;
 mod cursor;
 mod decoration;
-pub mod font;
 pub mod gpu;
-pub mod metrics;
 mod scrollbar;
 pub mod selection;
 mod text;
@@ -16,12 +14,11 @@ pub use caps::{
 };
 pub use cursor::Cursor;
 pub use decoration::Decoration;
-pub use font::{FontBook, load_system_fonts};
 pub use gpu::GpuContext;
-pub use metrics::TextMetrics;
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
-pub use text::{AtlasGlyph, Text};
+pub use text::Text;
 
 use harbor_types::RenderSnapshot;
 

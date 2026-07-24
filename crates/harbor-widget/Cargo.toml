@@ -7,4 +7,5 @@ edition = "2024"
 bytemuck = { workspace = true }
 hashbrown = { workspace = true }
 slotmap = { workspace = true }
+harbor-text = { workspace = true }
 wgpu = { workspace = true }

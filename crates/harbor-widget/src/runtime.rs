@@ -213,10 +213,9 @@ impl Runtime {
     /// `FrameRequest` indicating whether a redraw is needed.
     pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> FrameRequest {
         let needs_redraw = self.route_event(&event);
-        if needs_redraw
-            && let Some(root_id) = self.root_id {
-                crate::signal::mark_dirty(root_id);
-            }
+        if needs_redraw && let Some(root_id) = self.root_id {
+            crate::signal::mark_dirty(root_id);
+        }
         FrameRequest { needs_redraw }
     }
 
@@ -356,9 +355,10 @@ impl Runtime {
         let local_point = Point::new(point.x - rect.min.x, point.y - rect.min.y);
         let local_rect = Rect::from_min_size(Point::ZERO, rect.size());
         if let Some(ref view) = fiber.view
-            && view.hit_test(local_point, local_rect) {
-                return Some(fiber_id);
-            }
+            && view.hit_test(local_point, local_rect)
+        {
+            return Some(fiber_id);
+        }
 
         None
     }

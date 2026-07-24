@@ -1,19 +1,16 @@
 [package]
-name = "harbor-render"
+name = "harbor-text"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 harbor-types = { workspace = true }
 harbor-config = { workspace = true }
-harbor-terminal = { workspace = true }
-harbor-pty = { workspace = true }
-harbor-text = { workspace = true }
 anyhow = { workspace = true }
-arboard = { workspace = true }
-bytemuck = { workspace = true }
+fontdb = { workspace = true }
+fontdue = { workspace = true }
 hashbrown = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
 unicode-width = { workspace = true }
-wgpu = { workspace = true }
-winit = { workspace = true }

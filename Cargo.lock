@@ -758,13 +758,12 @@ dependencies = [
  "arboard",
  "bytemuck",
  "dirs",
- "fontdb",
- "fontdue",
  "harbor-config",
  "harbor-parser",
  "harbor-pty",
  "harbor-render",
  "harbor-terminal",
+ "harbor-text",
  "harbor-types",
  "harbor-ui",
  "harbor-widget",
@@ -806,11 +805,10 @@ dependencies = [
  "anyhow",
  "arboard",
  "bytemuck",
- "fontdb",
- "fontdue",
  "harbor-config",
  "harbor-pty",
  "harbor-terminal",
+ "harbor-text",
  "harbor-types",
  "hashbrown 0.17.1",
  "tracing",
@@ -826,6 +824,20 @@ dependencies = [
  "bitvec",
  "harbor-parser",
  "harbor-types",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
+name = "harbor-text"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fontdb",
+ "fontdue",
+ "harbor-config",
+ "harbor-types",
+ "hashbrown 0.17.1",
  "tracing",
  "unicode-width",
 ]
@@ -848,6 +860,7 @@ name = "harbor-widget"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "harbor-text",
  "hashbrown 0.17.1",
  "slotmap",
  "wgpu",
