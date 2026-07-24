@@ -183,3 +183,14 @@ Project domain concepts and terminology.
 - **Relationships:**
   - implements AnyView
   - handles Pointer and Focus events
+
+### Paste Confirmation Window
+- **Definition:** An OS-level secondary winit window that displays the paste confirmation UI independently of Harbor's main window.
+- **Relationships:**
+  - communicates with Harbor Widget Runtime
+  - depends on Cross-Window Input Gate
+
+### Cross-Window Input Gate
+- **Definition:** An App-owned policy that blocks terminal keyboard input and new paste requests while a Paste Confirmation Window exists.
+- **Relationships:**
+  - belongs to Paste Confirmation Window
