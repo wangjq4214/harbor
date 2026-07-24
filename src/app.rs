@@ -65,6 +65,8 @@ struct AppRuntime {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     ui: Option<UiRoot>,
+    /// Widget framework runtime (Phase 1: layout + quad rendering).
+    widget_runtime: Option<harbor_widget::runtime::Runtime>,
     paste_dialog: Option<PasteDialog>,
 }
 
@@ -413,9 +415,14 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.frame.surface_recovery_attempted = false;
                 gpu.resize(size.width, size.height);
-                ui.resize(gpu, (size.width, size.height));
                 self.session.pending_resize = Some(ui.terminal_size(gpu));
                 self.frame.render_dirty = true;
+                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(size.width, size.height, 1.0);
+                    widget_runtime.set_viewport(viewport);
+                    widget_runtime.update(std::time::Instant::now());
+                }
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
@@ -472,6 +479,7 @@ impl App {
                 window: None,
                 gpu: None,
                 ui: None,
+                widget_runtime: None,
                 paste_dialog: None,
             },
             session: TerminalSession {
@@ -545,6 +553,7 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.ui = Some(ui);
+        self.init_widget_runtime();
         self.session
             .updates
             .accept(initial.clone())
@@ -749,6 +758,13 @@ impl App {
             });
 
             ui.draw(&mut render_pass);
+
+            // Encode widget quads after terminal content.
+            if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                let (physical_w, physical_h) = gpu.surface_size();
+                let viewport = harbor_widget::renderer::Viewport::new(physical_w, physical_h, 1.0);
+                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
+            }
         }
 
         let command_buffer = encoder.finish();
@@ -762,6 +778,22 @@ impl App {
         } else if status == SurfaceStatus::Success {
             self.frame.surface_recovery_attempted = false;
         }
+    }
+
+    /// Initializes the widget runtime with a simple demo scene.
+    fn init_widget_runtime(&mut self) {
+        let gpu = self.runtime.gpu.as_ref().unwrap();
+        let mut runtime = harbor_widget::runtime::Runtime::new();
+
+        use harbor_widget::layout::Size;
+        use harbor_widget::scene::primitive::Color;
+        use harbor_widget::widgets::sized_box::SizedBox;
+
+        runtime.set_root(SizedBox::new(Size::new(200.0, 100.0)).color(Color::RED));
+        runtime.init_renderer(gpu.device(), gpu.format());
+        runtime.update(std::time::Instant::now());
+
+        self.runtime.widget_runtime = Some(runtime);
     }
 }
 

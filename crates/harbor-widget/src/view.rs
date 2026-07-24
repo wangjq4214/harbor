@@ -1,7 +1,9 @@
 use crate::fiber::FiberId;
-use crate::layout::{BoxConstraints, Size};
+use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::scene::primitive::Primitive;
 use crate::signal::{Hook, Signal};
 use std::any::TypeId;
+use std::sync::Arc;
 
 // ── Key ─────────────────────────────────────────────────────────────────────
 
@@ -104,6 +106,27 @@ pub(crate) trait AnyView: 'static {
 
     /// Computes the intrinsic size given layout constraints.
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size;
+
+    /// Computes the layout of this widget given child intrinsic sizes.
+    /// Returns own size and child origins (relative to self).
+    /// Default: positions all children at origin with own size from intrinsic_size.
+    fn layout_children(
+        &self,
+        constraints: BoxConstraints,
+        child_sizes: &[Size],
+    ) -> (Size, Vec<Point>) {
+        let _ = child_sizes;
+        let size = self.intrinsic_size(constraints);
+        let positions = vec![Point::ZERO; child_sizes.len()];
+        (size, positions)
+    }
+
+    /// Returns Primitives to draw for this widget given its layout rect.
+    /// Default: no primitives (invisible).
+    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+        let _ = rect;
+        vec![]
+    }
 }
 
 // ── View ────────────────────────────────────────────────────────────────────
@@ -111,8 +134,9 @@ pub(crate) trait AnyView: 'static {
 /// An opaque, discardable UI description with optional Key.
 ///
 /// Produced by `Component::build` and consumed by the reconciliation system.
+#[derive(Clone)]
 pub struct View {
-    pub(crate) inner: Box<dyn AnyView>,
+    pub(crate) inner: Arc<dyn AnyView>,
     explicit_key: Option<Key>,
     pub(crate) children: Vec<View>,
 }
@@ -122,7 +146,7 @@ impl View {
     #[allow(private_bounds)]
     pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
         View {
-            inner: Box::new(inner),
+            inner: Arc::new(inner),
             explicit_key: key,
             children,
         }
@@ -140,52 +164,13 @@ impl View {
     }
 
     /// Consumes the View and returns its components.
-    pub(crate) fn decompose(self) -> (Box<dyn AnyView>, Vec<View>, Option<Key>) {
+    pub(crate) fn decompose(self) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
         (self.inner, self.children, self.explicit_key)
     }
 }
 
-// ── SizedBox (test widget) ──────────────────────────────────────────────────
-
-/// AnyView implementation for SizedBox (public for integration tests).
-pub struct SizedBoxState {
-    pub size: Size,
-}
-
-impl AnyView for SizedBoxState {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(SizedBoxState { size: self.size }, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        constraints.constrain(self.size)
-    }
-}
-
-/// A simple fixed-size widget for testing the render pipeline.
-pub struct SizedBox {
-    size: Size,
-}
-
-impl SizedBox {
-    pub fn new(size: Size) -> Self {
-        SizedBox { size }
-    }
-}
-
-impl Component for SizedBox {
-    fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(SizedBoxState { size: self.size }, vec![], None)
-    }
-}
+// Re-export SizedBox from widgets module
+pub use crate::widgets::sized_box::SizedBox;
 
 #[cfg(test)]
 mod tests {
@@ -232,26 +217,18 @@ mod tests {
 
     #[test]
     fn view_key_explicit() {
-        let view = View::new(
-            SizedBoxState {
-                size: Size::new(10.0, 10.0),
-            },
-            vec![],
-            Some(Key::new("my_key")),
-        );
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(10.0, 10.0));
+        let view = View::new(sb, vec![], Some(Key::new("my_key")));
         assert_eq!(view.key(), Some(&Key::new("my_key")));
     }
 
     #[test]
     fn view_key_fallback_to_inner() {
-        // SizedBoxState has no key, so no fallback
-        let view = View::new(
-            SizedBoxState {
-                size: Size::new(10.0, 10.0),
-            },
-            vec![],
-            None,
-        );
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(10.0, 10.0));
+        // SizedBox has no key, so no fallback
+        let view = View::new(sb, vec![], None);
         assert_eq!(view.key(), None);
     }
 
@@ -284,20 +261,11 @@ mod tests {
 
     #[test]
     fn view_widget_type() {
-        let view1 = View::new(
-            SizedBoxState {
-                size: Size::new(10.0, 10.0),
-            },
-            vec![],
-            None,
-        );
-        let view2 = View::new(
-            SizedBoxState {
-                size: Size::new(20.0, 20.0),
-            },
-            vec![],
-            None,
-        );
+        use crate::widgets::sized_box::SizedBox;
+        let sb1 = SizedBox::new(Size::new(10.0, 10.0));
+        let sb2 = SizedBox::new(Size::new(20.0, 20.0));
+        let view1 = View::new(sb1, vec![], None);
+        let view2 = View::new(sb2, vec![], None);
         // Same widget type
         assert_eq!(view1.widget_type(), view2.widget_type());
     }
@@ -373,21 +341,19 @@ mod tests {
 
     #[test]
     fn anyview_intrinsic_size() {
-        let state = SizedBoxState {
-            size: Size::new(100.0, 50.0),
-        };
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(100.0, 50.0));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = state.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints);
         assert_eq!(size, Size::new(100.0, 50.0));
     }
 
     #[test]
     fn anyview_intrinsic_size_clamped() {
-        let state = SizedBoxState {
-            size: Size::new(1000.0, 50.0),
-        };
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(1000.0, 50.0));
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
-        let size = state.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints);
         // Both dimensions clamped to tight 500x500 constraint
         assert_eq!(size, Size::new(500.0, 500.0));
     }

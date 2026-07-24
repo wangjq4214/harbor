@@ -803,6 +803,7 @@ dependencies = [
  "harbor-terminal",
  "harbor-types",
  "harbor-ui",
+ "harbor-widget",
  "hashbrown 0.17.1",
  "pollster",
  "thiserror 2.0.18",
@@ -882,7 +883,9 @@ dependencies = [
 name = "harbor-widget"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "slotmap",
+ "wgpu",
 ]
 
 [[package]]
