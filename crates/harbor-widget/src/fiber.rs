@@ -1,8 +1,10 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::scene::SceneItem;
 use crate::signal::Hook;
 use crate::view::{AnyView, Key, View};
 use slotmap::SlotMap;
 use std::any::TypeId;
+use std::sync::Arc;
 
 // ── FiberId ──────────────────────────────────────────────────────────────────
 
@@ -68,15 +70,17 @@ pub struct Fiber {
     pub parent: Option<FiberId>,
     pub flags: DirtyFlags,
     pub layout_rect: Option<Rect>,
+    /// SceneItem ids owned by this fiber (for incremental paint tracking).
+    pub scene_item_ids: Vec<u64>,
     /// The type-erased widget data for layout and rebuild.
-    pub(crate) view: Option<Box<dyn AnyView>>,
+    pub(crate) view: Option<Arc<dyn AnyView>>,
 }
 
 impl Fiber {
     pub(crate) fn new(
         key: Option<Key>,
         widget_type: TypeId,
-        view: Option<Box<dyn AnyView>>,
+        view: Option<Arc<dyn AnyView>>,
     ) -> Self {
         Fiber {
             id: None, // set by FiberArena::insert
@@ -87,6 +91,7 @@ impl Fiber {
             parent: None,
             flags: DirtyFlags::NONE,
             layout_rect: None,
+            scene_item_ids: Vec::new(),
             view,
         }
     }
@@ -265,36 +270,113 @@ pub(crate) fn reconcile_children(
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
-/// Runs a basic layout pass on a fiber subtree.
-///
-/// Walks top-down, passing `BoxConstraints` to each node. Each node computes
-/// its `Rect` via `AnyView::intrinsic_size` and stores it in `Fiber.layout_rect`.
-/// Children are currently all positioned at the same origin (simple stacking
-/// for Phase 0).
+/// Two-pass layout walk:
+///   1. Collect child intrinsic sizes bottom-up.
+///   2. Call `layout_children` on the parent to compute own size and child origins.
+///   3. Recurse into children with computed positions.
 pub(crate) fn layout_fiber(
     arena: &mut FiberArena,
     id: FiberId,
     constraints: BoxConstraints,
     origin: Point,
 ) {
-    let (size, children) = if let Some(fiber) = arena.get_mut(id) {
-        let size = if let Some(ref view) = fiber.view {
-            view.intrinsic_size(constraints)
-        } else {
-            constraints.constrain(Size::ZERO)
+    // Phase 1: collect child intrinsic sizes (bottom-up)
+    let child_specs: Vec<(FiberId, Size)> = {
+        let fiber = match arena.get(id) {
+            Some(f) => f,
+            None => return,
         };
-        fiber.layout_rect = Some(Rect::from_min_size(origin, size));
         let children = fiber.children.clone();
-        (size, children)
-    } else {
-        return;
+        let mut specs = Vec::with_capacity(children.len());
+        for &cid in &children {
+            let child_size = if let Some(child) = arena.get(cid) {
+                child
+                    .view
+                    .as_ref()
+                    .map(|v| v.intrinsic_size(constraints))
+                    .unwrap_or(Size::ZERO)
+            } else {
+                Size::ZERO
+            };
+            specs.push((cid, child_size));
+        }
+        specs
     };
 
-    // Layout children at origin for Phase 0 (will become proper flex/stack later)
-    let child_constraints = BoxConstraints::loose(size);
-    for &child_id in &children {
-        layout_fiber(arena, child_id, child_constraints, origin);
+    // Phase 2: compute own size and child origins
+    let (own_size, child_origins) = {
+        let fiber = match arena.get(id) {
+            Some(f) => f,
+            None => return,
+        };
+        let sizes: Vec<Size> = child_specs.iter().map(|(_, s)| *s).collect();
+
+        fiber
+            .view
+            .as_ref()
+            .map(|v| v.layout_children(constraints, &sizes))
+            .unwrap_or((constraints.constrain(Size::ZERO), vec![]))
+    };
+
+    // Store own rect
+    if let Some(fiber) = arena.get_mut(id) {
+        fiber.layout_rect = Some(Rect::from_min_size(origin, own_size));
     }
+
+    // Phase 3: recurse into children with computed positions
+    for ((cid, _child_size), child_pos) in child_specs.iter().zip(child_origins.iter()) {
+        let child_origin = Point::new(origin.x + child_pos.x, origin.y + child_pos.y);
+        let child_constraints = BoxConstraints::loose(own_size);
+        layout_fiber(arena, *cid, child_constraints, child_origin);
+    }
+}
+
+// ── Paint ────────────────────────────────────────────────────────────────────
+
+static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_scene_id() -> u64 {
+    NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Walks the fiber tree top-down, accumulates Primitives from each fiber
+/// via `AnyView::paint_primitives`, assigns incrementing paint_order and
+/// scene ids, and returns a flat Vec of SceneItems.
+pub(crate) fn paint_fiber(arena: &FiberArena, id: FiberId, base_order: u32) -> Vec<SceneItem> {
+    let mut items = Vec::new();
+    let mut order = base_order;
+
+    let fiber = match arena.get(id) {
+        Some(f) => f,
+        None => return items,
+    };
+
+    let rect = fiber.layout_rect;
+    let children = fiber.children.clone();
+    let _has_view = fiber.view.is_some();
+
+    // Collect self primitives
+    if let Some(ref view) = fiber.view
+        && let Some(r) = rect
+    {
+        for prim in view.paint_primitives(r) {
+            items.push(SceneItem {
+                id: next_scene_id(),
+                primitive: prim,
+                paint_order: order,
+            });
+            order += 1;
+        }
+    }
+
+    // Collect children (in order)
+    for child_id in &children {
+        let child_items = paint_fiber(arena, *child_id, order);
+        order += child_items.len() as u32;
+        items.extend(child_items);
+    }
+
+    items
 }
 
 #[cfg(test)]
@@ -660,10 +742,11 @@ mod tests {
     fn layout_sets_rect_on_fiber() {
         let mut arena = FiberArena::new();
 
-        let state = crate::view::SizedBoxState {
-            size: Size::new(100.0, 50.0),
-        };
-        let view = View::new(state, vec![], None);
+        use crate::view::Component;
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(100.0, 50.0));
+        let mut cx = crate::view::BuildCx::stub();
+        let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
 
         layout_fiber(
@@ -678,5 +761,211 @@ mod tests {
         let rect = fiber.layout_rect.unwrap();
         assert_eq!(rect.min, Point::new(10.0, 20.0));
         assert_eq!(rect.size(), Size::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn paint_fiber_collects_primitives() {
+        let mut arena = FiberArena::new();
+
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::sized_box::SizedBox;
+        let sb = SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED);
+        let mut cx = crate::view::BuildCx::stub();
+        let view = sb.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        // Layout first so the fiber has a rect
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&arena, fiber_id, 0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].paint_order, 0);
+    }
+
+    #[test]
+    fn paint_fiber_nested_column_correct_paint_order() {
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::column::Column;
+        use crate::widgets::sized_box::SizedBox;
+
+        let mut arena = FiberArena::new();
+
+        // Column with 3 colored SizedBox children
+        let column = Column::new()
+            .child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::RED))
+            .child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::GREEN))
+            .child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::BLUE));
+        let mut cx = crate::view::BuildCx::stub();
+        let view = column.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        // Layout
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&arena, fiber_id, 0);
+        // Each child has one prim (Quad), plus parent has 0 (no background)
+        assert_eq!(items.len(), 3);
+        // Paint order should be sequential: 0, 1, 2
+        assert_eq!(items[0].paint_order, 0);
+        assert_eq!(items[1].paint_order, 1);
+        assert_eq!(items[2].paint_order, 2);
+        // Check colors via primitive
+        use crate::scene::primitive::Primitive;
+        match &items[0].primitive {
+            Primitive::Quad { color, .. } => assert_eq!(*color, Color::RED),
+            _ => panic!("expected Quad"),
+        }
+        match &items[1].primitive {
+            Primitive::Quad { color, .. } => assert_eq!(*color, Color::GREEN),
+            _ => panic!("expected Quad"),
+        }
+        match &items[2].primitive {
+            Primitive::Quad { color, .. } => assert_eq!(*color, Color::BLUE),
+            _ => panic!("expected Quad"),
+        }
+    }
+
+    #[test]
+    fn paint_fiber_column_with_background_produces_paint_order() {
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::column::Column;
+        use crate::widgets::sized_box::SizedBox;
+
+        let mut arena = FiberArena::new();
+
+        // Column with background + one child
+        let column = Column::new()
+            .background(Color::BLACK)
+            .child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::RED));
+        let mut cx = crate::view::BuildCx::stub();
+        let view = column.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&arena, fiber_id, 0);
+        // Parent background (paint_order 0) + child quad (paint_order 1)
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].paint_order, 0,
+            "parent background should paint first"
+        );
+        assert_eq!(items[1].paint_order, 1, "child should paint after parent");
+    }
+
+    #[test]
+    fn paint_fiber_row_with_nested_padding() {
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::padding::Padding;
+        use crate::widgets::row::Row;
+        use crate::widgets::sized_box::SizedBox;
+
+        let mut arena = FiberArena::new();
+
+        // Row containing a Padding containing a SizedBox
+        let row = Row::new().child(
+            Padding::new(8.0, 8.0, 8.0, 8.0)
+                .background(Color::BLACK)
+                .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED)),
+        );
+        let mut cx = crate::view::BuildCx::stub();
+        let view = row.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&arena, fiber_id, 0);
+        // Row has no background, Padding has background, SizedBox has color
+        // Paint order: Row (0 prims), then Padding (1 prim), then SizedBox (1 prim) = 2
+        assert_eq!(items.len(), 2, "padding bg + sized box color = 2 prims");
+        // Both items should have incrementing paint orders
+        assert_eq!(items[0].paint_order, 0);
+        assert_eq!(items[1].paint_order, 1);
+    }
+
+    #[test]
+    fn paint_fiber_stack_overlapping_children() {
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::sized_box::SizedBox;
+        use crate::widgets::stack::Stack;
+
+        let mut arena = FiberArena::new();
+
+        let stack = Stack::new()
+            .background(Color::BLACK)
+            .child(SizedBox::new(Size::new(100.0, 100.0)).color(Color::RED))
+            .child(SizedBox::new(Size::new(80.0, 80.0)).color(Color::GREEN));
+        let mut cx = crate::view::BuildCx::stub();
+        let view = stack.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&arena, fiber_id, 0);
+        // Stack background + 2 children = 3
+        assert_eq!(items.len(), 3);
+        // Paint order: stack bg (0), first child (1), second child (2)
+        assert_eq!(items[0].paint_order, 0);
+        assert_eq!(items[1].paint_order, 1);
+        assert_eq!(items[2].paint_order, 2);
+    }
+
+    #[test]
+    fn paint_fiber_respects_base_order() {
+        use crate::scene::primitive::Color;
+        use crate::view::Component;
+        use crate::widgets::sized_box::SizedBox;
+
+        let mut arena = FiberArena::new();
+
+        let sb = SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED);
+        let mut cx = crate::view::BuildCx::stub();
+        let view = sb.build(&mut cx);
+        let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+
+        layout_fiber(
+            &mut arena,
+            fiber_id,
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            Point::ZERO,
+        );
+
+        // Paint with non-zero base_order
+        let items = paint_fiber(&arena, fiber_id, 10);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].paint_order, 10,
+            "paint order should start at base_order"
+        );
     }
 }

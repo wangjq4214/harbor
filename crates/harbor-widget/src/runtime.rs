@@ -1,7 +1,11 @@
 use crate::fiber::{
-    DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, reconcile_children, unmount_fiber,
+    DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber, reconcile_children,
+    unmount_fiber,
 };
 use crate::layout::{BoxConstraints, Point, Size};
+use crate::renderer::Viewport;
+use crate::renderer::quad::QuadRenderer;
+use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::PENDING_DIRTY;
 use crate::view::{BuildCx, Component};
 use std::time::Instant;
@@ -17,11 +21,15 @@ pub struct FrameRequest {
 
 /// Top-level widget tree scheduler.
 ///
-/// Owns the fiber tree and orchestrates reconcile -> layout cycles.
+/// Owns the fiber tree and orchestrates reconcile -> layout -> paint cycles.
 pub struct Runtime {
     arena: FiberArena,
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
+    scene_graph: SceneGraph,
+    renderer: Option<QuadRenderer>,
+    pending_delta: Option<SceneDelta>,
+    current_viewport: Option<Viewport>,
 }
 
 impl Default for Runtime {
@@ -36,6 +44,10 @@ impl Runtime {
             arena: FiberArena::new(),
             root_id: None,
             root_component: None,
+            scene_graph: SceneGraph::new(),
+            renderer: None,
+            pending_delta: None,
+            current_viewport: None,
         }
     }
 
@@ -90,13 +102,21 @@ impl Runtime {
             fiber.children = new_children;
         }
 
-        // Initial layout
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
+        // Initial layout using current viewport or default
+        let viewport_size = self
+            .current_viewport
+            .as_ref()
+            .map(|v| v.logical_size)
+            .unwrap_or(Size::new(800.0, 600.0));
+        let constraints = BoxConstraints::loose(viewport_size);
         layout_fiber(&mut self.arena, root_id, constraints, Point::ZERO);
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.flags.remove(DirtyFlags::LAYOUT_DIRTY);
             fiber.flags.remove(DirtyFlags::BUILD_DIRTY);
         }
+
+        // Run initial paint pass
+        self.run_paint_pass();
 
         // Mark root dirty (first update will trigger a redraw)
         crate::signal::mark_dirty(root_id);
@@ -157,14 +177,71 @@ impl Runtime {
             fiber.children = new_children;
         }
 
-        // Layout pass
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
+        // Layout pass using current viewport or default
+        let viewport_size = self
+            .current_viewport
+            .as_ref()
+            .map(|v| v.logical_size)
+            .unwrap_or(Size::new(800.0, 600.0));
+        let constraints = BoxConstraints::loose(viewport_size);
         layout_fiber(&mut self.arena, root_id, constraints, Point::ZERO);
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.flags.remove(DirtyFlags::LAYOUT_DIRTY);
         }
 
+        // Run paint pass
+        self.run_paint_pass();
+
         FrameRequest { needs_redraw: true }
+    }
+
+    /// Initializes the GPU renderer. Must be called after a wgpu Device is
+    /// available and before the first call to `encode()`.
+    pub fn init_renderer(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        self.renderer = Some(QuadRenderer::new(device, format));
+    }
+
+    /// Applies the pending SceneDelta to the GPU renderer and encodes draw
+    /// calls into the RenderPass. No-op if the renderer hasn't been
+    /// initialized or there is no pending delta.
+    pub fn encode<'a>(
+        &'a mut self,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'a>,
+        viewport: Viewport,
+    ) {
+        if let Some(ref mut renderer) = self.renderer {
+            if let Some(ref delta) = self.pending_delta {
+                self.current_viewport = Some(viewport.clone());
+                renderer.update(queue, delta, &viewport);
+            }
+            renderer.encode(pass);
+        }
+    }
+
+    /// Signals that the viewport has changed (e.g., due to window resize).
+    /// Marks the root fiber as LAYOUT_DIRTY so the next update re-lays out
+    /// at the new size.
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.current_viewport = Some(viewport);
+        if let Some(root_id) = self.root_id {
+            if let Some(fiber) = self.arena.get_mut(root_id) {
+                fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
+            }
+            crate::signal::mark_dirty(root_id);
+        }
+    }
+
+    // ── Internal ─────────────────────────────────────────────────────────
+
+    fn run_paint_pass(&mut self) {
+        let Some(root_id) = self.root_id else {
+            return;
+        };
+
+        let items = paint_fiber(&self.arena, root_id, 0);
+        let delta = self.scene_graph.diff(items);
+        self.pending_delta = Some(delta);
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -177,5 +254,10 @@ impl Runtime {
     /// Returns a reference to the FiberArena.
     pub fn arena(&self) -> &FiberArena {
         &self.arena
+    }
+
+    /// Returns the pending SceneDelta, if any.
+    pub fn pending_delta(&self) -> Option<&SceneDelta> {
+        self.pending_delta.as_ref()
     }
 }

@@ -1,7 +1,8 @@
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::signal::Signal;
-use harbor_widget::view::{BuildCx, Component, Key, SizedBox, SizedBoxState, View};
+use harbor_widget::view::{BuildCx, Component, Key, View};
+use harbor_widget::widgets::sized_box::SizedBox;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -16,14 +17,8 @@ impl Component for Wrapper {
     fn build(&self, cx: &mut BuildCx) -> View {
         // Build the inner SizedBox using the same BuildCx
         let inner = SizedBox::new(self.inner_size).build(cx);
-        // Wrap in a container view (using SizedBoxState as the container)
-        View::new(
-            SizedBoxState {
-                size: Size::new(200.0, 200.0),
-            },
-            vec![inner],
-            None,
-        )
+        // Wrap in a container view (using SizedBox as the container)
+        View::new(SizedBox::new(Size::new(200.0, 200.0)), vec![inner], None)
     }
 }
 
@@ -158,13 +153,8 @@ fn signal_write_triggers_rebuild() {
 
 #[test]
 fn view_key_preserved() {
-    let view = View::new(
-        SizedBoxState {
-            size: Size::new(10.0, 10.0),
-        },
-        vec![],
-        Some(Key::new("test_key")),
-    );
+    let sb = SizedBox::new(Size::new(10.0, 10.0));
+    let view = View::new(sb, vec![], Some(Key::new("test_key")));
     assert_eq!(view.key(), Some(&Key::new("test_key")));
-    assert_eq!(view.widget_type(), std::any::TypeId::of::<SizedBoxState>());
+    assert_eq!(view.widget_type(), std::any::TypeId::of::<SizedBox>());
 }

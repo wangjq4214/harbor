@@ -65,6 +65,7 @@ harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
 harbor-render = { workspace = true }
 harbor-ui = { workspace = true }
+harbor-widget = { workspace = true }
 
 # external
 anyhow = { workspace = true }
