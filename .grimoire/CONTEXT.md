@@ -132,3 +132,54 @@ Project domain concepts and terminology.
 - **Relationships:**
   - consumed by Widget Renderer
   - provided by Host
+
+### UiEvent
+- **Definition:** A single enum representing all input events (pointer, keyboard, focus) dispatched through the widget tree via capture-target-bubble routing.
+- **Synonyms:** Event
+- **Relationships:**
+  - consumed by Runtime::dispatch
+  - handled by AnyView::handle_event
+
+### EventCtx
+- **Definition:** A command buffer passed to event handlers; supports request_focus, capture_pointer, release_pointer, invalidate_paint, and stop_propagation. Commands are applied after the event walk completes.
+- **Relationships:**
+  - produced by Runtime event routing
+  - consumed by AnyView::handle_event
+
+### FocusScope
+- **Definition:** A widget that wraps a subtree and manages Tab/Shift+Tab focus traversal within it; supports a modal flag that blocks events from reaching widgets outside the scope.
+- **Relationships:**
+  - implements AnyView
+  - manages FocusNode ordering
+
+### Hit Testing
+- **Definition:** Reverse-paint-order traversal of the Render Tree checking point-in-rect per widget, used to determine the event target for pointer events.
+- **Relationships:**
+  - uses RenderNode layout rects
+  - invoked by event routing
+
+### Pointer Capture
+- **Definition:** A mechanism where a widget that receives a pointer-down can request to receive all subsequent move/up/cancel events for that pointer, even if the pointer moves outside its bounds.
+- **Relationships:**
+  - managed by InputState
+  - requested via EventCtx::capture_pointer
+
+### InputState
+- **Definition:** A per-Runtime struct holding focused FiberId, hovered FiberId, and pointer capture map; extracted from Runtime to keep it focused on scheduling.
+- **Relationships:**
+  - belongs to Runtime
+  - consumed by event routing
+
+### Event Routing
+- **Definition:** The capture → target → bubble walk through the Fiber tree, where hit testing identifies the target, then handlers are called in three phases before EventCtx commands are applied.
+- **Synonyms:** Event Walk
+- **Relationships:**
+  - consumes UiEvent
+  - uses InputState
+  - produces EventCtx commands
+
+### Button
+- **Definition:** A focusable widget with an onClick callback and hover/pressed/focused visual states; used for paste confirmation buttons and other clickable UI in Phase 2.
+- **Relationships:**
+  - implements AnyView
+  - handles Pointer and Focus events

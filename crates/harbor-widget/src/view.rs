@@ -1,4 +1,6 @@
 use crate::fiber::FiberId;
+use crate::input::event::UiEvent;
+use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::Primitive;
 use crate::signal::{Hook, Signal};
@@ -127,6 +129,34 @@ pub(crate) trait AnyView: 'static {
         let _ = rect;
         vec![]
     }
+
+    /// Returns true if the point (in widget-local coordinates) is inside
+    /// the widget's hit-testable region.
+    /// Default: point-in-rect test.
+    fn hit_test(&self, point: Point, rect: Rect) -> bool {
+        rect.contains(point)
+    }
+
+    /// Handles an input event delivered to this widget.
+    /// Returns `EventHandled::Handled` if consumed.
+    /// Default: ignores all events.
+    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
+        let _ = (event, ctx, rect);
+        EventHandled::Ignored
+    }
+
+    /// Whether this widget can receive focus via Tab navigation.
+    /// Default: false.
+    fn is_focusable(&self) -> bool {
+        false
+    }
+
+    /// Whether this widget is a modal scope — events targeting widgets outside
+    /// its subtree should be blocked.
+    /// Default: false.
+    fn is_modal_scope(&self) -> bool {
+        false
+    }
 }
 
 // ── View ────────────────────────────────────────────────────────────────────
@@ -143,6 +173,8 @@ pub struct View {
 
 impl View {
     /// Creates a new View wrapping the given AnyView implementation.
+    // AnyView is pub(crate); private_bounds is intentional — this is the
+    // public API surface for crate-internal widget types.
     #[allow(private_bounds)]
     pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
         View {

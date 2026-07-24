@@ -1,22 +1,25 @@
 use crate::fiber::FiberId;
+use hashbrown::HashSet;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 // ── Dirty Queue (shared with Runtime) ────────────────────────────────────────
 
 thread_local! {
-    /// Global queue of fibers that have been marked dirty by Signal writes.
-    pub(crate) static PENDING_DIRTY: RefCell<Vec<FiberId>> =
-        const { RefCell::new(Vec::new()) };
+    /// Global set of fibers that have been marked dirty by Signal writes.
+    /// Uses hashbrown::HashSet for O(1) deduplication.
+    ///
+    /// NOTE: This is thread-local, not Runtime-scoped. It assumes a single
+    /// Runtime per thread. If multiple Runtime instances exist on the same
+    /// thread, Signal writes from one will be processed by the other's update().
+    pub(crate) static PENDING_DIRTY: RefCell<HashSet<FiberId>> =
+        RefCell::new(HashSet::new());
 }
 
-/// Pushes a FiberId to the dirty queue if not already present.
+/// Inserts a FiberId into the dirty set (idempotent, O(1)).
 pub(crate) fn mark_dirty(id: FiberId) {
     PENDING_DIRTY.with(|q| {
-        let mut q = q.borrow_mut();
-        if !q.contains(&id) {
-            q.push(id);
-        }
+        q.borrow_mut().insert(id);
     });
 }
 
@@ -194,7 +197,8 @@ mod tests {
         signal.set(1);
 
         let dirty = PENDING_DIRTY.with(|q| q.borrow().clone());
-        assert_eq!(dirty, vec![fid]);
+        assert!(dirty.contains(&fid));
+        assert_eq!(dirty.len(), 1);
         clear_dirty_queue();
     }
 

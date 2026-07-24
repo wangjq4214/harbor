@@ -61,6 +61,8 @@ pub struct QuadRenderer {
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
     instance_capacity: u32,
+    /// Free slots reclaimed from removed items, popped before allocating new ones.
+    free_slots: Vec<u32>,
     /// Maps SceneItem id -> instance buffer slot for lookups on modify/remove.
     id_to_slot: std::collections::BTreeMap<u64, u32>,
     /// Reverse map: slot -> id
@@ -183,6 +185,7 @@ impl QuadRenderer {
             instance_buffer,
             instance_count: 0,
             instance_capacity,
+            free_slots: Vec::new(),
             id_to_slot: std::collections::BTreeMap::new(),
             slot_to_id: std::collections::BTreeMap::new(),
         }
@@ -195,6 +198,8 @@ impl QuadRenderer {
         for id in &delta.removed {
             if let Some(slot) = self.id_to_slot.remove(id) {
                 self.slot_to_id.remove(&slot);
+                // Reclaim the slot for future allocations
+                self.free_slots.push(slot);
                 // Write zeroed instance data to clear the slot
                 let instance = QuadInstance {
                     rect: [0.0, 0.0, 0.0, 0.0],
@@ -212,7 +217,9 @@ impl QuadRenderer {
             let instance = self.item_to_instance(item, viewport);
             let slot = self.allocate_slot();
             if slot >= self.instance_capacity {
-                // Skip items beyond capacity (buffer growth would require recreating)
+                // Buffer full — item skipped. With free-list recycling, this
+                // only occurs when >256 quads are alive simultaneously.
+                // TODO: grow buffer by recreating with double capacity.
                 continue;
             }
             self.id_to_slot.insert(item.id, slot);
@@ -272,6 +279,9 @@ impl QuadRenderer {
     }
 
     fn allocate_slot(&mut self) -> u32 {
+        if let Some(slot) = self.free_slots.pop() {
+            return slot;
+        }
         let slot = self.instance_count;
         self.instance_count += 1;
         slot
