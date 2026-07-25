@@ -72,6 +72,11 @@ impl UiRoot {
         self.text.text_bind_group()
     }
 
+    /// The bind group layout for the glyph atlas (texture + sampler).
+    pub(crate) fn text_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        self.text.text_bind_group_layout()
+    }
+
     /// Ensures dialog text characters are rasterized.
     pub(crate) fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
         self.text.ensure_glyphs(text, gpu);

@@ -1,4 +1,5 @@
 pub mod quad;
+pub mod text_renderer;
 
 use crate::layout::{Rect, Size};
 

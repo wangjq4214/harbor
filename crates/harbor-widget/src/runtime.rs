@@ -8,10 +8,13 @@ use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
+use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::primitive::ExternalDrawFn;
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::PENDING_DIRTY;
+use crate::text::TextRunCache;
 use crate::view::{BuildCx, Component};
+use crate::widgets::text_label;
 use hashbrown::HashSet;
 use std::time::Instant;
 
@@ -55,6 +58,8 @@ pub struct Runtime {
     root_component: Option<Box<dyn Component>>,
     scene_graph: SceneGraph,
     renderer: Option<QuadRenderer>,
+    text_renderer: Option<TextRenderer>,
+    text_run_cache: TextRunCache,
     pending_delta: Option<SceneDelta>,
     current_viewport: Option<Viewport>,
     input: InputState,
@@ -74,6 +79,8 @@ impl Runtime {
             root_component: None,
             scene_graph: SceneGraph::new(),
             renderer: None,
+            text_renderer: None,
+            text_run_cache: TextRunCache::new(),
             pending_delta: None,
             current_viewport: None,
             input: InputState::new(),
@@ -195,14 +202,31 @@ impl Runtime {
         self.renderer = Some(QuadRenderer::new(device, format));
     }
 
-    /// Applies the pending SceneDelta to the GPU renderer and encodes draw
-    /// calls into the RenderPass. No-op if the renderer hasn't been
+    /// Initializes the text renderer with the shared glyph atlas.
+    /// Must be called after `init_renderer`. If not called, text primitives
+    /// are silently skipped during encode.
+    pub fn init_text_renderer(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        self.text_renderer = Some(TextRenderer::new(
+            device,
+            format,
+            bind_group_layout,
+            bind_group,
+        ));
+    }
+
+    /// Applies the pending SceneDelta to the GPU renderers and encodes draw
+    /// calls into the RenderPass. No-op if the quad renderer hasn't been
     /// initialized or there is no pending delta.
     ///
-    /// When `external_draw` is `Some`, external primitives invoke the
-    /// callback between quad batches so external content respects paint
-    /// order.  A scissor rect is set (and restored) around each external
-    /// draw call.
+    /// Processes Quad, Border, Text, and External primitives in paint order.
+    /// Text primitives are rendered via the TextRenderer (if initialized).
+    /// External primitives invoke the callback between quad/text batches.
     pub fn encode<'a>(
         &'a mut self,
         queue: &wgpu::Queue,
@@ -218,25 +242,36 @@ impl Runtime {
         if let Some(ref delta) = self.pending_delta {
             self.current_viewport = Some(viewport.clone());
             renderer.update(queue, delta, &viewport);
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.update(queue, delta, &self.text_run_cache, &viewport);
+            }
         }
 
         let raw_items = self.scene_graph.items();
 
-        // Fast path: no external provider or no External items.
-        if external_draw.is_none()
-            || !raw_items.iter().any(|it| {
+        let has_external = external_draw.is_some()
+            && raw_items.iter().any(|it| {
                 matches!(
                     it.primitive,
                     crate::scene::primitive::Primitive::External { .. }
                 )
-            })
-        {
+            });
+
+        let has_text = self.text_renderer.is_some()
+            && raw_items.iter().any(|it| {
+                matches!(
+                    it.primitive,
+                    crate::scene::primitive::Primitive::Text { .. }
+                )
+            });
+
+        // Fast path: only quad/border primitives.
+        if !has_external && !has_text {
             renderer.encode(pass);
             return;
         }
 
-        // Collect quad ranges separated by External items.
-        // Track the min/max instance slots for each contiguous quad batch.
+        // Slow path: iterate paint-order, interleaving quad ranges, text, and external.
         let mut quad_range_start: Option<u32> = None;
         let mut quad_range_end: u32 = 0;
 
@@ -250,7 +285,7 @@ impl Runtime {
                         quad_range_end = 0;
                     }
 
-                    // Apply scissor and invoke external callback.
+                    // Invoke external callback with scissor.
                     if let Some(ref cb) = external_draw {
                         let phys_x = (rect.min.x * viewport.scale_factor) as u32;
                         let phys_y = (rect.min.y * viewport.scale_factor) as u32;
@@ -268,8 +303,21 @@ impl Runtime {
                         );
                     }
                 }
+                crate::scene::primitive::Primitive::Text { .. } => {
+                    // Flush accumulated quad range.
+                    if let Some(start) = quad_range_start.take() {
+                        let count = quad_range_end - start + 1;
+                        renderer.encode_range(pass, start, count);
+                        quad_range_end = 0;
+                    }
+
+                    // Render text run.
+                    if let Some(ref tr) = self.text_renderer {
+                        tr.encode_item(pass, item.id);
+                    }
+                }
                 _ => {
-                    // Quad (or Text/Border) — track its instance slot.
+                    // Quad or Border — track its instance slot for batching.
                     if let Some(slot) = renderer.slot_of(item.id) {
                         match quad_range_start {
                             None => {
@@ -515,7 +563,32 @@ impl Runtime {
 
         let items = paint_fiber(&self.arena, root_id, 0);
         let delta = self.scene_graph.diff(items);
+
         self.pending_delta = Some(delta);
+    }
+
+    /// Drains thread-local pending text runs and registers them with the cache.
+    /// Must be called after the paint pass (during `update`) and before `encode`.
+    pub fn register_pending_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
+        let pending = text_label::drain_pending_text_runs();
+        if pending.is_empty() {
+            return;
+        }
+
+        let metrics = crate::text::current_metrics().unwrap_or(crate::text::TextMetrics {
+            cell_width: 10.0,
+            line_height: 20.0,
+            ascent: 16.0,
+            underline_position: 0.0,
+            underline_thickness: 1.5,
+            strikethrough_position: 0.0,
+            strikethrough_thickness: 1.5,
+        });
+
+        for (id, text, _color) in &pending {
+            self.text_run_cache
+                .register_with_id(*id, text, &metrics, glyph_fn);
+        }
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -551,9 +624,46 @@ impl Runtime {
         &self.input
     }
 
+    /// Returns a mutable reference to the TextRunCache.
+    /// The host uses this to look up glyph data for text rendering.
+    pub fn text_run_cache(&mut self) -> &mut TextRunCache {
+        &mut self.text_run_cache
+    }
+
     /// Programmatically sets the focused fiber for keyboard event routing.
     pub fn set_focus(&mut self, id: FiberId) {
         self.input.focused = Some(id);
+    }
+
+    /// Scans the fiber tree and focuses the first focusable widget.
+    /// Returns true if a focusable widget was found and focused.
+    pub fn focus_first_focusable(&mut self) -> bool {
+        let Some(root_id) = self.root_id else {
+            return false;
+        };
+        if let Some(fid) = self.find_first_focusable(root_id) {
+            self.input.focused = Some(fid);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn find_first_focusable(&self, fiber_id: FiberId) -> Option<FiberId> {
+        let fiber = self.arena.get(fiber_id)?;
+        // Check self
+        if let Some(ref view) = fiber.view
+            && view.is_focusable()
+        {
+            return Some(fiber_id);
+        }
+        // Check children in order
+        for &child_id in &fiber.children {
+            if let Some(fid) = self.find_first_focusable(child_id) {
+                return Some(fid);
+            }
+        }
+        None
     }
 
     /// Clears the focused fiber.
@@ -916,5 +1026,122 @@ mod tests {
     fn has_modal_returns_false_with_no_root() {
         let rt = Runtime::new();
         assert!(!rt.has_modal());
+    }
+    // ── focus_first_focusable ──────────────────────────────────────────
+
+    #[test]
+    fn should_focus_button_when_it_is_focusable() {
+        // Arrange
+        let mut rt = Runtime::new();
+        rt.set_root(Button::new("OK"));
+        rt.update(now());
+
+        // Act
+        let found = rt.focus_first_focusable();
+
+        // Assert
+        assert!(
+            found,
+            "focus_first_focusable should return true for a Button"
+        );
+        assert!(rt.input().focused.is_some(), "focused widget should be set");
+    }
+
+    #[test]
+    fn should_skip_non_focusable_sized_box_and_focus_button() {
+        use crate::widgets::column::Column;
+        // Arrange
+        let mut rt = Runtime::new();
+        rt.set_root(
+            Column::new()
+                .child(SizedBox::new(Size::new(100.0, 50.0)))
+                .child(Button::new("Next")),
+        );
+        rt.update(now());
+
+        // Act
+        let found = rt.focus_first_focusable();
+
+        // Assert
+        assert!(
+            found,
+            "should find the Button even though SizedBox comes first"
+        );
+        let focused_id = rt.input().focused.expect("focused widget should be set");
+        let fiber = rt.arena().get(focused_id).unwrap();
+        assert!(
+            fiber.view.as_ref().unwrap().is_focusable(),
+            "focused widget should be focusable (the Button, not the SizedBox)"
+        );
+    }
+
+    #[test]
+    fn should_return_false_when_no_root_set() {
+        // Arrange
+        let mut rt = Runtime::new();
+
+        // Act
+        let found = rt.focus_first_focusable();
+
+        // Assert
+        assert!(!found, "should return false when no root widget is set");
+        assert!(rt.input().focused.is_none(), "focused should remain None");
+    }
+
+    #[test]
+    fn should_return_false_when_no_focusable_widgets_exist() {
+        // Arrange
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.update(now());
+
+        // Act
+        let found = rt.focus_first_focusable();
+
+        // Assert
+        assert!(
+            !found,
+            "should return false when tree has no focusable widgets"
+        );
+        assert!(rt.input().focused.is_none(), "focused should remain None");
+    }
+
+    // ── register_pending_text_runs ─────────────────────────────────────
+
+    #[test]
+    fn should_register_queued_text_run_in_cache() {
+        use crate::scene::primitive::Color;
+        // Arrange: queue a text run via the thread-local mechanism
+        let text = "Hello";
+        let color = Color::WHITE;
+        crate::widgets::text_label::queue_text_run(text, color);
+
+        let mut rt = Runtime::new();
+
+        // Act
+        rt.register_pending_text_runs(&|_ch| None);
+
+        // Assert: the cache should contain one run
+        assert_eq!(
+            rt.text_run_cache().len(),
+            1,
+            "cache should have one registered text run"
+        );
+        assert!(!rt.text_run_cache().is_empty(), "cache should not be empty");
+    }
+
+    #[test]
+    fn should_be_noop_when_no_pending_text_runs() {
+        // Arrange
+        let mut rt = Runtime::new();
+
+        // Act
+        rt.register_pending_text_runs(&|_ch| None);
+
+        // Assert
+        assert!(
+            rt.text_run_cache().is_empty(),
+            "cache should remain empty when no runs are pending"
+        );
     }
 }

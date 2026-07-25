@@ -1,3 +1,7 @@
 {
-  "rust-analyzer.inlayHints.typeHints.enable": false
+  "rust-analyzer.inlayHints.typeHints.enable": false,
+  "cSpell.words": [
+    "wgpu",
+    "winit"
+  ]
 }

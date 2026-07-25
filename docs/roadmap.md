@@ -506,7 +506,7 @@ The product milestones below retain the existing implementation notes, task list
 - [x] Ctrl+V pastes
 - [ ] Command+C / Command+V on macOS
 - [x] Bracketed paste mode
-- [x] Handle newlines during paste with a confirmation dialog when bracketed paste is disabled
+- [ ] Multi-line paste opens a cancel-only confirmation window when bracketed paste is disabled; confirmation delivery is not implemented
 - [ ] Filter dangerous control characters when necessary
 
 **Mouse Protocol**

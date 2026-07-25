@@ -7,12 +7,17 @@ use std::cell::Cell;
 
 // ── Button Constants ────────────────────────────────────────────────────────
 
-/// Estimated pixel width per character for button sizing.
-const CHAR_WIDTH_ESTIMATE: f32 = 10.0;
 /// Horizontal padding added to both sides of the button label.
 const HORIZONTAL_PADDING: f32 = 32.0;
 /// Default button height in logical pixels.
 const DEFAULT_HEIGHT: f32 = 32.0;
+
+/// Returns the current cell width from thread-local metrics, or a default.
+fn cell_width() -> f32 {
+    crate::text::current_metrics()
+        .map(|m| m.cell_width)
+        .unwrap_or(10.0)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ButtonVisualState {
@@ -129,7 +134,7 @@ impl AnyView for Button {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        let label_width = self.label.len() as f32 * CHAR_WIDTH_ESTIMATE + HORIZONTAL_PADDING;
+        let label_width = self.label.len() as f32 * cell_width() + HORIZONTAL_PADDING;
         let width = label_width.clamp(constraints.min.width, constraints.max.width);
         let height = DEFAULT_HEIGHT.clamp(constraints.min.height, constraints.max.height);
         constraints.constrain(Size::new(width, height))
@@ -150,7 +155,8 @@ impl AnyView for Button {
         let state = self.state.get();
         let bg = state.background_color();
         let border = state.border_color();
-        vec![
+
+        let mut prims = vec![
             Primitive::Quad {
                 rect,
                 color: bg,
@@ -162,7 +168,31 @@ impl AnyView for Button {
                 color: border,
                 corner_radius: Self::corner_radius(),
             },
-        ]
+        ];
+
+        // Render the button label as a Text primitive.
+        if !self.label.is_empty() {
+            let label_color = Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
+            let run_id = crate::widgets::text_label::queue_text_run(&self.label, label_color);
+            // Position the text centered within the button.
+            let text_width = self.label.len() as f32 * cell_width();
+            let origin = Point::new(
+                rect.min.x + (rect.size().width - text_width).max(0.0) / 2.0,
+                rect.min.y + (rect.size().height - DEFAULT_HEIGHT).max(0.0) / 2.0 + 2.0,
+            );
+            prims.push(Primitive::Text {
+                run: run_id,
+                origin,
+                color: label_color,
+            });
+        }
+
+        prims
     }
 
     fn hit_test(&self, point: Point, rect: Rect) -> bool {
@@ -267,9 +297,10 @@ mod tests {
 
     #[test]
     fn button_paint_produces_quad_and_border() {
-        let btn = Button::new("OK");
+        let btn = Button::new("");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
         let prims = btn.paint_primitives(rect);
+        // Empty label — no Text primitive, only Quad + Border
         assert_eq!(prims.len(), 2);
         match &prims[0] {
             Primitive::Quad { .. } => {}
@@ -278,6 +309,18 @@ mod tests {
         match &prims[1] {
             Primitive::Border { .. } => {}
             _ => panic!("expected Border"),
+        }
+    }
+
+    #[test]
+    fn button_paint_with_label_includes_text() {
+        let btn = Button::new("OK");
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
+        let prims = btn.paint_primitives(rect);
+        assert_eq!(prims.len(), 3);
+        match &prims[2] {
+            Primitive::Text { .. } => {}
+            _ => panic!("expected Text as third primitive"),
         }
     }
 

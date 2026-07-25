@@ -7,3 +7,4 @@ pub mod padding;
 pub mod row;
 pub mod sized_box;
 pub mod stack;
+pub mod text_label;

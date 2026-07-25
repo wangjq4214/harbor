@@ -300,6 +300,11 @@ impl Text {
         &self.gpu_atlas.bind_group
     }
 
+    /// The bind group layout for the glyph atlas (texture + sampler).
+    pub fn text_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.bind_group_layout
+    }
+
     /// Ensures all characters in `text` are rasterized and uploaded to the GPU atlas.
     /// Call before building text vertices for dialog labels that reference the atlas.
     pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
