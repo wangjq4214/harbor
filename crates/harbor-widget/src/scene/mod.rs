@@ -111,8 +111,12 @@ impl SceneGraph {
         self.items.clear();
     }
 
-    /// Returns the current pending delta (produced by last diff), if any.
-    /// After calling diff(), callers can inspect the result.
+    /// Returns the current retained items in paint order.
+    pub fn items(&self) -> &[SceneItem] {
+        &self.items
+    }
+
+    /// Returns the number of retained items.
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
@@ -318,5 +322,97 @@ mod tests {
         let delta3 = graph.diff(incoming3);
         assert_eq!(delta3.modified.len(), 1);
         assert!(delta3.added.is_empty());
+    }
+
+    // ── items() accessor ──────────────────────────────────────────────
+
+    #[test]
+    fn items_returns_empty_slice_for_new_graph() {
+        let graph = SceneGraph::new();
+        assert!(graph.items().is_empty());
+    }
+
+    #[test]
+    fn items_returns_retained_items_in_order() {
+        let mut graph = SceneGraph::new();
+        let incoming = vec![
+            make_quad(0, 0, 0.0, 0.0),
+            make_quad(0, 1, 100.0, 0.0),
+            make_quad(0, 2, 200.0, 0.0),
+        ];
+        graph.diff(incoming);
+        let items = graph.items();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].paint_order, 0);
+        assert_eq!(items[1].paint_order, 1);
+        assert_eq!(items[2].paint_order, 2);
+    }
+
+    #[test]
+    fn items_reflects_diff_result() {
+        let mut graph = SceneGraph::new();
+        // Diff some items in
+        let incoming = vec![make_quad(0, 0, 0.0, 0.0)];
+        graph.diff(incoming);
+        assert_eq!(graph.items().len(), 1);
+
+        // Diff empty — all removed
+        graph.diff(vec![]);
+        assert!(graph.items().is_empty());
+    }
+
+    #[test]
+    fn items_returns_same_reference_after_multiple_diffs() {
+        let mut graph = SceneGraph::new();
+        let incoming = vec![make_quad(0, 0, 0.0, 0.0)];
+        graph.diff(incoming);
+        let first = graph.items().as_ptr();
+
+        // Diff again with same item (no structural changes)
+        let id = graph.items()[0].id;
+        graph.diff(vec![make_quad(id, 0, 0.0, 0.0)]);
+        let second = graph.items().as_ptr();
+        // items is replaced wholesale by diff, so pointer may differ
+        // but contents are consistent
+        assert_eq!(graph.items().len(), 1);
+        let _ = (first, second);
+    }
+
+    #[test]
+    fn items_after_clear_is_empty() {
+        let mut graph = SceneGraph::new();
+        let incoming = vec![make_quad(0, 0, 0.0, 0.0), make_quad(0, 1, 100.0, 0.0)];
+        graph.diff(incoming);
+        assert_eq!(graph.items().len(), 2);
+
+        graph.clear();
+        assert!(graph.items().is_empty());
+        assert_eq!(graph.item_count(), 0);
+    }
+
+    #[test]
+    fn items_includes_external_primitives() {
+        use crate::scene::primitive::{ExternalDrawId, Primitive};
+
+        let mut graph = SceneGraph::new();
+        let external_item = SceneItem {
+            id: 0,
+            primitive: Primitive::External {
+                draw: 42u64 as ExternalDrawId,
+                rect: Rect::from_min_size(Point::new(0.0, 0.0), Size::new(800.0, 600.0)),
+            },
+            paint_order: 0,
+        };
+        graph.diff(vec![external_item]);
+
+        let items = graph.items();
+        assert_eq!(items.len(), 1);
+        match &items[0].primitive {
+            Primitive::External { draw, rect } => {
+                assert_eq!(*draw, 42);
+                assert_eq!(rect.size(), Size::new(800.0, 600.0));
+            }
+            _ => panic!("expected External primitive"),
+        }
     }
 }

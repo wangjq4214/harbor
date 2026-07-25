@@ -8,6 +8,7 @@ use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
+use crate::scene::primitive::ExternalDrawFn;
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::PENDING_DIRTY;
 use crate::view::{BuildCx, Component};
@@ -19,6 +20,27 @@ use std::time::Instant;
 /// Post-update signal indicating whether a redraw is needed.
 pub struct FrameRequest {
     pub needs_redraw: bool,
+}
+
+// ── External input trampoline ──────────────────────────────────────────────
+
+// Thread-local queue for external input events.
+//
+// Written by `CustomPaint::handle_event` during the event walk and drained
+// by `Runtime::drain_external_input` after the walk completes.
+thread_local! {
+    static PENDING_EXTERNAL_INPUT: std::cell::RefCell<
+        Vec<(crate::scene::primitive::ExternalDrawId, crate::input::event::UiEvent)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Called by CustomPaint::handle_event during event routing.
+/// Queues an event for deferred delivery to the external input handler.
+pub fn queue_external_input(
+    id: crate::scene::primitive::ExternalDrawId,
+    event: crate::input::event::UiEvent,
+) {
+    PENDING_EXTERNAL_INPUT.with(|q| q.borrow_mut().push((id, event)));
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
@@ -176,18 +198,97 @@ impl Runtime {
     /// Applies the pending SceneDelta to the GPU renderer and encodes draw
     /// calls into the RenderPass. No-op if the renderer hasn't been
     /// initialized or there is no pending delta.
+    ///
+    /// When `external_draw` is `Some`, external primitives invoke the
+    /// callback between quad batches so external content respects paint
+    /// order.  A scissor rect is set (and restored) around each external
+    /// draw call.
     pub fn encode<'a>(
         &'a mut self,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
+        external_draw: Option<&ExternalDrawFn<'_>>,
     ) {
-        if let Some(ref mut renderer) = self.renderer {
-            if let Some(ref delta) = self.pending_delta {
-                self.current_viewport = Some(viewport.clone());
-                renderer.update(queue, delta, &viewport);
-            }
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+
+        if let Some(ref delta) = self.pending_delta {
+            self.current_viewport = Some(viewport.clone());
+            renderer.update(queue, delta, &viewport);
+        }
+
+        let raw_items = self.scene_graph.items();
+
+        // Fast path: no external provider or no External items.
+        if external_draw.is_none()
+            || !raw_items.iter().any(|it| {
+                matches!(
+                    it.primitive,
+                    crate::scene::primitive::Primitive::External { .. }
+                )
+            })
+        {
             renderer.encode(pass);
+            return;
+        }
+
+        // Collect quad ranges separated by External items.
+        // Track the min/max instance slots for each contiguous quad batch.
+        let mut quad_range_start: Option<u32> = None;
+        let mut quad_range_end: u32 = 0;
+
+        for item in raw_items {
+            match &item.primitive {
+                crate::scene::primitive::Primitive::External { draw, rect } => {
+                    // Flush accumulated quad range.
+                    if let Some(start) = quad_range_start.take() {
+                        let count = quad_range_end - start + 1;
+                        renderer.encode_range(pass, start, count);
+                        quad_range_end = 0;
+                    }
+
+                    // Apply scissor and invoke external callback.
+                    if let Some(ref cb) = external_draw {
+                        let phys_x = (rect.min.x * viewport.scale_factor) as u32;
+                        let phys_y = (rect.min.y * viewport.scale_factor) as u32;
+                        let phys_w =
+                            ((rect.size().width * viewport.scale_factor).ceil() as u32).max(1);
+                        let phys_h =
+                            ((rect.size().height * viewport.scale_factor).ceil() as u32).max(1);
+                        pass.set_scissor_rect(phys_x, phys_y, phys_w, phys_h);
+                        cb(*draw, *rect, pass);
+                        pass.set_scissor_rect(
+                            0,
+                            0,
+                            viewport.physical_size.0,
+                            viewport.physical_size.1,
+                        );
+                    }
+                }
+                _ => {
+                    // Quad (or Text/Border) — track its instance slot.
+                    if let Some(slot) = renderer.slot_of(item.id) {
+                        match quad_range_start {
+                            None => {
+                                quad_range_start = Some(slot);
+                                quad_range_end = slot;
+                            }
+                            Some(_) => {
+                                quad_range_end = quad_range_end.max(slot);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Flush trailing quad range.
+        if let Some(start) = quad_range_start {
+            let count = quad_range_end - start + 1;
+            renderer.encode_range(pass, start, count);
         }
     }
 
@@ -432,6 +533,17 @@ impl Runtime {
     /// Returns the pending SceneDelta, if any.
     pub fn pending_delta(&self) -> Option<&SceneDelta> {
         self.pending_delta.as_ref()
+    }
+
+    /// Drains queued external input events produced by focusable CustomPaint
+    /// widgets during the last event dispatch.
+    pub fn drain_external_input(
+        &self,
+    ) -> Vec<(
+        crate::scene::primitive::ExternalDrawId,
+        crate::input::event::UiEvent,
+    )> {
+        PENDING_EXTERNAL_INPUT.with(|q| std::mem::take(&mut *q.borrow_mut()))
     }
 
     /// Returns a reference to the InputState.

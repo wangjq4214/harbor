@@ -53,6 +53,14 @@ impl Color {
 pub type TextRunId = u64;
 pub type ExternalDrawId = u64;
 
+/// Signature for an external draw callback.
+///
+/// Called by [`Runtime::encode`] when a [`Primitive::External`] is encountered.
+/// The callback receives the draw ID, the layout rect in logical dp, and the
+/// active RenderPass (with scissor already set).
+pub type ExternalDrawFn<'a> =
+    dyn Fn(ExternalDrawId, crate::layout::Rect, &mut wgpu::RenderPass<'_>) + 'a;
+
 /// Standardized draw input produced by widgets during the paint pass.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Primitive {
@@ -74,6 +82,7 @@ pub enum Primitive {
     },
     External {
         draw: ExternalDrawId,
+        rect: crate::layout::Rect,
     },
 }
 

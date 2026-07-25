@@ -26,6 +26,11 @@ use harbor_types::{
     RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
 };
 use harbor_ui::DialogResult;
+use harbor_widget::input::event::{
+    Key as WidgetKey, KeyboardEvent as WidgetKbEvent, Modifiers as WidgetModifiers, PointerButton,
+    PointerEvent, PointerPhase, UiEvent,
+};
+use harbor_widget::layout::Point as WidgetPoint;
 use paste_dialog::PasteDialog;
 use ui::UiRoot;
 
@@ -399,6 +404,33 @@ impl ApplicationHandler<AppEvent> for App {
             Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
         }
 
+        let mut widget_handled_key = false;
+        if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+            let scale = window.scale_factor() as f32;
+            if let Some(ui_event) = winit_to_uievent(&event, scale, self.modifiers) {
+                let frame_request = widget_runtime.dispatch(ui_event, Instant::now());
+                if frame_request.needs_redraw {
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                }
+                for (_id, external_event) in widget_runtime.drain_external_input() {
+                    if let UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }) =
+                        external_event
+                    {
+                        let (logical_key, text) = widget_key_to_winit(&key);
+                        if let Some(request) = InputEncoder::request(
+                            &logical_key,
+                            text.as_deref(),
+                            widget_to_winit_mods(modifiers),
+                            false,
+                        ) {
+                            let _ = worker.send(harbor_types::TerminalCommand::Input(request));
+                        }
+                        widget_handled_key = true;
+                    }
+                }
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 tracing::info!("close requested");
@@ -418,10 +450,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.session.pending_resize = Some(ui.terminal_size(gpu));
                 self.frame.render_dirty = true;
                 if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let scale = window.scale_factor() as f32;
                     let viewport =
-                        harbor_widget::renderer::Viewport::new(size.width, size.height, 1.0);
+                        harbor_widget::renderer::Viewport::new(size.width, size.height, scale);
                     widget_runtime.set_viewport(viewport);
-                    widget_runtime.update(std::time::Instant::now());
+                    widget_runtime.update(Instant::now());
                 }
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
@@ -452,7 +485,7 @@ impl ApplicationHandler<AppEvent> for App {
                 device_id: _,
                 event,
                 is_synthetic: _,
-            } if event.state == ElementState::Pressed && !dialog_active => {
+            } if event.state == ElementState::Pressed && !dialog_active && !widget_handled_key => {
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
                 let Some(request) = InputEncoder::request(
                     &event.logical_key,
@@ -467,6 +500,158 @@ impl ApplicationHandler<AppEvent> for App {
             _ => {}
         }
     }
+}
+
+// ── Widget event translation helpers ───────────────────────────────────────
+
+fn winit_to_uievent(
+    event: &WindowEvent,
+    scale_factor: f32,
+    modifiers: winit::keyboard::ModifiersState,
+) -> Option<UiEvent> {
+    match event {
+        WindowEvent::KeyboardInput {
+            device_id: _,
+            event,
+            is_synthetic: _,
+        } => {
+            let key = match &event.logical_key {
+                Key::Named(named) => named_to_widget_key(named)?,
+                Key::Character(ch) => WidgetKey::Character(ch.chars().next().unwrap_or('\0')),
+                _ => return None,
+            };
+            let modifiers = modifiers_to_widget(modifiers);
+            match event.state {
+                ElementState::Pressed => {
+                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }))
+                }
+                ElementState::Released => {
+                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyUp { key, modifiers }))
+                }
+            }
+        }
+        WindowEvent::CursorMoved {
+            device_id: _,
+            position,
+        } => {
+            let pos = WidgetPoint::new(
+                position.x as f32 / scale_factor,
+                position.y as f32 / scale_factor,
+            );
+            Some(UiEvent::Pointer(PointerEvent::new(
+                pos,
+                PointerPhase::Move,
+                PointerButton::Left,
+                0,
+            )))
+        }
+        WindowEvent::MouseInput {
+            device_id: _,
+            state,
+            button,
+        } => {
+            let phase = match state {
+                ElementState::Pressed => PointerPhase::Down,
+                ElementState::Released => PointerPhase::Up,
+            };
+            let btn = match button {
+                winit::event::MouseButton::Left => PointerButton::Left,
+                winit::event::MouseButton::Right => PointerButton::Right,
+                winit::event::MouseButton::Middle => PointerButton::Middle,
+                _ => return None,
+            };
+            Some(UiEvent::Pointer(PointerEvent::new(
+                WidgetPoint::ZERO,
+                phase,
+                btn,
+                0,
+            )))
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (dx, dy) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (*x, *y),
+                MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+            };
+            Some(UiEvent::Pointer(PointerEvent::new(
+                WidgetPoint::ZERO,
+                PointerPhase::Wheel { dx, dy },
+                PointerButton::Left,
+                0,
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn named_to_widget_key(named: &NamedKey) -> Option<WidgetKey> {
+    match named {
+        NamedKey::Tab => Some(WidgetKey::Tab),
+        NamedKey::Enter => Some(WidgetKey::Enter),
+        NamedKey::Space => Some(WidgetKey::Space),
+        NamedKey::Escape => Some(WidgetKey::Escape),
+        NamedKey::Backspace => Some(WidgetKey::Backspace),
+        NamedKey::Delete => Some(WidgetKey::Delete),
+        NamedKey::ArrowUp => Some(WidgetKey::ArrowUp),
+        NamedKey::ArrowDown => Some(WidgetKey::ArrowDown),
+        NamedKey::ArrowLeft => Some(WidgetKey::ArrowLeft),
+        NamedKey::ArrowRight => Some(WidgetKey::ArrowRight),
+        NamedKey::Home => Some(WidgetKey::Home),
+        NamedKey::End => Some(WidgetKey::End),
+        NamedKey::PageUp => Some(WidgetKey::PageUp),
+        NamedKey::PageDown => Some(WidgetKey::PageDown),
+        _ => None,
+    }
+}
+
+fn modifiers_to_widget(mods: winit::keyboard::ModifiersState) -> WidgetModifiers {
+    WidgetModifiers {
+        shift: mods.shift_key(),
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
+        meta: mods.super_key(),
+    }
+}
+
+/// Converts a widget `Key` back to a winit `Key` and optional character text.
+fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
+    match key {
+        WidgetKey::Tab => (Key::Named(NamedKey::Tab), None),
+        WidgetKey::Enter => (Key::Named(NamedKey::Enter), Some("\r".into())),
+        WidgetKey::Space => (Key::Character(" ".into()), Some(" ".into())),
+        WidgetKey::Escape => (Key::Named(NamedKey::Escape), None),
+        WidgetKey::Backspace => (Key::Named(NamedKey::Backspace), None),
+        WidgetKey::Delete => (Key::Named(NamedKey::Delete), None),
+        WidgetKey::ArrowUp => (Key::Named(NamedKey::ArrowUp), None),
+        WidgetKey::ArrowDown => (Key::Named(NamedKey::ArrowDown), None),
+        WidgetKey::ArrowLeft => (Key::Named(NamedKey::ArrowLeft), None),
+        WidgetKey::ArrowRight => (Key::Named(NamedKey::ArrowRight), None),
+        WidgetKey::Home => (Key::Named(NamedKey::Home), None),
+        WidgetKey::End => (Key::Named(NamedKey::End), None),
+        WidgetKey::PageUp => (Key::Named(NamedKey::PageUp), None),
+        WidgetKey::PageDown => (Key::Named(NamedKey::PageDown), None),
+        WidgetKey::Character(c) => {
+            let s: String = c.to_string();
+            (Key::Character(s.clone().into()), Some(s))
+        }
+    }
+}
+
+fn widget_to_winit_mods(m: WidgetModifiers) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState;
+    let mut state = ModifiersState::empty();
+    if m.shift {
+        state |= ModifiersState::SHIFT;
+    }
+    if m.ctrl {
+        state |= ModifiersState::CONTROL;
+    }
+    if m.alt {
+        state |= ModifiersState::ALT;
+    }
+    if m.meta {
+        state |= ModifiersState::SUPER;
+    }
+    state
 }
 
 // ── App (own methods) ─────────────────────────────────────────────────────
@@ -757,13 +942,27 @@ impl App {
                 multiview_mask: None,
             });
 
-            ui.draw(&mut render_pass);
-
-            // Encode widget quads after terminal content.
+            let terminal_ui: &UiRoot = ui;
             if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
                 let (physical_w, physical_h) = gpu.surface_size();
-                let viewport = harbor_widget::renderer::Viewport::new(physical_w, physical_h, 1.0);
-                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
+                let viewport =
+                    harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
+                let draw_terminal =
+                    |_id: harbor_widget::scene::primitive::ExternalDrawId,
+                     _rect: harbor_widget::layout::Rect,
+                     pass: &mut wgpu::RenderPass<'_>| {
+                        terminal_ui.draw(pass);
+                    };
+
+                widget_runtime.encode(
+                    gpu.queue(),
+                    &mut render_pass,
+                    viewport,
+                    Some(&draw_terminal),
+                );
+            } else {
+                terminal_ui.draw(&mut render_pass);
             }
         }
 
@@ -780,18 +979,17 @@ impl App {
         }
     }
 
-    /// Initializes the widget runtime with a simple demo scene.
+    /// Initializes the widget runtime with a terminal CustomPaint root.
     fn init_widget_runtime(&mut self) {
+        use harbor_widget::widgets::custom_paint::CustomPaint;
+
+        const TERMINAL_DRAW_ID: harbor_widget::scene::primitive::ExternalDrawId = 1;
+
         let gpu = self.runtime.gpu.as_ref().unwrap();
         let mut runtime = harbor_widget::runtime::Runtime::new();
-
-        use harbor_widget::layout::Size;
-        use harbor_widget::scene::primitive::Color;
-        use harbor_widget::widgets::sized_box::SizedBox;
-
-        runtime.set_root(SizedBox::new(Size::new(200.0, 100.0)).color(Color::RED));
+        runtime.set_root(CustomPaint::new(TERMINAL_DRAW_ID));
         runtime.init_renderer(gpu.device(), gpu.format());
-        runtime.update(std::time::Instant::now());
+        runtime.update(Instant::now());
 
         self.runtime.widget_runtime = Some(runtime);
     }

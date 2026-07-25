@@ -238,17 +238,33 @@ impl QuadRenderer {
         }
     }
 
-    /// Encodes instanced draw calls into the RenderPass.
+    /// Encodes all instanced draw calls into the RenderPass.
     pub fn encode<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         if self.instance_count == 0 {
             return;
         }
+        self.encode_impl(pass, 0, self.instance_count);
+    }
 
+    /// Encodes a contiguous range of instance slots.
+    ///
+    /// Draws instances `[start, end)` from the instance buffer.  Zeroed
+    /// instances (removed items) in the range produce invisible quads, so
+    /// the range does not need to be sparse.
+    pub fn encode_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
+        if count == 0 || start >= self.instance_count {
+            return;
+        }
+        let count = count.min(self.instance_count - start);
+        self.encode_impl(pass, start, count);
+    }
+
+    fn encode_impl<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..6, 0, 0..self.instance_count);
+        pass.draw_indexed(0..6, 0, start..(start + count));
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
@@ -276,6 +292,11 @@ impl QuadRenderer {
                 _pad: [0.0, 0.0, 0.0],
             },
         }
+    }
+
+    /// Returns the instance buffer slot for a SceneItem ID, if present.
+    pub fn slot_of(&self, id: u64) -> Option<u32> {
+        self.id_to_slot.get(&id).copied()
     }
 
     fn allocate_slot(&mut self) -> u32 {

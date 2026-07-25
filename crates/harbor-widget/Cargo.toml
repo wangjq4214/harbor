@@ -9,3 +9,6 @@ hashbrown = { workspace = true }
 slotmap = { workspace = true }
 harbor-text = { workspace = true }
 wgpu = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }

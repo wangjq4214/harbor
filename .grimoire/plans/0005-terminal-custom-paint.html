@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terminal CustomPaint</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --card-bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #555;
+    --border: #e0e0e0;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --code-bg: #f5f5f5;
+    --tag-bg: #f0f0f0;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+  }
+  .plan {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  header h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  header .meta { color: var(--text-muted); font-size: 0.9rem; display: flex; gap: 2rem; flex-wrap: wrap; }
+  .meta-item { display: flex; gap: 0.35rem; }
+  .meta-item strong { font-weight: 600; }
+
+  section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  section h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  section h2 .num {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700;
+  }
+  section h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; color: #333; }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  .table-wrap table { border: none; }
+  .table-wrap th:first-child, .table-wrap td:first-child { padding-left: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--accent-light); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #f8fafd; }
+
+  .mermaid-wrap {
+    background: #fcfcfc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1rem 0;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    margin: 0.75rem 0;
+  }
+  pre.mermaid {
+    background: transparent;
+    color: inherit;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; }
+  :not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #e8e8e8;
+  }
+
+  .step {
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    background: var(--accent-light);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .step h4 { font-size: 0.95rem; margin-bottom: 0.4rem; color: var(--accent); }
+  .step p, .step ul { font-size: 0.9rem; margin: 0.25rem 0; }
+  .step ul { padding-left: 1.25rem; }
+  .step .outcome { margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: #e6f4ea; border-radius: 4px; font-size: 0.85rem; color: #137333; }
+  .step .files { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--tag-bg);
+    color: var(--text-muted);
+  }
+  .badge.create { background: #e6f4ea; color: #137333; }
+  .badge.modify { background: #fef3c7; color: #92400e; }
+
+  .decision-list { list-style: none; }
+  .decision-list li { padding: 0.4rem 0; padding-left: 1.2rem; position: relative; }
+  .decision-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  .test-grid { display: grid; gap: 1rem; }
+  .test-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .test-card h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: #333;
+  }
+  .test-card h3 code { font-weight: 700; color: var(--accent); background: none; border: none; padding: 0; }
+  .test-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .test-label {
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: right;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 0.1rem;
+  }
+  .test-card ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.9rem;
+    color: #444;
+  }
+  .test-card ul li { margin-bottom: 0.2rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    section { break-inside: avoid; border: 1px solid #ccc; }
+    .step { background: #f9f9f9; }
+  }
+  @media (max-width: 640px) {
+    body { padding: 0.5rem; }
+    section { padding: 1.25rem; }
+    header { padding: 1.25rem; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="plan">
+
+<header>
+  <h1>Terminal CustomPaint</h1>
+  <div class="meta">
+    <div class="meta-item"><strong>Input:</strong> <span>.grimoire/ticket/0001-phase-3-widget-runtime-integration/T0002-terminal-custom-paint.md</span></div>
+    <div class="meta-item"><strong>Date:</strong> <span>2026-07-24</span></div>
+  </div>
+</header>
+
+<!-- ── Section 1: Type Design ── -->
+<section>
+  <h2><span class="num">1</span> Type Design</h2>
+
+  <h3>Modified Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Change</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Runtime</code></td>
+        <td>runtime.rs</td>
+        <td>Top-level widget tree scheduler</td>
+        <td>Add external draw callback storage, external input deferral queue, provider setters; modify <code>encode()</code> to flush widget batches and invoke external provider; modify event routing to queue input for external CustomPaint nodes</td>
+        <td>Runtime already owns the encode/dispatch lifecycle — integrating external providers extends its existing responsibility without creating a new concept</td>
+      </tr>
+      <tr>
+        <td><code>SceneGraph</code></td>
+        <td>scene/mod.rs</td>
+        <td>Retained ordered flat scene</td>
+        <td>Add <code>items()</code> accessor returning the current items in paint order</td>
+        <td>Runtime needs paint-order awareness at encode time to interleave quad batches and external draw calls</td>
+      </tr>
+      <tr>
+        <td><code>QuadRenderer</code></td>
+        <td>renderer/quad.rs</td>
+        <td>Instanced quad GPU renderer</td>
+        <td>Add <code>slot_of(id) -&gt; Option&lt;u32&gt;</code> to look up instance slot by SceneItem ID; modify encode to emit only quads that precede the first External in paint order, so external providers can be interleaved</td>
+        <td>QuadRenderer already owns the id→slot mapping; exposing it allows Runtime to know which instances to draw before/after an External without duplicating mapping state</td>
+      </tr>
+      <tr>
+        <td><code>App</code></td>
+        <td>src/app.rs</td>
+        <td>Application shell: winit lifecycle, frame render</td>
+        <td>Replace demo red quad with terminal <code>CustomPaint</code> root; wire external draw callback that invokes <code>UiRoot::draw</code>; translate winit keyboard/pointer/focus events to <code>UiEvent</code> and dispatch; pass actual viewport scale factor</td>
+        <td>App owns the terminal renderer and winit event source; extending its existing orchestration role to bridge terminal→widget is a natural extension, not a new concept</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>New Types</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>File</th><th>Concept</th><th>Responsibility</th><th>Relationships</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>CustomPaint</code></td>
+        <td>widgets/custom_paint.rs</td>
+        <td>A focusable widget that delegates painting and input to an externally-owned renderer identified by <code>ExternalDrawId</code></td>
+        <td>Produces <code>Primitive::External</code> at paint time; accepts focus; queues keyboard/pointer events for deferred delivery to the external input handler; fills available layout space</td>
+        <td>Composes children (Vec&lt;View&gt;); implements Component, AnyView; uses ExternalDrawId</td>
+        <td>New concept per ADR 0005 — a widget whose paint is supplied by an App-owned provider, distinct from self-rendering widgets like SizedBox or Button. Cannot be absorbed into an existing type without violating single-responsibility</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Design Decisions</h3>
+  <ul class="decision-list">
+    <li><strong>Draw provider as <code>Box&lt;dyn Fn(ExternalDrawId, Rect, &amp;mut wgpu::RenderPass) + 'static&gt;</code> stored on Runtime.</strong> A function pointer stored once during App init avoids threading lifetime parameters through every <code>encode()</code> call. The <code>'static</code> bound is acceptable because the App owns all terminal state through its own fields, and winit/wgpu references are already <code>'static</code>.</li>
+    <li><strong>Input deferral via in-Runtime queue, not a stored callback.</strong> External input events are queued per-ExternalDrawId during event routing and drained after the event walk. This avoids the App needing to supply a second callback — the App drains the queue alongside <code>update()</code>. Simpler API surface.</li>
+    <li><strong>Encode batches all quads before the first External in one draw call, then invokes external providers.</strong> For T0002 the terminal is the root widget (no quads with higher paint_order), so all-quads-then-external is correct. When future overlay widgets are added, the interleaving infrastructure (paint-order iteration, range-based quad encode) already exists and just needs the split condition adjusted.</li>
+    <li><strong><code>CustomPaint</code> fills available space by default.</strong> The terminal should occupy the full viewport. Rather than requiring the App to specify a size, CustomPaint expands to fill its constraints, matching the behavior needed for the root widget.</li>
+    <li><strong>No new type for the provider contract — a type alias suffices.</strong> A single-function callback has no internal state or multiple methods. Introducing a trait would be ceremony without benefit. If a second External consumer arrives, the signature can be promoted to a trait.</li>
+  </ul>
+</section>
+
+<!-- ── Section 2: Type Relationship Diagram ── -->
+<section>
+  <h2><span class="num">2</span> Type Relationship Diagram</h2>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+classDiagram
+    namespace harbor_widget {
+        class Runtime {
+            +Option~ExternalDrawFn~ external_draw
+            +Vec~DeferredInput~ external_input_queue
+            +set_external_draw_provider(fn)
+            +drain_external_input() Vec~DeferredInput~
+            +encode(queue, pass, viewport)
+            +dispatch(event, now) FrameRequest
+        }
+        class CustomPaint {
+            +ExternalDrawId draw_id
+            +List~View~ children
+            +is_focusable() bool
+            +paint_primitives() List~Primitive~
+        }
+        class SceneGraph {
+            +items() List~SceneItem~
+        }
+        class QuadRenderer {
+            +slot_of(id) Option~u32~
+            +encode_range(pass, start, count)
+        }
+        class ExternalDrawFn {
+            &lt;&lt;interface&gt;&gt;
+            +call(ExternalDrawId, Rect, RenderPass)
+        }
+        class Primitive {
+            &lt;&lt;enum&gt;&gt;
+        }
+        class ExternalDrawId {
+            &lt;&lt;type&gt;&gt;
+        }
+        class UiEvent {
+            &lt;&lt;enum&gt;&gt;
+        }
+        class DeferredInput {
+            &lt;&lt;type&gt;&gt;
+        }
+    }
+    namespace app {
+        class App {
+            +Runtime widget_runtime
+            +UiRoot ui
+            +GpuContext gpu
+            +render_frame()
+            +window_event()
+        }
+        class UiRoot {
+            +draw(pass)
+        }
+    }
+
+    Runtime *-- CustomPaint : builds via Component
+    Runtime o-- SceneGraph : owns
+    Runtime o-- QuadRenderer : owns
+    Runtime o-- ExternalDrawFn : stores
+    CustomPaint --> Primitive : produces
+    CustomPaint --> UiEvent : queues
+    App --> Runtime : owns
+    App --> UiRoot : owns
+    App ..> ExternalDrawFn : supplies
+</pre>
+  </div>
+</section>
+
+<!-- ── Section 3: Implementation Steps ── -->
+<section>
+  <h2><span class="num">3</span> Implementation Steps</h2>
+
+  <div class="step">
+    <h4>Step 1: Expose <code>SceneGraph::items()</code> and <code>QuadRenderer::slot_of()</code></h4>
+    <div class="files">Files: crates/harbor-widget/src/scene/mod.rs, crates/harbor-widget/src/renderer/quad.rs</div>
+    <p><strong>Action:</strong> Add a public <code>items() -&gt; &amp;[SceneItem]</code> method to SceneGraph returning the current retained items in paint order. Add <code>slot_of(id: u64) -&gt; Option&lt;u32&gt;</code> to QuadRenderer for SceneItem→instance-slot lookup.</p>
+    <div class="outcome"><strong>Outcome:</strong> Runtime can iterate SceneItems in paint order and know which instance buffer slot each quad occupies — prerequisites for interleaving quads with externals.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 2: Add external draw provider storage and setter to <code>Runtime</code></h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Define type alias <code>ExternalDrawFn = dyn Fn(ExternalDrawId, Rect, &amp;mut wgpu::RenderPass&lt;'_&gt;) + 'static</code> in the scene module. Add field <code>external_draw: Option&lt;Box&lt;ExternalDrawFn&gt;&gt;</code> to Runtime. Add <code>set_external_draw_provider(fn)</code> setter.</p>
+    <div class="outcome"><strong>Outcome:</strong> App can register a terminal-drawing closure on the Runtime before the first frame.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 3: Modify <code>Runtime::encode()</code> to handle External primitives</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Change <code>encode()</code> to: (a) iterate SceneGraph items in paint order via <code>items()</code>; (b) collect contiguous Quad items into one batch and call <code>QuadRenderer::encode()</code> for them; (c) for each External item, set a scissor rect on the RenderPass matching the item's layout rect (converted to physical pixels via viewport scale factor), invoke the stored <code>external_draw</code> callback with the draw ID and logical rect, then reset the scissor; (d) continue encoding remaining Quads after the last External.</p>
+    <pre>
+// pseudo-code for encode()
+fn encode(&amp;mut self, queue, pass, viewport) {
+    let items = self.scene_graph.items();
+    let mut quad_start = None;
+    for (i, item) in items.iter().enumerate() {
+        match &amp;item.primitive {
+            Primitive::External { draw } =&gt; {
+                // flush preceding quads
+                if let Some(start) = quad_start {
+                    self.renderer.encode_range(pass, start, i - start);
+                    quad_start = None;
+                }
+                // apply clip and call external provider
+                if let Some(ref cb) = self.external_draw {
+                    let rect = self.scene_rect_for(item.id);
+                    let phys = viewport.logical_to_physical(&amp;rect);
+                    pass.set_scissor_rect(phys.x, phys.y, phys.w, phys.h);
+                    cb(*draw, rect, pass);
+                    pass.set_scissor_rect(0, 0, viewport.physical_size.0, viewport.physical_size.1);
+                }
+            }
+            Primitive::Quad { .. } =&gt; {
+                if quad_start.is_none() { quad_start = Some(i); }
+            }
+            _ =&gt; {}
+        }
+    }
+    // flush trailing quads
+    if let Some(start) = quad_start {
+        self.renderer.encode_range(pass, start, items.len() - start);
+    }
+}
+    </pre>
+    <div class="outcome"><strong>Outcome:</strong> Widget quads and external terminal content are drawn in correct paint order within a single RenderPass. Scissor clipping restricts terminal output to the CustomPaint rect.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 4: Create <code>CustomPaint</code> widget</h4>
+    <div class="files">Files: crates/harbor-widget/src/widgets/custom_paint.rs (create), crates/harbor-widget/src/widgets/mod.rs</div>
+    <p><strong>Action:</strong> Create <code>CustomPaint</code> struct with field <code>draw_id: ExternalDrawId</code> and <code>children: Vec&lt;View&gt;</code>. Implement <code>Component</code> (builder pattern: <code>new(id) -&gt; Self</code>, <code>child(widget)</code>). Implement <code>AnyView</code>: <code>is_focusable() → true</code>; <code>intrinsic_size()</code> fills constraints.max; <code>paint_primitives()</code> returns <code>vec![Primitive::External { draw: self.draw_id }]</code>; <code>handle_event()</code> records input for deferred delivery (see Step 5); <code>hit_test()</code> uses default point-in-rect.</p>
+    <pre>
+pub struct CustomPaint {
+    pub draw_id: ExternalDrawId,
+    children: Vec&lt;View&gt;,
+}
+
+impl AnyView for CustomPaint {
+    fn is_focusable(&amp;self) -&gt; bool { true }
+    fn paint_primitives(&amp;self, _rect: Rect) -&gt; Vec&lt;Primitive&gt; {
+        vec![Primitive::External { draw: self.draw_id }]
+    }
+    fn handle_event(&amp;self, event: &amp;UiEvent, ctx: &amp;mut EventCtx, _rect: Rect) -&gt; EventHandled {
+        // Queue for deferred delivery to App terminal handler
+        crate::runtime::queue_external_input(self.draw_id, event.clone());
+        EventHandled::Handled
+    }
+}
+    </pre>
+    <div class="outcome"><strong>Outcome:</strong> A focusable widget that marks a region for external painting and routes input events to the deferred external-input queue.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 5: Add external input deferral to <code>Runtime</code></h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> Add <code>pending_external_input: Vec&lt;(ExternalDrawId, UiEvent)&gt;</code> field to Runtime. Add <code>queue_external_input(id, event)</code> (pub(crate), called by CustomPaint::handle_event). Add <code>drain_external_input() -&gt; Vec&lt;(ExternalDrawId, UiEvent)&gt;</code> public method. In <code>dispatch()</code>, drain the queue after event routing completes and return events alongside the FrameRequest.</p>
+    <pre>
+// Key change in Runtime::dispatch():
+pub fn dispatch(&amp;mut self, event: UiEvent, now: Instant) -&gt; (FrameRequest, Vec&lt;(ExternalDrawId, UiEvent)&gt;) {
+    let needs_redraw = self.route_event(&amp;event);
+    if needs_redraw &amp;&amp; let Some(root_id) = self.root_id {
+        crate::signal::mark_dirty(root_id);
+    }
+    let external_events = std::mem::take(&amp;mut self.pending_external_input);
+    (FrameRequest { needs_redraw }, external_events)
+}
+    </pre>
+    <div class="outcome"><strong>Outcome:</strong> Terminal input events pass through Widget event routing (focus, hit-testing, capture/bubble) and are delivered to the App as a deferred batch after the event walk completes — the App then forwards them to the existing terminal input path.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 6: Pass scale factor through viewport in App</h4>
+    <div class="files">Files: src/app.rs</div>
+    <p><strong>Action:</strong> Use <code>window.scale_factor()</code> instead of the hardcoded <code>1.0</code> when constructing <code>harbor_widget::renderer::Viewport</code>. Update in both <code>WindowEvent::Resized</code> and <code>render_frame()</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> Widget layout, scissor rects, and terminal rendering use the actual monitor DPI scale factor.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 7: Replace demo scene with terminal CustomPaint in App</h4>
+    <div class="files">Files: src/app.rs</div>
+    <p><strong>Action:</strong> Replace <code>init_widget_runtime()</code> content: set root to <code>CustomPaint::new(TERMINAL_DRAW_ID)</code>. Register external draw callback that calls <code>UiRoot::draw(pass)</code>. Remove <code>SizedBox</code> import. Use a constant <code>TERMINAL_DRAW_ID: ExternalDrawId = 1</code>.</p>
+    <pre>
+fn init_widget_runtime(&amp;mut self) {
+    use harbor_widget::widgets::custom_paint::CustomPaint;
+    const TERMINAL_DRAW_ID: ExternalDrawId = 1;
+
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(TERMINAL_DRAW_ID));
+    rt.set_external_draw_provider(|_id, _rect, pass| {
+        // Will be wired in Step 8
+    });
+    rt.init_renderer(gpu.device(), gpu.format());
+    rt.update(Instant::now());
+    self.widget_runtime = Some(rt);
+}
+    </pre>
+    <div class="outcome"><strong>Outcome:</strong> The widget Runtime root is a CustomPaint node. Demo red quad is removed.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 8: Wire terminal drawing through external draw callback</h4>
+    <div class="files">Files: src/app.rs, crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> In the external draw callback registered on Runtime, invoke <code>self.ui.as_ref().unwrap().draw(pass)</code>. This requires the callback to capture a reference to <code>App</code> — solved by making the callback a method on App that borrows <code>ui</code>. Since closures with <code>'static</code> bound cannot capture <code>&amp;self</code>, restructure: store the callback as a thin function pointer plus a <code>*const ()</code> context, or split <code>render_frame</code> so the Runtime::encode call passes the external draw logic inline. <strong>Pragmatic approach for T0002:</strong> change <code>Runtime::encode()</code> to accept <code>external_draw: Option&lt;&amp;dyn Fn(ExternalDrawId, Rect, &amp;mut wgpu::RenderPass)&gt;</code> as a parameter instead of storing it on Runtime. This avoids <code>'static</code> lifetime issues and lets the App borrow <code>ui</code> only during the encode call.</p>
+    <pre>
+// Updated Runtime::encode signature:
+pub fn encode&lt;'a&gt;(
+    &amp;'a mut self,
+    queue: &amp;wgpu::Queue,
+    pass: &amp;mut wgpu::RenderPass&lt;'a&gt;,
+    viewport: Viewport,
+    external_draw: Option&lt;&amp;dyn Fn(ExternalDrawId, Rect, &amp;mut wgpu::RenderPass)&gt;,
+)
+
+// In App::render_frame():
+let external_draw = |_id: ExternalDrawId, _rect: Rect, pass: &amp;mut wgpu::RenderPass| {
+    self.ui.as_ref().unwrap().draw(pass);
+};
+wr.encode(gpu.queue(), &amp;mut render_pass, viewport, Some(&amp;external_draw));
+    </pre>
+    <div class="outcome"><strong>Outcome:</strong> The terminal renderer's <code>UiRoot::draw()</code> is invoked from within the widget Runtime's encode pass, at the paint-order position of the CustomPaint node. No lifetime or ownership issues.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 9: Translate winit events to UiEvent and dispatch to widget Runtime</h4>
+    <div class="files">Files: src/app.rs</div>
+    <p><strong>Action:</strong> In <code>window_event()</code>, for keyboard and pointer events, translate winit event types to <code>harbor_widget::input::event::UiEvent</code> variants and call <code>self.widget_runtime.as_mut().unwrap().dispatch(event, now)</code>. Drain returned external input events and forward them to the existing terminal input path (PTY write) for the terminal's ExternalDrawId. Pointer events: translate MouseInput to Pointer(Down/Up/Move), CursorMoved to Pointer(Move), MouseWheel to Pointer(Wheel). Keyboard events: translate KeyInput to Keyboard(KeyDown/KeyUp). Focus events: translate Focused → Focus(Gained), unfocused → Focus(Lost).</p>
+    <div class="outcome"><strong>Outcome:</strong> Winit keyboard and pointer events flow through the widget Runtime's capture→target→bubble routing. Only events reaching the focused CustomPaint node are dequeued as external input and forwarded to the terminal.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 10: Handle stale ExternalDrawId safely</h4>
+    <div class="files">Files: crates/harbor-widget/src/runtime.rs</div>
+    <p><strong>Action:</strong> In <code>encode()</code>, when an External item's draw ID is not recognized by the external draw callback (the callback returns without drawing), the Runtime should not panic. Implement the guard by logging a warning and continuing. For input: if a deferred external input event has an ExternalDrawId with no matching living CustomPaint fiber, drop the event silently.</p>
+    <div class="outcome"><strong>Outcome:</strong> Unknown or stale external IDs never cause a panic or draw unrelated content.</div>
+  </div>
+
+  <div class="step">
+    <h4>Step 11: Remove the red demo root and exercise resize/DPI updates</h4>
+    <div class="files">Files: src/app.rs</div>
+    <p><strong>Action:</strong> Confirm demo code is removed (Step 7). Verify that <code>WindowEvent::Resized</code> already calls <code>wr.set_viewport(viewport)</code> with the correct scale factor (Step 6). Ensure <code>render_frame()</code> uses the same viewport for <code>wr.encode()</code>.</p>
+    <div class="outcome"><strong>Outcome:</strong> Terminal CustomPaint is the only widget root. Resize and DPI changes flow through viewport updates to layout, clipping, and terminal rendering.</div>
+  </div>
+</section>
+
+<!-- ── Section 4: Edge Cases ── -->
+<section>
+  <h2><span class="num">4</span> Edge Cases</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Condition</th><th>Expected Behavior</th><th>Owning Step</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>External draw callback is <code>None</code> when Runtime encounters an External primitive</td>
+        <td>Runtime skips the external draw silently — no quad rendering, no panic. A warning is logged.</td>
+        <td>Step 3</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>ExternalDrawId in deferred input queue has no matching CustomPaint fiber (fiber was unmounted between event routing and drain)</td>
+        <td>Event is dropped silently. No panic or delivery to unrelated fiber.</td>
+        <td>Step 5</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>CustomPaint rect is zero-sized (viewport not yet set, or window minimized)</td>
+        <td>Scissor rect of zero area is set on the RenderPass — wgpu treats this as a no-op draw. No crash.</td>
+        <td>Step 3</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Multiple External primitives with different draw IDs in the same frame</td>
+        <td>Each is invoked in paint order with its own rect and clip. Quads between them are flushed in correct order.</td>
+        <td>Step 3</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Widget tree has no External primitives (e.g., before CustomPaint is set as root)</td>
+        <td><code>encode()</code> behaves as before — all quads encoded in a single draw call. No external draw callback invoked.</td>
+        <td>Step 3</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>Keyboard event arrives when CustomPaint is not focused (focus is on another widget, or no widget has focus)</td>
+        <td>Event routes via capture→target→bubble. If no focused fiber or target is not CustomPaint, the event is not queued for external input — no terminal input is sent. This is correct: unfocused terminal should not receive keyboard input.</td>
+        <td>Step 5, Step 9</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>Scale factor changes between viewport updates (DPI change while window is being dragged across monitors)</td>
+        <td>Next <code>set_viewport()</code> call updates the scale factor; next <code>encode()</code> uses the current viewport's scale factor for scissor rect conversion. No stale scale factor persists beyond one frame.</td>
+        <td>Step 6</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ── Section 5: Test Strategy ── -->
+<section>
+  <h2><span class="num">5</span> Test Strategy</h2>
+  <div class="test-grid">
+
+    <div class="test-card">
+      <h3><code>CustomPaint</code></h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Produces exactly one <code>Primitive::External</code> with the correct draw ID; <code>is_focusable()</code> returns true; <code>handle_event()</code> returns Handled for all event types; intrinsic_size fills constraints.max</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — CustomPaint has no external dependencies. Input queuing uses a thread-local or module-level queue (see Runtime tests).</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>CustomPaint with and without children — children should not affect paint_primitives</li>
+          <li>CustomPaint with different ExternalDrawId values — verify the ID is passed correctly</li>
+          <li>CustomPaint handle_event with Keyboard, Pointer, Focus variants — all return Handled</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Runtime</code> (encode with External)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>encode() calls external draw callback exactly once per External primitive, with the correct rect; quads before External are encoded; quads after External are encoded; scissor rect is set; no panic when callback is None</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>External draw callback replaced with a closure that records invocations (draw ID + rect). QuadRenderer::encode_range() verified via instance count checks. wgpu RenderPass can be a mock or the test can verify through the callback side-effect.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Scene with zero External primitives — callback never invoked</li>
+          <li>Scene with one External primitive and no quads — one callback invocation</li>
+          <li>Scene with quads on both sides of an External — correct encode order</li>
+          <li>Callback is None — no panic, quads still encode</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>Runtime</code> (external input deferral)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span>Events handled by a focusable CustomPaint fiber are queued and returned by drain_external_input() or dispatch(); events handled by non-CustomPaint fibers are not queued</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>Thread-local external input queue (module-level <code>std::cell::RefCell&lt;Vec&lt;...&gt;&gt;</code>) that CustomPaint::handle_event writes to and Runtime drains.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>One CustomPaint, one keyboard event → one queued event</li>
+          <li>Multiple CustomPaint nodes with different IDs → events tagged with correct ID</li>
+          <li>No CustomPaint in tree → queue is empty</li>
+          <li>Event targeting non-CustomPaint widget → not queued</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>QuadRenderer</code> (slot_of, encode_range)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span><code>slot_of(id)</code> returns the correct instance buffer slot for a known SceneItem ID; returns None for unknown IDs. <code>encode_range</code> draws only the specified instance range.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>No mocking needed — QuadRenderer is tested with a real wgpu instance, or encode_range side effects are verified indirectly through the external draw callback test.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>slot_of for existing ID → correct slot</li>
+          <li>slot_of for removed/unknown ID → None</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="test-card">
+      <h3><code>SceneGraph</code> (items accessor)</h3>
+      <div class="test-row">
+        <span class="test-label">Verify</span>
+        <span><code>items()</code> returns items in paint order matching the order they were diffed; items are immutable references</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Mock</span>
+        <span>None — pure data accessor.</span>
+      </div>
+      <div class="test-row">
+        <span class="test-label">Variations</span>
+        <ul>
+          <li>Empty scene → empty slice</li>
+          <li>Scene with Quads + External → items in paint order with correct primitives</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Section 6: Affected Files ── -->
+<section>
+  <h2><span class="num">6</span> Affected Files</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Action</th><th>Referenced By</th></tr></thead>
+    <tbody>
+      <tr><td><code>crates/harbor-widget/src/widgets/custom_paint.rs</code></td><td><span class="badge create">Create</span></td><td>Step 4, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/widgets/mod.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 4</td></tr>
+      <tr><td><code>crates/harbor-widget/src/scene/mod.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 1, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/scene/primitive.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 2 (add type alias)</td></tr>
+      <tr><td><code>crates/harbor-widget/src/renderer/quad.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 1, Step 3, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/runtime.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 2, Step 3, Step 5, Step 8, Step 10, Test Strategy</td></tr>
+      <tr><td><code>crates/harbor-widget/src/fiber.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 3 (layout_rect access for External items), Step 4</td></tr>
+      <tr><td><code>src/app.rs</code></td><td><span class="badge modify">Modify</span></td><td>Step 6, Step 7, Step 8, Step 9, Step 11</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

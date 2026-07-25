@@ -909,6 +909,7 @@ dependencies = [
  "bytemuck",
  "harbor-text",
  "hashbrown 0.17.1",
+ "pollster",
  "slotmap",
  "wgpu",
 ]
