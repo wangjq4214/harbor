@@ -239,6 +239,13 @@ impl ApplicationHandler<AppEvent> for App {
                                 ui.text_glyph(ch).copied()
                             });
                         }
+                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event
+                            && let Some(gpu) = self.runtime.gpu.as_ref()
+                        {
+                            confirmation.scale_factor_changed(gpu.device(), *scale_factor);
+                            self.frame.render_dirty = true;
+                            self.request_redraw(RedrawReason::Resize);
+                        }
                         if let WindowEvent::Resized(size) = &event
                             && let Some(gpu) = self.runtime.gpu.as_ref()
                         {
@@ -324,12 +331,24 @@ impl ApplicationHandler<AppEvent> for App {
 
         if let EventResult::ConfirmPaste(raw_text) = &handled {
             if self.runtime.confirmation_window.is_none() {
-                let ensure_text = format!("Paste {} lines?Cancel", raw_text.lines().count());
-                ui.ensure_glyphs(&ensure_text, gpu);
                 let metrics = *ui.text_metrics();
                 harbor_widget::text::set_current_metrics(metrics);
+
+                // Compute preview wrapping and ensure glyphs for all preview chars.
+                let max_chars = ((crate::app::confirmation::DIALOG_WIDTH
+                    - crate::app::confirmation::DIALOG_HORIZONTAL_PADDING)
+                    as f32
+                    / metrics.cell_width)
+                    .floor() as usize;
+                let max_chars = max_chars.max(1);
+                let wrapped_lines =
+                    crate::app::confirmation::wrap_preview_text(raw_text, max_chars);
+                let all_preview_text: String = wrapped_lines.join("");
+                ui.ensure_glyphs(&all_preview_text, gpu);
+
                 self.runtime.confirmation_window = Some(ConfirmationWindow::new(
                     raw_text.clone(),
+                    wrapped_lines,
                     event_loop,
                     gpu,
                     metrics,
@@ -452,6 +471,20 @@ impl ApplicationHandler<AppEvent> for App {
                     widget_runtime.set_viewport(viewport);
                     widget_runtime.update(Instant::now());
                 }
+                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                tracing::trace!(?scale_factor, "main window scale factor changed");
+                let sf = scale_factor as f32;
+                let (physical_w, physical_h) = gpu.surface_size();
+                gpu.reconfigure();
+                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(physical_w, physical_h, sf);
+                    widget_runtime.set_viewport(viewport);
+                    widget_runtime.update(Instant::now());
+                }
+                self.frame.render_dirty = true;
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {

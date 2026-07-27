@@ -4,6 +4,7 @@ pub mod column;
 pub mod custom_paint;
 pub mod focus_scope;
 pub mod padding;
+pub mod preview_pane;
 pub mod row;
 pub mod sized_box;
 pub mod stack;

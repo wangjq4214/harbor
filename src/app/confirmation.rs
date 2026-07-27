@@ -1,7 +1,7 @@
 //! Secondary winit window for paste confirmation rendered by Widget Runtime.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use winit::{
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
@@ -17,16 +17,21 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::app::winit_to_uievent;
 use harbor_render::GpuContext;
 use harbor_text::TextMetrics;
+use harbor_types::safe_preview_line;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
+use harbor_widget::widgets::focus_scope::FocusScope;
 use harbor_widget::widgets::padding::Padding;
+use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
 
-const DIALOG_WIDTH: u32 = 600;
-const DIALOG_HEIGHT: u32 = 400;
+pub(crate) const DIALOG_WIDTH: u32 = 600;
+const DIALOG_HEIGHT: u32 = 500;
+pub(crate) const DIALOG_HORIZONTAL_PADDING: u32 = 48;
+const PREVIEW_VISIBLE_LINES: usize = 12;
 
 fn centered_dialog_position(
     main_position: winit::dpi::PhysicalPosition<i32>,
@@ -40,6 +45,47 @@ fn centered_dialog_position(
         main_position.x + (main_size.width as i32 - dialog_width) / 2,
         main_position.y + (main_size.height as i32 - dialog_height) / 2,
     )
+}
+
+// ── Text wrapping ───────────────────────────────────────────────────────────
+
+/// Wraps preview text at `max_chars` characters per line, after escaping
+/// control characters via `safe_preview_line`.
+pub(crate) fn wrap_preview_text(raw_text: &str, max_chars: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for line in raw_text.lines() {
+        let escaped = safe_preview_line(line);
+        if escaped.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+        let mut start = 0;
+        while start < escaped.len() {
+            let mut end = (start + max_chars).min(escaped.len());
+            // Back up to a char boundary if we landed mid-char.
+            while !escaped.is_char_boundary(end) {
+                end -= 1;
+            }
+            // When max_chars is too small to fit even one multi-byte character,
+            // advance past the current character so we don't loop forever.
+            if end == start {
+                end = start + 1;
+                while end < escaped.len() && !escaped.is_char_boundary(end) {
+                    end += 1;
+                }
+            }
+            wrapped.push(escaped[start..end].to_string());
+            start = end;
+        }
+    }
+    wrapped
+}
+
+/// Adjusts a shared scroll offset by `delta` lines, clamped to `[0, max]`.
+fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) {
+    let current = offset.load(Ordering::Relaxed) as isize;
+    let new = (current + delta).clamp(0, max as isize);
+    offset.store(new as usize, Ordering::Relaxed);
 }
 
 // ── ConfirmationResult ──────────────────────────────────────────────────────
@@ -66,11 +112,16 @@ pub(crate) struct ConfirmationWindow {
     raw_text: String,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
+    wrapped_lines: Vec<String>,
+    preview_scroll_offset: Arc<AtomicUsize>,
+    preview_line_height: f32,
+    preview_max_chars: usize,
 }
 
 impl ConfirmationWindow {
     pub(crate) fn new(
         raw_text: String,
+        wrapped_lines: Vec<String>,
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
         metrics: TextMetrics,
@@ -79,6 +130,12 @@ impl ConfirmationWindow {
         main_window: Option<&Window>,
     ) -> Self {
         let line_count = raw_text.lines().count();
+
+        let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
+            .floor() as usize;
+        let max_chars = max_chars.max(1);
+        let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
+        let preview_line_height = metrics.line_height;
 
         let mut window_attrs = Window::default_attributes()
             .with_title("")
@@ -131,12 +188,14 @@ impl ConfirmationWindow {
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
 
+        // Surface config uses physical pixel dimensions.
+        let physical_size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            width: DIALOG_WIDTH,
-            height: DIALOG_HEIGHT,
+            width: physical_size.width,
+            height: physical_size.height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
@@ -153,8 +212,13 @@ impl ConfirmationWindow {
 
         let mut runtime = Runtime::new();
 
-        let confirm_root =
-            build_confirmation_root(line_count, Arc::clone(&cancelled), Arc::clone(&confirmed));
+        let confirm_root = build_confirmation_root(
+            line_count,
+            wrapped_lines.clone(),
+            Arc::clone(&preview_scroll_offset),
+            Arc::clone(&cancelled),
+            Arc::clone(&confirmed),
+        );
         runtime.set_root(confirm_root);
 
         // Init quad renderer (needed for button backgrounds/borders).
@@ -168,12 +232,17 @@ impl ConfirmationWindow {
             text_bind_group,
         );
 
-        // Trigger initial build + layout.
-        let viewport = harbor_widget::renderer::Viewport::new(DIALOG_WIDTH, DIALOG_HEIGHT, 1.0);
+        // Trigger initial build + layout with physical size and actual scale factor.
+        let scale = window.scale_factor() as f32;
+        let viewport = harbor_widget::renderer::Viewport::new(
+            physical_size.width,
+            physical_size.height,
+            scale,
+        );
         runtime.set_viewport(viewport);
         runtime.update(std::time::Instant::now());
 
-        // Set focus on the Paste button (first focusable widget).
+        // Set focus on the Cancel button (first focusable widget).
         runtime.focus_first_focusable();
         window.request_redraw();
 
@@ -185,6 +254,10 @@ impl ConfirmationWindow {
             raw_text,
             cancelled,
             confirmed,
+            wrapped_lines,
+            preview_scroll_offset,
+            preview_line_height,
+            preview_max_chars: max_chars,
         }
     }
 
@@ -212,16 +285,42 @@ impl ConfirmationWindow {
 
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if key_event.state == ElementState::Pressed => match &key_event.logical_key {
-                Key::Named(NamedKey::Escape) => return ConfirmationResult::Cancelled,
-                Key::Character(ch) if ch == "n" || ch == "N" => {
-                    return ConfirmationResult::Cancelled;
+            } if key_event.state == ElementState::Pressed => {
+                // ── y / n / Escape shortcuts ──────────────────────────
+                match &key_event.logical_key {
+                    Key::Named(NamedKey::Escape) => return ConfirmationResult::Cancelled,
+                    Key::Character(ch) if ch == "n" || ch == "N" => {
+                        return ConfirmationResult::Cancelled;
+                    }
+                    Key::Character(ch) if ch == "y" || ch == "Y" => {
+                        return ConfirmationResult::Confirmed;
+                    }
+                    _ => {}
                 }
-                Key::Character(ch) if ch == "y" || ch == "Y" => {
-                    return ConfirmationResult::Confirmed;
+
+                // ── Keyboard scroll (works regardless of focus) ───────
+                let max_scroll = self
+                    .wrapped_lines
+                    .len()
+                    .saturating_sub(PREVIEW_VISIBLE_LINES);
+                match &key_event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => {
+                        scroll_preview(&self.preview_scroll_offset, -1, max_scroll);
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        scroll_preview(&self.preview_scroll_offset, 1, max_scroll);
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        let lines = -((PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize);
+                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
+                    }
+                    Key::Named(NamedKey::PageDown) => {
+                        let lines = (PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize;
+                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
 
             _ => {}
         }
@@ -261,11 +360,18 @@ impl ConfirmationWindow {
             wgpu::CurrentSurfaceTexture::Success(o) => o,
             wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                let (w, h) = (self.surface_config.width, self.surface_config.height);
+                let physical_size = self.window.inner_size();
+                let scale = self.window.scale_factor() as f32;
+                self.surface_config.width = physical_size.width;
+                self.surface_config.height = physical_size.height;
                 self.surface.configure(device, &self.surface_config);
                 // Update viewport for the reconfigured surface
                 self.runtime
-                    .set_viewport(harbor_widget::renderer::Viewport::new(w, h, 1.0));
+                    .set_viewport(harbor_widget::renderer::Viewport::new(
+                        physical_size.width,
+                        physical_size.height,
+                        scale,
+                    ));
                 return;
             }
             wgpu::CurrentSurfaceTexture::Timeout
@@ -304,14 +410,31 @@ impl ConfirmationWindow {
                 multiview_mask: None,
             });
 
-            let scale = 1.0f32; // Non-resizable window at 1x
-            let viewport =
-                harbor_widget::renderer::Viewport::new(DIALOG_WIDTH, DIALOG_HEIGHT, scale);
+            let physical_size = self.window.inner_size();
+            let scale = self.window.scale_factor() as f32;
+            let viewport = harbor_widget::renderer::Viewport::new(
+                physical_size.width,
+                physical_size.height,
+                scale,
+            );
             self.runtime.encode(queue, &mut pass, viewport, None);
         }
 
         queue.submit(Some(encoder.finish()));
         queue.present(output);
+    }
+
+    /// Handles DPI scale factor changes.
+    pub(crate) fn scale_factor_changed(&mut self, device: &wgpu::Device, scale_factor: f64) {
+        let sf = scale_factor as f32;
+        let physical_size = self.window.inner_size();
+        self.surface_config.width = physical_size.width;
+        self.surface_config.height = physical_size.height;
+        let viewport =
+            harbor_widget::renderer::Viewport::new(physical_size.width, physical_size.height, sf);
+        self.runtime.set_viewport(viewport);
+        self.surface.configure(device, &self.surface_config);
+        self.runtime.update(std::time::Instant::now());
     }
 
     /// Handles resize events.
@@ -334,25 +457,39 @@ impl ConfirmationWindow {
 
 fn build_confirmation_root(
     line_count: usize,
+    wrapped_lines: Vec<String>,
+    scroll_offset: Arc<AtomicUsize>,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
 ) -> impl harbor_widget::view::Component {
     let header_text = format!("Paste {} lines?", line_count);
+    let line_height = harbor_widget::text::current_metrics()
+        .map(|m| m.line_height)
+        .unwrap_or(20.0);
 
-    Padding::new(24.0, 16.0, 24.0, 16.0).child(
-        Column::new()
-            .child(TextLabel::new(header_text))
-            .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 24.0)))
-            .child(
-                Row::new()
-                    .child(Button::new("Paste").on_click(move |_ctx| {
-                        confirmed.store(true, Ordering::SeqCst);
-                    }))
-                    .child(SizedBox::new(harbor_widget::layout::Size::new(12.0, 0.0)))
-                    .child(Button::new("Cancel").on_click(move |_ctx| {
-                        cancelled.store(true, Ordering::SeqCst);
-                    })),
-            ),
+    FocusScope::new().child(
+        Padding::new(24.0, 16.0, 24.0, 16.0).child(
+            Column::new()
+                .child(TextLabel::new(header_text))
+                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 8.0)))
+                .child(PreviewPane::new(
+                    wrapped_lines,
+                    scroll_offset,
+                    line_height,
+                    PREVIEW_VISIBLE_LINES,
+                ))
+                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 12.0)))
+                .child(
+                    Row::new()
+                        .child(Button::new("Cancel").on_click(move |_ctx| {
+                            cancelled.store(true, Ordering::SeqCst);
+                        }))
+                        .child(SizedBox::new(harbor_widget::layout::Size::new(12.0, 0.0)))
+                        .child(Button::new("Paste").on_click(move |_ctx| {
+                            confirmed.store(true, Ordering::SeqCst);
+                        })),
+                ),
+        ),
     )
 }
 
@@ -371,7 +508,10 @@ mod tests {
                 winit::dpi::PhysicalSize::new(1_000, 800),
                 1.0,
             ),
-            winit::dpi::PhysicalPosition::new(300, 300),
+            // DIALOG_WIDTH=600, DIALOG_HEIGHT=500 at scale 1.0
+            // x = 100 + (1000 - 600) / 2 = 300
+            // y = 100 + (800 - 500) / 2 = 250
+            winit::dpi::PhysicalPosition::new(300, 250),
         );
     }
 
@@ -383,7 +523,12 @@ mod tests {
                 winit::dpi::PhysicalSize::new(1_200, 900),
                 1.5,
             ),
-            winit::dpi::PhysicalPosition::new(-1_770, 250),
+            // DIALOG_WIDTH=600, DIALOG_HEIGHT=500 at scale 1.5
+            // dialog_width = 600 * 1.5 = 900
+            // dialog_height = 500 * 1.5 = 750
+            // x = -1920 + (1200 - 900) / 2 = -1770
+            // y = 100 + (900 - 750) / 2 = 175
+            winit::dpi::PhysicalPosition::new(-1_770, 175),
         );
     }
 
@@ -391,8 +536,10 @@ mod tests {
     fn build_confirmation_root_produces_valid_view() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
+        let wrapped = vec!["hello".to_string()];
+        let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(5, cancelled, confirmed);
+        let root = build_confirmation_root(5, wrapped, scroll, cancelled, confirmed);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -470,10 +617,10 @@ mod tests {
             winit::dpi::PhysicalSize::new(0, 0),
             1.0,
         );
-        // DIALOG_WIDTH=600, DIALOG_HEIGHT=400 at scale 1.0
+        // DIALOG_WIDTH=600, DIALOG_HEIGHT=500 at scale 1.0
         // x = 50 + (0 - 600) / 2 = 50 - 300 = -250
-        // y = 60 + (0 - 400) / 2 = 60 - 200 = -140
-        assert_eq!(pos, winit::dpi::PhysicalPosition::new(-250, -140));
+        // y = 60 + (0 - 500) / 2 = 60 - 250 = -190
+        assert_eq!(pos, winit::dpi::PhysicalPosition::new(-250, -190));
     }
 
     #[test]
@@ -492,8 +639,10 @@ mod tests {
     fn should_build_with_zero_lines() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
+        let wrapped: Vec<String> = vec![];
+        let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(0, cancelled, confirmed);
+        let root = build_confirmation_root(0, wrapped, scroll, cancelled, confirmed);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -502,8 +651,10 @@ mod tests {
     fn should_build_with_large_line_count() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
+        let wrapped = vec!["x".to_string()];
+        let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(usize::MAX, cancelled, confirmed);
+        let root = build_confirmation_root(usize::MAX, wrapped, scroll, cancelled, confirmed);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -634,5 +785,181 @@ mod tests {
             check_flags(&confirmed, &cancelled),
             ConfirmationResult::Confirmed
         ));
+    }
+
+    // ── wrap_preview_text ───────────────────────────────────────────────
+
+    #[test]
+    fn should_return_empty_vec_when_input_is_empty() {
+        let result = wrap_preview_text("", 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn should_keep_short_line_unchanged_when_within_max_chars() {
+        let result = wrap_preview_text("hello", 10);
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn should_wrap_long_line_at_max_chars_boundary() {
+        let result = wrap_preview_text("hello world", 5);
+        assert_eq!(result, vec!["hello", " worl", "d"]);
+    }
+
+    #[test]
+    fn should_escape_tab_character_to_arrow() {
+        // Tab (U+0009) is escaped to arrow (U+2192) by safe_preview_line.
+        let result = wrap_preview_text("a\tb", 10);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains('\u{2192}'));
+        assert!(!result[0].contains('\t'));
+    }
+
+    #[test]
+    fn should_escape_c0_control_character_to_unicode_control_picture() {
+        // C0 control 0x01 (SOH) is escaped to U+2401 by safe_preview_line.
+        let result = wrap_preview_text("\x01", 10);
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].contains('\x01'));
+        assert!(result[0].contains('\u{2401}'));
+    }
+
+    #[test]
+    fn should_preserve_carriage_return_in_escaped_output() {
+        // CR passes through safe_preview_line unchanged.
+        let result = wrap_preview_text("a\rb", 10);
+        assert_eq!(result, vec!["a\rb"]);
+    }
+
+    #[test]
+    fn should_split_input_on_newline_characters() {
+        let result = wrap_preview_text("line1\nline2", 10);
+        assert_eq!(result, vec!["line1", "line2"]);
+    }
+
+    #[test]
+    fn should_preserve_empty_lines_between_content() {
+        let result = wrap_preview_text("a\n\nb", 10);
+        assert_eq!(result, vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn should_wrap_correctly_with_max_chars_of_one() {
+        let result = wrap_preview_text("ab", 1);
+        assert_eq!(result, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn should_handle_multibyte_utf8_char_boundaries_when_wrapping() {
+        // "é" is 2 bytes in UTF-8. Wrapping at max_chars=1 should not panic
+        // and should keep the multibyte character intact.
+        let result = wrap_preview_text("\u{00E9}x", 1);
+        assert_eq!(result, vec!["\u{00E9}", "x"]);
+    }
+
+    #[test]
+    fn should_wrap_escaped_text_that_becomes_longer_after_escaping() {
+        // Control chars 0x01 and 0x02 become multi-byte Unicode control pictures
+        // (U+2401, U+2402 = 3 bytes each). Wrapping at max_chars=2 (bytes) produces
+        // one element per character since most of them span >2 bytes.
+        let input = "a\x01b\x02c";
+        let result = wrap_preview_text(input, 2);
+        // Escaped: "a" (1B), "␁" (3B), "b" (1B), "␂" (3B), "c" (1B)
+        assert_eq!(result, vec!["a", "\u{2401}", "b", "\u{2402}", "c"]);
+    }
+
+    // ── scroll_preview ──────────────────────────────────────────────────
+
+    #[test]
+    fn should_not_change_offset_when_delta_is_zero() {
+        let offset = AtomicUsize::new(5);
+        scroll_preview(&offset, 0, 10);
+        assert_eq!(offset.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn should_increment_offset_when_delta_is_positive() {
+        let offset = AtomicUsize::new(5);
+        scroll_preview(&offset, 3, 10);
+        assert_eq!(offset.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn should_decrement_offset_when_delta_is_negative() {
+        let offset = AtomicUsize::new(5);
+        scroll_preview(&offset, -3, 10);
+        assert_eq!(offset.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn should_clamp_offset_at_zero_when_decrementing_below_zero() {
+        let offset = AtomicUsize::new(1);
+        scroll_preview(&offset, -5, 10);
+        assert_eq!(offset.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn should_clamp_offset_at_max_when_incrementing_beyond_max() {
+        let offset = AtomicUsize::new(8);
+        scroll_preview(&offset, 5, 10);
+        assert_eq!(offset.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn should_keep_offset_at_zero_when_max_is_zero() {
+        let offset = AtomicUsize::new(0);
+        scroll_preview(&offset, 3, 0);
+        assert_eq!(offset.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn should_clamp_negative_offset_to_zero_when_max_is_zero() {
+        // Even with a negative delta, when max=0 the result stays at 0.
+        let offset = AtomicUsize::new(0);
+        scroll_preview(&offset, -3, 0);
+        assert_eq!(offset.load(Ordering::Relaxed), 0);
+    }
+
+    // ── build_confirmation_root focus order ─────────────────────────────
+
+    /// Builds the confirmation root in a Runtime and verifies that
+    /// focus_first_focusable finds a focusable widget. In the depth-first
+    /// traversal order, the Cancel Button is encountered before the Paste
+    /// Button because it is the leftmost child of the Row.
+    #[test]
+    fn should_focus_cancel_button_first_in_confirmation_root() {
+        use harbor_widget::runtime::Runtime;
+        use std::time::Instant;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+        let wrapped = vec!["sample text".to_string()];
+        let scroll = Arc::new(AtomicUsize::new(0));
+
+        // Arrange: build root and set in runtime.
+        let root = build_confirmation_root(1, wrapped, scroll, cancelled, confirmed);
+        let mut rt = Runtime::new();
+        rt.set_root(root);
+        rt.update(Instant::now());
+
+        // Act: focus the first focusable widget.
+        let found = rt.focus_first_focusable();
+
+        // Assert: a focusable widget was found. In the tree,
+        // FocusScope > Padding > Column > ... > Row > [Button("Cancel"), SizedBox, Button("Paste")].
+        // Depth-first traversal hits Cancel (leftmost Button) first.
+        assert!(found, "expected a focusable widget (Cancel button)");
+        assert!(rt.input().focused.is_some(), "focused should be set");
+
+        // Verify the focused widget is a Button (without being able to read
+        // the label from outside the crate, the structure guarantees it is Cancel).
+        let focused_id = rt.input().focused.unwrap();
+        let fiber = rt.arena().get(focused_id).unwrap();
+        assert_eq!(
+            fiber.widget_type,
+            std::any::TypeId::of::<harbor_widget::widgets::button::Button>(),
+            "focused widget should be a Button"
+        );
     }
 }
