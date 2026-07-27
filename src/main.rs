@@ -15,8 +15,15 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use winit::event_loop::EventLoop;
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 /// Creates the event loop and starts the application.
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let _guard = init_tracing();
     tracing::trace!("starting harbor");
 

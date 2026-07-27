@@ -65,4 +65,14 @@ winit → App → UiRoot (Background + TextLayer + Decoration + Cursor + Scrollb
 cargo test   # 317 tests, all passing ✅
 ```
 
+## 🧠 Heap Profiling
+
+Build and run with `dhat` when investigating heap allocations:
+
+```bash
+cargo run --profile dhat --features dhat-heap
+```
+
+On exit, `dhat-heap.json` is written to the working directory. Open it with the [DHAT viewer](https://nnethercote.github.io/dh_view/dh_view.html). This feature substantially slows the application and is intended only for profiling.
+
 > ⚓ **Build a reliable terminal first. Turn it into a development environment later.**
