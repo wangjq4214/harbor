@@ -219,7 +219,6 @@ fn worker_main(
 ) {
     let mut terminal = Terminal::new(size.rows, size.cols);
     let mut revision = 0;
-    let mut snapshot_dirty = false;
     publish_snapshot(
         &mut terminal,
         &mailbox,
@@ -268,12 +267,47 @@ fn worker_main(
     }
     let _ = ready_tx.send(Ok(()));
 
+    run_worker_loop(
+        &mut terminal,
+        &mailbox,
+        notifier.as_ref(),
+        control_rx,
+        signal_rx,
+        pty_rx,
+        pty,
+        &mut revision,
+    );
+
+    if !matches!(
+        lock(&mailbox).status,
+        WorkerStatus::Failed { .. } | WorkerStatus::Stopped
+    ) {
+        set_status(&mailbox, WorkerStatus::Stopped);
+        notify(notifier.as_ref());
+    }
+}
+
+/// Main worker event loop: polls control commands, PTY output, and deferred status
+/// until all inputs are exhausted and the shutdown condition is met.
+fn run_worker_loop(
+    terminal: &mut Terminal,
+    mailbox: &Arc<Mutex<Mailbox>>,
+    notifier: &dyn Fn(),
+    control_rx: Receiver<TerminalCommand>,
+    signal_rx: Receiver<()>,
+    pty_rx: &Receiver<PtyMessage>,
+    pty: &mut Pty,
+    revision: &mut u64,
+) {
     let mut control_closed = false;
     let mut pty_closed = false;
     let mut pending_pty_status = None;
+    let mut snapshot_dirty = false;
+
     loop {
         let mut progressed = false;
 
+        // ── Control commands ─────────────────────────────────────────
         match control_rx.try_recv() {
             Ok(command) => {
                 progressed = true;
@@ -285,15 +319,8 @@ fn worker_main(
                         | TerminalCommand::ScrollToTop { .. }
                         | TerminalCommand::ScrollToBottom { .. }
                 );
-                if apply_command(
-                    command,
-                    &mut terminal,
-                    pty,
-                    &mailbox,
-                    notifier.as_ref(),
-                    &mut revision,
-                ) {
-                    break;
+                if apply_command(command, terminal, pty, mailbox, notifier, revision) {
+                    return;
                 }
                 if publishes_snapshot {
                     snapshot_dirty = false;
@@ -303,47 +330,30 @@ fn worker_main(
             Err(TryRecvError::Empty) => {}
         }
 
+        // ── PTY output (batched for bounded work per wake) ──────────
         match pty_rx.try_recv() {
             Ok(PtyMessage::Bytes(bytes)) => {
                 progressed = true;
-                set_status(&mailbox, WorkerStatus::Processing);
+                set_status(mailbox, WorkerStatus::Processing);
                 terminal.process_output(&bytes);
                 snapshot_dirty = true;
 
-                // Bound parser work per wake so control commands and shutdown remain observable.
-                let mut terminal_status = None;
-                for _ in 1..64 {
-                    match pty_rx.try_recv() {
-                        Ok(PtyMessage::Bytes(bytes)) => {
-                            terminal.process_output(&bytes);
-                            snapshot_dirty = true;
-                        }
-                        Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
-                            terminal_status = Some(message);
-                            break;
-                        }
-                        Err(TryRecvError::Disconnected) => {
-                            pty_closed = true;
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                    }
+                let (status, inner_closed) =
+                    drain_pty_batch(terminal, pty_rx, &mut snapshot_dirty);
+                if inner_closed {
+                    pty_closed = true;
                 }
 
-                revision = revision.saturating_add(1);
-                if !mailbox_has_update(&mailbox) {
-                    publish_snapshot(
-                        &mut terminal,
-                        &mailbox,
-                        notifier.as_ref(),
-                        revision,
-                        true,
-                        None,
-                    );
-                    snapshot_dirty = false;
-                }
-                set_status(&mailbox, WorkerStatus::Idle);
-                pending_pty_status = terminal_status;
+                *revision = revision.saturating_add(1);
+                flush_snapshot_if_dirty(
+                    terminal,
+                    mailbox,
+                    notifier,
+                    *revision,
+                    &mut snapshot_dirty,
+                );
+                set_status(mailbox, WorkerStatus::Idle);
+                pending_pty_status = status;
             }
             Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
                 progressed = true;
@@ -351,57 +361,33 @@ fn worker_main(
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
             Err(TryRecvError::Empty) => {
-                if snapshot_dirty && !mailbox_has_update(&mailbox) {
-                    publish_snapshot(
-                        &mut terminal,
-                        &mailbox,
-                        notifier.as_ref(),
-                        revision,
-                        true,
-                        None,
-                    );
+                flush_snapshot_if_dirty(
+                    terminal,
+                    mailbox,
+                    notifier,
+                    *revision,
+                    &mut snapshot_dirty,
+                );
+                if snapshot_dirty {
                     snapshot_dirty = false;
                     progressed = true;
                 }
             }
         }
 
-        if let Some(status) = pending_pty_status.take() {
-            if snapshot_dirty && mailbox_has_update(&mailbox) {
-                pending_pty_status = Some(status);
-            } else {
-                if snapshot_dirty {
-                    publish_snapshot(
-                        &mut terminal,
-                        &mailbox,
-                        notifier.as_ref(),
-                        revision,
-                        true,
-                        None,
-                    );
-                    snapshot_dirty = false;
-                }
-                if apply_pty_status(status, &mailbox, notifier.as_ref()) {
-                    break;
-                }
-            }
-        }
+        // ── Deferred terminal status ────────────────────────────────
+        pending_pty_status =
+            try_consume_pending_status(pending_pty_status, terminal, mailbox, notifier, revision, &mut snapshot_dirty);
 
+        // ── Shutdown gate ───────────────────────────────────────────
         if control_closed && pty_closed && pending_pty_status.is_none() {
-            if snapshot_dirty && mailbox_has_update(&mailbox) {
+            if snapshot_dirty && mailbox_has_update(mailbox) {
                 // Wait for the UI to consume the pending update before flushing.
             } else {
                 if snapshot_dirty {
-                    publish_snapshot(
-                        &mut terminal,
-                        &mailbox,
-                        notifier.as_ref(),
-                        revision,
-                        true,
-                        None,
-                    );
+                    publish_snapshot(terminal, mailbox, notifier, *revision, true, None);
                 }
-                break;
+                return;
             }
         }
         if progressed {
@@ -409,16 +395,71 @@ fn worker_main(
         }
         match signal_rx.recv() {
             Ok(()) => {}
-            Err(_) => break,
+            Err(_) => return,
         }
     }
+}
 
-    if !matches!(
-        lock(&mailbox).status,
-        WorkerStatus::Failed { .. } | WorkerStatus::Stopped
-    ) {
-        set_status(&mailbox, WorkerStatus::Stopped);
-        notify(notifier.as_ref());
+/// Drains up to 63 additional PTY messages from `pty_rx` into `terminal`.
+/// Returns any terminal status message encountered and whether the PTY channel closed.
+fn drain_pty_batch(
+    terminal: &mut Terminal,
+    pty_rx: &Receiver<PtyMessage>,
+    snapshot_dirty: &mut bool,
+) -> (Option<PtyMessage>, bool) {
+    for _ in 1..64 {
+        match pty_rx.try_recv() {
+            Ok(PtyMessage::Bytes(bytes)) => {
+                terminal.process_output(&bytes);
+                *snapshot_dirty = true;
+            }
+            Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
+                return (Some(message), false);
+            }
+            Err(TryRecvError::Disconnected) => {
+                return (None, true);
+            }
+            Err(TryRecvError::Empty) => break,
+        }
+    }
+    (None, false)
+}
+
+/// Tries to consume the deferred terminal status, flushing any dirty snapshot first.
+/// Returns the remaining pending status (restored if snapshot is still pending consumption).
+fn try_consume_pending_status(
+    pending: Option<PtyMessage>,
+    terminal: &mut Terminal,
+    mailbox: &Arc<Mutex<Mailbox>>,
+    notifier: &dyn Fn(),
+    revision: &mut u64,
+    snapshot_dirty: &mut bool,
+) -> Option<PtyMessage> {
+    let status = pending?;
+    if *snapshot_dirty && mailbox_has_update(mailbox) {
+        return Some(status);
+    }
+    if *snapshot_dirty {
+        publish_snapshot(terminal, mailbox, notifier, *revision, true, None);
+        *snapshot_dirty = false;
+    }
+    if apply_pty_status(status, mailbox, notifier) {
+        // The exit signal will be handled by the caller.
+    }
+    None
+}
+
+/// Publishes a snapshot if dirty and the mailbox is accepting updates.
+fn flush_snapshot_if_dirty(
+    terminal: &mut Terminal,
+    mailbox: &Arc<Mutex<Mailbox>>,
+    notifier: &dyn Fn(),
+    revision: u64,
+    snapshot_dirty: &mut bool,
+) {
+    if *snapshot_dirty && !mailbox_has_update(mailbox) {
+        publish_snapshot(terminal, mailbox, notifier, revision, true, None);
+        *snapshot_dirty = false;
     }
 }
 fn apply_pty_status(
@@ -441,65 +482,6 @@ fn apply_pty_status(
     }
 }
 
-fn encode_input(
-    request: &harbor_types::InputRequest,
-    modes: harbor_types::InputModes,
-) -> Option<std::borrow::Cow<'static, [u8]>> {
-    use harbor_types::InputKey;
-    use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-    let key = match &request.key {
-        InputKey::Character(ch) => Key::Character(ch.clone().into()),
-        InputKey::Enter => Key::Named(NamedKey::Enter),
-        InputKey::Backspace => Key::Named(NamedKey::Backspace),
-        InputKey::Tab => Key::Named(NamedKey::Tab),
-        InputKey::Escape => Key::Named(NamedKey::Escape),
-        InputKey::Space => Key::Named(NamedKey::Space),
-        InputKey::ArrowUp => Key::Named(NamedKey::ArrowUp),
-        InputKey::ArrowDown => Key::Named(NamedKey::ArrowDown),
-        InputKey::ArrowRight => Key::Named(NamedKey::ArrowRight),
-        InputKey::ArrowLeft => Key::Named(NamedKey::ArrowLeft),
-        InputKey::Home => Key::Named(NamedKey::Home),
-        InputKey::End => Key::Named(NamedKey::End),
-        InputKey::F1 => Key::Named(NamedKey::F1),
-        InputKey::F2 => Key::Named(NamedKey::F2),
-        InputKey::F3 => Key::Named(NamedKey::F3),
-        InputKey::F4 => Key::Named(NamedKey::F4),
-        InputKey::F5 => Key::Named(NamedKey::F5),
-        InputKey::F6 => Key::Named(NamedKey::F6),
-        InputKey::F7 => Key::Named(NamedKey::F7),
-        InputKey::F8 => Key::Named(NamedKey::F8),
-        InputKey::F9 => Key::Named(NamedKey::F9),
-        InputKey::F10 => Key::Named(NamedKey::F10),
-        InputKey::F11 => Key::Named(NamedKey::F11),
-        InputKey::F12 => Key::Named(NamedKey::F12),
-        InputKey::Insert => Key::Named(NamedKey::Insert),
-        InputKey::Delete => Key::Named(NamedKey::Delete),
-        InputKey::PageUp => Key::Named(NamedKey::PageUp),
-        InputKey::PageDown => Key::Named(NamedKey::PageDown),
-    };
-    let mut modifiers = ModifiersState::default();
-    if request.modifiers.shift() {
-        modifiers.insert(ModifiersState::SHIFT);
-    }
-    if request.modifiers.alt() {
-        modifiers.insert(ModifiersState::ALT);
-    }
-    if request.modifiers.control() {
-        modifiers.insert(ModifiersState::CONTROL);
-    }
-    if request.modifiers.super_key() {
-        modifiers.insert(ModifiersState::SUPER);
-    }
-    InputEncoder::key(
-        &key,
-        request.text.as_deref(),
-        modifiers,
-        modes,
-        request.is_numpad,
-    )
-}
-
 fn apply_command(
     command: TerminalCommand,
     terminal: &mut Terminal,
@@ -517,7 +499,7 @@ fn apply_command(
             set_status(mailbox, WorkerStatus::Idle);
         }
         TerminalCommand::Input(request) => {
-            if let Some(bytes) = encode_input(&request, terminal.screen().input_modes()) {
+            if let Some(bytes) = InputEncoder::encode(&request, terminal.screen().input_modes()) {
                 pty.write(&bytes);
             }
             notify(notifier);
@@ -1184,7 +1166,7 @@ mod tests {
             let req = InputEncoder::request(&logical_key, text, m, false).unwrap();
             assert!(req.modifiers.control());
             assert_eq!(
-                encode_input(&req, modes).as_deref(),
+                InputEncoder::encode(&req, modes).as_deref(),
                 Some(b"\x03".as_slice())
             );
         }
@@ -1197,7 +1179,7 @@ mod tests {
             is_numpad: false,
         };
         assert_eq!(
-            encode_input(&req, modes).as_deref(),
+            InputEncoder::encode(&req, modes).as_deref(),
             Some(b"\x03".as_slice())
         );
 
@@ -1209,7 +1191,7 @@ mod tests {
             is_numpad: false,
         };
         assert_eq!(
-            encode_input(&req, modes).as_deref(),
+            InputEncoder::encode(&req, modes).as_deref(),
             Some(b"\x03".as_slice())
         );
 
@@ -1221,7 +1203,7 @@ mod tests {
             is_numpad: false,
         };
         assert_eq!(
-            encode_input(&req, modes).as_deref(),
+            InputEncoder::encode(&req, modes).as_deref(),
             Some(b"\x01".as_slice())
         );
 
@@ -1233,7 +1215,7 @@ mod tests {
             is_numpad: false,
         };
         assert_eq!(
-            encode_input(&req, modes).as_deref(),
+            InputEncoder::encode(&req, modes).as_deref(),
             Some(b"\x04".as_slice())
         );
     }

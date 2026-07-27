@@ -2,6 +2,7 @@
 
 mod confirmation;
 pub(crate) mod input;
+pub(crate) mod translate;
 mod ui;
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
@@ -26,11 +27,9 @@ use harbor_render::{
 use harbor_types::{
     RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
 };
-use harbor_widget::input::event::{
-    Key as WidgetKey, KeyboardEvent as WidgetKbEvent, Modifiers as WidgetModifiers, PointerButton,
-    PointerEvent, PointerPhase, UiEvent,
-};
-use harbor_widget::layout::Point as WidgetPoint;
+use harbor_widget::input::event::{KeyboardEvent as WidgetKbEvent, UiEvent};
+
+use translate::{widget_key_to_winit, widget_to_winit_mods, winit_to_uievent};
 use ui::UiRoot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +63,91 @@ fn scrollback_navigation(
     }
 }
 
+/// Outcome of a dialog-overlay event dispatch.
+struct DialogResult {
+    outcome: DialogOutcome,
+    /// True when ScaleFactorChanged was handled, requiring a main-window redraw.
+    needs_redraw: Option<RedrawReason>,
+}
+
+enum DialogOutcome {
+    None,
+    Cancelled,
+    Confirmed(String),
+}
+
+/// Owns the optional paste-confirmation dialog and mediates its lifecycle
+/// so `window_event` does not inline the take-match-put-back pattern.
+struct DialogOverlay {
+    window: Option<ConfirmationWindow>,
+}
+
+impl DialogOverlay {
+    fn is_active(&self) -> bool {
+        self.window.is_some()
+    }
+
+    fn window_id(&self) -> Option<WindowId> {
+        self.window.as_ref().map(|w| w.window_id())
+    }
+
+    /// Dispatches a window event to the active confirmation dialog, returning
+    /// the outcome and signalling when a main-window side-effect is needed.
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f32,
+        gpu: Option<&GpuContext>,
+        ui: Option<&UiRoot>,
+    ) -> DialogResult {
+        let Some(mut confirmation) = self.window.take() else {
+            return DialogResult {
+                outcome: DialogOutcome::None,
+                needs_redraw: None,
+            };
+        };
+        let mut needs_redraw = None;
+        let outcome = match confirmation.handle_event(event, scale) {
+            confirmation::ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
+            confirmation::ConfirmationResult::Confirmed => {
+                let raw_text = confirmation.raw_text().to_owned();
+                DialogOutcome::Confirmed(raw_text)
+            }
+            confirmation::ConfirmationResult::None => {
+                if matches!(event, WindowEvent::RedrawRequested)
+                    && let (Some(gpu), Some(ui)) = (gpu, ui)
+                {
+                    confirmation.render(gpu.device(), gpu.queue(), &|ch| {
+                        ui.text_glyph(ch).copied()
+                    });
+                }
+                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event
+                    && let Some(gpu) = gpu
+                {
+                    confirmation.scale_factor_changed(gpu.device(), *scale_factor);
+                    needs_redraw = Some(RedrawReason::Resize);
+                }
+                if let WindowEvent::Resized(size) = event
+                    && let Some(gpu) = gpu
+                {
+                    confirmation.resize(gpu.device(), size.width, size.height);
+                }
+                self.window = Some(confirmation);
+                DialogOutcome::None
+            }
+        };
+        DialogResult {
+            outcome,
+            needs_redraw,
+        }
+    }
+
+    /// Installs a new confirmation dialog, replacing any existing one.
+    fn open(&mut self, confirmation: ConfirmationWindow) {
+        self.window = Some(confirmation);
+    }
+}
+
 /// Runtime resources that exist while the window is alive.
 struct AppRuntime {
     window: Option<Arc<Window>>,
@@ -71,7 +155,7 @@ struct AppRuntime {
     ui: Option<UiRoot>,
     /// Widget framework runtime (Phase 1: layout + quad rendering).
     widget_runtime: Option<harbor_widget::runtime::Runtime>,
-    confirmation_window: Option<ConfirmationWindow>,
+    dialog: DialogOverlay,
 }
 
 /// Terminal-worker session state and its published projection.
@@ -208,57 +292,40 @@ impl ApplicationHandler<AppEvent> for App {
             self.request_redraw(RedrawReason::WorkerUpdate);
         }
 
-        let confirmation = self.runtime.confirmation_window.take();
-        if let Some(mut confirmation) = confirmation {
-            if confirmation.window_id() == window_id {
-                let scale = self
-                    .runtime
-                    .window
-                    .as_ref()
-                    .map(|window| window.scale_factor() as f32)
-                    .unwrap_or(1.0);
-                match confirmation.handle_event(&event, scale) {
-                    confirmation::ConfirmationResult::Cancelled => {
-                        self.request_redraw(RedrawReason::Input);
-                        return;
-                    }
-                    confirmation::ConfirmationResult::Confirmed => {
-                        let raw_text = confirmation.raw_text().to_owned();
-                        if let Some(worker) = self.session.worker.as_ref() {
-                            let _ = worker.send(harbor_types::TerminalCommand::PasteText(raw_text));
-                        }
-                        self.request_redraw(RedrawReason::Input);
-                        return;
-                    }
-                    confirmation::ConfirmationResult::None => {
-                        if matches!(&event, WindowEvent::RedrawRequested)
-                            && let (Some(gpu), Some(ui)) =
-                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref())
-                        {
-                            confirmation.render(gpu.device(), gpu.queue(), &|ch| {
-                                ui.text_glyph(ch).copied()
-                            });
-                        }
-                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event
-                            && let Some(gpu) = self.runtime.gpu.as_ref()
-                        {
-                            confirmation.scale_factor_changed(gpu.device(), *scale_factor);
-                            self.frame.render_dirty = true;
-                            self.request_redraw(RedrawReason::Resize);
-                        }
-                        if let WindowEvent::Resized(size) = &event
-                            && let Some(gpu) = self.runtime.gpu.as_ref()
-                        {
-                            confirmation.resize(gpu.device(), size.width, size.height);
-                        }
-                        self.runtime.confirmation_window = Some(confirmation);
-                    }
+        let dialog_window_id = self.runtime.dialog.window_id();
+        if dialog_window_id == Some(window_id) {
+            let scale = self
+                .runtime
+                .window
+                .as_ref()
+                .map(|window| window.scale_factor() as f32)
+                .unwrap_or(1.0);
+            let result = self.runtime.dialog.handle_event(
+                &event,
+                scale,
+                self.runtime.gpu.as_ref(),
+                self.runtime.ui.as_ref(),
+            );
+            if let Some(reason) = result.needs_redraw {
+                self.frame.render_dirty = true;
+                self.request_redraw(reason);
+            }
+            match result.outcome {
+                DialogOutcome::Cancelled => {
+                    self.request_redraw(RedrawReason::Input);
+                    return;
                 }
-            } else {
-                self.runtime.confirmation_window = Some(confirmation);
+                DialogOutcome::Confirmed(raw_text) => {
+                    if let Some(worker) = self.session.worker.as_ref() {
+                        let _ = worker.send(harbor_types::TerminalCommand::PasteText(raw_text));
+                    }
+                    self.request_redraw(RedrawReason::Input);
+                    return;
+                }
+                DialogOutcome::None => {}
             }
         }
-        let gate_active = self.runtime.confirmation_window.is_some();
+        let gate_active = self.runtime.dialog.is_active();
 
         let (Some(gpu), Some(ui), Some(snapshot), Some(worker), Some(window)) = (
             self.runtime.gpu.as_mut(),
@@ -330,7 +397,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         if let EventResult::ConfirmPaste(raw_text) = &handled {
-            if self.runtime.confirmation_window.is_none() {
+            if !self.runtime.dialog.is_active() {
                 let metrics = *ui.text_metrics();
                 harbor_widget::text::set_current_metrics(metrics);
 
@@ -346,7 +413,7 @@ impl ApplicationHandler<AppEvent> for App {
                 let all_preview_text: String = wrapped_lines.join("");
                 ui.ensure_glyphs(&all_preview_text, gpu);
 
-                self.runtime.confirmation_window = Some(ConfirmationWindow::new(
+                self.runtime.dialog.open(ConfirmationWindow::new(
                     raw_text.clone(),
                     wrapped_lines,
                     event_loop,
@@ -531,158 +598,6 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
-// ── Widget event translation helpers ───────────────────────────────────────
-
-pub(crate) fn winit_to_uievent(
-    event: &WindowEvent,
-    scale_factor: f32,
-    modifiers: winit::keyboard::ModifiersState,
-) -> Option<UiEvent> {
-    match event {
-        WindowEvent::KeyboardInput {
-            device_id: _,
-            event,
-            is_synthetic: _,
-        } => {
-            let key = match &event.logical_key {
-                Key::Named(named) => named_to_widget_key(named)?,
-                Key::Character(ch) => WidgetKey::Character(ch.chars().next().unwrap_or('\0')),
-                _ => return None,
-            };
-            let modifiers = modifiers_to_widget(modifiers);
-            match event.state {
-                ElementState::Pressed => {
-                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }))
-                }
-                ElementState::Released => {
-                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyUp { key, modifiers }))
-                }
-            }
-        }
-        WindowEvent::CursorMoved {
-            device_id: _,
-            position,
-        } => {
-            let pos = WidgetPoint::new(
-                position.x as f32 / scale_factor,
-                position.y as f32 / scale_factor,
-            );
-            Some(UiEvent::Pointer(PointerEvent::new(
-                pos,
-                PointerPhase::Move,
-                PointerButton::Left,
-                0,
-            )))
-        }
-        WindowEvent::MouseInput {
-            device_id: _,
-            state,
-            button,
-        } => {
-            let phase = match state {
-                ElementState::Pressed => PointerPhase::Down,
-                ElementState::Released => PointerPhase::Up,
-            };
-            let btn = match button {
-                winit::event::MouseButton::Left => PointerButton::Left,
-                winit::event::MouseButton::Right => PointerButton::Right,
-                winit::event::MouseButton::Middle => PointerButton::Middle,
-                _ => return None,
-            };
-            Some(UiEvent::Pointer(PointerEvent::new(
-                WidgetPoint::ZERO,
-                phase,
-                btn,
-                0,
-            )))
-        }
-        WindowEvent::MouseWheel { delta, .. } => {
-            let (dx, dy) = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (*x, *y),
-                MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
-            };
-            Some(UiEvent::Pointer(PointerEvent::new(
-                WidgetPoint::ZERO,
-                PointerPhase::Wheel { dx, dy },
-                PointerButton::Left,
-                0,
-            )))
-        }
-        _ => None,
-    }
-}
-
-fn named_to_widget_key(named: &NamedKey) -> Option<WidgetKey> {
-    match named {
-        NamedKey::Tab => Some(WidgetKey::Tab),
-        NamedKey::Enter => Some(WidgetKey::Enter),
-        NamedKey::Space => Some(WidgetKey::Space),
-        NamedKey::Escape => Some(WidgetKey::Escape),
-        NamedKey::Backspace => Some(WidgetKey::Backspace),
-        NamedKey::Delete => Some(WidgetKey::Delete),
-        NamedKey::ArrowUp => Some(WidgetKey::ArrowUp),
-        NamedKey::ArrowDown => Some(WidgetKey::ArrowDown),
-        NamedKey::ArrowLeft => Some(WidgetKey::ArrowLeft),
-        NamedKey::ArrowRight => Some(WidgetKey::ArrowRight),
-        NamedKey::Home => Some(WidgetKey::Home),
-        NamedKey::End => Some(WidgetKey::End),
-        NamedKey::PageUp => Some(WidgetKey::PageUp),
-        NamedKey::PageDown => Some(WidgetKey::PageDown),
-        _ => None,
-    }
-}
-
-fn modifiers_to_widget(mods: winit::keyboard::ModifiersState) -> WidgetModifiers {
-    WidgetModifiers {
-        shift: mods.shift_key(),
-        ctrl: mods.control_key(),
-        alt: mods.alt_key(),
-        meta: mods.super_key(),
-    }
-}
-
-/// Converts a widget `Key` back to a winit `Key` and optional character text.
-fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
-    match key {
-        WidgetKey::Tab => (Key::Named(NamedKey::Tab), None),
-        WidgetKey::Enter => (Key::Named(NamedKey::Enter), Some("\r".into())),
-        WidgetKey::Space => (Key::Character(" ".into()), Some(" ".into())),
-        WidgetKey::Escape => (Key::Named(NamedKey::Escape), None),
-        WidgetKey::Backspace => (Key::Named(NamedKey::Backspace), None),
-        WidgetKey::Delete => (Key::Named(NamedKey::Delete), None),
-        WidgetKey::ArrowUp => (Key::Named(NamedKey::ArrowUp), None),
-        WidgetKey::ArrowDown => (Key::Named(NamedKey::ArrowDown), None),
-        WidgetKey::ArrowLeft => (Key::Named(NamedKey::ArrowLeft), None),
-        WidgetKey::ArrowRight => (Key::Named(NamedKey::ArrowRight), None),
-        WidgetKey::Home => (Key::Named(NamedKey::Home), None),
-        WidgetKey::End => (Key::Named(NamedKey::End), None),
-        WidgetKey::PageUp => (Key::Named(NamedKey::PageUp), None),
-        WidgetKey::PageDown => (Key::Named(NamedKey::PageDown), None),
-        WidgetKey::Character(c) => {
-            let s: String = c.to_string();
-            (Key::Character(s.clone().into()), Some(s))
-        }
-    }
-}
-
-fn widget_to_winit_mods(m: WidgetModifiers) -> winit::keyboard::ModifiersState {
-    use winit::keyboard::ModifiersState;
-    let mut state = ModifiersState::empty();
-    if m.shift {
-        state |= ModifiersState::SHIFT;
-    }
-    if m.ctrl {
-        state |= ModifiersState::CONTROL;
-    }
-    if m.alt {
-        state |= ModifiersState::ALT;
-    }
-    if m.meta {
-        state |= ModifiersState::SUPER;
-    }
-    state
-}
-
 // ── App (own methods) ─────────────────────────────────────────────────────
 impl App {
     /// Creates the application shell with no initial window, GPU, or worker.
@@ -694,7 +609,7 @@ impl App {
                 gpu: None,
                 ui: None,
                 widget_runtime: None,
-                confirmation_window: None,
+                dialog: DialogOverlay { window: None },
             },
             session: TerminalSession {
                 latest_snapshot: None,

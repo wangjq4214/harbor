@@ -1,5 +1,6 @@
 //! Keyboard → PTY byte mapping.
 
+use harbor_types::{InputKey, InputRequest};
 use harbor_terminal::InputModes;
 use std::borrow::Cow;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -250,6 +251,65 @@ fn render_csi_key(
 pub(crate) struct InputEncoder;
 
 impl InputEncoder {
+    /// Encodes a logical `InputRequest` into ANSI bytes using the given terminal modes.
+    /// This is the single authoritative encoding path — call it directly instead of
+    /// converting through `winit::Key`.
+    pub(crate) fn encode(
+        request: &InputRequest,
+        modes: InputModes,
+    ) -> Option<Cow<'static, [u8]>> {
+        let key = match &request.key {
+            InputKey::Character(ch) => Key::Character(ch.clone().into()),
+            InputKey::Enter => Key::Named(NamedKey::Enter),
+            InputKey::Backspace => Key::Named(NamedKey::Backspace),
+            InputKey::Tab => Key::Named(NamedKey::Tab),
+            InputKey::Escape => Key::Named(NamedKey::Escape),
+            InputKey::Space => Key::Named(NamedKey::Space),
+            InputKey::ArrowUp => Key::Named(NamedKey::ArrowUp),
+            InputKey::ArrowDown => Key::Named(NamedKey::ArrowDown),
+            InputKey::ArrowRight => Key::Named(NamedKey::ArrowRight),
+            InputKey::ArrowLeft => Key::Named(NamedKey::ArrowLeft),
+            InputKey::Home => Key::Named(NamedKey::Home),
+            InputKey::End => Key::Named(NamedKey::End),
+            InputKey::F1 => Key::Named(NamedKey::F1),
+            InputKey::F2 => Key::Named(NamedKey::F2),
+            InputKey::F3 => Key::Named(NamedKey::F3),
+            InputKey::F4 => Key::Named(NamedKey::F4),
+            InputKey::F5 => Key::Named(NamedKey::F5),
+            InputKey::F6 => Key::Named(NamedKey::F6),
+            InputKey::F7 => Key::Named(NamedKey::F7),
+            InputKey::F8 => Key::Named(NamedKey::F8),
+            InputKey::F9 => Key::Named(NamedKey::F9),
+            InputKey::F10 => Key::Named(NamedKey::F10),
+            InputKey::F11 => Key::Named(NamedKey::F11),
+            InputKey::F12 => Key::Named(NamedKey::F12),
+            InputKey::Insert => Key::Named(NamedKey::Insert),
+            InputKey::Delete => Key::Named(NamedKey::Delete),
+            InputKey::PageUp => Key::Named(NamedKey::PageUp),
+            InputKey::PageDown => Key::Named(NamedKey::PageDown),
+        };
+        let mut modifiers = ModifiersState::default();
+        if request.modifiers.shift() {
+            modifiers.insert(ModifiersState::SHIFT);
+        }
+        if request.modifiers.alt() {
+            modifiers.insert(ModifiersState::ALT);
+        }
+        if request.modifiers.control() {
+            modifiers.insert(ModifiersState::CONTROL);
+        }
+        if request.modifiers.super_key() {
+            modifiers.insert(ModifiersState::SUPER);
+        }
+        Self::key(
+            &key,
+            request.text.as_deref(),
+            modifiers,
+            modes,
+            request.is_numpad,
+        )
+    }
+
     /// Captures a logical input request without consulting terminal modes.
     pub(crate) fn request(
         logical_key: &Key,
