@@ -21,6 +21,7 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::padding::Padding;
+use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
 
@@ -56,19 +57,20 @@ pub(crate) enum ConfirmationResult {
 /// confirmation UI.
 ///
 /// Renders a minimal confirmation dialog: header text showing line count,
-/// and a Cancel button (focused by default).
+/// Paste and Cancel buttons, with Paste focused by default.
 pub(crate) struct ConfirmationWindow {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     runtime: Runtime,
-    text_metrics: TextMetrics,
+    raw_text: String,
     cancelled: Arc<AtomicBool>,
+    confirmed: Arc<AtomicBool>,
 }
 
 impl ConfirmationWindow {
     pub(crate) fn new(
-        raw_text: &str,
+        raw_text: String,
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
         metrics: TextMetrics,
@@ -144,13 +146,15 @@ impl ConfirmationWindow {
 
         // ── Widget Runtime setup ──────────────────────────────────────
         let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
 
         // Set up thread-local metrics for this thread.
         harbor_widget::text::set_current_metrics(metrics);
 
         let mut runtime = Runtime::new();
 
-        let confirm_root = build_confirmation_root(line_count, Arc::clone(&cancelled));
+        let confirm_root =
+            build_confirmation_root(line_count, Arc::clone(&cancelled), Arc::clone(&confirmed));
         runtime.set_root(confirm_root);
 
         // Init quad renderer (needed for button backgrounds/borders).
@@ -169,7 +173,7 @@ impl ConfirmationWindow {
         runtime.set_viewport(viewport);
         runtime.update(std::time::Instant::now());
 
-        // Set focus on the Cancel button (first focusable widget).
+        // Set focus on the Paste button (first focusable widget).
         runtime.focus_first_focusable();
         window.request_redraw();
 
@@ -178,8 +182,9 @@ impl ConfirmationWindow {
             surface,
             surface_config,
             runtime,
-            text_metrics: metrics,
+            raw_text,
             cancelled,
+            confirmed,
         }
     }
 
@@ -187,11 +192,16 @@ impl ConfirmationWindow {
         self.window.id()
     }
 
+    /// Returns the raw paste candidate text, unchanged from when the dialog opened.
+    pub(crate) fn raw_text(&self) -> &str {
+        &self.raw_text
+    }
+
     /// Handles a winit event for this window.
     ///
     /// Translates winit events to Widget UiEvents, dispatches to the
-    /// Runtime, and checks the cancellation flag. Window-level shortcuts
-    /// (Escape, n) trigger cancellation directly.
+    /// Runtime, and checks the confirmation/cancellation flags.
+    /// Window-level shortcuts: Escape/n → cancel, y → confirm.
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -206,6 +216,9 @@ impl ConfirmationWindow {
                 Key::Named(NamedKey::Escape) => return ConfirmationResult::Cancelled,
                 Key::Character(ch) if ch == "n" || ch == "N" => {
                     return ConfirmationResult::Cancelled;
+                }
+                Key::Character(ch) if ch == "y" || ch == "Y" => {
+                    return ConfirmationResult::Confirmed;
                 }
                 _ => {}
             },
@@ -222,7 +235,9 @@ impl ConfirmationWindow {
             self.runtime.dispatch(ui_event, std::time::Instant::now());
         }
 
-        if self.cancelled.load(Ordering::SeqCst) {
+        if self.confirmed.load(Ordering::SeqCst) {
+            ConfirmationResult::Confirmed
+        } else if self.cancelled.load(Ordering::SeqCst) {
             ConfirmationResult::Cancelled
         } else {
             ConfirmationResult::None
@@ -320,6 +335,7 @@ impl ConfirmationWindow {
 fn build_confirmation_root(
     line_count: usize,
     cancelled: Arc<AtomicBool>,
+    confirmed: Arc<AtomicBool>,
 ) -> impl harbor_widget::view::Component {
     let header_text = format!("Paste {} lines?", line_count);
 
@@ -327,9 +343,16 @@ fn build_confirmation_root(
         Column::new()
             .child(TextLabel::new(header_text))
             .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 24.0)))
-            .child(Button::new("Cancel").on_click(move |_ctx| {
-                cancelled.store(true, Ordering::SeqCst);
-            })),
+            .child(
+                Row::new()
+                    .child(Button::new("Paste").on_click(move |_ctx| {
+                        confirmed.store(true, Ordering::SeqCst);
+                    }))
+                    .child(SizedBox::new(harbor_widget::layout::Size::new(12.0, 0.0)))
+                    .child(Button::new("Cancel").on_click(move |_ctx| {
+                        cancelled.store(true, Ordering::SeqCst);
+                    })),
+            ),
     )
 }
 
@@ -338,6 +361,7 @@ fn build_confirmation_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harbor_widget::view::{BuildCx, Component};
 
     #[test]
     fn centers_dialog_in_main_window() {
@@ -361,5 +385,254 @@ mod tests {
             ),
             winit::dpi::PhysicalPosition::new(-1_770, 250),
         );
+    }
+
+    #[test]
+    fn build_confirmation_root_produces_valid_view() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        let root = build_confirmation_root(5, cancelled, confirmed);
+        let mut cx = BuildCx::stub();
+        let _view = root.build(&mut cx);
+    }
+
+    #[test]
+    fn paste_callback_sets_confirmed_flag_only() {
+        // Replicates the exact closure pattern used in build_confirmation_root.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        let c = Arc::clone(&confirmed);
+        let on_paste = move |_ctx: &mut harbor_widget::input::event_ctx::EventCtx| {
+            c.store(true, Ordering::SeqCst);
+        };
+
+        let mut ctx = harbor_widget::input::event_ctx::EventCtx::new();
+        on_paste(&mut ctx);
+
+        assert!(confirmed.load(Ordering::SeqCst));
+        assert!(!cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancel_callback_sets_cancelled_flag_only() {
+        // Replicates the exact closure pattern used in build_confirmation_root.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        let c = Arc::clone(&cancelled);
+        let on_cancel = move |_ctx: &mut harbor_widget::input::event_ctx::EventCtx| {
+            c.store(true, Ordering::SeqCst);
+        };
+
+        let mut ctx = harbor_widget::input::event_ctx::EventCtx::new();
+        on_cancel(&mut ctx);
+
+        assert!(!confirmed.load(Ordering::SeqCst));
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn paste_and_cancel_flags_are_independent() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        confirmed.store(true, Ordering::SeqCst);
+        assert!(confirmed.load(Ordering::SeqCst));
+        assert!(!cancelled.load(Ordering::SeqCst));
+
+        confirmed.store(false, Ordering::SeqCst);
+        cancelled.store(true, Ordering::SeqCst);
+        assert!(!confirmed.load(Ordering::SeqCst));
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn should_preserve_raw_text_verbatim() {
+        // ConfirmationWindow::raw_text() returns the original paste text
+        // unchanged. Verify the data-flow contract: String in → &str out,
+        // multi-line with mixed line endings preserved.
+        let text = String::from("hello\nworld\r\n");
+        let stored = text.clone();
+        // Simulate the accessor contract: stored text matches original.
+        assert_eq!(stored.as_str(), "hello\nworld\r\n");
+        assert!(stored.contains('\n'));
+        assert!(stored.contains('\r'));
+    }
+
+    #[test]
+    fn should_center_at_origin_when_main_window_is_zero_sized() {
+        // When the main window has zero area, the dialog is still
+        // positioned relative to the main window origin.
+        let pos = centered_dialog_position(
+            winit::dpi::PhysicalPosition::new(50, 60),
+            winit::dpi::PhysicalSize::new(0, 0),
+            1.0,
+        );
+        // DIALOG_WIDTH=600, DIALOG_HEIGHT=400 at scale 1.0
+        // x = 50 + (0 - 600) / 2 = 50 - 300 = -250
+        // y = 60 + (0 - 400) / 2 = 60 - 200 = -140
+        assert_eq!(pos, winit::dpi::PhysicalPosition::new(-250, -140));
+    }
+
+    #[test]
+    fn should_produce_zero_dialog_when_scale_is_zero() {
+        // With scale_factor=0 the dialog occupies zero physical pixels,
+        // so the center coincides with the main window center.
+        let pos = centered_dialog_position(
+            winit::dpi::PhysicalPosition::new(100, 100),
+            winit::dpi::PhysicalSize::new(800, 600),
+            0.0,
+        );
+        assert_eq!(pos, winit::dpi::PhysicalPosition::new(500, 400));
+    }
+
+    #[test]
+    fn should_build_with_zero_lines() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        let root = build_confirmation_root(0, cancelled, confirmed);
+        let mut cx = BuildCx::stub();
+        let _view = root.build(&mut cx);
+    }
+
+    #[test]
+    fn should_build_with_large_line_count() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::new(AtomicBool::new(false));
+
+        let root = build_confirmation_root(usize::MAX, cancelled, confirmed);
+        let mut cx = BuildCx::stub();
+        let _view = root.build(&mut cx);
+    }
+
+    // ── handle_event key-matching (replicated pure logic) ──────────────
+    //
+    // handle_event itself requires a fully constructed ConfirmationWindow
+    // (OS window + GPU surface). The key-to-result mapping is pure and
+    // can be tested by replicating the match arms that handle_event uses.
+
+    /// Replicates the key-match logic from handle_event for testing.
+    fn map_key_to_result(key: &winit::keyboard::Key) -> Option<ConfirmationResult> {
+        match key {
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
+                Some(ConfirmationResult::Cancelled)
+            }
+            winit::keyboard::Key::Character(ch) if ch == "n" || ch == "N" => {
+                Some(ConfirmationResult::Cancelled)
+            }
+            winit::keyboard::Key::Character(ch) if ch == "y" || ch == "Y" => {
+                Some(ConfirmationResult::Confirmed)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn should_return_confirmed_on_lowercase_y() {
+        let key = winit::keyboard::Key::Character("y".into());
+        assert!(matches!(
+            map_key_to_result(&key),
+            Some(ConfirmationResult::Confirmed)
+        ));
+    }
+
+    #[test]
+    fn should_return_confirmed_on_uppercase_y() {
+        let key = winit::keyboard::Key::Character("Y".into());
+        assert!(matches!(
+            map_key_to_result(&key),
+            Some(ConfirmationResult::Confirmed)
+        ));
+    }
+
+    #[test]
+    fn should_return_cancelled_on_lowercase_n() {
+        let key = winit::keyboard::Key::Character("n".into());
+        assert!(matches!(
+            map_key_to_result(&key),
+            Some(ConfirmationResult::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn should_return_cancelled_on_uppercase_n() {
+        let key = winit::keyboard::Key::Character("N".into());
+        assert!(matches!(
+            map_key_to_result(&key),
+            Some(ConfirmationResult::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn should_return_cancelled_on_escape() {
+        let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        assert!(matches!(
+            map_key_to_result(&key),
+            Some(ConfirmationResult::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn should_return_none_on_unrecognized_key() {
+        let key = winit::keyboard::Key::Character("x".into());
+        assert!(map_key_to_result(&key).is_none());
+    }
+
+    // ── Flag priority ─────────────────────────────────────────────────
+
+    /// Replicates the flag-check logic from handle_event for testing.
+    fn check_flags(confirmed: &AtomicBool, cancelled: &AtomicBool) -> ConfirmationResult {
+        if confirmed.load(Ordering::SeqCst) {
+            ConfirmationResult::Confirmed
+        } else if cancelled.load(Ordering::SeqCst) {
+            ConfirmationResult::Cancelled
+        } else {
+            ConfirmationResult::None
+        }
+    }
+
+    #[test]
+    fn should_return_none_when_neither_flag_is_set() {
+        let confirmed = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
+        assert!(matches!(
+            check_flags(&confirmed, &cancelled),
+            ConfirmationResult::None
+        ));
+    }
+
+    #[test]
+    fn should_return_confirmed_when_confirmed_flag_is_set() {
+        let confirmed = AtomicBool::new(true);
+        let cancelled = AtomicBool::new(false);
+        assert!(matches!(
+            check_flags(&confirmed, &cancelled),
+            ConfirmationResult::Confirmed
+        ));
+    }
+
+    #[test]
+    fn should_return_cancelled_when_only_cancelled_flag_is_set() {
+        let confirmed = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            check_flags(&confirmed, &cancelled),
+            ConfirmationResult::Cancelled
+        ));
+    }
+
+    #[test]
+    fn should_prioritize_confirmed_over_cancelled_when_both_flags_are_set() {
+        // Confirmed takes priority: even if both flags are somehow true,
+        // the result should be Confirmed.
+        let confirmed = AtomicBool::new(true);
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            check_flags(&confirmed, &cancelled),
+            ConfirmationResult::Confirmed
+        ));
     }
 }

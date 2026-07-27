@@ -5,9 +5,7 @@ use harbor_render::{
     InteractionResult, Scrollbar, Selection, Text, TextMetrics, WaitResult,
 };
 use harbor_terminal::TerminalSize;
-use harbor_types::{
-    CopySelectionResult, DirtyRange, TerminalSnapshot, TerminalUpdate, UpdateDamage,
-};
+use harbor_types::{CopySelectionResult, DirtyRange, TerminalSnapshot, UpdateDamage};
 use winit::keyboard::ModifiersState;
 
 /// Container for all UI components. Owns GPU resources and delegates
@@ -62,11 +60,6 @@ impl UiRoot {
         self.text.glyph(ch)
     }
 
-    /// The text render pipeline.
-    pub(crate) fn text_pipeline(&self) -> &wgpu::RenderPipeline {
-        self.text.text_pipeline()
-    }
-
     /// The bind group holding the glyph atlas texture and sampler.
     pub(crate) fn text_bind_group(&self) -> &wgpu::BindGroup {
         self.text.text_bind_group()
@@ -93,12 +86,6 @@ impl UiRoot {
             || self.decoration.is_dirty()
             || self.selection.is_dirty()
             || self.cursor.is_dirty()
-    }
-
-    /// Applies a complete revisioned update. A revision gap's `FullUpload`
-    /// cannot be reduced to the update's local dirty ranges.
-    pub(crate) fn prepare_update(&mut self, gpu: &GpuContext, update: &TerminalUpdate) {
-        self.prepare_update_damage(gpu, &update.snapshot, &update.damage);
     }
 
     pub(crate) fn prepare_update_damage(
@@ -152,20 +139,10 @@ impl UiRoot {
         self.scrollbar.draw(pass);
     }
 
-    /// Called when the window surface is resized. Forwards to all components
-    /// so they can mark their GPU resources as needing re-upload.
-    pub(crate) fn resize(&mut self, gpu: &GpuContext, size: (u32, u32)) {
-        Component::resize(&mut self.background, gpu, size);
-        Component::resize(&mut self.text, gpu, size);
-        Component::resize(&mut self.decoration, gpu, size);
-        Component::resize(&mut self.selection, gpu, size);
-        Component::resize(&mut self.cursor, gpu, size);
-        Component::resize(&mut self.scrollbar, gpu, size);
-    }
-
     pub(crate) fn apply_copy_result(&mut self, result: CopySelectionResult) -> bool {
         self.selection.apply_copy_result(result)
     }
+
     pub(crate) fn set_copy_pending(&mut self, request_id: u64) {
         self.selection.set_copy_pending(request_id);
     }

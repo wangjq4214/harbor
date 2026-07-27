@@ -204,6 +204,7 @@ where
         notifier();
     }
 }
+
 fn worker_main(
     size: TerminalSize,
     start_pty: bool,
@@ -868,26 +869,6 @@ mod tests {
         assert!(sender.join().unwrap().is_err());
     }
 
-    fn worker_input_encoding_uses_authoritative_modes() {
-        let request = harbor_types::InputRequest {
-            key: harbor_types::InputKey::ArrowUp,
-            text: None,
-            modifiers: harbor_types::InputModifiers::default(),
-            is_numpad: false,
-        };
-        assert_eq!(
-            encode_input(
-                &request,
-                harbor_types::InputModes {
-                    application_cursor: true,
-                    ..Default::default()
-                }
-            )
-            .as_deref(),
-            Some(b"\x1bOA".as_slice())
-        );
-    }
-
     #[test]
     fn worker_copy_selection_returns_async_result() {
         let mut terminal = Terminal::new(1, 4);
@@ -1201,7 +1182,7 @@ mod tests {
             m.insert(ModifiersState::CONTROL);
 
             let req = InputEncoder::request(&logical_key, text, m, false).unwrap();
-            assert_eq!(req.modifiers.control(), true);
+            assert!(req.modifiers.control());
             assert_eq!(
                 encode_input(&req, modes).as_deref(),
                 Some(b"\x03".as_slice())

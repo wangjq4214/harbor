@@ -218,8 +218,15 @@ impl ApplicationHandler<AppEvent> for App {
                     .map(|window| window.scale_factor() as f32)
                     .unwrap_or(1.0);
                 match confirmation.handle_event(&event, scale) {
-                    confirmation::ConfirmationResult::Cancelled
-                    | confirmation::ConfirmationResult::Confirmed => {
+                    confirmation::ConfirmationResult::Cancelled => {
+                        self.request_redraw(RedrawReason::Input);
+                        return;
+                    }
+                    confirmation::ConfirmationResult::Confirmed => {
+                        let raw_text = confirmation.raw_text().to_owned();
+                        if let Some(worker) = self.session.worker.as_ref() {
+                            let _ = worker.send(harbor_types::TerminalCommand::PasteText(raw_text));
+                        }
                         self.request_redraw(RedrawReason::Input);
                         return;
                     }
@@ -322,7 +329,7 @@ impl ApplicationHandler<AppEvent> for App {
                 let metrics = *ui.text_metrics();
                 harbor_widget::text::set_current_metrics(metrics);
                 self.runtime.confirmation_window = Some(ConfirmationWindow::new(
-                    raw_text,
+                    raw_text.clone(),
                     event_loop,
                     gpu,
                     metrics,
