@@ -1,25 +1,25 @@
 //! Streaming VT/ANSI parser core — zero dependencies.
 //!
 //! The parser is a pure byte state machine that emits recognized control
-//! sequences into a [`Perform`] sink. It knows nothing about terminal screens,
+//! sequences into a [`VtHandler`] sink. It knows nothing about terminal screens,
 //! rendering, or I/O.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use harbor_parser::{Parser, Perform, Params};
+//! use harbor_parser::{Params, Parser, VtHandler};
 //!
 //! struct MyHandler;
-//! impl Perform for MyHandler {
+//! impl VtHandler for MyHandler {
 //!     fn print(&mut self, ch: char) { /* … */ }
 //!     fn execute(&mut self, byte: u8) { /* … */ }
 //!     // … remaining methods
-//!     # fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: Option<u8>, _: u8) {}
-//!     # fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
+//!     # fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: u8, _: bool) {}
+//!     # fn esc_dispatch(&mut self, _: &[u8], _: u8) {}
 //!     # fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
-//!     # fn hook(&mut self, _: &Params, _: &[u8], _: bool, _: u8) {}
-//!     # fn put(&mut self, _: u8) {}
-//!     # fn unhook(&mut self) {}
+//!     # fn dcs_hook(&mut self, _: &Params, _: &[u8], _: u8) {}
+//!     # fn dcs_put(&mut self, _: u8) {}
+//!     # fn dcs_unhook(&mut self) {}
 //!     # fn start_string(&mut self, _: u8) {}
 //! }
 //!
@@ -30,10 +30,10 @@
 //! }
 //! ```
 
-pub mod core;
-pub mod params;
-pub mod perform;
+mod core;
+mod params;
+mod perform;
 
 pub use core::Parser;
-pub use params::{CsiAccumulator, Param, Params, Utf8State};
-pub use perform::Perform;
+pub use params::Params;
+pub use perform::VtHandler;

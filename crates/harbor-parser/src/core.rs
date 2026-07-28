@@ -1,7 +1,7 @@
-//! Byte state machine. No `Screen` dependency — emits into `Perform`.
+//! Byte state machine. No `Screen` dependency — emits into `VtHandler`.
 
 use crate::params::{CsiAccumulator, MAX_OSC_BYTES, MAX_STRING_BYTES, Utf8State};
-use crate::perform::Perform;
+use crate::perform::VtHandler;
 
 /// High-level ANSI/VT parser states for incremental parsing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,26 +63,26 @@ impl Default for Parser {
 }
 
 impl Parser {
-    /// Advances the state machine by one byte, emitting actions into `performer`.
-    pub fn advance<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    /// Advances the state machine by one byte, emitting actions into `handler`.
+    pub fn advance<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match self.state {
-            State::Ground => self.ground(performer, byte),
-            State::Escape => self.escape(performer, byte),
-            State::EscapeIntermediate => self.escape_intermediate(performer, byte),
-            State::CsiEntry => self.csi_entry(performer, byte),
-            State::CsiParam => self.csi_param(performer, byte),
-            State::CsiIntermediate => self.csi_intermediate(performer, byte),
-            State::CsiIgnore => self.csi_ignore(performer, byte),
-            State::OscString => self.osc_string(performer, byte),
-            State::OscStringEscape => self.osc_string_escape(performer, byte),
-            State::DcsEntry => self.dcs_entry(performer, byte),
-            State::DcsParam => self.dcs_param(performer, byte),
-            State::DcsIntermediate => self.dcs_intermediate(performer, byte),
-            State::DcsPassthrough => self.dcs_passthrough(performer, byte),
-            State::DcsIgnore => self.dcs_ignore(performer, byte),
-            State::DcsEscape => self.dcs_escape(performer, byte),
-            State::SosPmApcString => self.sos_pm_apc_string(performer, byte),
-            State::SosPmApcEscape => self.sos_pm_apc_escape(performer, byte),
+            State::Ground => self.ground(handler, byte),
+            State::Escape => self.escape(handler, byte),
+            State::EscapeIntermediate => self.escape_intermediate(handler, byte),
+            State::CsiEntry => self.csi_entry(handler, byte),
+            State::CsiParam => self.csi_param(handler, byte),
+            State::CsiIntermediate => self.csi_intermediate(handler, byte),
+            State::CsiIgnore => self.csi_ignore(handler, byte),
+            State::OscString => self.osc_string(handler, byte),
+            State::OscStringEscape => self.osc_string_escape(handler, byte),
+            State::DcsEntry => self.dcs_entry(handler, byte),
+            State::DcsParam => self.dcs_param(handler, byte),
+            State::DcsIntermediate => self.dcs_intermediate(handler, byte),
+            State::DcsPassthrough => self.dcs_passthrough(handler, byte),
+            State::DcsIgnore => self.dcs_ignore(handler, byte),
+            State::DcsEscape => self.dcs_escape(handler, byte),
+            State::SosPmApcString => self.sos_pm_apc_string(handler, byte),
+            State::SosPmApcEscape => self.sos_pm_apc_escape(handler, byte),
         }
     }
 
@@ -91,7 +91,7 @@ impl Parser {
         self.c1_enabled = enabled;
     }
 
-    fn handle_c1<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn handle_c1<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x9b => {
                 // CSI
@@ -113,7 +113,7 @@ impl Parser {
             0x98 | 0x9e | 0x9f => {
                 // SOS / PM / APC
                 self.clear_string();
-                performer.start_string(byte - 0x40);
+                handler.start_string(byte - 0x40);
                 self.hooked = true;
                 self.state = State::SosPmApcString;
             }
@@ -123,7 +123,7 @@ impl Parser {
             }
             _ => {
                 let final_char = byte - 0x40;
-                performer.esc_dispatch(&[], false, final_char);
+                handler.esc_dispatch(&[], final_char);
                 self.enter_ground();
             }
         }
@@ -144,10 +144,10 @@ impl Parser {
         self.dcs_ignoring = false;
     }
 
-    /// End a hooked string sequence, calling `unhook` only if a hook is active.
-    fn end_hooked<P: Perform>(&mut self, performer: &mut P) {
+    /// End a hooked string sequence, calling `dcs_unhook` only if a hook is active.
+    fn end_hooked<H: VtHandler>(&mut self, handler: &mut H) {
         if self.hooked {
-            performer.unhook();
+            handler.dcs_unhook();
             self.hooked = false;
         }
         self.string_len = 0;
@@ -162,29 +162,29 @@ impl Parser {
 
     // ── Ground ───────────────────────────────────────────────────────────
 
-    fn ground<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn ground<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x1b => {
                 self.state = State::Escape;
             }
-            0x00..=0x1f => performer.execute(byte),
+            0x00..=0x1f => handler.execute(byte),
             0x7f => {} // DEL: ignore
             0x20..=0x7e => {
                 if self.utf8.len > 0 {
-                    self.write_replacement(performer);
+                    self.write_replacement(handler);
                 }
-                performer.print(byte as char);
+                handler.print(byte as char);
             }
             0x80..=0x9f if self.c1_enabled && self.utf8.len == 0 => {
-                self.handle_c1(performer, byte);
+                self.handle_c1(handler, byte);
             }
-            _ => self.put_utf8_byte(performer, byte),
+            _ => self.put_utf8_byte(handler, byte),
         }
     }
 
     // ── Escape ───────────────────────────────────────────────────────────
 
-    fn escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             b'[' => {
                 self.clear_csi();
@@ -202,7 +202,7 @@ impl Parser {
             }
             b'X' | b'^' | b'_' => {
                 self.clear_string();
-                performer.start_string(byte);
+                handler.start_string(byte);
                 self.hooked = true;
                 self.state = State::SosPmApcString;
             }
@@ -215,17 +215,17 @@ impl Parser {
             0x1b => self.state = State::Escape,
             0x00..=0x1f => {
                 // C0 executes but leaves the parser in Escape (historical behavior).
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {
                 // Final byte (including known c/D/E/M/7/8 and unknown).
-                performer.esc_dispatch(&[], false, byte);
+                handler.esc_dispatch(&[], byte);
                 self.enter_ground();
             }
         }
     }
 
-    fn escape_intermediate<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn escape_intermediate<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
@@ -239,12 +239,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {
                 let intermediates = self.csi.intermediates().to_vec();
-                let ignore = self.csi.malformed();
-                performer.esc_dispatch(&intermediates, ignore, byte);
+                if !self.csi.malformed() {
+                    handler.esc_dispatch(&intermediates, byte);
+                }
                 self.clear_csi();
                 self.enter_ground();
             }
@@ -253,7 +254,7 @@ impl Parser {
 
     // ── CSI ──────────────────────────────────────────────────────────────
 
-    fn csi_entry<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn csi_entry<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x3c..=0x3f => {
                 self.csi.set_private(byte);
@@ -275,7 +276,7 @@ impl Parser {
                 self.csi.push_intermediate(byte);
                 self.state = State::CsiIntermediate;
             }
-            0x40..=0x7e => self.csi_dispatch_final(performer, byte),
+            0x40..=0x7e => self.csi_dispatch_final(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.enter_ground();
@@ -285,13 +286,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn csi_param<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn csi_param<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x3c..=0x3f => self.csi.set_private(byte),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
@@ -301,7 +302,7 @@ impl Parser {
                 self.csi.push_intermediate(byte);
                 self.state = State::CsiIntermediate;
             }
-            0x40..=0x7e => self.csi_dispatch_final(performer, byte),
+            0x40..=0x7e => self.csi_dispatch_final(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.enter_ground();
@@ -311,13 +312,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn csi_intermediate<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn csi_intermediate<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
@@ -327,7 +328,7 @@ impl Parser {
                 self.csi.set_malformed();
                 self.state = State::CsiIgnore;
             }
-            0x40..=0x7e => self.csi_dispatch_final(performer, byte),
+            0x40..=0x7e => self.csi_dispatch_final(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.enter_ground();
@@ -337,13 +338,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn csi_ignore<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn csi_ignore<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x40..=0x7e => {
                 // Consume final without side effects (malformed path).
@@ -359,20 +360,24 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn csi_dispatch_final<P: Perform>(&mut self, performer: &mut P, action: u8) {
+    fn csi_dispatch_final<H: VtHandler>(&mut self, handler: &mut H, action: u8) {
         self.csi.finalize_params();
         let params = self.csi.params();
         let intermediates = self.csi.intermediates().to_vec();
         let private_marker = self.csi.private_marker();
         let malformed = self.csi.malformed();
         if !malformed {
-            performer.csi_dispatch(&params, &intermediates, private_marker, action);
+            match private_marker {
+                None => handler.csi_dispatch(&params, &intermediates, action, false),
+                Some(b'?') => handler.csi_dispatch(&params, &intermediates, action, true),
+                Some(_) => {}
+            }
         }
         self.clear_csi();
         self.enter_ground();
@@ -380,10 +385,10 @@ impl Parser {
 
     // ── OSC ──────────────────────────────────────────────────────────────
 
-    fn osc_string<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn osc_string<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x07 => {
-                self.finish_osc(performer, true);
+                self.finish_osc(handler, true);
             }
             0x18 | 0x1a => {
                 // Abort without dispatch.
@@ -392,16 +397,16 @@ impl Parser {
             }
             0x1b => self.state = State::OscStringEscape,
             0x9c if self.c1_enabled => {
-                self.finish_osc(performer, false);
+                self.finish_osc(handler, false);
             }
             _ => self.push_osc_byte(byte),
         }
     }
 
-    fn osc_string_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn osc_string_escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
-            b'\\' => self.finish_osc(performer, false),
-            0x9c if self.c1_enabled => self.finish_osc(performer, false),
+            b'\\' => self.finish_osc(handler, false),
+            0x9c if self.c1_enabled => self.finish_osc(handler, false),
             0x18 | 0x1a => {
                 self.clear_osc();
                 self.enter_ground();
@@ -424,7 +429,7 @@ impl Parser {
         }
     }
 
-    fn finish_osc<P: Perform>(&mut self, performer: &mut P, bell_terminated: bool) {
+    fn finish_osc<H: VtHandler>(&mut self, handler: &mut H, bell_terminated: bool) {
         if !self.osc_overflow {
             // Split on ';' for param slices without allocation of owned strings.
             let parts: Vec<&[u8]> = if self.osc.is_empty() {
@@ -432,7 +437,7 @@ impl Parser {
             } else {
                 self.osc.split(|b| *b == b';').collect()
             };
-            performer.osc_dispatch(&parts, bell_terminated);
+            handler.osc_dispatch(&parts, bell_terminated);
         }
         self.clear_osc();
         self.enter_ground();
@@ -440,7 +445,7 @@ impl Parser {
 
     // ── DCS ──────────────────────────────────────────────────────────────
 
-    fn dcs_entry<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_entry<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x3c..=0x3f => {
                 self.csi.set_private(byte);
@@ -462,7 +467,7 @@ impl Parser {
                 self.csi.push_intermediate(byte);
                 self.state = State::DcsIntermediate;
             }
-            0x40..=0x7e => self.dcs_hook(performer, byte),
+            0x40..=0x7e => self.dcs_hook(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.clear_string();
@@ -474,13 +479,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn dcs_param<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_param<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x3c..=0x3f => self.csi.set_private(byte),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
@@ -490,7 +495,7 @@ impl Parser {
                 self.csi.push_intermediate(byte);
                 self.state = State::DcsIntermediate;
             }
-            0x40..=0x7e => self.dcs_hook(performer, byte),
+            0x40..=0x7e => self.dcs_hook(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.clear_string();
@@ -502,13 +507,13 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn dcs_intermediate<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_intermediate<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
@@ -518,7 +523,7 @@ impl Parser {
                 self.dcs_ignoring = true;
                 self.state = State::DcsIgnore;
             }
-            0x40..=0x7e => self.dcs_hook(performer, byte),
+            0x40..=0x7e => self.dcs_hook(handler, byte),
             0x18 | 0x1a => {
                 self.clear_csi();
                 self.clear_string();
@@ -530,49 +535,50 @@ impl Parser {
                 self.state = State::Escape;
             }
             0x00..=0x17 | 0x19 | 0x1c..=0x1f => {
-                performer.execute(byte);
+                handler.execute(byte);
             }
             _ => {}
         }
     }
 
-    fn dcs_hook<P: Perform>(&mut self, performer: &mut P, action: u8) {
+    fn dcs_hook<H: VtHandler>(&mut self, handler: &mut H, action: u8) {
         self.csi.finalize_params();
         let params = self.csi.params();
         let intermediates = self.csi.intermediates().to_vec();
         let ignore = self.csi.malformed();
-        performer.hook(&params, &intermediates, ignore, action);
-        self.hooked = true;
         self.clear_csi();
         if ignore {
+            self.hooked = false;
             self.dcs_ignoring = true;
             self.state = State::DcsIgnore;
         } else {
+            handler.dcs_hook(&params, &intermediates, action);
+            self.hooked = true;
             self.dcs_ignoring = false;
             self.state = State::DcsPassthrough;
         }
     }
 
-    fn dcs_passthrough<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_passthrough<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x18 | 0x1a => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x1b => self.state = State::DcsEscape,
             0x9c if self.c1_enabled => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
-            _ => self.put_string_byte(performer, byte),
+            _ => self.put_string_byte(handler, byte),
         }
     }
 
-    fn dcs_ignore<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_ignore<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x18 | 0x1a => {
                 // Only unhook if a hook lifecycle was started (final received).
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x1b => {
@@ -580,7 +586,7 @@ impl Parser {
                 self.state = State::DcsEscape;
             }
             0x9c if self.c1_enabled => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             _ => {
@@ -589,14 +595,14 @@ impl Parser {
         }
     }
 
-    fn dcs_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn dcs_escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x18 | 0x1a => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x1b => self.state = State::DcsEscape,
@@ -605,7 +611,7 @@ impl Parser {
                 if self.dcs_ignoring {
                     self.state = State::DcsIgnore;
                 } else {
-                    self.put_string_byte(performer, byte);
+                    self.put_string_byte(handler, byte);
                     self.state = State::DcsPassthrough;
                 }
             }
@@ -614,42 +620,42 @@ impl Parser {
 
     // ── SOS / PM / APC ───────────────────────────────────────────────────
 
-    fn sos_pm_apc_string<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn sos_pm_apc_string<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x18 | 0x1a => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x1b => self.state = State::SosPmApcEscape,
             0x9c if self.c1_enabled => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
-            _ => self.put_string_byte(performer, byte),
+            _ => self.put_string_byte(handler, byte),
         }
     }
 
-    fn sos_pm_apc_escape<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn sos_pm_apc_escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x18 | 0x1a => {
-                self.end_hooked(performer);
+                self.end_hooked(handler);
                 self.enter_ground();
             }
             0x1b => self.state = State::SosPmApcEscape,
             _ => {
-                self.put_string_byte(performer, byte);
+                self.put_string_byte(handler, byte);
                 self.state = State::SosPmApcString;
             }
         }
     }
 
-    fn put_string_byte<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn put_string_byte<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         if self.string_len < MAX_STRING_BYTES {
-            performer.put(byte);
+            handler.dcs_put(byte);
             self.string_len += 1;
         } else {
             self.string_overflow = true;
@@ -659,9 +665,9 @@ impl Parser {
 
     // ── UTF-8 ────────────────────────────────────────────────────────────
 
-    fn put_utf8_byte<P: Perform>(&mut self, performer: &mut P, byte: u8) {
+    fn put_utf8_byte<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         if self.utf8.len == self.utf8.bytes.len() {
-            self.write_replacement(performer);
+            self.write_replacement(handler);
         }
         self.utf8.bytes[self.utf8.len] = byte;
         self.utf8.len += 1;
@@ -669,18 +675,18 @@ impl Parser {
         match std::str::from_utf8(&self.utf8.bytes[..self.utf8.len]) {
             Ok(text) => {
                 if let Some(ch) = text.chars().next() {
-                    performer.print(ch);
+                    handler.print(ch);
                     self.utf8.reset();
                 }
             }
-            Err(error) if error.error_len().is_some() => self.write_replacement(performer),
-            Err(_) if self.utf8.len == self.utf8.bytes.len() => self.write_replacement(performer),
+            Err(error) if error.error_len().is_some() => self.write_replacement(handler),
+            Err(_) if self.utf8.len == self.utf8.bytes.len() => self.write_replacement(handler),
             Err(_) => {}
         }
     }
 
-    fn write_replacement<P: Perform>(&mut self, performer: &mut P) {
+    fn write_replacement<H: VtHandler>(&mut self, handler: &mut H) {
         self.utf8.reset();
-        performer.print('\u{fffd}');
+        handler.print('\u{fffd}');
     }
 }

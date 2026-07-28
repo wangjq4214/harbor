@@ -3,43 +3,32 @@
 use super::*;
 use crate::Terminal;
 use crate::screen::Screen;
-use harbor_parser::Parser;
-use harbor_parser::Perform;
-use harbor_parser::params::Params;
+use harbor_parser::{Params, Parser, VtHandler};
 
 #[derive(Default)]
 struct CsiRecorder {
-    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, u8)>,
+    dispatches: Vec<(bool, Vec<Option<usize>>, u8)>,
 }
 
-impl Perform for CsiRecorder {
+impl VtHandler for CsiRecorder {
     fn print(&mut self, _ch: char) {}
 
     fn execute(&mut self, _byte: u8) {}
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        _intermediates: &[u8],
-        private_marker: Option<u8>,
-        action: u8,
-    ) {
-        self.dispatches.push((
-            private_marker,
-            params.iter_flat().collect::<Vec<_>>(),
-            action,
-        ));
+    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], action: u8, private: bool) {
+        self.dispatches
+            .push((private, params.iter_flat().collect::<Vec<_>>(), action));
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _byte: u8) {}
 
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
 
-    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: u8) {}
+    fn dcs_hook(&mut self, _params: &Params, _intermediates: &[u8], _action: u8) {}
 
-    fn put(&mut self, _byte: u8) {}
+    fn dcs_put(&mut self, _byte: u8) {}
 
-    fn unhook(&mut self) {}
+    fn dcs_unhook(&mut self) {}
 
     fn start_string(&mut self, _kind: u8) {}
 }
@@ -361,7 +350,7 @@ fn string_cancellation() {
 }
 
 #[test]
-fn csi_dispatch_preserves_private_marker_identity_and_clears_state() {
+fn csi_dispatch_filters_non_dec_private_markers_and_clears_state() {
     let mut parser = Parser::default();
     let mut recorder = CsiRecorder::default();
 
@@ -379,12 +368,9 @@ fn csi_dispatch_preserves_private_marker_identity_and_clears_state() {
     assert_eq!(
         recorder.dispatches,
         vec![
-            (Some(b'>'), vec![Some(1)], b'm'),
-            (Some(b'?'), vec![Some(2)], b'm'),
-            (Some(b'<'), vec![Some(3)], b'm'),
-            (Some(b'='), vec![Some(4)], b'm'),
-            (None, vec![Some(5)], b'm'),
-            (None, vec![Some(6)], b'm'),
+            (true, vec![Some(2)], b'm'),
+            (false, vec![Some(5)], b'm'),
+            (false, vec![Some(6)], b'm'),
         ]
     );
 }

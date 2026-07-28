@@ -1,16 +1,16 @@
 //! Fixed-capacity CSI/string accumulators and limits.
 
-pub const MAX_PARAMS: usize = 16;
-pub const MAX_SUBPARAMS: usize = 8;
-pub const MAX_INTERMEDIATES: usize = 2;
-pub const MAX_CSI_PARAM: usize = 65535;
-pub const MAX_OSC_BYTES: usize = 4096;
-pub const MAX_STRING_BYTES: usize = 4096;
+pub(crate) const MAX_PARAMS: usize = 16;
+pub(crate) const MAX_SUBPARAMS: usize = 8;
+pub(crate) const MAX_INTERMEDIATES: usize = 2;
+pub(crate) const MAX_CSI_PARAM: usize = 65535;
+pub(crate) const MAX_OSC_BYTES: usize = 4096;
+pub(crate) const MAX_STRING_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Param {
-    pub values: [Option<usize>; MAX_SUBPARAMS],
-    pub len: usize,
+pub(crate) struct Param {
+    values: [Option<usize>; MAX_SUBPARAMS],
+    len: usize,
 }
 
 impl Default for Param {
@@ -23,7 +23,7 @@ impl Default for Param {
 }
 
 impl Param {
-    pub fn get(&self, index: usize) -> Option<usize> {
+    fn get(&self, index: usize) -> Option<usize> {
         self.values.get(index).and_then(|v| *v)
     }
 }
@@ -31,8 +31,8 @@ impl Param {
 /// Fixed CSI parameter list. Empty slots are preserved as `None` (e.g. `CSI ;3 H`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Params {
-    pub values: [Param; MAX_PARAMS],
-    pub len: usize,
+    values: [Param; MAX_PARAMS],
+    len: usize,
 }
 
 impl Params {
@@ -44,9 +44,20 @@ impl Params {
         }
     }
 
-    pub fn get_param(&self, index: usize) -> Option<&Param> {
+    /// Number of parameter slots, including empty slots.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Number of colon-separated sub-parameters in a parameter slot.
+    pub fn sub_params_len(&self, index: usize) -> Option<usize> {
+        (index < self.len).then(|| self.values[index].len)
+    }
+
+    /// Returns a colon-separated sub-parameter by slot and sub-parameter index.
+    pub fn get_sub_param(&self, index: usize, sub_index: usize) -> Option<usize> {
         if index < self.len {
-            Some(&self.values[index])
+            self.values[index].get(sub_index)
         } else {
             None
         }
@@ -83,7 +94,7 @@ impl From<&[Option<usize>]> for Params {
 
 /// Accumulator for CSI (and DCS introducer) parameters and intermediates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CsiAccumulator {
+pub(crate) struct CsiAccumulator {
     values: [Param; MAX_PARAMS],
     len: usize,
     /// Digits being accumulated for the current sub-parameter.
@@ -192,11 +203,11 @@ impl CsiAccumulator {
 
 /// Pending UTF-8 bytes for a possibly split multi-byte character.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Utf8State {
+pub(crate) struct Utf8State {
     /// Buffered UTF-8 bytes. Four bytes is the maximum length of one Unicode scalar value.
-    pub bytes: [u8; 4],
+    pub(crate) bytes: [u8; 4],
     /// Number of valid bytes currently stored in `bytes`.
-    pub len: usize,
+    pub(crate) len: usize,
 }
 
 impl Utf8State {

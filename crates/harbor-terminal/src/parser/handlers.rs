@@ -1,15 +1,14 @@
-//! Screen-backed `Perform` handler — all current execute/dispatch behavior.
+//! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
 use crate::screen::Screen;
-use harbor_parser::Perform;
-use harbor_parser::params::Params;
+use harbor_parser::{Params, VtHandler};
 
 /// Applies recognized VT actions to a `Screen`.
 pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
 }
 
-impl Perform for ScreenHandler<'_> {
+impl VtHandler for ScreenHandler<'_> {
     fn print(&mut self, ch: char) {
         self.screen.write_char(ch);
     }
@@ -27,30 +26,20 @@ impl Perform for ScreenHandler<'_> {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        intermediates: &[u8],
-        private_marker: Option<u8>,
-        action: u8,
-    ) {
-        if let Some(private_marker) = private_marker {
-            match (private_marker, action) {
-                (b'?', b'h' | b'l') => {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], action: u8, private: bool) {
+        if private {
+            match action {
+                b'h' | b'l' => {
                     let enabled = action == b'h';
                     for param in params.iter_flat().flatten() {
                         self.screen.set_private_mode(param, enabled);
                     }
                 }
-                (b'?', b'J') => {
-                    self.screen.selective_erase_display(params.get_or(0, 0));
-                }
-                (b'?', b'K') => {
-                    self.screen.selective_erase_line(params.get_or(0, 0));
-                }
+                b'J' => self.screen.selective_erase_display(params.get_or(0, 0)),
+                b'K' => self.screen.selective_erase_line(params.get_or(0, 0)),
                 _ => {
                     tracing::warn!(
-                        "unsupported private CSI sequence: marker=0x{private_marker:02x} params={:?} final=0x{action:02x}",
+                        "unsupported private CSI sequence: params={:?} final=0x{action:02x}",
                         params.iter_flat().collect::<Vec<_>>(),
                     );
                 }
@@ -73,21 +62,15 @@ impl Perform for ScreenHandler<'_> {
                     b'v' => self.screen.deccra(params),
                     b'r' => self.screen.deccara(params),
                     b't' => self.screen.decrara(params),
-                    _ => {
-                        tracing::warn!(
-                            "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
-                            intermediates,
-                            params.iter_flat().collect::<Vec<_>>(),
-                            action,
-                        );
-                    }
+                    _ => tracing::warn!(
+                        "unsupported CSI intermediates {intermediates:?}: params={:?} final=0x{action:02x}",
+                        params.iter_flat().collect::<Vec<_>>(),
+                    ),
                 }
             } else {
                 tracing::warn!(
-                    "unsupported CSI intermediates {:?}: params={:?} final=0x{:02x}",
-                    intermediates,
+                    "unsupported CSI intermediates {intermediates:?}: params={:?} final=0x{action:02x}",
                     params.iter_flat().collect::<Vec<_>>(),
-                    action,
                 );
             }
             return;
@@ -162,10 +145,7 @@ impl Perform for ScreenHandler<'_> {
         }
     }
 
-    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        if ignore {
-            return;
-        }
+    fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8) {
         if !intermediates.is_empty() {
             if intermediates == [b'('] {
                 self.screen.designate_g0(byte);
@@ -221,15 +201,15 @@ impl Perform for ScreenHandler<'_> {
         }
     }
 
-    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: u8) {
+    fn dcs_hook(&mut self, _params: &Params, _intermediates: &[u8], _action: u8) {
         tracing::trace!("DCS hook (no-op)");
     }
 
-    fn put(&mut self, _byte: u8) {
+    fn dcs_put(&mut self, _byte: u8) {
         // Consume-only: payload never reaches the screen.
     }
 
-    fn unhook(&mut self) {
+    fn dcs_unhook(&mut self) {
         tracing::trace!("DCS/string unhook (no-op)");
     }
 

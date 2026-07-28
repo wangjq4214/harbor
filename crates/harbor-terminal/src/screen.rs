@@ -1,6 +1,6 @@
 use crate::normal_buf::CellsIter;
 use crate::{DirtyRange, InputModes, NormalBuf};
-use harbor_parser::params::Params;
+use harbor_parser::Params;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -483,9 +483,11 @@ impl Screen {
     /// left unchanged.
     pub fn set_sgr(&mut self, params: &Params) {
         let mut i = 0usize;
-        while i < params.len {
-            let p = params.get_param(i).expect("index is bounded by params.len");
-            let n = p.get(0).unwrap_or_default();
+        while i < params.len() {
+            let sub_params_len = params
+                .sub_params_len(i)
+                .expect("index is bounded by params.len()");
+            let n = params.get_or(i, 0);
             match n {
                 0 => {
                     self.pen.fg = Color::Default;
@@ -514,11 +516,11 @@ impl Screen {
                 38 | 48 => {
                     let is_fg = n == 38;
                     // Check if this parameter has colon sub-parameters
-                    if p.len > 1 {
-                        let sub = p.get(1).unwrap_or_default();
+                    if sub_params_len > 1 {
+                        let sub = params.get_sub_param(i, 1).unwrap_or_default();
                         match sub {
                             5 => {
-                                if let Some(val) = p.get(2)
+                                if let Some(val) = params.get_sub_param(i, 2)
                                     && val <= 255
                                 {
                                     if is_fg {
@@ -529,11 +531,16 @@ impl Screen {
                                 }
                             }
                             2 => {
-                                let (r_idx, g_idx, b_idx) =
-                                    if p.len >= 6 { (3, 4, 5) } else { (2, 3, 4) };
-                                if let (Some(r), Some(g), Some(b)) =
-                                    (p.get(r_idx), p.get(g_idx), p.get(b_idx))
-                                    && r <= 255
+                                let (r_idx, g_idx, b_idx) = if sub_params_len >= 6 {
+                                    (3, 4, 5)
+                                } else {
+                                    (2, 3, 4)
+                                };
+                                if let (Some(r), Some(g), Some(b)) = (
+                                    params.get_sub_param(i, r_idx),
+                                    params.get_sub_param(i, g_idx),
+                                    params.get_sub_param(i, b_idx),
+                                ) && r <= 255
                                     && g <= 255
                                     && b <= 255
                                 {
@@ -548,17 +555,16 @@ impl Screen {
                         }
                     } else {
                         // Semicolon fallback: read subsequent parameters
-                        if i + 1 >= params.len {
+                        if i + 1 >= params.len() {
                             break;
                         }
-                        let next_p = &params.values[i + 1];
-                        let sub = next_p.get(0).unwrap_or_default();
+                        let sub = params.get_or(i + 1, 0);
                         match sub {
                             5 => {
-                                if i + 2 >= params.len {
+                                if i + 2 >= params.len() {
                                     break;
                                 }
-                                if let Some(val) = params.values[i + 2].get(0)
+                                if let Some(val) = params.get(i + 2)
                                     && val <= 255
                                 {
                                     if is_fg {
@@ -570,14 +576,12 @@ impl Screen {
                                 i += 2;
                             }
                             2 => {
-                                if i + 4 >= params.len {
+                                if i + 4 >= params.len() {
                                     break;
                                 }
-                                if let (Some(r), Some(g), Some(b)) = (
-                                    params.values[i + 2].get(0),
-                                    params.values[i + 3].get(0),
-                                    params.values[i + 4].get(0),
-                                ) && r <= 255
+                                if let (Some(r), Some(g), Some(b)) =
+                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                                    && r <= 255
                                     && g <= 255
                                     && b <= 255
                                 {
@@ -2115,10 +2119,8 @@ impl Screen {
             self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 let cell = self.normal.cell_mut(row, col);
-                for idx in 4..params.len {
-                    if let Some(code) = params.values[idx].get(0) {
-                        Self::apply_sgr_to_cell(cell, code);
-                    }
+                for code in params.iter_flat().skip(4).flatten() {
+                    Self::apply_sgr_to_cell(cell, code);
                 }
             }
         }
@@ -2157,10 +2159,8 @@ impl Screen {
             self.mark_range_dirty(row, l, r + 1);
             for col in l..=r {
                 let cell = self.normal.cell_mut(row, col);
-                for idx in 4..params.len {
-                    if let Some(code) = params.values[idx].get(0) {
-                        Self::toggle_sgr_on_cell(cell, code);
-                    }
+                for code in params.iter_flat().skip(4).flatten() {
+                    Self::toggle_sgr_on_cell(cell, code);
                 }
             }
         }
