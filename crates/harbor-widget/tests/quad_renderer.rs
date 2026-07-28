@@ -6,9 +6,14 @@
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::renderer::quad::QuadRenderer;
-use harbor_widget::scene::primitive::{Color, Primitive};
+use harbor_widget::runtime::Runtime;
+use harbor_widget::scene::primitive::{Color, ExternalDrawFn, Primitive};
 use harbor_widget::scene::{SceneDelta, SceneItem};
-use std::sync::atomic::{AtomicBool, Ordering};
+use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::stack::Stack;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 // ── GPU helpers ─────────────────────────────────────────────────────────────
 
@@ -440,6 +445,193 @@ fn should_invoke_external_draw_with_correct_rect_and_scissor() {
     encoder.finish();
 
     assert!(callback_called.load(Ordering::SeqCst));
+}
+
+#[test]
+fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: a Runtime whose root CustomPaint registers a handler.
+    let invoked_draw_id = Arc::new(AtomicU64::new(u64::MAX));
+    let observed_draw_id = Arc::clone(&invoked_draw_id);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+        observed_draw_id.store(draw_id, Ordering::SeqCst);
+    });
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+
+        // Act: encode the External primitive without supplying an external callback.
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    encoder.finish();
+
+    // Assert: Runtime resolved and invoked the handler registered during build.
+    assert_eq!(invoked_draw_id.load(Ordering::SeqCst), 42);
+}
+
+#[test]
+fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: two handlers retained by CustomPaint children built through Stack.
+    let first_draw_id = Arc::new(AtomicU64::new(u64::MAX));
+    let first_observed = Arc::clone(&first_draw_id);
+    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+        first_observed.store(draw_id, Ordering::SeqCst);
+    });
+    let second_draw_id = Arc::new(AtomicU64::new(u64::MAX));
+    let second_observed = Arc::clone(&second_draw_id);
+    let second_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+        second_observed.store(draw_id, Ordering::SeqCst);
+    });
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(CustomPaint::new(1).handler(first_handler))
+            .child(CustomPaint::new(2).handler(second_handler)),
+    );
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    encoder.finish();
+
+    // Assert: each External primitive resolves its matching retained handler.
+    assert_eq!(first_draw_id.load(Ordering::SeqCst), 1);
+    assert_eq!(second_draw_id.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: two CustomPaint children register distinct handlers for one draw ID.
+    let first_calls = Arc::new(AtomicU64::new(0));
+    let first_observed = Arc::clone(&first_calls);
+    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _| {
+        first_observed.fetch_add(1, Ordering::SeqCst);
+    });
+    let last_calls = Arc::new(AtomicU64::new(0));
+    let last_observed = Arc::clone(&last_calls);
+    let last_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _| {
+        last_observed.fetch_add(1, Ordering::SeqCst);
+    });
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(CustomPaint::new(42).handler(first_handler))
+            .child(CustomPaint::new(42).handler(last_handler)),
+    );
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    // Act: encode both External primitives sharing the same draw ID.
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    encoder.finish();
+
+    // Assert: HashMap registration semantics retain only the final handler.
+    assert_eq!(first_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(last_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn should_remove_handler_when_custom_paint_is_replaced() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: a Runtime with an initially registered CustomPaint handler.
+    let calls = Arc::new(AtomicU64::new(0));
+    let observed_calls = Arc::clone(&calls);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _| {
+        observed_calls.fetch_add(1, Ordering::SeqCst);
+    });
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    let mut initial_encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut initial_encoder);
+        runtime.encode(&queue, &mut pass, viewport.clone());
+    }
+    initial_encoder.finish();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Act: replace the CustomPaint with an unregistered instance using the same draw ID.
+    runtime.set_root(CustomPaint::new(42));
+    runtime.update(Instant::now());
+    let mut replacement_encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut replacement_encoder);
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    replacement_encoder.finish();
+
+    // Assert: the removed CustomPaint's handler is not retained across rebuilds.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn should_skip_external_primitive_when_custom_paint_has_no_handler() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: a Runtime whose CustomPaint has the default, handler-free configuration.
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(CustomPaint::new(42));
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+
+        // Act: encode the External primitive without a registered handler.
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+
+    // Assert: the unhandled External primitive is skipped without a validation error or panic.
+    encoder.finish();
 }
 
 #[test]

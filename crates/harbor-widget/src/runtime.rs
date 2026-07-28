@@ -9,13 +9,14 @@ use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
-use crate::scene::primitive::ExternalDrawFn;
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::PENDING_DIRTY;
 use crate::text::TextRunCache;
 use crate::view::{BuildCx, Component};
 use crate::widgets::text_label;
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 // ── FrameRequest ────────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ pub struct Runtime {
     text_run_cache: TextRunCache,
     pending_delta: Option<SceneDelta>,
     current_viewport: Option<Viewport>,
+    external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     input: InputState,
 }
 
@@ -83,6 +85,7 @@ impl Runtime {
             text_run_cache: TextRunCache::new(),
             pending_delta: None,
             current_viewport: None,
+            external_draws: HashMap::new(),
             input: InputState::new(),
         }
     }
@@ -154,9 +157,13 @@ impl Runtime {
             current_fiber: Some(root_id),
             hooks,
             hook_index: 0,
+            external_draws: Vec::new(),
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
+        view.register_child_external_draws(&mut cx);
+        self.external_draws.clear();
+        self.external_draws.extend(cx.external_draws.drain(..));
         let widget_type = view.widget_type();
         let key = view.key().cloned();
         let (inner, children, _explicit_key) = view.decompose();
@@ -226,13 +233,12 @@ impl Runtime {
     ///
     /// Processes Quad, Border, Text, and External primitives in paint order.
     /// Text primitives are rendered via the TextRenderer (if initialized).
-    /// External primitives invoke the callback between quad/text batches.
+    /// External primitives invoke their registered handlers between quad/text batches.
     pub fn encode<'a>(
         &'a mut self,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
-        external_draw: Option<&ExternalDrawFn<'_>>,
     ) {
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
@@ -249,7 +255,7 @@ impl Runtime {
 
         let raw_items = self.scene_graph.items();
 
-        let has_external = external_draw.is_some()
+        let has_external = !self.external_draws.is_empty()
             && raw_items.iter().any(|it| {
                 matches!(
                     it.primitive,
@@ -285,8 +291,8 @@ impl Runtime {
                         quad_range_end = 0;
                     }
 
-                    // Invoke external callback with scissor.
-                    if let Some(ref cb) = external_draw {
+                    // Invoke the registered external handler with scissor.
+                    if let Some(cb) = self.external_draws.get(draw) {
                         let phys_x = (rect.min.x * viewport.scale_factor) as u32;
                         let phys_y = (rect.min.y * viewport.scale_factor) as u32;
                         let phys_w =

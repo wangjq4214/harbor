@@ -117,9 +117,8 @@ impl DialogOverlay {
                 if matches!(event, WindowEvent::RedrawRequested)
                     && let (Some(gpu), Some(ui)) = (gpu, ui)
                 {
-                    confirmation.render(gpu.device(), gpu.queue(), &|ch| {
-                        ui.text_glyph(ch).copied()
-                    });
+                    confirmation
+                        .render(gpu.device(), gpu.queue(), &|ch| ui.text_glyph(ch).copied());
                 }
                 if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event
                     && let Some(gpu) = gpu
@@ -886,28 +885,17 @@ impl App {
                 multiview_mask: None,
             });
 
-            let terminal_ui: &UiRoot = ui;
             if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                 let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
                 let (physical_w, physical_h) = gpu.surface_size();
                 let viewport =
                     harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
-                let draw_terminal =
-                    |_id: harbor_widget::scene::primitive::ExternalDrawId,
-                     _rect: harbor_widget::layout::Rect,
-                     pass: &mut wgpu::RenderPass<'_>| {
-                        terminal_ui.draw(pass);
-                    };
-
-                widget_runtime.encode(
-                    gpu.queue(),
-                    &mut render_pass,
-                    viewport,
-                    Some(&draw_terminal),
-                );
-            } else {
-                terminal_ui.draw(&mut render_pass);
+                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
             }
+
+            // T0003 will register the terminal draw handler through CustomPaint.
+            // Until then, preserve the existing direct terminal draw path.
+            ui.draw(&mut render_pass);
         }
 
         let command_buffer = encoder.finish();

@@ -417,7 +417,7 @@ impl ConfirmationWindow {
                 physical_size.height,
                 scale,
             );
-            self.runtime.encode(queue, &mut pass, viewport, None);
+            self.runtime.encode(queue, &mut pass, viewport);
         }
 
         queue.submit(Some(encoder.finish()));

@@ -1,8 +1,9 @@
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{ExternalDrawId, Primitive};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use std::sync::Arc;
 
 /// A focusable widget that delegates painting to an externally-owned
 /// renderer identified by [`ExternalDrawId`].
@@ -13,6 +14,7 @@ use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 #[derive(Clone)]
 pub struct CustomPaint {
     pub draw_id: ExternalDrawId,
+    handler: Option<Arc<ExternalDrawFn<'static>>>,
     children: Vec<View>,
 }
 
@@ -20,8 +22,15 @@ impl CustomPaint {
     pub fn new(draw_id: ExternalDrawId) -> Self {
         CustomPaint {
             draw_id,
+            handler: None,
             children: vec![],
         }
+    }
+
+    /// Sets the renderer invoked for this widget's external primitive.
+    pub fn handler(mut self, handler: Arc<ExternalDrawFn<'static>>) -> Self {
+        self.handler = Some(handler);
+        self
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
@@ -32,7 +41,10 @@ impl CustomPaint {
 }
 
 impl Component for CustomPaint {
-    fn build(&self, _cx: &mut BuildCx) -> View {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        if let Some(handler) = &self.handler {
+            cx.register_external_draw(self.draw_id, Arc::clone(handler));
+        }
         View::new(self.clone(), self.children.clone(), None)
     }
 }
@@ -53,6 +65,12 @@ impl AnyView for CustomPaint {
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
         // Fill available space so the terminal occupies the full viewport.
         constraints.max
+    }
+
+    fn register_external_draws(&self, cx: &mut BuildCx) {
+        if let Some(handler) = &self.handler {
+            cx.register_external_draw(self.draw_id, Arc::clone(handler));
+        }
     }
 
     fn layout_children(
@@ -87,6 +105,7 @@ impl AnyView for CustomPaint {
 mod tests {
     use super::*;
     use crate::input::event::{Key, KeyboardEvent, Modifiers};
+    use std::sync::Arc;
 
     #[test]
     fn custom_paint_is_focusable() {
@@ -137,5 +156,34 @@ mod tests {
         let view = cp.build(&mut cx);
         let (_inner, children, _key) = view.decompose();
         assert!(children.is_empty());
+    }
+
+    #[test]
+    fn should_register_handler_when_custom_paint_is_built_with_one() {
+        // Arrange: a CustomPaint with a stable handler and real build context.
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _| {});
+        let custom_paint = CustomPaint::new(42).handler(Arc::clone(&handler));
+        let mut cx = BuildCx::stub();
+
+        // Act: build the component.
+        custom_paint.build(&mut cx);
+
+        // Assert: the handler is registered for the component's draw ID.
+        assert_eq!(cx.external_draws.len(), 1);
+        assert_eq!(cx.external_draws[0].0, 42);
+        assert!(Arc::ptr_eq(&cx.external_draws[0].1, &handler));
+    }
+
+    #[test]
+    fn should_not_register_handler_when_custom_paint_has_none() {
+        // Arrange: a CustomPaint using its default, handler-free configuration.
+        let custom_paint = CustomPaint::new(42);
+        let mut cx = BuildCx::stub();
+
+        // Act: build the component.
+        custom_paint.build(&mut cx);
+
+        // Assert: no external draw registration is produced.
+        assert!(cx.external_draws.is_empty());
     }
 }

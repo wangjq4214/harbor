@@ -2,7 +2,7 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::Primitive;
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
 use crate::signal::{Hook, Signal};
 use std::any::TypeId;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ pub struct BuildCx {
     pub(crate) current_fiber: Option<FiberId>,
     pub(crate) hooks: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
+    pub(crate) external_draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
 }
 
 impl BuildCx {
@@ -37,7 +38,17 @@ impl BuildCx {
             current_fiber: None,
             hooks: Vec::new(),
             hook_index: 0,
+            external_draws: Vec::new(),
         }
+    }
+
+    /// Registers an external draw handler for the current build.
+    pub fn register_external_draw(
+        &mut self,
+        id: ExternalDrawId,
+        handler: Arc<ExternalDrawFn<'static>>,
+    ) {
+        self.external_draws.push((id, handler));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -108,6 +119,9 @@ pub(crate) trait AnyView: 'static {
 
     /// Computes the intrinsic size given layout constraints.
     fn intrinsic_size(&self, constraints: BoxConstraints) -> Size;
+
+    /// Registers external draw handlers retained by this view.
+    fn register_external_draws(&self, _cx: &mut BuildCx) {}
 
     /// Computes the layout of this widget given child intrinsic sizes.
     /// Returns own size and child origins (relative to self).
@@ -193,6 +207,18 @@ impl View {
     /// Returns the TypeId of the widget that produced this view.
     pub fn widget_type(&self) -> TypeId {
         self.inner.widget_type()
+    }
+
+    /// Registers external draw handlers retained by descendant views.
+    pub(crate) fn register_child_external_draws(&self, cx: &mut BuildCx) {
+        for child in &self.children {
+            child.register_external_draws(cx);
+        }
+    }
+
+    fn register_external_draws(&self, cx: &mut BuildCx) {
+        self.inner.register_external_draws(cx);
+        self.register_child_external_draws(cx);
     }
 
     /// Consumes the View and returns its components.
@@ -309,6 +335,7 @@ mod tests {
             current_fiber: None,
             hooks,
             hook_index: 0,
+            external_draws: Vec::new(),
         };
 
         // First build: creates a new signal
@@ -321,6 +348,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
+            external_draws: Vec::new(),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -333,6 +361,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
+            external_draws: Vec::new(),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -349,6 +378,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
+            external_draws: Vec::new(),
         };
 
         // First build with u32
@@ -359,6 +389,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
+            external_draws: Vec::new(),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }
