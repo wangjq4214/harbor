@@ -194,3 +194,57 @@ Project domain concepts and terminology.
 - **Definition:** An App-owned policy that blocks terminal keyboard input and new paste requests while a Paste Confirmation Window exists.
 - **Relationships:**
   - belongs to Paste Confirmation Window
+
+## Terminal Domain
+
+### Terminal
+- **Definition:** A self-contained engine owning terminal screen state, VT parsing, wgpu-based rendering (text, cursor, background, scrollbar, selection), and PTY I/O. It does NOT own GpuContext, a window, or a wgpu Device — those are injected by CustomPaint at render time.
+- **Synonyms:** Terminal Engine
+- **Relationships:**
+  - contains Screen state
+  - contains Parser (from harbor-parser)
+  - wrapped by CustomPaint
+  - depends on wgpu, harbor-parser, harbor-text
+
+### CustomPaint
+- **Definition:** A widget that explicitly marks an "escape hatch" from the normal widget rendering path. It produces a `Primitive::External` with an `ExternalDrawId`, delegating actual rendering to an externally registered handler (e.g., Terminal). During `build()`, it registers its draw handler into `BuildCx` so the Runtime can call it during encode.
+- **Synonyms:** External Draw Widget
+- **Relationships:**
+  - produces Primitive::External
+  - registers ExternalDrawFn into Runtime via BuildCx
+  - wraps Terminal
+  - receives GpuContext externally for injection
+
+### ExternalDrawFn
+- **Definition:** A callback type `dyn Fn(ExternalDrawId, Rect, &mut RenderPass)` registered per `ExternalDrawId`, invoked by Runtime during encode for each `Primitive::External` encountered.
+- **Relationships:**
+  - stored in Runtime HashMap
+  - invoked by Runtime::encode
+
+### ExternalDrawId
+- **Definition:** A `u64` identifier linking a `CustomPaint` widget to its `ExternalDrawFn` handler in the Runtime.
+- **Synonyms:** Draw ID
+- **Relationships:**
+  - stored in CustomPaint
+  - key in Runtime handler map
+
+## Parser Domain
+
+### harbor-parser
+- **Definition:** A zero-dependency streaming VT/ANSI byte state machine crate. It exposes exactly three public items: `VtHandler` trait, `Params`, and `Parser`. All internal state (accumulator, UTF-8 decoder) is private.
+- **Synonyms:** VT Parser
+- **Relationships:**
+  - depends on nothing
+  - consumed by harbor-terminal
+
+### VtHandler
+- **Definition:** A trait with 9 callback methods (`print`, `execute`, `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `dcs_hook`, `dcs_put`, `dcs_unhook`, `string_start`) that receives fully-parsed VT actions from the Parser. Static dispatch via generics.
+- **Relationships:**
+  - implemented by harbor-terminal Screen handler
+  - called by Parser::advance
+
+### Params
+- **Definition:** An opaque container for CSI/DCS numeric parameters, supporting flat iteration and colon-separated sub-parameters. Internal representation is hidden.
+- **Relationships:**
+  - passed to VtHandler::csi_dispatch and VtHandler::dcs_hook
+  - produced by Parser

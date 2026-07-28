@@ -1,7 +1,7 @@
 # CustomPaint Input Provider
 
 **Status:** Superseded
-**Superseded by:** [0009-app-cross-window-input-gate.md](./0009-app-cross-window-input-gate.md)
+**Superseded by:** [0009-app-cross-window-input-gate.md](./0009-app-cross-window-input-gate.md), [spec-0002](../spec/0002-terminal-render-consolidation.md)
 **Date:** 2026-07-24
 
 ## Context
