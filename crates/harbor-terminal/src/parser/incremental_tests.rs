@@ -253,7 +253,7 @@ fn incomplete_csi_resumes_across_calls() {
 #[test]
 fn alt_screen_mid_batch_still_splits_via_terminal() {
     // Keep the existing Terminal-level contract green under the new parser.
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("before");
     // CSI ?1049h then text in one batch — Terminal::put_bytes must split.
     terminal.put_bytes(b"\x1b[?1049hAFTER");

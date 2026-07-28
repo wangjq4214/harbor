@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn build_vertices_returns_degenerate_when_no_scrollback() {
-        let term = Terminal::new(24, 80);
+        let term = Terminal::new_headless(24, 80);
         // scroll_count == 0 by default
         let vertices = build_vertices(&term.snapshot(), 800.0, 600.0);
         // All 6 vertices should be degenerate (position is [0, 0])
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn build_vertices_returns_non_degenerate_with_scrollback() {
-        let mut term = Terminal::new(24, 80);
+        let mut term = Terminal::new_headless(24, 80);
         // Write enough lines to create scrollback.
         for _ in 0..50 {
             term.put_bytes(b"hello world\n");

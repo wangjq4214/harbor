@@ -1,7 +1,7 @@
 # Terminal Render Consolidation
 
 **Spec ID:** 0002
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2025-07-28
 
 ## Requirement

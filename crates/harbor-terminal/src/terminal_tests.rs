@@ -2,12 +2,15 @@
 
 use crate::screen::CellAttrs;
 use crate::screen::Color;
-use crate::{InputModes, PasteDisposition, Terminal, safe_preview_line, should_confirm_multiline};
+use crate::{
+    InputModes, PasteDisposition, Terminal, TerminalSize, safe_preview_line,
+    should_confirm_multiline,
+};
 use std::borrow::Cow;
 
 #[test]
 fn writes_plain_characters_and_tracks_cursor() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_str("ab");
 
@@ -21,7 +24,7 @@ fn writes_plain_characters_and_tracks_cursor() {
 
 #[test]
 fn crlf_moves_to_next_row_start() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_str("a\r\nb");
 
@@ -35,7 +38,7 @@ fn crlf_moves_to_next_row_start() {
 
 #[test]
 fn carriage_return_overwrites_from_row_start() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("ab\rc");
 
@@ -48,7 +51,7 @@ fn carriage_return_overwrites_from_row_start() {
 
 #[test]
 fn backspace_is_non_destructive() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("ab\u{8}");
 
@@ -61,7 +64,7 @@ fn backspace_is_non_destructive() {
 
 #[test]
 fn backspace_erases_previous_cell() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("ab\u{8}c");
 
@@ -74,7 +77,7 @@ fn backspace_erases_previous_cell() {
 
 #[test]
 fn scrolls_when_writing_past_last_row() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_str("one\r\ntwo\r\nthr");
 
@@ -88,7 +91,7 @@ fn scrolls_when_writing_past_last_row() {
 
 #[test]
 fn resize_preserves_visible_cells_and_clamps_cursor() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
     terminal.put_str("abcdef");
 
     terminal.resize(1, 3);
@@ -103,7 +106,7 @@ fn resize_preserves_visible_cells_and_clamps_cursor() {
 
 #[test]
 fn resize_preserves_scrollback_viewport() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
     for line in ["A", "B", "C", "D"] {
         terminal.process_output(format!("{line}\r\n").as_bytes());
     }
@@ -121,7 +124,7 @@ fn resize_preserves_scrollback_viewport() {
 
 #[test]
 fn resize_zero_dimensions_uses_safe_terminal_size() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
     terminal.resize(0, 0);
 
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 1));
@@ -129,7 +132,7 @@ fn resize_zero_dimensions_uses_safe_terminal_size() {
 
 #[test]
 fn sgr_sets_fg_color_on_written_cells() {
-    let mut terminal = Terminal::new(1, 8);
+    let mut terminal = Terminal::new_headless(1, 8);
 
     terminal.put_bytes(b"a\x1b[31mb\x1b[0mc");
 
@@ -144,21 +147,21 @@ fn sgr_sets_fg_color_on_written_cells() {
 
 #[test]
 fn sgr_bold_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1ma");
     assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::BOLD));
 }
 
 #[test]
 fn sgr_dim_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[2ma");
     assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::DIM));
 }
 
 #[test]
 fn sgr_italic_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[3ma");
     assert!(
         terminal
@@ -171,7 +174,7 @@ fn sgr_italic_sets_attr() {
 
 #[test]
 fn sgr_underline_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[4ma");
     assert!(
         terminal
@@ -184,7 +187,7 @@ fn sgr_underline_sets_attr() {
 
 #[test]
 fn sgr_blink_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[5ma");
     assert!(
         terminal
@@ -197,7 +200,7 @@ fn sgr_blink_sets_attr() {
 
 #[test]
 fn sgr_inverse_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[7ma");
     assert!(
         terminal
@@ -210,7 +213,7 @@ fn sgr_inverse_sets_attr() {
 
 #[test]
 fn sgr_strikethrough_sets_attr() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[9ma");
     assert!(
         terminal
@@ -223,7 +226,7 @@ fn sgr_strikethrough_sets_attr() {
 
 #[test]
 fn sgr_reset_clears_all() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1;31;42ma");
     terminal.put_bytes(b"\x1b[0mb");
     let cell = terminal.screen().cell(0, 1);
@@ -237,7 +240,7 @@ fn sgr_reset_clears_all() {
 #[test]
 fn sgr_8color_fg_sets_named() {
     for code in 30u8..=37u8 {
-        let mut terminal = Terminal::new(1, 2);
+        let mut terminal = Terminal::new_headless(1, 2);
         let seq = format!("\x1b[{}mX", code);
         terminal.put_bytes(seq.as_bytes());
         assert_eq!(
@@ -253,7 +256,7 @@ fn sgr_8color_fg_sets_named() {
 #[test]
 fn sgr_8color_bg_sets_named() {
     for code in 40u8..=47u8 {
-        let mut terminal = Terminal::new(1, 2);
+        let mut terminal = Terminal::new_headless(1, 2);
         let seq = format!("\x1b[{}mX", code);
         terminal.put_bytes(seq.as_bytes());
         assert_eq!(
@@ -269,7 +272,7 @@ fn sgr_8color_bg_sets_named() {
 #[test]
 fn sgr_bright_fg_sets_bright() {
     for code in 90u8..=97u8 {
-        let mut terminal = Terminal::new(1, 2);
+        let mut terminal = Terminal::new_headless(1, 2);
         let seq = format!("\x1b[{}mX", code);
         terminal.put_bytes(seq.as_bytes());
         assert_eq!(
@@ -285,7 +288,7 @@ fn sgr_bright_fg_sets_bright() {
 #[test]
 fn sgr_bright_bg_sets_bright() {
     for code in 100u8..=107u8 {
-        let mut terminal = Terminal::new(1, 2);
+        let mut terminal = Terminal::new_headless(1, 2);
         let seq = format!("\x1b[{}mX", code);
         terminal.put_bytes(seq.as_bytes());
         assert_eq!(
@@ -300,35 +303,35 @@ fn sgr_bright_bg_sets_bright() {
 
 #[test]
 fn sgr_256color_fg_sets_indexed() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[38;5;200mb");
     assert_eq!(terminal.screen().cell(0, 0).fg, Color::Indexed(200));
 }
 
 #[test]
 fn sgr_256color_bg_sets_indexed() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[48;5;100mb");
     assert_eq!(terminal.screen().cell(0, 0).bg, Color::Indexed(100));
 }
 
 #[test]
 fn sgr_truecolor_fg_sets_rgb() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[38;2;10;20;30mb");
     assert_eq!(terminal.screen().cell(0, 0).fg, Color::Rgb(10, 20, 30));
 }
 
 #[test]
 fn sgr_truecolor_bg_sets_rgb() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[48;2;100;150;200mb");
     assert_eq!(terminal.screen().cell(0, 0).bg, Color::Rgb(100, 150, 200));
 }
 
 #[test]
 fn sgr_multi_param_sets_all() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1;31;44ma");
     let cell = terminal.screen().cell(0, 0);
     assert!(cell.attrs.contains(CellAttrs::BOLD));
@@ -338,7 +341,7 @@ fn sgr_multi_param_sets_all() {
 
 #[test]
 fn sgr_default_fg_bg_resets_colors() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[31;42m\x1b[39;49mb");
     let cell = terminal.screen().cell(0, 0);
     assert_eq!(cell.fg, Color::Default);
@@ -347,7 +350,7 @@ fn sgr_default_fg_bg_resets_colors() {
 
 #[test]
 fn sgr_compound_clear_removes_attrs() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1;3ma");
     let cell = terminal.screen().cell(0, 0);
     assert!(cell.attrs.contains(CellAttrs::BOLD));
@@ -360,7 +363,7 @@ fn sgr_compound_clear_removes_attrs() {
 
 #[test]
 fn sgr_22_clears_bold_and_dim() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1;2ma\x1b[22mb");
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::BOLD));
@@ -369,7 +372,7 @@ fn sgr_22_clears_bold_and_dim() {
 
 #[test]
 fn sgr_24_clears_underline() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[4ma\x1b[24mb");
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::UNDERLINE));
@@ -377,7 +380,7 @@ fn sgr_24_clears_underline() {
 
 #[test]
 fn sgr_25_clears_blink() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[5ma\x1b[25mb");
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::BLINK));
@@ -385,7 +388,7 @@ fn sgr_25_clears_blink() {
 
 #[test]
 fn sgr_27_clears_inverse() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[7ma\x1b[27mb");
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::INVERSE));
@@ -393,7 +396,7 @@ fn sgr_27_clears_inverse() {
 
 #[test]
 fn sgr_29_clears_strikethrough() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[9ma\x1b[29mb");
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::STRIKETHROUGH));
@@ -401,7 +404,7 @@ fn sgr_29_clears_strikethrough() {
 
 #[test]
 fn sgr_bare_csi_m_is_reset() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[1;31;42ma\x1b[mb");
     let cell = terminal.screen().cell(0, 1);
     assert_eq!(cell.fg, Color::Default);
@@ -413,7 +416,7 @@ fn sgr_bare_csi_m_is_reset() {
 
 #[test]
 fn sgr_indexed_out_of_range_ignored() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[31ma");
     terminal.put_bytes(b"\x1b[38;5;300mb");
     // 300 > 255 so fg should still be Named(1) from the 31 sequence
@@ -422,7 +425,7 @@ fn sgr_indexed_out_of_range_ignored() {
 
 #[test]
 fn sgr_truecolor_missing_params_ignored() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[31ma");
     terminal.put_bytes(b"\x1b[38;2;128;64mx");
     // Incomplete truecolor seq — fg stays red, 'x' still renders
@@ -432,7 +435,7 @@ fn sgr_truecolor_missing_params_ignored() {
 
 #[test]
 fn sgr_truecolor_component_out_of_range_ignored() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[31ma");
     terminal.put_bytes(b"\x1b[38;2;300;0;0mb");
     // 300 > 255 — fg stays red
@@ -440,7 +443,7 @@ fn sgr_truecolor_component_out_of_range_ignored() {
 }
 #[test]
 fn csi_cursor_position_overwrites_target_cell() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_bytes(b"abcd\x1b[1;2HZ");
 
@@ -453,7 +456,7 @@ fn csi_cursor_position_overwrites_target_cell() {
 
 #[test]
 fn csi_erase_line_clears_selected_range() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_bytes(b"abcd\x1b[1;3H\x1b[K");
 
@@ -466,7 +469,7 @@ fn csi_erase_line_clears_selected_range() {
 
 #[test]
 fn csi_erase_display_mode_two_clears_and_homes() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_bytes(b"abcd");
     terminal.put_bytes(b"\x1b[2Jx");
@@ -481,7 +484,7 @@ fn csi_erase_display_mode_two_clears_and_homes() {
 
 #[test]
 fn keeps_incomplete_escape_sequence_across_chunks() {
-    let mut terminal = Terminal::new(1, 5);
+    let mut terminal = Terminal::new_headless(1, 5);
 
     terminal.put_bytes(b"a\x1b[");
 
@@ -498,7 +501,7 @@ fn keeps_incomplete_escape_sequence_across_chunks() {
 
 #[test]
 fn keeps_incomplete_utf8_sequence_across_chunks() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     let bytes = "中".as_bytes();
 
     terminal.put_bytes(&bytes[..1]);
@@ -513,7 +516,7 @@ fn keeps_incomplete_utf8_sequence_across_chunks() {
 
 #[test]
 fn treats_cjk_characters_as_double_width_cells() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("中a");
 
@@ -526,7 +529,7 @@ fn treats_cjk_characters_as_double_width_cells() {
 
 #[test]
 fn overwrites_both_cells_of_double_width_character() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("中b");
     terminal.put_bytes(b"\x1b[1;2HX");
@@ -540,7 +543,7 @@ fn overwrites_both_cells_of_double_width_character() {
 
 #[test]
 fn backspace_on_double_width_character_is_non_destructive() {
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
 
     terminal.put_str("中\u{8}");
 
@@ -553,7 +556,7 @@ fn backspace_on_double_width_character_is_non_destructive() {
 
 #[test]
 fn horizontal_tab_at_line_end_does_not_loop_forever() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
 
     terminal.put_str("abc\tz");
 
@@ -563,7 +566,7 @@ fn horizontal_tab_at_line_end_does_not_loop_forever() {
 
 #[test]
 fn ignores_private_cursor_visibility_sequence() {
-    let mut terminal = Terminal::new(1, 6);
+    let mut terminal = Terminal::new_headless(1, 6);
 
     terminal.put_bytes(b"a\x1b[?25lb");
 
@@ -572,7 +575,7 @@ fn ignores_private_cursor_visibility_sequence() {
 
 #[test]
 fn ignores_osc_title_sequence_terminated_by_bel() {
-    let mut terminal = Terminal::new(1, 8);
+    let mut terminal = Terminal::new_headless(1, 8);
 
     terminal.put_bytes(b"a\x1b]0;C:\\Windows\\system32\\cmd.exe\x07b");
 
@@ -581,7 +584,7 @@ fn ignores_osc_title_sequence_terminated_by_bel() {
 
 #[test]
 fn keeps_incomplete_osc_sequence_across_chunks() {
-    let mut terminal = Terminal::new(1, 8);
+    let mut terminal = Terminal::new_headless(1, 8);
 
     terminal.put_bytes(b"a\x1b]0;title");
     terminal.put_bytes(b"\x1b\\b");
@@ -592,7 +595,7 @@ fn keeps_incomplete_osc_sequence_across_chunks() {
 #[test]
 fn cargo_update_output_spans_multiple_rows() {
     // Replay the PTY output chunks logged during `cargo update`.
-    let mut terminal = Terminal::new(5, 80);
+    let mut terminal = Terminal::new_headless(5, 80);
 
     // Chunk 0: "    Updating crates.io index\r\n"
     terminal.put_bytes(b"\x1b[92m\x1b[1m    Updating\x1b[m crates.io index\r\n");
@@ -650,7 +653,7 @@ fn cargo_update_output_spans_multiple_rows() {
 
 #[test]
 fn erase_chars_via_csi_x_clears_specified_count() {
-    let mut terminal = Terminal::new(1, 20);
+    let mut terminal = Terminal::new_headless(1, 20);
     terminal.put_bytes(b"hello world!!!!!!");
     assert_eq!(terminal.row_text(0).trim_end(), "hello world!!!!!!");
 
@@ -665,7 +668,7 @@ fn erase_chars_via_csi_x_clears_specified_count() {
 
 #[test]
 fn alt_screen_enter_exit_preserves_normal_screen() {
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("normal");
     assert_eq!(terminal.row_text(0).trim(), "normal");
     assert_eq!(
@@ -699,7 +702,7 @@ fn alt_screen_enter_exit_preserves_normal_screen() {
 
 #[test]
 fn alt_screen_enter_twice_is_idempotent() {
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("\x1b[?1049h");
     terminal.put_str("first");
     terminal.put_str("\x1b[?1049h"); // second enter — no-op
@@ -708,7 +711,7 @@ fn alt_screen_enter_twice_is_idempotent() {
 
 #[test]
 fn alt_screen_exit_when_not_in_alt_is_noop() {
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("normal");
     terminal.put_str("\x1b[?1049l"); // exit without enter — no panic
     assert_eq!(terminal.row_text(0).trim(), "normal");
@@ -717,7 +720,7 @@ fn alt_screen_exit_when_not_in_alt_is_noop() {
 #[test]
 fn alt_screen_switch_mid_batch_splits_correctly() {
     // Simulates PTY sending CSI ?1049h followed by content in one read.
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("before");
     terminal.put_bytes(b"\x1b[?1049hafter");
     // "before" stayed on normal screen, "after" landed on alt screen.
@@ -729,7 +732,7 @@ fn alt_screen_switch_mid_batch_splits_correctly() {
 
 #[test]
 fn alt_screen_resize_preserves_both_screens() {
-    let mut terminal = Terminal::new(3, 20);
+    let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("normal");
     terminal.put_str("\x1b[?1049h");
     terminal.put_str("alt");
@@ -743,7 +746,7 @@ fn alt_screen_resize_preserves_both_screens() {
 
 #[test]
 fn alt_screen_exit_restores_scrollback_viewport() {
-    let mut terminal = Terminal::new(5, 10);
+    let mut terminal = Terminal::new_headless(5, 10);
     // Write enough lines to create scrollback.
     for _ in 0..6 {
         terminal.process_output(b"line\n");
@@ -777,7 +780,7 @@ fn alt_screen_exit_restores_scrollback_viewport() {
 
 #[test]
 fn ich_via_csi_at_shifts_cells_right() {
-    let mut terminal = Terminal::new(1, 8);
+    let mut terminal = Terminal::new_headless(1, 8);
     terminal.put_str("abcdef");
     terminal.put_bytes(b"\x1b[1;3H"); // CUP: col 3 (0-based col 2)
     terminal.put_bytes(b"\x1b[2@"); // ICH 2
@@ -786,7 +789,7 @@ fn ich_via_csi_at_shifts_cells_right() {
 
 #[test]
 fn dch_via_csi_p_shifts_cells_left() {
-    let mut terminal = Terminal::new(1, 8);
+    let mut terminal = Terminal::new_headless(1, 8);
     terminal.put_str("abcdef");
     terminal.put_bytes(b"\x1b[1;3H"); // col 3
     terminal.put_bytes(b"\x1b[2P"); // DCH 2
@@ -797,7 +800,7 @@ fn dch_via_csi_p_shifts_cells_left() {
 
 #[test]
 fn il_via_csi_l_inserts_lines() {
-    let mut terminal = Terminal::new(5, 4);
+    let mut terminal = Terminal::new_headless(5, 4);
     terminal.put_bytes(b"\x1b[1;1Haaaa");
     terminal.put_bytes(b"\x1b[2;1Hbbbb");
     terminal.put_bytes(b"\x1b[3;1Hcccc");
@@ -814,7 +817,7 @@ fn il_via_csi_l_inserts_lines() {
 
 #[test]
 fn dl_via_csi_m_deletes_lines() {
-    let mut terminal = Terminal::new(5, 4);
+    let mut terminal = Terminal::new_headless(5, 4);
     terminal.put_bytes(b"\x1b[1;1Haaaa");
     terminal.put_bytes(b"\x1b[2;1Hbbbb");
     terminal.put_bytes(b"\x1b[3;1Hcccc");
@@ -833,7 +836,7 @@ fn dl_via_csi_m_deletes_lines() {
 
 #[test]
 fn su_via_csi_s_scrolls_up() {
-    let mut terminal = Terminal::new(5, 4);
+    let mut terminal = Terminal::new_headless(5, 4);
     terminal.put_bytes(b"\x1b[1;1Haaaa");
     terminal.put_bytes(b"\x1b[2;1Hbbbb");
     terminal.put_bytes(b"\x1b[3;1Hcccc");
@@ -849,7 +852,7 @@ fn su_via_csi_s_scrolls_up() {
 
 #[test]
 fn sd_via_csi_t_scrolls_down() {
-    let mut terminal = Terminal::new(5, 4);
+    let mut terminal = Terminal::new_headless(5, 4);
     terminal.put_bytes(b"\x1b[1;1Haaaa");
     terminal.put_bytes(b"\x1b[2;1Hbbbb");
     terminal.put_bytes(b"\x1b[3;1Hcccc");
@@ -867,7 +870,7 @@ fn sd_via_csi_t_scrolls_down() {
 
 #[test]
 fn decstbm_region_respected_by_scroll() {
-    let mut terminal = Terminal::new(4, 4);
+    let mut terminal = Terminal::new_headless(4, 4);
     // Write content with default (full) scroll region first.
     terminal.put_bytes(b"\x1b[1;1Haaaa");
     terminal.put_bytes(b"\x1b[2;1Hbbbb");
@@ -887,7 +890,7 @@ fn decstbm_region_respected_by_scroll() {
 #[test]
 fn decstbm_vim_like_scenario() {
     // Simulate vim setting scroll region, writing lines, and scrolling within region.
-    let mut terminal = Terminal::new(5, 10);
+    let mut terminal = Terminal::new_headless(5, 10);
     // Write lines with default (full) scroll region first.
     terminal.put_bytes(b"\x1b[1;1Htitle");
     terminal.put_bytes(b"\x1b[2;1Hline1");
@@ -909,7 +912,7 @@ fn decstbm_vim_like_scenario() {
 
 #[test]
 fn cursor_save_restore_via_esc_7_8() {
-    let mut terminal = Terminal::new(4, 10);
+    let mut terminal = Terminal::new_headless(4, 10);
     terminal.put_bytes(b"\x1b[2;3H"); // cursor to row 2, col 3
     terminal.put_bytes(b"\x1b7"); // ESC 7 → save cursor (row 1, col 2)
     terminal.put_bytes(b"\x1b[4;8H"); // cursor to row 4, col 8
@@ -928,7 +931,7 @@ fn cursor_save_restore_via_esc_7_8() {
 
 #[test]
 fn put_bytes_does_not_snap_viewport() {
-    let mut terminal = Terminal::new(5, 10);
+    let mut terminal = Terminal::new_headless(5, 10);
     // Write enough lines to create scrollback.
     for _ in 0..6 {
         terminal.process_output(b"line\n");
@@ -952,7 +955,7 @@ fn put_bytes_does_not_snap_viewport() {
 
 #[test]
 fn process_output_snaps_viewport() {
-    let mut terminal = Terminal::new(5, 10);
+    let mut terminal = Terminal::new_headless(5, 10);
     // Write enough lines to create scrollback.
     for _ in 0..6 {
         terminal.process_output(b"line\n");
@@ -973,7 +976,7 @@ fn process_output_snaps_viewport() {
 
 #[test]
 fn viewport_navigation_pages_and_reaches_top() {
-    let mut terminal = Terminal::new(4, 10);
+    let mut terminal = Terminal::new_headless(4, 10);
     for _ in 0..10 {
         terminal.process_output(b"line\n");
     }
@@ -1010,7 +1013,7 @@ fn viewport_navigation_pages_and_reaches_top() {
 #[test]
 fn sgr_bg_preserved_after_erase_line() {
     // Vim's pattern: set bg → write text → CSI K (erase to end of line)
-    let mut terminal = Terminal::new(1, 6);
+    let mut terminal = Terminal::new_headless(1, 6);
     terminal.put_bytes(b"\x1b[44mHi\x1b[K");
     // "Hi" should have blue bg; erased remainder should also have blue bg
     let cell = terminal.screen();
@@ -1026,7 +1029,7 @@ fn sgr_bg_preserved_after_erase_line() {
 
 #[test]
 fn sgr_bg_preserved_after_erase_display() {
-    let mut terminal = Terminal::new(2, 4);
+    let mut terminal = Terminal::new_headless(2, 4);
     // Set bg green, write, erase entire display
     terminal.put_bytes(b"\x1b[42mab\x1b[2J");
     for row in 0..2 {
@@ -1043,7 +1046,7 @@ fn sgr_bg_preserved_after_erase_display() {
 #[test]
 fn default_bg_after_sgr_reset_and_erase() {
     // After SGR reset (ESC [ m), erasing should produce default-bg cells
-    let mut terminal = Terminal::new(1, 4);
+    let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[44mHi\x1b[0m\x1b[K");
     // "Hi" was written before reset, so still has blue bg
     assert_eq!(terminal.screen().cell(0, 0).ch, 'H');
@@ -1058,7 +1061,7 @@ fn default_bg_after_sgr_reset_and_erase() {
 
 #[test]
 fn bracketed_paste_mode_tracks_decset_and_decrst() {
-    let mut terminal = Terminal::new(1, 1);
+    let mut terminal = Terminal::new_headless(1, 1);
 
     terminal.put_bytes(b"\x1b[?2004h");
     assert!(terminal.screen().input_modes().bracketed_paste);
@@ -1069,7 +1072,7 @@ fn bracketed_paste_mode_tracks_decset_and_decrst() {
 
 #[test]
 fn bracketed_paste_mode_resets_and_is_scoped_to_active_screen() {
-    let mut terminal = Terminal::new(1, 1);
+    let mut terminal = Terminal::new_headless(1, 1);
 
     terminal.put_bytes(b"\x1b[?2004h\x1bc");
     assert!(!terminal.screen().input_modes().bracketed_paste);
@@ -1331,4 +1334,119 @@ fn preview_cjk_text_is_unchanged() {
 fn preview_printable_ascii_range_is_unchanged() {
     let printable: String = (b' '..=b'~').map(|b| b as char).collect();
     assert_eq!(safe_preview_line(&printable), printable);
+}
+
+// ── Terminal API & lifecycle tests ─────────────────────────────────────
+
+#[test]
+fn should_return_fixed_draw_id_when_queried() {
+    // Arrange
+    let terminal = Terminal::new_headless(24, 80);
+
+    // Act
+    let draw_id = terminal.draw_id();
+
+    // Assert
+    assert_eq!(draw_id, 1);
+}
+
+#[test]
+fn should_initialize_headless_terminal_with_given_dimensions() {
+    // Arrange & Act
+    let terminal = Terminal::new_headless(30, 100);
+
+    // Assert
+    assert_eq!(terminal.screen().rows(), 30);
+    assert_eq!(terminal.screen().cols(), 100);
+}
+
+#[test]
+fn should_return_none_for_render_component_getters_when_headless() {
+    // Arrange
+    let terminal = Terminal::new_headless(24, 80);
+
+    // Act & Assert
+    assert!(terminal.text_metrics().is_none());
+    assert!(terminal.text_glyph('A').is_none());
+    assert!(terminal.text_bind_group().is_none());
+    assert!(terminal.text_bind_group_layout().is_none());
+}
+
+#[test]
+fn should_return_true_and_update_size_when_resize_if_changed_has_new_dimensions() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(24, 80);
+    let new_size = TerminalSize {
+        rows: 30,
+        cols: 100,
+    };
+
+    // Act
+    let changed = terminal.resize_if_changed(new_size);
+
+    // Assert
+    assert!(changed);
+    assert_eq!(terminal.screen().rows(), 30);
+    assert_eq!(terminal.screen().cols(), 100);
+}
+
+#[test]
+fn should_return_false_and_preserve_size_when_resize_if_changed_has_same_dimensions() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(24, 80);
+    let same_size = TerminalSize { rows: 24, cols: 80 };
+
+    // Act
+    let changed = terminal.resize_if_changed(same_size);
+
+    // Assert
+    assert!(!changed);
+    assert_eq!(terminal.screen().rows(), 24);
+    assert_eq!(terminal.screen().cols(), 80);
+}
+
+#[test]
+fn should_reset_scroll_snap_suppression_when_resized() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(24, 80);
+    terminal.set_suppress_scroll_snap(true);
+
+    // Act
+    terminal.resize(30, 100);
+
+    // Assert
+    // Verify scroll snap is no longer suppressed by checking behavior after scrolling
+    for i in 0..35 {
+        terminal.put_str(&format!("line {i}\r\n"));
+    }
+    terminal.scroll_viewport_up(5);
+    let offset_before = terminal.screen().view_offset();
+    assert!(offset_before > 0);
+
+    // process_output should snap to bottom now since suppress_scroll_snap was reset to false
+    terminal.process_output(b"new output\r\n");
+    assert_eq!(terminal.screen().view_offset(), 0);
+}
+
+#[test]
+fn should_reset_scroll_snap_suppression_when_resize_if_changed_modifies_dimensions() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(24, 80);
+    terminal.set_suppress_scroll_snap(true);
+
+    // Act
+    let changed = terminal.resize_if_changed(TerminalSize {
+        rows: 30,
+        cols: 100,
+    });
+
+    // Assert
+    assert!(changed);
+    // Verify scroll snap is reset by scrolling up and then processing output
+    for i in 0..35 {
+        terminal.put_str(&format!("line {i}\r\n"));
+    }
+    terminal.scroll_viewport_up(5);
+    terminal.process_output(b"more output\r\n");
+    assert_eq!(terminal.screen().view_offset(), 0);
 }

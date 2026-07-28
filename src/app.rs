@@ -3,9 +3,13 @@
 mod confirmation;
 pub(crate) mod input;
 pub(crate) mod translate;
-mod ui;
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
@@ -20,9 +24,9 @@ use crate::{
     terminal_worker::{TerminalWorkerClient, empty_snapshot},
 };
 use confirmation::ConfirmationWindow;
-use harbor_render::{
-    EventResult, GpuContext, SurfaceDisposition, SurfaceStatus, TextMetrics, UiRequest,
-    load_system_fonts, surface_disposition,
+use harbor_terminal::{
+    GpuContext, SurfaceDisposition, SurfaceStatus, Terminal, TextMetrics, load_system_fonts,
+    surface_disposition,
 };
 use harbor_types::{
     RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
@@ -30,7 +34,35 @@ use harbor_types::{
 use harbor_widget::input::event::{KeyboardEvent as WidgetKbEvent, UiEvent};
 
 use translate::{widget_key_to_winit, widget_to_winit_mods, winit_to_uievent};
-use ui::UiRoot;
+
+// ── Thread-local GPU context scope for widget external draw pass ──────────────
+
+thread_local! {
+    static CURRENT_GPU: Cell<Option<*const GpuContext>> = const { Cell::new(None) };
+}
+
+/// Executes a closure with `gpu` set as the thread-local active GPU context.
+/// Resets to `None` on return or unwind.
+pub(crate) fn with_current_gpu<R>(gpu: &GpuContext, f: impl FnOnce() -> R) -> R {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CURRENT_GPU.with(|c| c.set(None));
+        }
+    }
+    CURRENT_GPU.with(|c| c.set(Some(gpu as *const GpuContext)));
+    let _guard = Guard;
+    f()
+}
+
+/// Accesses the active GPU context if within a `with_current_gpu` scope.
+pub(crate) fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
+    CURRENT_GPU.with(|c| {
+        let ptr = c.get()?;
+        let gpu = unsafe { &*ptr };
+        Some(f(gpu))
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScrollbackNavigation {
@@ -76,8 +108,7 @@ enum DialogOutcome {
     Confirmed(String),
 }
 
-/// Owns the optional paste-confirmation dialog and mediates its lifecycle
-/// so `window_event` does not inline the take-match-put-back pattern.
+/// Owns the optional paste-confirmation dialog and mediates its lifecycle.
 struct DialogOverlay {
     window: Option<ConfirmationWindow>,
 }
@@ -91,14 +122,13 @@ impl DialogOverlay {
         self.window.as_ref().map(|w| w.window_id())
     }
 
-    /// Dispatches a window event to the active confirmation dialog, returning
-    /// the outcome and signalling when a main-window side-effect is needed.
+    /// Dispatches a window event to the active confirmation dialog.
     fn handle_event(
         &mut self,
         event: &WindowEvent,
         scale: f32,
         gpu: Option<&GpuContext>,
-        ui: Option<&UiRoot>,
+        terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> DialogResult {
         let Some(mut confirmation) = self.window.take() else {
             return DialogResult {
@@ -115,10 +145,12 @@ impl DialogOverlay {
             }
             confirmation::ConfirmationResult::None => {
                 if matches!(event, WindowEvent::RedrawRequested)
-                    && let (Some(gpu), Some(ui)) = (gpu, ui)
+                    && let (Some(gpu), Some(terminal)) = (gpu, terminal)
                 {
-                    confirmation
-                        .render(gpu.device(), gpu.queue(), &|ch| ui.text_glyph(ch).copied());
+                    let term = terminal.lock().unwrap();
+                    confirmation.render(gpu.device(), gpu.queue(), &|ch| {
+                        term.text_glyph(ch).copied()
+                    });
                 }
                 if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event
                     && let Some(gpu) = gpu
@@ -142,6 +174,7 @@ impl DialogOverlay {
     }
 
     /// Installs a new confirmation dialog, replacing any existing one.
+    #[allow(dead_code)]
     fn open(&mut self, confirmation: ConfirmationWindow) {
         self.window = Some(confirmation);
     }
@@ -151,8 +184,8 @@ impl DialogOverlay {
 struct AppRuntime {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
-    ui: Option<UiRoot>,
-    /// Widget framework runtime (Phase 1: layout + quad rendering).
+    terminal: Option<Arc<Mutex<Terminal>>>,
+    /// Widget framework runtime.
     widget_runtime: Option<harbor_widget::runtime::Runtime>,
     dialog: DialogOverlay,
 }
@@ -190,15 +223,15 @@ enum AppError {
     #[error("failed to create window")]
     Window(#[from] winit::error::OsError),
     #[error("failed to start terminal worker")]
-    Worker(#[source] anyhow::Error),
+    Worker(#[from] anyhow::Error),
     #[error("failed to create renderer")]
     Renderer(#[source] anyhow::Error),
 }
 
 // ── ApplicationHandler (winit lifecycle) ──────────────────────────────────
 impl ApplicationHandler<AppEvent> for App {
-    /// Called on start or wake from suspend.  Bootstraps the window, GPU,
-    /// component tree, terminal, and PTY on first call.
+    /// Called on start or wake from suspend. Bootstraps the window, GPU,
+    /// terminal engine, and PTY on first call.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(error) = self.try_resume(event_loop) {
             tracing::error!(error = %format_args!("{error:#}"), "application error");
@@ -214,14 +247,13 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Called when the event loop is about to block. Applies pending resize,
-    /// then drives component deadlines (cursor blink, scrollbar auto-hide).
+    /// Called when the event loop is about to block. Applies pending resize.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.consume_worker_updates() {
             self.request_redraw(RedrawReason::WorkerUpdate);
         }
-        let (Some(ui), Some(snapshot), Some(worker), Some(window)) = (
-            self.runtime.ui.as_mut(),
+        let (Some(_terminal), Some(_snapshot), Some(worker), Some(_window)) = (
+            self.runtime.terminal.as_ref(),
             self.session.latest_snapshot.as_ref(),
             self.session.worker.as_ref(),
             self.runtime.window.as_ref(),
@@ -256,24 +288,7 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        let wait = ui.compact_deadline(snapshot);
-        for request in wait.requests {
-            match request {
-                UiRequest::Scroll(amount) => {
-                    let _ = worker.request_scroll_viewport(amount);
-                }
-                UiRequest::Redraw => {
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Active)
-                }
-                UiRequest::SetSelectionDragActive(active) => {
-                    let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(
-                        active,
-                    ));
-                }
-                _ => {}
-            }
-        }
-        self.frame.scheduler.set_deadline(wait.deadline);
+        self.frame.scheduler.set_deadline(None);
         if self.frame.scheduler.should_request_continuous_redraw() {
             self.request_redraw(RedrawReason::Active);
         }
@@ -303,7 +318,7 @@ impl ApplicationHandler<AppEvent> for App {
                 &event,
                 scale,
                 self.runtime.gpu.as_ref(),
-                self.runtime.ui.as_ref(),
+                self.runtime.terminal.as_ref(),
             );
             if let Some(reason) = result.needs_redraw {
                 self.frame.render_dirty = true;
@@ -326,9 +341,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let gate_active = self.runtime.dialog.is_active();
 
-        let (Some(gpu), Some(ui), Some(snapshot), Some(worker), Some(window)) = (
+        let (Some(gpu), Some(terminal), Some(snapshot), Some(worker), Some(window)) = (
             self.runtime.gpu.as_mut(),
-            self.runtime.ui.as_mut(),
+            self.runtime.terminal.as_ref(),
             self.session.latest_snapshot.as_ref(),
             self.session.worker.as_ref(),
             self.runtime.window.as_ref(),
@@ -348,86 +363,6 @@ impl ApplicationHandler<AppEvent> for App {
             self.frame.scheduler.set_active(false);
         }
 
-        let mut handled = ui.handle_event(&event, snapshot, self.modifiers);
-        for request in handled.requests.drain(..) {
-            match request {
-                UiRequest::Copy(bounds) => {
-                    if let Some(request_id) = worker.request_copy(bounds) {
-                        ui.set_copy_pending(request_id);
-                    }
-                }
-                UiRequest::Paste(text) => {
-                    let _ = worker.send(harbor_types::TerminalCommand::PasteText(text));
-                }
-                UiRequest::Scroll(amount) => {
-                    let _ = worker.request_scroll_viewport(amount);
-                }
-                UiRequest::ScrollToTop => {
-                    let _ = worker.request_scroll_to_top();
-                }
-                UiRequest::ScrollToBottom => {
-                    let _ = worker.request_scroll_to_bottom();
-                }
-                UiRequest::SetSelectionDragActive(active) => {
-                    let _ = worker.send(harbor_types::TerminalCommand::SetSelectionDragActive(
-                        active,
-                    ));
-                }
-                UiRequest::Input(input) => {
-                    let _ = worker.send(harbor_types::TerminalCommand::Input(input));
-                }
-                UiRequest::Redraw => {
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input)
-                }
-            }
-        }
-        let handled = handled.event;
-
-        match &event {
-            WindowEvent::MouseInput {
-                state,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => self
-                .frame
-                .scheduler
-                .set_active(*state == ElementState::Pressed && handled == EventResult::Handled),
-            _ => {}
-        }
-
-        if let EventResult::ConfirmPaste(raw_text) = &handled {
-            if !self.runtime.dialog.is_active() {
-                let metrics = *ui.text_metrics();
-                harbor_widget::text::set_current_metrics(metrics);
-
-                // Compute preview wrapping and ensure glyphs for all preview chars.
-                let max_chars = ((crate::app::confirmation::DIALOG_WIDTH
-                    - crate::app::confirmation::DIALOG_HORIZONTAL_PADDING)
-                    as f32
-                    / metrics.cell_width)
-                    .floor() as usize;
-                let max_chars = max_chars.max(1);
-                let wrapped_lines =
-                    crate::app::confirmation::wrap_preview_text(raw_text, max_chars);
-                let all_preview_text: String = wrapped_lines.join("");
-                ui.ensure_glyphs(&all_preview_text, gpu);
-
-                self.runtime.dialog.open(ConfirmationWindow::new(
-                    raw_text.clone(),
-                    wrapped_lines,
-                    event_loop,
-                    gpu,
-                    metrics,
-                    ui.text_bind_group_layout(),
-                    ui.text_bind_group(),
-                    Some(window),
-                ));
-            }
-            self.frame.render_dirty = true;
-            Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-            return;
-        }
-
         let is_copy = self.modifiers.control_key()
             && matches!(&event, WindowEvent::KeyboardInput { event: kbd, .. }
                 if kbd.state == ElementState::Pressed
@@ -437,15 +372,9 @@ impl ApplicationHandler<AppEvent> for App {
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
             && kbd.text.is_some()
-            && !(handled == EventResult::Handled && is_copy)
+            && !is_copy
         {
             let _ = worker.request_scroll_to_bottom();
-        }
-
-        if handled == EventResult::Handled {
-            self.frame.render_dirty = true;
-            Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-            return;
         }
 
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
@@ -528,7 +457,8 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.frame.surface_recovery_attempted = false;
                 gpu.resize(size.width, size.height);
-                self.session.pending_resize = Some(ui.terminal_size(gpu));
+                let term_size = terminal.lock().unwrap().terminal_size(gpu);
+                self.session.pending_resize = Some(term_size);
                 self.frame.render_dirty = true;
                 if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                     let scale = window.scale_factor() as f32;
@@ -600,13 +530,12 @@ impl ApplicationHandler<AppEvent> for App {
 // ── App (own methods) ─────────────────────────────────────────────────────
 impl App {
     /// Creates the application shell with no initial window, GPU, or worker.
-    /// These are lazily initialised on the first `resumed` call.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             runtime: AppRuntime {
                 window: None,
                 gpu: None,
-                ui: None,
+                terminal: None,
                 widget_runtime: None,
                 dialog: DialogOverlay { window: None },
             },
@@ -629,8 +558,7 @@ impl App {
         }
     }
 
-    /// Creates the main window, GPU context, font atlas, and component tree.
-    /// Keeps existing state on repeated resumes (e.g. after suspend/resume).
+    /// Creates the main window, GPU context, font atlas, and terminal engine.
     fn try_resume(&mut self, event_loop: &ActiveEventLoop) -> std::result::Result<(), AppError> {
         if self.runtime.window.is_some() {
             return Ok(());
@@ -670,17 +598,26 @@ impl App {
         let metrics = TextMetrics::new(&fonts);
 
         let bootstrap = empty_snapshot(1, 1);
-        let ui = UiRoot::new(&gpu, &bootstrap, fonts, metrics).map_err(AppError::Renderer)?;
-        let size = ui.terminal_size(&gpu);
-        let worker = TerminalWorkerClient::start(size, self.event_proxy.clone())
+        let size = TerminalSize {
+            rows: bootstrap.rows,
+            cols: bootstrap.cols,
+        };
+        let terminal = Arc::new(Mutex::new(Terminal::new(size, &gpu, fonts, metrics)));
+        let term_size = terminal.lock().unwrap().terminal_size(&gpu);
+
+        let worker = TerminalWorkerClient::start(term_size, self.event_proxy.clone())
             .map_err(AppError::Worker)?;
         let initial = worker.take_update().ok_or_else(|| {
             AppError::Worker(anyhow::anyhow!("worker did not publish initial snapshot"))
         })?;
 
-        tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
+        tracing::info!(
+            rows = term_size.rows,
+            cols = term_size.cols,
+            "terminal initialized"
+        );
         self.runtime.gpu = Some(gpu);
-        self.runtime.ui = Some(ui);
+        self.runtime.terminal = Some(terminal);
         self.init_widget_runtime();
         self.session
             .updates
@@ -767,21 +704,6 @@ impl App {
             };
             self.session.pending_snapshot_commands.remove(&request_id);
         }
-        loop {
-            let result = self
-                .session
-                .worker
-                .as_ref()
-                .and_then(TerminalWorkerClient::take_copy_result);
-            let Some(result) = result else {
-                break;
-            };
-            if let Some(ui) = self.runtime.ui.as_mut()
-                && ui.apply_copy_result(result)
-            {
-                changed = true;
-            }
-        }
         if let Some(worker) = self.session.worker.as_ref() {
             let status = worker.status();
             if status != self.session.worker_status {
@@ -804,9 +726,9 @@ impl App {
     }
 
     fn render_frame(&mut self) {
-        let (Some(gpu), Some(ui), Some(snapshot)) = (
+        let (Some(gpu), Some(terminal), Some(_snapshot)) = (
             self.runtime.gpu.as_mut(),
-            self.runtime.ui.as_mut(),
+            self.runtime.terminal.as_ref(),
             self.session.latest_snapshot.as_ref(),
         ) else {
             return;
@@ -852,12 +774,13 @@ impl App {
             _ => unreachable!("surface disposition must match texture status"),
         };
 
-        // Surface texture acquired successfully — now prepare GPU buffers
         let render_dirty = std::mem::take(&mut self.frame.render_dirty);
-        if let Some(damage) = self.frame.pending_damage.take() {
-            ui.prepare_update_damage(gpu, snapshot, &damage);
-        } else if render_dirty {
-            ui.prepare(gpu, snapshot);
+        if let Ok(mut term) = terminal.lock() {
+            if let Some(damage) = self.frame.pending_damage.take() {
+                term.prepare(gpu, Some(&damage));
+            } else if render_dirty {
+                term.prepare(gpu, None);
+            }
         }
 
         let view = output
@@ -890,12 +813,11 @@ impl App {
                 let (physical_w, physical_h) = gpu.surface_size();
                 let viewport =
                     harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
-                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
-            }
 
-            // T0003 will register the terminal draw handler through CustomPaint.
-            // Until then, preserve the existing direct terminal draw path.
-            ui.draw(&mut render_pass);
+                with_current_gpu(gpu, || {
+                    widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
+                });
+            }
         }
 
         let command_buffer = encoder.finish();
@@ -915,11 +837,22 @@ impl App {
     fn init_widget_runtime(&mut self) {
         use harbor_widget::widgets::custom_paint::CustomPaint;
 
-        const TERMINAL_DRAW_ID: harbor_widget::scene::primitive::ExternalDrawId = 1;
+        let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
+        let draw_id = terminal_arc.lock().unwrap().draw_id();
 
+        let handler: Arc<harbor_widget::scene::primitive::ExternalDrawFn<'static>> =
+            Arc::new(move |id, rect, pass| {
+                current_gpu(|gpu| {
+                    if let Ok(mut term) = terminal_arc.lock() {
+                        term.render(id, rect, pass, gpu);
+                    }
+                });
+            });
+
+        let custom_paint = CustomPaint::new(draw_id).handler(handler);
         let gpu = self.runtime.gpu.as_ref().unwrap();
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(CustomPaint::new(TERMINAL_DRAW_ID));
+        runtime.set_root(custom_paint);
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.update(Instant::now());
 
@@ -938,11 +871,7 @@ fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
 }
 
 /// Paints the terminal background color into the window using GDI, before the
-/// wgpu surface is ready. Prevents the OS from showing a white window during
-/// the GPU initialisation period.
-///
-/// The linear-light BACKGROUND values (0.36, 0.20, 0.08) are converted to
-/// sRGB bytes (162, 124, 80) for GDI. COLORREF format is 0x00BBGGRR.
+/// wgpu surface is ready.
 #[cfg(target_os = "windows")]
 fn paint_gdi_background(window: &Window) {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -972,8 +901,6 @@ fn paint_gdi_background(window: &Window) {
 
     let hwnd = h.hwnd.get();
     let size = window.inner_size();
-    // BACKGROUND linear (0.36, 0.20, 0.08) → sRGB (162, 124, 80).
-    // COLORREF byte order is 0x00BBGGRR.
     let color: u32 = 162 | (124 << 8) | (80 << 16);
     let rect = Rect {
         left: 0,
@@ -1037,6 +964,7 @@ mod tests {
             None
         );
     }
+
     #[test]
     fn coalesced_updates_require_full_upload_but_single_update_keeps_damage() {
         let ranges = vec![harbor_terminal::DirtyRange {

@@ -15,7 +15,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::app::winit_to_uievent;
-use harbor_render::GpuContext;
+use harbor_terminal::GpuContext;
 use harbor_text::TextMetrics;
 use harbor_types::safe_preview_line;
 use harbor_widget::runtime::Runtime;

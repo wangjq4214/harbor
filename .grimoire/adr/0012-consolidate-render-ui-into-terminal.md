@@ -1,6 +1,6 @@
 # Consolidate harbor-render and harbor-ui into harbor-terminal
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2025-07-28
 
 ## Context

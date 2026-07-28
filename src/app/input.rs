@@ -1,7 +1,7 @@
 //! Keyboard → PTY byte mapping.
 
-use harbor_types::{InputKey, InputRequest};
 use harbor_terminal::InputModes;
+use harbor_types::{InputKey, InputRequest};
 use std::borrow::Cow;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -254,10 +254,7 @@ impl InputEncoder {
     /// Encodes a logical `InputRequest` into ANSI bytes using the given terminal modes.
     /// This is the single authoritative encoding path — call it directly instead of
     /// converting through `winit::Key`.
-    pub(crate) fn encode(
-        request: &InputRequest,
-        modes: InputModes,
-    ) -> Option<Cow<'static, [u8]>> {
+    pub(crate) fn encode(request: &InputRequest, modes: InputModes) -> Option<Cow<'static, [u8]>> {
         let key = match &request.key {
             InputKey::Character(ch) => Key::Character(ch.clone().into()),
             InputKey::Enter => Key::Named(NamedKey::Enter),
@@ -734,7 +731,7 @@ mod tests {
             ("RIS", b"\x1bc".as_slice()),
             ("DECSTR", b"\x1b[!p".as_slice()),
         ] {
-            let mut terminal = Terminal::new(3, 3);
+            let mut terminal = Terminal::new_headless(3, 3);
             terminal.put_bytes(b"\x1b[?1h\x1b=");
 
             assert_eq!(

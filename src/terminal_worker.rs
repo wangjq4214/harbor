@@ -217,7 +217,7 @@ fn worker_main(
     mailbox: Arc<Mutex<Mailbox>>,
     ready_tx: mpsc::SyncSender<anyhow::Result<()>>,
 ) {
-    let mut terminal = Terminal::new(size.rows, size.cols);
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
     let mut revision = 0;
     publish_snapshot(
         &mut terminal,
@@ -338,8 +338,7 @@ fn run_worker_loop(
                 terminal.process_output(&bytes);
                 snapshot_dirty = true;
 
-                let (status, inner_closed) =
-                    drain_pty_batch(terminal, pty_rx, &mut snapshot_dirty);
+                let (status, inner_closed) = drain_pty_batch(terminal, pty_rx, &mut snapshot_dirty);
                 if inner_closed {
                     pty_closed = true;
                 }
@@ -376,8 +375,14 @@ fn run_worker_loop(
         }
 
         // ── Deferred terminal status ────────────────────────────────
-        pending_pty_status =
-            try_consume_pending_status(pending_pty_status, terminal, mailbox, notifier, revision, &mut snapshot_dirty);
+        pending_pty_status = try_consume_pending_status(
+            pending_pty_status,
+            terminal,
+            mailbox,
+            notifier,
+            revision,
+            &mut snapshot_dirty,
+        );
 
         // ── Shutdown gate ───────────────────────────────────────────
         if control_closed && pty_closed && pending_pty_status.is_none() {
@@ -510,7 +515,7 @@ fn apply_command(
             notify(notifier);
         }
         TerminalCommand::Resize { request_id, size } => {
-            if terminal.resize_terminal_if_changed(size) {
+            if terminal.resize_if_changed(size) {
                 pty.resize(size);
                 *revision = revision.saturating_add(1);
             }
@@ -853,7 +858,7 @@ mod tests {
 
     #[test]
     fn worker_copy_selection_returns_async_result() {
-        let mut terminal = Terminal::new(1, 4);
+        let mut terminal = Terminal::new_headless(1, 4);
         terminal.put_str("ab");
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update_notification_pending: false,
@@ -891,7 +896,7 @@ mod tests {
 
     #[test]
     fn worker_acknowledges_the_snapshot_command_request_id() {
-        let mut terminal = Terminal::new(1, 4);
+        let mut terminal = Terminal::new_headless(1, 4);
         let mailbox = Arc::new(Mutex::new(Mailbox {
             update_notification_pending: false,
             update: None,

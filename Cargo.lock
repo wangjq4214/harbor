@@ -808,7 +808,6 @@ dependencies = [
  "harbor-config",
  "harbor-parser",
  "harbor-pty",
- "harbor-render",
  "harbor-terminal",
  "harbor-text",
  "harbor-types",
@@ -868,11 +867,19 @@ dependencies = [
 name = "harbor-terminal"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arboard",
  "bitvec",
+ "bytemuck",
+ "harbor-config",
  "harbor-parser",
+ "harbor-text",
  "harbor-types",
+ "harbor-widget",
  "tracing",
  "unicode-width",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

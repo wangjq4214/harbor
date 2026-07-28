@@ -1,13 +1,10 @@
+use harbor_text::TextMetrics;
 use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
-use crate::{
-    Component, EventResult, TextMetrics,
-    caps::{InteractionResult, UiRequest, WaitResult},
-    gpu::{self, GpuContext, TexturedVertex},
-};
+use super::gpu::{self, GpuContext, TexturedVertex};
+use crate::CursorShape;
 use harbor_config::{BLINK_INTERVAL_MS, TEXT_PADDING};
-use harbor_terminal::CursorShape;
 
 const CURSOR_SHADER: &str = r#"
 struct VertexInput {
@@ -46,7 +43,6 @@ fn should_render_cursor(snap: &TerminalSnapshot, blink_visible: bool) -> bool {
 }
 
 /// Combined cursor rendering + blink state machine.
-/// Replaces CursorLayer and CursorBlink in the component tree.
 pub struct Cursor {
     /// wgpu render pipeline for the solid-color cursor quad.
     pipeline: wgpu::RenderPipeline,
@@ -58,20 +54,19 @@ pub struct Cursor {
     /// Whether the cursor should be rendered this frame (controlled by blink
     /// timer or steady-on when blinking is disabled).
     visible: bool,
-    /// Whether vertices need to be re-uploaded to the GPU.
-    dirty: bool,
-    /// Cell width derived from font metrics, used to compute cursor quad position.
-    cell_width: f32,
-    /// Line height, used for cursor quad height and underline/bar thickness.
-    line_height: f32,
-    /// Current cursor shape (block / underline / bar), set by DECSCUSR.
+    /// Cursor shape (Block, Underline, Bar).
     shape: CursorShape,
-    /// Snapshot from the last upload, used to skip uploads when nothing changed.
-    last_cursor: Option<LastCursorState>,
-    /// Blink timer start (set to `Instant::now` on construction).
+    /// Start time of the current blink cycle (reset on keypress / position change).
     blink_start: Instant,
-    /// Visibility state from the last committed frame, used to detect blink toggles.
+    /// Last rendered blink visibility state (used to trigger redraws on toggle).
     last_rendered_visible: bool,
+    /// Cell dimensions in logical pixels.
+    cell_width: f32,
+    line_height: f32,
+    /// Cached state from last prepare call to avoid re-writing vertex buffer.
+    last_cursor: Option<LastCursorState>,
+    /// Set true when window size changes or metric updates occur.
+    dirty: bool,
 }
 
 impl Cursor {
@@ -79,7 +74,6 @@ impl Cursor {
         self.dirty
     }
 
-    /// Creates the cursor: pipeline, vertex buffer, and blink timer at `Instant::now`.
     pub fn new(gpu: &GpuContext, metrics: TextMetrics) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let vertex_buffer =
@@ -88,18 +82,34 @@ impl Cursor {
             pipeline,
             vertex_buffer,
             vertex_count: 0,
-            visible: false,
-            dirty: false,
+            visible: true,
+            shape: CursorShape::Block,
+            blink_start: Instant::now(),
+            last_rendered_visible: true,
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
-            shape: CursorShape::Bar,
             last_cursor: None,
-            blink_start: Instant::now(),
-            last_rendered_visible: false,
+            dirty: true,
         }
     }
 
-    /// Compiles the solid-color cursor shader into a render pipeline.
+    /// Resets the blink timer (makes cursor solid-on immediately).
+    pub fn reset_blink(&mut self) {
+        self.blink_start = Instant::now();
+        self.dirty = true;
+    }
+
+    /// Calculates whether cursor is in the visible phase of the blink cycle.
+    pub fn blink_visible(&self) -> bool {
+        let elapsed_ms = self.blink_start.elapsed().as_millis() as u64;
+        (elapsed_ms / BLINK_INTERVAL_MS).is_multiple_of(2)
+    }
+
+    pub fn commit_frame(&mut self) {
+        self.last_rendered_visible = self.visible;
+        self.dirty = false;
+    }
+
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cursor shader"),
@@ -139,59 +149,28 @@ impl Cursor {
         })
     }
 
-    /// Whether the cursor should be visible right now (blink-phase check).
-    fn blink_visible(&self) -> bool {
-        let millis = self.blink_start.elapsed().as_millis() as u64;
-        (millis / BLINK_INTERVAL_MS).is_multiple_of(2)
-    }
-
-    /// Snapshots the current blink phase so the next `on_about_to_wait`
-    /// can detect a toggle.
-    fn commit_frame(&mut self) {
-        self.last_rendered_visible = self.blink_visible();
-    }
-    fn set_visible(&mut self, visible: bool, snap: &TerminalSnapshot) {
-        self.visible = visible;
-        self.shape = snap.cursor_shape;
-        let current = if visible && snap.cursor_y < snap.rows && snap.cursor_x < snap.cols {
-            LastCursorState {
-                visible,
-                x: snap.cursor_x,
-                y: snap.cursor_y,
-                shape: self.shape,
-            }
-        } else {
-            LastCursorState {
-                visible: false,
-                x: 0,
-                y: 0,
-                shape: self.shape,
-            }
-        };
-        if self.last_cursor != Some(current) {
-            self.dirty = true;
-        }
-    }
-}
-
-impl Component for Cursor {
-    /// If dirty, computes cell-aligned vertex quad for the current cursor
-    /// shape and uploads it.
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
             self.last_cursor = None;
             return;
         };
 
-        let visible = should_render_cursor(snap, self.blink_visible());
-        self.set_visible(visible, snap);
+        self.visible = should_render_cursor(snap, self.blink_visible());
+        self.shape = snap.cursor_shape;
 
-        if !self.dirty {
+        let state_changed = self.last_cursor.is_none_or(|last| {
+            last.visible != self.visible
+                || last.x != snap.cursor_x
+                || last.y != snap.cursor_y
+                || last.shape != self.shape
+        });
+
+        if !self.dirty && !state_changed {
             return;
         }
-        self.dirty = false;
-        if self.visible && snap.cursor_y < snap.rows && snap.cursor_x < snap.cols {
+
+        if self.visible && snap.cursor_x < snap.cols && snap.cursor_y < snap.rows {
             let (surf_w, surf_h) = gpu.surface_size();
             let cell_x = TEXT_PADDING + snap.cursor_x as f32 * self.cell_width;
             let cell_y = TEXT_PADDING + snap.cursor_y as f32 * self.line_height;
@@ -252,7 +231,7 @@ impl Component for Cursor {
     }
 
     /// Sets the pipeline and issues the draw call. No-op when vertex_count is 0.
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         if self.vertex_count == 0 {
             return;
         }
@@ -262,41 +241,15 @@ impl Component for Cursor {
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         self.dirty = true;
-    }
-}
-
-impl Cursor {
-    pub fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _snapshot: &TerminalSnapshot,
-    ) -> InteractionResult {
-        InteractionResult::continue_()
-    }
-
-    pub fn on_about_to_wait(&mut self, snapshot: &TerminalSnapshot) -> WaitResult {
-        if !snapshot.cursor_visible || !snapshot.cursor_blink {
-            return WaitResult::default();
-        }
-        let visible = self.blink_visible();
-        let mut result = WaitResult::default();
-        if visible != self.last_rendered_visible {
-            self.dirty = true;
-            result.requests.push(UiRequest::Redraw);
-        }
-        let millis = self.blink_start.elapsed().as_millis() as u64;
-        let next_toggle_ms = ((millis / BLINK_INTERVAL_MS) + 1) * BLINK_INTERVAL_MS;
-        result.deadline = Some(self.blink_start + std::time::Duration::from_millis(next_toggle_ms));
-        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::should_render_cursor;
-    use harbor_terminal::Terminal;
+    use crate::Terminal;
 
     #[test]
     fn dectcem_controls_rendered_cursor_visibility() {
