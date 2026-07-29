@@ -206,65 +206,6 @@ pub(crate) fn modifiers_to_widget(mods: ModifiersState) -> WidgetModifiers {
     }
 }
 
-/// Converts a widget `Key` back to a winit `Key` and optional character text.
-pub(crate) fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
-    match key {
-        WidgetKey::Tab => (Key::Named(NamedKey::Tab), None),
-        WidgetKey::Enter => (Key::Named(NamedKey::Enter), Some("\r".into())),
-        WidgetKey::Space => (Key::Character(" ".into()), Some(" ".into())),
-        WidgetKey::Escape => (Key::Named(NamedKey::Escape), None),
-        WidgetKey::Backspace => (Key::Named(NamedKey::Backspace), None),
-        WidgetKey::Insert => (Key::Named(NamedKey::Insert), None),
-        WidgetKey::Delete => (Key::Named(NamedKey::Delete), None),
-        WidgetKey::F1 => (Key::Named(NamedKey::F1), None),
-        WidgetKey::F2 => (Key::Named(NamedKey::F2), None),
-        WidgetKey::F3 => (Key::Named(NamedKey::F3), None),
-        WidgetKey::F4 => (Key::Named(NamedKey::F4), None),
-        WidgetKey::F5 => (Key::Named(NamedKey::F5), None),
-        WidgetKey::F6 => (Key::Named(NamedKey::F6), None),
-        WidgetKey::F7 => (Key::Named(NamedKey::F7), None),
-        WidgetKey::F8 => (Key::Named(NamedKey::F8), None),
-        WidgetKey::F9 => (Key::Named(NamedKey::F9), None),
-        WidgetKey::F10 => (Key::Named(NamedKey::F10), None),
-        WidgetKey::F11 => (Key::Named(NamedKey::F11), None),
-        WidgetKey::F12 => (Key::Named(NamedKey::F12), None),
-        WidgetKey::ArrowUp => (Key::Named(NamedKey::ArrowUp), None),
-        WidgetKey::ArrowDown => (Key::Named(NamedKey::ArrowDown), None),
-        WidgetKey::ArrowLeft => (Key::Named(NamedKey::ArrowLeft), None),
-        WidgetKey::ArrowRight => (Key::Named(NamedKey::ArrowRight), None),
-        WidgetKey::Home => (Key::Named(NamedKey::Home), None),
-        WidgetKey::End => (Key::Named(NamedKey::End), None),
-        WidgetKey::PageUp => (Key::Named(NamedKey::PageUp), None),
-        WidgetKey::PageDown => (Key::Named(NamedKey::PageDown), None),
-        // This compatibility conversion is retained for the terminal worker only.
-        // The live App delivers widget events directly to Terminal.
-        WidgetKey::NumpadEnter => (Key::Named(NamedKey::Enter), None),
-        WidgetKey::NumpadCharacter(c) | WidgetKey::Character(c) => {
-            let s: String = c.to_string();
-            (Key::Character(s.clone().into()), Some(s))
-        }
-    }
-}
-
-/// Converts widget-framework modifier flags back to winit modifier state.
-pub(crate) fn widget_to_winit_mods(m: WidgetModifiers) -> winit::keyboard::ModifiersState {
-    use winit::keyboard::ModifiersState;
-    let mut state = ModifiersState::empty();
-    if m.shift {
-        state |= ModifiersState::SHIFT;
-    }
-    if m.ctrl {
-        state |= ModifiersState::CONTROL;
-    }
-    if m.alt {
-        state |= ModifiersState::ALT;
-    }
-    if m.meta {
-        state |= ModifiersState::SUPER;
-    }
-    state
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,7 +274,6 @@ mod tests {
 
         for (named, widget) in expected {
             assert_eq!(named_to_widget_key(&named), Some(widget));
-            assert_eq!(widget_key_to_winit(&widget), (Key::Named(named), None),);
         }
     }
 }

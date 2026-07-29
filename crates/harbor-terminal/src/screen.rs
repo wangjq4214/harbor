@@ -362,7 +362,8 @@ impl Screen {
     }
 
     pub fn set_cursor_position(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.cursor.set_cursor_position(&self.normal, row_1_based, col_1_based);
+        self.cursor
+            .set_cursor_position(&self.normal, row_1_based, col_1_based);
     }
 
     pub fn set_cursor_col(&mut self, col_1_based: usize) {
@@ -374,7 +375,8 @@ impl Screen {
     }
 
     pub fn set_cursor(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.cursor.set_cursor(&self.normal, row_1_based, col_1_based);
+        self.cursor
+            .set_cursor(&self.normal, row_1_based, col_1_based);
     }
 
     pub fn home_cursor(&mut self) {
@@ -388,7 +390,8 @@ impl Screen {
     }
 
     pub fn set_left_right_margins(&mut self, left: usize, right: usize) {
-        self.cursor.set_left_right_margins(&self.normal, left, right);
+        self.cursor
+            .set_left_right_margins(&self.normal, left, right);
     }
 
     // ── modes ──────────────────────────────────────────────────────────
@@ -451,93 +454,178 @@ impl Screen {
     pub fn erase_display(&mut self, mode: usize) {
         // We need to split borrows: self.edit needs &mut self, self.cursor needs &mut self.
         // destructure to satisfy borrow checker.
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.erase_display(normal, cursor, mode);
     }
 
     pub fn erase_line(&mut self, mode: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.erase_line(normal, cursor, mode);
     }
 
     pub fn erase_chars(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.erase_chars(normal, cursor, n);
     }
 
     pub fn selective_erase_display(&mut self, mode: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.selective_erase_display(normal, cursor, mode);
     }
 
     pub fn selective_erase_line(&mut self, mode: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.selective_erase_line(normal, cursor, mode);
     }
 
     // ── insert / delete ────────────────────────────────────────────────
 
     pub fn insert_chars(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.insert_chars(normal, cursor, n);
     }
 
     pub fn delete_chars(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.delete_chars(normal, cursor, n);
     }
 
     pub fn insert_lines(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.insert_lines(normal, cursor, n);
     }
 
     pub fn delete_lines(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.delete_lines(normal, cursor, n);
     }
 
     // ── scroll region (CSI S / CSI T) ──────────────────────────────────
 
     pub fn scroll_up_region(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.scroll_up_region(normal, cursor, n);
     }
 
     pub fn scroll_down_region(&mut self, n: usize) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.scroll_down_region(normal, cursor, n);
     }
 
     // ── DEC rectangle ops ──────────────────────────────────────────────
 
     pub fn decera(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.decera(normal, cursor, params);
     }
 
     pub fn decsera(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.decsera(normal, cursor, params);
     }
 
     pub fn decfra(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.decfra(normal, cursor, params);
     }
 
     pub fn deccra(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.deccra(normal, cursor, params);
     }
 
     pub fn deccara(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.deccara(normal, cursor, params);
     }
 
     pub fn decrara(&mut self, params: &Params) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.decrara(normal, cursor, params);
     }
 
@@ -564,7 +652,12 @@ impl Screen {
     // ── write_char (coordinator) ───────────────────────────────────────
 
     pub fn write_char(&mut self, ch: char) {
-        let Screen { normal, cursor, edit, .. } = self;
+        let Screen {
+            normal,
+            cursor,
+            edit,
+            ..
+        } = self;
         edit.write_char(normal, cursor, ch);
     }
 
@@ -586,7 +679,12 @@ impl Screen {
         }
         if target > self.cursor.cursor.x {
             let spaces = target - self.cursor.cursor.x;
-            let Screen { normal, cursor, edit, .. } = self;
+            let Screen {
+                normal,
+                cursor,
+                edit,
+                ..
+            } = self;
             for _ in 0..spaces {
                 edit.write_char(normal, cursor, ' ');
             }
@@ -599,7 +697,12 @@ impl Screen {
         if let Some(ch) = self.edit.charsets.last_char {
             let n = if n == 0 { 1 } else { n };
             let count = n.min(self.normal.cols());
-            let Screen { normal, cursor, edit, .. } = self;
+            let Screen {
+                normal,
+                cursor,
+                edit,
+                ..
+            } = self;
             for _ in 0..count {
                 edit.write_char(normal, cursor, ch);
             }
@@ -648,7 +751,12 @@ impl Screen {
                 self.cursor.scroll_region.bottom.saturating_add(1),
             );
             if self.cursor.margins.enabled {
-                let Screen { normal, cursor, edit, .. } = self;
+                let Screen {
+                    normal,
+                    cursor,
+                    edit,
+                    ..
+                } = self;
                 // Call through edit for margin-rect scroll down
                 let top = cursor.scroll_region.top;
                 let bottom = cursor.scroll_region.bottom;
@@ -669,18 +777,6 @@ impl Screen {
                 for col in cursor.margins.left..=cursor.margins.right {
                     *normal.cell_mut(top, col) = blank;
                 }
-            } else if self.cursor.scroll_region.top == 0
-                && self.cursor.scroll_region.bottom == self.normal.rows() - 1
-            {
-                let tr = self.normal.total_rows();
-                let vis = self.normal.visible_start();
-                let c = self.normal.cols();
-                let src_start = ((vis + self.cursor.scroll_region.top) % tr) * c;
-                let src_end = ((vis + self.cursor.scroll_region.bottom) % tr) * c;
-                let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
-                self.normal.copy_ring_range(src_start, src_end, dst);
-                self.normal
-                    .fill_row_with(self.cursor.scroll_region.top, self.edit.erase_cell());
             } else {
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
@@ -714,7 +810,12 @@ impl Screen {
             self.cursor.scroll_region.bottom.saturating_add(1),
         );
         if self.cursor.margins.enabled {
-            let Screen { normal, cursor, edit, .. } = self;
+            let Screen {
+                normal,
+                cursor,
+                edit,
+                ..
+            } = self;
             let top = cursor.scroll_region.top;
             let bottom = cursor.scroll_region.bottom;
             let height = bottom - top + 1;
@@ -734,8 +835,7 @@ impl Screen {
         } else if self.cursor.scroll_region.top == 0
             && self.cursor.scroll_region.bottom == self.normal.rows() - 1
         {
-            self.normal
-                .scroll_up_full_screen(1, self.edit.erase_cell());
+            self.normal.scroll_up_full_screen(1, self.edit.erase_cell());
         } else {
             let tr = self.normal.total_rows();
             let vis = self.normal.visible_start();

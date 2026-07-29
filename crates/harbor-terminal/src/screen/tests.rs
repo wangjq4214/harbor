@@ -608,7 +608,10 @@ fn resize_clamps_margins_and_updates_tab_stops() {
     screen.edit.tab_stops.0[4] = true;
 
     screen.resize(2, 6);
-    assert_eq!((screen.cursor.margins.left, screen.cursor.margins.right), (5, 5));
+    assert_eq!(
+        (screen.cursor.margins.left, screen.cursor.margins.right),
+        (5, 5)
+    );
     assert_eq!(
         screen.edit.tab_stops.0,
         vec![false, false, false, false, true, false]
@@ -619,8 +622,14 @@ fn resize_clamps_margins_and_updates_tab_stops() {
         screen.edit.tab_stops.0[4],
         "existing tab stops must be preserved"
     );
-    assert!(screen.edit.tab_stops.0[8], "new default tab stop at column 8");
-    assert!(screen.edit.tab_stops.0[16], "new default tab stop at column 16");
+    assert!(
+        screen.edit.tab_stops.0[8],
+        "new default tab stop at column 8"
+    );
+    assert!(
+        screen.edit.tab_stops.0[16],
+        "new default tab stop at column 16"
+    );
 }
 #[test]
 fn erase_chars_clears_from_cursor_to_right() {
@@ -1277,7 +1286,10 @@ fn test_autowrap_and_pending_wrap() {
     assert_eq!(screen.row_text(0), "abcde");
     assert_eq!(screen.cursor.cursor.x, 4, "cursor stays at the last column");
     assert_eq!(screen.cursor.cursor.y, 0);
-    assert!(screen.cursor.modes.pending_wrap, "should enter pending wrap state");
+    assert!(
+        screen.cursor.modes.pending_wrap,
+        "should enter pending wrap state"
+    );
 
     // Writing the 6th character should wrap to next line
     screen.write_char('f');
@@ -1433,13 +1445,19 @@ fn test_tab_stops_hts_tbc() {
 
     screen.cursor.cursor.x = 0;
     screen.horizontal_tab();
-    assert_eq!(screen.cursor.cursor.x, 8, "should jump over cleared tab stop");
+    assert_eq!(
+        screen.cursor.cursor.x, 8,
+        "should jump over cleared tab stop"
+    );
 
     // Clear all tab stops
     screen.clear_tab_stops(3);
     screen.cursor.cursor.x = 0;
     screen.horizontal_tab();
-    assert_eq!(screen.cursor.cursor.x, 19, "should jump to the right margin limit");
+    assert_eq!(
+        screen.cursor.cursor.x, 19,
+        "should jump to the right margin limit"
+    );
 }
 
 #[test]
@@ -2090,7 +2108,10 @@ fn alt_screen_restores_all_state_groups() {
     assert_eq!(screen.edit.pen.bg, Color::Named(2), "SGR bg restored");
     assert!(screen.edit.pen.protected, "pen protected restored");
     // ScrollRegion
-    assert_eq!(screen.cursor.scroll_region.top, 1, "scroll region top restored");
+    assert_eq!(
+        screen.cursor.scroll_region.top, 1,
+        "scroll region top restored"
+    );
     assert_eq!(
         screen.cursor.scroll_region.bottom, 3,
         "scroll region bottom restored"
@@ -2116,7 +2137,11 @@ fn alt_screen_restores_all_state_groups() {
     // TabStops
     assert!(screen.edit.tab_stops.0[5], "tab stop restored");
     // CharacterSets
-    assert_eq!(screen.edit.charsets.last_char, Some('X'), "last_char restored");
+    assert_eq!(
+        screen.edit.charsets.last_char,
+        Some('X'),
+        "last_char restored"
+    );
     assert_eq!(screen.edit.charsets.g0, b'0', "g0 charset restored");
     assert_eq!(screen.edit.charsets.g1, b'A', "g1 charset restored");
     assert_eq!(screen.edit.charsets.active, 1, "active charset restored");

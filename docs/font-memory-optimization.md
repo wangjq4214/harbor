@@ -44,7 +44,7 @@ load_candidate_fonts
       -> fontdue::Font::from_bytes
 ```
 
-In `crates/harbor-render/src/font.rs`, `load_candidate_fonts` starts the CJK loader before determining whether the selected primary font requires fallback. On Windows, its candidates include `msyh.ttc`, `msyh.ttf`, `simhei.ttf`, `simsun.ttc`, and `Deng.ttf`.
+In `crates/harbor-text/src/font.rs`, `load_candidate_fonts` starts the CJK loader before determining whether the selected primary font requires fallback. On Windows, its candidates include `msyh.ttc`, `msyh.ttf`, `simhei.ttf`, `simsun.ttc`, and `Deng.ttf`.
 
 `fontdue::Font::from_bytes` eagerly parses a large CJK font collection. The profile attributes approximately 363 MiB, 118 MiB, 98 MiB, and 51 MiB of cumulative allocations to internal calls reached from this parser invocation. The raw font-file read alone is approximately 18.79 MiB.
 
@@ -119,8 +119,8 @@ Each scenario records the executable, backend, font set, screen size, dwell time
 
 Target files:
 
-- `crates/harbor-render/src/font.rs`
-- `crates/harbor-render/src/text.rs`
+- `crates/harbor-text/src/font.rs`
+- `crates/harbor-terminal/src/render/text.rs`
 - callers that currently pass an immutable `FontBook`
 
 ### Design

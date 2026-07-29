@@ -12,10 +12,8 @@ members = [".", "crates/*"]
 harbor-config = { path = "crates/harbor-config" }
 harbor-parser = { path = "crates/harbor-parser" }
 harbor-pty = { path = "crates/harbor-pty" }
-harbor-render = { path = "crates/harbor-render" }
 harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-types = { path = "crates/harbor-types" }
-harbor-ui = { path = "crates/harbor-ui" }
 harbor-widget = { path = "crates/harbor-widget" }
 harbor-text = { path = "crates/harbor-text" }
 
@@ -61,26 +59,20 @@ winit = { version = "0.30", features = ["rwh_06"] }
 [dependencies]
 # workspace crates
 harbor-config = { workspace = true }
-harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
 harbor-widget = { workspace = true }
-harbor-text = { workspace = true }
 
 # external
 anyhow = { workspace = true }
-arboard = { workspace = true }
-bytemuck = { workspace = true }
 dhat = { workspace = true, optional = true }
 dirs = { workspace = true }
-hashbrown = { workspace = true }
 pollster = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
-unicode-width = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 

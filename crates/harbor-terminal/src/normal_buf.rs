@@ -136,7 +136,11 @@ impl NormalBuf {
     ///
     /// Accepts any `RangeBounds<usize>` so both inline ranges and Range variables work.
     #[allow(dead_code)]
-    pub(crate) fn copy_cells_within<R: std::ops::RangeBounds<usize>>(&mut self, src: R, dst: usize) {
+    pub(crate) fn copy_cells_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        src: R,
+        dst: usize,
+    ) {
         self.cells.copy_within(src, dst);
     }
 
@@ -147,12 +151,7 @@ impl NormalBuf {
     /// When `src_start <= src_end` the range is contiguous; otherwise
     /// it is split into two parts: `[src_start, ring_end)` and
     /// `[0, src_end)`, and both are copied in order.
-    pub(crate) fn copy_ring_range(
-        &mut self,
-        src_start: usize,
-        src_end: usize,
-        dst: usize,
-    ) {
+    pub(crate) fn copy_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
         let ring_end = self.total_rows * self.cols;
         if src_start <= src_end {
             self.cells.copy_within(src_start..src_end, dst);

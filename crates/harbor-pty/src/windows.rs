@@ -9,10 +9,7 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Foundation::{
-            CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
-            WAIT_TIMEOUT,
-        },
+        Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, WAIT_FAILED, WAIT_TIMEOUT},
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
             Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
@@ -156,11 +153,6 @@ impl Pty {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
         self._pseudo_console.as_mut().unwrap().resize(size)
-    }
-
-    /// Writes keyboard input bytes into the ConPTY input pipe.
-    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
-        self._input_write.as_mut().unwrap().write(data)
     }
 
     /// Starts termination of the shell process tree without blocking the caller.
@@ -452,12 +444,6 @@ impl PtyReader {
         .context("failed to read pty output")?;
 
         Ok(bytes_read as usize)
-    }
-
-    pub(crate) fn is_shutdown_error(error: &anyhow::Error) -> bool {
-        error
-            .downcast_ref::<::windows::core::Error>()
-            .is_some_and(|error| error.code() == HRESULT::from_win32(ERROR_OPERATION_ABORTED.0))
     }
 }
 

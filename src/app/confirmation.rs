@@ -1,5 +1,7 @@
 //! Secondary winit window for paste confirmation rendered by Widget Runtime.
 
+#![allow(dead_code, clippy::too_many_arguments)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use winit::{
@@ -15,8 +17,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::translate::winit_to_uievent;
-use harbor_terminal::GpuContext;
-use harbor_text::TextMetrics;
+use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;

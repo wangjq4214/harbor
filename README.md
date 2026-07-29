@@ -50,13 +50,11 @@ cargo run    # 🪟 Windows only — Unix PTY is a stub for now
 ## 🏗️ Architecture
 
 ```
-winit → App → UiRoot (Background + TextLayer + Decoration + Cursor + Scrollbar)
-                ↕
-         Terminal → Screen (NormalBuf ring buffer)
-                ↕
-         Parser (streaming byte-at-a-time)
-                ↕
-         PTY (Windows ConPTY, Unix stub)
+winit → App → Terminal (CustomPaint widget)
+                ├── Screen (NormalBuf ring buffer)
+                ├── wgpu Render Pipelines (Background, Text, Decoration, Selection, Cursor, Scrollbar)
+                ├── Parser (harbor-parser streaming VT)
+                └── PTY Handles (Windows ConPTY, Unix stub)
 ```
 
 ## 🧪 Run Tests

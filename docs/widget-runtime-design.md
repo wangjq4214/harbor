@@ -294,7 +294,7 @@ harbor-text
 └── TextRun cache
 ```
 
-`harbor-render` 与 `harbor-widget` 各自拥有 GPU renderer adapter，共享 CPU 文本模型和 raster 数据。terminal 的等宽逐格文本与通用 UI shaping 不完全相同；复杂脚本、双向文本、ligature、selection/caret 不进入首版。
+`harbor-terminal` 与 `harbor-widget` 各自拥有 GPU renderer adapter，共享 CPU 文本模型和 raster 数据。terminal 的等宽逐格文本与通用 UI shaping 不完全相同；复杂脚本、双向文本、ligature、selection/caret 不进入首版。
 
 ## 11. 与 Harbor 的帧合成
 

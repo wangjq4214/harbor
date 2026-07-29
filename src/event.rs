@@ -8,10 +8,6 @@ use std::time::Instant;
 pub(crate) enum AppEvent {
     /// The terminal reader queued output for UI-thread parsing.
     TerminalOutputReady,
-    /// The terminal worker published a new snapshot or status.
-    ///
-    /// Retained until T0005 removes the obsolete worker.
-    WorkerUpdateReady,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -31,7 +27,6 @@ pub(crate) enum FrameControlFlow {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RedrawReason {
-    WorkerUpdate,
     TerminalOutput,
     Input,
     Resize,

@@ -83,6 +83,7 @@ impl Background {
     }
 
     /// Builds background vertices for a slice of columns in a single row `[start_col, end_col)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_background_range_vertices(
         cell_width: f32,
         line_height: f32,

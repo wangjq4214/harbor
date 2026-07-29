@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0005
 **Source:** [Spec: 0002-terminal-render-consolidation](../spec/0002-terminal-render-consolidation.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

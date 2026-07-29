@@ -429,7 +429,12 @@ impl VtEditEngine {
 
     // ── erase display / line / chars ──────────────────────────────
 
-    pub(crate) fn erase_display(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, mode: usize) {
+    pub(crate) fn erase_display(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+    ) {
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -493,7 +498,12 @@ impl VtEditEngine {
         }
     }
 
-    pub(crate) fn erase_line(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, mode: usize) {
+    pub(crate) fn erase_line(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+    ) {
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -517,7 +527,9 @@ impl VtEditEngine {
                 cursor.cursor.x.saturating_sub(1),
                 right_col + 1,
             ),
-            1 => normal.mark_range_dirty(cursor.cursor.y, left_col, (cursor.cursor.x + 2).min(cols)),
+            1 => {
+                normal.mark_range_dirty(cursor.cursor.y, left_col, (cursor.cursor.x + 2).min(cols))
+            }
             2 => normal.mark_range_dirty(cursor.cursor.y, left_col, right_col + 1),
             _ => {}
         }
@@ -529,7 +541,12 @@ impl VtEditEngine {
         }
     }
 
-    pub(crate) fn erase_chars(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn erase_chars(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -558,7 +575,12 @@ impl VtEditEngine {
 
     // ── selective erase ───────────────────────────────────────────
 
-    pub(crate) fn selective_erase_display(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, mode: usize) {
+    pub(crate) fn selective_erase_display(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+    ) {
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -639,7 +661,12 @@ impl VtEditEngine {
         }
     }
 
-    pub(crate) fn selective_erase_line(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, mode: usize) {
+    pub(crate) fn selective_erase_line(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+    ) {
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -690,7 +717,12 @@ impl VtEditEngine {
 
     // ── insert / delete chars ─────────────────────────────────────
 
-    pub(crate) fn insert_chars(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn insert_chars(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         cursor.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
@@ -720,7 +752,12 @@ impl VtEditEngine {
         normal.fill_linear_range_with(row_start + col, row_start + col + n, self.erase_cell());
     }
 
-    pub(crate) fn delete_chars(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn delete_chars(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         cursor.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
@@ -753,16 +790,32 @@ impl VtEditEngine {
 
     // ── insert / delete lines ─────────────────────────────────────
 
-    pub(crate) fn insert_lines(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn insert_lines(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         let n = if n == 0 { 1 } else { n };
-        if cursor.cursor.y < cursor.scroll_region.top || cursor.cursor.y > cursor.scroll_region.bottom {
+        if cursor.cursor.y < cursor.scroll_region.top
+            || cursor.cursor.y > cursor.scroll_region.bottom
+        {
             return;
         }
         let max_n = cursor.scroll_region.bottom - cursor.cursor.y + 1;
         let n = n.min(max_n);
-        normal.mark_rows_dirty(cursor.cursor.y, cursor.scroll_region.bottom.saturating_add(1));
+        normal.mark_rows_dirty(
+            cursor.cursor.y,
+            cursor.scroll_region.bottom.saturating_add(1),
+        );
         if cursor.margins.enabled {
-            self.scroll_margin_rect_down(normal, cursor, cursor.cursor.y, cursor.scroll_region.bottom, n);
+            self.scroll_margin_rect_down(
+                normal,
+                cursor,
+                cursor.cursor.y,
+                cursor.scroll_region.bottom,
+                n,
+            );
             cursor.cursor.x = 0;
             return;
         }
@@ -786,16 +839,32 @@ impl VtEditEngine {
         cursor.cursor.x = 0;
     }
 
-    pub(crate) fn delete_lines(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn delete_lines(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         let n = if n == 0 { 1 } else { n };
-        if cursor.cursor.y < cursor.scroll_region.top || cursor.cursor.y > cursor.scroll_region.bottom {
+        if cursor.cursor.y < cursor.scroll_region.top
+            || cursor.cursor.y > cursor.scroll_region.bottom
+        {
             return;
         }
         let max_n = cursor.scroll_region.bottom - cursor.cursor.y + 1;
         let n = n.min(max_n);
-        normal.mark_rows_dirty(cursor.cursor.y, cursor.scroll_region.bottom.saturating_add(1));
+        normal.mark_rows_dirty(
+            cursor.cursor.y,
+            cursor.scroll_region.bottom.saturating_add(1),
+        );
         if cursor.margins.enabled {
-            self.scroll_margin_rect_up(normal, cursor, cursor.cursor.y, cursor.scroll_region.bottom, n);
+            self.scroll_margin_rect_up(
+                normal,
+                cursor,
+                cursor.cursor.y,
+                cursor.scroll_region.bottom,
+                n,
+            );
             cursor.cursor.x = 0;
             return;
         }
@@ -821,7 +890,12 @@ impl VtEditEngine {
 
     // ── scroll region ─────────────────────────────────────────────
 
-    pub(crate) fn scroll_up_region(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn scroll_up_region(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         let n = if n == 0 { 1 } else { n };
         let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
         let n = n.min(region_height);
@@ -829,7 +903,13 @@ impl VtEditEngine {
             normal.mark_row_dirty(row);
         }
         if cursor.margins.enabled {
-            self.scroll_margin_rect_up(normal, cursor, cursor.scroll_region.top, cursor.scroll_region.bottom, n);
+            self.scroll_margin_rect_up(
+                normal,
+                cursor,
+                cursor.scroll_region.top,
+                cursor.scroll_region.bottom,
+                n,
+            );
             return;
         }
         if n == region_height {
@@ -850,7 +930,12 @@ impl VtEditEngine {
         }
     }
 
-    pub(crate) fn scroll_down_region(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine, n: usize) {
+    pub(crate) fn scroll_down_region(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        n: usize,
+    ) {
         let n = if n == 0 { 1 } else { n };
         let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
         let n = n.min(region_height);
@@ -858,7 +943,13 @@ impl VtEditEngine {
             normal.mark_row_dirty(row);
         }
         if cursor.margins.enabled {
-            self.scroll_margin_rect_down(normal, cursor, cursor.scroll_region.top, cursor.scroll_region.bottom, n);
+            self.scroll_margin_rect_down(
+                normal,
+                cursor,
+                cursor.scroll_region.top,
+                cursor.scroll_region.bottom,
+                n,
+            );
             return;
         }
         if n == region_height {
@@ -881,7 +972,14 @@ impl VtEditEngine {
 
     // ── margin-rect scroll helpers ────────────────────────────────
 
-    fn scroll_margin_rect_up(&mut self, normal: &mut NormalBuf, cursor: &CursorEngine, top: usize, bottom: usize, n: usize) {
+    fn scroll_margin_rect_up(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &CursorEngine,
+        top: usize,
+        bottom: usize,
+        n: usize,
+    ) {
         let height = bottom - top + 1;
         if n < height {
             for dst_row in top..=(bottom - n) {
@@ -900,7 +998,14 @@ impl VtEditEngine {
         }
     }
 
-    fn scroll_margin_rect_down(&mut self, normal: &mut NormalBuf, cursor: &CursorEngine, top: usize, bottom: usize, n: usize) {
+    fn scroll_margin_rect_down(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &CursorEngine,
+        top: usize,
+        bottom: usize,
+        n: usize,
+    ) {
         let height = bottom - top + 1;
         if n < height {
             for dst_row in ((top + n)..=bottom).rev() {
@@ -925,14 +1030,25 @@ impl VtEditEngine {
     /// bottom of the region.  This is the core of the Screen-level
     /// `scroll_region_up_one` coordinator method, extracted so `write_char`
     /// can use it without going through Screen.
-    pub(crate) fn scroll_region_up_one_inner(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine) {
+    pub(crate) fn scroll_region_up_one_inner(
+        &mut self,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+    ) {
         normal.mark_rows_dirty(
             cursor.scroll_region.top,
             cursor.scroll_region.bottom.saturating_add(1),
         );
         if cursor.margins.enabled {
-            self.scroll_margin_rect_up(normal, cursor, cursor.scroll_region.top, cursor.scroll_region.bottom, 1);
-        } else if cursor.scroll_region.top == 0 && cursor.scroll_region.bottom == normal.rows() - 1 {
+            self.scroll_margin_rect_up(
+                normal,
+                cursor,
+                cursor.scroll_region.top,
+                cursor.scroll_region.bottom,
+                1,
+            );
+        } else if cursor.scroll_region.top == 0 && cursor.scroll_region.bottom == normal.rows() - 1
+        {
             normal.scroll_up_full_screen(1, self.erase_cell());
         } else {
             let tr = normal.total_rows();

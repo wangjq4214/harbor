@@ -49,6 +49,11 @@ impl Params {
         self.len
     }
 
+    /// Returns `true` if there are no parameter slots.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Number of colon-separated sub-parameters in a parameter slot.
     pub fn sub_params_len(&self, index: usize) -> Option<usize> {
         (index < self.len).then(|| self.values[index].len)

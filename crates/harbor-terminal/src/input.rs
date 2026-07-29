@@ -28,10 +28,12 @@ impl TerminalInputEncoder {
             key => (key, false),
         };
 
-        if modes.application_keypad && is_numpad && modifier_code == 1 {
-            if let Some(sequence) = keypad_sequence(key) {
-                return Some(sequence.to_vec());
-            }
+        if modes.application_keypad
+            && is_numpad
+            && modifier_code == 1
+            && let Some(sequence) = keypad_sequence(key)
+        {
+            return Some(sequence.to_vec());
         }
 
         if modifiers.ctrl

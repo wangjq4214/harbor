@@ -328,7 +328,7 @@ The product milestones below retain the existing implementation notes, task list
 
 **Terminal Grid.** `Terminal` + `Cell`, rows/cols tracking, cursor position, character write with automatic wrap, `\n`/`\r`/`\x08` handling, `scroll_up` on overflow, `clear`, `resize`, renderer reads grid row-by-row.
 
-**PTY (Windows).** Custom ConPTY wrapper, default shell (`cmd`/`powershell`/`pwsh`), worker-owned reader/parser/model lifecycle, revisioned snapshots to the UI, keyboard input forwarded through the worker.
+**PTY (Windows).** Custom ConPTY wrapper, default shell (`cmd`/`powershell`/`pwsh`), direct reader-thread → UI parser lifecycle, keyboard input forwarded directly to terminal.
 
 **Input.** Normal text, Enter→`\r`, Backspace→`0x7f`, Tab→`\t`, Escape→`0x1b`, Ctrl+letter→control char, arrow keys→CSI sequences.
 

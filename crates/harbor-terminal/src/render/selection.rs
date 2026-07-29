@@ -20,13 +20,12 @@ pub struct Selection {
     /// Cached from the most recent CursorMoved event (physical pixels).
     #[allow(dead_code)]
     last_cursor_pos: Option<(f64, f64)>,
-    pending_copy: Option<u64>,
     cell_width: f32,
     line_height: f32,
     /// Whether vertex buffer needs re-upload.
     dirty: bool,
     /// System clipboard handle (None when clipboard is unavailable, e.g. headless).
-    clipboard: Option<Clipboard>,
+    _clipboard: Option<Clipboard>,
 }
 
 impl Selection {
@@ -44,11 +43,10 @@ impl Selection {
             vertex_count: 0,
             vertex_cap: 0,
             last_cursor_pos: None,
-            pending_copy: None,
             cell_width,
             line_height,
             dirty: false,
-            clipboard: {
+            _clipboard: {
                 let cb = Clipboard::new();
                 if cb.is_err() {
                     tracing::warn!("clipboard unavailable; copy/paste will be disabled");
@@ -58,30 +56,9 @@ impl Selection {
         }
     }
 
-    /// Completes a worker copy request and updates the UI-owned clipboard.
-    pub fn apply_copy_result(&mut self, result: harbor_types::CopySelectionResult) -> bool {
-        if self.pending_copy != Some(result.request_id) {
-            return false;
-        }
-        self.pending_copy = None;
-        if result.text.is_empty() {
-            return true;
-        }
-        if let Some(clipboard) = self.clipboard.as_mut()
-            && let Err(error) = clipboard.set_text(result.text)
-        {
-            tracing::warn!(?error, "failed to copy text to clipboard");
-        }
-        true
-    }
-
-    pub fn set_copy_pending(&mut self, request_id: u64) {
-        self.pending_copy = Some(request_id);
-    }
-
     /// Converts physical pixel coordinates `(x, y)` to grid `(row, col)`
     /// relative to global line space.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn pixel_to_cell(
         &self,
         px: f64,

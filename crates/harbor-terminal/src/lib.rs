@@ -26,9 +26,7 @@ pub use selection_model::{
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 pub use harbor_types::should_confirm_multiline;
 pub use harbor_types::{
-    CopySelectionResult, InputKey, InputModes, InputModifiers, InputRequest, PasteDisposition,
-    RevisionedUpdateReceiver, TerminalCommand, TerminalSize, TerminalSnapshot, TerminalUpdate,
-    UpdateDamage, WorkerStatus, safe_preview_line,
+    InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
 };
 pub use harbor_widget::scene::primitive::ExternalDrawId;
 
@@ -140,6 +138,7 @@ impl Terminal {
     /// The reader is consumed by a dedicated blocking thread; the writer is used
     /// synchronously by UI-thread input handling. `pty_control` is the concrete
     /// platform lifecycle owner that preserves resize and safe reader reaping.
+    #[allow(clippy::too_many_arguments)]
     pub fn new<R, W>(
         size: TerminalSize,
         pty_read: R,

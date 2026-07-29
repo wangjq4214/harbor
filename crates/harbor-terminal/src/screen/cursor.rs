@@ -4,8 +4,8 @@
 //! visible grid take `&NormalBuf`; methods that also modify the grid or call
 //! into the edit engine live on `Screen` (the coordinator).
 
-use crate::normal_buf::NormalBuf;
 use crate::InputModes;
+use crate::normal_buf::NormalBuf;
 use harbor_types::{CellAttrs, Color, CursorShape};
 
 use super::edit::{Pen, Rect, TabStops};
@@ -271,7 +271,12 @@ impl CursorEngine {
     }
 
     /// Positions the cursor from 1-based ANSI coordinates, clamped to the visible grid.
-    pub(crate) fn set_cursor_position(&mut self, normal: &NormalBuf, row_1_based: usize, col_1_based: usize) {
+    pub(crate) fn set_cursor_position(
+        &mut self,
+        normal: &NormalBuf,
+        row_1_based: usize,
+        col_1_based: usize,
+    ) {
         self.modes.pending_wrap = false;
         if self.modes.origin {
             let relative_row = row_1_based.saturating_sub(1);
@@ -311,7 +316,12 @@ impl CursorEngine {
         }
     }
 
-    pub(crate) fn set_cursor(&mut self, normal: &NormalBuf, row_1_based: usize, col_1_based: usize) {
+    pub(crate) fn set_cursor(
+        &mut self,
+        normal: &NormalBuf,
+        row_1_based: usize,
+        col_1_based: usize,
+    ) {
         self.set_cursor_position(normal, row_1_based, col_1_based);
     }
 
@@ -354,11 +364,7 @@ impl CursorEngine {
 
     pub(crate) fn set_scroll_region(&mut self, normal: &NormalBuf, top: usize, bottom: usize) {
         let top = if top == 0 { 1 } else { top };
-        let bottom = if bottom == 0 {
-            normal.rows()
-        } else {
-            bottom
-        };
+        let bottom = if bottom == 0 { normal.rows() } else { bottom };
         let top = top.max(1).min(normal.rows());
         let bottom = bottom.min(normal.rows());
         if top >= bottom {
@@ -371,11 +377,7 @@ impl CursorEngine {
 
     pub(crate) fn set_left_right_margins(&mut self, normal: &NormalBuf, left: usize, right: usize) {
         let left = if left == 0 { 1 } else { left };
-        let right = if right == 0 {
-            normal.cols()
-        } else {
-            right
-        };
+        let right = if right == 0 { normal.cols() } else { right };
         let left = left.max(1).min(normal.cols());
         let right = right.min(normal.cols());
         if left < right {
@@ -389,7 +391,12 @@ impl CursorEngine {
 
     /// Sets a DEC private mode. Returns `true` if the mode was handled,
     /// `false` if it should be handled by the caller (e.g. alt-screen).
-    pub(crate) fn set_private_mode(&mut self, normal: &NormalBuf, param: usize, enabled: bool) -> bool {
+    pub(crate) fn set_private_mode(
+        &mut self,
+        normal: &NormalBuf,
+        param: usize,
+        enabled: bool,
+    ) -> bool {
         match param {
             1 => self.modes.application_cursor = enabled,
             66 => self.modes.application_keypad = enabled,

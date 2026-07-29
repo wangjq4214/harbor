@@ -1,7 +1,6 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
 mod confirmation;
-pub(crate) mod input;
 pub(crate) mod translate;
 
 use std::{
@@ -111,8 +110,6 @@ fn route_terminal_inputs(
 fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
     match event {
         AppEvent::TerminalOutputReady => Some(RedrawReason::TerminalOutput),
-        // Kept for the inert terminal worker until T0005 removes it.
-        AppEvent::WorkerUpdateReady => None,
     }
 }
 
@@ -834,10 +831,6 @@ mod tests {
         assert_eq!(
             redraw_reason_for_app_event(AppEvent::TerminalOutputReady),
             Some(RedrawReason::TerminalOutput)
-        );
-        assert_eq!(
-            redraw_reason_for_app_event(AppEvent::WorkerUpdateReady),
-            None
         );
     }
 }
