@@ -1,9 +1,8 @@
 use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
-use harbor_config::TEXT_PADDING;
-
 use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange};
 
 // ── BackgroundLayer ───────────────────────────────────────────────────────────
@@ -95,14 +94,12 @@ impl Background {
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity((end_col - start_col) * 6);
+        let viewport = RenderViewport::new(cell_width, line_height);
         for col in start_col..end_col {
             let cell = snap.cell(row, col);
             let inverse = cell.attrs.contains(CellAttrs::INVERSE);
             if cell.bg != Color::Default || (inverse && cell.fg != Color::Default) {
-                let left = TEXT_PADDING + col as f32 * cell_width;
-                let right = TEXT_PADDING + (col + 1) as f32 * cell_width;
-                let top = TEXT_PADDING + row as f32 * line_height;
-                let bottom = TEXT_PADDING + (row + 1) as f32 * line_height;
+                let (left, top, right, bottom) = viewport.cell_bounds(row, col);
 
                 let color = if inverse {
                     cell.fg.to_rgba()

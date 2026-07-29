@@ -15,12 +15,13 @@ pub use damage::DirtyRange;
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use render::{
-    Background, Cursor, Decoration, GpuContext, Scrollbar, Selection, SurfaceDisposition,
-    SurfaceStatus, Text, UploadMode, UploadPlan, UploadPolicy, surface_disposition,
+    Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
+    SurfaceDisposition, SurfaceStatus, TerminalRenderPipeline, Text, UploadMode, UploadPlan,
+    UploadPolicy, surface_disposition,
 };
 pub use screen::{AltScreenAction, Cell, CellAttrs, Color, CursorShape, Screen, SelectionBounds};
 pub use selection_model::{
-    AutoScroll, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
+    AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
 };
 
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
@@ -123,13 +124,8 @@ pub struct Terminal {
     draw_id: ExternalDrawId,
     /// The PTY reader, writer, and shutdown owner for this terminal instance.
     pty: Option<TerminalPty>,
-    // Render components
-    background: Option<Background>,
-    text: Option<Text>,
-    decoration: Option<Decoration>,
-    selection: Option<Selection>,
-    cursor: Option<Cursor>,
-    scrollbar: Option<Scrollbar>,
+    /// Encapsulated GPU render pipeline.
+    renderer: Option<TerminalRenderPipeline>,
 }
 
 impl Terminal {
@@ -156,19 +152,10 @@ impl Terminal {
         let mut terminal = Self::new_headless(size.rows, size.cols);
         let snap = terminal.normal.terminal_snapshot();
 
-        let background = Background::new(gpu, &snap, metrics.cell_width, metrics.line_height);
-        let text = Text::new(gpu, font_book, metrics, &snap).expect("text renderer init");
-        let decoration = Decoration::new(gpu, &snap, metrics);
-        let selection = Selection::new(gpu, metrics.cell_width, metrics.line_height);
-        let cursor = Cursor::new(gpu, metrics);
-        let scrollbar = Scrollbar::new(gpu, &snap);
+        let renderer = TerminalRenderPipeline::new(gpu, font_book, metrics, &snap)
+            .expect("terminal render pipeline init");
 
-        terminal.background = Some(background);
-        terminal.text = Some(text);
-        terminal.decoration = Some(decoration);
-        terminal.selection = Some(selection);
-        terminal.cursor = Some(cursor);
-        terminal.scrollbar = Some(scrollbar);
+        terminal.renderer = Some(renderer);
         terminal.pty = Some(TerminalPty::new(
             pty_read,
             pty_write,
@@ -181,12 +168,8 @@ impl Terminal {
     /// Calculates the grid dimensions used by a rendered terminal at the current surface size.
     pub fn terminal_size_for(gpu: &GpuContext, metrics: &TextMetrics) -> TerminalSize {
         let (width, height) = gpu.surface_size();
-        let available_width = (width as f32 - 2.0 * harbor_config::TEXT_PADDING).max(0.0);
-        let available_height = (height as f32 - 2.0 * harbor_config::TEXT_PADDING).max(0.0);
-        TerminalSize {
-            rows: ((available_height / metrics.line_height).floor() as usize).max(1),
-            cols: ((available_width / metrics.cell_width).floor() as usize).max(1),
-        }
+        RenderViewport::new(metrics.cell_width, metrics.line_height)
+            .compute_grid_size(width, height)
     }
 
     /// Creates a headless Terminal without GPU or PTY resources (for parser tests).
@@ -197,12 +180,7 @@ impl Terminal {
             suppress_scroll_snap: false,
             draw_id: 1,
             pty: None,
-            background: None,
-            text: None,
-            decoration: None,
-            selection: None,
-            cursor: None,
-            scrollbar: None,
+            renderer: None,
         }
     }
 
@@ -231,47 +209,8 @@ impl Terminal {
     /// Prepares GPU resources for all render components.
     pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {
         let snap = self.normal.terminal_snapshot();
-        if let (
-            Some(background),
-            Some(text),
-            Some(decoration),
-            Some(selection),
-            Some(cursor),
-            Some(scrollbar),
-        ) = (
-            &mut self.background,
-            &mut self.text,
-            &mut self.decoration,
-            &mut self.selection,
-            &mut self.cursor,
-            &mut self.scrollbar,
-        ) {
-            if let Some(damage) = damage {
-                let full_ranges;
-                let dirty_ranges = match damage {
-                    UpdateDamage::Ranges(ranges) => ranges,
-                    UpdateDamage::FullUpload => {
-                        full_ranges = (0..snap.rows)
-                            .map(|row| DirtyRange {
-                                row,
-                                start_col: 0,
-                                end_col: snap.cols,
-                            })
-                            .collect::<Vec<_>>();
-                        &full_ranges
-                    }
-                };
-                background.prepare_with_dirty(gpu, &snap, dirty_ranges);
-                text.prepare_with_dirty(gpu, &snap, dirty_ranges);
-                decoration.prepare_with_dirty(gpu, &snap, dirty_ranges);
-            } else {
-                background.prepare(gpu, Some(&snap));
-                text.prepare(gpu, Some(&snap));
-                decoration.prepare(gpu, Some(&snap));
-            }
-            selection.prepare(gpu, Some(&snap));
-            cursor.prepare(gpu, Some(&snap));
-            scrollbar.prepare(gpu, Some(&snap));
+        if let Some(renderer) = &mut self.renderer {
+            renderer.prepare(gpu, &snap, damage);
         }
     }
 
@@ -288,27 +227,8 @@ impl Terminal {
         }
         self.drain_pty();
         self.prepare(gpu, None);
-        if let (
-            Some(background),
-            Some(text),
-            Some(decoration),
-            Some(selection),
-            Some(cursor),
-            Some(scrollbar),
-        ) = (
-            &self.background,
-            &self.text,
-            &self.decoration,
-            &self.selection,
-            &self.cursor,
-            &self.scrollbar,
-        ) {
-            background.draw(pass);
-            text.draw(pass);
-            decoration.draw(pass);
-            selection.draw(pass);
-            cursor.draw(pass);
-            scrollbar.draw(pass);
+        if let Some(renderer) = &self.renderer {
+            renderer.draw(pass);
         }
     }
 
@@ -319,29 +239,14 @@ impl Terminal {
 
     pub fn resize_gpu(&mut self, size: TerminalSize, gpu: &GpuContext) {
         self.resize_if_changed(size);
-        if let Some(bg) = &mut self.background {
-            bg.resize(gpu, (0, 0));
-        }
-        if let Some(text) = &mut self.text {
-            text.resize(gpu, (0, 0));
-        }
-        if let Some(dec) = &mut self.decoration {
-            dec.resize(gpu, (0, 0));
-        }
-        if let Some(sel) = &mut self.selection {
-            sel.resize(gpu, (0, 0));
-        }
-        if let Some(cur) = &mut self.cursor {
-            cur.resize(gpu, (0, 0));
-        }
-        if let Some(sb) = &mut self.scrollbar {
-            sb.resize(gpu, (0, 0));
+        if let Some(renderer) = &mut self.renderer {
+            renderer.resize(gpu);
         }
     }
 
     pub fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
-        if let Some(text) = &self.text {
-            text.terminal_size(gpu)
+        if let Some(renderer) = &self.renderer {
+            renderer.terminal_size(gpu)
         } else {
             TerminalSize {
                 rows: self.normal.rows(),
@@ -351,24 +256,24 @@ impl Terminal {
     }
 
     pub fn text_metrics(&self) -> Option<&TextMetrics> {
-        self.text.as_ref().map(|t| t.metrics())
+        self.renderer.as_ref().map(|r| r.metrics())
     }
 
     pub fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.text.as_ref().and_then(|t| t.glyph(ch))
+        self.renderer.as_ref().and_then(|r| r.glyph(ch))
     }
 
     pub fn text_bind_group(&self) -> Option<&wgpu::BindGroup> {
-        self.text.as_ref().map(|t| t.text_bind_group())
+        self.renderer.as_ref().map(|r| r.text_bind_group())
     }
 
     pub fn text_bind_group_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.text.as_ref().map(|t| t.text_bind_group_layout())
+        self.renderer.as_ref().map(|r| r.text_bind_group_layout())
     }
 
     pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        if let Some(t) = &mut self.text {
-            t.ensure_glyphs(text, gpu);
+        if let Some(r) = &mut self.renderer {
+            r.ensure_glyphs(text, gpu);
         }
     }
 

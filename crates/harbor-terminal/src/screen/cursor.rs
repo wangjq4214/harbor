@@ -354,8 +354,7 @@ impl CursorEngine {
         }
         self.cursor.x -= 1;
 
-        let index = normal.display_to_ring(self.cursor.y) * normal.cols() + self.cursor.x;
-        if normal.cell_linear(index).wide_continuation && self.cursor.x > 0 {
+        if normal.cell(self.cursor.y, self.cursor.x).wide_continuation && self.cursor.x > 0 {
             self.cursor.x -= 1;
         }
     }

@@ -2,6 +2,8 @@ pub mod background;
 pub mod cursor;
 pub mod decoration;
 pub mod gpu;
+pub mod layout;
+pub mod pipeline;
 pub mod scrollbar;
 pub mod selection;
 pub mod text;
@@ -13,6 +15,8 @@ pub use gpu::{
     GpuContext, SurfaceDisposition, SurfaceStatus, UploadMode, UploadPlan, UploadPolicy,
     surface_disposition,
 };
+pub use layout::RenderViewport;
+pub use pipeline::TerminalRenderPipeline;
 pub use scrollbar::Scrollbar;
 pub use selection::Selection;
 pub use text::Text;

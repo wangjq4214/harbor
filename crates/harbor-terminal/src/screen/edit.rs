@@ -358,10 +358,9 @@ impl VtEditEngine {
         let end_col = (start_x + width + 1).min(normal.cols());
         normal.mark_range_dirty(cursor.cursor.y, start_col, end_col);
 
-        let index = normal.display_to_ring(cursor.cursor.y) * normal.cols() + cursor.cursor.x;
-        self.clear_cell_for_write(normal, index);
+        self.clear_cell_for_write(normal, cursor.cursor.y, cursor.cursor.x);
         if width == 2 && cursor.cursor.x < right_limit {
-            self.clear_cell_for_write(normal, index + 1);
+            self.clear_cell_for_write(normal, cursor.cursor.y, cursor.cursor.x + 1);
         }
 
         let cell = normal.live_cell_mut(cursor.cursor.y, cursor.cursor.x);
@@ -374,7 +373,7 @@ impl VtEditEngine {
         );
 
         if width == 2 && cursor.cursor.x < right_limit {
-            *normal.cell_linear_mut(index + 1) = Cell {
+            *normal.cell_mut(cursor.cursor.y, cursor.cursor.x + 1) = Cell {
                 ch: ' ',
                 wide_continuation: true,
                 fg: self.pen.fg,
@@ -407,24 +406,21 @@ impl VtEditEngine {
     }
 
     /// Clears the target cell *and* any joined cell from a double-width glyph that overlaps it.
-    fn clear_cell_for_write(&self, normal: &mut NormalBuf, index: usize) {
-        debug_assert!(
-            index > 0 || !normal.cell_linear(index).wide_continuation,
-            "wide_continuation at column 0 is invalid"
-        );
-
-        if normal.cell_linear(index).wide_continuation {
-            *normal.cell_linear_mut(index - 1) = Cell::default();
-            *normal.cell_linear_mut(index) = Cell::default();
+    fn clear_cell_for_write(&self, normal: &mut NormalBuf, row: usize, col: usize) {
+        if normal.cell(row, col).wide_continuation {
+            if col > 0 {
+                *normal.cell_mut(row, col - 1) = Cell::default();
+            }
+            *normal.cell_mut(row, col) = Cell::default();
             return;
         }
 
-        if UnicodeWidthChar::width(normal.cell_linear(index).ch).unwrap_or(0) == 2
-            && index % normal.cols() + 1 < normal.cols()
+        if UnicodeWidthChar::width(normal.cell(row, col).ch).unwrap_or(0) == 2
+            && col + 1 < normal.cols()
         {
-            *normal.cell_linear_mut(index + 1) = Cell::default();
+            *normal.cell_mut(row, col + 1) = Cell::default();
         }
-        *normal.cell_linear_mut(index) = Cell::default();
+        *normal.cell_mut(row, col) = Cell::default();
     }
 
     // ── erase display / line / chars ──────────────────────────────
@@ -596,65 +592,30 @@ impl VtEditEngine {
 
         match mode {
             0 => {
-                normal.mark_range_dirty(cursor.cursor.y, cursor.cursor.x, right_col + 1);
-                let ring_row = normal.display_to_ring(cursor.cursor.y);
-                let start_idx = ring_row * cols + cursor.cursor.x;
-                let row_end = ring_row * cols + right_col + 1;
-                for idx in start_idx..row_end {
-                    let cell = normal.cell_linear_mut(idx);
-                    if !cell.protected {
-                        *cell = erase;
-                    }
-                }
+                normal.selective_erase_row_range(
+                    cursor.cursor.y,
+                    cursor.cursor.x,
+                    right_col + 1,
+                    erase,
+                );
                 for row in cursor.cursor.y + 1..normal.rows() {
-                    normal.mark_range_dirty(row, left_col, right_col + 1);
-                    let r_row = normal.display_to_ring(row);
-                    let r_start = r_row * cols + left_col;
-                    let r_end = r_row * cols + right_col + 1;
-                    for idx in r_start..r_end {
-                        let cell = normal.cell_linear_mut(idx);
-                        if !cell.protected {
-                            *cell = erase;
-                        }
-                    }
+                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
                 }
             }
             1 => {
                 for row in 0..cursor.cursor.y {
-                    normal.mark_range_dirty(row, left_col, right_col + 1);
-                    let r_row = normal.display_to_ring(row);
-                    let r_start = r_row * cols + left_col;
-                    let r_end = r_row * cols + right_col + 1;
-                    for idx in r_start..r_end {
-                        let cell = normal.cell_linear_mut(idx);
-                        if !cell.protected {
-                            *cell = erase;
-                        }
-                    }
+                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
                 }
-                normal.mark_range_dirty(cursor.cursor.y, left_col, cursor.cursor.x + 1);
-                let ring_row = normal.display_to_ring(cursor.cursor.y);
-                let start_idx = ring_row * cols + left_col;
-                let end_idx = ring_row * cols + cursor.cursor.x + 1;
-                for idx in start_idx..end_idx {
-                    let cell = normal.cell_linear_mut(idx);
-                    if !cell.protected {
-                        *cell = erase;
-                    }
-                }
+                normal.selective_erase_row_range(
+                    cursor.cursor.y,
+                    left_col,
+                    cursor.cursor.x + 1,
+                    erase,
+                );
             }
             2 => {
                 for row in 0..normal.rows() {
-                    normal.mark_range_dirty(row, left_col, right_col + 1);
-                    let r_row = normal.display_to_ring(row);
-                    let r_start = r_row * cols + left_col;
-                    let r_end = r_row * cols + right_col + 1;
-                    for idx in r_start..r_end {
-                        let cell = normal.cell_linear_mut(idx);
-                        if !cell.protected {
-                            *cell = erase;
-                        }
-                    }
+                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
                 }
             }
             _ => {}
@@ -673,43 +634,36 @@ impl VtEditEngine {
             return;
         }
         let erase = self.erase_cell();
-        let ring_row = normal.display_to_ring(cursor.cursor.y);
         let cols = normal.cols();
         let (left_col, right_col) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
             (0, cols - 1)
         };
-        let start_idx = ring_row * cols + left_col;
-        let cursor_idx = ring_row * cols + cursor.cursor.x;
-        let end_idx = ring_row * cols + right_col + 1;
         match mode {
             0 => {
-                normal.mark_range_dirty(cursor.cursor.y, cursor.cursor.x, right_col + 1);
-                for idx in cursor_idx..end_idx {
-                    let cell = normal.cell_linear_mut(idx);
-                    if !cell.protected {
-                        *cell = erase;
-                    }
-                }
+                normal.selective_erase_row_range(
+                    cursor.cursor.y,
+                    cursor.cursor.x,
+                    right_col + 1,
+                    erase,
+                );
             }
             1 => {
-                normal.mark_range_dirty(cursor.cursor.y, left_col, cursor.cursor.x + 1);
-                for idx in start_idx..=cursor_idx {
-                    let cell = normal.cell_linear_mut(idx);
-                    if !cell.protected {
-                        *cell = erase;
-                    }
-                }
+                normal.selective_erase_row_range(
+                    cursor.cursor.y,
+                    left_col,
+                    cursor.cursor.x + 1,
+                    erase,
+                );
             }
             2 => {
-                normal.mark_range_dirty(cursor.cursor.y, left_col, right_col + 1);
-                for idx in start_idx..end_idx {
-                    let cell = normal.cell_linear_mut(idx);
-                    if !cell.protected {
-                        *cell = erase;
-                    }
-                }
+                normal.selective_erase_row_range(
+                    cursor.cursor.y,
+                    left_col,
+                    right_col + 1,
+                    erase,
+                );
             }
             _ => {}
         }

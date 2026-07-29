@@ -3,8 +3,9 @@ use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
 use super::gpu::{self, GpuContext, TexturedVertex};
+use crate::render::RenderViewport;
 use crate::CursorShape;
-use harbor_config::{BLINK_INTERVAL_MS, TEXT_PADDING};
+use harbor_config::BLINK_INTERVAL_MS;
 
 const CURSOR_SHADER: &str = r#"
 struct VertexInput {
@@ -172,8 +173,8 @@ impl Cursor {
 
         if self.visible && snap.cursor_x < snap.cols && snap.cursor_y < snap.rows {
             let (surf_w, surf_h) = gpu.surface_size();
-            let cell_x = TEXT_PADDING + snap.cursor_x as f32 * self.cell_width;
-            let cell_y = TEXT_PADDING + snap.cursor_y as f32 * self.line_height;
+            let viewport = RenderViewport::new(self.cell_width, self.line_height);
+            let (cell_x, cell_y) = viewport.cell_pos(snap.cursor_y, snap.cursor_x);
 
             let (left, top, right, bottom) = match self.shape {
                 CursorShape::Block => (

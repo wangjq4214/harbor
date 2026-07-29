@@ -107,19 +107,42 @@ impl NormalBuf {
         self.cell_mut(display_row, col)
     }
 
-    // ── linear-index helpers (for Screen's ring-buffer operations) ──
-
-    /// Returns a mutable reference to a cell by linear index.
-    ///
-    /// Screen uses this for direct per-cell writes after computing the
-    /// ring-buffer index itself.
-    pub(crate) fn cell_linear_mut(&mut self, index: usize) -> &mut Cell {
-        &mut self.cells[index]
+    /// Fills a row range `[start_col, end_col)` with a cell value and marks it dirty.
+    pub fn fill_row_range(&mut self, row: usize, start_col: usize, end_col: usize, cell: Cell) {
+        let start_col = start_col.min(self.cols);
+        let end_col = end_col.min(self.cols);
+        if start_col >= end_col {
+            return;
+        }
+        let ring_row = self.display_to_ring(row);
+        let start = ring_row * self.cols + start_col;
+        let end = ring_row * self.cols + end_col;
+        self.cells[start..end].fill(cell);
+        self.mark_range_dirty(row, start_col, end_col);
     }
 
-    /// Returns a reference to a cell by linear index.
-    pub(crate) fn cell_linear(&self, index: usize) -> &Cell {
-        &self.cells[index]
+    /// Selectively erases unprotected cells in a row range `[start_col, end_col)` and marks it dirty.
+    pub fn selective_erase_row_range(
+        &mut self,
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        erase: Cell,
+    ) {
+        let start_col = start_col.min(self.cols);
+        let end_col = end_col.min(self.cols);
+        if start_col >= end_col {
+            return;
+        }
+        let ring_row = self.display_to_ring(row);
+        let start = ring_row * self.cols + start_col;
+        let end = ring_row * self.cols + end_col;
+        for idx in start..end {
+            if !self.cells[idx].protected {
+                self.cells[idx] = erase;
+            }
+        }
+        self.mark_range_dirty(row, start_col, end_col);
     }
 
     /// Fills a contiguous range of cells with a specific cell value.

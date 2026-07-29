@@ -70,26 +70,62 @@ pub enum SelectionOutcome {
     DragEnded,
 }
 
+/// A stable cell coordinate in scrollback generation space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GenPos {
+    pub generation: u64,
+    pub col: usize,
+}
+
+impl GenPos {
+    pub const fn new(generation: u64, col: usize) -> Self {
+        Self { generation, col }
+    }
+}
+
+impl From<(u64, usize)> for GenPos {
+    fn from((generation, col): (u64, usize)) -> Self {
+        Self { generation, col }
+    }
+}
+
+impl From<GenPos> for (u64, usize) {
+    fn from(pos: GenPos) -> Self {
+        (pos.generation, pos.col)
+    }
+}
+
 /// Tracks the current text selection as a pair of grid coordinates.
 /// `anchor` is where the drag started; `cursor` is the current drag endpoint.
 /// Both use **generations** (stable scrollback coordinates).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectionRange {
-    pub anchor: (u64, usize), // (generation, col)
-    pub cursor: (u64, usize), // (generation, col)
+    pub anchor: GenPos,
+    pub cursor: GenPos,
 }
 
 impl SelectionRange {
+    pub fn new(anchor: impl Into<GenPos>, cursor: impl Into<GenPos>) -> Self {
+        Self {
+            anchor: anchor.into(),
+            cursor: cursor.into(),
+        }
+    }
+
+    /// Returns `(start_pos, end_pos)` in row-major reading order.
+    pub fn normalized_pos(&self) -> (GenPos, GenPos) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
     /// Returns `(start_row, start_col, end_row, end_col)` in row-major reading order.
     /// Guarantees start ≤ end in row-major (generation-major).
     pub fn normalized(&self) -> (u64, usize, u64, usize) {
-        if self.anchor.0 < self.cursor.0
-            || (self.anchor.0 == self.cursor.0 && self.anchor.1 <= self.cursor.1)
-        {
-            (self.anchor.0, self.anchor.1, self.cursor.0, self.cursor.1)
-        } else {
-            (self.cursor.0, self.cursor.1, self.anchor.0, self.anchor.1)
-        }
+        let (start, end) = self.normalized_pos();
+        (start.generation, start.col, end.generation, end.col)
     }
 }
 
@@ -109,7 +145,7 @@ pub struct SelectionModel {
     /// Timestamp of the most recent `MouseInput::Pressed` (for click-chain detection).
     last_click_at: Option<Instant>,
     /// Grid cell of the most recent click (gen, col).
-    last_click_cell: Option<(u64, usize)>,
+    last_click_cell: Option<GenPos>,
     /// Consecutive click count (1 = single, 2 = double, 3+ = triple/line).
     click_count: u32,
     /// Auto-scroll direction while dragging at viewport edge (None = idle).
@@ -144,10 +180,11 @@ impl SelectionModel {
     /// and granularity accordingly.
     pub fn press(
         &mut self,
-        cell: (u64, usize),
+        cell: impl Into<GenPos>,
         now: Instant,
         screen: &TerminalSnapshot,
     ) -> SelectionOutcome {
+        let cell: GenPos = cell.into();
         // ── Click chain detection ──────────────────────────
         let in_timeout = self
             .last_click_at
@@ -174,10 +211,10 @@ impl SelectionModel {
             }
             2 => {
                 self.granularity = SelectionGranularity::Word;
-                let (start, end) = Self::find_word_range(screen, cell.0, cell.1);
+                let (start, end) = Self::find_word_range(screen, cell.generation, cell.col);
                 self.range = Some(SelectionRange {
-                    anchor: start,
-                    cursor: end,
+                    anchor: start.into(),
+                    cursor: end.into(),
                 });
             }
             _ => {
@@ -185,8 +222,8 @@ impl SelectionModel {
                 self.granularity = SelectionGranularity::Line;
                 let last = cols.saturating_sub(1);
                 self.range = Some(SelectionRange {
-                    anchor: (cell.0, 0),
-                    cursor: (cell.0, last),
+                    anchor: GenPos::new(cell.generation, 0),
+                    cursor: GenPos::new(cell.generation, last),
                 });
             }
         }
@@ -197,7 +234,8 @@ impl SelectionModel {
 
     /// Mouse drag to `cell` during an active selection.
     /// Returns true if the cursor position changed.
-    pub fn drag_to(&mut self, cell: (u64, usize), screen: &TerminalSnapshot) -> bool {
+    pub fn drag_to(&mut self, cell: impl Into<GenPos>, screen: &TerminalSnapshot) -> bool {
+        let cell: GenPos = cell.into();
         let Some(ref mut sel) = self.range else {
             return false;
         };
@@ -207,8 +245,12 @@ impl SelectionModel {
 
         let anchor = sel.anchor;
         let new_cursor = match self.granularity {
-            SelectionGranularity::Word => Self::snap_word_cursor(screen, cell.0, cell.1, anchor),
-            SelectionGranularity::Line => Self::snap_line_cursor(screen, cell.0, cell.1, anchor),
+            SelectionGranularity::Word => {
+                Self::snap_word_cursor(screen, cell.generation, cell.col, anchor.into()).into()
+            }
+            SelectionGranularity::Line => {
+                Self::snap_line_cursor(screen, cell.generation, cell.col, anchor.into()).into()
+            }
             SelectionGranularity::Character => cell,
         };
         sel.cursor = new_cursor;
@@ -217,7 +259,7 @@ impl SelectionModel {
         let rows = screen.rows;
         let view_offset = screen.view_offset;
         let scroll_count = screen.scroll_count;
-        let display_row = ((cell.0 - screen.history_start) as usize + view_offset)
+        let display_row = ((cell.generation - screen.history_start) as usize + view_offset)
             .saturating_sub(scroll_count)
             .min(rows - 1);
         let new_auto_scroll = if display_row < AUTO_SCROLL_MARGIN && view_offset < scroll_count {
@@ -346,12 +388,14 @@ impl SelectionModel {
         let can_scroll_down = screen.view_offset > 0;
 
         let (direction, new_gen) = match scroll {
-            AutoScroll::Up if can_scroll_up => {
-                (AutoScroll::Up, self.range?.cursor.0.saturating_sub(1))
-            }
-            AutoScroll::Down if can_scroll_down => {
-                (AutoScroll::Down, self.range?.cursor.0.saturating_add(1))
-            }
+            AutoScroll::Up if can_scroll_up => (
+                AutoScroll::Up,
+                self.range?.cursor.generation.saturating_sub(1),
+            ),
+            AutoScroll::Down if can_scroll_down => (
+                AutoScroll::Down,
+                self.range?.cursor.generation.saturating_add(1),
+            ),
             _ => {
                 // Can't scroll in this direction — stop.
                 self.auto_scroll = None;
@@ -362,10 +406,14 @@ impl SelectionModel {
 
         // Re-snap column when in word or line mode.
         let anchor = self.range?.anchor;
-        let cur_col = self.range?.cursor.1;
+        let cur_col = self.range?.cursor.col;
         let snapped = match self.granularity {
-            SelectionGranularity::Word => Self::snap_word_cursor(screen, new_gen, cur_col, anchor),
-            SelectionGranularity::Line => Self::snap_line_cursor(screen, new_gen, cur_col, anchor),
+            SelectionGranularity::Word => {
+                Self::snap_word_cursor(screen, new_gen, cur_col, anchor.into())
+            }
+            SelectionGranularity::Line => {
+                Self::snap_line_cursor(screen, new_gen, cur_col, anchor.into())
+            }
             SelectionGranularity::Character => (new_gen, cur_col),
         };
 
