@@ -2,10 +2,9 @@ use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext};
+use crate::SelectionModel;
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
-
-use crate::{SelectionGranularity, SelectionModel};
 
 // ── Selection (outer — GPU) ──────────────────────────────────────
 
@@ -195,16 +194,5 @@ impl Selection {
         // Grid dimensions changed; old selection coordinates are stale.
         self.model.clear();
         self.dirty = true;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selection_initial_state() {
-        // Simple sanity test for Selection struct
-        assert_eq!(std::mem::size_of::<SelectionGranularity>(), 1);
     }
 }

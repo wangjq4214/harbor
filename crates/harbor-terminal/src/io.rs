@@ -12,7 +12,7 @@ use std::{
 };
 
 use harbor_pty::PtyControl;
-use harbor_types::{AltScreenAction, InputModes, TerminalSize};
+use harbor_types::{AltScreenAction, TerminalSize};
 use harbor_widget::input::event::UiEvent;
 
 use crate::input::TerminalInputEncoder;
@@ -130,12 +130,7 @@ impl TerminalIo {
     {
         Self {
             parser: TerminalParser::default(),
-            pty: Some(TerminalPty::new(
-                pty_read,
-                pty_write,
-                pty_control,
-                wake,
-            )),
+            pty: Some(TerminalPty::new(pty_read, pty_write, pty_control, wake)),
             suppress_scroll_snap: false,
         }
     }

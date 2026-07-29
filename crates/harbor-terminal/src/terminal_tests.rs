@@ -1,5 +1,6 @@
 //! Integration-style tests for the Terminal facade.
 
+use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
@@ -1859,7 +1860,7 @@ fn pty_queue_is_bounded_and_wakes_once_until_drained() {
     let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader = BurstReader {
-        remaining: crate::PTY_QUEUE_CAPACITY + 1,
+        remaining: PTY_QUEUE_CAPACITY + 1,
         reads: std::sync::Arc::clone(&reads),
         completed: std::sync::Arc::clone(&completed),
     };
@@ -1869,7 +1870,7 @@ fn pty_queue_is_bounded_and_wakes_once_until_drained() {
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("first queued chunk must wake the UI");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while reads.load(std::sync::atomic::Ordering::SeqCst) < crate::PTY_QUEUE_CAPACITY + 1 {
+    while reads.load(std::sync::atomic::Ordering::SeqCst) < PTY_QUEUE_CAPACITY + 1 {
         assert!(
             std::time::Instant::now() < deadline,
             "reader did not reach the send that must wait for bounded queue capacity"

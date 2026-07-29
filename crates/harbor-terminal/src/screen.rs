@@ -21,7 +21,7 @@ use harbor_parser::Params;
 
 use self::alt::AltScreenStack;
 use self::cursor::CursorEngine;
-use self::edit::{CharacterSets, TabStops, VtEditEngine};
+use self::edit::{TabStops, VtEditEngine};
 
 pub use self::reader::ScreenReader;
 
@@ -30,8 +30,10 @@ pub use self::reader::ScreenReader;
 pub use harbor_types::AltScreenAction;
 pub use harbor_types::Cell;
 pub use harbor_types::CellAttrs;
+pub use harbor_types::CharacterProtection;
 pub use harbor_types::Color;
 pub use harbor_types::CursorShape;
+pub use harbor_types::CursorStyleArg;
 pub use harbor_types::SelectionBounds;
 
 // ── Screen ────────────────────────────────────────────────────────────
@@ -115,8 +117,8 @@ impl Screen {
         self.cursor.cursor_visible()
     }
 
-    pub fn set_cursor_style(&mut self, ps: usize) {
-        self.cursor.set_cursor_style(ps);
+    pub fn set_cursor_style(&mut self, arg: CursorStyleArg) {
+        self.cursor.set_cursor_style(arg);
     }
 
     pub fn input_modes(&self) -> InputModes {
@@ -374,8 +376,8 @@ impl Screen {
         self.edit.set_active_charset(active);
     }
 
-    pub fn set_character_protection(&mut self, ps: usize) {
-        self.edit.set_character_protection(ps);
+    pub fn set_character_protection(&mut self, arg: CharacterProtection) {
+        self.edit.set_character_protection(arg);
     }
 
     // ── erase ──────────────────────────────────────────────────────────
@@ -561,11 +563,11 @@ impl Screen {
     // ── tab stops ──────────────────────────────────────────────────────
 
     pub fn set_tab_stop(&mut self) {
-        self.cursor.set_tab_stop(&mut self.edit.tab_stops);
+        self.edit.set_tab_stop(self.cursor.cursor.x);
     }
 
     pub fn clear_tab_stops(&mut self, mode: usize) {
-        self.cursor.clear_tab_stops(&mut self.edit.tab_stops, mode);
+        self.edit.clear_tab_stops(self.cursor.cursor.x, mode);
     }
 
     // ── cursor save / restore ──────────────────────────────────────────
@@ -686,12 +688,8 @@ impl Screen {
                     edit,
                     ..
                 } = self;
-                // Call through edit for margin-rect scroll down
                 let top = cursor.scroll_region.top;
                 let bottom = cursor.scroll_region.bottom;
-                // Use scroll_margin_rect_down via the edit engine
-                // We need to access it — it's not pub, so we inline or make it accessible
-                // For now, inline the margin rect scroll:
                 let height = bottom - top + 1;
                 if 1 < height {
                     for dst_row in ((top + 1)..=bottom).rev() {

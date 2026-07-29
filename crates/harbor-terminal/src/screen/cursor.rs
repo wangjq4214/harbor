@@ -8,7 +8,7 @@ use crate::InputModes;
 use crate::normal_buf::NormalBuf;
 use harbor_types::{CellAttrs, Color, CursorShape};
 
-use super::edit::{Pen, Rect, TabStops};
+use super::edit::{Pen, Rect};
 
 /// Saved terminal state for cursor save/restore (DECSC/DECRC). Captures the cursor position
 /// and SGR attributes so the screen can be restored after a screen-altering operation.
@@ -204,16 +204,14 @@ impl CursorEngine {
         self.cursor.visible
     }
 
-    pub(crate) fn set_cursor_style(&mut self, ps: usize) {
-        let (shape, blink) = match ps {
-            0 => (CursorShape::Bar, true),
-            1 => (CursorShape::Block, true),
-            2 => (CursorShape::Block, false),
-            3 => (CursorShape::Underline, true),
-            4 => (CursorShape::Underline, false),
-            5 => (CursorShape::Bar, true),
-            6 => (CursorShape::Bar, false),
-            _ => (CursorShape::default(), true),
+    pub(crate) fn set_cursor_style(&mut self, arg: harbor_types::CursorStyleArg) {
+        let (shape, blink) = match arg {
+            harbor_types::CursorStyleArg::BlinkingBlock => (CursorShape::Block, true),
+            harbor_types::CursorStyleArg::SteadyBlock => (CursorShape::Block, false),
+            harbor_types::CursorStyleArg::BlinkingUnderline => (CursorShape::Underline, true),
+            harbor_types::CursorStyleArg::SteadyUnderline => (CursorShape::Underline, false),
+            harbor_types::CursorStyleArg::BlinkingBar => (CursorShape::Bar, true),
+            harbor_types::CursorStyleArg::SteadyBar => (CursorShape::Bar, false),
         };
         self.cursor.shape = shape;
         self.cursor.blink = blink;
@@ -472,28 +470,6 @@ impl CursorEngine {
             self.modes.origin = saved.origin_mode;
             self.modes.autowrap = saved.autowrap;
             self.modes.pending_wrap = saved.pending_wrap;
-        }
-    }
-
-    // ── tab stops (cursor-relative) ───────────────────────────────
-
-    pub(crate) fn set_tab_stop(&mut self, tab_stops: &mut TabStops) {
-        if self.cursor.x < tab_stops.0.len() {
-            tab_stops.0[self.cursor.x] = true;
-        }
-    }
-
-    pub(crate) fn clear_tab_stops(&mut self, tab_stops: &mut TabStops, mode: usize) {
-        match mode {
-            0 => {
-                if self.cursor.x < tab_stops.0.len() {
-                    tab_stops.0[self.cursor.x] = false;
-                }
-            }
-            3 => {
-                tab_stops.0.fill(false);
-            }
-            _ => {}
         }
     }
 

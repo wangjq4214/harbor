@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 mod damage;
 mod input;
 mod io;
@@ -13,6 +11,14 @@ mod terminal_tests;
 
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
+use harbor_pty::PtyControl;
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
+pub use harbor_types::should_confirm_multiline;
+pub use harbor_types::{
+    InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
+};
+pub use harbor_widget::scene::primitive::ExternalDrawId;
+use io::TerminalIo;
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use render::{
@@ -20,23 +26,14 @@ pub use render::{
     SurfaceDisposition, SurfaceStatus, TerminalRenderPipeline, Text, UploadMode, UploadPlan,
     UploadPolicy, surface_disposition,
 };
-pub use screen::{AltScreenAction, Cell, CellAttrs, Color, CursorShape, Screen, ScreenReader, SelectionBounds};
+pub use screen::{
+    AltScreenAction, Cell, CellAttrs, CharacterProtection, Color, CursorShape, CursorStyleArg,
+    Screen, ScreenReader, SelectionBounds,
+};
 pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
 };
-
-pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
-pub use harbor_types::should_confirm_multiline;
-pub use harbor_types::{
-    InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
-};
-pub use harbor_widget::scene::primitive::ExternalDrawId;
-
 use std::io::{Read, Write};
-
-use harbor_pty::PtyControl;
-use io::TerminalIo;
-pub(crate) use io::PTY_QUEUE_CAPACITY;
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
 pub struct Terminal {

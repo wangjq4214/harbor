@@ -234,6 +234,59 @@ pub enum CursorShape {
     Bar,
 }
 
+/// Parameter for DECSCUSR (CSI Ps SP q) — cursor style.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorStyleArg {
+    /// Ps = 1: blinking block (default).
+    #[default]
+    BlinkingBlock,
+    /// Ps = 2: steady (non-blinking) block.
+    SteadyBlock,
+    /// Ps = 3: blinking underline.
+    BlinkingUnderline,
+    /// Ps = 4: steady underline.
+    SteadyUnderline,
+    /// Ps = 0 or 5: blinking bar.
+    BlinkingBar,
+    /// Ps = 6: steady bar.
+    SteadyBar,
+}
+
+impl CursorStyleArg {
+    /// Convert from a DECSCUSR Ps parameter, falling back to `BlinkingBlock`.
+    pub fn from_param(ps: usize) -> Self {
+        match ps {
+            1 => Self::BlinkingBlock,
+            2 => Self::SteadyBlock,
+            3 => Self::BlinkingUnderline,
+            4 => Self::SteadyUnderline,
+            0 | 5 => Self::BlinkingBar,
+            6 => Self::SteadyBar,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Parameter for DECSCA (CSI Ps " q) — character protection mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CharacterProtection {
+    /// Ps = 0 or 2: subsequent characters are NOT protected.
+    #[default]
+    Unprotected,
+    /// Ps = 1: subsequent characters are protected from selective erase.
+    Protected,
+}
+
+impl CharacterProtection {
+    /// Convert from a DECSCA Ps parameter, falling back to `Unprotected`.
+    pub fn from_param(ps: usize) -> Self {
+        match ps {
+            1 => Self::Protected,
+            _ => Self::Unprotected,
+        }
+    }
+}
+
 // ── SelectionBounds ───────────────────────────────────────────────────────────
 
 /// Display-coordinate bounds of a text selection, row-major, inclusive.

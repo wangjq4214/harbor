@@ -2,6 +2,7 @@
 
 use crate::screen::Screen;
 use harbor_parser::{Params, VtHandler};
+use harbor_types::{CharacterProtection, CursorStyleArg};
 
 /// Applies recognized VT actions to a `Screen`.
 pub struct ScreenHandler<'a> {
@@ -49,11 +50,13 @@ impl VtHandler for ScreenHandler<'_> {
 
         if !intermediates.is_empty() {
             if intermediates == [b' '] && action == b'q' {
-                self.screen.set_cursor_style(params.get_or(0, 1));
+                self.screen
+                    .set_cursor_style(CursorStyleArg::from_param(params.get_or(0, 1)));
             } else if intermediates == [b'!'] && action == b'p' {
                 self.screen.soft_reset();
             } else if intermediates == [b'"'] && action == b'q' {
-                self.screen.set_character_protection(params.get_or(0, 0));
+                self.screen
+                    .set_character_protection(CharacterProtection::from_param(params.get_or(0, 0)));
             } else if intermediates == [b'$'] {
                 match action {
                     b'z' => self.screen.decera(params),

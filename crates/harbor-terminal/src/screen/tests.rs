@@ -1606,9 +1606,9 @@ fn scrolling_preserves_the_column_chosen_by_the_caller() {
 fn test_decsca_protected_attr() {
     let mut screen = Screen::new(5, 5);
     assert!(!screen.edit.pen.protected);
-    screen.set_character_protection(1);
+    screen.set_character_protection(harbor_types::CharacterProtection::Protected);
     assert!(screen.edit.pen.protected);
-    screen.set_character_protection(0);
+    screen.set_character_protection(harbor_types::CharacterProtection::Unprotected);
     assert!(!screen.edit.pen.protected);
 }
 
@@ -2049,10 +2049,10 @@ fn alt_screen_restores_all_state_groups() {
     screen.set_private_mode(6, true); // origin mode
     screen.set_private_mode(7, false); // autowrap off
     screen.set_private_mode(25, false); // cursor invisible
-    screen.set_cursor_style(2); // block, no blink
+    screen.set_cursor_style(harbor_types::CursorStyleArg::SteadyBlock); // block, no blink
     screen.set_standard_mode(4, true); // insert mode
     screen.set_standard_mode(20, true); // line feed mode
-    screen.set_character_protection(1); // protected
+    screen.set_character_protection(harbor_types::CharacterProtection::Protected); // protected
     screen.set_sgr_slice(&[Some(1), Some(31), Some(42)]);
     screen.write_char('X'); // set last_char (advances cursor to 1)
     screen.cursor.cursor.x = 5;
@@ -2074,10 +2074,10 @@ fn alt_screen_restores_all_state_groups() {
     screen.set_private_mode(6, false);
     screen.set_private_mode(7, true); // autowrap on
     screen.set_private_mode(25, true); // cursor visible
-    screen.set_cursor_style(0); // bar, blink
+    screen.set_cursor_style(harbor_types::CursorStyleArg::BlinkingBar); // bar, blink
     screen.set_standard_mode(4, false); // replace mode
     screen.set_standard_mode(20, false); // normal line feed
-    screen.set_character_protection(0); // not protected
+    screen.set_character_protection(harbor_types::CharacterProtection::Unprotected); // not protected
     screen.set_sgr_slice(&[Some(0)]);
     screen.set_scroll_region(0, 0);
     screen.clear_tab_stops(3);

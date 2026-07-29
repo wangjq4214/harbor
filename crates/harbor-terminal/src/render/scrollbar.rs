@@ -1,4 +1,3 @@
-use bytemuck::Zeroable;
 use harbor_types::TerminalSnapshot;
 use wgpu::util::DeviceExt;
 

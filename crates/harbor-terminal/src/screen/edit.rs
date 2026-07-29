@@ -5,10 +5,10 @@
 
 use crate::normal_buf::NormalBuf;
 use harbor_parser::Params;
-use harbor_types::{Cell, CellAttrs, Color};
+use harbor_types::{Cell, CellAttrs, CharacterProtection, Color};
 use unicode_width::UnicodeWidthChar;
 
-use super::cursor::{CursorEngine, Margins};
+use super::cursor::CursorEngine;
 
 /// Current SGR pen state — the active foreground, background, attributes,
 /// and protection flag applied to each newly written character.
@@ -279,13 +279,30 @@ impl VtEditEngine {
 
     // ── character protection ──────────────────────────────────────
 
-    pub(crate) fn set_character_protection(&mut self, ps: usize) {
-        match ps {
-            0 | 2 => {
-                self.pen.protected = false;
+    pub(crate) fn set_character_protection(&mut self, arg: CharacterProtection) {
+        self.pen.protected = match arg {
+            CharacterProtection::Protected => true,
+            CharacterProtection::Unprotected => false,
+        };
+    }
+
+    // ── tab stops ─────────────────────────────────────────────────
+
+    pub(crate) fn set_tab_stop(&mut self, cursor_x: usize) {
+        if cursor_x < self.tab_stops.0.len() {
+            self.tab_stops.0[cursor_x] = true;
+        }
+    }
+
+    pub(crate) fn clear_tab_stops(&mut self, cursor_x: usize, mode: usize) {
+        match mode {
+            0 => {
+                if cursor_x < self.tab_stops.0.len() {
+                    self.tab_stops.0[cursor_x] = false;
+                }
             }
-            1 => {
-                self.pen.protected = true;
+            3 => {
+                self.tab_stops.0.fill(false);
             }
             _ => {}
         }
@@ -319,7 +336,6 @@ impl VtEditEngine {
 
         // 1. Handle pending wrap if autowrap is on
         if cursor.modes.autowrap && cursor.modes.pending_wrap {
-            // Simulate newline: carriage_return + index-like advance.
             cursor.carriage_return();
             self.newline_inner(normal, cursor);
             cursor.modes.pending_wrap = false;
@@ -395,10 +411,8 @@ impl VtEditEngine {
     }
 
     /// Internal helper: handles the line-feed / index portion of newline for write_char.
-    /// Does NOT call carriage_return (caller does that).
     fn newline_inner(&mut self, normal: &mut NormalBuf, cursor: &mut CursorEngine) {
         if cursor.index_needs_scroll() {
-            // Inline scroll_region_up_one logic (needed for inline use from write_char).
             self.scroll_region_up_one_inner(normal, cursor);
         } else {
             cursor.index_advance(normal);
@@ -658,12 +672,7 @@ impl VtEditEngine {
                 );
             }
             2 => {
-                normal.selective_erase_row_range(
-                    cursor.cursor.y,
-                    left_col,
-                    right_col + 1,
-                    erase,
-                );
+                normal.selective_erase_row_range(cursor.cursor.y, left_col, right_col + 1, erase);
             }
             _ => {}
         }

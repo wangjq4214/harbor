@@ -220,6 +220,7 @@ impl NormalBuf {
     pub fn cell_mut(&mut self, display_row: usize, col: usize) -> &mut Cell {
         debug_assert!(display_row < self.visible_rows);
         debug_assert!(col < self.cols);
+        self.mark_range_dirty(display_row, col, col + 1);
         let actual_row = self.display_to_ring(display_row);
         &mut self.cells[actual_row * self.cols + col]
     }
