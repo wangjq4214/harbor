@@ -173,6 +173,55 @@ impl Cell {
         self.attrs = attrs;
         self.protected = protected;
     }
+
+    /// Applies a single SGR (Select Graphic Rendition) code to this cell,
+    /// mutating foreground, background, attributes, and protection in place.
+    pub fn apply_sgr(&mut self, code: usize) {
+        match code {
+            0 => {
+                self.fg = Color::Default;
+                self.bg = Color::Default;
+                self.attrs = CellAttrs::default();
+                self.protected = false;
+            }
+            1 => self.attrs.set(CellAttrs::BOLD),
+            2 => self.attrs.set(CellAttrs::DIM),
+            3 => self.attrs.set(CellAttrs::ITALIC),
+            4 => self.attrs.set(CellAttrs::UNDERLINE),
+            5 => self.attrs.set(CellAttrs::BLINK),
+            7 => self.attrs.set(CellAttrs::INVERSE),
+            9 => self.attrs.set(CellAttrs::STRIKETHROUGH),
+            22 => self.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
+            23 => self.attrs.clear(CellAttrs::ITALIC),
+            24 => self.attrs.clear(CellAttrs::UNDERLINE),
+            25 => self.attrs.clear(CellAttrs::BLINK),
+            27 => self.attrs.clear(CellAttrs::INVERSE),
+            29 => self.attrs.clear(CellAttrs::STRIKETHROUGH),
+            30..=37 => self.fg = Color::Named((code - 30) as u8),
+            40..=47 => self.bg = Color::Named((code - 40) as u8),
+            39 => self.fg = Color::Default,
+            49 => self.bg = Color::Default,
+            90..=97 => self.fg = Color::Bright((code - 90) as u8),
+            100..=107 => self.bg = Color::Bright((code - 100) as u8),
+            _ => {}
+        }
+    }
+
+    /// Toggles a single SGR attribute on this cell (used by DECRARA).
+    /// Only supports attribute codes (bold, dim, italic, underline, blink,
+    /// inverse, strikethrough); color codes are silently ignored.
+    pub fn toggle_sgr(&mut self, code: usize) {
+        match code {
+            1 => self.attrs.toggle(CellAttrs::BOLD),
+            2 => self.attrs.toggle(CellAttrs::DIM),
+            3 => self.attrs.toggle(CellAttrs::ITALIC),
+            4 => self.attrs.toggle(CellAttrs::UNDERLINE),
+            5 => self.attrs.toggle(CellAttrs::BLINK),
+            7 => self.attrs.toggle(CellAttrs::INVERSE),
+            9 => self.attrs.toggle(CellAttrs::STRIKETHROUGH),
+            _ => {}
+        }
+    }
 }
 
 // ── CursorShape ───────────────────────────────────────────────────────────────

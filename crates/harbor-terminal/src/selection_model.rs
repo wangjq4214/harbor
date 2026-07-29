@@ -101,7 +101,7 @@ impl SelectionRange {
 #[derive(Clone, Debug)]
 pub struct SelectionModel {
     /// None = no active selection.
-    pub range: Option<SelectionRange>,
+    range: Option<SelectionRange>,
     /// True while left mouse button is held.
     dragging: bool,
     /// Current selection granularity (Character / Word / Line).

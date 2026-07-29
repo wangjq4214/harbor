@@ -127,11 +127,14 @@ impl Selection {
         surf_w: f32,
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
-        let Some(range) = self.model.range.as_ref() else {
+        let Some(bounds) = self.model.bounds() else {
             return Vec::new();
         };
 
-        let (sg, sc, eg, ec) = range.normalized();
+        let sg = bounds.start_row;
+        let sc = bounds.start_col;
+        let eg = bounds.end_row;
+        let ec = bounds.end_col;
 
         let history_start = snap.history_start;
         let scroll_count = snap.scroll_count;
