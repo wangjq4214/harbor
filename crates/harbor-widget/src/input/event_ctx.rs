@@ -54,6 +54,11 @@ impl EventCtx {
         self.commands.push(EventCommand::RequestFocus(id));
     }
 
+    /// Returns the fiber whose handler is currently running.
+    pub(crate) fn current_fiber(&self) -> Option<FiberId> {
+        self.current_fiber
+    }
+
     /// Capture all subsequent pointer events for the given pointer_id,
     /// routing them to the current fiber regardless of hit test results.
     pub fn capture_pointer(&mut self, pointer_id: u64) {

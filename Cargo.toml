@@ -65,7 +65,6 @@ harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
-harbor-ui = { workspace = true }
 harbor-widget = { workspace = true }
 harbor-text = { workspace = true }
 

@@ -11,6 +11,7 @@ backend-vulkan = []
 [dependencies]
 harbor-types = { workspace = true }
 harbor-parser = { workspace = true }
+harbor-pty = { workspace = true }
 harbor-config = { workspace = true }
 harbor-text = { workspace = true }
 harbor-widget = { workspace = true }

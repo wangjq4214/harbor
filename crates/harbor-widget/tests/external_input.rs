@@ -138,6 +138,37 @@ fn should_queue_event_when_custom_paint_dispatches_through_runtime() {
 }
 
 #[test]
+fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(12));
+    rt.update(now());
+    let root_id = rt.root_id().unwrap();
+
+    assert!(rt.focus_first_focusable());
+    assert_eq!(rt.input().focused, Some(root_id));
+    rt.dispatch(key_down(Key::Enter), now());
+    assert_eq!(rt.drain_external_input().len(), 1);
+
+    rt.clear_focus();
+    rt.dispatch(
+        pointer_event(
+            Point::new(400.0, 300.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            0,
+        ),
+        now(),
+    );
+    assert_eq!(rt.input().focused, Some(root_id));
+    rt.drain_external_input();
+
+    rt.dispatch(key_down(Key::Escape), now());
+    let drained = rt.drain_external_input();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].0, 12);
+}
+
+#[test]
 fn should_queue_multiple_custom_paint_events_across_dispatch() {
     let mut rt = Runtime::new();
     rt.set_root(CustomPaint::new(5));

@@ -52,7 +52,20 @@ pub enum Key {
     Space,
     Escape,
     Backspace,
+    Insert,
     Delete,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
@@ -61,6 +74,10 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// Character emitted from the numeric keypad.
+    NumpadCharacter(char),
+    /// Enter emitted from the numeric keypad.
+    NumpadEnter,
     Character(char),
 }
 

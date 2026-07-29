@@ -356,6 +356,9 @@ fn run_worker_loop(
             }
             Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
                 progressed = true;
+                // EOF/error is emitted only after the PTY reader has stopped;
+                // do not wait for every sender clone to be dropped before shutdown.
+                pty_closed = true;
                 pending_pty_status = Some(message);
             }
             Err(TryRecvError::Disconnected) => pty_closed = true,
@@ -406,7 +409,7 @@ fn run_worker_loop(
 }
 
 /// Drains up to 63 additional PTY messages from `pty_rx` into `terminal`.
-/// Returns any terminal status message encountered and whether the PTY channel closed.
+/// Returns any terminal status message encountered and whether PTY output has ended.
 fn drain_pty_batch(
     terminal: &mut Terminal,
     pty_rx: &Receiver<PtyMessage>,
@@ -419,7 +422,7 @@ fn drain_pty_batch(
                 *snapshot_dirty = true;
             }
             Ok(message @ (PtyMessage::Eof | PtyMessage::Error(_))) => {
-                return (Some(message), false);
+                return (Some(message), true);
             }
             Err(TryRecvError::Disconnected) => {
                 return (None, true);
@@ -1015,14 +1018,16 @@ mod tests {
             }
         );
     }
-    /// Stress test: feed 50k lines through the worker and verify that
+    /// Stress test: feed a sustained burst through the worker and verify that
     /// mailbox/queues stay bounded. Exercises the PTY output hot path.
     ///
     /// A single consumer thread drains updates (no race with main thread).
     /// The main thread only feeds input and waits for completion.
     #[test]
     fn burst_output_queues_stay_bounded() {
-        const LINES: usize = 50_000;
+        // Keep the debug-build workload large enough to overflow every bounded
+        // queue repeatedly without turning this unit test into a benchmark.
+        const LINES: usize = 5_000;
         const LINE: &[u8] = b"harbor-profile-burst 0123456789 abcdefghijklmnopqrstuvwxyz\r\n";
 
         let (control_tx, control_rx) = mpsc::channel();
@@ -1132,6 +1137,9 @@ mod tests {
         // Wait for the consumer to observe Stopped and finish draining.
         consumer.join().expect("consumer thread panicked");
         drop(control_tx);
+        // The worker may already be waiting on its coalesced wake channel after
+        // processing EOF; wake it once to observe the closed control channel.
+        signal_wake(&signal_tx);
         thread.join().expect("worker thread panicked");
 
         let total_consumed = consumed_count.load(Ordering::Relaxed);

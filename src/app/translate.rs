@@ -3,7 +3,7 @@
 //! Extracted from `app.rs` so changes to key mappings are isolated in one file.
 
 use winit::{
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Ime, MouseScrollDelta, WindowEvent},
     keyboard::{Key, ModifiersState, NamedKey},
 };
 
@@ -13,12 +13,69 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::layout::Point as WidgetPoint;
 
-/// Converts a winit `WindowEvent` into a widget-framework `UiEvent`, or `None`
-/// for events the widget framework does not consume.
+/// Tracks whether winit has enabled composition input for a window.
+///
+/// Winit 0.30 sends committed composition text through `Ime::Commit`; while
+/// composition is enabled, forwarding an unmodified character KeyDown as well
+/// would insert that text twice. Physical shortcuts, navigation, and keypad
+/// keys remain KeyDown-driven.
+#[derive(Default)]
+pub(crate) struct ImeState {
+    enabled: bool,
+}
+
+impl ImeState {
+    fn observe(&mut self, event: &Ime) {
+        match event {
+            Ime::Enabled => self.enabled = true,
+            Ime::Disabled => self.enabled = false,
+            Ime::Preedit(_, _) | Ime::Commit(_) => {}
+        }
+    }
+
+    fn suppresses_character_key(
+        &self,
+        key: &Key,
+        modifiers: ModifiersState,
+        is_numpad: bool,
+    ) -> bool {
+        self.enabled
+            && !is_numpad
+            && !modifiers.control_key()
+            && !modifiers.alt_key()
+            && !modifiers.super_key()
+            && matches!(key, Key::Character(_))
+    }
+}
+
+fn ime_to_uievent(event: &Ime, state: &mut ImeState) -> Option<UiEvent> {
+    state.observe(event);
+    match event {
+        Ime::Commit(text) if !text.is_empty() => {
+            Some(UiEvent::Keyboard(WidgetKbEvent::Ime(text.clone())))
+        }
+        _ => None,
+    }
+}
+
+/// Converts a winit `WindowEvent` without retaining composition state.
+///
+/// Secondary windows use this compatibility form; the terminal window uses
+/// [`winit_to_uievent_with_ime`] so composition commits are de-duplicated.
 pub(crate) fn winit_to_uievent(
     event: &WindowEvent,
     scale_factor: f32,
     modifiers: ModifiersState,
+) -> Option<UiEvent> {
+    winit_to_uievent_with_ime(event, scale_factor, modifiers, &mut ImeState::default())
+}
+
+/// Converts a winit `WindowEvent` while tracking composition state for a window.
+pub(crate) fn winit_to_uievent_with_ime(
+    event: &WindowEvent,
+    scale_factor: f32,
+    modifiers: ModifiersState,
+    ime: &mut ImeState,
 ) -> Option<UiEvent> {
     match event {
         WindowEvent::KeyboardInput {
@@ -26,8 +83,18 @@ pub(crate) fn winit_to_uievent(
             event,
             is_synthetic: _,
         } => {
+            let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
+            if event.state == ElementState::Pressed
+                && ime.suppresses_character_key(&event.logical_key, modifiers, is_numpad)
+            {
+                return None;
+            }
             let key = match &event.logical_key {
+                Key::Named(NamedKey::Enter) if is_numpad => WidgetKey::NumpadEnter,
                 Key::Named(named) => named_to_widget_key(named)?,
+                Key::Character(ch) if is_numpad => {
+                    WidgetKey::NumpadCharacter(ch.chars().next().unwrap_or('\0'))
+                }
                 Key::Character(ch) => WidgetKey::Character(ch.chars().next().unwrap_or('\0')),
                 _ => return None,
             };
@@ -41,6 +108,7 @@ pub(crate) fn winit_to_uievent(
                 }
             }
         }
+        WindowEvent::Ime(event) => ime_to_uievent(event, ime),
         WindowEvent::CursorMoved {
             device_id: _,
             position,
@@ -102,7 +170,20 @@ pub(crate) fn named_to_widget_key(named: &NamedKey) -> Option<WidgetKey> {
         NamedKey::Space => Some(WidgetKey::Space),
         NamedKey::Escape => Some(WidgetKey::Escape),
         NamedKey::Backspace => Some(WidgetKey::Backspace),
+        NamedKey::Insert => Some(WidgetKey::Insert),
         NamedKey::Delete => Some(WidgetKey::Delete),
+        NamedKey::F1 => Some(WidgetKey::F1),
+        NamedKey::F2 => Some(WidgetKey::F2),
+        NamedKey::F3 => Some(WidgetKey::F3),
+        NamedKey::F4 => Some(WidgetKey::F4),
+        NamedKey::F5 => Some(WidgetKey::F5),
+        NamedKey::F6 => Some(WidgetKey::F6),
+        NamedKey::F7 => Some(WidgetKey::F7),
+        NamedKey::F8 => Some(WidgetKey::F8),
+        NamedKey::F9 => Some(WidgetKey::F9),
+        NamedKey::F10 => Some(WidgetKey::F10),
+        NamedKey::F11 => Some(WidgetKey::F11),
+        NamedKey::F12 => Some(WidgetKey::F12),
         NamedKey::ArrowUp => Some(WidgetKey::ArrowUp),
         NamedKey::ArrowDown => Some(WidgetKey::ArrowDown),
         NamedKey::ArrowLeft => Some(WidgetKey::ArrowLeft),
@@ -133,7 +214,20 @@ pub(crate) fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
         WidgetKey::Space => (Key::Character(" ".into()), Some(" ".into())),
         WidgetKey::Escape => (Key::Named(NamedKey::Escape), None),
         WidgetKey::Backspace => (Key::Named(NamedKey::Backspace), None),
+        WidgetKey::Insert => (Key::Named(NamedKey::Insert), None),
         WidgetKey::Delete => (Key::Named(NamedKey::Delete), None),
+        WidgetKey::F1 => (Key::Named(NamedKey::F1), None),
+        WidgetKey::F2 => (Key::Named(NamedKey::F2), None),
+        WidgetKey::F3 => (Key::Named(NamedKey::F3), None),
+        WidgetKey::F4 => (Key::Named(NamedKey::F4), None),
+        WidgetKey::F5 => (Key::Named(NamedKey::F5), None),
+        WidgetKey::F6 => (Key::Named(NamedKey::F6), None),
+        WidgetKey::F7 => (Key::Named(NamedKey::F7), None),
+        WidgetKey::F8 => (Key::Named(NamedKey::F8), None),
+        WidgetKey::F9 => (Key::Named(NamedKey::F9), None),
+        WidgetKey::F10 => (Key::Named(NamedKey::F10), None),
+        WidgetKey::F11 => (Key::Named(NamedKey::F11), None),
+        WidgetKey::F12 => (Key::Named(NamedKey::F12), None),
         WidgetKey::ArrowUp => (Key::Named(NamedKey::ArrowUp), None),
         WidgetKey::ArrowDown => (Key::Named(NamedKey::ArrowDown), None),
         WidgetKey::ArrowLeft => (Key::Named(NamedKey::ArrowLeft), None),
@@ -142,7 +236,10 @@ pub(crate) fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
         WidgetKey::End => (Key::Named(NamedKey::End), None),
         WidgetKey::PageUp => (Key::Named(NamedKey::PageUp), None),
         WidgetKey::PageDown => (Key::Named(NamedKey::PageDown), None),
-        WidgetKey::Character(c) => {
+        // This compatibility conversion is retained for the terminal worker only.
+        // The live App delivers widget events directly to Terminal.
+        WidgetKey::NumpadEnter => (Key::Named(NamedKey::Enter), None),
+        WidgetKey::NumpadCharacter(c) | WidgetKey::Character(c) => {
             let s: String = c.to_string();
             (Key::Character(s.clone().into()), Some(s))
         }
@@ -166,4 +263,77 @@ pub(crate) fn widget_to_winit_mods(m: WidgetModifiers) -> winit::keyboard::Modif
         state |= ModifiersState::SUPER;
     }
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_commit_is_the_only_composition_text_event() {
+        let mut state = ImeState::default();
+        assert!(ime_to_uievent(&Ime::Enabled, &mut state).is_none());
+        assert!(state.suppresses_character_key(
+            &Key::Character("a".into()),
+            ModifiersState::default(),
+            false,
+        ));
+        assert_eq!(
+            ime_to_uievent(&Ime::Commit("語".into()), &mut state),
+            Some(UiEvent::Keyboard(WidgetKbEvent::Ime("語".into())))
+        );
+    }
+
+    #[test]
+    fn ime_does_not_block_physical_shortcuts_navigation_or_keypad() {
+        let mut state = ImeState::default();
+        state.observe(&Ime::Enabled);
+
+        assert!(!state.suppresses_character_key(
+            &Key::Character("c".into()),
+            ModifiersState::CONTROL,
+            false,
+        ));
+        assert!(!state.suppresses_character_key(
+            &Key::Named(NamedKey::ArrowUp),
+            ModifiersState::default(),
+            false,
+        ));
+        assert!(!state.suppresses_character_key(
+            &Key::Character("1".into()),
+            ModifiersState::default(),
+            true,
+        ));
+
+        state.observe(&Ime::Disabled);
+        assert!(!state.suppresses_character_key(
+            &Key::Character("a".into()),
+            ModifiersState::default(),
+            false,
+        ));
+    }
+
+    #[test]
+    fn insert_and_function_keys_round_trip_through_widget_keys() {
+        let expected = [
+            (NamedKey::Insert, WidgetKey::Insert),
+            (NamedKey::F1, WidgetKey::F1),
+            (NamedKey::F2, WidgetKey::F2),
+            (NamedKey::F3, WidgetKey::F3),
+            (NamedKey::F4, WidgetKey::F4),
+            (NamedKey::F5, WidgetKey::F5),
+            (NamedKey::F6, WidgetKey::F6),
+            (NamedKey::F7, WidgetKey::F7),
+            (NamedKey::F8, WidgetKey::F8),
+            (NamedKey::F9, WidgetKey::F9),
+            (NamedKey::F10, WidgetKey::F10),
+            (NamedKey::F11, WidgetKey::F11),
+            (NamedKey::F12, WidgetKey::F12),
+        ];
+
+        for (named, widget) in expected {
+            assert_eq!(named_to_widget_key(&named), Some(widget));
+            assert_eq!(widget_key_to_winit(&widget), (Key::Named(named), None),);
+        }
+    }
 }

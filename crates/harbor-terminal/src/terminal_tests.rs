@@ -1450,3 +1450,576 @@ fn should_reset_scroll_snap_suppression_when_resize_if_changed_modifies_dimensio
     terminal.process_output(b"more output\r\n");
     assert_eq!(terminal.screen().view_offset(), 0);
 }
+
+struct ScriptedReader {
+    chunks: std::collections::VecDeque<Vec<u8>>,
+}
+
+impl std::io::Read for ScriptedReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let Some(chunk) = self.chunks.pop_front() else {
+            return Ok(0);
+        };
+        buffer[..chunk.len()].copy_from_slice(&chunk);
+        Ok(chunk.len())
+    }
+}
+
+#[derive(Clone)]
+struct RecordingWriter {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    max_write: usize,
+}
+
+impl std::io::Write for RecordingWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let length = buffer.len().min(self.max_write);
+        self.bytes
+            .lock()
+            .expect("recording writer lock poisoned")
+            .extend_from_slice(&buffer[..length]);
+        Ok(length)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn terminal_with_io<R>(
+    reader: R,
+) -> (
+    Terminal,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    std::sync::mpsc::Receiver<()>,
+)
+where
+    R: std::io::Read + Send + 'static,
+{
+    let bytes = Default::default();
+    let writer = RecordingWriter {
+        bytes: std::sync::Arc::clone(&bytes),
+        max_write: 2,
+    };
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let terminal =
+        Terminal::new_headless_with_io(2, 8, reader, writer, move || wake_tx.send(()).is_ok());
+    (terminal, bytes, wake_rx)
+}
+
+struct CompletedScriptedReader {
+    chunks: std::collections::VecDeque<Vec<u8>>,
+    completed: std::sync::mpsc::Sender<()>,
+}
+
+impl std::io::Read for CompletedScriptedReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let Some(chunk) = self.chunks.pop_front() else {
+            let _ = self.completed.send(());
+            return Ok(0);
+        };
+        buffer[..chunk.len()].copy_from_slice(&chunk);
+        Ok(chunk.len())
+    }
+}
+
+#[test]
+fn pty_reader_output_is_drained_fifo_coalesces_wakes_and_refreshes_snapshot() {
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([b"first\r\n".to_vec(), b"second".to_vec()]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should request a redraw for queued output");
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enqueue both chunks before EOF");
+    assert!(
+        wake_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "queued chunks must share one pending wake"
+    );
+
+    // drain_and_snapshot drains queued output before exposing current parser/screen state.
+    let snapshot = terminal.drain_and_snapshot();
+    assert_eq!(terminal.row_text(0), "first   ");
+    assert_eq!(terminal.row_text(1), "second  ");
+    assert_eq!(snapshot.cursor_y, 1);
+    assert!(!terminal.drain_pty());
+}
+
+#[test]
+fn direct_widget_input_writes_all_encoded_bytes() {
+    use harbor_widget::input::event::{FocusEvent, Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('c'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::Ime("語".into())))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('x'),
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+        }))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Focus(FocusEvent::Lost))
+        .unwrap();
+
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        [b"\x03".as_slice(), "語".as_bytes(), b"\x1bx".as_slice()].concat()
+    );
+}
+
+#[test]
+fn direct_widget_input_observes_current_application_modes() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?1h\x1b=");
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::ArrowUp,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::NumpadCharacter('1'),
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOA\x1bOq");
+}
+
+#[test]
+fn should_write_modified_cursor_sequence_when_widget_event_has_shift() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::ArrowUp,
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    });
+
+    // Act
+    terminal.handle_event(event).unwrap();
+
+    // Assert
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[1;2A");
+}
+
+struct EofReader {
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    started: std::sync::mpsc::Sender<()>,
+}
+
+impl std::io::Read for EofReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.started.send(());
+        Ok(0)
+    }
+}
+
+struct BlockingThenChunkReader {
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    entered: std::sync::mpsc::Sender<()>,
+    permit: std::sync::mpsc::Receiver<()>,
+    completed: std::sync::mpsc::Sender<()>,
+}
+
+impl std::io::Read for BlockingThenChunkReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.entered.send(());
+        self.permit.recv().expect("test must release reader");
+        buffer[..4].copy_from_slice(b"late");
+        Ok(4)
+    }
+}
+
+impl Drop for BlockingThenChunkReader {
+    fn drop(&mut self) {
+        let _ = self.completed.send(());
+    }
+}
+
+struct FailingWriter;
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("write failed"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn should_stop_reader_after_eof_without_waking() {
+    // Arrange
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let reader = EofReader {
+        reads: std::sync::Arc::clone(&reads),
+        started: started_tx,
+    };
+    let (_terminal, _written, wake_rx) = terminal_with_io(reader);
+
+    // Act
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should attempt its initial read");
+
+    // Assert
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(wake_rx.try_recv().is_err());
+}
+
+#[test]
+fn should_stop_reader_when_terminal_receiver_is_disconnected() {
+    // Arrange
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (permit_tx, permit_rx) = std::sync::mpsc::channel();
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = BlockingThenChunkReader {
+        reads: std::sync::Arc::clone(&reads),
+        entered: entered_tx,
+        permit: permit_rx,
+        completed: completed_tx,
+    };
+    let (terminal, _written, _wake_rx) = terminal_with_io(reader);
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should block waiting for input");
+
+    // Act
+    drop(terminal);
+    permit_tx.send(()).expect("reader should still be waiting");
+
+    // Assert
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should exit after its send is rejected");
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn should_write_application_keypad_enter_from_widget_event() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b=");
+    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::NumpadEnter,
+        modifiers: Modifiers::default(),
+    });
+
+    // Act
+    terminal.handle_event(event).unwrap();
+
+    // Assert
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOM");
+}
+
+#[test]
+fn should_ignore_unsuitable_widget_events() {
+    use harbor_widget::{
+        input::event::{
+            FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
+            UiEvent,
+        },
+        layout::Point,
+    };
+
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    let events = [
+        UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Character('x'),
+            modifiers: Modifiers::default(),
+        }),
+        UiEvent::Keyboard(KeyboardEvent::Ime(String::new())),
+        UiEvent::Focus(FocusEvent::Lost),
+        UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::Down,
+            PointerButton::Left,
+            1,
+        )),
+    ];
+
+    // Act
+    for event in events {
+        terminal.handle_event(event).unwrap();
+    }
+
+    // Assert
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn should_propagate_writer_errors_for_encodable_widget_events() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    // Arrange
+    let mut terminal = Terminal::new_headless_with_io(
+        2,
+        8,
+        ScriptedReader {
+            chunks: std::collections::VecDeque::new(),
+        },
+        FailingWriter,
+        || true,
+    );
+    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('x'),
+        modifiers: Modifiers::default(),
+    });
+
+    // Act
+    let result = terminal.handle_event(event);
+
+    // Assert
+    assert!(result.is_err());
+}
+
+struct BurstReader {
+    remaining: usize,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    completed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::io::Read for BurstReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            self.completed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(0);
+        }
+        self.remaining -= 1;
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        buffer[0] = b'x';
+        Ok(1)
+    }
+}
+
+#[test]
+fn pty_queue_is_bounded_and_wakes_once_until_drained() {
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = BurstReader {
+        remaining: crate::PTY_QUEUE_CAPACITY + 1,
+        reads: std::sync::Arc::clone(&reads),
+        completed: std::sync::Arc::clone(&completed),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("first queued chunk must wake the UI");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while reads.load(std::sync::atomic::Ordering::SeqCst) < crate::PTY_QUEUE_CAPACITY + 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reader did not reach the send that must wait for bounded queue capacity"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        wake_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "a full burst must not post a wake per chunk"
+    );
+
+    assert!(terminal.drain_pty());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !completed.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reader did not resume after output was drained"
+        );
+        std::thread::yield_now();
+    }
+    // The final chunk may have arrived during the first drain or after it
+    // re-armed the wake flag; either way the UI thread can drain it now.
+    let _ = terminal.drain_pty();
+    assert!(!terminal.drain_pty());
+}
+
+struct ErrorReader {
+    started: std::sync::mpsc::Sender<()>,
+}
+
+impl std::io::Read for ErrorReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        let _ = self.started.send(());
+        Err(std::io::Error::other("read failed"))
+    }
+}
+
+#[test]
+fn reader_error_stops_without_enqueuing_or_waking() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let reader = ErrorReader {
+        started: started_tx,
+    };
+    let (_terminal, _written, wake_rx) = terminal_with_io(reader);
+
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should make its initial read");
+    assert!(wake_rx.try_recv().is_err());
+}
+
+#[test]
+fn terminal_input_returns_scrollback_to_live_viewport() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for line in 0..8 {
+        terminal.process_output(format!("line {line}\r\n").as_bytes());
+    }
+    terminal.scroll_viewport_up(3);
+    assert!(terminal.screen().view_offset() > 0);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('x'),
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert_eq!(written.lock().unwrap().as_slice(), b"x");
+}
+
+#[test]
+fn queued_output_updates_modes_before_input_encoding() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?1h\x1b=".to_vec()]),
+        completed: completed_tx,
+    };
+    let (mut terminal, written, wake_rx) = terminal_with_io(reader);
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("mode update should wake the UI");
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("mode update should finish reading");
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::ArrowUp,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::NumpadCharacter('1'),
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOA\x1bOq");
+}
+
+#[test]
+fn should_keep_snapshot_non_draining_while_drain_and_snapshot_is_fresh() {
+    // Arrange
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([b"x".to_vec()]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("queued output should wake the UI");
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should finish after queuing output");
+
+    // Act
+    let cached = terminal.snapshot();
+    let fresh = terminal.drain_and_snapshot();
+
+    // Assert
+    assert_eq!(cached.cells[0].ch, ' ');
+    assert_eq!(fresh.cells[0].ch, 'x');
+}
+
+#[test]
+fn drain_and_snapshot_observes_queued_bracketed_paste_mode() {
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2004h".to_vec()]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("mode update should wake the UI");
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("mode update should finish reading");
+
+    assert!(terminal.drain_and_snapshot().input_modes.bracketed_paste);
+}

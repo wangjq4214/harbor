@@ -6,7 +6,11 @@ use std::time::Instant;
 
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
+    /// The terminal reader queued output for UI-thread parsing.
+    TerminalOutputReady,
     /// The terminal worker published a new snapshot or status.
+    ///
+    /// Retained until T0005 removes the obsolete worker.
     WorkerUpdateReady,
 }
 
@@ -28,6 +32,7 @@ pub(crate) enum FrameControlFlow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RedrawReason {
     WorkerUpdate,
+    TerminalOutput,
     Input,
     Resize,
     SurfaceRecovery,
@@ -112,8 +117,8 @@ mod tests {
     fn coalesces_wakes_until_redraw_is_observed() {
         let mut scheduler = FrameScheduler::default();
 
-        assert!(scheduler.wake(RedrawReason::WorkerUpdate));
-        assert!(!scheduler.wake(RedrawReason::WorkerUpdate));
+        assert!(scheduler.wake(RedrawReason::TerminalOutput));
+        assert!(!scheduler.wake(RedrawReason::TerminalOutput));
         assert!(scheduler.redraw_pending());
 
         scheduler.redraw_requested();

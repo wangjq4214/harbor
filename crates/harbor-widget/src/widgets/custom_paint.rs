@@ -1,4 +1,4 @@
-use crate::input::event::UiEvent;
+use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
@@ -94,7 +94,13 @@ impl AnyView for CustomPaint {
         true
     }
 
-    fn handle_event(&self, event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
+    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
+        if matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Down)
+            && let Some(fiber) = ctx.current_fiber()
+        {
+            ctx.request_focus(fiber);
+        }
+
         // Queue for deferred delivery to the App via Runtime.
         crate::runtime::queue_external_input(self.draw_id, event.clone());
         EventHandled::Handled

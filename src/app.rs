@@ -6,7 +6,6 @@ pub(crate) mod translate;
 
 use std::{
     cell::Cell,
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -18,22 +17,15 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{
-    app::input::InputEncoder,
-    event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason},
-    terminal_worker::{TerminalWorkerClient, empty_snapshot},
-};
+use crate::event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason};
 use confirmation::ConfirmationWindow;
+use harbor_pty::PtyEndpoints;
 use harbor_terminal::{
     GpuContext, SurfaceDisposition, SurfaceStatus, Terminal, TextMetrics, load_system_fonts,
     surface_disposition,
 };
-use harbor_types::{
-    RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
-};
-use harbor_widget::input::event::{KeyboardEvent as WidgetKbEvent, UiEvent};
-
-use translate::{widget_key_to_winit, widget_to_winit_mods, winit_to_uievent};
+use harbor_widget::input::event::UiEvent;
+use translate::{ImeState, winit_to_uievent_with_ime};
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
@@ -92,6 +84,35 @@ fn scrollback_navigation(
         Key::Named(NamedKey::Home) => Some(ScrollbackNavigation::Top),
         Key::Named(NamedKey::End) => Some(ScrollbackNavigation::Bottom),
         _ => None,
+    }
+}
+
+fn routes_terminal_input(
+    gate_active: bool,
+    event_draw_id: harbor_terminal::ExternalDrawId,
+    terminal_draw_id: harbor_terminal::ExternalDrawId,
+) -> bool {
+    !gate_active && event_draw_id == terminal_draw_id
+}
+
+fn route_terminal_inputs(
+    gate_active: bool,
+    terminal_draw_id: harbor_terminal::ExternalDrawId,
+    events: impl IntoIterator<Item = (harbor_terminal::ExternalDrawId, UiEvent)>,
+    mut handle: impl FnMut(UiEvent),
+) {
+    for (event_draw_id, event) in events {
+        if routes_terminal_input(gate_active, event_draw_id, terminal_draw_id) {
+            handle(event);
+        }
+    }
+}
+
+fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
+    match event {
+        AppEvent::TerminalOutputReady => Some(RedrawReason::TerminalOutput),
+        // Kept for the inert terminal worker until T0005 removes it.
+        AppEvent::WorkerUpdateReady => None,
     }
 }
 
@@ -190,20 +211,8 @@ struct AppRuntime {
     dialog: DialogOverlay,
 }
 
-/// Terminal-worker session state and its published projection.
-struct TerminalSession {
-    latest_snapshot: Option<TerminalSnapshot>,
-    updates: RevisionedUpdateReceiver,
-    worker: Option<TerminalWorkerClient>,
-    worker_status: WorkerStatus,
-    pending_resize: Option<TerminalSize>,
-    pending_snapshot_commands: HashMap<u64, Instant>,
-}
-
-/// State governing damage, scheduling, and surface recovery.
+/// State governing scheduling and surface recovery.
 struct FrameState {
-    pending_damage: Option<UpdateDamage>,
-    render_dirty: bool,
     scheduler: FrameScheduler,
     surface_recovery_attempted: bool,
 }
@@ -211,10 +220,10 @@ struct FrameState {
 /// Winit coordinator over concrete lifecycle state groups.
 pub(crate) struct App {
     runtime: AppRuntime,
-    session: TerminalSession,
     frame: FrameState,
     event_proxy: EventLoopProxy<AppEvent>,
     modifiers: ModifiersState,
+    ime: ImeState,
 }
 
 /// Errors that can occur while starting the application.
@@ -222,8 +231,8 @@ pub(crate) struct App {
 enum AppError {
     #[error("failed to create window")]
     Window(#[from] winit::error::OsError),
-    #[error("failed to start terminal worker")]
-    Worker(#[from] anyhow::Error),
+    #[error("failed to create pty endpoints")]
+    Pty(#[source] anyhow::Error),
     #[error("failed to create renderer")]
     Renderer(#[source] anyhow::Error),
 }
@@ -239,55 +248,15 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Handles terminal-worker update wakes without touching the worker model.
+    /// Handles redraw wakes posted by the terminal reader thread.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
-        let AppEvent::WorkerUpdateReady = event;
-        if self.consume_worker_updates() {
-            self.request_redraw(RedrawReason::WorkerUpdate);
+        if let Some(reason) = redraw_reason_for_app_event(event) {
+            self.request_redraw(reason);
         }
     }
 
-    /// Called when the event loop is about to block. Applies pending resize.
+    /// Called when the event loop is about to block.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.consume_worker_updates() {
-            self.request_redraw(RedrawReason::WorkerUpdate);
-        }
-        let (Some(_terminal), Some(_snapshot), Some(worker), Some(_window)) = (
-            self.runtime.terminal.as_ref(),
-            self.session.latest_snapshot.as_ref(),
-            self.session.worker.as_ref(),
-            self.runtime.window.as_ref(),
-        ) else {
-            self.frame.scheduler.set_deadline(None);
-            self.set_control_flow(event_loop);
-            return;
-        };
-
-        if let Some(new_size) = self.session.pending_resize.take()
-            && let Some(request_id) = worker.request_resize(new_size)
-        {
-            self.session
-                .pending_snapshot_commands
-                .insert(request_id, Instant::now());
-        }
-
-        if matches!(
-            self.session.worker_status,
-            WorkerStatus::Failed { .. } | WorkerStatus::Stopped
-        ) {
-            self.session.pending_snapshot_commands.clear();
-        }
-
-        if !self.session.pending_snapshot_commands.is_empty() {
-            self.frame.scheduler.set_deadline(None);
-            if self.frame.scheduler.control_flow() == FrameControlFlow::Poll {
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                self.set_control_flow(event_loop);
-            }
-            return;
-        }
-
         self.frame.scheduler.set_deadline(None);
         if self.frame.scheduler.should_request_continuous_redraw() {
             self.request_redraw(RedrawReason::Active);
@@ -295,17 +264,13 @@ impl ApplicationHandler<AppEvent> for App {
         self.set_control_flow(event_loop);
     }
 
-    /// Dispatches window-level events: resize, redraw, close, keyboard input.
+    /// Dispatches window-level events: resize, redraw, close, and terminal input.
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if self.consume_worker_updates() {
-            self.request_redraw(RedrawReason::WorkerUpdate);
-        }
-
         let dialog_window_id = self.runtime.dialog.window_id();
         if dialog_window_id == Some(window_id) {
             let scale = self
@@ -321,7 +286,6 @@ impl ApplicationHandler<AppEvent> for App {
                 self.runtime.terminal.as_ref(),
             );
             if let Some(reason) = result.needs_redraw {
-                self.frame.render_dirty = true;
                 self.request_redraw(reason);
             }
             match result.outcome {
@@ -330,8 +294,16 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 DialogOutcome::Confirmed(raw_text) => {
-                    if let Some(worker) = self.session.worker.as_ref() {
-                        let _ = worker.send(harbor_types::TerminalCommand::PasteText(raw_text));
+                    if let Some(terminal) = self.runtime.terminal.as_ref()
+                        && let Ok(mut terminal) = terminal.lock()
+                    {
+                        let bytes = terminal
+                            .drain_and_snapshot()
+                            .input_modes
+                            .paste(raw_text.as_bytes());
+                        if let Err(error) = terminal.write_pty(&bytes) {
+                            tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+                        }
                     }
                     self.request_redraw(RedrawReason::Input);
                     return;
@@ -341,11 +313,9 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let gate_active = self.runtime.dialog.is_active();
 
-        let (Some(gpu), Some(terminal), Some(snapshot), Some(worker), Some(window)) = (
+        let (Some(gpu), Some(terminal), Some(window)) = (
             self.runtime.gpu.as_mut(),
             self.runtime.terminal.as_ref(),
-            self.session.latest_snapshot.as_ref(),
-            self.session.worker.as_ref(),
             self.runtime.window.as_ref(),
         ) else {
             return;
@@ -363,88 +333,54 @@ impl ApplicationHandler<AppEvent> for App {
             self.frame.scheduler.set_active(false);
         }
 
-        let is_copy = self.modifiers.control_key()
-            && matches!(&event, WindowEvent::KeyboardInput { event: kbd, .. }
-                if kbd.state == ElementState::Pressed
-                && matches!(&kbd.logical_key, Key::Character(ch) if ch == "c" || ch == "C")
-            );
-
         if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
             && kbd.state == ElementState::Pressed
-            && kbd.text.is_some()
-            && !is_copy
         {
-            let _ = worker.request_scroll_to_bottom();
-        }
-
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-            && let Some(navigation) =
+            let snapshot = terminal.lock().unwrap().drain_and_snapshot();
+            if let Some(navigation) =
                 scrollback_navigation(&kbd.logical_key, self.modifiers, snapshot.is_alt)
-        {
-            let page_rows = snapshot.rows;
-            let request_id = match navigation {
-                ScrollbackNavigation::PageUp => {
-                    worker.request_scroll_viewport(-(page_rows as isize))
+            {
+                let mut terminal = terminal.lock().unwrap();
+                match navigation {
+                    ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(snapshot.rows),
+                    ScrollbackNavigation::PageDown => terminal.scroll_viewport_down(snapshot.rows),
+                    ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
+                    ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
                 }
-                ScrollbackNavigation::PageDown => {
-                    worker.request_scroll_viewport(page_rows as isize)
-                }
-                ScrollbackNavigation::Top => worker.request_scroll_to_top(),
-                ScrollbackNavigation::Bottom => worker.request_scroll_to_bottom(),
-            };
-            if let Some(request_id) = request_id {
-                self.session
-                    .pending_snapshot_commands
-                    .insert(request_id, Instant::now());
+                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                return;
             }
             Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-            return;
         }
 
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-        {
-            self.frame.render_dirty = true;
-            Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-        }
-
-        let mut widget_handled_key = false;
         if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
             let scale = window.scale_factor() as f32;
             let is_keyboard = matches!(&event, WindowEvent::KeyboardInput { .. });
             if (!gate_active || !is_keyboard)
-                && let Some(ui_event) = winit_to_uievent(&event, scale, self.modifiers)
+                && let Some(ui_event) =
+                    winit_to_uievent_with_ime(&event, scale, self.modifiers, &mut self.ime)
             {
                 let frame_request = widget_runtime.dispatch(ui_event, Instant::now());
                 if frame_request.needs_redraw {
                     Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
                 }
-                if !gate_active {
-                    for (_id, external_event) in widget_runtime.drain_external_input() {
-                        if let UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }) =
-                            external_event
-                        {
-                            let (logical_key, text) = widget_key_to_winit(&key);
-                            if let Some(request) = InputEncoder::request(
-                                &logical_key,
-                                text.as_deref(),
-                                widget_to_winit_mods(modifiers),
-                                false,
-                            ) {
-                                let _ = worker.send(harbor_types::TerminalCommand::Input(request));
-                            }
-                            widget_handled_key = true;
+                let draw_id = terminal.lock().unwrap().draw_id();
+                route_terminal_inputs(
+                    gate_active,
+                    draw_id,
+                    widget_runtime.drain_external_input(),
+                    |external_event| {
+                        if let Err(error) = terminal.lock().unwrap().handle_event(external_event) {
+                            tracing::warn!(error = %format_args!("{error:#}"), "failed to write terminal input");
                         }
-                    }
-                }
+                    },
+                );
             }
         }
 
         match event {
             WindowEvent::CloseRequested => {
                 tracing::info!("close requested");
-                worker.shutdown();
                 event_loop.exit();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -457,9 +393,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.frame.surface_recovery_attempted = false;
                 gpu.resize(size.width, size.height);
-                let term_size = terminal.lock().unwrap().terminal_size(gpu);
-                self.session.pending_resize = Some(term_size);
-                self.frame.render_dirty = true;
+                let mut terminal = terminal.lock().unwrap();
+                let terminal_size = terminal.terminal_size(gpu);
+                terminal.resize_gpu(terminal_size, gpu);
                 if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                     let scale = window.scale_factor() as f32;
                     let viewport =
@@ -471,16 +407,18 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 tracing::trace!(?scale_factor, "main window scale factor changed");
-                let sf = scale_factor as f32;
-                let (physical_w, physical_h) = gpu.surface_size();
+                let scale = scale_factor as f32;
+                let (physical_width, physical_height) = gpu.surface_size();
                 gpu.reconfigure();
                 if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-                    let viewport =
-                        harbor_widget::renderer::Viewport::new(physical_w, physical_h, sf);
+                    let viewport = harbor_widget::renderer::Viewport::new(
+                        physical_width,
+                        physical_height,
+                        scale,
+                    );
                     widget_runtime.set_viewport(viewport);
                     widget_runtime.update(Instant::now());
                 }
-                self.frame.render_dirty = true;
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
@@ -489,6 +427,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.render_frame();
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let snapshot = terminal.lock().unwrap().drain_and_snapshot();
                 if snapshot.is_alt {
                     return;
                 }
@@ -496,31 +435,16 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
                 };
-                if lines != 0 {
-                    let request_id = worker.request_scroll_viewport(-lines);
-                    if let Some(request_id) = request_id {
-                        self.session
-                            .pending_snapshot_commands
-                            .insert(request_id, Instant::now());
-                    }
+                if lines > 0 {
+                    terminal.lock().unwrap().scroll_viewport_up(lines as usize);
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                } else if lines < 0 {
+                    terminal
+                        .lock()
+                        .unwrap()
+                        .scroll_viewport_down(lines.unsigned_abs());
                     Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
                 }
-            }
-            WindowEvent::KeyboardInput {
-                device_id: _,
-                event,
-                is_synthetic: _,
-            } if event.state == ElementState::Pressed && !gate_active && !widget_handled_key => {
-                let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
-                let Some(request) = InputEncoder::request(
-                    &event.logical_key,
-                    event.text.as_deref(),
-                    self.modifiers,
-                    is_numpad,
-                ) else {
-                    return;
-                };
-                let _ = worker.send(harbor_types::TerminalCommand::Input(request));
             }
             _ => {}
         }
@@ -529,7 +453,7 @@ impl ApplicationHandler<AppEvent> for App {
 
 // ── App (own methods) ─────────────────────────────────────────────────────
 impl App {
-    /// Creates the application shell with no initial window, GPU, or worker.
+    /// Creates the application shell with no initial window, GPU, or terminal.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             runtime: AppRuntime {
@@ -539,22 +463,13 @@ impl App {
                 widget_runtime: None,
                 dialog: DialogOverlay { window: None },
             },
-            session: TerminalSession {
-                latest_snapshot: None,
-                updates: RevisionedUpdateReceiver::default(),
-                worker: None,
-                worker_status: WorkerStatus::Ready,
-                pending_resize: None,
-                pending_snapshot_commands: HashMap::new(),
-            },
             frame: FrameState {
-                pending_damage: None,
-                render_dirty: false,
                 scheduler: FrameScheduler::default(),
                 surface_recovery_attempted: false,
             },
             event_proxy,
             modifiers: ModifiersState::default(),
+            ime: ImeState::default(),
         }
     }
 
@@ -567,6 +482,8 @@ impl App {
         tracing::info!("creating window");
         let window =
             Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
+        // Winit 0.30 emits composition commits only after IME is explicitly enabled.
+        window.set_ime_allowed(true);
 
         #[cfg(target_os = "windows")]
         paint_gdi_background(&window);
@@ -597,36 +514,31 @@ impl App {
             .map_err(AppError::Renderer)?;
         let metrics = TextMetrics::new(&fonts);
 
-        let bootstrap = empty_snapshot(1, 1);
-        let size = TerminalSize {
-            rows: bootstrap.rows,
-            cols: bootstrap.cols,
-        };
-        let terminal = Arc::new(Mutex::new(Terminal::new(size, &gpu, fonts, metrics)));
-        let term_size = terminal.lock().unwrap().terminal_size(&gpu);
-
-        let worker = TerminalWorkerClient::start(term_size, self.event_proxy.clone())
-            .map_err(AppError::Worker)?;
-        let initial = worker.take_update().ok_or_else(|| {
-            AppError::Worker(anyhow::anyhow!("worker did not publish initial snapshot"))
-        })?;
-
-        tracing::info!(
-            rows = term_size.rows,
-            cols = term_size.cols,
-            "terminal initialized"
+        let size = Terminal::terminal_size_for(&gpu, &metrics);
+        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size)
+            .map_err(AppError::Pty)?
+            .into_parts();
+        let event_proxy = self.event_proxy.clone();
+        let terminal = Terminal::new(
+            size,
+            pty_read,
+            pty_write,
+            pty_control,
+            &gpu,
+            fonts,
+            metrics,
+            move || {
+                event_proxy
+                    .send_event(AppEvent::TerminalOutputReady)
+                    .is_ok()
+            },
         );
+        let terminal = Arc::new(Mutex::new(terminal));
+
+        tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.terminal = Some(terminal);
         self.init_widget_runtime();
-        self.session
-            .updates
-            .accept(initial.clone())
-            .expect("initial worker revision must be accepted");
-        self.frame.pending_damage = Some(UpdateDamage::FullUpload);
-        self.session.latest_snapshot = Some(initial.snapshot);
-        self.session.worker_status = worker.status();
-        self.session.worker = Some(worker);
         self.runtime.window = Some(window.clone());
         self.request_redraw(RedrawReason::Input);
         Ok(())
@@ -655,84 +567,15 @@ impl App {
         }
     }
 
-    fn damage_after_coalescing(damage: UpdateDamage, accepted_updates: usize) -> UpdateDamage {
-        if accepted_updates > 1 {
-            UpdateDamage::FullUpload
-        } else {
-            damage
-        }
-    }
-
-    fn consume_worker_updates(&mut self) -> bool {
-        let mut changed = false;
-        let mut latest_update = None;
-        let mut accepted_updates = 0usize;
-        loop {
-            let update = self
-                .session
-                .worker
-                .as_ref()
-                .and_then(TerminalWorkerClient::take_update);
-            let Some(update) = update else {
-                break;
-            };
-            let Some(update) = self.session.updates.accept(update) else {
-                continue;
-            };
-            accepted_updates = accepted_updates.saturating_add(1);
-            latest_update = Some(update);
-        }
-        if let Some(update) = latest_update {
-            let damage = Self::damage_after_coalescing(update.damage, accepted_updates);
-            if let Some(existing) = self.frame.pending_damage.as_mut() {
-                *existing = UpdateDamage::FullUpload;
-            } else {
-                self.frame.pending_damage = Some(damage);
-            }
-            self.session.latest_snapshot = Some(update.snapshot);
-            self.frame.render_dirty = true;
-            changed = true;
-        }
-        loop {
-            let request_id = self
-                .session
-                .worker
-                .as_ref()
-                .and_then(TerminalWorkerClient::take_acknowledgement);
-            let Some(request_id) = request_id else {
-                break;
-            };
-            self.session.pending_snapshot_commands.remove(&request_id);
-        }
-        if let Some(worker) = self.session.worker.as_ref() {
-            let status = worker.status();
-            if status != self.session.worker_status {
-                match &status {
-                    WorkerStatus::Failed { .. } => {
-                        tracing::error!(status = ?status, "terminal worker failed");
-                        self.session.pending_snapshot_commands.clear();
-                    }
-                    WorkerStatus::Stopped => {
-                        tracing::info!(status = ?status, "terminal worker stopped");
-                        self.session.pending_snapshot_commands.clear();
-                    }
-                    WorkerStatus::Ready | WorkerStatus::Processing | WorkerStatus::Idle => {}
-                }
-                self.session.worker_status = status;
-                changed = true;
-            }
-        }
-        changed
-    }
-
     fn render_frame(&mut self) {
-        let (Some(gpu), Some(terminal), Some(_snapshot)) = (
-            self.runtime.gpu.as_mut(),
-            self.runtime.terminal.as_ref(),
-            self.session.latest_snapshot.as_ref(),
-        ) else {
+        let (Some(gpu), Some(terminal)) =
+            (self.runtime.gpu.as_mut(), self.runtime.terminal.as_ref())
+        else {
             return;
         };
+        if let Ok(mut terminal) = terminal.lock() {
+            terminal.drain_pty();
+        }
 
         let frame = gpu.get_current_texture();
         let status = match &frame {
@@ -773,15 +616,6 @@ impl App {
             }
             _ => unreachable!("surface disposition must match texture status"),
         };
-
-        let render_dirty = std::mem::take(&mut self.frame.render_dirty);
-        if let Ok(mut term) = terminal.lock() {
-            if let Some(damage) = self.frame.pending_damage.take() {
-                term.prepare(gpu, Some(&damage));
-            } else if render_dirty {
-                term.prepare(gpu, None);
-            }
-        }
 
         let view = output
             .texture
@@ -855,6 +689,7 @@ impl App {
         runtime.set_root(custom_paint);
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.update(Instant::now());
+        runtime.focus_first_focusable();
 
         self.runtime.widget_runtime = Some(runtime);
     }
@@ -966,19 +801,43 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_updates_require_full_upload_but_single_update_keeps_damage() {
-        let ranges = vec![harbor_terminal::DirtyRange {
-            row: 0,
-            start_col: 1,
-            end_col: 2,
-        }];
+    fn external_input_requires_matching_draw_id_and_an_open_gate() {
+        assert!(routes_terminal_input(false, 7, 7));
+        assert!(!routes_terminal_input(false, 6, 7));
+        assert!(!routes_terminal_input(true, 7, 7));
+    }
+
+    #[test]
+    fn routes_only_matching_external_input_when_gate_is_open() {
+        use harbor_widget::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, UiEvent};
+
+        let matching = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let other = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Escape,
+            modifiers: Modifiers::default(),
+        });
+        let mut routed = Vec::new();
+
+        route_terminal_inputs(false, 7, [(6, other), (7, matching.clone())], |event| {
+            routed.push(event)
+        });
+        route_terminal_inputs(true, 7, [(7, matching.clone())], |event| routed.push(event));
+
+        assert_eq!(routed, vec![matching]);
+    }
+
+    #[test]
+    fn terminal_output_event_requests_terminal_output_redraw() {
         assert_eq!(
-            App::damage_after_coalescing(UpdateDamage::Ranges(ranges.clone()), 1),
-            UpdateDamage::Ranges(ranges)
+            redraw_reason_for_app_event(AppEvent::TerminalOutputReady),
+            Some(RedrawReason::TerminalOutput)
         );
         assert_eq!(
-            App::damage_after_coalescing(UpdateDamage::Ranges(Vec::new()), 2),
-            UpdateDamage::FullUpload
+            redraw_reason_for_app_event(AppEvent::WorkerUpdateReady),
+            None
         );
     }
 }

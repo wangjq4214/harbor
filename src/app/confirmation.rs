@@ -14,7 +14,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::app::winit_to_uievent;
+use super::translate::winit_to_uievent;
 use harbor_terminal::GpuContext;
 use harbor_text::TextMetrics;
 use harbor_types::safe_preview_line;

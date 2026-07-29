@@ -11,6 +11,7 @@ mod windows;
 
 use parking_lot::Mutex;
 use std::{
+    io::{self, Read, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -19,9 +20,9 @@ use std::{
     thread::JoinHandle,
 };
 #[cfg(unix)]
-use unix::{Pty as RawPty, PtyReader};
+use unix::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
 #[cfg(windows)]
-use windows::{Pty as RawPty, PtyReader};
+use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
 
 use anyhow::ensure;
 use harbor_types::TerminalSize;
@@ -129,6 +130,147 @@ impl PtySize {
     }
 }
 
+/// The read, write, and lifecycle capabilities of one live PTY.
+///
+/// [`PtyEndpoints::into_parts`] is deliberately the only way to transfer its
+/// capabilities. The opaque [`PtyControl`] keeps ConPTY resources inside this
+/// crate and requires the terminal reader thread for safe shutdown.
+pub struct PtyEndpoints {
+    reader: Option<PtyReaderEndpoint>,
+    writer: Option<PtyWriter>,
+    control: Option<PtyControl>,
+}
+
+/// Read endpoint that acknowledges shutdown only after its blocking read has
+/// returned and the reader thread releases it.
+pub struct PtyReaderEndpoint {
+    reader: PtyReader,
+    _completion: ReaderCompletion,
+}
+
+/// Write-only PTY input endpoint for the terminal UI thread.
+pub struct PtyWriter {
+    writer: RawPtyWriter,
+}
+
+/// Opaque owner for PTY resize and shutdown resources.
+///
+/// It can only be created by [`PtyEndpoints`]. Its public operations are
+/// capability-oriented so platform handles never cross the crate boundary.
+pub struct PtyControl {
+    pty: Option<RawPty>,
+    reader_shutdown: Option<ReaderShutdown>,
+}
+
+impl PtyEndpoints {
+    /// Spawns a shell and returns its independent terminal-owned endpoints.
+    pub fn spawn_shell(size: TerminalSize) -> anyhow::Result<Self> {
+        let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?)?;
+        let (reader_shutdown, completion) = ReaderShutdown::new();
+        let (reader, writer, pty) = pty.into_endpoints(reader);
+        Ok(Self {
+            reader: Some(PtyReaderEndpoint {
+                reader,
+                _completion: completion,
+            }),
+            writer: Some(PtyWriter { writer }),
+            control: Some(PtyControl {
+                pty: Some(pty),
+                reader_shutdown: Some(reader_shutdown),
+            }),
+        })
+    }
+
+    /// Transfers the I/O endpoints and their shutdown owner to a terminal.
+    pub fn into_parts(mut self) -> (PtyReaderEndpoint, PtyWriter, PtyControl) {
+        (
+            self.reader
+                .take()
+                .expect("pty endpoints can only be split once"),
+            self.writer
+                .take()
+                .expect("pty endpoints can only be split once"),
+            self.control
+                .take()
+                .expect("pty endpoints can only be split once"),
+        )
+    }
+}
+
+impl Drop for PtyEndpoints {
+    fn drop(&mut self) {
+        // No reader thread exists until the endpoints are transferred to Terminal,
+        // so ordinary platform teardown is safe on this unstarted path.
+        if let Some(control) = self.control.take() {
+            control.close_without_reader();
+        }
+    }
+}
+
+impl Read for PtyReaderEndpoint {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(buffer).map_err(endpoint_io_error)
+    }
+}
+
+impl Write for PtyWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.writer.write(buffer).map_err(endpoint_io_error)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl PtyControl {
+    /// Resizes the live pseudo terminal.
+    pub fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
+        self.pty
+            .as_mut()
+            .expect("pty control is unavailable during shutdown")
+            .resize(PtySize::from_terminal(size)?)
+    }
+
+    /// Transfers the PTY and terminal reader to the platform shutdown reaper.
+    ///
+    /// This never waits on the UI thread. On Windows the reaper first cancels
+    /// the blocking reader and observes its completion before ConPTY is closed.
+    pub fn shutdown(mut self, reader: JoinHandle<()>) {
+        let pty = self
+            .pty
+            .take()
+            .expect("pty control must retain its platform pty until shutdown");
+        let reader_shutdown = self
+            .reader_shutdown
+            .take()
+            .expect("pty control must retain its reader shutdown protocol");
+        RawPty::shutdown(pty, reader, reader_shutdown);
+    }
+
+    fn close_without_reader(mut self) {
+        drop(self.pty.take());
+        drop(self.reader_shutdown.take());
+    }
+}
+
+impl Drop for PtyControl {
+    fn drop(&mut self) {
+        if let Some(pty) = self.pty.take() {
+            // A control separated from its terminal has no reader JoinHandle to
+            // cancel. Leaking is safer than closing ConPTY while ReadFile may
+            // still own the output handle; normal endpoint and Terminal drops
+            // take an explicit safe teardown path above.
+            tracing::error!("pty control dropped without its terminal reader; leaking session");
+            std::mem::forget(pty);
+        }
+    }
+}
+
+fn endpoint_io_error(error: anyhow::Error) -> io::Error {
+    io::Error::other(error)
+}
+
 impl PtySession {
     pub fn start_shell_reader<F>(size: TerminalSize, output_handler: F) -> anyhow::Result<Self>
     where
@@ -184,6 +326,16 @@ impl PtySession {
             .as_mut()
             .expect("pty session is unavailable during shutdown")
             .write(data)
+    }
+
+    /// Writes every byte to the underlying PTY input pipe.
+    pub fn write_all(&mut self, mut data: &[u8]) -> anyhow::Result<()> {
+        while !data.is_empty() {
+            let written = self.write(data)?;
+            ensure!(written != 0, "pty writer accepted no input bytes");
+            data = &data[written..];
+        }
+        Ok(())
     }
 }
 
@@ -476,6 +628,36 @@ mod tests {
         );
         reader.join().unwrap();
         assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_endpoints_write_resize_and_shutdown_without_blocking_ui() {
+        use std::time::{Duration, Instant};
+
+        let (mut reader, mut writer, mut control) =
+            PtyEndpoints::spawn_shell(TerminalSize { rows: 24, cols: 80 })
+                .expect("Windows ConPTY endpoints should start")
+                .into_parts();
+        let reader_thread = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while reader.read(&mut buffer).is_ok_and(|length| length != 0) {}
+        });
+
+        writer
+            .write_all(b"\r")
+            .expect("endpoint writer should forward all bytes");
+        control
+            .resize(TerminalSize { rows: 25, cols: 81 })
+            .expect("endpoint control should forward resize");
+        drop(writer);
+
+        let started = Instant::now();
+        control.shutdown(reader_thread);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "endpoint shutdown must transfer cleanup rather than block the UI"
+        );
     }
 
     #[cfg(windows)]

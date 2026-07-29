@@ -60,6 +60,11 @@ pub struct PtyReader {
     output_read: OwnedHandle,
 }
 
+/// Write-only input endpoint transferred to the terminal UI thread.
+pub struct PtyWriter {
+    input_write: OwnedHandle,
+}
+
 impl Pty {
     pub fn spawn_shell(size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
@@ -134,6 +139,17 @@ impl Pty {
             },
             PtyReader { output_read },
         ))
+    }
+
+    /// Separates the input pipe from the resources that must remain alive until
+    /// the terminal reader has stopped. This keeps ConPTY ownership inside the
+    /// PTY crate while allowing the terminal to own its reader thread.
+    pub(crate) fn into_endpoints(mut self, reader: PtyReader) -> (PtyReader, PtyWriter, Self) {
+        let input_write = self
+            ._input_write
+            .take()
+            .expect("live pty must retain its input write handle");
+        (reader, PtyWriter { input_write }, self)
     }
 
     pub fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
@@ -412,6 +428,12 @@ fn build_environment_block() -> Vec<u16> {
     }
     block.push(0u16); // double-null terminator
     block
+}
+
+impl PtyWriter {
+    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
+        self.input_write.write(data)
+    }
 }
 
 impl PtyReader {
