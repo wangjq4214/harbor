@@ -2,6 +2,7 @@
 
 mod damage;
 mod input;
+mod io;
 mod normal_buf;
 mod parser;
 pub mod render;
@@ -19,7 +20,7 @@ pub use render::{
     SurfaceDisposition, SurfaceStatus, TerminalRenderPipeline, Text, UploadMode, UploadPlan,
     UploadPolicy, surface_disposition,
 };
-pub use screen::{AltScreenAction, Cell, CellAttrs, Color, CursorShape, Screen, SelectionBounds};
+pub use screen::{AltScreenAction, Cell, CellAttrs, Color, CursorShape, Screen, ScreenReader, SelectionBounds};
 pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
 };
@@ -31,99 +32,20 @@ pub use harbor_types::{
 };
 pub use harbor_widget::scene::primitive::ExternalDrawId;
 
-use std::{
-    io::{Read, Write},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, TryRecvError},
-    },
-    thread::JoinHandle,
-};
+use std::io::{Read, Write};
 
 use harbor_pty::PtyControl;
-use input::TerminalInputEncoder;
+use io::TerminalIo;
+pub(crate) use io::PTY_QUEUE_CAPACITY;
 
-/// The maximum number of parser chunks buffered between the blocking PTY reader
-/// and the UI thread. Backpressure here bounds memory without ever blocking UI.
-const PTY_QUEUE_CAPACITY: usize = 32;
-
-/// I/O and shutdown resources sharing the terminal's lifetime.
-struct TerminalPty {
-    output: Receiver<Vec<u8>>,
-    writer: Box<dyn Write + Send>,
-    reader: Option<JoinHandle<()>>,
-    control: Option<PtyControl>,
-    wake_pending: Arc<AtomicBool>,
-}
-
-impl TerminalPty {
-    fn new<R, W>(
-        reader: R,
-        writer: W,
-        control: Option<PtyControl>,
-        wake: impl Fn() -> bool + Send + 'static,
-    ) -> Self
-    where
-        R: Read + Send + 'static,
-        W: Write + Send + 'static,
-    {
-        let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
-        let wake_pending = Arc::new(AtomicBool::new(false));
-        let reader_wake_pending = Arc::clone(&wake_pending);
-        let reader = std::thread::Builder::new()
-            .name("harbor-terminal-reader".into())
-            .spawn(move || pump_reader(reader, output_tx, reader_wake_pending, wake))
-            .expect("failed to start terminal PTY reader");
-        Self {
-            output,
-            writer: Box::new(writer),
-            reader: Some(reader),
-            control,
-            wake_pending,
-        }
-    }
-}
-
-fn pump_reader<R>(
-    mut reader: R,
-    output: mpsc::SyncSender<Vec<u8>>,
-    wake_pending: Arc<AtomicBool>,
-    wake: impl Fn() -> bool,
-) where
-    R: Read,
-{
-    let mut buffer = [0; 4096];
-    loop {
-        let length = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(length) => length,
-            Err(error) => {
-                tracing::warn!(error = %error, "terminal pty reader stopped after read error");
-                break;
-            }
-        };
-        if output.send(buffer[..length].to_vec()).is_err() {
-            break;
-        }
-        if !wake_pending.swap(true, Ordering::AcqRel) && !wake() {
-            break;
-        }
-    }
-}
-
-/// Stateful terminal engine owning screen state, parser, rendering, and PTY I/O.
+/// Stateful terminal engine owning screen state, I/O, and rendering.
 pub struct Terminal {
-    /// Incremental ANSI/VT parser.
-    parser: TerminalParser,
     /// Screen (primary buffer; alt screen handled internally via in_alt).
-    normal: Screen,
-    /// When true, `process_output` skips the scroll-to-bottom snap.
-    suppress_scroll_snap: bool,
+    screen: Screen,
     /// Identifier for CustomPaint widget delegate drawing.
     draw_id: ExternalDrawId,
-    /// The PTY reader, writer, and shutdown owner for this terminal instance.
-    pty: Option<TerminalPty>,
+    /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
+    io: TerminalIo,
     /// Encapsulated GPU render pipeline.
     renderer: Option<TerminalRenderPipeline>,
 }
@@ -150,18 +72,13 @@ impl Terminal {
         W: Write + Send + 'static,
     {
         let mut terminal = Self::new_headless(size.rows, size.cols);
-        let snap = terminal.normal.terminal_snapshot();
+        let snap = terminal.screen.terminal_snapshot();
 
         let renderer = TerminalRenderPipeline::new(gpu, font_book, metrics, &snap)
             .expect("terminal render pipeline init");
 
         terminal.renderer = Some(renderer);
-        terminal.pty = Some(TerminalPty::new(
-            pty_read,
-            pty_write,
-            Some(pty_control),
-            wake,
-        ));
+        terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
         terminal
     }
 
@@ -175,11 +92,9 @@ impl Terminal {
     /// Creates a headless Terminal without GPU or PTY resources (for parser tests).
     pub fn new_headless(rows: usize, cols: usize) -> Self {
         Self {
-            parser: TerminalParser::default(),
-            normal: Screen::new(rows, cols),
-            suppress_scroll_snap: false,
+            screen: Screen::new(rows, cols),
             draw_id: 1,
-            pty: None,
+            io: TerminalIo::new_headless(),
             renderer: None,
         }
     }
@@ -197,18 +112,22 @@ impl Terminal {
         W: Write + Send + 'static,
     {
         let mut terminal = Self::new_headless(rows, cols);
-        terminal.pty = Some(TerminalPty::new(reader, writer, None, wake));
+        terminal.io = TerminalIo::new(reader, writer, None, wake);
         terminal
     }
+
+    // ── identity ──────────────────────────────────────────────────────
 
     /// Fixed identifier linking this Terminal to its CustomPaint widget.
     pub fn draw_id(&self) -> ExternalDrawId {
         self.draw_id
     }
 
+    // ── render orchestration ──────────────────────────────────────────
+
     /// Prepares GPU resources for all render components.
     pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {
-        let snap = self.normal.terminal_snapshot();
+        let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
             renderer.prepare(gpu, &snap, damage);
         }
@@ -225,12 +144,14 @@ impl Terminal {
         if draw_id != self.draw_id {
             return;
         }
-        self.drain_pty();
+        self.io.drain(&mut self.screen);
         self.prepare(gpu, None);
         if let Some(renderer) = &self.renderer {
             renderer.draw(pass);
         }
     }
+
+    // ── resize ────────────────────────────────────────────────────────
 
     /// Resizes the terminal grid and forwards changed dimensions to its PTY.
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -249,11 +170,13 @@ impl Terminal {
             renderer.terminal_size(gpu)
         } else {
             TerminalSize {
-                rows: self.normal.rows(),
-                cols: self.normal.cols(),
+                rows: self.screen.rows(),
+                cols: self.screen.cols(),
             }
         }
     }
+
+    // ── text / glyphs ─────────────────────────────────────────────────
 
     pub fn text_metrics(&self) -> Option<&TextMetrics> {
         self.renderer.as_ref().map(|r| r.metrics())
@@ -277,81 +200,30 @@ impl Terminal {
         }
     }
 
+    // ── I/O delegation ────────────────────────────────────────────────
+
     pub fn put_str(&mut self, text: &str) {
         self.put_bytes(text.as_bytes());
     }
 
     /// Feeds raw PTY bytes through the streaming parser.
     pub fn put_bytes(&mut self, bytes: &[u8]) {
-        let mut remaining = bytes;
-        while !remaining.is_empty() {
-            let result = {
-                let parser = &mut self.parser;
-                parser.put_bytes(&mut self.normal, remaining)
-            };
-            remaining = &remaining[result.consumed..];
-            if let Some(action) = result.alt_request {
-                self.normal.take_alt_request();
-                self.suppress_scroll_snap = false;
-                match action {
-                    AltScreenAction::Enter => self.normal.enter_alt(),
-                    AltScreenAction::Exit => self.normal.exit_alt(),
-                }
-            }
-        }
+        self.io.feed_pty_output(&mut self.screen, bytes);
     }
 
-    /// Feeds raw PTY bytes into the terminal parser.
+    /// Feeds raw PTY bytes into the terminal parser, snapping to bottom first.
     pub fn process_output(&mut self, output: &[u8]) {
-        if output.is_empty() {
-            tracing::trace!("ignored empty pty output chunk");
-            return;
-        }
-        if !self.normal.is_alt() && !self.suppress_scroll_snap {
-            self.normal.scroll_to_bottom();
-        }
-        self.put_bytes(output);
+        self.io.feed_pty_output_snapped(&mut self.screen, output);
     }
 
     /// Drains all reader-thread output in FIFO order into the terminal parser.
-    ///
-    /// A wake remains pending until this has observed an empty queue. The second
-    /// receive after clearing the flag closes the producer/consumer race: bytes
-    /// queued just before the clear are consumed here, while later bytes post a
-    /// fresh wake.
     pub fn drain_pty(&mut self) -> bool {
-        let mut changed = false;
-        loop {
-            let received = self.pty.as_ref().map(|pty| pty.output.try_recv());
-            match received {
-                Some(Ok(bytes)) => {
-                    self.process_output(&bytes);
-                    changed = true;
-                }
-                Some(Err(TryRecvError::Empty | TryRecvError::Disconnected)) => {
-                    let Some(pty) = self.pty.as_ref() else {
-                        return changed;
-                    };
-                    pty.wake_pending.store(false, Ordering::Release);
-                    match pty.output.try_recv() {
-                        Ok(bytes) => {
-                            self.process_output(&bytes);
-                            changed = true;
-                        }
-                        Err(TryRecvError::Empty | TryRecvError::Disconnected) => return changed,
-                    }
-                }
-                None => return changed,
-            }
-        }
+        self.io.drain(&mut self.screen)
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.
     pub fn write_pty(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
-        let Some(pty) = self.pty.as_mut() else {
-            anyhow::bail!("terminal has no active pty");
-        };
-        pty.writer.write_all(bytes).map_err(Into::into)
+        self.io.write_pty(bytes)
     }
 
     /// Drains new output, encodes a widget event using current modes, and writes it to the PTY.
@@ -359,44 +231,45 @@ impl Terminal {
         &mut self,
         event: harbor_widget::input::event::UiEvent,
     ) -> anyhow::Result<()> {
-        self.drain_pty();
-        let Some(bytes) = TerminalInputEncoder::encode(&event, self.normal.input_modes()) else {
-            return Ok(());
-        };
-        // Terminal-bound input resumes the live viewport so typed text and the
-        // shell response are visible immediately after browsing scrollback.
-        self.normal.scroll_to_bottom();
-        self.write_pty(&bytes)
+        self.io.handle_event(&mut self.screen, event)
     }
+
+    /// When true, `process_output` skips the scroll-to-bottom snap.
+    pub fn set_suppress_scroll_snap(&mut self, suppress: bool) {
+        self.io.set_suppress_scroll_snap(suppress);
+    }
+
+    // ── screen access ─────────────────────────────────────────────────
 
     /// Returns the renderable screen snapshot owned by this terminal.
     pub fn screen(&self) -> &Screen {
-        &self.normal
+        &self.screen
     }
 
     /// Returns the current GPU-independent terminal state for the UI/update contract.
     pub fn snapshot(&self) -> TerminalSnapshot {
-        self.normal.terminal_snapshot()
+        self.screen.terminal_snapshot()
     }
 
     /// Drains pending PTY output before returning the current terminal snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
-        self.drain_pty();
+        self.io.drain(&mut self.screen);
         self.snapshot()
     }
 
     /// Mutable screen access for tests.
+    #[cfg(test)]
     pub fn screen_mut(&mut self) -> &mut Screen {
-        &mut self.normal
+        &mut self.screen
     }
 
     /// Resets the screen's dirty-row tracking.
     pub fn clear_screen_dirty(&mut self) {
-        self.normal.clear_dirty();
+        self.screen.clear_dirty();
     }
 
     pub fn row_text(&self, row: usize) -> String {
-        self.screen().row_text(row)
+        self.screen.row_text(row)
     }
 
     /// Resizes the terminal grid without GPU resources. Returns true if size changed.
@@ -406,73 +279,40 @@ impl Terminal {
             cols: new_size.cols.max(1),
         };
         let current = TerminalSize {
-            rows: self.screen().rows(),
-            cols: self.screen().cols(),
+            rows: self.screen.rows(),
+            cols: self.screen.cols(),
         };
 
         if new_size == current {
             return false;
         }
 
-        self.normal.resize(new_size.rows, new_size.cols);
-        self.suppress_scroll_snap = false;
-        if let Some(pty) = self.pty.as_mut()
-            && let Some(control) = pty.control.as_mut()
-            && let Err(error) = control.resize(new_size)
-        {
-            tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
-        }
+        self.screen.resize(new_size.rows, new_size.cols);
+        self.io.reset_scroll_snap();
+        self.io.resize_pty(new_size);
         true
     }
 
+    // ── viewport scroll ───────────────────────────────────────────────
+
     pub fn scroll_viewport_up(&mut self, n: usize) {
-        self.normal.scroll_up(n);
+        self.screen.scroll_up(n);
     }
 
     pub fn scroll_viewport_down(&mut self, n: usize) {
-        self.normal.scroll_down(n);
+        self.screen.scroll_down(n);
     }
 
     pub fn scroll_viewport_to_top(&mut self) {
-        let scroll_count = self.normal.scroll_count();
-        self.normal.scroll_up(scroll_count);
+        let scroll_count = self.screen.scroll_count();
+        self.screen.scroll_up(scroll_count);
     }
 
     pub fn scroll_viewport_to_bottom(&mut self) {
-        self.normal.scroll_to_bottom();
+        self.screen.scroll_to_bottom();
     }
 
     pub fn is_alt_screen(&self) -> bool {
-        self.normal.is_alt()
-    }
-
-    pub fn set_suppress_scroll_snap(&mut self, suppress: bool) {
-        self.suppress_scroll_snap = suppress;
-    }
-}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        let Some(pty) = self.pty.take() else {
-            return;
-        };
-        let TerminalPty {
-            output,
-            writer,
-            reader,
-            control,
-            wake_pending: _,
-        } = pty;
-
-        // Disconnect the reader before transferring its thread to the PTY
-        // shutdown reaper. A blocked bounded send then exits without waiting on
-        // the UI thread.
-        drop(output);
-        drop(writer);
-        if let (Some(control), Some(reader)) = (control, reader) {
-            control.shutdown(reader);
-        }
-        // Generic test readers have no platform cancellation capability; their
-        // JoinHandle is deliberately detached after the output receiver closes.
+        self.screen.is_alt()
     }
 }

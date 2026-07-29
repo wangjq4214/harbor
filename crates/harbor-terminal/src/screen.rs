@@ -11,6 +11,7 @@
 mod alt;
 mod cursor;
 mod edit;
+mod reader;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +22,8 @@ use harbor_parser::Params;
 use self::alt::AltScreenStack;
 use self::cursor::CursorEngine;
 use self::edit::{CharacterSets, TabStops, VtEditEngine};
+
+pub use self::reader::ScreenReader;
 
 // ── re-exports ────────────────────────────────────────────────────────
 
@@ -143,91 +146,24 @@ impl Screen {
     }
 
     /// Direct cell mutation for test setup.
+    #[cfg(test)]
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
         self.normal.cell_mut(row, col)
     }
 
-    // ── snapshot / selection ───────────────────────────────────────────
+    // ── read-only queries ──────────────────────────────────────────────
+
+    /// Returns a `ScreenReader` for snapshot and text-extraction queries.
+    pub fn reader(&self) -> ScreenReader<'_> {
+        ScreenReader::new(self)
+    }
 
     pub fn terminal_snapshot(&self) -> harbor_types::TerminalSnapshot {
-        let rows = self.rows();
-        let cols = self.cols();
-        let mut cells = Vec::with_capacity(rows * cols);
-        for r in 0..rows {
-            for c in 0..cols {
-                cells.push(*self.cell(r, c));
-            }
-        }
-        harbor_types::TerminalSnapshot {
-            rows,
-            cols,
-            cells,
-            cursor_x: self.cursor_x(),
-            cursor_y: self.cursor_y(),
-            cursor_visible: self.cursor_visible(),
-            cursor_blink: self.cursor_blink(),
-            cursor_shape: self.cursor_shape(),
-            scroll_count: self.scroll_count(),
-            view_offset: self.view_offset(),
-            history_start: self.history_start(),
-            is_alt: self.is_alt(),
-            input_modes: self.input_modes(),
-            dirty_ranges: self.dirty_ranges(),
-        }
+        self.reader().terminal_snapshot()
     }
 
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
-        let SelectionBounds {
-            start_row,
-            start_col,
-            end_row,
-            end_col,
-        } = bounds;
-        let cols = self.cols();
-        let hist_start = self.normal.history_start();
-        let retained_rows = self.normal.scroll_count() + self.normal.rows();
-        let max_gen = hist_start + retained_rows as u64 - 1;
-
-        let orig_start = start_row;
-        let orig_end = end_row;
-        let start_row = start_row.max(hist_start);
-        let end_row = end_row.min(max_gen);
-        if start_row > end_row {
-            return String::new();
-        }
-
-        let mut buf = String::new();
-
-        for generation in start_row..=end_row {
-            let col_start = if generation == orig_start {
-                start_col
-            } else {
-                0
-            };
-            let col_end = if generation == orig_end {
-                end_col
-            } else {
-                cols.saturating_sub(1)
-            };
-
-            let row_len_before = buf.len();
-            for col in col_start..=col_end {
-                let Some(cell) = self.normal.cell_at_generation(generation, col) else {
-                    continue;
-                };
-                if cell.wide_continuation {
-                    continue;
-                }
-                buf.push(cell.ch);
-            }
-            let row_text = &buf[row_len_before..];
-            let trim_len = row_text.trim_end().len();
-            buf.truncate(row_len_before + trim_len);
-            if generation < end_row {
-                buf.push('\n');
-            }
-        }
-        buf
+        self.reader().selected_text(bounds)
     }
 
     // ── dirty tracking ─────────────────────────────────────────────────
@@ -321,17 +257,10 @@ impl Screen {
         let rows = rows.max(1);
         let cols = cols.max(1);
         self.normal.resize(rows, cols);
-        self.cursor.cursor.y = self.cursor.cursor.y.min(rows - 1);
-        self.cursor.cursor.x = self.cursor.cursor.x.min(cols - 1);
-        self.cursor.margins.clamp(cols);
+        self.cursor.clamp_to_grid(rows, cols);
         self.edit.tab_stops.resize(cols);
-        self.cursor.scroll_region = self::cursor::ScrollRegion::full(rows);
         if let Some(saved) = &mut self.alt_saved {
             saved.resize(rows, cols);
-        }
-        if let Some(saved) = &mut self.cursor.cursor.saved {
-            saved.cursor_x = saved.cursor_x.min(cols - 1);
-            saved.cursor_y = saved.cursor_y.min(rows - 1);
         }
     }
 

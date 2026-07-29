@@ -163,6 +163,21 @@ impl CursorEngine {
         }
     }
 
+    // ── resize / clamp ────────────────────────────────────────────
+
+    /// Clamps cursor position, margins, and scroll region into the new grid
+    /// dimensions. Also clamps any saved cursor snapshot (DECSC).
+    pub(crate) fn clamp_to_grid(&mut self, rows: usize, cols: usize) {
+        self.cursor.y = self.cursor.y.min(rows.saturating_sub(1));
+        self.cursor.x = self.cursor.x.min(cols.saturating_sub(1));
+        self.margins.clamp(cols);
+        self.scroll_region = ScrollRegion::full(rows);
+        if let Some(ref mut saved) = self.cursor.saved {
+            saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
+            saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
+        }
+    }
+
     // ── read-only cursor queries ──────────────────────────────────
 
     pub(crate) fn cursor_x(&self) -> usize {
