@@ -869,6 +869,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "tracing",
  "unicode-width",
+ "windows",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@ use fontdue::{Font, FontSettings};
 
 use crate::atlas::{GlyphBitmapBounds, GlyphKey};
 use crate::backend::compat::CompatState;
+use crate::backend::dwrite::DwriteState;
 use crate::metrics::FontMetrics;
 
 const CJK_PROBE: char = '中';
@@ -20,10 +21,16 @@ pub(crate) struct LoadedFont {
     pub font: Font,
 }
 
+/// Private discriminant between temporary compat and native primary backends.
+enum FontBackend {
+    Compat(CompatState),
+    Native(DwriteState),
+}
+
 /// System terminal font set with a primary monospace face and glyph fallbacks.
 pub struct FontBook {
     #[cfg(windows)]
-    compat: CompatState,
+    backend: FontBackend,
 }
 
 impl FontBook {
@@ -32,51 +39,70 @@ impl FontBook {
     #[cfg(windows)]
     pub(crate) fn from_compat(fonts: Vec<LoadedFont>) -> Self {
         Self {
-            compat: CompatState::new(fonts),
+            backend: FontBackend::Compat(CompatState::new(fonts)),
+        }
+    }
+
+    /// Wrap a DirectWrite primary-face session.
+    #[cfg(windows)]
+    pub(crate) fn from_native(state: DwriteState) -> Self {
+        Self {
+            backend: FontBackend::Native(state),
         }
     }
 
     /// Rasterize a character to a bitmap with backend-neutral bounds.
     pub fn rasterize(&self, ch: char, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
-        let key = self.compat.resolve(ch, px, 0);
-        self.compat.rasterize(key, px)
+        match &self.backend {
+            FontBackend::Compat(compat) => {
+                let key = compat.resolve(ch, px, 0);
+                compat.rasterize(key, px)
+            }
+            FontBackend::Native(native) => {
+                let key = native.resolve(ch, px, 0);
+                native.rasterize(key, px)
+            }
+        }
     }
 
     /// Rasterize a glyph by its resolved key (used during atlas rebuild).
     pub fn rasterize_from_key(&self, key: GlyphKey, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
-        self.compat.rasterize(key, px)
+        match &self.backend {
+            FontBackend::Compat(compat) => compat.rasterize(key, px),
+            FontBackend::Native(native) => native.rasterize(key, px),
+        }
     }
 
     /// Resolve a character to a stable glyph identity.
     pub fn resolve(&self, ch: char) -> GlyphKey {
-        self.compat.resolve(ch, harbor_config::FONT_SIZE, 0)
+        match &self.backend {
+            FontBackend::Compat(compat) => compat.resolve(ch, harbor_config::FONT_SIZE, 0),
+            FontBackend::Native(native) => native.resolve(ch, harbor_config::FONT_SIZE, 0),
+        }
     }
 
     /// Primary font metrics for terminal cell sizing.
     pub fn font_metrics(&self) -> FontMetrics {
-        self.compat.font_metrics(harbor_config::FONT_SIZE)
+        match &self.backend {
+            FontBackend::Compat(compat) => compat.font_metrics(harbor_config::FONT_SIZE),
+            FontBackend::Native(native) => native.font_metrics(harbor_config::FONT_SIZE),
+        }
     }
 }
 
-/// Loads terminal fonts without scanning the whole system on the common path.
+/// Loads terminal fonts for Harbor startup.
 ///
-/// Fast path:
-/// - `HARBOR_FONT` when explicitly configured.
-/// - A short per-platform candidate list for common monospace and CJK fonts.
-///
-/// Slow path:
-/// - `fontdb` full system discovery only when the fast path cannot find a
-///   usable primary font.
+/// - `HARBOR_FONT` still uses the temporary compat loader (T0003).
+/// - Otherwise selects a DirectWrite system monospace primary face (T0002).
 pub fn load_system_fonts() -> Result<FontBook> {
     if let Some(fonts) = load_configured_fonts()? {
         return Ok(fonts);
     }
 
-    if let Some(fonts) = load_candidate_fonts() {
-        return Ok(fonts);
-    }
-
-    load_fontdb_fonts()
+    let state = DwriteState::open_system_primary()
+        .context("load DirectWrite system primary face")?;
+    tracing::info!("loaded terminal font from DirectWrite system primary");
+    Ok(FontBook::from_native(state))
 }
 
 fn load_configured_fonts() -> Result<Option<FontBook>> {
@@ -89,6 +115,7 @@ fn load_configured_fonts() -> Result<Option<FontBook>> {
     Ok(Some(build_font_book(primary)))
 }
 
+#[allow(dead_code)]
 fn load_candidate_fonts() -> Option<FontBook> {
     // Kick off CJK loading on a background thread so primary + CJK IO+parse
     // overlap instead of running serially.
@@ -135,6 +162,7 @@ fn build_font_book(primary: LoadedFont) -> FontBook {
     FontBook::from_compat(fonts)
 }
 
+#[allow(dead_code)]
 fn load_fontdb_fonts() -> Result<FontBook> {
     let mut database = Database::new();
     database.load_system_fonts();
@@ -169,6 +197,7 @@ fn load_fontdb_fonts() -> Result<FontBook> {
     Ok(FontBook::from_compat(fonts))
 }
 
+#[allow(dead_code)]
 fn load_first_font_file(candidates: Vec<PathBuf>) -> Option<LoadedFont> {
     candidates
         .into_iter()
@@ -202,6 +231,7 @@ fn load_font_file(path: &Path, collection_index: u32) -> Result<LoadedFont> {
     Ok(LoadedFont { family, font })
 }
 
+#[allow(dead_code)]
 fn load_primary_font(database: &Database) -> Result<LoadedFont> {
     let query = Query {
         families: &[Family::Monospace],
@@ -222,6 +252,7 @@ fn load_primary_font(database: &Database) -> Result<LoadedFont> {
     .context("load primary monospace font")
 }
 
+#[allow(dead_code)]
 fn load_cjk_fallback(database: &Database, primary_family: &str) -> Result<Option<LoadedFont>> {
     let monospaced_ids = database
         .faces()
@@ -289,6 +320,7 @@ fn load_font(database: &Database, id: ID) -> Result<Option<LoadedFont>> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn primary_font_candidates() -> Vec<PathBuf> {
     let fonts_dir = windows_fonts_dir();
     [
@@ -304,6 +336,7 @@ fn primary_font_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn cjk_font_candidates() -> Vec<PathBuf> {
     let fonts_dir = windows_fonts_dir();
     [
@@ -319,6 +352,7 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn windows_fonts_dir() -> PathBuf {
     env::var_os("WINDIR")
         .or_else(|| env::var_os("SYSTEMROOT"))
@@ -383,12 +417,59 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    fn ensure_no_harbor_font() {
+        // Default-path tests must exercise DirectWrite, not a configured compat font.
+        unsafe {
+            std::env::remove_var(FONT_ENV);
+        }
+    }
+
     fn test_font_book() -> FontBook {
+        ensure_no_harbor_font();
         load_system_fonts().expect("load test font")
     }
 
     #[test]
-    fn rasterize_regular_char_returns_bitmap() {
+    fn should_load_native_primary_when_harbor_font_unset() {
+        // Arrange
+        ensure_no_harbor_font();
+
+        // Act
+        let fonts = load_system_fonts().expect("default load path");
+
+        // Assert — default path yields a usable primary face for terminal metrics/glyphs.
+        let metrics = fonts.font_metrics();
+        assert!(metrics.cell_width > 0.0, "cell_width={}", metrics.cell_width);
+        assert!(metrics.line_height > 0.0, "line_height={}", metrics.line_height);
+        assert!(metrics.ascent > 0.0, "ascent={}", metrics.ascent);
+
+        let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+        assert!(bounds.width > 0, "latin width should be > 0");
+        assert!(bounds.height > 0, "latin height should be > 0");
+        assert_eq!(bitmap.len(), bounds.width * bounds.height);
+    }
+
+    #[test]
+    fn should_return_positive_advance_when_rasterizing_space_on_default_path() {
+        // Arrange
+        let fonts = test_font_book();
+
+        // Act
+        let (bounds, bitmap) = fonts.rasterize(' ', harbor_config::FONT_SIZE);
+
+        // Assert
+        assert_eq!(bounds.width, 0);
+        assert_eq!(bounds.height, 0);
+        assert!(bitmap.is_empty());
+        assert!(
+            bounds.advance_width > 0.0,
+            "space advance_width={}",
+            bounds.advance_width
+        );
+    }
+
+    #[test]
+    fn should_return_bitmap_when_rasterizing_latin() {
         let fonts = test_font_book();
         let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
         assert!(bounds.width > 0, "glyph width should be > 0");
@@ -397,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn rasterize_space_has_zero_dimensions() {
+    fn should_return_zero_dimensions_when_rasterizing_space() {
         let fonts = test_font_book();
         let (bounds, _bitmap) = fonts.rasterize(' ', harbor_config::FONT_SIZE);
         assert_eq!(bounds.width, 0);
@@ -405,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn font_metrics_are_positive() {
+    fn should_return_positive_metrics_when_default_font_loads() {
         let fonts = test_font_book();
         let fm = fonts.font_metrics();
         assert!(fm.cell_width > 0.0, "cell_width should be positive");
@@ -414,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_returns_stable_key() {
+    fn should_return_stable_key_when_resolving_same_char() {
         let fonts = test_font_book();
         let k1 = fonts.resolve('A');
         let k2 = fonts.resolve('A');
@@ -425,13 +506,25 @@ mod tests {
     }
 
     #[test]
-    fn rasterize_cjk_fallback() {
+    fn rasterize_cjk_without_fallback_does_not_panic() {
         let fonts = test_font_book();
-        let (bounds, bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
-        // CJK glyph should rasterize (via fallback if primary doesn't have it).
-        assert!(bounds.width > 0, "CJK glyph width should be > 0");
-        assert!(bounds.height > 0, "CJK glyph height should be > 0");
-        assert!(!bitmap.is_empty(), "CJK bitmap should not be empty");
+        // System fallback is T0004; default native path may return empty/.notdef ink.
+        let (_bounds, _bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
+    }
+
+    #[test]
+    fn should_not_panic_when_resolving_and_rasterizing_missing_glyph() {
+        // Arrange
+        let fonts = test_font_book();
+        let ch = '\u{E000}';
+
+        // Act
+        let key = fonts.resolve(ch);
+        let (_bounds, _bitmap) = fonts.rasterize(ch, harbor_config::FONT_SIZE);
+        let (_bounds2, _bitmap2) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+
+        // Assert — completing without panic is the public FontBook contract for T0002.
+        let _ = key.face_id;
     }
 
     // ── resolve tests ────────────────────────────────────────────────
@@ -507,19 +600,11 @@ mod tests {
     }
 
     #[test]
-    fn should_rasterize_from_key_with_cjk_char() {
+    fn should_rasterize_from_key_with_cjk_char_without_panic() {
         let fonts = test_font_book();
         let key = fonts.resolve('中');
-        let (bounds, bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
-        assert!(
-            bounds.width > 0,
-            "CJK rasterize_from_key width should be > 0"
-        );
-        assert!(
-            bounds.height > 0,
-            "CJK rasterize_from_key height should be > 0"
-        );
-        assert!(!bitmap.is_empty(), "CJK bitmap should not be empty");
+        // Fallback coverage belongs to T0004.
+        let (_bounds, _bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
     }
 
     // ── font_metrics tests ───────────────────────────────────────────

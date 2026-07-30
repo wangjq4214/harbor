@@ -12,5 +12,8 @@ fontdue = { workspace = true }
 hashbrown = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 [dev-dependencies]
 unicode-width = { workspace = true }

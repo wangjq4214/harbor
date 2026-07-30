@@ -485,30 +485,12 @@ impl App {
         #[cfg(target_os = "windows")]
         paint_gdi_background(&window);
 
-        let font_handle = std::thread::Builder::new()
-            .name("font-loader".into())
-            .spawn(|| {
-                #[cfg(target_os = "windows")]
-                {
-                    use windows::Win32::System::Threading::{
-                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-                    };
-                    unsafe {
-                        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    }
-                }
-                load_system_fonts()
-            })
-            .expect("failed to spawn font-loader thread");
-
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
         gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
 
-        let fonts = font_handle
-            .join()
-            .map_err(|_| AppError::Renderer(anyhow::anyhow!("font loader thread panicked")))?
-            .map_err(AppError::Renderer)?;
+        // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
+        let fonts = load_system_fonts().map_err(AppError::Renderer)?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
 
         let size = Terminal::terminal_size_for(&gpu, &metrics);

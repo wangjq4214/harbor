@@ -18,3 +18,6 @@ compile_error!("harbor-text currently requires Windows");
 
 #[cfg(windows)]
 pub(crate) mod compat;
+
+#[cfg(windows)]
+pub(crate) mod dwrite;
