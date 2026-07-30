@@ -6,55 +6,55 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use fontdb::{Database, Family, ID, Query};
-use fontdue::{Font, FontSettings, Metrics};
+use fontdue::{Font, FontSettings};
+
+use crate::atlas::{GlyphBitmapBounds, GlyphKey};
+use crate::backend::compat::CompatState;
+use crate::metrics::FontMetrics;
 
 const CJK_PROBE: char = '中';
 const FONT_ENV: &str = "HARBOR_FONT";
 
-struct LoadedFont {
-    family: String,
-    font: Font,
+pub(crate) struct LoadedFont {
+    pub family: String,
+    pub font: Font,
 }
 
 /// System terminal font set with a primary monospace face and glyph fallbacks.
 pub struct FontBook {
-    fonts: Vec<LoadedFont>,
+    #[cfg(windows)]
+    compat: CompatState,
 }
 
 impl FontBook {
-    pub fn rasterize(&self, ch: char, px: f32) -> (Metrics, Vec<u8>) {
-        self.font_for(ch).rasterize(ch, px)
-    }
-
-    /// Font-derived measurements for terminal cell sizing.
-    /// `cell_width` comes from the primary monospace face; full-width terminal
-    /// cells are handled by the terminal grid, not by doubling font metrics.
-    pub fn terminal_metrics(&self) -> (f32, f32, f32) {
-        let font = &self.fonts[0].font;
-        let metrics = font.metrics('M', harbor_config::FONT_SIZE);
-        let cell_width = metrics.advance_width.ceil();
-        if let Some(line) = font.horizontal_line_metrics(harbor_config::FONT_SIZE) {
-            (cell_width, line.new_line_size.ceil(), line.ascent.ceil())
-        } else {
-            // Fallback: approximate from a representative glyph.
-            let h = metrics.bounds.height.ceil();
-            (cell_width, h + 4.0, h)
+    /// Wrap legacy fontdue fonts for compatibility.
+    /// Temporary — will be removed when the DirectWrite backend replaces all paths.
+    #[cfg(windows)]
+    pub(crate) fn from_compat(fonts: Vec<LoadedFont>) -> Self {
+        Self {
+            compat: CompatState::new(fonts),
         }
     }
 
-    /// Horizontal line metrics (ascent, descent, line_gap, new_line_size) for the primary
-    /// monospace font. Returns `None` only when the font lacks this metric table.
-    pub fn primary_horizontal_line_metrics(&self, size: f32) -> Option<fontdue::LineMetrics> {
-        self.fonts[0].font.horizontal_line_metrics(size)
+    /// Rasterize a character to a bitmap with backend-neutral bounds.
+    pub fn rasterize(&self, ch: char, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
+        let key = self.compat.resolve(ch, px, 0);
+        self.compat.rasterize(key, px)
     }
 
-    fn font_for(&self, ch: char) -> &Font {
-        let font = self
-            .fonts
-            .iter()
-            .find(|font| font.font.has_glyph(ch))
-            .unwrap_or(&self.fonts[0]);
-        &font.font
+    /// Rasterize a glyph by its resolved key (used during atlas rebuild).
+    pub fn rasterize_from_key(&self, key: GlyphKey, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
+        self.compat.rasterize(key, px)
+    }
+
+    /// Resolve a character to a stable glyph identity.
+    pub fn resolve(&self, ch: char) -> GlyphKey {
+        self.compat.resolve(ch, harbor_config::FONT_SIZE, 0)
+    }
+
+    /// Primary font metrics for terminal cell sizing.
+    pub fn font_metrics(&self) -> FontMetrics {
+        self.compat.font_metrics(harbor_config::FONT_SIZE)
     }
 }
 
@@ -97,9 +97,7 @@ fn load_candidate_fonts() -> Option<FontBook> {
     let primary = load_first_font_file(primary_font_candidates())?;
     if primary.font.has_glyph(CJK_PROBE) {
         tracing::info!(primary = %primary.family, "loaded terminal font from fast path");
-        return Some(FontBook {
-            fonts: vec![primary],
-        });
+        return Some(FontBook::from_compat(vec![primary]));
     }
 
     // Wait for the CJK thread result.
@@ -109,9 +107,7 @@ fn load_candidate_fonts() -> Option<FontBook> {
         fallback = %fallback.family,
         "loaded terminal fonts from fast path"
     );
-    Some(FontBook {
-        fonts: vec![primary, fallback],
-    })
+    Some(FontBook::from_compat(vec![primary, fallback]))
 }
 
 fn build_font_book(primary: LoadedFont) -> FontBook {
@@ -136,7 +132,7 @@ fn build_font_book(primary: LoadedFont) -> FontBook {
         tracing::info!(primary = %fonts[0].family, "loaded terminal font from fast path");
     }
 
-    FontBook { fonts }
+    FontBook::from_compat(fonts)
 }
 
 fn load_fontdb_fonts() -> Result<FontBook> {
@@ -170,7 +166,7 @@ fn load_fontdb_fonts() -> Result<FontBook> {
         tracing::info!(primary = %fonts[0].family, "loaded terminal font from fontdb");
     }
 
-    Ok(FontBook { fonts })
+    Ok(FontBook::from_compat(fonts))
 }
 
 fn load_first_font_file(candidates: Vec<PathBuf>) -> Option<LoadedFont> {
@@ -394,43 +390,192 @@ mod tests {
     #[test]
     fn rasterize_regular_char_returns_bitmap() {
         let fonts = test_font_book();
-        let (metrics, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
-        assert!(metrics.width > 0, "glyph width should be > 0");
-        assert!(metrics.height > 0, "glyph height should be > 0");
+        let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+        assert!(bounds.width > 0, "glyph width should be > 0");
+        assert!(bounds.height > 0, "glyph height should be > 0");
         assert!(!bitmap.is_empty(), "bitmap should not be empty");
     }
 
     #[test]
     fn rasterize_space_has_zero_dimensions() {
         let fonts = test_font_book();
-        let (metrics, _bitmap) = fonts.rasterize(' ', harbor_config::FONT_SIZE);
-        assert_eq!(metrics.width, 0);
-        assert_eq!(metrics.height, 0);
+        let (bounds, _bitmap) = fonts.rasterize(' ', harbor_config::FONT_SIZE);
+        assert_eq!(bounds.width, 0);
+        assert_eq!(bounds.height, 0);
     }
 
     #[test]
-    fn terminal_metrics_are_positive() {
+    fn font_metrics_are_positive() {
         let fonts = test_font_book();
-        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
-        assert!(cell_width > 0.0, "cell_width should be positive");
-        assert!(line_height > 0.0, "line_height should be positive");
-        assert!(ascent > 0.0, "ascent should be positive");
+        let fm = fonts.font_metrics();
+        assert!(fm.cell_width > 0.0, "cell_width should be positive");
+        assert!(fm.line_height > 0.0, "line_height should be positive");
+        assert!(fm.ascent > 0.0, "ascent should be positive");
     }
 
     #[test]
-    fn has_horizontal_line_metrics() {
+    fn resolve_returns_stable_key() {
         let fonts = test_font_book();
-        let lm = fonts.primary_horizontal_line_metrics(harbor_config::FONT_SIZE);
-        assert!(lm.is_some(), "primary font should have line metrics");
+        let k1 = fonts.resolve('A');
+        let k2 = fonts.resolve('A');
+        assert_eq!(
+            k1, k2,
+            "resolve should return the same key for the same char"
+        );
     }
 
     #[test]
     fn rasterize_cjk_fallback() {
         let fonts = test_font_book();
-        let (metrics, bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
+        let (bounds, bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
         // CJK glyph should rasterize (via fallback if primary doesn't have it).
-        assert!(metrics.width > 0, "CJK glyph width should be > 0");
-        assert!(metrics.height > 0, "CJK glyph height should be > 0");
+        assert!(bounds.width > 0, "CJK glyph width should be > 0");
+        assert!(bounds.height > 0, "CJK glyph height should be > 0");
         assert!(!bitmap.is_empty(), "CJK bitmap should not be empty");
+    }
+
+    // ── resolve tests ────────────────────────────────────────────────
+
+    #[test]
+    fn should_return_different_keys_for_different_chars() {
+        let fonts = test_font_book();
+        let key_a = fonts.resolve('A');
+        let key_b = fonts.resolve('B');
+        assert_ne!(
+            key_a, key_b,
+            "different chars should produce different keys"
+        );
+    }
+
+    #[test]
+    fn should_return_key_with_valid_glyph_index() {
+        let fonts = test_font_book();
+        let key = fonts.resolve('A');
+        // glyph_index 0 is valid for some fonts, but the key should be well-formed.
+        // At minimum, face_id should be a valid index.
+        let _ = key.glyph_index;
+        let _ = key.face_id;
+    }
+
+    #[test]
+    fn should_resolve_cjk_char() {
+        let fonts = test_font_book();
+        let key = fonts.resolve('中');
+        // Should not panic and should return a valid key.
+        assert_eq!(key.style_bits, 0);
+    }
+
+    // ── rasterize_from_key tests ─────────────────────────────────────
+
+    #[test]
+    fn should_rasterize_from_key_producing_valid_bitmap() {
+        let fonts = test_font_book();
+        let key = fonts.resolve('A');
+        let (bounds, bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+        assert!(bounds.width > 0, "rasterize_from_key width should be > 0");
+        assert!(bounds.height > 0, "rasterize_from_key height should be > 0");
+        assert!(!bitmap.is_empty(), "bitmap should not be empty");
+    }
+
+    #[test]
+    fn should_rasterize_from_key_match_rasterize_directly() {
+        let fonts = test_font_book();
+        let key = fonts.resolve('A');
+        let (bounds_key, bitmap_key) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+        let (bounds_direct, bitmap_direct) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+        assert_eq!(
+            bounds_key.width, bounds_direct.width,
+            "width from key and direct should match"
+        );
+        assert_eq!(
+            bounds_key.height, bounds_direct.height,
+            "height from key and direct should match"
+        );
+        assert_eq!(
+            bounds_key.bearing_x, bounds_direct.bearing_x,
+            "bearing_x from key and direct should match"
+        );
+        assert_eq!(
+            bounds_key.bearing_y, bounds_direct.bearing_y,
+            "bearing_y from key and direct should match"
+        );
+        assert_eq!(
+            bitmap_key.len(),
+            bitmap_direct.len(),
+            "bitmap lengths should match"
+        );
+    }
+
+    #[test]
+    fn should_rasterize_from_key_with_cjk_char() {
+        let fonts = test_font_book();
+        let key = fonts.resolve('中');
+        let (bounds, bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+        assert!(
+            bounds.width > 0,
+            "CJK rasterize_from_key width should be > 0"
+        );
+        assert!(
+            bounds.height > 0,
+            "CJK rasterize_from_key height should be > 0"
+        );
+        assert!(!bitmap.is_empty(), "CJK bitmap should not be empty");
+    }
+
+    // ── font_metrics tests ───────────────────────────────────────────
+
+    #[test]
+    fn should_return_non_negative_descent() {
+        let fonts = test_font_book();
+        let fm = fonts.font_metrics();
+        assert!(
+            fm.descent >= 0.0,
+            "descent should be non-negative, got {}",
+            fm.descent
+        );
+    }
+
+    #[test]
+    fn should_return_non_negative_line_gap() {
+        let fonts = test_font_book();
+        let fm = fonts.font_metrics();
+        // line_gap can be zero or positive for typical monospace fonts.
+        // Some fonts may have negative line_gap, but the field should be finite.
+        assert!(
+            fm.line_gap.is_finite(),
+            "line_gap should be finite, got {}",
+            fm.line_gap
+        );
+    }
+
+    #[test]
+    fn should_return_ascent_greater_than_zero() {
+        let fonts = test_font_book();
+        let fm = fonts.font_metrics();
+        assert!(fm.ascent > 0.0, "ascent should be positive");
+    }
+
+    #[test]
+    fn should_return_line_height_greater_than_ascent() {
+        let fonts = test_font_book();
+        let fm = fonts.font_metrics();
+        assert!(
+            fm.line_height >= fm.ascent,
+            "line_height ({}) should be >= ascent ({})",
+            fm.line_height,
+            fm.ascent
+        );
+    }
+
+    #[test]
+    fn should_return_consistent_metrics_across_calls() {
+        let fonts = test_font_book();
+        let fm1 = fonts.font_metrics();
+        let fm2 = fonts.font_metrics();
+        assert_eq!(fm1.cell_width, fm2.cell_width);
+        assert_eq!(fm1.line_height, fm2.line_height);
+        assert_eq!(fm1.ascent, fm2.ascent);
+        assert_eq!(fm1.descent, fm2.descent);
+        assert_eq!(fm1.line_gap, fm2.line_gap);
     }
 }

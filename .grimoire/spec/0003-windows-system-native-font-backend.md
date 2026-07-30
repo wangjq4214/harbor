@@ -1,7 +1,7 @@
 # Windows System-Native Font Backend
 
 **Spec ID:** 0003
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-07-30
 
 ## Requirement

@@ -509,7 +509,7 @@ impl App {
             .join()
             .map_err(|_| AppError::Renderer(anyhow::anyhow!("font loader thread panicked")))?
             .map_err(AppError::Renderer)?;
-        let metrics = TextMetrics::new(&fonts);
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
 
         let size = Terminal::terminal_size_for(&gpu, &metrics);
         let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size)

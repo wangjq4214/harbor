@@ -4,9 +4,10 @@
 //! No wgpu, winit, or `harbor-widget` dependency.
 
 pub mod atlas;
+pub mod backend;
 pub mod font;
 pub mod metrics;
 
-pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, RasterizeResult};
+pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, GlyphKey, RasterizeResult};
 pub use font::{FontBook, load_system_fonts};
-pub use metrics::TextMetrics;
+pub use metrics::{FontMetrics, TextMetrics};

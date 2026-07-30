@@ -1,6 +1,23 @@
-use crate::font::FontBook;
 use harbor_config::TEXT_PADDING;
 use harbor_types::TerminalSize;
+
+/// Backend-neutral primary font measurements.
+///
+/// Carries the essential metrics derived from the primary face for terminal
+/// cell sizing, without any font-parser-specific types.
+#[derive(Clone, Copy, Debug)]
+pub struct FontMetrics {
+    /// Cell width in pixels (advance of 'M' glyph).
+    pub cell_width: f32,
+    /// Line height in pixels.
+    pub line_height: f32,
+    /// Ascent from baseline to top of line.
+    pub ascent: f32,
+    /// Descent from baseline to bottom of line (positive value).
+    pub descent: f32,
+    /// Extra spacing between lines.
+    pub line_gap: f32,
+}
 
 /// Fixed measurements used to map window pixels to terminal cells.
 #[derive(Clone, Copy)]
@@ -17,20 +34,16 @@ pub struct TextMetrics {
 }
 
 impl TextMetrics {
-    pub fn new(fonts: &FontBook) -> Self {
-        let (cell_width, line_height, ascent) = fonts.terminal_metrics();
-        let (underline_position, strikethrough_position) = fonts
-            .primary_horizontal_line_metrics(harbor_config::FONT_SIZE)
-            .map(|lm| {
-                let d = lm.descent.abs();
-                (line_height - d + 1.0, (line_height - d) * 0.45)
-            })
-            .unwrap_or((line_height * 0.8, line_height * 0.45));
+    /// Construct from backend-neutral font metrics.
+    pub fn from_font_metrics(fm: FontMetrics) -> Self {
+        let d = fm.descent;
+        let underline_position = fm.line_height - d + 1.0;
+        let strikethrough_position = (fm.line_height - d) * 0.45;
 
         Self {
-            cell_width,
-            line_height,
-            ascent,
+            cell_width: fm.cell_width,
+            line_height: fm.line_height,
+            ascent: fm.ascent,
             underline_position,
             underline_thickness: 1.5,
             strikethrough_position,
@@ -56,15 +69,13 @@ mod tests {
     use super::*;
 
     fn make_metrics(cell_width: f32, line_height: f32) -> TextMetrics {
-        TextMetrics {
+        TextMetrics::from_font_metrics(FontMetrics {
             cell_width,
             line_height,
             ascent: 0.0,
-            underline_position: 0.0,
-            underline_thickness: 1.5,
-            strikethrough_position: 0.0,
-            strikethrough_thickness: 1.5,
-        }
+            descent: 2.0,
+            line_gap: 0.0,
+        })
     }
 
     #[test]
@@ -114,5 +125,101 @@ mod tests {
         let size = metrics.terminal_size(1920, 1080);
         assert!(size.cols > 100, "should fit many columns");
         assert!(size.rows > 20, "should fit many rows");
+    }
+
+    // ── FontMetrics tests ─────────────────────────────────────────────
+
+    #[test]
+    fn should_expose_all_fields_when_constructed() {
+        let fm = FontMetrics {
+            cell_width: 8.0,
+            line_height: 16.0,
+            ascent: 14.0,
+            descent: 3.0,
+            line_gap: 1.0,
+        };
+        assert_eq!(fm.cell_width, 8.0);
+        assert_eq!(fm.line_height, 16.0);
+        assert_eq!(fm.ascent, 14.0);
+        assert_eq!(fm.descent, 3.0);
+        assert_eq!(fm.line_gap, 1.0);
+    }
+
+    #[test]
+    fn should_be_copy_and_clone() {
+        let fm = FontMetrics {
+            cell_width: 9.0,
+            line_height: 18.0,
+            ascent: 15.0,
+            descent: 2.5,
+            line_gap: 0.5,
+        };
+        let copy = fm;
+        let cloned = fm;
+        assert_eq!(copy.cell_width, cloned.cell_width);
+        assert_eq!(copy.line_height, cloned.line_height);
+        assert_eq!(copy.ascent, cloned.ascent);
+        assert_eq!(copy.descent, cloned.descent);
+        assert_eq!(copy.line_gap, cloned.line_gap);
+    }
+
+    #[test]
+    fn should_support_zero_values() {
+        let fm = FontMetrics {
+            cell_width: 0.0,
+            line_height: 0.0,
+            ascent: 0.0,
+            descent: 0.0,
+            line_gap: 0.0,
+        };
+        assert_eq!(fm.cell_width, 0.0);
+        assert_eq!(fm.line_height, 0.0);
+    }
+
+    #[test]
+    fn should_be_usable_with_from_font_metrics() {
+        let fm = FontMetrics {
+            cell_width: 10.0,
+            line_height: 20.0,
+            ascent: 16.0,
+            descent: 4.0,
+            line_gap: 2.0,
+        };
+        let tm = TextMetrics::from_font_metrics(fm);
+        assert_eq!(tm.cell_width, 10.0);
+        assert_eq!(tm.line_height, 20.0);
+        assert_eq!(tm.ascent, 16.0);
+        // underline_position = line_height - descent + 1.0 = 20.0 - 4.0 + 1.0 = 17.0
+        assert_eq!(tm.underline_position, 17.0);
+        // strikethrough_position = (line_height - descent) * 0.45 = 16.0 * 0.45 = 7.2
+        assert_eq!(tm.strikethrough_position, 7.2);
+    }
+
+    #[test]
+    fn should_compute_underline_position_from_descent() {
+        let fm = FontMetrics {
+            cell_width: 8.0,
+            line_height: 16.0,
+            ascent: 13.0,
+            descent: 3.0,
+            line_gap: 0.0,
+        };
+        let tm = TextMetrics::from_font_metrics(fm);
+        // underline_position = line_height - descent + 1 = 16 - 3 + 1 = 14
+        assert_eq!(tm.underline_position, 14.0);
+    }
+
+    #[test]
+    fn should_compute_strikethrough_position_from_descent() {
+        let fm = FontMetrics {
+            cell_width: 8.0,
+            line_height: 16.0,
+            ascent: 13.0,
+            descent: 3.0,
+            line_gap: 0.0,
+        };
+        let tm = TextMetrics::from_font_metrics(fm);
+        // strikethrough_position = (line_height - descent) * 0.45 = 13 * 0.45 = 5.85
+        assert_eq!(tm.strikethrough_position, 5.85);
     }
 }

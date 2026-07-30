@@ -37,7 +37,12 @@ impl TerminalRenderPipeline {
         })
     }
 
-    pub fn prepare(&mut self, gpu: &GpuContext, snap: &TerminalSnapshot, damage: Option<&UpdateDamage>) {
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        snap: &TerminalSnapshot,
+        damage: Option<&UpdateDamage>,
+    ) {
         if let Some(damage) = damage {
             let full_ranges;
             let dirty_ranges = match damage {

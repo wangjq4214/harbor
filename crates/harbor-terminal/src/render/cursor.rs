@@ -3,8 +3,8 @@ use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
 use super::gpu::{self, GpuContext, TexturedVertex};
-use crate::render::RenderViewport;
 use crate::CursorShape;
+use crate::render::RenderViewport;
 use harbor_config::BLINK_INTERVAL_MS;
 
 const CURSOR_SHADER: &str = r#"

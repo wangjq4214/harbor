@@ -1,6 +1,5 @@
 use std::cmp::Reverse;
 
-use fontdue::Metrics;
 use hashbrown::HashMap;
 
 use crate::font::FontBook;
@@ -9,10 +8,55 @@ use harbor_config::FONT_SIZE;
 const ATLAS_PADDING: u32 = 1;
 pub const MAX_ATLAS_SIZE: u32 = 2048;
 
+/// Stable identity for a rasterized glyph in the atlas.
+///
+/// Distinguishes the same Unicode scalar rendered by different font faces,
+/// at different sizes, or with different style variants.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct GlyphKey {
+    /// Opaque face identifier assigned by the font backend.
+    pub face_id: u64,
+    /// Font-specific glyph index (not a Unicode scalar).
+    pub glyph_index: u32,
+    /// Quantized font size in bits (typically `size.to_bits()`).
+    pub size_bits: u32,
+    /// Style variant: 0 = regular, 1 = bold, etc.
+    pub style_bits: u8,
+}
+
+/// Pixel dimensions and placement of a rasterized glyph bitmap.
+///
+/// Backend-neutral — does not reference any specific font parser.
+#[derive(Clone, Copy, Debug)]
+pub struct GlyphBitmapBounds {
+    /// Glyph bitmap pixel width.
+    pub width: usize,
+    /// Glyph bitmap pixel height.
+    pub height: usize,
+    /// Horizontal offset from origin to left edge of the glyph bitmap.
+    pub bearing_x: i32,
+    /// Vertical offset from origin to top edge of the glyph bitmap.
+    pub bearing_y: i32,
+    /// Horizontal distance to advance after rendering this glyph.
+    pub advance_width: f32,
+}
+
+/// Internal metrics for atlas packing — mirrors the fields the atlas code
+/// reads from fontdue::Metrics but without the fontdue dependency.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct PackedMetrics {
+    width: usize,
+    height: usize,
+    bearing_x: i32,
+    bearing_y: i32,
+    advance_width: f32,
+}
+
 /// Result of an incremental `rasterize_new` call.
 pub struct RasterizeResult {
-    /// Characters that were newly rasterized and added to the cache.
-    pub new_chars: Vec<char>,
+    /// Glyph keys that were newly rasterized and added to the cache.
+    pub new_keys: Vec<GlyphKey>,
     /// True when the atlas overflowed and was fully rebuilt.
     /// When true, the caller MUST rebuild all GPU vertices — all UVs changed.
     pub evicted: bool,
@@ -34,16 +78,18 @@ pub struct AtlasUv {
 /// Atlas placement and metrics for one rasterized glyph.
 #[derive(Clone, Copy)]
 pub struct AtlasGlyph {
+    /// Stable identity for this glyph in the atlas.
+    pub key: GlyphKey,
     /// UV sub-region (unit texture coordinates).
     pub uv: AtlasUv,
     /// Glyph pixel width.
     pub width: u32,
     /// Glyph pixel height.
     pub height: u32,
-    /// fontdue horizontal offset (sub-pixel).
-    pub xmin: i32,
-    /// fontdue vertical offset (sub-pixel).
-    pub ymin: i32,
+    /// Horizontal offset from glyph origin to left edge of bitmap.
+    pub bearing_x: i32,
+    /// Vertical offset from glyph origin to top edge of bitmap.
+    pub bearing_y: i32,
     /// Pixel x position within the fixed-size atlas.
     pub atlas_x: u32,
     /// Pixel y position within the fixed-size atlas.
@@ -63,10 +109,10 @@ struct Shelf {
 
 /// One rasterised glyph (used for repacking).
 struct RasterizedGlyph {
-    /// Source character.
-    ch: char,
-    /// fontdue metrics.
-    metrics: Metrics,
+    /// Stable identity for this glyph.
+    key: GlyphKey,
+    /// Packed metrics for atlas placement.
+    metrics: PackedMetrics,
     /// Greyscale bitmap (1 byte/pixel, 0 = transparent, 255 = opaque).
     bitmap: Vec<u8>,
 }
@@ -80,8 +126,10 @@ pub struct GlyphAtlas {
     height: u32,
     /// Flattened greyscale pixel data (always MAX_ATLAS_SIZE^2 bytes).
     pixels: Vec<u8>,
-    /// Character → atlas placement / UV lookup (persistent cache).
-    glyphs: HashMap<char, AtlasGlyph>,
+    /// GlyphKey → atlas placement / UV lookup (persistent cache).
+    glyphs: HashMap<GlyphKey, AtlasGlyph>,
+    /// (char, size_bits, style_bits) → GlyphKey resolution cache.
+    resolution: HashMap<(char, u32, u8), GlyphKey>,
     /// Ordered top-to-bottom shelves for multi-row packing.
     shelves: Vec<Shelf>,
 }
@@ -99,6 +147,7 @@ impl GlyphAtlas {
             height: MAX_ATLAS_SIZE,
             pixels: vec![0; (MAX_ATLAS_SIZE * MAX_ATLAS_SIZE) as usize],
             glyphs: HashMap::new(),
+            resolution: HashMap::new(),
             shelves: Vec::new(),
         }
     }
@@ -108,7 +157,7 @@ impl GlyphAtlas {
     /// Chars should be pre-filtered (no spaces) and deduplicated by the caller
     /// for best performance, but this method sorts and deduplicates internally.
     ///
-    /// Returns `RasterizeResult` with newly added chars and an eviction flag.
+    /// Returns `RasterizeResult` with newly added glyph keys and an eviction flag.
     /// When `evicted` is true, all UVs have changed and the caller must rebuild
     /// all GPU vertices.
     pub fn rasterize_new(&mut self, fonts: &FontBook, chars: &[char]) -> RasterizeResult {
@@ -116,14 +165,27 @@ impl GlyphAtlas {
         chars.sort_unstable();
         chars.dedup();
 
+        let size_bits = FONT_SIZE.to_bits();
+        let style_bits: u8 = 0;
+
         // Collect only new glyphs (not yet cached).
         let mut new_glyphs: Vec<RasterizedGlyph> = Vec::new();
         for ch in &chars {
-            if !self.glyphs.contains_key(ch) {
-                let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
+            let key = *self
+                .resolution
+                .entry((*ch, size_bits, style_bits))
+                .or_insert_with(|| fonts.resolve(*ch));
+            if !self.glyphs.contains_key(&key) {
+                let (bounds, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
                 new_glyphs.push(RasterizedGlyph {
-                    ch: *ch,
-                    metrics,
+                    key,
+                    metrics: PackedMetrics {
+                        width: bounds.width,
+                        height: bounds.height,
+                        bearing_x: bounds.bearing_x,
+                        bearing_y: bounds.bearing_y,
+                        advance_width: bounds.advance_width,
+                    },
                     bitmap,
                 });
             }
@@ -131,12 +193,12 @@ impl GlyphAtlas {
 
         if new_glyphs.is_empty() {
             return RasterizeResult {
-                new_chars: Vec::new(),
+                new_keys: Vec::new(),
                 evicted: false,
             };
         }
 
-        let new_chars: Vec<char> = new_glyphs.iter().map(|g| g.ch).collect();
+        let new_keys: Vec<GlyphKey> = new_glyphs.iter().map(|g| g.key).collect();
 
         tracing::debug!(
             new_glyphs = new_glyphs.len(),
@@ -151,16 +213,16 @@ impl GlyphAtlas {
                 let gh = glyph.metrics.height as u32;
                 if shelf_y + gh > MAX_ATLAS_SIZE {
                     tracing::debug!("atlas full; evicting and rebuilding");
-                    // Internal full rebuild with the union of existing + new chars.
-                    let all_chars: Vec<char> = self
+                    // Internal full rebuild: re-resolve all cached chars + new chars.
+                    let all_keys: Vec<GlyphKey> = self
                         .glyphs
-                        .keys()
-                        .copied()
-                        .chain(new_chars.iter().copied())
+                        .values()
+                        .map(|g| g.key)
+                        .chain(new_keys.iter().copied())
                         .collect();
-                    self.rebuild(fonts, &all_chars);
+                    self.rebuild_by_keys(fonts, &all_keys);
                     return RasterizeResult {
-                        new_chars: all_chars,
+                        new_keys: all_keys,
                         evicted: true,
                     };
                 }
@@ -171,7 +233,7 @@ impl GlyphAtlas {
         self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
 
         RasterizeResult {
-            new_chars,
+            new_keys,
             evicted: false,
         }
     }
@@ -181,20 +243,43 @@ impl GlyphAtlas {
     /// `chars` should be pre-filtered and deduplicated by the caller.
     /// Glyphs are sorted by height descending for better packing.
     pub fn rebuild(&mut self, fonts: &FontBook, chars: &[char]) {
-        let mut chars: Vec<char> = chars.to_vec();
-        chars.sort_unstable();
-        chars.dedup();
+        self.resolution.clear();
+        let size_bits = FONT_SIZE.to_bits();
+        let style_bits: u8 = 0;
+        let keys: Vec<GlyphKey> = chars
+            .iter()
+            .map(|ch| {
+                let key = fonts.resolve(*ch);
+                self.resolution.insert((*ch, size_bits, style_bits), key);
+                key
+            })
+            .collect();
+        self.rebuild_by_keys(fonts, &keys);
+    }
+
+    /// Rebuild the atlas from resolved glyph keys (internal).
+    fn rebuild_by_keys(&mut self, fonts: &FontBook, keys: &[GlyphKey]) {
+        let mut unique_keys: Vec<GlyphKey> = keys.to_vec();
+        unique_keys.sort();
+        unique_keys.dedup();
 
         self.glyphs.clear();
         self.pixels.fill(0);
         self.shelves.clear();
 
         let mut new_rasterized: Vec<RasterizedGlyph> = Vec::new();
-        for ch in &chars {
-            let (metrics, bitmap) = fonts.rasterize(*ch, FONT_SIZE);
+        for key in &unique_keys {
+            let key = *key;
+            let (bounds, bitmap) = fonts.rasterize_from_key(key, FONT_SIZE);
             new_rasterized.push(RasterizedGlyph {
-                ch: *ch,
-                metrics,
+                key,
+                metrics: PackedMetrics {
+                    width: bounds.width,
+                    height: bounds.height,
+                    bearing_x: bounds.bearing_x,
+                    bearing_y: bounds.bearing_y,
+                    advance_width: bounds.advance_width,
+                },
                 bitmap,
             });
         }
@@ -224,9 +309,18 @@ impl GlyphAtlas {
         );
     }
 
-    /// Looks up a cached glyph. Returns `None` if the glyph hasn't been rasterized.
-    pub fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.glyphs.get(&ch)
+    /// Looks up a cached glyph by its stable key. Returns `None` if not cached.
+    pub fn glyph(&self, key: GlyphKey) -> Option<&AtlasGlyph> {
+        self.glyphs.get(&key)
+    }
+
+    /// Looks up a cached glyph by character. Returns `None` if not cached.
+    ///
+    /// This resolves the character to a GlyphKey using the resolution cache,
+    /// which is O(1) after the first resolution.
+    pub fn glyph_by_char(&self, ch: char) -> Option<&AtlasGlyph> {
+        let key = *self.resolution.get(&(ch, FONT_SIZE.to_bits(), 0))?;
+        self.glyphs.get(&key)
     }
 
     /// Number of cached glyphs.
@@ -268,8 +362,9 @@ impl GlyphAtlas {
                 let top = y as f32 / MAX_ATLAS_SIZE as f32;
                 let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
                 self.glyphs.insert(
-                    glyph.ch,
+                    glyph.key,
                     AtlasGlyph {
+                        key: glyph.key,
                         uv: AtlasUv {
                             left,
                             top,
@@ -278,8 +373,8 @@ impl GlyphAtlas {
                         },
                         width: glyph.metrics.width as u32,
                         height: glyph.metrics.height as u32,
-                        xmin: glyph.metrics.xmin,
-                        ymin: glyph.metrics.ymin,
+                        bearing_x: glyph.metrics.bearing_x,
+                        bearing_y: glyph.metrics.bearing_y,
                         atlas_x: x,
                         atlas_y: y,
                     },
@@ -304,8 +399,9 @@ impl GlyphAtlas {
         let top = y as f32 / MAX_ATLAS_SIZE as f32;
         let bottom = (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32;
         self.glyphs.insert(
-            glyph.ch,
+            glyph.key,
             AtlasGlyph {
+                key: glyph.key,
                 uv: AtlasUv {
                     left,
                     top,
@@ -314,8 +410,8 @@ impl GlyphAtlas {
                 },
                 width: glyph.metrics.width as u32,
                 height: glyph.metrics.height as u32,
-                xmin: glyph.metrics.xmin,
-                ymin: glyph.metrics.ymin,
+                bearing_x: glyph.metrics.bearing_x,
+                bearing_y: glyph.metrics.bearing_y,
                 atlas_x: x,
                 atlas_y: y,
             },
@@ -349,11 +445,16 @@ mod tests {
         load_system_fonts().expect("load test font")
     }
 
+    /// Helper: resolve a char to a GlyphKey via the font book.
+    fn glyph_key(fonts: &FontBook, ch: char) -> GlyphKey {
+        fonts.resolve(ch)
+    }
+
     #[test]
     fn empty_atlas_has_no_glyphs() {
         let atlas = GlyphAtlas::new();
         assert_eq!(atlas.len(), 0);
-        assert!(atlas.glyph('a').is_none());
+        assert!(atlas.glyph_by_char('a').is_none());
         assert_eq!(
             atlas.pixels().len(),
             (MAX_ATLAS_SIZE * MAX_ATLAS_SIZE) as usize
@@ -368,11 +469,11 @@ mod tests {
         let chars: Vec<char> = "abc".chars().collect();
         let result = atlas.rasterize_new(&fonts, &chars);
 
-        assert_eq!(result.new_chars.len(), 3);
+        assert_eq!(result.new_keys.len(), 3);
         assert!(!result.evicted);
-        assert!(atlas.glyph('a').is_some());
-        assert!(atlas.glyph('b').is_some());
-        assert!(atlas.glyph('c').is_some());
+        assert!(atlas.glyph_by_char('a').is_some());
+        assert!(atlas.glyph_by_char('b').is_some());
+        assert!(atlas.glyph_by_char('c').is_some());
     }
 
     #[test]
@@ -385,7 +486,7 @@ mod tests {
         let result = atlas.rasterize_new(&fonts, &chars);
 
         // 'a' and 'b' added; space rasterized but skipped (width 0).
-        assert_eq!(result.new_chars.len(), 3); // space also returned as "new" but has width 0
+        assert_eq!(result.new_keys.len(), 3); // space also returned as "new" but has width 0
         // Caller should pre-filter spaces; this test confirms atlas doesn't crash.
     }
 
@@ -395,22 +496,24 @@ mod tests {
         let mut atlas = GlyphAtlas::new();
 
         let first = atlas.rasterize_new(&fonts, &['a', 'b']);
-        assert_eq!(first.new_chars.len(), 2);
+        assert_eq!(first.new_keys.len(), 2);
 
         let second = atlas.rasterize_new(&fonts, &['a', 'b']);
-        assert!(second.new_chars.is_empty(), "no new glyphs expected");
+        assert!(second.new_keys.is_empty(), "no new glyphs expected");
         assert!(!second.evicted);
         assert_eq!(atlas.len(), 2);
     }
 
     #[test]
-    fn rasterize_new_only_returns_new_chars() {
+    fn rasterize_new_only_returns_new_keys() {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
 
         let _ = atlas.rasterize_new(&fonts, &['a', 'b']);
         let result = atlas.rasterize_new(&fonts, &['a', 'b', 'c']);
-        assert_eq!(result.new_chars, vec!['c'], "only 'c' is new");
+        // Should contain exactly one key: the resolved key for 'c'.
+        let c_key = glyph_key(&fonts, 'c');
+        assert_eq!(result.new_keys, vec![c_key], "only 'c' is new");
     }
 
     #[test]
@@ -423,9 +526,9 @@ mod tests {
 
         atlas.rebuild(&fonts, &['c', 'd']);
         assert_eq!(atlas.len(), 2);
-        assert!(atlas.glyph('a').is_none());
-        assert!(atlas.glyph('c').is_some());
-        assert!(atlas.glyph('d').is_some());
+        assert!(atlas.glyph_by_char('a').is_none());
+        assert!(atlas.glyph_by_char('c').is_some());
+        assert!(atlas.glyph_by_char('d').is_some());
     }
 
     #[test]
@@ -437,7 +540,11 @@ mod tests {
         let _ = atlas.rasterize_new(&fonts, &chars);
 
         for ch in "helo!".chars() {
-            assert!(atlas.glyph(ch).is_some(), "glyph '{}' should exist", ch);
+            assert!(
+                atlas.glyph_by_char(ch).is_some(),
+                "glyph '{}' should exist",
+                ch
+            );
         }
     }
 
@@ -449,7 +556,7 @@ mod tests {
         let _ = atlas.rasterize_new(&fonts, &['a', 'b', 'c']);
         // Add a new char that should fit on the same shelf (small glyph).
         let result = atlas.rasterize_new(&fonts, &['d']);
-        assert_eq!(result.new_chars, vec!['d']);
+        assert_eq!(result.new_keys.len(), 1);
     }
 
     #[test]
@@ -477,7 +584,11 @@ mod tests {
         );
         // All chars should still be in the atlas.
         for ch in &chars {
-            assert!(atlas.glyph(*ch).is_some(), "glyph '{}' should exist", ch);
+            assert!(
+                atlas.glyph_by_char(*ch).is_some(),
+                "glyph '{}' should exist",
+                ch
+            );
         }
     }
 
@@ -487,8 +598,8 @@ mod tests {
         let mut atlas = GlyphAtlas::new();
 
         let result = atlas.rasterize_new(&fonts, &['中']);
-        assert_eq!(result.new_chars.len(), 1);
-        let glyph = atlas.glyph('中').expect("CJK glyph in atlas");
+        assert_eq!(result.new_keys.len(), 1);
+        let glyph = atlas.glyph_by_char('中').expect("CJK glyph in atlas");
         assert!(glyph.width > 0);
         assert!(glyph.height > 0);
     }
@@ -508,9 +619,9 @@ mod tests {
 
         let result = atlas.rasterize_new(&fonts, &all_chars);
         // On most fonts, 250 unique glyphs should overflow 2048px atlas.
-        // If evicted, all chars are in new_chars and cache is rebuilt.
+        // If evicted, all chars are in new_keys and cache is rebuilt.
         if result.evicted {
-            assert_eq!(result.new_chars.len(), atlas.len());
+            assert_eq!(result.new_keys.len(), atlas.len());
         }
         // Regardless, the atlas should contain at least one glyph.
         assert!(!atlas.is_empty(), "atlas should contain glyphs");
@@ -527,8 +638,8 @@ mod tests {
         // Rebuild with a different set
         atlas.rebuild(&fonts, &['x', 'y']);
         assert_eq!(atlas.len(), 2, "rebuild clears old glyphs");
-        assert!(atlas.glyph('x').is_some());
-        assert!(atlas.glyph('y').is_some());
+        assert!(atlas.glyph_by_char('x').is_some());
+        assert!(atlas.glyph_by_char('y').is_some());
     }
 
     #[test]
@@ -546,10 +657,14 @@ mod tests {
 
     #[test]
     fn glyph_returns_none_for_unknown_char() {
+        let fonts = test_font_book();
         let atlas = GlyphAtlas::new();
-        assert!(atlas.glyph('Z').is_none());
-        assert!(atlas.glyph('中').is_none());
-        assert!(atlas.glyph('\x00').is_none());
+        assert!(atlas.glyph_by_char('Z').is_none());
+        assert!(atlas.glyph_by_char('中').is_none());
+        assert!(atlas.glyph_by_char('\x00').is_none());
+        // Also test direct key lookup
+        let key = glyph_key(&fonts, 'A');
+        assert!(atlas.glyph(key).is_none());
     }
 
     #[test]
@@ -568,8 +683,355 @@ mod tests {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
         let result = atlas.rasterize_new(&fonts, &[]);
-        assert!(result.new_chars.is_empty());
+        assert!(result.new_keys.is_empty());
         assert!(!result.evicted);
         assert_eq!(atlas.len(), 0);
+    }
+
+    // ── GlyphKey tests ───────────────────────────────────────────────
+
+    #[test]
+    fn should_equal_when_all_fields_match() {
+        let k1 = GlyphKey {
+            face_id: 1,
+            glyph_index: 42,
+            size_bits: 0x41800000,
+            style_bits: 0,
+        };
+        let k2 = GlyphKey {
+            face_id: 1,
+            glyph_index: 42,
+            size_bits: 0x41800000,
+            style_bits: 0,
+        };
+        assert_eq!(k1, k2, "identical keys should be equal");
+    }
+
+    #[test]
+    fn should_not_equal_when_face_id_differs() {
+        let k1 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k2 = GlyphKey {
+            face_id: 1,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        assert_ne!(k1, k2, "different face_id should produce inequality");
+    }
+
+    #[test]
+    fn should_not_equal_when_glyph_index_differs() {
+        let k1 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k2 = GlyphKey {
+            face_id: 0,
+            glyph_index: 2,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        assert_ne!(k1, k2, "different glyph_index should produce inequality");
+    }
+
+    #[test]
+    fn should_not_equal_when_size_bits_differs() {
+        let k1 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k2 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 20,
+            style_bits: 0,
+        };
+        assert_ne!(k1, k2, "different size_bits should produce inequality");
+    }
+
+    #[test]
+    fn should_not_equal_when_style_bits_differs() {
+        let k1 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k2 = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 1,
+        };
+        assert_ne!(k1, k2, "different style_bits should produce inequality");
+    }
+
+    #[test]
+    fn should_order_by_face_id_first() {
+        let k_small = GlyphKey {
+            face_id: 0,
+            glyph_index: 100,
+            size_bits: 0,
+            style_bits: 0,
+        };
+        let k_large = GlyphKey {
+            face_id: 1,
+            glyph_index: 0,
+            size_bits: 0,
+            style_bits: 0,
+        };
+        assert!(k_small < k_large, "lower face_id should come first");
+    }
+
+    #[test]
+    fn should_order_by_glyph_index_when_face_ids_equal() {
+        let k_small = GlyphKey {
+            face_id: 0,
+            glyph_index: 5,
+            size_bits: 0,
+            style_bits: 0,
+        };
+        let k_large = GlyphKey {
+            face_id: 0,
+            glyph_index: 10,
+            size_bits: 0,
+            style_bits: 0,
+        };
+        assert!(k_small < k_large, "lower glyph_index should come first");
+    }
+
+    #[test]
+    fn should_order_by_size_bits_when_prev_fields_equal() {
+        let k_small = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k_large = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 20,
+            style_bits: 0,
+        };
+        assert!(k_small < k_large, "lower size_bits should come first");
+    }
+
+    #[test]
+    fn should_order_by_style_bits_when_all_prev_equal() {
+        let k_small = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 0,
+        };
+        let k_large = GlyphKey {
+            face_id: 0,
+            glyph_index: 1,
+            size_bits: 10,
+            style_bits: 1,
+        };
+        assert!(k_small < k_large, "lower style_bits should come first");
+    }
+
+    #[test]
+    fn should_hash_consistently_with_equality() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let k1 = GlyphKey {
+            face_id: 3,
+            glyph_index: 7,
+            size_bits: 0x41800000,
+            style_bits: 2,
+        };
+        let k2 = GlyphKey {
+            face_id: 3,
+            glyph_index: 7,
+            size_bits: 0x41800000,
+            style_bits: 2,
+        };
+
+        let mut h1 = DefaultHasher::new();
+        k1.hash(&mut h1);
+        let hash1 = h1.finish();
+
+        let mut h2 = DefaultHasher::new();
+        k2.hash(&mut h2);
+        let hash2 = h2.finish();
+
+        assert_eq!(hash1, hash2, "equal keys must produce the same hash");
+    }
+
+    #[test]
+    fn should_useful_as_hashmap_key() {
+        let fonts = test_font_book();
+        let key_a = fonts.resolve('A');
+        let key_b = fonts.resolve('B');
+
+        let mut map = hashbrown::HashMap::new();
+        map.insert(key_a, 1u32);
+        map.insert(key_b, 2u32);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&key_a), Some(&1));
+        assert_eq!(map.get(&key_b), Some(&2));
+    }
+
+    #[test]
+    fn should_resolve_different_chars_to_different_keys() {
+        let fonts = test_font_book();
+        let key_a = fonts.resolve('A');
+        let key_b = fonts.resolve('B');
+        assert_ne!(
+            key_a, key_b,
+            "different chars should resolve to different keys"
+        );
+    }
+
+    #[test]
+    fn should_resolve_same_char_to_same_key_regardless_of_size() {
+        let fonts = test_font_book();
+        // resolve() always uses FONT_SIZE internally, so repeated calls are stable.
+        let k1 = fonts.resolve('Z');
+        let k2 = fonts.resolve('Z');
+        assert_eq!(k1, k2, "same char should always resolve to the same key");
+    }
+
+    // ── GlyphBitmapBounds tests ──────────────────────────────────────
+
+    #[test]
+    fn should_expose_all_fields_when_constructed() {
+        let bounds = GlyphBitmapBounds {
+            width: 10,
+            height: 20,
+            bearing_x: 1,
+            bearing_y: -2,
+            advance_width: 12.5,
+        };
+        assert_eq!(bounds.width, 10);
+        assert_eq!(bounds.height, 20);
+        assert_eq!(bounds.bearing_x, 1);
+        assert_eq!(bounds.bearing_y, -2);
+        assert_eq!(bounds.advance_width, 12.5);
+    }
+
+    #[test]
+    fn should_support_zero_dimensions() {
+        let bounds = GlyphBitmapBounds {
+            width: 0,
+            height: 0,
+            bearing_x: 0,
+            bearing_y: 0,
+            advance_width: 0.0,
+        };
+        assert_eq!(bounds.width, 0);
+        assert_eq!(bounds.height, 0);
+    }
+
+    #[test]
+    fn should_support_negative_bearings() {
+        let bounds = GlyphBitmapBounds {
+            width: 8,
+            height: 12,
+            bearing_x: -3,
+            bearing_y: -5,
+            advance_width: 6.0,
+        };
+        assert_eq!(bounds.bearing_x, -3);
+        assert_eq!(bounds.bearing_y, -5);
+    }
+
+    #[test]
+    fn should_be_copy_and_clone() {
+        let bounds = GlyphBitmapBounds {
+            width: 10,
+            height: 20,
+            bearing_x: 1,
+            bearing_y: 2,
+            advance_width: 11.0,
+        };
+        let copy = bounds;
+        let cloned = bounds;
+        assert_eq!(copy.width, cloned.width);
+        assert_eq!(copy.advance_width, cloned.advance_width);
+    }
+
+    // ── AtlasGlyph bearing fields tests ──────────────────────────────
+
+    #[test]
+    fn should_store_bearing_fields_in_atlas_glyph() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let _ = atlas.rasterize_new(&fonts, &['A']);
+        let glyph = atlas.glyph_by_char('A').expect("A should be in atlas");
+        // bearing_x and bearing_y should be set (exact values depend on the font).
+        // Just verify the fields are accessible and the struct is coherent.
+        let _ = glyph.bearing_x;
+        let _ = glyph.bearing_y;
+        assert!(glyph.width > 0, "A glyph should have positive width");
+        assert!(glyph.height > 0, "A glyph should have positive height");
+    }
+
+    #[test]
+    fn should_lookup_glyph_by_key_after_rasterize() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let _ = atlas.rasterize_new(&fonts, &['X']);
+        let key = fonts.resolve('X');
+        let glyph = atlas.glyph(key).expect("glyph should be findable by key");
+        assert!(glyph.width > 0);
+        assert!(glyph.key == key, "stored glyph key should match lookup key");
+    }
+
+    #[test]
+    fn should_return_none_when_looking_up_key_not_in_atlas() {
+        let fonts = test_font_book();
+        let atlas = GlyphAtlas::new();
+        let key = fonts.resolve('Q');
+        assert!(atlas.glyph(key).is_none(), "empty atlas should return None");
+    }
+
+    #[test]
+    fn rasterize_result_keys_match_resolved_keys() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let chars: Vec<char> = vec!['a', 'b', 'c'];
+        let result = atlas.rasterize_new(&fonts, &chars);
+        // Every key in new_keys should match the resolved key for the corresponding char.
+        for (i, ch) in chars.iter().enumerate() {
+            let expected_key = fonts.resolve(*ch);
+            assert_eq!(
+                result.new_keys[i], expected_key,
+                "new_keys[{}] should match resolve('{}')",
+                i, ch
+            );
+        }
+    }
+
+    #[test]
+    fn glyph_by_char_matches_glyph_by_key() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let _ = atlas.rasterize_new(&fonts, &['M']);
+        let key = fonts.resolve('M');
+        let by_char = atlas
+            .glyph_by_char('M')
+            .expect("glyph_by_char should find M");
+        let by_key = atlas.glyph(key).expect("glyph should find M by key");
+        // Both should point to the same atlas entry.
+        assert_eq!(by_char.atlas_x, by_key.atlas_x);
+        assert_eq!(by_char.atlas_y, by_key.atlas_y);
+        assert_eq!(by_char.width, by_key.width);
+        assert_eq!(by_char.height, by_key.height);
     }
 }

@@ -150,8 +150,8 @@ impl TextRunCache {
                 && g.height > 0
             {
                 let origin = Point::new(
-                    pen_x + g.xmin as f32,
-                    baseline_y - g.ymin as f32 - g.height as f32,
+                    pen_x + g.bearing_x as f32,
+                    baseline_y - g.bearing_y as f32 - g.height as f32,
                 );
                 glyphs.push(GlyphLayout {
                     origin,
@@ -227,6 +227,12 @@ mod tests {
 
     fn test_glyph_fn(_ch: char) -> Option<AtlasGlyph> {
         Some(AtlasGlyph {
+            key: harbor_text::GlyphKey {
+                face_id: 0,
+                glyph_index: 0,
+                size_bits: 0,
+                style_bits: 0,
+            },
             uv: AtlasUv {
                 left: 0.0,
                 top: 0.0,
@@ -235,8 +241,8 @@ mod tests {
             },
             width: 8,
             height: 16,
-            xmin: 0,
-            ymin: 0,
+            bearing_x: 0,
+            bearing_y: 0,
             atlas_x: 0,
             atlas_y: 0,
         })
@@ -316,6 +322,12 @@ mod tests {
     fn zero_width_glyph_is_skipped() {
         let fn_zero_width = |_ch: char| -> Option<AtlasGlyph> {
             Some(AtlasGlyph {
+                key: harbor_text::GlyphKey {
+                    face_id: 0,
+                    glyph_index: 0,
+                    size_bits: 0,
+                    style_bits: 0,
+                },
                 uv: AtlasUv {
                     left: 0.0,
                     top: 0.0,
@@ -324,8 +336,8 @@ mod tests {
                 },
                 width: 0,
                 height: 16,
-                xmin: 1,
-                ymin: 2,
+                bearing_x: 1,
+                bearing_y: 2,
                 atlas_x: 0,
                 atlas_y: 0,
             })
