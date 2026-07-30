@@ -2,6 +2,24 @@
 
 Project domain concepts and terminology.
 
+### System-Native Font Loading
+- **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
+
+### System Default Font Selection
+- **Definition:** The Windows `harbor-text` policy that honors an environment-variable font override and otherwise delegates primary font selection to the operating system.
+- **Relationships:**
+  - depends on System-Native Font Loading
+
+### DirectWrite Font Backend
+- **Definition:** The Windows `harbor-text` backend that uses DirectWrite for font selection, system fallback, metrics, glyph resolution, and rasterization while retaining the existing WGPU glyph atlas.
+- **Relationships:**
+  - implements System-Native Font Loading
+
+### System Font Fallback
+- **Definition:** The DirectWrite-based policy that resolves missing characters through Windows fallback fonts for both environment-overridden and system-selected primary fonts.
+- **Relationships:**
+  - belongs to DirectWrite Font Backend
+
 ### Harbor Widget Runtime
 - **Definition:** A declarative GPU UI runtime based on Rust and wgpu, managing the full UI pipeline from component state changes to retained GPU scene encoding.
 - **Synonyms:** Widget Runtime, Runtime
