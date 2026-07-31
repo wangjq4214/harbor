@@ -1,6 +1,6 @@
 # `harbor-widget` Depends on `wgpu` but NOT `harbor-render`
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2025-07-23
 
 ## Context

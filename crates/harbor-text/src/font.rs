@@ -3,8 +3,10 @@ use std::{
     path::{Path, PathBuf},
     thread,
 };
+#[cfg(test)]
+use std::{ffi::OsString, sync::Mutex};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use fontdb::{Database, Family, ID, Query};
 use fontdue::{Font, FontSettings};
 
@@ -15,6 +17,30 @@ use crate::metrics::FontMetrics;
 
 const CJK_PROBE: char = '中';
 const FONT_ENV: &str = "HARBOR_FONT";
+
+#[cfg(test)]
+static FONT_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn with_font_env<R>(value: Option<OsString>, f: impl FnOnce() -> R) -> R {
+    let guard = FONT_ENV_LOCK.lock().expect("font environment lock");
+    let previous = env::var_os(FONT_ENV);
+    match value {
+        Some(value) => unsafe { env::set_var(FONT_ENV, value) },
+        None => unsafe { env::remove_var(FONT_ENV) },
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    match previous {
+        Some(value) => unsafe { env::set_var(FONT_ENV, value) },
+        None => unsafe { env::remove_var(FONT_ENV) },
+    }
+    drop(guard);
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
 
 pub(crate) struct LoadedFont {
     pub family: String,
@@ -92,15 +118,15 @@ impl FontBook {
 
 /// Loads terminal fonts for Harbor startup.
 ///
-/// - `HARBOR_FONT` still uses the temporary compat loader (T0003).
-/// - Otherwise selects a DirectWrite system monospace primary face (T0002).
+/// - `HARBOR_FONT` selects a DirectWrite process-private primary face.
+/// - Otherwise selects a DirectWrite system monospace primary face.
 pub fn load_system_fonts() -> Result<FontBook> {
     if let Some(fonts) = load_configured_fonts()? {
         return Ok(fonts);
     }
 
-    let state = DwriteState::open_system_primary()
-        .context("load DirectWrite system primary face")?;
+    let state =
+        DwriteState::open_system_primary().context("load DirectWrite system primary face")?;
     tracing::info!("loaded terminal font from DirectWrite system primary");
     Ok(FontBook::from_native(state))
 }
@@ -109,10 +135,14 @@ fn load_configured_fonts() -> Result<Option<FontBook>> {
     let Some(path) = env::var_os(FONT_ENV) else {
         return Ok(None);
     };
+    let path = PathBuf::from(path);
+    if path.as_os_str().is_empty() {
+        bail!("HARBOR_FONT is set but empty");
+    }
 
-    let primary = load_font_file(Path::new(&path), 0)
-        .with_context(|| format!("load configured font from {}", Path::new(&path).display()))?;
-    Ok(Some(build_font_book(primary)))
+    let state = DwriteState::open_configured_primary(&path)?;
+    tracing::info!(path = %path.display(), "loaded terminal font from HARBOR_FONT");
+    Ok(Some(FontBook::from_native(state)))
 }
 
 #[allow(dead_code)]
@@ -137,6 +167,7 @@ fn load_candidate_fonts() -> Option<FontBook> {
     Some(FontBook::from_compat(vec![primary, fallback]))
 }
 
+#[allow(dead_code)]
 fn build_font_book(primary: LoadedFont) -> FontBook {
     let mut fonts = vec![primary];
 
@@ -417,36 +448,133 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    fn ensure_no_harbor_font() {
-        // Default-path tests must exercise DirectWrite, not a configured compat font.
-        unsafe {
-            std::env::remove_var(FONT_ENV);
-        }
-    }
-
     fn test_font_book() -> FontBook {
-        ensure_no_harbor_font();
-        load_system_fonts().expect("load test font")
+        with_font_env(None, || load_system_fonts().expect("load test font"))
     }
 
     #[test]
     fn should_load_native_primary_when_harbor_font_unset() {
-        // Arrange
-        ensure_no_harbor_font();
-
-        // Act
-        let fonts = load_system_fonts().expect("default load path");
+        // Arrange and act
+        let fonts = with_font_env(None, || load_system_fonts().expect("default load path"));
 
         // Assert — default path yields a usable primary face for terminal metrics/glyphs.
         let metrics = fonts.font_metrics();
-        assert!(metrics.cell_width > 0.0, "cell_width={}", metrics.cell_width);
-        assert!(metrics.line_height > 0.0, "line_height={}", metrics.line_height);
+        assert!(
+            metrics.cell_width > 0.0,
+            "cell_width={}",
+            metrics.cell_width
+        );
+        assert!(
+            metrics.line_height > 0.0,
+            "line_height={}",
+            metrics.line_height
+        );
         assert!(metrics.ascent > 0.0, "ascent={}", metrics.ascent);
 
         let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
         assert!(bounds.width > 0, "latin width should be > 0");
         assert!(bounds.height > 0, "latin height should be > 0");
         assert_eq!(bitmap.len(), bounds.width * bounds.height);
+    }
+
+    #[test]
+    fn should_load_configured_native_primary_from_system_font_path() {
+        let Some(path) = primary_font_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+        else {
+            return;
+        };
+
+        let (is_native, metrics, bounds, bitmap) =
+            with_font_env(Some(path.into_os_string()), || {
+                let fonts = load_system_fonts().expect("configured font path");
+                let is_native = matches!(&fonts.backend, FontBackend::Native(_));
+                let metrics = fonts.font_metrics();
+                let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+                (is_native, metrics, bounds, bitmap)
+            });
+        assert!(is_native, "configured font should use DirectWrite");
+        assert!(metrics.cell_width > 0.0);
+        assert!(metrics.line_height > 0.0);
+        assert!(bounds.width > 0);
+        assert!(bounds.height > 0);
+        assert_eq!(bitmap.len(), bounds.width * bounds.height);
+    }
+
+    #[test]
+    fn should_rasterize_configured_primary_by_resolved_key() {
+        // Arrange
+        let Some(path) = primary_font_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+        else {
+            return;
+        };
+        // Act
+        let (key, direct, by_key) = with_font_env(Some(path.into_os_string()), || {
+            let fonts = load_system_fonts().expect("configured font path");
+            let key = fonts.resolve('A');
+            let direct = fonts.rasterize('A', harbor_config::FONT_SIZE);
+            let by_key = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+            (key, direct, by_key)
+        });
+
+        // Assert
+        assert_eq!(key.face_id, 0);
+        assert!(key.glyph_index > 0, "configured Latin glyph should resolve");
+        assert_eq!(direct.0.width, by_key.0.width);
+        assert_eq!(direct.0.height, by_key.0.height);
+        assert_eq!(direct.0.bearing_x, by_key.0.bearing_x);
+        assert_eq!(direct.0.bearing_y, by_key.0.bearing_y);
+        assert_eq!(direct.0.advance_width, by_key.0.advance_width);
+        assert_eq!(direct.1, by_key.1);
+        assert!(by_key.0.width > 0);
+        assert!(by_key.0.height > 0);
+        assert_eq!(by_key.1.len(), by_key.0.width * by_key.0.height);
+    }
+
+    #[test]
+    fn should_reject_missing_configured_font_without_fallback() {
+        let path = env::temp_dir().join(format!("harbor-missing-font-{}.ttf", std::process::id()));
+        let message = with_font_env(
+            Some(path.clone().into_os_string()),
+            || match load_system_fonts() {
+                Ok(_) => panic!("missing configured font unexpectedly succeeded"),
+                Err(error) => format!("{error:#}"),
+            },
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        with_font_env(None, || {
+            load_system_fonts().expect("system fallback after failed load")
+        });
+    }
+
+    #[test]
+    fn should_reject_empty_configured_font_value() {
+        let message = with_font_env(Some(OsString::new()), || match load_system_fonts() {
+            Ok(_) => panic!("empty configured font unexpectedly succeeded"),
+            Err(error) => format!("{error:#}"),
+        });
+        assert!(
+            message.contains("HARBOR_FONT is set but empty"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn should_reject_unsupported_configured_font_without_fallback() {
+        let path = env::temp_dir().join(format!("harbor-invalid-font-{}.bin", std::process::id()));
+        fs::write(&path, b"not a font").expect("write invalid font fixture");
+        let message = with_font_env(
+            Some(path.clone().into_os_string()),
+            || match load_system_fonts() {
+                Ok(_) => panic!("invalid configured font unexpectedly succeeded"),
+                Err(error) => format!("{error:#}"),
+            },
+        );
+        let _ = fs::remove_file(&path);
+        assert!(message.contains(&path.display().to_string()), "{message}");
     }
 
     #[test]

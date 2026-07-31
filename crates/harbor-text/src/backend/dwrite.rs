@@ -1,17 +1,20 @@
 //! DirectWrite primary-face backend for default Windows font startup.
 //!
 //! Owns a factory and retained primary face. Discovery-only collections are
-//! released after selection. Fallback and configured-font loading are out of
-//! scope for T0002.
+//! released after selection. Configured paths are opened as process-private
+//! faces and are not registered in system font collections.
+
+use std::{os::windows::ffi::OsStrExt, path::Path};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FACE_TYPE, DWRITE_FONT_FILE_TYPE,
+    DWRITE_FONT_SIMULATIONS_NONE, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_RENDERING_MODE_ALIASED, DWRITE_TEXTURE_ALIASED_1x1,
     DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteFontFace, IDWriteFontFace1,
 };
-use windows::core::Interface;
+use windows::core::{BOOL, Interface, PCWSTR};
 
 use crate::atlas::{GlyphBitmapBounds, GlyphKey};
 use crate::backend::NativeFaceId;
@@ -37,6 +40,28 @@ impl DwriteState {
         let primary_face = select_system_primary(&factory)?;
         let primary_metrics = font_metrics_from_face(&primary_face, harbor_config::FONT_SIZE)
             .context("measure DirectWrite system primary face")?;
+        Ok(Self {
+            factory,
+            primary_face,
+            face_id: PRIMARY_FACE_ID,
+            primary_metrics,
+        })
+    }
+
+    /// Open a process-private primary face from a filesystem font path.
+    pub fn open_configured_primary(path: &Path) -> Result<Self> {
+        let factory: IDWriteFactory = unsafe {
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).with_context(|| {
+                format!(
+                    "create DirectWrite factory for configured font {}",
+                    path.display()
+                )
+            })?
+        };
+        let primary_face = create_face_from_path(&factory, path)
+            .with_context(|| format!("load configured font from {}", path.display()))?;
+        let primary_metrics = font_metrics_from_face(&primary_face, harbor_config::FONT_SIZE)
+            .with_context(|| format!("measure configured font {}", path.display()))?;
         Ok(Self {
             factory,
             primary_face,
@@ -200,6 +225,45 @@ impl DwriteState {
     }
 }
 
+fn create_face_from_path(factory: &IDWriteFactory, path: &Path) -> Result<IDWriteFontFace> {
+    if path.as_os_str().is_empty() {
+        bail!("configured font path is empty");
+    }
+
+    let path_display = path.display().to_string();
+    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let font_file = unsafe {
+        factory
+            .CreateFontFileReference(PCWSTR(wide_path.as_ptr()), None)
+            .with_context(|| format!("CreateFontFileReference for {path_display}"))?
+    };
+
+    let mut is_supported = BOOL(0);
+    let mut file_type = DWRITE_FONT_FILE_TYPE(0);
+    let mut face_type = DWRITE_FONT_FACE_TYPE(0);
+    let mut number_of_faces = 0;
+    unsafe {
+        font_file
+            .Analyze(
+                &mut is_supported,
+                &mut file_type,
+                Some(&mut face_type),
+                &mut number_of_faces,
+            )
+            .with_context(|| format!("Analyze configured font {path_display}"))?;
+    }
+    if !is_supported.as_bool() || number_of_faces == 0 {
+        bail!("configured font {path_display} is unsupported or contains no faces");
+    }
+
+    let font_files = [Some(font_file)];
+    unsafe {
+        factory
+            .CreateFontFace(face_type, &font_files, 0, DWRITE_FONT_SIMULATIONS_NONE)
+            .with_context(|| format!("CreateFontFace for configured font {path_display}"))
+    }
+}
+
 fn font_metrics_from_face(face: &IDWriteFontFace, size: f32) -> Result<FontMetrics> {
     let mut metrics = Default::default();
     unsafe {
@@ -299,7 +363,55 @@ fn select_system_primary(factory: &IDWriteFactory) -> Result<IDWriteFontFace> {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs, path::PathBuf};
+
     use super::*;
+
+    fn windows_fonts_dir() -> PathBuf {
+        env::var_os("WINDIR")
+            .or_else(|| env::var_os("SYSTEMROOT"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("Fonts")
+    }
+
+    fn configured_font_path() -> Option<PathBuf> {
+        let fonts_dir = windows_fonts_dir();
+        [
+            "CascadiaMono.ttf",
+            "CascadiaCode.ttf",
+            "consola.ttf",
+            "cour.ttf",
+        ]
+        .into_iter()
+        .map(|name| fonts_dir.join(name))
+        .find(|path| path.is_file())
+    }
+
+    fn configured_collection_path() -> Option<PathBuf> {
+        let fonts_dir = windows_fonts_dir();
+        ["msyh.ttc", "simsun.ttc"]
+            .into_iter()
+            .map(|name| fonts_dir.join(name))
+            .find(|path| path.is_file())
+    }
+
+    fn collection_family_count() -> u32 {
+        let factory: IDWriteFactory = unsafe {
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("create DirectWrite factory")
+        };
+        let mut collection = None;
+        unsafe {
+            factory
+                .GetSystemFontCollection(&mut collection, false)
+                .expect("get system font collection");
+        }
+        unsafe {
+            collection
+                .expect("system font collection")
+                .GetFontFamilyCount()
+        }
+    }
 
     /// Manual E2E checklist for first Latin presentation (spec 0003 / T0002).
     ///
@@ -316,6 +428,102 @@ mod tests {
 
     fn open_primary() -> DwriteState {
         DwriteState::open_system_primary().expect("open system primary")
+    }
+
+    #[test]
+    fn should_open_configured_primary_from_system_font_path() {
+        let Some(path) = configured_font_path() else {
+            return;
+        };
+
+        let state = DwriteState::open_configured_primary(&path).expect("configured font opens");
+        let metrics = state.font_metrics(harbor_config::FONT_SIZE);
+        assert!(metrics.cell_width > 0.0);
+        assert!(metrics.line_height > 0.0);
+
+        let key = state.resolve('A', harbor_config::FONT_SIZE, 0);
+        let (bounds, bitmap) = state.rasterize(key, harbor_config::FONT_SIZE);
+        assert!(bounds.width > 0);
+        assert!(bounds.height > 0);
+        assert_eq!(bitmap.len(), bounds.width * bounds.height);
+    }
+
+    #[test]
+    fn should_open_first_face_of_available_collection() {
+        let Some(path) = configured_collection_path() else {
+            return;
+        };
+
+        let state =
+            DwriteState::open_configured_primary(&path).expect("configured collection opens");
+        let metrics = state.font_metrics(harbor_config::FONT_SIZE);
+        assert!(metrics.cell_width > 0.0);
+        assert!(metrics.line_height > 0.0);
+        let _ = state.resolve('A', harbor_config::FONT_SIZE, 0);
+    }
+
+    #[test]
+    fn should_leave_system_collection_unchanged_for_configured_primary() {
+        let Some(path) = configured_font_path() else {
+            return;
+        };
+        let before = collection_family_count();
+        {
+            let _state =
+                DwriteState::open_configured_primary(&path).expect("configured font opens");
+            assert_eq!(collection_family_count(), before);
+        }
+        assert_eq!(collection_family_count(), before);
+    }
+
+    #[test]
+    fn should_reject_empty_configured_path_before_directwrite_call() {
+        // Arrange
+        let path = Path::new("");
+
+        // Act
+        let error = match DwriteState::open_configured_primary(path) {
+            Ok(_) => panic!("empty configured path unexpectedly opened"),
+            Err(error) => error,
+        };
+
+        // Assert
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("configured font path is empty"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn should_include_missing_configured_path_in_error() {
+        // Arrange
+        let path = env::temp_dir().join(format!("harbor-missing-font-{}.ttf", std::process::id()));
+        let _ = fs::remove_file(&path);
+
+        // Act
+        let error = match DwriteState::open_configured_primary(&path) {
+            Ok(_) => panic!("missing font unexpectedly opened"),
+            Err(error) => error,
+        };
+
+        // Assert
+        let message = format!("{error:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn should_include_unsupported_configured_path_in_error() {
+        let path = env::temp_dir().join(format!("harbor-invalid-font-{}.bin", std::process::id()));
+        fs::write(&path, b"not a font").expect("write invalid font fixture");
+        let result = DwriteState::open_configured_primary(&path);
+        let error = match result {
+            Ok(_) => panic!("invalid font unexpectedly opened"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

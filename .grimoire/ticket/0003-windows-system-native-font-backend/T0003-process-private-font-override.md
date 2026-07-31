@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec: 0003-windows-system-native-font-backend](../../spec/0003-windows-system-native-font-backend.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

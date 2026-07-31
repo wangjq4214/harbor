@@ -439,18 +439,10 @@ impl GlyphAtlas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::font::load_system_fonts;
-
-    fn ensure_no_harbor_font() {
-        // Default-path atlas tests must exercise DirectWrite, not a configured compat font.
-        unsafe {
-            std::env::remove_var("HARBOR_FONT");
-        }
-    }
+    use crate::font::{load_system_fonts, with_font_env};
 
     fn test_font_book() -> FontBook {
-        ensure_no_harbor_font();
-        load_system_fonts().expect("load test font")
+        with_font_env(None, || load_system_fonts().expect("load test font"))
     }
 
     /// Helper: resolve a char to a GlyphKey via the font book.
