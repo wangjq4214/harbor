@@ -1,7 +1,8 @@
 # Use Widget Runtime for the Paste Confirmation Window
 
-**Status:** Completed
+**Status:** Superseded
 **Date:** 2026-07-24
+**Superseded by:** [ADR 0015](./0015-runtime-owned-frame-presentation.md)
 
 ## Context
 

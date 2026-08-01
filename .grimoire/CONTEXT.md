@@ -151,6 +151,79 @@ Project domain concepts and terminology.
   - consumed by Widget Renderer
   - provided by Host
 
+### Runtime Host
+- **Definition:** The binary-layer owner of application entry, winit window and surface lifetimes, GPU device resources, fatal-error policy, and cross-window coordination.
+- **Synonyms:** Host, App
+- **Relationships:**
+  - communicates with Harbor Widget Runtime
+  - contains Winit Event Adapter
+  - provides WinitFrameTarget
+
+### Winit Event Adapter
+- **Definition:** A feature-gated harbor-widget adapter that converts winit input and lifecycle events into platform-independent runtime input without exposing winit types to the core Runtime.
+- **Relationships:**
+  - belongs to Runtime Host
+  - produces UiEvent
+  - communicates with Harbor Widget Runtime
+
+### WinitFrameTarget
+- **Definition:** A frame-scoped borrowed bundle of Window, Surface, Device, and Queue references that lets the winit runtime integration render and present without retaining platform resources.
+- **Relationships:**
+  - provided by Runtime Host
+  - consumed by Harbor Widget Runtime
+
+### Runtime Frame Presentation
+- **Definition:** The runtime-owned frame policy that acquires the current SurfaceTexture, encodes and submits GPU work, notifies the window, and presents the completed frame using a borrowed WinitFrameTarget.
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - depends on WinitFrameTarget
+  - extends Widget Renderer
+
+### Runtime Integration Boundary
+- **Definition:** The public feature-gated harbor-widget API that handles generic window events and frame presentation while excluding terminal, paste, and other Harbor-specific business policy.
+- **Relationships:**
+  - contains Winit Event Adapter
+  - contains Runtime Frame Presentation
+  - communicates with Runtime Host
+
+### External Runtime Invalidation
+- **Definition:** A platform-independent signal through which Host-owned asynchronous sources mark a Runtime dirty without exposing their business-specific event types to harbor-widget.
+- **Relationships:**
+  - consumed by Harbor Widget Runtime
+  - produces RuntimeEffects
+
+### TerminalOutputReady
+- **Definition:** A Host-owned application event emitted when the PTY reader has terminal output ready for UI-thread processing.
+- **Relationships:**
+  - produces External Runtime Invalidation
+  - belongs to Runtime Host
+
+### Runtime Frame Scheduler
+- **Definition:** The runtime-owned state machine that converts invalidation, animation deadlines, and steady-state activity into Wait, WaitUntil, Poll, and RequestRedraw effects.
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - consumes External Runtime Invalidation
+  - produces RuntimeEffects
+
+### Terminal Input Semantics
+- **Definition:** The harbor-terminal responsibility for interpreting routed platform-independent keyboard and pointer events as terminal actions such as scrollback navigation.
+- **Relationships:**
+  - belongs to Terminal
+  - consumes UiEvent
+
+### RuntimeEffects
+- **Definition:** A platform-independent command batch returned by Runtime for its Host to apply, including redraw, cursor, IME, and clipboard requests.
+- **Synonyms:** Runtime Effects
+- **Relationships:**
+  - produced by Harbor Widget Runtime
+  - consumed by Runtime Host
+
+### Runtime Per Window
+- **Definition:** The ownership model in which each OS window has an independent Runtime, Widget tree, and input state while GPU and text resources may be shared.
+- **Relationships:**
+  - depends on Runtime Host
+  - contains Harbor Widget Runtime
+
 ### UiEvent
 - **Definition:** A single enum representing all input events (pointer, keyboard, focus) dispatched through the widget tree via capture-target-bubble routing.
 - **Synonyms:** Event
