@@ -11,6 +11,7 @@ use fontdb::{Database, Family, ID, Query};
 use fontdue::{Font, FontSettings};
 
 use crate::atlas::{GlyphBitmapBounds, GlyphKey};
+use crate::backend::GlyphResolution;
 use crate::backend::compat::CompatState;
 use crate::backend::dwrite::DwriteState;
 use crate::metrics::FontMetrics;
@@ -49,8 +50,8 @@ pub(crate) struct LoadedFont {
 
 /// Private discriminant between temporary compat and native primary backends.
 enum FontBackend {
-    Compat(CompatState),
-    Native(DwriteState),
+    Compat(Box<CompatState>),
+    Native(Box<DwriteState>),
 }
 
 /// System terminal font set with a primary monospace face and glyph fallbacks.
@@ -65,7 +66,7 @@ impl FontBook {
     #[cfg(windows)]
     pub(crate) fn from_compat(fonts: Vec<LoadedFont>) -> Self {
         Self {
-            backend: FontBackend::Compat(CompatState::new(fonts)),
+            backend: FontBackend::Compat(Box::new(CompatState::new(fonts))),
         }
     }
 
@@ -73,25 +74,33 @@ impl FontBook {
     #[cfg(windows)]
     pub(crate) fn from_native(state: DwriteState) -> Self {
         Self {
-            backend: FontBackend::Native(state),
+            backend: FontBackend::Native(Box::new(state)),
         }
     }
 
     /// Rasterize a character to a bitmap with backend-neutral bounds.
+    ///
+    /// Resolves once, then rasterizes the resulting key. Unavailable characters
+    /// yield empty ink without a second mapping attempt.
     pub fn rasterize(&self, ch: char, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
-        match &self.backend {
-            FontBackend::Compat(compat) => {
-                let key = compat.resolve(ch, px, 0);
-                compat.rasterize(key, px)
+        match self.resolve(ch, px, 0) {
+            GlyphResolution::Available(key) => {
+                self.rasterize_from_key(key, f32::from_bits(key.size_bits))
             }
-            FontBackend::Native(native) => {
-                let key = native.resolve(ch, px, 0);
-                native.rasterize(key, px)
-            }
+            GlyphResolution::Unavailable => (
+                GlyphBitmapBounds {
+                    width: 0,
+                    height: 0,
+                    bearing_x: 0,
+                    bearing_y: 0,
+                    advance_width: 0.0,
+                },
+                Vec::new(),
+            ),
         }
     }
 
-    /// Rasterize a glyph by its resolved key (used during atlas rebuild).
+    /// Rasterize a glyph by its already-resolved key (used during atlas rebuild).
     pub fn rasterize_from_key(&self, key: GlyphKey, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
         match &self.backend {
             FontBackend::Compat(compat) => compat.rasterize(key, px),
@@ -99,11 +108,11 @@ impl FontBook {
         }
     }
 
-    /// Resolve a character to a stable glyph identity.
-    pub fn resolve(&self, ch: char) -> GlyphKey {
+    /// Resolve a character to an available glyph key or a cached unavailable result.
+    pub fn resolve(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
         match &self.backend {
-            FontBackend::Compat(compat) => compat.resolve(ch, harbor_config::FONT_SIZE, 0),
-            FontBackend::Native(native) => native.resolve(ch, harbor_config::FONT_SIZE, 0),
+            FontBackend::Compat(compat) => compat.resolve(ch, size, style),
+            FontBackend::Native(native) => native.resolve(ch, size, style),
         }
     }
 
@@ -448,6 +457,13 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    fn expect_key(resolution: GlyphResolution) -> GlyphKey {
+        match resolution {
+            GlyphResolution::Available(key) => key,
+            GlyphResolution::Unavailable => panic!("expected Available"),
+        }
+    }
+
     fn test_font_book() -> FontBook {
         with_font_env(None, || load_system_fonts().expect("load test font"))
     }
@@ -514,7 +530,7 @@ mod tests {
         // Act
         let (key, direct, by_key) = with_font_env(Some(path.into_os_string()), || {
             let fonts = load_system_fonts().expect("configured font path");
-            let key = fonts.resolve('A');
+            let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
             let direct = fonts.rasterize('A', harbor_config::FONT_SIZE);
             let by_key = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
             (key, direct, by_key)
@@ -625,8 +641,8 @@ mod tests {
     #[test]
     fn should_return_stable_key_when_resolving_same_char() {
         let fonts = test_font_book();
-        let k1 = fonts.resolve('A');
-        let k2 = fonts.resolve('A');
+        let k1 = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
+        let k2 = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
         assert_eq!(
             k1, k2,
             "resolve should return the same key for the same char"
@@ -634,10 +650,47 @@ mod tests {
     }
 
     #[test]
-    fn rasterize_cjk_without_fallback_does_not_panic() {
+    fn should_pass_size_and_style_through_resolve() {
+        // Arrange
         let fonts = test_font_book();
-        // System fallback is T0004; default native path may return empty/.notdef ink.
+        let size = harbor_config::FONT_SIZE + 2.0;
+        let style = 1u8;
+
+        // Act
+        let key = expect_key(fonts.resolve('A', size, style));
+
+        // Assert
+        assert_eq!(key.size_bits, size.to_bits());
+        assert_eq!(key.style_bits, style);
+    }
+
+    #[test]
+    fn should_return_empty_ink_when_rasterizing_unavailable() {
+        // Arrange
+        let fonts = test_font_book();
+        let ch = '\u{E000}';
+
+        // Act
+        let resolution = fonts.resolve(ch, harbor_config::FONT_SIZE, 0);
+        let (bounds, bitmap) = fonts.rasterize(ch, harbor_config::FONT_SIZE);
+
+        // Assert
+        if matches!(resolution, GlyphResolution::Unavailable) {
+            assert_eq!(bounds.width, 0);
+            assert_eq!(bounds.height, 0);
+            assert!(bitmap.is_empty());
+            assert_eq!(bounds.advance_width, 0.0);
+        }
+    }
+
+    #[test]
+    fn should_rasterize_cjk_via_fallback_or_primary() {
+        let fonts = test_font_book();
+        let resolution = fonts.resolve('中', harbor_config::FONT_SIZE, 0);
         let (_bounds, _bitmap) = fonts.rasterize('中', harbor_config::FONT_SIZE);
+        if let GlyphResolution::Available(key) = resolution {
+            let (_bounds2, _bitmap2) = fonts.rasterize_from_key(key, f32::from_bits(key.size_bits));
+        }
     }
 
     #[test]
@@ -647,12 +700,12 @@ mod tests {
         let ch = '\u{E000}';
 
         // Act
-        let key = fonts.resolve(ch);
+        let resolution = fonts.resolve(ch, harbor_config::FONT_SIZE, 0);
         let (_bounds, _bitmap) = fonts.rasterize(ch, harbor_config::FONT_SIZE);
-        let (_bounds2, _bitmap2) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
-
-        // Assert — completing without panic is the public FontBook contract for T0002.
-        let _ = key.face_id;
+        if let GlyphResolution::Available(key) = resolution {
+            let (_bounds2, _bitmap2) = fonts.rasterize_from_key(key, f32::from_bits(key.size_bits));
+            let _ = key.face_id;
+        }
     }
 
     // ── resolve tests ────────────────────────────────────────────────
@@ -660,8 +713,8 @@ mod tests {
     #[test]
     fn should_return_different_keys_for_different_chars() {
         let fonts = test_font_book();
-        let key_a = fonts.resolve('A');
-        let key_b = fonts.resolve('B');
+        let key_a = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
+        let key_b = expect_key(fonts.resolve('B', harbor_config::FONT_SIZE, 0));
         assert_ne!(
             key_a, key_b,
             "different chars should produce different keys"
@@ -671,7 +724,7 @@ mod tests {
     #[test]
     fn should_return_key_with_valid_glyph_index() {
         let fonts = test_font_book();
-        let key = fonts.resolve('A');
+        let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
         // glyph_index 0 is valid for some fonts, but the key should be well-formed.
         // At minimum, face_id should be a valid index.
         let _ = key.glyph_index;
@@ -681,9 +734,10 @@ mod tests {
     #[test]
     fn should_resolve_cjk_char() {
         let fonts = test_font_book();
-        let key = fonts.resolve('中');
-        // Should not panic and should return a valid key.
-        assert_eq!(key.style_bits, 0);
+        match fonts.resolve('中', harbor_config::FONT_SIZE, 0) {
+            GlyphResolution::Available(key) => assert_eq!(key.style_bits, 0),
+            GlyphResolution::Unavailable => {}
+        }
     }
 
     // ── rasterize_from_key tests ─────────────────────────────────────
@@ -691,7 +745,7 @@ mod tests {
     #[test]
     fn should_rasterize_from_key_producing_valid_bitmap() {
         let fonts = test_font_book();
-        let key = fonts.resolve('A');
+        let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
         let (bounds, bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
         assert!(bounds.width > 0, "rasterize_from_key width should be > 0");
         assert!(bounds.height > 0, "rasterize_from_key height should be > 0");
@@ -701,7 +755,7 @@ mod tests {
     #[test]
     fn should_rasterize_from_key_match_rasterize_directly() {
         let fonts = test_font_book();
-        let key = fonts.resolve('A');
+        let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
         let (bounds_key, bitmap_key) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
         let (bounds_direct, bitmap_direct) = fonts.rasterize('A', harbor_config::FONT_SIZE);
         assert_eq!(
@@ -730,9 +784,9 @@ mod tests {
     #[test]
     fn should_rasterize_from_key_with_cjk_char_without_panic() {
         let fonts = test_font_book();
-        let key = fonts.resolve('中');
-        // Fallback coverage belongs to T0004.
-        let (_bounds, _bitmap) = fonts.rasterize_from_key(key, harbor_config::FONT_SIZE);
+        if let GlyphResolution::Available(key) = fonts.resolve('中', harbor_config::FONT_SIZE, 0) {
+            let (_bounds, _bitmap) = fonts.rasterize_from_key(key, f32::from_bits(key.size_bits));
+        }
     }
 
     // ── font_metrics tests ───────────────────────────────────────────

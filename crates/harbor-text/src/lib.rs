@@ -9,5 +9,6 @@ pub mod font;
 pub mod metrics;
 
 pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, GlyphKey, RasterizeResult};
+pub use backend::{GlyphResolution, ResolutionKey};
 pub use font::{FontBook, load_system_fonts};
 pub use metrics::{FontMetrics, TextMetrics};

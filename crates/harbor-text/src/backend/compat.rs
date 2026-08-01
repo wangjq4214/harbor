@@ -5,6 +5,7 @@
 //! replaces all behavior paths.
 
 use crate::atlas::{GlyphBitmapBounds, GlyphKey};
+use crate::backend::GlyphResolution;
 use crate::font::LoadedFont;
 use crate::metrics::FontMetrics;
 
@@ -25,20 +26,21 @@ impl CompatState {
     ///
     /// The first font in the set that contains the character gets assigned
     /// face_id 0 (or its sequential index). Characters absent from all fonts
-    /// fall back to face 0.
-    pub fn resolve(&self, ch: char, size: f32, style: u8) -> GlyphKey {
+    /// fall back to face 0. Legacy adapter always returns [`GlyphResolution::Available`];
+    /// native system fallback remains exclusively in `DwriteState`.
+    pub fn resolve(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
         let face_idx = self
             .fonts
             .iter()
             .position(|f| f.font.has_glyph(ch))
             .unwrap_or(0);
         let glyph_index = self.fonts[face_idx].font.lookup_glyph_index(ch) as u32;
-        GlyphKey {
+        GlyphResolution::Available(GlyphKey {
             face_id: face_idx as u64,
             glyph_index,
             size_bits: size.to_bits(),
             style_bits: style,
-        }
+        })
     }
 
     /// Rasterize a glyph by its resolved key.
@@ -67,5 +69,74 @@ impl CompatState {
             descent: lm.map_or(0.0, |l| l.descent.abs()),
             line_gap: lm.map_or(0.0, |l| l.line_gap),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompatState;
+    use crate::backend::GlyphResolution;
+    use crate::font::LoadedFont;
+
+    fn open_compat_fixture() -> Option<CompatState> {
+        let candidates = [
+            r"C:\Windows\Fonts\consola.ttf",
+            r"C:\Windows\Fonts\cour.ttf",
+            r"C:\Windows\Fonts\lucon.ttf",
+        ];
+        for path in candidates {
+            let Ok(data) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(font) = fontdue::Font::from_bytes(data, fontdue::FontSettings::default()) else {
+                continue;
+            };
+            return Some(CompatState::new(vec![LoadedFont {
+                family: "fixture".into(),
+                font,
+            }]));
+        }
+        None
+    }
+
+    #[test]
+    fn should_return_available_for_latin_without_native_fallback() {
+        // Arrange
+        let Some(state) = open_compat_fixture() else {
+            return;
+        };
+        let size = harbor_config::FONT_SIZE;
+
+        // Act
+        let resolution = state.resolve('A', size, 0);
+
+        // Assert
+        let GlyphResolution::Available(key) = resolution else {
+            panic!("compat resolve always returns Available");
+        };
+        assert_eq!(key.face_id, 0);
+        assert_eq!(key.size_bits, size.to_bits());
+        let (bounds, bitmap) = state.rasterize(key, size);
+        assert!(bounds.width > 0);
+        assert!(!bitmap.is_empty());
+    }
+
+    #[test]
+    fn should_embed_requested_size_and_style_in_compat_key() {
+        // Arrange
+        let Some(state) = open_compat_fixture() else {
+            return;
+        };
+
+        // Act
+        let resolution = state.resolve('M', 18.0, 2);
+
+        // Assert
+        let GlyphResolution::Available(key) = resolution else {
+            panic!("compat resolve always returns Available");
+        };
+        assert_eq!(key.size_bits, 18.0f32.to_bits());
+        assert_eq!(key.style_bits, 2);
+        assert_eq!(key.face_id, 0);
     }
 }

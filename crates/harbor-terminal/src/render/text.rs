@@ -236,9 +236,21 @@ impl Text {
         chars.sort_unstable();
         chars.dedup();
         let result = self.atlas.rasterize_new(&self.fonts, &chars);
-        if !result.new_keys.is_empty() {
-            self.gpu_atlas
-                .update_glyphs(gpu.queue(), &self.atlas, &result.new_keys);
+        self.apply_rasterize_result(gpu, result);
+    }
+
+    /// Apply CPU atlas changes to the GPU atlas / vertex dirty state.
+    fn apply_rasterize_result(&mut self, gpu: &GpuContext, result: harbor_text::RasterizeResult) {
+        match atlas_gpu_sync(&result) {
+            AtlasGpuSync::None => {}
+            AtlasGpuSync::Incremental => {
+                self.gpu_atlas
+                    .update_glyphs(gpu.queue(), &self.atlas, &result.new_keys);
+            }
+            AtlasGpuSync::FullWithVertexRebuild => {
+                self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
+                self.dirty = true;
+            }
         }
     }
 
@@ -512,15 +524,7 @@ impl Text {
 
         let unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
         let result = self.atlas.rasterize_new(&self.fonts, &unique);
-        if !result.new_keys.is_empty() {
-            if result.evicted {
-                self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
-                self.dirty = true;
-            } else {
-                self.gpu_atlas
-                    .update_glyphs(gpu.queue(), &self.atlas, &result.new_keys);
-            }
-        }
+        self.apply_rasterize_result(gpu, result);
 
         let plan = gpu.upload_plan(
             snap.rows,
@@ -576,9 +580,31 @@ impl Text {
     }
 }
 
+/// GPU atlas upload decision derived from a CPU [`harbor_text::RasterizeResult`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtlasGpuSync {
+    /// No new tiles — skip upload.
+    None,
+    /// Ordinary additions — upload only new glyph tiles.
+    Incremental,
+    /// Eviction repack — full texture upload and vertex rebuild.
+    FullWithVertexRebuild,
+}
+
+fn atlas_gpu_sync(result: &harbor_text::RasterizeResult) -> AtlasGpuSync {
+    if result.new_keys.is_empty() {
+        AtlasGpuSync::None
+    } else if result.evicted {
+        AtlasGpuSync::FullWithVertexRebuild
+    } else {
+        AtlasGpuSync::Incremental
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harbor_text::{GlyphKey, RasterizeResult};
 
     #[test]
     fn default_colors_preserve_attributes() {
@@ -594,5 +620,60 @@ mod tests {
         let attrs = CellAttrs::default();
         let color = glyph_color(Color::Named(1), Color::Default, attrs);
         assert_eq!(color, Color::Named(1).to_rgba());
+    }
+
+    #[test]
+    fn should_skip_upload_when_no_new_keys() {
+        // Arrange
+        let result = RasterizeResult {
+            new_keys: Vec::new(),
+            evicted: true,
+        };
+
+        // Act
+        let action = atlas_gpu_sync(&result);
+
+        // Assert
+        assert_eq!(action, AtlasGpuSync::None);
+    }
+
+    #[test]
+    fn should_choose_incremental_when_new_keys_without_eviction() {
+        // Arrange
+        let result = RasterizeResult {
+            new_keys: vec![GlyphKey {
+                face_id: 0,
+                glyph_index: 1,
+                size_bits: 0,
+                style_bits: 0,
+            }],
+            evicted: false,
+        };
+
+        // Act
+        let action = atlas_gpu_sync(&result);
+
+        // Assert
+        assert_eq!(action, AtlasGpuSync::Incremental);
+    }
+
+    #[test]
+    fn should_choose_full_rebuild_when_evicted() {
+        // Arrange
+        let result = RasterizeResult {
+            new_keys: vec![GlyphKey {
+                face_id: 1,
+                glyph_index: 2,
+                size_bits: 0,
+                style_bits: 0,
+            }],
+            evicted: true,
+        };
+
+        // Act
+        let action = atlas_gpu_sync(&result);
+
+        // Assert
+        assert_eq!(action, AtlasGpuSync::FullWithVertexRebuild);
     }
 }
