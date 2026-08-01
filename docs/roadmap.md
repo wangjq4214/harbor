@@ -402,9 +402,9 @@ The product milestones below retain the existing implementation notes, task list
 
 **Cell-Based Rendering.** Cell-by-cell read, glyph instance per visible cell, dynamic buffer upload via `write_buffer`, batched single draw call, pixel-coordinate conversion, `TEXT_PADDING = 16.0`.
 
-**Font Loading.** Font loading with fast-path candidates (env var → bundled candidates → fontdb system discovery). CJK detection via glyph probe; automatic fallback font loading when primary font lacks CJK coverage. Primary monospace font + optional CJK fallback.
+**Font Loading.** Windows DirectWrite selects a system monospace primary face, or a process-private primary from `HARBOR_FONT`. Missing characters resolve through DirectWrite system font fallback. No hard-coded candidate lists, `fontdb`, or full-file Rust parsers remain on the production path.
 
-**Font Metrics.** Cell width/height/baseline/ascent calculated via fontdue, characters and cursor aligned to cell grid.
+**Font Metrics.** Cell width/height/baseline/ascent derived from the DirectWrite primary face; characters and cursor align to the cell grid. Fallback faces do not alter grid geometry.
 
 **Cursor.** Shape-driven solid-color cursor component supporting block, underline, and bar shapes. DECSCUSR (`CSI Ps SP q`) controls shape and blink mode. Blink gated by `cursor_blink` flag — steady cursor when blink is off. Default shape is blinking bar. Blink timer via `on_about_to_wait` deadline.
 
