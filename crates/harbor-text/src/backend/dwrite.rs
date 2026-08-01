@@ -1,14 +1,18 @@
 //! DirectWrite primary-face backend with system font fallback.
 //!
 //! Owns a factory, system fallback service, primary descriptor, face registry,
-//! and resolution cache. Discovery-only collections are released after selection.
-//! Configured paths are opened as process-private faces and are not registered
-//! in system font collections.
+//! and resolution cache. Long-lived state holds only those native handles and
+//! caches — never a complete font-file byte buffer.
+//!
+//! Ownership rules:
+//! - System `IDWriteFontCollection` is discovery-only and dropped after primary selection.
+//! - `CreateFontFileReference` is consumed by `CreateFontFace` and not stored on `DwriteState`.
+//! - `MapCharacters` fonts are registered only when they produce a usable nonzero glyph;
+//!   rejected mappings never enter `NativeFaceRegistry`.
+//! - Configured paths are opened as process-private faces and are not registered
+//!   in system font collections.
 
-use std::{cell::RefCell, os::windows::ffi::OsStrExt, path::Path};
-
-#[cfg(test)]
-use std::cell::Cell;
+use std::{cell::Cell, cell::RefCell, os::windows::ffi::OsStrExt, path::Path};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use hashbrown::HashMap;
@@ -32,6 +36,8 @@ use crate::metrics::FontMetrics;
 
 const PRIMARY_FACE_ID: NativeFaceId = NativeFaceId(0);
 const LOCALE_NAME_MAX: usize = 85;
+/// Keep in sync with `font.rs` and `src/app.rs` (`FONT_LIFECYCLE_TARGET`).
+const LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
 
 /// Primary face identity and style metadata for DirectWrite fallback mapping.
 #[derive(Clone)]
@@ -203,6 +209,8 @@ pub(crate) struct DwriteState {
     locale: Vec<u16>,
     /// Validated metrics at harbor_config::FONT_SIZE, computed during open.
     primary_metrics: FontMetrics,
+    /// Once-only gate for the `first_fallback` lifecycle marker.
+    first_fallback_emitted: Cell<bool>,
     #[cfg(test)]
     map_calls: Cell<u32>,
 }
@@ -224,6 +232,7 @@ impl DwriteState {
             resolutions: RefCell::new(HashMap::new()),
             locale,
             primary_metrics,
+            first_fallback_emitted: Cell::new(false),
             #[cfg(test)]
             map_calls: Cell::new(0),
         })
@@ -254,6 +263,7 @@ impl DwriteState {
             resolutions: RefCell::new(HashMap::new()),
             locale,
             primary_metrics,
+            first_fallback_emitted: Cell::new(false),
             #[cfg(test)]
             map_calls: Cell::new(0),
         })
@@ -349,12 +359,27 @@ impl DwriteState {
             Err(_) => return GlyphResolution::Unavailable,
         };
         let effective_size = size * scale;
-        GlyphResolution::Available(GlyphKey {
+        let key = GlyphKey {
             face_id,
             glyph_index: u32::from(glyph),
             size_bits: effective_size.to_bits(),
             style_bits: style,
-        })
+        };
+        self.emit_first_fallback(ch, face_id);
+        GlyphResolution::Available(key)
+    }
+
+    fn emit_first_fallback(&self, ch: char, face_id: u64) {
+        if self.first_fallback_emitted.replace(true) {
+            return;
+        }
+        tracing::info!(
+            target: LIFECYCLE_TARGET,
+            phase = "first_fallback",
+            scalar = %ch,
+            face_id,
+            "font lifecycle"
+        );
     }
 
     pub fn rasterize(&self, key: GlyphKey, _px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
@@ -776,9 +801,95 @@ fn string_from_wide(wide: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
     use std::{env, fs, path::PathBuf};
 
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
     use super::*;
+
+    /// Captures `harbor.font.lifecycle` field maps for behavior assertions.
+    #[derive(Clone, Default)]
+    struct LifecycleCapture {
+        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    }
+
+    impl LifecycleCapture {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn events_with_phase(&self, phase: &str) -> Vec<HashMap<String, String>> {
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .iter()
+                .filter(|fields| fields.get("phase").map(|p| p == phase).unwrap_or(false))
+                .cloned()
+                .collect()
+        }
+    }
+
+    struct FieldRecorder<'a> {
+        fields: &'a mut HashMap<String, String>,
+    }
+
+    impl Visit for FieldRecorder<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl<S> Layer<S> for LifecycleCapture
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            if event.metadata().target() != LIFECYCLE_TARGET {
+                return;
+            }
+            let mut fields = HashMap::new();
+            event.record(&mut FieldRecorder {
+                fields: &mut fields,
+            });
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .push(fields);
+        }
+    }
+
+    fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
+        let capture = LifecycleCapture::new();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, capture)
+    }
 
     fn windows_fonts_dir() -> PathBuf {
         env::var_os("WINDIR")
@@ -1026,6 +1137,52 @@ mod tests {
         assert_eq!(metrics_before.cell_width, metrics_after.cell_width);
         assert_eq!(metrics_before.line_height, metrics_after.line_height);
         assert_eq!(metrics_before.ascent, metrics_after.ascent);
+    }
+
+    #[test]
+    fn should_not_emit_first_fallback_when_resolving_latin_on_primary() {
+        // Arrange
+        let state = open_primary();
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            let _ = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
+        });
+
+        // Assert
+        assert!(
+            capture.events_with_phase("first_fallback").is_empty(),
+            "primary Latin resolve must not emit first_fallback"
+        );
+    }
+
+    #[test]
+    fn should_emit_first_fallback_once_when_mapping_non_primary_face() {
+        // Arrange
+        let state = open_primary();
+
+        // Act
+        let (fallback_face, capture) = with_lifecycle_capture(|| {
+            let resolution = state.resolve('中', harbor_config::FONT_SIZE, 0);
+            let GlyphResolution::Available(key) = resolution else {
+                return None;
+            };
+            if key.face_id == PRIMARY_FACE_ID.0 {
+                return None;
+            }
+            let _ = expect_available(state.resolve('国', harbor_config::FONT_SIZE, 0));
+            Some(key.face_id)
+        });
+
+        // Assert — skip when primary already covers CJK (no fallback path).
+        let Some(face_id) = fallback_face else {
+            return;
+        };
+        let events = capture.events_with_phase("first_fallback");
+        assert_eq!(events.len(), 1, "first_fallback must emit once");
+        let expected_face = face_id.to_string();
+        assert_eq!(events[0].get("face_id"), Some(&expected_face));
+        assert!(events[0].contains_key("scalar"));
     }
 
     #[test]

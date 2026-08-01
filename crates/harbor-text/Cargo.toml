@@ -7,8 +7,6 @@ edition = "2024"
 harbor-types = { workspace = true }
 harbor-config = { workspace = true }
 anyhow = { workspace = true }
-fontdb = { workspace = true }
-fontdue = { workspace = true }
 hashbrown = { workspace = true }
 tracing = { workspace = true }
 
@@ -18,3 +16,4 @@ windows-core = { workspace = true }
 
 [dev-dependencies]
 unicode-width = { workspace = true }
+tracing-subscriber = { workspace = true }

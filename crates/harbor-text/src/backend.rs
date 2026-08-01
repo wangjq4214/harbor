@@ -1,7 +1,7 @@
-//! Platform-gated font backend types and compat adapter.
+//! Platform-gated font backend types and DirectWrite session.
 //!
-//! On Windows, contains the fontdue compatibility adapter (`CompatState`).
-//! On non-Windows, emits a compile error — direct platform compilation.
+//! On Windows, exposes the DirectWrite-backed native session (`dwrite`).
+//! On non-Windows, emits a compile error — Harbor text currently requires Windows.
 
 use crate::atlas::GlyphKey;
 
@@ -37,9 +37,6 @@ pub enum GlyphResolution {
 
 #[cfg(not(windows))]
 compile_error!("harbor-text currently requires Windows");
-
-#[cfg(windows)]
-pub(crate) mod compat;
 
 #[cfg(windows)]
 pub(crate) mod dwrite;

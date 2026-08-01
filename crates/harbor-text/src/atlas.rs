@@ -42,8 +42,8 @@ pub struct GlyphBitmapBounds {
     pub advance_width: f32,
 }
 
-/// Internal metrics for atlas packing — mirrors the fields the atlas code
-/// reads from fontdue::Metrics but without the fontdue dependency.
+/// Internal metrics for atlas packing — pixel size, bearings, and advance
+/// from a backend-neutral rasterization result.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 struct PackedMetrics {

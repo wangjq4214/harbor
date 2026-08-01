@@ -1,23 +1,23 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    thread,
-};
+//! System font loading and the backend-neutral [`FontBook`] façade.
+//!
+//! On Windows, primary selection uses DirectWrite (system monospace or
+//! process-private `HARBOR_FONT`). Missing glyphs resolve through DirectWrite
+//! system fallback. Non-Windows builds are rejected by the backend gate.
+
+use std::{env, path::PathBuf};
 #[cfg(test)]
 use std::{ffi::OsString, sync::Mutex};
 
-use anyhow::{Context as _, Result, anyhow, bail};
-use fontdb::{Database, Family, ID, Query};
-use fontdue::{Font, FontSettings};
+use anyhow::{Context as _, Result, bail};
 
 use crate::atlas::{GlyphBitmapBounds, GlyphKey};
 use crate::backend::GlyphResolution;
-use crate::backend::compat::CompatState;
 use crate::backend::dwrite::DwriteState;
 use crate::metrics::FontMetrics;
 
-const CJK_PROBE: char = '中';
 const FONT_ENV: &str = "HARBOR_FONT";
+/// Keep in sync with `dwrite.rs` and `src/app.rs` (`FONT_LIFECYCLE_TARGET`).
+const LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
 
 #[cfg(test)]
 static FONT_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -43,38 +43,16 @@ pub(crate) fn with_font_env<R>(value: Option<OsString>, f: impl FnOnce() -> R) -
     }
 }
 
-pub(crate) struct LoadedFont {
-    pub family: String,
-    pub font: Font,
-}
-
-/// Private discriminant between temporary compat and native primary backends.
-enum FontBackend {
-    Compat(Box<CompatState>),
-    Native(Box<DwriteState>),
-}
-
-/// System terminal font set with a primary monospace face and glyph fallbacks.
+/// System terminal font set with a DirectWrite primary face and glyph fallbacks.
 pub struct FontBook {
-    #[cfg(windows)]
-    backend: FontBackend,
+    native: Box<DwriteState>,
 }
 
 impl FontBook {
-    /// Wrap legacy fontdue fonts for compatibility.
-    /// Temporary — will be removed when the DirectWrite backend replaces all paths.
-    #[cfg(windows)]
-    pub(crate) fn from_compat(fonts: Vec<LoadedFont>) -> Self {
-        Self {
-            backend: FontBackend::Compat(Box::new(CompatState::new(fonts))),
-        }
-    }
-
     /// Wrap a DirectWrite primary-face session.
-    #[cfg(windows)]
     pub(crate) fn from_native(state: DwriteState) -> Self {
         Self {
-            backend: FontBackend::Native(Box::new(state)),
+            native: Box::new(state),
         }
     }
 
@@ -102,26 +80,17 @@ impl FontBook {
 
     /// Rasterize a glyph by its already-resolved key (used during atlas rebuild).
     pub fn rasterize_from_key(&self, key: GlyphKey, px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
-        match &self.backend {
-            FontBackend::Compat(compat) => compat.rasterize(key, px),
-            FontBackend::Native(native) => native.rasterize(key, px),
-        }
+        self.native.rasterize(key, px)
     }
 
     /// Resolve a character to an available glyph key or a cached unavailable result.
     pub fn resolve(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
-        match &self.backend {
-            FontBackend::Compat(compat) => compat.resolve(ch, size, style),
-            FontBackend::Native(native) => native.resolve(ch, size, style),
-        }
+        self.native.resolve(ch, size, style)
     }
 
     /// Primary font metrics for terminal cell sizing.
     pub fn font_metrics(&self) -> FontMetrics {
-        match &self.backend {
-            FontBackend::Compat(compat) => compat.font_metrics(harbor_config::FONT_SIZE),
-            FontBackend::Native(native) => native.font_metrics(harbor_config::FONT_SIZE),
-        }
+        self.native.font_metrics(harbor_config::FONT_SIZE)
     }
 }
 
@@ -130,14 +99,28 @@ impl FontBook {
 /// - `HARBOR_FONT` selects a DirectWrite process-private primary face.
 /// - Otherwise selects a DirectWrite system monospace primary face.
 pub fn load_system_fonts() -> Result<FontBook> {
+    let started = std::time::Instant::now();
     if let Some(fonts) = load_configured_fonts()? {
+        emit_font_init("configured", started);
         return Ok(fonts);
     }
 
     let state =
         DwriteState::open_system_primary().context("load DirectWrite system primary face")?;
     tracing::info!("loaded terminal font from DirectWrite system primary");
-    Ok(FontBook::from_native(state))
+    let fonts = FontBook::from_native(state);
+    emit_font_init("system", started);
+    Ok(fonts)
+}
+
+fn emit_font_init(source: &str, started: std::time::Instant) {
+    tracing::info!(
+        target: LIFECYCLE_TARGET,
+        phase = "font_init",
+        source,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "font lifecycle"
+    );
 }
 
 fn load_configured_fonts() -> Result<Option<FontBook>> {
@@ -154,215 +137,13 @@ fn load_configured_fonts() -> Result<Option<FontBook>> {
     Ok(Some(FontBook::from_native(state)))
 }
 
-#[allow(dead_code)]
-fn load_candidate_fonts() -> Option<FontBook> {
-    // Kick off CJK loading on a background thread so primary + CJK IO+parse
-    // overlap instead of running serially.
-    let cjk_handle = thread::spawn(|| load_first_cjk_font_file(cjk_font_candidates()));
-
-    let primary = load_first_font_file(primary_font_candidates())?;
-    if primary.font.has_glyph(CJK_PROBE) {
-        tracing::info!(primary = %primary.family, "loaded terminal font from fast path");
-        return Some(FontBook::from_compat(vec![primary]));
-    }
-
-    // Wait for the CJK thread result.
-    let fallback = cjk_handle.join().ok()??;
-    tracing::info!(
-        primary = %primary.family,
-        fallback = %fallback.family,
-        "loaded terminal fonts from fast path"
-    );
-    Some(FontBook::from_compat(vec![primary, fallback]))
-}
-
-#[allow(dead_code)]
-fn build_font_book(primary: LoadedFont) -> FontBook {
-    let mut fonts = vec![primary];
-
-    if !fonts[0].font.has_glyph(CJK_PROBE) {
-        if let Some(fallback) = load_first_cjk_font_file(cjk_font_candidates()) {
-            tracing::info!(
-                primary = %fonts[0].family,
-                fallback = %fallback.family,
-                "loaded terminal fonts from fast path"
-            );
-            fonts.push(fallback);
-        } else {
-            tracing::warn!(
-                primary = %fonts[0].family,
-                probe = %CJK_PROBE,
-                "no CJK-capable font fallback found on fast path"
-            );
-        }
-    } else {
-        tracing::info!(primary = %fonts[0].family, "loaded terminal font from fast path");
-    }
-
-    FontBook::from_compat(fonts)
-}
-
-#[allow(dead_code)]
-fn load_fontdb_fonts() -> Result<FontBook> {
-    let mut database = Database::new();
-    database.load_system_fonts();
-
-    let face_count = database.faces().count();
-    if face_count == 0 {
-        return Err(anyhow!("no system fonts found"));
-    }
-
-    let primary = load_primary_font(&database)?;
-    let mut fonts = vec![primary];
-
-    if !fonts[0].font.has_glyph(CJK_PROBE) {
-        if let Some(fallback) = load_cjk_fallback(&database, &fonts[0].family)? {
-            tracing::info!(
-                primary = %fonts[0].family,
-                fallback = %fallback.family,
-                "loaded terminal fonts from fontdb"
-            );
-            fonts.push(fallback);
-        } else {
-            tracing::warn!(
-                primary = %fonts[0].family,
-                probe = %CJK_PROBE,
-                "no CJK-capable font fallback found in fontdb"
-            );
-        }
-    } else {
-        tracing::info!(primary = %fonts[0].family, "loaded terminal font from fontdb");
-    }
-
-    Ok(FontBook::from_compat(fonts))
-}
-
-#[allow(dead_code)]
-fn load_first_font_file(candidates: Vec<PathBuf>) -> Option<LoadedFont> {
-    candidates
-        .into_iter()
-        .find_map(|path| load_font_file(&path, 0).ok())
-}
-
-fn load_first_cjk_font_file(candidates: Vec<PathBuf>) -> Option<LoadedFont> {
-    candidates.into_iter().find_map(|path| {
-        let font = load_font_file(&path, 0).ok()?;
-        font.font.has_glyph(CJK_PROBE).then_some(font)
-    })
-}
-
-fn load_font_file(path: &Path, collection_index: u32) -> Result<LoadedFont> {
-    let bytes = fs::read(path).with_context(|| format!("read font {}", path.display()))?;
-    let font = Font::from_bytes(
-        bytes,
-        FontSettings {
-            collection_index,
-            ..FontSettings::default()
-        },
-    )
-    .map_err(|error| anyhow!("parse font '{}': {error}", path.display()))?;
-
-    let family = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("terminal font")
-        .to_owned();
-
-    Ok(LoadedFont { family, font })
-}
-
-#[allow(dead_code)]
-fn load_primary_font(database: &Database) -> Result<LoadedFont> {
-    let query = Query {
-        families: &[Family::Monospace],
-        ..Query::default()
-    };
-
-    let preferred_ids = database.query(&query).into_iter();
-    let monospaced_ids = database
-        .faces()
-        .filter(|face| face.monospaced)
-        .map(|face| face.id);
-    let remaining_ids = database.faces().map(|face| face.id);
-
-    load_first_font(
-        database,
-        preferred_ids.chain(monospaced_ids).chain(remaining_ids),
-    )
-    .context("load primary monospace font")
-}
-
-#[allow(dead_code)]
-fn load_cjk_fallback(database: &Database, primary_family: &str) -> Result<Option<LoadedFont>> {
-    let monospaced_ids = database
-        .faces()
-        .filter(|face| face.monospaced)
-        .map(|face| face.id);
-    let remaining_ids = database.faces().map(|face| face.id);
-
-    for id in monospaced_ids.chain(remaining_ids) {
-        let Some(font) = load_font(database, id)? else {
-            continue;
-        };
-        if font.family == primary_family {
-            continue;
-        }
-        if font.font.has_glyph(CJK_PROBE) {
-            return Ok(Some(font));
-        }
-    }
-
-    Ok(None)
-}
-
-fn load_first_font(database: &Database, ids: impl IntoIterator<Item = ID>) -> Result<LoadedFont> {
-    for id in ids {
-        if let Some(font) = load_font(database, id)? {
-            return Ok(font);
-        }
-    }
-
-    Err(anyhow!("no parseable system font found"))
-}
-
-fn load_font(database: &Database, id: ID) -> Result<Option<LoadedFont>> {
-    let Some(face) = database.face(id) else {
-        return Ok(None);
-    };
-    let family = face
-        .families
-        .first()
-        .map(|(family, _)| family.clone())
-        .unwrap_or_else(|| face.post_script_name.clone());
-
-    let Some(font) = database.with_face_data(id, |data, collection_index| {
-        Font::from_bytes(
-            data,
-            FontSettings {
-                collection_index,
-                ..FontSettings::default()
-            },
-        )
-    }) else {
-        tracing::debug!(family, "skipping unreadable font data");
-        return Ok(None);
-    };
-
-    let font = match font {
-        Ok(font) => font,
-        Err(error) => {
-            tracing::debug!(family, error = %error, "skipping unsupported font");
-            return Ok(None);
-        }
-    };
-
-    Ok(Some(LoadedFont { family, font }))
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-fn primary_font_candidates() -> Vec<PathBuf> {
-    let fonts_dir = windows_fonts_dir();
+#[cfg(test)]
+fn test_configured_font_path() -> Option<PathBuf> {
+    let fonts_dir = env::var_os("WINDIR")
+        .or_else(|| env::var_os("SYSTEMROOT"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("Fonts");
     [
         "CascadiaMono.ttf",
         "CascadiaCode.ttf",
@@ -372,83 +153,7 @@ fn primary_font_candidates() -> Vec<PathBuf> {
     ]
     .into_iter()
     .map(|file| fonts_dir.join(file))
-    .collect()
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-fn cjk_font_candidates() -> Vec<PathBuf> {
-    let fonts_dir = windows_fonts_dir();
-    [
-        "msyh.ttc",
-        "msyh.ttf",
-        "simhei.ttf",
-        "simsun.ttc",
-        "Deng.ttf",
-    ]
-    .into_iter()
-    .map(|file| fonts_dir.join(file))
-    .collect()
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-fn windows_fonts_dir() -> PathBuf {
-    env::var_os("WINDIR")
-        .or_else(|| env::var_os("SYSTEMROOT"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts")
-}
-
-#[cfg(target_os = "macos")]
-fn primary_font_candidates() -> Vec<PathBuf> {
-    [
-        "/System/Library/Fonts/Menlo.ttc",
-        "/System/Library/Fonts/SFNSMono.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn cjk_font_candidates() -> Vec<PathBuf> {
-    [
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn primary_font_candidates() -> Vec<PathBuf> {
-    [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-        "/usr/local/share/fonts/DejaVuSansMono.ttf",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn cjk_font_candidates() -> Vec<PathBuf> {
-    [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
+    .find(|path| path.is_file())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -456,6 +161,11 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
     fn expect_key(resolution: GlyphResolution) -> GlyphKey {
         match resolution {
@@ -466,6 +176,147 @@ mod tests {
 
     fn test_font_book() -> FontBook {
         with_font_env(None, || load_system_fonts().expect("load test font"))
+    }
+
+    /// Captures `harbor.font.lifecycle` field maps for behavior assertions.
+    #[derive(Clone, Default)]
+    struct LifecycleCapture {
+        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    }
+
+    impl LifecycleCapture {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn events_with_phase(&self, phase: &str) -> Vec<HashMap<String, String>> {
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .iter()
+                .filter(|fields| fields.get("phase").map(|p| p == phase).unwrap_or(false))
+                .cloned()
+                .collect()
+        }
+    }
+
+    struct FieldRecorder<'a> {
+        fields: &'a mut HashMap<String, String>,
+    }
+
+    impl Visit for FieldRecorder<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl<S> Layer<S> for LifecycleCapture
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            if event.metadata().target() != LIFECYCLE_TARGET {
+                return;
+            }
+            let mut fields = HashMap::new();
+            event.record(&mut FieldRecorder {
+                fields: &mut fields,
+            });
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .push(fields);
+        }
+    }
+
+    fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
+        let capture = LifecycleCapture::new();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, capture)
+    }
+
+    #[test]
+    fn should_emit_font_init_system_when_harbor_font_unset() {
+        // Arrange / Act
+        let (fonts, capture) = with_lifecycle_capture(|| {
+            with_font_env(None, || load_system_fonts().expect("default load path"))
+        });
+
+        // Assert
+        let events = capture.events_with_phase("font_init");
+        assert_eq!(events.len(), 1, "expected one font_init marker");
+        assert_eq!(events[0].get("source").map(String::as_str), Some("system"));
+        assert!(events[0].contains_key("elapsed_ms"));
+        let metrics = fonts.font_metrics();
+        assert!(metrics.cell_width > 0.0);
+    }
+
+    #[test]
+    fn should_emit_font_init_configured_when_harbor_font_set() {
+        // Arrange
+        let Some(path) = test_configured_font_path() else {
+            return;
+        };
+
+        // Act
+        let (fonts, capture) = with_lifecycle_capture(|| {
+            with_font_env(Some(path.into_os_string()), || {
+                load_system_fonts().expect("configured font path")
+            })
+        });
+
+        // Assert
+        let events = capture.events_with_phase("font_init");
+        assert_eq!(events.len(), 1, "expected one font_init marker");
+        assert_eq!(
+            events[0].get("source").map(String::as_str),
+            Some("configured")
+        );
+        assert!(events[0].contains_key("elapsed_ms"));
+        let metrics = fonts.font_metrics();
+        assert!(metrics.cell_width > 0.0);
+    }
+
+    #[test]
+    fn should_not_emit_font_init_when_configured_font_missing() {
+        // Arrange
+        let path = env::temp_dir().join(format!("harbor-missing-font-{}.ttf", std::process::id()));
+
+        // Act
+        let (result, capture) = with_lifecycle_capture(|| {
+            with_font_env(Some(path.clone().into_os_string()), || load_system_fonts())
+        });
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            capture.events_with_phase("font_init").is_empty(),
+            "failed load must not emit font_init"
+        );
     }
 
     #[test]
@@ -495,22 +346,16 @@ mod tests {
 
     #[test]
     fn should_load_configured_native_primary_from_system_font_path() {
-        let Some(path) = primary_font_candidates()
-            .into_iter()
-            .find(|path| path.is_file())
-        else {
+        let Some(path) = test_configured_font_path() else {
             return;
         };
 
-        let (is_native, metrics, bounds, bitmap) =
-            with_font_env(Some(path.into_os_string()), || {
-                let fonts = load_system_fonts().expect("configured font path");
-                let is_native = matches!(&fonts.backend, FontBackend::Native(_));
-                let metrics = fonts.font_metrics();
-                let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
-                (is_native, metrics, bounds, bitmap)
-            });
-        assert!(is_native, "configured font should use DirectWrite");
+        let (metrics, bounds, bitmap) = with_font_env(Some(path.into_os_string()), || {
+            let fonts = load_system_fonts().expect("configured font path");
+            let metrics = fonts.font_metrics();
+            let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
+            (metrics, bounds, bitmap)
+        });
         assert!(metrics.cell_width > 0.0);
         assert!(metrics.line_height > 0.0);
         assert!(bounds.width > 0);
@@ -521,10 +366,7 @@ mod tests {
     #[test]
     fn should_rasterize_configured_primary_by_resolved_key() {
         // Arrange
-        let Some(path) = primary_font_candidates()
-            .into_iter()
-            .find(|path| path.is_file())
-        else {
+        let Some(path) = test_configured_font_path() else {
             return;
         };
         // Act
@@ -725,8 +567,6 @@ mod tests {
     fn should_return_key_with_valid_glyph_index() {
         let fonts = test_font_book();
         let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
-        // glyph_index 0 is valid for some fonts, but the key should be well-formed.
-        // At minimum, face_id should be a valid index.
         let _ = key.glyph_index;
         let _ = key.face_id;
     }
@@ -806,8 +646,6 @@ mod tests {
     fn should_return_non_negative_line_gap() {
         let fonts = test_font_book();
         let fm = fonts.font_metrics();
-        // line_gap can be zero or positive for typical monospace fonts.
-        // Some fonts may have negative line_gap, but the field should be finite.
         assert!(
             fm.line_gap.is_finite(),
             "line_gap should be finite, got {}",

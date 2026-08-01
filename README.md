@@ -39,7 +39,7 @@ cargo run    # 🪟 Windows only — Unix PTY is a stub for now
 **GPU Rendering** 🎨
 - Full render pass: clear → cell backgrounds → glyphs → decorations → cursor → scrollbar
 - Each layer owns its pipeline + vertex buffer; incremental uploads via `write_buffer`
-- Font loading with fast-path candidates + fontdb fallback + automatic CJK probe
+- Font loading via DirectWrite (system monospace primary, optional `HARBOR_FONT` override, system fallback for missing glyphs)
 
 **Scrollback & Scrollbar** 📜
 - Ring-buffer scrollback (O(1) on full-screen scroll, no cell copies)

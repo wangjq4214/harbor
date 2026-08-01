@@ -20,8 +20,6 @@ harbor-text = { path = "crates/harbor-text" }
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
 anyhow = "1.0"
 arboard = "3.6"
-fontdb = "0.23.0"
-fontdue = "0.9"
 hashbrown = "0.17"
 tracing = "0.1"
 unicode-width = "0.2"

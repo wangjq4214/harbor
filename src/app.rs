@@ -6,7 +6,7 @@ pub(crate) mod translate;
 use std::{
     cell::Cell,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use winit::{
     application::ApplicationHandler,
@@ -212,6 +212,80 @@ struct AppRuntime {
 struct FrameState {
     scheduler: FrameScheduler,
     surface_recovery_attempted: bool,
+    /// Set after the first successful surface present.
+    first_present_at: Option<Instant>,
+    /// Once-only gate for the steady-state dwell marker.
+    steady_state_emitted: bool,
+}
+
+/// Documented 5s dwell after first present for the `steady_state` lifecycle marker.
+const FONT_STEADY_STATE_DWELL: Duration = Duration::from_secs(5);
+/// Keep in sync with `harbor-text` `LIFECYCLE_TARGET` (`font.rs` / `dwrite.rs`).
+const FONT_LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
+
+impl FrameState {
+    /// Records the first successful present and emits `first_present` once.
+    fn mark_first_present(&mut self) {
+        self.mark_first_present_at(Instant::now());
+    }
+
+    fn mark_first_present_at(&mut self, at: Instant) {
+        if self.first_present_at.is_some() {
+            return;
+        }
+        self.first_present_at = Some(at);
+        tracing::info!(
+            target: FONT_LIFECYCLE_TARGET,
+            phase = "first_present",
+            "font lifecycle"
+        );
+    }
+
+    /// Emits `steady_state` once after the documented dwell past first present.
+    fn maybe_emit_steady_state(&mut self) {
+        self.maybe_emit_steady_state_at(Instant::now());
+    }
+
+    fn maybe_emit_steady_state_at(&mut self, now: Instant) {
+        if self.steady_state_emitted {
+            return;
+        }
+        let Some(presented_at) = self.first_present_at else {
+            return;
+        };
+        let dwell = now.saturating_duration_since(presented_at);
+        if dwell < FONT_STEADY_STATE_DWELL {
+            return;
+        }
+        self.steady_state_emitted = true;
+        tracing::info!(
+            target: FONT_LIFECYCLE_TARGET,
+            phase = "steady_state",
+            dwell_ms = dwell.as_millis() as u64,
+            "font lifecycle"
+        );
+    }
+
+    /// Arm a one-shot WaitUntil so idle Latin DHAT runs observe `steady_state`
+    /// near the documented dwell without requiring input.
+    fn schedule_steady_state_deadline(&mut self) {
+        self.schedule_steady_state_deadline_at(Instant::now());
+    }
+
+    fn schedule_steady_state_deadline_at(&mut self, now: Instant) {
+        if self.steady_state_emitted {
+            return;
+        }
+        let Some(presented_at) = self.first_present_at else {
+            return;
+        };
+        let deadline = presented_at + FONT_STEADY_STATE_DWELL;
+        if now >= deadline {
+            self.maybe_emit_steady_state_at(now);
+            return;
+        }
+        self.scheduler.set_deadline(Some(deadline));
+    }
 }
 
 /// Winit coordinator over concrete lifecycle state groups.
@@ -258,6 +332,8 @@ impl ApplicationHandler<AppEvent> for App {
         if self.frame.scheduler.should_request_continuous_redraw() {
             self.request_redraw(RedrawReason::Active);
         }
+        self.frame.maybe_emit_steady_state();
+        self.frame.schedule_steady_state_deadline();
         self.set_control_flow(event_loop);
     }
 
@@ -463,6 +539,8 @@ impl App {
             frame: FrameState {
                 scheduler: FrameScheduler::default(),
                 surface_recovery_attempted: false,
+                first_present_at: None,
+                steady_state_emitted: false,
             },
             event_proxy,
             modifiers: ModifiersState::default(),
@@ -547,99 +625,109 @@ impl App {
     }
 
     fn render_frame(&mut self) {
-        let (Some(gpu), Some(terminal)) =
-            (self.runtime.gpu.as_mut(), self.runtime.terminal.as_ref())
-        else {
-            return;
-        };
-        if let Ok(mut terminal) = terminal.lock() {
-            terminal.drain_pty();
-        }
-
-        let frame = gpu.get_current_texture();
-        let status = match &frame {
-            wgpu::CurrentSurfaceTexture::Success(_) => SurfaceStatus::Success,
-            wgpu::CurrentSurfaceTexture::Suboptimal(_) => SurfaceStatus::Suboptimal,
-            wgpu::CurrentSurfaceTexture::Lost => SurfaceStatus::Lost,
-            wgpu::CurrentSurfaceTexture::Outdated => SurfaceStatus::Outdated,
-            wgpu::CurrentSurfaceTexture::Timeout => SurfaceStatus::Timeout,
-            wgpu::CurrentSurfaceTexture::Occluded => SurfaceStatus::Occluded,
-            wgpu::CurrentSurfaceTexture::Validation => SurfaceStatus::Validation,
-        };
-        let disposition = surface_disposition(status);
-        let (output, reconfigure_after_present) = match (frame, disposition) {
-            (wgpu::CurrentSurfaceTexture::Success(output), SurfaceDisposition::Present) => {
-                (output, false)
-            }
-            (
-                wgpu::CurrentSurfaceTexture::Suboptimal(output),
-                SurfaceDisposition::PresentAndReconfigure,
-            ) => {
-                tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
-                (output, true)
-            }
-            (_, SurfaceDisposition::ReconfigureAndRedraw) => {
-                tracing::warn!(?status, "surface requires reconfiguration");
-                if !self.frame.surface_recovery_attempted {
-                    self.frame.surface_recovery_attempted = true;
-                    gpu.reconfigure();
-                    self.request_redraw(RedrawReason::SurfaceRecovery);
-                } else {
-                    tracing::warn!(?status, "surface recovery deferred until external wake");
-                }
-                return;
-            }
-            (_, SurfaceDisposition::Skip) => {
-                tracing::debug!(?status, "surface frame skipped");
-                return;
-            }
-            _ => unreachable!("surface disposition must match texture status"),
-        };
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
+        let status;
+        let reconfigure_after_present;
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-                let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
-                let (physical_w, physical_h) = gpu.surface_size();
-                let viewport =
-                    harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
-
-                with_current_gpu(gpu, || {
-                    widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
-                });
+            let (Some(gpu), Some(terminal)) =
+                (self.runtime.gpu.as_mut(), self.runtime.terminal.as_ref())
+            else {
+                return;
+            };
+            if let Ok(mut terminal) = terminal.lock() {
+                terminal.drain_pty();
             }
+
+            let frame = gpu.get_current_texture();
+            status = match &frame {
+                wgpu::CurrentSurfaceTexture::Success(_) => SurfaceStatus::Success,
+                wgpu::CurrentSurfaceTexture::Suboptimal(_) => SurfaceStatus::Suboptimal,
+                wgpu::CurrentSurfaceTexture::Lost => SurfaceStatus::Lost,
+                wgpu::CurrentSurfaceTexture::Outdated => SurfaceStatus::Outdated,
+                wgpu::CurrentSurfaceTexture::Timeout => SurfaceStatus::Timeout,
+                wgpu::CurrentSurfaceTexture::Occluded => SurfaceStatus::Occluded,
+                wgpu::CurrentSurfaceTexture::Validation => SurfaceStatus::Validation,
+            };
+            let disposition = surface_disposition(status);
+            let (output, reconfigure) = match (frame, disposition) {
+                (wgpu::CurrentSurfaceTexture::Success(output), SurfaceDisposition::Present) => {
+                    (output, false)
+                }
+                (
+                    wgpu::CurrentSurfaceTexture::Suboptimal(output),
+                    SurfaceDisposition::PresentAndReconfigure,
+                ) => {
+                    tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
+                    (output, true)
+                }
+                (_, SurfaceDisposition::ReconfigureAndRedraw) => {
+                    tracing::warn!(?status, "surface requires reconfiguration");
+                    if !self.frame.surface_recovery_attempted {
+                        self.frame.surface_recovery_attempted = true;
+                        gpu.reconfigure();
+                        self.request_redraw(RedrawReason::SurfaceRecovery);
+                    } else {
+                        tracing::warn!(?status, "surface recovery deferred until external wake");
+                    }
+                    return;
+                }
+                (_, SurfaceDisposition::Skip) => {
+                    tracing::debug!(?status, "surface frame skipped");
+                    return;
+                }
+                _ => unreachable!("surface disposition must match texture status"),
+            };
+            reconfigure_after_present = reconfigure;
+
+            let view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
+                    let (physical_w, physical_h) = gpu.surface_size();
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
+
+                    with_current_gpu(gpu, || {
+                        widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
+                    });
+                }
+            }
+
+            let command_buffer = encoder.finish();
+            gpu.queue().submit(Some(command_buffer));
+            gpu.present(output);
+            tracing::trace!(?status, "surface frame presented");
         }
 
-        let command_buffer = encoder.finish();
-        gpu.queue().submit(Some(command_buffer));
-        gpu.present(output);
-        tracing::trace!(?status, "surface frame presented");
+        self.frame.mark_first_present();
+        self.frame.schedule_steady_state_deadline();
         if reconfigure_after_present && !self.frame.surface_recovery_attempted {
             self.frame.surface_recovery_attempted = true;
-            gpu.reconfigure();
+            if let Some(gpu) = self.runtime.gpu.as_mut() {
+                gpu.reconfigure();
+            }
             self.request_redraw(RedrawReason::SurfaceSuboptimal);
         } else if status == SurfaceStatus::Success {
             self.frame.surface_recovery_attempted = false;
@@ -741,6 +829,235 @@ mod tests {
 
     fn key(name: NamedKey) -> Key {
         Key::Named(name)
+    }
+
+    fn empty_frame() -> FrameState {
+        FrameState {
+            scheduler: FrameScheduler::default(),
+            surface_recovery_attempted: false,
+            first_present_at: None,
+            steady_state_emitted: false,
+        }
+    }
+
+    /// Captures `harbor.font.lifecycle` field maps for behavior assertions.
+    #[derive(Clone, Default)]
+    struct LifecycleCapture {
+        events: Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    }
+
+    impl LifecycleCapture {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn phases(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .iter()
+                .filter_map(|fields| fields.get("phase").cloned())
+                .collect()
+        }
+    }
+
+    struct FieldRecorder<'a> {
+        fields: &'a mut std::collections::HashMap<String, String>,
+    }
+
+    impl tracing::field::Visit for FieldRecorder<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl<S> tracing_subscriber::layer::Layer<S> for LifecycleCapture
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() != FONT_LIFECYCLE_TARGET {
+                return;
+            }
+            let mut fields = std::collections::HashMap::new();
+            event.record(&mut FieldRecorder {
+                fields: &mut fields,
+            });
+            self.events
+                .lock()
+                .expect("lifecycle capture lock")
+                .push(fields);
+        }
+    }
+
+    fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let capture = LifecycleCapture::new();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, capture)
+    }
+
+    #[test]
+    fn should_emit_first_present_once_when_marked() {
+        // Arrange
+        let mut frame = empty_frame();
+        let at = Instant::now();
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            frame.mark_first_present_at(at);
+            frame.mark_first_present_at(at + Duration::from_millis(1));
+        });
+
+        // Assert
+        assert_eq!(capture.phases(), vec!["first_present".to_string()]);
+    }
+
+    #[test]
+    fn should_not_emit_steady_state_when_first_present_missing() {
+        // Arrange
+        let mut frame = empty_frame();
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            frame.maybe_emit_steady_state_at(Instant::now());
+        });
+
+        // Assert
+        assert!(capture.phases().is_empty());
+    }
+
+    #[test]
+    fn should_not_emit_steady_state_when_dwell_incomplete() {
+        // Arrange
+        let mut frame = empty_frame();
+        let presented_at = Instant::now();
+        let before_dwell = presented_at + FONT_STEADY_STATE_DWELL - Duration::from_millis(1);
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            frame.mark_first_present_at(presented_at);
+            frame.maybe_emit_steady_state_at(before_dwell);
+        });
+
+        // Assert
+        assert_eq!(capture.phases(), vec!["first_present".to_string()]);
+    }
+
+    #[test]
+    fn should_emit_steady_state_once_when_dwell_elapsed() {
+        // Arrange
+        let mut frame = empty_frame();
+        let presented_at = Instant::now();
+        let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            frame.mark_first_present_at(presented_at);
+            frame.maybe_emit_steady_state_at(after_dwell);
+            frame.maybe_emit_steady_state_at(after_dwell + Duration::from_secs(1));
+        });
+
+        // Assert
+        assert_eq!(
+            capture.phases(),
+            vec!["first_present".to_string(), "steady_state".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_arm_scheduler_deadline_when_first_present_marked() {
+        // Arrange
+        let mut frame = empty_frame();
+        let presented_at = Instant::now();
+        let expected_deadline = presented_at + FONT_STEADY_STATE_DWELL;
+
+        // Act
+        frame.mark_first_present_at(presented_at);
+        frame.schedule_steady_state_deadline_at(presented_at);
+
+        // Assert
+        assert_eq!(
+            frame.scheduler.control_flow(),
+            FrameControlFlow::WaitUntil(expected_deadline)
+        );
+    }
+
+    #[test]
+    fn should_not_arm_deadline_when_first_present_missing() {
+        // Arrange
+        let mut frame = empty_frame();
+
+        // Act
+        frame.schedule_steady_state_deadline_at(Instant::now());
+
+        // Assert
+        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
+    }
+
+    #[test]
+    fn should_emit_steady_state_without_deadline_when_dwell_already_elapsed() {
+        // Arrange
+        let mut frame = empty_frame();
+        let presented_at = Instant::now();
+        let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
+
+        // Act
+        let (_, capture) = with_lifecycle_capture(|| {
+            frame.mark_first_present_at(presented_at);
+            frame.schedule_steady_state_deadline_at(after_dwell);
+        });
+
+        // Assert
+        assert_eq!(
+            capture.phases(),
+            vec!["first_present".to_string(), "steady_state".to_string()]
+        );
+        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
+    }
+
+    #[test]
+    fn should_not_arm_deadline_when_steady_state_already_emitted() {
+        // Arrange
+        let mut frame = empty_frame();
+        let presented_at = Instant::now();
+        let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
+        frame.mark_first_present_at(presented_at);
+        frame.maybe_emit_steady_state_at(after_dwell);
+
+        // Act
+        frame.schedule_steady_state_deadline_at(after_dwell);
+
+        // Assert
+        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
     }
 
     #[test]
