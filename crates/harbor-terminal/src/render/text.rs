@@ -604,7 +604,7 @@ fn atlas_gpu_sync(result: &harbor_text::RasterizeResult) -> AtlasGpuSync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harbor_text::{GlyphKey, RasterizeResult};
+    use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
 
     #[test]
     fn default_colors_preserve_attributes() {
@@ -641,12 +641,12 @@ mod tests {
     fn should_choose_incremental_when_new_keys_without_eviction() {
         // Arrange
         let result = RasterizeResult {
-            new_keys: vec![GlyphKey {
-                face_id: 0,
-                glyph_index: 1,
-                size_bits: 0,
-                style_bits: 0,
-            }],
+            new_keys: vec![GlyphKey::new(
+                FaceId::PRIMARY,
+                GlyphId::new(1),
+                FontSize::new(1.0).expect("valid test font size"),
+                FontStyle::REGULAR,
+            )],
             evicted: false,
         };
 
@@ -661,12 +661,12 @@ mod tests {
     fn should_choose_full_rebuild_when_evicted() {
         // Arrange
         let result = RasterizeResult {
-            new_keys: vec![GlyphKey {
-                face_id: 1,
-                glyph_index: 2,
-                size_bits: 0,
-                style_bits: 0,
-            }],
+            new_keys: vec![GlyphKey::new(
+                FaceId::new(1),
+                GlyphId::new(2),
+                FontSize::new(1.0).expect("valid test font size"),
+                FontStyle::REGULAR,
+            )],
             evicted: true,
         };
 

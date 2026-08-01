@@ -227,12 +227,12 @@ mod tests {
 
     fn test_glyph_fn(_ch: char) -> Option<AtlasGlyph> {
         Some(AtlasGlyph {
-            key: harbor_text::GlyphKey {
-                face_id: 0,
-                glyph_index: 0,
-                size_bits: 0,
-                style_bits: 0,
-            },
+            key: harbor_text::GlyphKey::new(
+                harbor_text::FaceId::PRIMARY,
+                harbor_text::GlyphId::new(0),
+                harbor_text::FontSize::new(1.0).expect("valid test font size"),
+                harbor_text::FontStyle::REGULAR,
+            ),
             uv: AtlasUv {
                 left: 0.0,
                 top: 0.0,
@@ -322,12 +322,12 @@ mod tests {
     fn zero_width_glyph_is_skipped() {
         let fn_zero_width = |_ch: char| -> Option<AtlasGlyph> {
             Some(AtlasGlyph {
-                key: harbor_text::GlyphKey {
-                    face_id: 0,
-                    glyph_index: 0,
-                    size_bits: 0,
-                    style_bits: 0,
-                },
+                key: harbor_text::GlyphKey::new(
+                    harbor_text::FaceId::PRIMARY,
+                    harbor_text::GlyphId::new(0),
+                    harbor_text::FontSize::new(1.0).expect("valid test font size"),
+                    harbor_text::FontStyle::REGULAR,
+                ),
                 uv: AtlasUv {
                     left: 0.0,
                     top: 0.0,

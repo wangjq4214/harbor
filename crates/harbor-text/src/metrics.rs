@@ -33,6 +33,33 @@ pub struct TextMetrics {
     pub strikethrough_thickness: f32,
 }
 
+impl FontMetrics {
+    /// Construct metrics after validating the dimensions used for layout.
+    pub fn new(
+        cell_width: f32,
+        line_height: f32,
+        ascent: f32,
+        descent: f32,
+        line_gap: f32,
+    ) -> Option<Self> {
+        let valid_positive = |value: f32| value.is_finite() && value > 0.0;
+        let valid_non_negative = |value: f32| value.is_finite() && value >= 0.0;
+        let valid_finite = |value: f32| value.is_finite();
+        (valid_positive(cell_width)
+            && valid_positive(line_height)
+            && valid_positive(ascent)
+            && valid_non_negative(descent)
+            && valid_finite(line_gap))
+        .then_some(Self {
+            cell_width,
+            line_height,
+            ascent,
+            descent,
+            line_gap,
+        })
+    }
+}
+
 impl TextMetrics {
     /// Construct from backend-neutral font metrics.
     pub fn from_font_metrics(fm: FontMetrics) -> Self {
@@ -52,13 +79,25 @@ impl TextMetrics {
     }
 
     pub fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
-        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(self.cell_width);
-        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(self.line_height);
+        // Keep this boundary total even for legacy callers that construct the
+        // public record literal directly instead of using FontMetrics::new.
+        let cell_width = positive_dimension_or_one(self.cell_width);
+        let line_height = positive_dimension_or_one(self.line_height);
+        let text_width = (width as f32 - TEXT_PADDING * 2.0).max(cell_width);
+        let text_height = (height as f32 - TEXT_PADDING * 2.0).max(line_height);
 
         TerminalSize {
-            rows: (text_height / self.line_height).floor().max(1.0) as usize,
-            cols: (text_width / self.cell_width).floor().max(1.0) as usize,
+            rows: (text_height / line_height).floor().max(1.0) as usize,
+            cols: (text_width / cell_width).floor().max(1.0) as usize,
         }
+    }
+}
+
+fn positive_dimension_or_one(value: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
     }
 }
 
@@ -112,6 +151,22 @@ mod tests {
     fn terminal_size_handles_zero_window() {
         let metrics = make_metrics(10.0, 20.0);
         // Zero window → text area clamped to cell_width / line_height.
+        let size = metrics.terminal_size(0, 0);
+        assert_eq!(size.cols, 1);
+        assert_eq!(size.rows, 1);
+    }
+
+    #[test]
+    fn terminal_size_handles_invalid_public_dimensions() {
+        let metrics = TextMetrics {
+            cell_width: 0.0,
+            line_height: f32::NAN,
+            ascent: 0.0,
+            underline_position: 0.0,
+            underline_thickness: 1.5,
+            strikethrough_position: 0.0,
+            strikethrough_thickness: 1.5,
+        };
         let size = metrics.terminal_size(0, 0);
         assert_eq!(size.cols, 1);
         assert_eq!(size.rows, 1);
@@ -174,6 +229,13 @@ mod tests {
         };
         assert_eq!(fm.cell_width, 0.0);
         assert_eq!(fm.line_height, 0.0);
+    }
+
+    #[test]
+    fn should_reject_invalid_dimensions_at_construction() {
+        assert!(FontMetrics::new(0.0, 16.0, 14.0, 2.0, 0.0).is_none());
+        assert!(FontMetrics::new(8.0, f32::NAN, 14.0, 2.0, 0.0).is_none());
+        assert!(FontMetrics::new(8.0, 16.0, 14.0, 2.0, -1.0).is_some());
     }
 
     #[test]

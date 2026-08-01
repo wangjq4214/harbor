@@ -12,7 +12,12 @@
 //! - Configured paths are opened as process-private faces and are not registered
 //!   in system font collections.
 
-use std::{cell::Cell, cell::RefCell, os::windows::ffi::OsStrExt, path::Path};
+use std::{
+    cell::{Cell, RefCell},
+    os::windows::ffi::OsStrExt,
+    path::Path,
+    rc::Rc,
+};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use hashbrown::HashMap;
@@ -30,11 +35,13 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::core::{BOOL, ComObjectInner as _, Interface, implement};
 
-use crate::atlas::{GlyphBitmapBounds, GlyphKey};
-use crate::backend::{GlyphResolution, NativeFaceId, ResolutionKey};
+use crate::atlas::GlyphBitmapBounds;
+use crate::contracts::{
+    FaceId, FontSize, FontStyle, GlyphId, GlyphKey, GlyphResolution, ResolutionKey,
+};
 use crate::metrics::FontMetrics;
 
-const PRIMARY_FACE_ID: NativeFaceId = NativeFaceId(0);
+const PRIMARY_FACE_ID: FaceId = FaceId::PRIMARY;
 const LOCALE_NAME_MAX: usize = 85;
 /// Keep in sync with `font.rs` and `src/app.rs` (`FONT_LIFECYCLE_TARGET`).
 const LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
@@ -43,7 +50,7 @@ const LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
 #[derive(Clone)]
 struct PrimaryDescriptor {
     #[allow(dead_code)]
-    face_id: u64,
+    face_id: FaceId,
     family_name: Vec<u16>,
     weight: DWRITE_FONT_WEIGHT,
     style: DWRITE_FONT_STYLE,
@@ -60,8 +67,8 @@ struct FaceFingerprint {
 
 /// Session-local stable identity and ownership of native faces used for rendering.
 struct NativeFaceRegistry {
-    faces: HashMap<u64, IDWriteFontFace>,
-    fingerprints: HashMap<FaceFingerprint, u64>,
+    faces: HashMap<FaceId, IDWriteFontFace>,
+    fingerprints: HashMap<FaceFingerprint, FaceId>,
     next_id: u64,
 }
 
@@ -69,9 +76,9 @@ impl NativeFaceRegistry {
     fn with_primary(face: IDWriteFontFace) -> Result<Self> {
         let fingerprint = face_fingerprint(&face)?;
         let mut faces = HashMap::new();
-        faces.insert(PRIMARY_FACE_ID.0, face);
+        faces.insert(PRIMARY_FACE_ID, face);
         let mut fingerprints = HashMap::new();
-        fingerprints.insert(fingerprint, PRIMARY_FACE_ID.0);
+        fingerprints.insert(fingerprint, PRIMARY_FACE_ID);
         Ok(Self {
             faces,
             fingerprints,
@@ -79,19 +86,19 @@ impl NativeFaceRegistry {
         })
     }
 
-    fn register(&mut self, face: IDWriteFontFace) -> Result<u64> {
+    fn register(&mut self, face: IDWriteFontFace) -> Result<FaceId> {
         let fingerprint = face_fingerprint(&face)?;
         if let Some(&id) = self.fingerprints.get(&fingerprint) {
             return Ok(id);
         }
-        let id = self.next_id;
+        let id = FaceId::new(self.next_id);
         self.next_id += 1;
         self.fingerprints.insert(fingerprint, id);
         self.faces.insert(id, face);
         Ok(id)
     }
 
-    fn get(&self, face_id: u64) -> Option<&IDWriteFontFace> {
+    fn get(&self, face_id: FaceId) -> Option<&IDWriteFontFace> {
         self.faces.get(&face_id)
     }
 
@@ -199,23 +206,61 @@ impl IDWriteTextAnalysisSource_Impl for FallbackTextSource_Impl {
     }
 }
 
-/// Long-lived DirectWrite primary-face session with system fallback.
-pub(crate) struct DwriteState {
+/// Native handles and the session-local face registry shared by its components.
+struct DirectWriteSession {
     factory: IDWriteFactory2,
     fallback: IDWriteFontFallback,
     descriptor: PrimaryDescriptor,
-    faces: RefCell<NativeFaceRegistry>,
-    resolutions: RefCell<HashMap<ResolutionKey, GlyphResolution>>,
+    faces: Rc<RefCell<NativeFaceRegistry>>,
     locale: Vec<u16>,
-    /// Validated metrics at harbor_config::FONT_SIZE, computed during open.
-    primary_metrics: FontMetrics,
-    /// Once-only gate for the `first_fallback` lifecycle marker.
+}
+
+/// Character resolution, fallback mapping, and resolution caching.
+struct GlyphResolver {
+    session: Rc<DirectWriteSession>,
+    resolutions: RefCell<HashMap<ResolutionKey, GlyphResolution>>,
     first_fallback_emitted: Cell<bool>,
     #[cfg(test)]
     map_calls: Cell<u32>,
 }
 
+/// Glyph bitmap rasterization using the session's factory and face registry.
+struct GlyphRasterizer {
+    factory: IDWriteFactory2,
+    faces: Rc<RefCell<NativeFaceRegistry>>,
+}
+
+/// Small composition root for one DirectWrite font session.
+pub(crate) struct DwriteState {
+    session: Rc<DirectWriteSession>,
+    resolver: GlyphResolver,
+    rasterizer: GlyphRasterizer,
+    primary_metrics: FontMetrics,
+}
+
 impl DwriteState {
+    fn from_session(session: DirectWriteSession, primary_metrics: FontMetrics) -> Self {
+        let session = Rc::new(session);
+        let faces = Rc::clone(&session.faces);
+        let resolver = GlyphResolver {
+            session: Rc::clone(&session),
+            resolutions: RefCell::new(HashMap::new()),
+            first_fallback_emitted: Cell::new(false),
+            #[cfg(test)]
+            map_calls: Cell::new(0),
+        };
+        let rasterizer = GlyphRasterizer {
+            factory: session.factory.clone(),
+            faces,
+        };
+        Self {
+            session,
+            resolver,
+            rasterizer,
+            primary_metrics,
+        }
+    }
+
     /// Select a system monospace/fixed-pitch primary face and retain it.
     pub fn open_system_primary() -> Result<Self> {
         let (factory, fallback, locale) = open_factory_fallback_locale()?;
@@ -224,18 +269,16 @@ impl DwriteState {
             .context("measure DirectWrite system primary face")?;
         let faces = NativeFaceRegistry::with_primary(primary_face)
             .context("register DirectWrite system primary face")?;
-        Ok(Self {
-            factory,
-            fallback,
-            descriptor,
-            faces: RefCell::new(faces),
-            resolutions: RefCell::new(HashMap::new()),
-            locale,
+        Ok(Self::from_session(
+            DirectWriteSession {
+                factory,
+                fallback,
+                descriptor,
+                faces: Rc::new(RefCell::new(faces)),
+                locale,
+            },
             primary_metrics,
-            first_fallback_emitted: Cell::new(false),
-            #[cfg(test)]
-            map_calls: Cell::new(0),
-        })
+        ))
     }
 
     /// Open a process-private primary face from a filesystem font path.
@@ -255,37 +298,40 @@ impl DwriteState {
             .with_context(|| format!("measure configured font {}", path.display()))?;
         let faces = NativeFaceRegistry::with_primary(primary_face)
             .with_context(|| format!("register configured font {}", path.display()))?;
-        Ok(Self {
-            factory,
-            fallback,
-            descriptor,
-            faces: RefCell::new(faces),
-            resolutions: RefCell::new(HashMap::new()),
-            locale,
+        Ok(Self::from_session(
+            DirectWriteSession {
+                factory,
+                fallback,
+                descriptor,
+                faces: Rc::new(RefCell::new(faces)),
+                locale,
+            },
             primary_metrics,
-            first_fallback_emitted: Cell::new(false),
-            #[cfg(test)]
-            map_calls: Cell::new(0),
-        })
+        ))
     }
 
     pub fn font_metrics(&self, size: f32) -> FontMetrics {
         if size.to_bits() == harbor_config::FONT_SIZE.to_bits() {
             return self.primary_metrics;
         }
-        let faces = self.faces.borrow();
-        let Some(primary) = faces.get(PRIMARY_FACE_ID.0) else {
+        let faces = self.session.faces.borrow();
+        let Some(primary) = faces.get(PRIMARY_FACE_ID) else {
             return self.primary_metrics;
         };
         font_metrics_from_face(primary, size).unwrap_or(self.primary_metrics)
     }
 
-    pub fn resolve(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
-        let key = ResolutionKey {
-            scalar: ch,
-            size_bits: size.to_bits(),
-            style_bits: style,
+    pub fn resolve<S: Into<FontStyle>>(&self, ch: char, size: f32, style: S) -> GlyphResolution {
+        self.resolver.resolve(ch, size, style.into())
+    }
+}
+
+impl GlyphResolver {
+    fn resolve(&self, ch: char, size: f32, style: FontStyle) -> GlyphResolution {
+        let Some(size) = FontSize::new(size) else {
+            return GlyphResolution::Unavailable;
         };
+        let key = ResolutionKey::new(ch, size, style);
         if let Some(cached) = self.resolutions.borrow().get(&key).copied() {
             return cached;
         }
@@ -294,44 +340,44 @@ impl DwriteState {
         result
     }
 
-    fn resolve_uncached(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
+    fn resolve_uncached(&self, ch: char, size: FontSize, style: FontStyle) -> GlyphResolution {
         let primary_glyph = match self.primary_glyph_index(ch) {
             Ok(glyph) => glyph,
             Err(_) => return GlyphResolution::Unavailable,
         };
         if primary_glyph != 0 {
             return GlyphResolution::Available(GlyphKey {
-                face_id: PRIMARY_FACE_ID.0,
-                glyph_index: u32::from(primary_glyph),
-                size_bits: size.to_bits(),
-                style_bits: style,
+                face_id: PRIMARY_FACE_ID,
+                glyph_id: GlyphId::new(u32::from(primary_glyph)),
+                size,
+                style,
             });
         }
         self.map_fallback(ch, size, style)
     }
 
-    fn map_fallback(&self, ch: char, size: f32, style: u8) -> GlyphResolution {
+    fn map_fallback(&self, ch: char, size: FontSize, style: FontStyle) -> GlyphResolution {
         #[cfg(test)]
         self.map_calls.set(self.map_calls.get() + 1);
 
-        let source = FallbackTextSource::new(ch, &self.locale).into_object();
+        let source = FallbackTextSource::new(ch, &self.session.locale).into_object();
         let analysis: IDWriteTextAnalysisSource = source.to_interface();
         let text_length = ch.len_utf16() as u32;
         let mut mapped_length = 0u32;
         let mut mapped_font = None;
         let mut scale = 0.0f32;
-        let family = windows::core::PCWSTR(self.descriptor.family_name.as_ptr());
+        let family = windows::core::PCWSTR(self.session.descriptor.family_name.as_ptr());
 
         let map_result = unsafe {
-            self.fallback.MapCharacters(
+            self.session.fallback.MapCharacters(
                 &analysis,
                 0,
                 text_length,
                 None,
                 family,
-                self.descriptor.weight,
-                self.descriptor.style,
-                self.descriptor.stretch,
+                self.session.descriptor.weight,
+                self.session.descriptor.style,
+                self.session.descriptor.stretch,
                 &mut mapped_length,
                 &mut mapped_font,
                 &mut scale,
@@ -354,22 +400,25 @@ impl DwriteState {
             Ok(glyph) if glyph != 0 => glyph,
             _ => return GlyphResolution::Unavailable,
         };
-        let face_id = match self.faces.borrow_mut().register(face) {
+        let face_id = match self.session.faces.borrow_mut().register(face) {
             Ok(id) => id,
             Err(_) => return GlyphResolution::Unavailable,
         };
-        let effective_size = size * scale;
-        let key = GlyphKey {
-            face_id,
-            glyph_index: u32::from(glyph),
-            size_bits: effective_size.to_bits(),
-            style_bits: style,
+        let effective_size = size.get() * scale;
+        let Some(effective_size) = FontSize::new(effective_size) else {
+            return GlyphResolution::Unavailable;
         };
+        let key = GlyphKey::new(
+            face_id,
+            GlyphId::new(u32::from(glyph)),
+            effective_size,
+            style,
+        );
         self.emit_first_fallback(ch, face_id);
         GlyphResolution::Available(key)
     }
 
-    fn emit_first_fallback(&self, ch: char, face_id: u64) {
+    fn emit_first_fallback(&self, ch: char, face_id: FaceId) {
         if self.first_fallback_emitted.replace(true) {
             return;
         }
@@ -377,20 +426,30 @@ impl DwriteState {
             target: LIFECYCLE_TARGET,
             phase = "first_fallback",
             scalar = %ch,
-            face_id,
+            face_id = face_id.get(),
             "font lifecycle"
         );
     }
 
-    pub fn rasterize(&self, key: GlyphKey, _px: f32) -> (GlyphBitmapBounds, Vec<u8>) {
-        let px = f32::from_bits(key.size_bits);
+    fn primary_glyph_index(&self, ch: char) -> Result<u16> {
+        let faces = self.session.faces.borrow();
+        let face = faces
+            .get(PRIMARY_FACE_ID)
+            .ok_or_else(|| anyhow!("primary face missing from registry"))?;
+        glyph_index_on_face(face, ch)
+    }
+}
+
+impl GlyphRasterizer {
+    pub fn rasterize(&self, key: GlyphKey) -> (GlyphBitmapBounds, Vec<u8>) {
+        let px = key.size.get();
         match self.rasterize_inner(key, px) {
             Ok(result) => result,
             Err(err) => {
                 tracing::error!(
                     error = %err,
-                    glyph = key.glyph_index,
-                    face = key.face_id,
+                    glyph = key.glyph_id.get(),
+                    face = key.face_id.get(),
                     "DirectWrite rasterize failed"
                 );
                 (
@@ -411,9 +470,9 @@ impl DwriteState {
         let faces = self.faces.borrow();
         let face = faces
             .get(key.face_id)
-            .ok_or_else(|| anyhow!("unknown face_id {}", key.face_id))?;
-        let glyph = u16::try_from(key.glyph_index)
-            .map_err(|_| anyhow!("glyph index {} out of u16 range", key.glyph_index))?;
+            .ok_or_else(|| anyhow!("unknown face_id {}", key.face_id.get()))?;
+        let glyph = u16::try_from(key.glyph_id.get())
+            .map_err(|_| anyhow!("glyph index {} out of u16 range", key.glyph_id.get()))?;
         let advance = {
             let mut metrics = Default::default();
             unsafe {
@@ -496,28 +555,33 @@ impl DwriteState {
             pixels,
         ))
     }
+}
 
-    fn primary_glyph_index(&self, ch: char) -> Result<u16> {
-        let faces = self.faces.borrow();
-        let face = faces
-            .get(PRIMARY_FACE_ID.0)
-            .ok_or_else(|| anyhow!("primary face missing from registry"))?;
-        glyph_index_on_face(face, ch)
+impl DwriteState {
+    pub fn rasterize(&self, key: GlyphKey) -> (GlyphBitmapBounds, Vec<u8>) {
+        self.rasterizer.rasterize(key)
     }
 
     #[cfg(test)]
     pub fn map_call_count(&self) -> u32 {
-        self.map_calls.get()
+        self.resolver.map_call_count()
     }
 
     #[cfg(test)]
     pub fn face_count(&self) -> usize {
-        self.faces.borrow().len()
+        self.session.faces.borrow().len()
     }
 
     #[cfg(test)]
     pub fn primary_family_name(&self) -> String {
-        string_from_wide(&self.descriptor.family_name)
+        string_from_wide(&self.session.descriptor.family_name)
+    }
+}
+
+impl GlyphResolver {
+    #[cfg(test)]
+    fn map_call_count(&self) -> u32 {
+        self.map_calls.get()
     }
 }
 
@@ -620,13 +684,8 @@ fn font_metrics_from_face(face: &IDWriteFontFace, size: f32) -> Result<FontMetri
             "DirectWrite primary metrics non-positive: cell_width={cell_width}, line_height={line_height}, ascent={ascent}"
         );
     }
-    Ok(FontMetrics {
-        cell_width,
-        line_height,
-        ascent: ascent.ceil(),
-        descent,
-        line_gap,
-    })
+    FontMetrics::new(cell_width, line_height, ascent.ceil(), descent, line_gap)
+        .ok_or_else(|| anyhow!("DirectWrite primary metrics contained invalid dimensions"))
 }
 
 fn select_system_primary(
@@ -682,7 +741,7 @@ fn select_system_primary(
             Err(_) => continue,
         };
         let descriptor = PrimaryDescriptor {
-            face_id: PRIMARY_FACE_ID.0,
+            face_id: PRIMARY_FACE_ID,
             family_name,
             weight: unsafe { font.GetWeight() },
             style: unsafe { font.GetStyle() },
@@ -703,7 +762,7 @@ fn describe_face(face: &IDWriteFontFace) -> Result<PrimaryDescriptor> {
     let names = unsafe { face3.GetFamilyNames() }.context("GetFamilyNames")?;
     let family_name = localized_string(&names).context("read primary family name")?;
     Ok(PrimaryDescriptor {
-        face_id: PRIMARY_FACE_ID.0,
+        face_id: PRIMARY_FACE_ID,
         family_name,
         weight: unsafe { face3.GetWeight() },
         style: unsafe { face3.GetStyle() },
@@ -966,7 +1025,7 @@ mod tests {
         assert!(metrics.line_height > 0.0);
 
         let key = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
-        let (bounds, bitmap) = state.rasterize(key, harbor_config::FONT_SIZE);
+        let (bounds, bitmap) = state.rasterize(key);
         assert!(bounds.width > 0);
         assert!(bounds.height > 0);
         assert_eq!(bitmap.len(), bounds.width * bounds.height);
@@ -1072,7 +1131,7 @@ mod tests {
         let first = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
         let second = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
         assert_eq!(first, second);
-        assert_eq!(first.face_id, PRIMARY_FACE_ID.0);
+        assert_eq!(first.face_id, PRIMARY_FACE_ID);
         assert_eq!(state.map_call_count(), 0);
     }
 
@@ -1080,7 +1139,7 @@ mod tests {
     fn should_return_non_empty_bitmap_when_rasterizing_latin() {
         let state = open_primary();
         let key = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
-        let (bounds, bitmap) = state.rasterize(key, harbor_config::FONT_SIZE);
+        let (bounds, bitmap) = state.rasterize(key);
         assert!(bounds.width > 0);
         assert!(bounds.height > 0);
         assert_eq!(bitmap.len(), bounds.width * bounds.height);
@@ -1090,7 +1149,7 @@ mod tests {
     fn should_return_zero_ink_with_positive_advance_when_rasterizing_space() {
         let state = open_primary();
         let key = expect_available(state.resolve(' ', harbor_config::FONT_SIZE, 0));
-        let (bounds, bitmap) = state.rasterize(key, harbor_config::FONT_SIZE);
+        let (bounds, bitmap) = state.rasterize(key);
         assert_eq!(bounds.width, 0);
         assert_eq!(bounds.height, 0);
         assert!(bitmap.is_empty());
@@ -1122,13 +1181,13 @@ mod tests {
             assert_eq!(state.map_call_count(), 0);
             return;
         };
-        if key.face_id != PRIMARY_FACE_ID.0 {
+        if key.face_id != PRIMARY_FACE_ID {
             assert_eq!(state.map_call_count(), 1);
             assert!(state.face_count() >= before_faces);
             let again = expect_available(state.resolve('中', harbor_config::FONT_SIZE, 0));
             assert_eq!(again, key);
             assert_eq!(state.map_call_count(), 1);
-            let (bounds, bitmap) = state.rasterize(key, f32::from_bits(key.size_bits));
+            let (bounds, bitmap) = state.rasterize(key);
             assert!(bounds.width > 0);
             assert!(bounds.height > 0);
             assert_eq!(bitmap.len(), bounds.width * bounds.height);
@@ -1167,7 +1226,7 @@ mod tests {
             let GlyphResolution::Available(key) = resolution else {
                 return None;
             };
-            if key.face_id == PRIMARY_FACE_ID.0 {
+            if key.face_id == PRIMARY_FACE_ID {
                 return None;
             }
             let _ = expect_available(state.resolve('国', harbor_config::FONT_SIZE, 0));
@@ -1197,9 +1256,9 @@ mod tests {
         let GlyphResolution::Available(key) = resolution else {
             return;
         };
-        if key.face_id != PRIMARY_FACE_ID.0 {
+        if key.face_id != PRIMARY_FACE_ID {
             assert_eq!(state.map_call_count(), 1);
-            let (bounds, _) = state.rasterize(key, f32::from_bits(key.size_bits));
+            let (bounds, _) = state.rasterize(key);
             assert!(bounds.width > 0);
             assert!(bounds.height > 0);
         }
@@ -1312,9 +1371,9 @@ mod tests {
         let size = harbor_config::FONT_SIZE;
         let style = 1u8;
         let key = expect_available(state.resolve('A', size, style));
-        assert_eq!(key.size_bits, size.to_bits());
-        assert_eq!(key.style_bits, style);
-        assert_eq!(key.face_id, PRIMARY_FACE_ID.0);
+        assert_eq!(key.size.bits(), size.to_bits());
+        assert_eq!(key.style.get(), style);
+        assert_eq!(key.face_id, PRIMARY_FACE_ID);
     }
 
     #[test]
@@ -1323,19 +1382,19 @@ mod tests {
         let key_a = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
         let key_b = expect_available(state.resolve('B', harbor_config::FONT_SIZE, 0));
         assert_ne!(key_a, key_b);
-        assert_ne!(key_a.glyph_index, key_b.glyph_index);
+        assert_ne!(key_a.glyph_id.get(), key_b.glyph_id.get());
     }
 
     #[test]
     fn should_return_empty_bitmap_when_rasterizing_out_of_range_glyph() {
         let state = open_primary();
         let key = GlyphKey {
-            face_id: PRIMARY_FACE_ID.0,
-            glyph_index: u32::from(u16::MAX) + 1,
-            size_bits: harbor_config::FONT_SIZE.to_bits(),
-            style_bits: 0,
+            face_id: PRIMARY_FACE_ID,
+            glyph_id: GlyphId::new(u32::from(u16::MAX) + 1),
+            size: FontSize::from_bits(harbor_config::FONT_SIZE.to_bits()),
+            style: FontStyle::new(0),
         };
-        let (bounds, bitmap) = state.rasterize(key, harbor_config::FONT_SIZE);
+        let (bounds, bitmap) = state.rasterize(key);
         assert_eq!(bounds.width, 0);
         assert_eq!(bounds.height, 0);
         assert!(bitmap.is_empty());
@@ -1356,9 +1415,9 @@ mod tests {
         // Force equal glyph_index collision across faces in the atlas key space.
         let colliding = GlyphKey {
             face_id: cjk_key.face_id,
-            glyph_index: latin.glyph_index,
-            size_bits: cjk_key.size_bits,
-            style_bits: cjk_key.style_bits,
+            glyph_id: GlyphId::new(latin.glyph_id.get()),
+            size: FontSize::from_bits(cjk_key.size.bits()),
+            style: FontStyle::new(cjk_key.style.get()),
         };
         assert_ne!(latin, colliding);
     }
