@@ -434,7 +434,7 @@ impl ApplicationHandler<AppEvent> for App {
                     winit_to_uievent_with_ime(&event, scale, self.modifiers, &mut self.ime)
             {
                 let frame_request = widget_runtime.dispatch(ui_event, Instant::now());
-                if frame_request.needs_redraw {
+                if frame_request.request_redraw {
                     Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
                 }
                 let draw_id = terminal.lock().unwrap().draw_id();
@@ -829,6 +829,41 @@ mod tests {
 
     fn key(name: NamedKey) -> Key {
         Key::Named(name)
+    }
+
+    // Compile-only coverage for the feature-gated Host contract. The fixture is
+    // intentionally never called: its parameters are borrowed by the caller,
+    // so no Window, Surface, Device, or Queue is created by the test suite.
+    #[allow(dead_code)]
+    fn winit_runtime_contract_fixture<'frame, 'surface>(
+        window: &'frame Window,
+        surface: &'frame wgpu::Surface<'surface>,
+        device: &'frame wgpu::Device,
+        queue: &'frame wgpu::Queue,
+        config: &'frame mut wgpu::SurfaceConfiguration,
+    ) {
+        use harbor_widget::{
+            effects::RuntimeEffects,
+            renderer::Viewport,
+            runtime::Runtime,
+            winit::{FrameOutcome, WinitAdapter, WinitFrameTarget},
+        };
+
+        let _: fn(&mut WinitAdapter, &mut Runtime, &WindowEvent) -> RuntimeEffects =
+            WinitAdapter::handle_event;
+        let mut runtime = Runtime::new();
+        let mut adapter = WinitAdapter::new();
+        let target = WinitFrameTarget::new(
+            window,
+            surface,
+            device,
+            queue,
+            config,
+            Viewport::new(1, 1, 1.0),
+            wgpu::Color::BLACK,
+        );
+        let outcome: FrameOutcome = adapter.render(&mut runtime, target);
+        let _ = outcome;
     }
 
     fn empty_frame() -> FrameState {

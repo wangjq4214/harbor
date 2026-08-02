@@ -1,6 +1,6 @@
 # Runtime-Owned Frame Presentation with Borrowed Host Resources
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-07-25
 
 ## Context

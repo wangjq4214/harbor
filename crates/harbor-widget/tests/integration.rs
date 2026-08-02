@@ -31,7 +31,7 @@ fn sized_box_layout_integration() {
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
 
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw, "first build should request redraw");
+    assert!(req.request_redraw, "first build should request redraw");
 
     // Verify root fiber has layout_rect with size 100x50
     let root_id = rt.root_id().unwrap();
@@ -49,11 +49,11 @@ fn second_update_without_changes_no_redraw() {
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
 
     let req1 = rt.update(Instant::now());
-    assert!(req1.needs_redraw);
+    assert!(req1.request_redraw);
 
     let req2 = rt.update(Instant::now());
     assert!(
-        !req2.needs_redraw,
+        !req2.request_redraw,
         "second update without changes should skip redraw"
     );
 }
@@ -77,7 +77,7 @@ fn set_root_twice_replaces_tree() {
     );
 
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let fiber = rt.arena().get(second_root).unwrap();
     assert_eq!(fiber.layout_rect.unwrap().size(), Size::new(200.0, 100.0));
@@ -91,7 +91,7 @@ fn nested_sized_box_produces_correct_layout_rects() {
     });
 
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
@@ -137,19 +137,59 @@ fn signal_write_triggers_rebuild() {
     });
 
     let req1 = rt.update(Instant::now());
-    assert!(req1.needs_redraw);
+    assert!(req1.request_redraw);
 
     let state = shared_state.borrow().as_ref().unwrap().clone();
     state.set(1);
 
     let req2 = rt.update(Instant::now());
-    assert!(req2.needs_redraw, "signal change should trigger redraw");
+    assert!(req2.request_redraw, "signal change should trigger redraw");
 
     let req3 = rt.update(Instant::now());
     assert!(
-        !req3.needs_redraw,
+        !req3.request_redraw,
         "after processing the signal change, the tree should be clean"
     );
+}
+
+#[test]
+fn runtimes_consume_only_their_own_signal_dirty_notifications() {
+    #[derive(Clone)]
+    struct StatefulWidget {
+        state: Rc<RefCell<Option<Signal<u32>>>>,
+        size: Size,
+    }
+
+    impl Component for StatefulWidget {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let state = cx.use_state(|| 0u32);
+            *self.state.borrow_mut() = Some(state);
+            SizedBox::new(self.size).build(cx)
+        }
+    }
+
+    let first_state = Rc::new(RefCell::new(None));
+    let second_state = Rc::new(RefCell::new(None));
+    let mut first = Runtime::new();
+    let mut second = Runtime::new();
+    first.set_root(StatefulWidget {
+        state: first_state.clone(),
+        size: Size::new(100.0, 50.0),
+    });
+    second.set_root(StatefulWidget {
+        state: second_state.clone(),
+        size: Size::new(200.0, 100.0),
+    });
+    assert!(first.update(Instant::now()).request_redraw);
+    assert!(second.update(Instant::now()).request_redraw);
+
+    first_state.borrow().as_ref().unwrap().set(1);
+    assert!(first.update(Instant::now()).request_redraw);
+    assert!(!second.update(Instant::now()).request_redraw);
+
+    second_state.borrow().as_ref().unwrap().set(1);
+    assert!(second.update(Instant::now()).request_redraw);
+    assert!(!first.update(Instant::now()).request_redraw);
 }
 
 #[test]
@@ -258,14 +298,14 @@ fn signal_write_after_root_replacement_triggers_rebuild() {
     sig1.set(42);
     let req = rt.update(Instant::now());
     assert!(
-        !req.needs_redraw,
+        !req.request_redraw,
         "old signal should not trigger rebuild after root replacement"
     );
 
     // Signal from new root should trigger rebuild
     sig2.set(99);
     let req2 = rt.update(Instant::now());
-    assert!(req2.needs_redraw, "new signal should trigger rebuild");
+    assert!(req2.request_redraw, "new signal should trigger rebuild");
 }
 
 // ── Multiple set_root cycles ─────────────────────────────────────────────────
@@ -277,7 +317,7 @@ fn multiple_set_root_without_update_works() {
     rt.set_root(SizedBox::new(Size::new(200.0, 100.0)));
     rt.set_root(SizedBox::new(Size::new(300.0, 150.0)));
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let root_id = rt.root_id().unwrap();
     let fiber = rt.arena().get(root_id).unwrap();
@@ -296,7 +336,7 @@ fn zero_padding_is_noop_at_runtime_level() {
             .child(SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED)),
     );
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
@@ -319,7 +359,7 @@ fn align_center_integration() {
     let mut rt = Runtime::new();
     rt.set_root(Align::new(Alignment::Center).child(SizedBox::new(Size::new(50.0, 50.0))));
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
@@ -349,7 +389,7 @@ fn row_cross_axis_center_integration() {
             .child(SizedBox::new(Size::new(50.0, 100.0))),
     );
     let req = rt.update(Instant::now());
-    assert!(req.needs_redraw);
+    assert!(req.request_redraw);
 
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();

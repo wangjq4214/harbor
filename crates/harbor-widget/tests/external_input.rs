@@ -376,7 +376,7 @@ fn should_handle_custom_paint_without_children() {
     rt.set_root(CustomPaint::new(1));
     let req = rt.update(now());
 
-    assert!(req.needs_redraw, "first update should request redraw");
+    assert!(req.request_redraw, "first update should request redraw");
 
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();

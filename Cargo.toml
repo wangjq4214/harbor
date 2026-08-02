@@ -63,7 +63,7 @@ harbor-config = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-types = { workspace = true }
-harbor-widget = { workspace = true }
+harbor-widget = { workspace = true, features = ["winit"] }
 
 # external
 anyhow = { workspace = true }

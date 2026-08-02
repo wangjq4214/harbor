@@ -9,6 +9,11 @@ hashbrown = { workspace = true }
 slotmap = { workspace = true }
 harbor-text = { workspace = true }
 wgpu = { workspace = true }
+winit = { workspace = true, optional = true }
+
+[features]
+default = []
+winit = ["dep:winit"]
 
 [dev-dependencies]
 pollster = { workspace = true }

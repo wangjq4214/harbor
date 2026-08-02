@@ -1,7 +1,7 @@
 # Widget Runtime Host Simplification
 
 **Spec ID:** 0004
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-08-02
 
 ## Requirement

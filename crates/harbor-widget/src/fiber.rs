@@ -770,7 +770,12 @@ mod tests {
         assert!(!arena.contains(child_id));
 
         signal.set(1);
-        let dirty = PENDING_DIRTY.with(|q| q.borrow().clone());
+        let dirty = PENDING_DIRTY.with(|q| {
+            q.borrow()
+                .get(&crate::signal::DEFAULT_RUNTIME_ID)
+                .cloned()
+                .unwrap_or_default()
+        });
         assert!(dirty.is_empty());
         clear_dirty_queue();
     }

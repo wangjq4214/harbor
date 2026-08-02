@@ -1,25 +1,75 @@
 use crate::fiber::FiberId;
-use hashbrown::HashSet;
-use std::cell::{Ref, RefCell};
+use hashbrown::{HashMap, HashSet};
+use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-// ── Dirty Queue (shared with Runtime) ────────────────────────────────────────
+// ── Runtime-scoped dirty queues ─────────────────────────────────────────────
 
-thread_local! {
-    /// Global set of fibers that have been marked dirty by Signal writes.
-    /// Uses hashbrown::HashSet for O(1) deduplication.
-    ///
-    /// NOTE: This is thread-local, not Runtime-scoped. It assumes a single
-    /// Runtime per thread. If multiple Runtime instances exist on the same
-    /// thread, Signal writes from one will be processed by the other's update().
-    pub(crate) static PENDING_DIRTY: RefCell<HashSet<FiberId>> =
-        RefCell::new(HashSet::new());
+/// Identifies one Runtime's signal subscriptions and pending work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RuntimeId(u64);
+
+impl RuntimeId {
+    pub(crate) fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
-/// Inserts a FiberId into the dirty set (idempotent, O(1)).
-pub(crate) fn mark_dirty(id: FiberId) {
-    PENDING_DIRTY.with(|q| {
-        q.borrow_mut().insert(id);
+pub(crate) const DEFAULT_RUNTIME_ID: RuntimeId = RuntimeId(0);
+
+thread_local! {
+    /// Pending fibers grouped by their owning Runtime.
+    pub(crate) static PENDING_DIRTY: RefCell<HashMap<RuntimeId, HashSet<FiberId>>> =
+        RefCell::new(HashMap::new());
+
+    static ACTIVE_RUNTIME: Cell<Option<RuntimeId>> = const { Cell::new(None) };
+}
+
+/// Temporarily associates Signal subscriptions made during a Runtime build
+/// with that Runtime. The previous scope is restored when this is dropped.
+pub(crate) struct RuntimeScope {
+    previous: Option<RuntimeId>,
+}
+
+impl RuntimeScope {
+    pub(crate) fn enter(id: RuntimeId) -> Self {
+        let previous = ACTIVE_RUNTIME.with(|active| active.replace(Some(id)));
+        Self { previous }
+    }
+}
+
+impl Drop for RuntimeScope {
+    fn drop(&mut self) {
+        ACTIVE_RUNTIME.with(|active| active.set(self.previous));
+    }
+}
+
+fn active_runtime() -> RuntimeId {
+    ACTIVE_RUNTIME.with(Cell::get).unwrap_or(DEFAULT_RUNTIME_ID)
+}
+
+/// Inserts a FiberId into a specific Runtime's dirty set.
+pub(crate) fn mark_dirty_for(runtime_id: RuntimeId, id: FiberId) {
+    PENDING_DIRTY.with(|queues| {
+        queues
+            .borrow_mut()
+            .entry(runtime_id)
+            .or_default()
+            .insert(id);
+    });
+}
+
+/// Takes only the pending work belonging to one Runtime.
+pub(crate) fn take_dirty(runtime_id: RuntimeId) -> HashSet<FiberId> {
+    PENDING_DIRTY.with(|queues| queues.borrow_mut().remove(&runtime_id).unwrap_or_default())
+}
+
+/// Removes all pending work for a Runtime that is being destroyed.
+pub(crate) fn remove_runtime(runtime_id: RuntimeId) {
+    PENDING_DIRTY.with(|queues| {
+        queues.borrow_mut().remove(&runtime_id);
     });
 }
 
@@ -39,10 +89,16 @@ pub(crate) trait Hook: 'static {
 // ── Signal ───────────────────────────────────────────────────────────────────
 
 /// Internal shared data for a Signal.
+#[derive(Clone, Copy)]
+struct Subscriber {
+    runtime_id: RuntimeId,
+    fiber_id: FiberId,
+}
+
 struct SignalData<T> {
     value: T,
     version: u64,
-    subscribers: Vec<FiberId>,
+    subscribers: Vec<Subscriber>,
 }
 
 /// A fine-grained pull-based reactive state cell.
@@ -98,8 +154,8 @@ impl<T> Signal<T> {
         let mut data = self.data.borrow_mut();
         data.value = value;
         data.version += 1;
-        for &id in &data.subscribers {
-            mark_dirty(id);
+        for subscriber in &data.subscribers {
+            mark_dirty_for(subscriber.runtime_id, subscriber.fiber_id);
         }
     }
 
@@ -110,16 +166,26 @@ impl<T> Signal<T> {
 
     /// Subscribes a fiber to this signal (idempotent).
     pub fn subscribe(&self, id: FiberId) {
+        let runtime_id = active_runtime();
         let mut data = self.data.borrow_mut();
-        if !data.subscribers.contains(&id) {
-            data.subscribers.push(id);
+        if !data
+            .subscribers
+            .iter()
+            .any(|subscriber| subscriber.runtime_id == runtime_id && subscriber.fiber_id == id)
+        {
+            data.subscribers.push(Subscriber {
+                runtime_id,
+                fiber_id: id,
+            });
         }
     }
 
-    /// Removes a fiber's subscription.
+    /// Removes a fiber's subscription in the active Runtime scope.
     pub fn unsubscribe(&self, id: FiberId) {
+        let runtime_id = active_runtime();
         let mut data = self.data.borrow_mut();
-        data.subscribers.retain(|&x| x != id);
+        data.subscribers
+            .retain(|subscriber| subscriber.runtime_id != runtime_id || subscriber.fiber_id != id);
     }
 }
 
@@ -196,7 +262,12 @@ mod tests {
         signal.subscribe(fid);
         signal.set(1);
 
-        let dirty = PENDING_DIRTY.with(|q| q.borrow().clone());
+        let dirty = PENDING_DIRTY.with(|q| {
+            q.borrow()
+                .get(&DEFAULT_RUNTIME_ID)
+                .cloned()
+                .unwrap_or_default()
+        });
         assert!(dirty.contains(&fid));
         assert_eq!(dirty.len(), 1);
         clear_dirty_queue();

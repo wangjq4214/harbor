@@ -423,7 +423,7 @@ fn should_not_crash_dispatch_with_no_root() {
         pointer_event(Point::ZERO, PointerPhase::Down, PointerButton::Left, 0),
         now(),
     );
-    assert!(!req.needs_redraw);
+    assert!(!req.request_redraw);
 }
 
 #[test]
@@ -444,7 +444,7 @@ fn should_return_needs_redraw_false_when_no_handler_requests_paint() {
         now(),
     );
     assert!(
-        !req.needs_redraw,
+        !req.request_redraw,
         "Move event on SizedBox (ignores all events) should not trigger redraw"
     );
 }
@@ -706,7 +706,7 @@ fn should_not_crash_on_wheel_event() {
         now(),
     );
     assert!(
-        !req.needs_redraw,
+        !req.request_redraw,
         "Wheel event (ignored by Button) should not trigger redraw"
     );
 }
@@ -731,7 +731,7 @@ fn should_route_move_event_to_button_without_crashing() {
     );
     // Move inside the button bounds — button handles it (sets hover, requests paint)
     assert!(
-        req.needs_redraw,
+        req.request_redraw,
         "Move should request redraw for hover state"
     );
 }
@@ -747,7 +747,7 @@ fn should_not_crash_on_keyboard_with_no_focused_widget() {
     // No focus set — keyboard events go to root via keyboard path
     let req = rt.dispatch(key_down(Key::Tab), now());
     // Tab on Button (not FocusScope) is ignored
-    assert!(!req.needs_redraw);
+    assert!(!req.request_redraw);
 }
 
 // ── Viewport change triggers re-layout ──────────────────────────────────────
@@ -760,17 +760,17 @@ fn should_trigger_relayout_on_viewport_change() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
     let req1 = rt.update(now());
-    assert!(req1.needs_redraw);
+    assert!(req1.request_redraw);
 
     // Second update without changes
     let req2 = rt.update(now());
-    assert!(!req2.needs_redraw);
+    assert!(!req2.request_redraw);
 
     // Change viewport — should mark root dirty
     rt.set_viewport(Viewport::new(1024, 768, 1.0));
     let req3 = rt.update(now());
     assert!(
-        req3.needs_redraw,
+        req3.request_redraw,
         "viewport change should trigger relayout and redraw"
     );
 }
@@ -797,5 +797,5 @@ fn should_clear_focus_programmatically() {
 fn should_ignore_update_with_no_root() {
     let mut rt = Runtime::new();
     let req = rt.update(now());
-    assert!(!req.needs_redraw);
+    assert!(!req.request_redraw);
 }

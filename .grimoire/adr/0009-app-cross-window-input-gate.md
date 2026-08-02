@@ -1,6 +1,6 @@
 # App Cross-Window Input Gate
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-07-24
 
 ## Context

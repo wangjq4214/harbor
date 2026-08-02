@@ -1,6 +1,7 @@
 # `harbor-widget` Depends on `wgpu` but NOT `harbor-render`
 
-**Status:** Completed
+**Status:** Superseded
+**Successor:** [ADR 0015 — Runtime-Owned Frame Presentation](0015-runtime-owned-frame-presentation.md)
 **Date:** 2025-07-23
 
 ## Context

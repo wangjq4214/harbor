@@ -1,6 +1,6 @@
 # Retain a Separate Paste Confirmation Window
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-07-24
 
 ## Context

@@ -1,3 +1,4 @@
+use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber, reconcile_children,
     unmount_fiber,
@@ -11,20 +12,13 @@ use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
-use crate::signal::PENDING_DIRTY;
+use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
 use crate::text::TextRunCache;
 use crate::view::{BuildCx, Component};
 use crate::widgets::text_label;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-
-// ── FrameRequest ────────────────────────────────────────────────────────────
-
-/// Post-update signal indicating whether a redraw is needed.
-pub struct FrameRequest {
-    pub needs_redraw: bool,
-}
 
 // ── External input trampoline ──────────────────────────────────────────────
 
@@ -54,6 +48,7 @@ pub fn queue_external_input(
 /// Owns the fiber tree and orchestrates reconcile -> layout -> paint cycles
 /// as well as input event routing.
 pub struct Runtime {
+    runtime_id: RuntimeId,
     arena: FiberArena,
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
@@ -76,6 +71,7 @@ impl Default for Runtime {
 impl Runtime {
     pub fn new() -> Self {
         Runtime {
+            runtime_id: RuntimeId::new(),
             arena: FiberArena::new(),
             root_id: None,
             root_component: None,
@@ -94,6 +90,8 @@ impl Runtime {
     ///
     /// If a previous root existed, it is unmounted recursively.
     pub fn set_root(&mut self, root: impl Component + 'static) {
+        let _scope = RuntimeScope::enter(self.runtime_id);
+
         // Unmount old root if present
         if let Some(old_root) = self.root_id.take() {
             unmount_fiber(&mut self.arena, old_root);
@@ -118,25 +116,21 @@ impl Runtime {
             fiber.flags.insert(DirtyFlags::BUILD_DIRTY);
             fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
         }
-        crate::signal::mark_dirty(root_id);
+        mark_dirty_for(self.runtime_id, root_id);
     }
 
     /// Processes dirty fibers and runs layout.
     ///
-    /// Returns a `FrameRequest` indicating whether a redraw is needed.
-    pub fn update(&mut self, _now: Instant) -> FrameRequest {
-        let dirty: HashSet<FiberId> = PENDING_DIRTY.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    /// Returns the platform-neutral effects produced by this update.
+    pub fn update(&mut self, _now: Instant) -> RuntimeEffects {
+        let dirty = take_dirty(self.runtime_id);
 
         if dirty.is_empty() {
-            return FrameRequest {
-                needs_redraw: false,
-            };
+            return RuntimeEffects::default();
         }
 
         let Some(root_id) = self.root_id else {
-            return FrameRequest {
-                needs_redraw: false,
-            };
+            return RuntimeEffects::default();
         };
 
         let old_children = self
@@ -147,11 +141,26 @@ impl Runtime {
 
         self.rebuild_root(root_id, &old_children);
 
-        FrameRequest { needs_redraw: true }
+        RuntimeEffects::request_redraw()
+    }
+
+    /// Marks work originating outside the runtime as pending.
+    ///
+    /// The source is intentionally represented only by a marker so this core
+    /// API remains independent of terminals, application events, and window
+    /// systems. A host applies the returned effects just like any other turn.
+    pub fn invalidate_external(&mut self, _work: ExternalInvalidation) -> RuntimeEffects {
+        let Some(root_id) = self.root_id else {
+            return RuntimeEffects::default();
+        };
+
+        mark_dirty_for(self.runtime_id, root_id);
+        RuntimeEffects::request_redraw()
     }
 
     /// Shared rebuild → reconcile → layout → paint sequence.
     fn rebuild_root(&mut self, root_id: FiberId, old_children: &[FiberId]) {
+        let _scope = RuntimeScope::enter(self.runtime_id);
         let hooks = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().hooks);
         let mut cx = BuildCx {
             current_fiber: Some(root_id),
@@ -355,7 +364,7 @@ impl Runtime {
             if let Some(fiber) = self.arena.get_mut(root_id) {
                 fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
             }
-            crate::signal::mark_dirty(root_id);
+            mark_dirty_for(self.runtime_id, root_id);
         }
     }
 
@@ -364,14 +373,13 @@ impl Runtime {
     /// Dispatches a UI event into the widget tree.
     ///
     /// Routes the event through capture → target → bubble phases,
-    /// then applies any commands issued by handlers. Returns a
-    /// `FrameRequest` indicating whether a redraw is needed.
-    pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> FrameRequest {
+    /// then applies any commands issued by handlers.
+    pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> RuntimeEffects {
         let needs_redraw = self.route_event(&event);
         if needs_redraw && let Some(root_id) = self.root_id {
-            crate::signal::mark_dirty(root_id);
+            mark_dirty_for(self.runtime_id, root_id);
         }
-        FrameRequest { needs_redraw }
+        RuntimeEffects::from_redraw(needs_redraw)
     }
 
     /// Core event routing: hit test → capture → target → bubble → apply.
@@ -701,6 +709,16 @@ impl Runtime {
             }
         }
         false
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        let _scope = RuntimeScope::enter(self.runtime_id);
+        if let Some(root_id) = self.root_id.take() {
+            unmount_fiber(&mut self.arena, root_id);
+        }
+        remove_runtime(self.runtime_id);
     }
 }
 

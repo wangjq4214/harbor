@@ -838,6 +838,7 @@ dependencies = [
  "pollster",
  "slotmap",
  "wgpu",
+ "winit",
 ]
 
 [[package]]
