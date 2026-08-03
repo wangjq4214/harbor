@@ -34,10 +34,16 @@ impl InputState {
         self.pointer_captures.get(&pointer_id).copied()
     }
 
+    /// Returns all pointer ids currently captured by widgets.
+    pub(crate) fn captured_pointer_ids(&self) -> Vec<u64> {
+        self.pointer_captures.keys().copied().collect()
+    }
+
     /// Applies accumulated EventCtx commands after the event walk.
     /// Returns true if a paint invalidation was requested.
     pub(crate) fn apply(&mut self, commands: Vec<EventCommand>, arena: &FiberArena) -> bool {
         let mut needs_paint = false;
+        let mut navigated_scopes = Vec::new();
         for cmd in commands {
             match cmd {
                 EventCommand::RequestFocus(id) => {
@@ -50,6 +56,13 @@ impl InputState {
                     self.pointer_captures.remove(&pointer_id);
                 }
                 EventCommand::NavigateFocus { scope, forward } => {
+                    // A FocusScope can see one key event in both capture and
+                    // bubble phases. Apply one navigation per scope/dir for
+                    // that event rather than immediately wrapping back.
+                    if navigated_scopes.contains(&(scope, forward)) {
+                        continue;
+                    }
+                    navigated_scopes.push((scope, forward));
                     let next = Self::find_next_focusable(arena, scope, self.focused, forward);
                     self.focused = next;
                 }

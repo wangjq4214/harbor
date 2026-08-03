@@ -1,7 +1,6 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
 mod confirmation;
-pub(crate) mod translate;
 
 use std::{
     cell::Cell,
@@ -10,10 +9,11 @@ use std::{
 };
 use winit::{
     application::ApplicationHandler,
+    dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 use crate::event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason};
@@ -23,8 +23,12 @@ use harbor_terminal::{
     GpuContext, SurfaceDisposition, SurfaceStatus, Terminal, TextMetrics, load_system_fonts,
     surface_disposition,
 };
-use harbor_widget::input::event::UiEvent;
-use translate::{ImeState, winit_to_uievent_with_ime};
+use harbor_widget::effects::{
+    ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ImeEffect, RuntimeEffects,
+};
+use harbor_widget::input::event::{KeyboardEvent, UiEvent};
+use harbor_widget::layout::Point;
+use harbor_widget::winit::WinitAdapter;
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
@@ -99,12 +103,19 @@ fn route_terminal_inputs(
     terminal_draw_id: harbor_terminal::ExternalDrawId,
     events: impl IntoIterator<Item = (harbor_terminal::ExternalDrawId, UiEvent)>,
     mut handle: impl FnMut(UiEvent),
-) {
+) -> bool {
+    let mut routed = false;
     for (event_draw_id, event) in events {
         if routes_terminal_input(gate_active, event_draw_id, terminal_draw_id) {
+            routed = true;
             handle(event);
         }
     }
+    routed
+}
+
+fn is_terminal_key_press(event: &UiEvent) -> bool {
+    matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
 }
 
 fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
@@ -113,11 +124,89 @@ fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
     }
 }
 
+fn control_flow_for_effect(effect: ControlFlowEffect) -> ControlFlow {
+    match effect {
+        ControlFlowEffect::Wait => ControlFlow::Wait,
+        ControlFlowEffect::WaitUntil(deadline) => ControlFlow::WaitUntil(deadline),
+        ControlFlowEffect::Poll => ControlFlow::Poll,
+    }
+}
+
+fn frame_control_flow_for_effect(effect: ControlFlowEffect) -> FrameControlFlow {
+    match effect {
+        ControlFlowEffect::Wait => FrameControlFlow::Wait,
+        ControlFlowEffect::WaitUntil(deadline) => FrameControlFlow::WaitUntil(deadline),
+        ControlFlowEffect::Poll => FrameControlFlow::Poll,
+    }
+}
+
+fn arbitrate_control_flow(
+    main: FrameControlFlow,
+    confirmation: FrameControlFlow,
+) -> FrameControlFlow {
+    match (main, confirmation) {
+        (FrameControlFlow::Poll, _) | (_, FrameControlFlow::Poll) => FrameControlFlow::Poll,
+        (FrameControlFlow::WaitUntil(main), FrameControlFlow::WaitUntil(confirmation)) => {
+            FrameControlFlow::WaitUntil(main.min(confirmation))
+        }
+        (FrameControlFlow::WaitUntil(deadline), FrameControlFlow::Wait)
+        | (FrameControlFlow::Wait, FrameControlFlow::WaitUntil(deadline)) => {
+            FrameControlFlow::WaitUntil(deadline)
+        }
+        (FrameControlFlow::Wait, FrameControlFlow::Wait) => FrameControlFlow::Wait,
+    }
+}
+
+fn cursor_icon_for_effect(effect: CursorEffect) -> CursorIcon {
+    match effect {
+        CursorEffect::Reset | CursorEffect::Set(CursorShape::Default) => CursorIcon::Default,
+        CursorEffect::Set(CursorShape::Pointer) => CursorIcon::Pointer,
+        CursorEffect::Set(CursorShape::Text) => CursorIcon::Text,
+        CursorEffect::Set(CursorShape::Crosshair) => CursorIcon::Crosshair,
+        CursorEffect::Set(CursorShape::Grab) => CursorIcon::Grab,
+        CursorEffect::Set(CursorShape::Grabbing) => CursorIcon::Grabbing,
+        CursorEffect::Set(CursorShape::NotAllowed) => CursorIcon::NotAllowed,
+        CursorEffect::Set(CursorShape::ResizeHorizontal) => CursorIcon::EwResize,
+        CursorEffect::Set(CursorShape::ResizeVertical) => CursorIcon::NsResize,
+    }
+}
+
+fn ime_cursor_area(position: Point) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+    (
+        LogicalPosition::new(position.x as f64, position.y as f64),
+        LogicalSize::new(1.0, 1.0),
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClipboardHostAction {
+    Deferred(ClipboardEffect),
+}
+
+/// Returns the operation metadata safe to include in clipboard logs.
+fn clipboard_log_metadata(effect: &ClipboardEffect) -> (&'static str, usize) {
+    match effect {
+        ClipboardEffect::Read => ("read", 0),
+        ClipboardEffect::Write(contents) => ("write", contents.len()),
+    }
+}
+
+/// Keeps clipboard effects at the platform-neutral boundary until a host
+/// result channel exists. In particular, a read is never performed and then
+/// discarded by this application shell.
+fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
+    let (operation, byte_len) = clipboard_log_metadata(&effect);
+    tracing::warn!(
+        operation,
+        byte_len,
+        "clipboard effect deferred: host result channel is not implemented"
+    );
+    ClipboardHostAction::Deferred(effect)
+}
+
 /// Outcome of a dialog-overlay event dispatch.
 struct DialogResult {
     outcome: DialogOutcome,
-    /// True when ScaleFactorChanged was handled, requiring a main-window redraw.
-    needs_redraw: Option<RedrawReason>,
 }
 
 enum DialogOutcome {
@@ -140,22 +229,24 @@ impl DialogOverlay {
         self.window.as_ref().map(|w| w.window_id())
     }
 
+    fn control_flow(&self) -> Option<FrameControlFlow> {
+        self.window.as_ref().map(ConfirmationWindow::control_flow)
+    }
+
     /// Dispatches a window event to the active confirmation dialog.
     fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale: f32,
+        event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
         terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> DialogResult {
         let Some(mut confirmation) = self.window.take() else {
             return DialogResult {
                 outcome: DialogOutcome::None,
-                needs_redraw: None,
             };
         };
-        let mut needs_redraw = None;
-        let outcome = match confirmation.handle_event(event, scale) {
+        let outcome = match confirmation.handle_event(event, event_loop) {
             confirmation::ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
             confirmation::ConfirmationResult::Confirmed => {
                 let raw_text = confirmation.raw_text().to_owned();
@@ -166,29 +257,25 @@ impl DialogOverlay {
                     && let (Some(gpu), Some(terminal)) = (gpu, terminal)
                 {
                     let term = terminal.lock().unwrap();
-                    confirmation.render(gpu.device(), gpu.queue(), &|ch| {
+                    confirmation.render(event_loop, gpu.device(), gpu.queue(), &|ch| {
                         term.text_glyph(ch).copied()
                     });
                 }
                 if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event
                     && let Some(gpu) = gpu
                 {
-                    confirmation.scale_factor_changed(gpu.device(), *scale_factor);
-                    needs_redraw = Some(RedrawReason::Resize);
+                    confirmation.scale_factor_changed(event_loop, gpu.device(), *scale_factor);
                 }
                 if let WindowEvent::Resized(size) = event
                     && let Some(gpu) = gpu
                 {
-                    confirmation.resize(gpu.device(), size.width, size.height);
+                    confirmation.resize(event_loop, gpu.device(), size.width, size.height);
                 }
                 self.window = Some(confirmation);
                 DialogOutcome::None
             }
         };
-        DialogResult {
-            outcome,
-            needs_redraw,
-        }
+        DialogResult { outcome }
     }
 
     /// Installs a new confirmation dialog, replacing any existing one.
@@ -205,6 +292,8 @@ struct AppRuntime {
     terminal: Option<Arc<Mutex<Terminal>>>,
     /// Widget framework runtime.
     widget_runtime: Option<harbor_widget::runtime::Runtime>,
+    /// Main-window input adapter, sharing the runtime's window lifecycle.
+    winit_adapter: Option<WinitAdapter>,
     dialog: DialogOverlay,
 }
 
@@ -293,8 +382,6 @@ pub(crate) struct App {
     runtime: AppRuntime,
     frame: FrameState,
     event_proxy: EventLoopProxy<AppEvent>,
-    modifiers: ModifiersState,
-    ime: ImeState,
 }
 
 /// Errors that can occur while starting the application.
@@ -346,21 +433,12 @@ impl ApplicationHandler<AppEvent> for App {
     ) {
         let dialog_window_id = self.runtime.dialog.window_id();
         if dialog_window_id == Some(window_id) {
-            let scale = self
-                .runtime
-                .window
-                .as_ref()
-                .map(|window| window.scale_factor() as f32)
-                .unwrap_or(1.0);
             let result = self.runtime.dialog.handle_event(
                 &event,
-                scale,
+                event_loop,
                 self.runtime.gpu.as_ref(),
                 self.runtime.terminal.as_ref(),
             );
-            if let Some(reason) = result.needs_redraw {
-                self.request_redraw(reason);
-            }
             match result.outcome {
                 DialogOutcome::Cancelled => {
                     self.request_redraw(RedrawReason::Input);
@@ -410,9 +488,15 @@ impl ApplicationHandler<AppEvent> for App {
             && kbd.state == ElementState::Pressed
         {
             let snapshot = terminal.lock().unwrap().drain_and_snapshot();
-            if let Some(navigation) =
-                scrollback_navigation(&kbd.logical_key, self.modifiers, snapshot.is_alt)
-            {
+            if let Some(navigation) = scrollback_navigation(
+                &kbd.logical_key,
+                self.runtime
+                    .winit_adapter
+                    .as_ref()
+                    .map(WinitAdapter::modifiers)
+                    .unwrap_or_default(),
+                snapshot.is_alt,
+            ) {
                 let mut terminal = terminal.lock().unwrap();
                 match navigation {
                     ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(snapshot.rows),
@@ -423,48 +507,66 @@ impl ApplicationHandler<AppEvent> for App {
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
                 return;
             }
-            Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
         }
 
-        if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-            let scale = window.scale_factor() as f32;
-            let is_keyboard = matches!(&event, WindowEvent::KeyboardInput { .. });
-            if (!gate_active || !is_keyboard)
-                && let Some(ui_event) =
-                    winit_to_uievent_with_ime(&event, scale, self.modifiers, &mut self.ime)
-            {
-                let frame_request = widget_runtime.dispatch(ui_event, Instant::now());
-                if frame_request.request_redraw {
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-                }
+        if matches!(&event, WindowEvent::CloseRequested) {
+            tracing::info!("close requested");
+            event_loop.exit();
+            return;
+        }
+
+        let outcome = match (
+            self.runtime.winit_adapter.as_mut(),
+            self.runtime.widget_runtime.as_mut(),
+        ) {
+            (Some(adapter), Some(widget_runtime)) => {
+                Some(adapter.handle_event(widget_runtime, &event))
+            }
+            _ => None,
+        };
+        if let Some(outcome) = outcome
+            && outcome.handled
+        {
+            Self::apply_runtime_effects(
+                &mut self.frame.scheduler,
+                event_loop,
+                window,
+                outcome.effects,
+            );
+            if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                 let draw_id = terminal.lock().unwrap().draw_id();
-                route_terminal_inputs(
+                let terminal_key_press = std::cell::Cell::new(false);
+                let routed = route_terminal_inputs(
                     gate_active,
                     draw_id,
                     widget_runtime.drain_external_input(),
                     |external_event| {
+                        if is_terminal_key_press(&external_event) {
+                            terminal_key_press.set(true);
+                        }
                         if let Err(error) = terminal.lock().unwrap().handle_event(external_event) {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to write terminal input");
                         }
                     },
                 );
+                // CustomPaint does not necessarily invalidate paint for a
+                // terminal keypress. Preserve the old scheduler wake, but
+                // only for an actually routed KeyDown (not IME suppression).
+                if routed && terminal_key_press.get() {
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                }
             }
         }
 
         match event {
-            WindowEvent::CloseRequested => {
-                tracing::info!("close requested");
-                event_loop.exit();
-            }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers.state();
-            }
             WindowEvent::Resized(size) => {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
+                self.frame.surface_recovery_attempted = false;
                 if size.width == 0 || size.height == 0 {
+                    self.frame.scheduler.set_drawable(false);
                     return;
                 }
-                self.frame.surface_recovery_attempted = false;
+                self.frame.scheduler.set_drawable(true);
                 gpu.resize(size.width, size.height);
                 let mut terminal = terminal.lock().unwrap();
                 let terminal_size = terminal.terminal_size(gpu);
@@ -474,15 +576,28 @@ impl ApplicationHandler<AppEvent> for App {
                     let viewport =
                         harbor_widget::renderer::Viewport::new(size.width, size.height, scale);
                     widget_runtime.set_viewport(viewport);
-                    widget_runtime.update(Instant::now());
+                    let effects = widget_runtime.update(Instant::now());
+                    Self::apply_runtime_effects(
+                        &mut self.frame.scheduler,
+                        event_loop,
+                        window,
+                        effects,
+                    );
                 }
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 tracing::trace!(?scale_factor, "main window scale factor changed");
                 let scale = scale_factor as f32;
-                let (physical_width, physical_height) = gpu.surface_size();
-                gpu.reconfigure();
+                let size = window.inner_size();
+                self.frame.surface_recovery_attempted = false;
+                if size.width == 0 || size.height == 0 {
+                    self.frame.scheduler.set_drawable(false);
+                    return;
+                }
+                self.frame.scheduler.set_drawable(true);
+                let (physical_width, physical_height) = (size.width, size.height);
+                gpu.resize(physical_width, physical_height);
                 if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                     let viewport = harbor_widget::renderer::Viewport::new(
                         physical_width,
@@ -490,14 +605,20 @@ impl ApplicationHandler<AppEvent> for App {
                         scale,
                     );
                     widget_runtime.set_viewport(viewport);
-                    widget_runtime.update(Instant::now());
+                    let effects = widget_runtime.update(Instant::now());
+                    Self::apply_runtime_effects(
+                        &mut self.frame.scheduler,
+                        event_loop,
+                        window,
+                        effects,
+                    );
                 }
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
                 self.frame.scheduler.redraw_requested();
-                self.render_frame();
+                self.render_frame(event_loop);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let snapshot = terminal.lock().unwrap().drain_and_snapshot();
@@ -534,6 +655,7 @@ impl App {
                 gpu: None,
                 terminal: None,
                 widget_runtime: None,
+                winit_adapter: None,
                 dialog: DialogOverlay { window: None },
             },
             frame: FrameState {
@@ -543,8 +665,6 @@ impl App {
                 steady_state_emitted: false,
             },
             event_proxy,
-            modifiers: ModifiersState::default(),
-            ime: ImeState::default(),
         }
     }
 
@@ -565,7 +685,10 @@ impl App {
 
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
-        gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
+        let initial_size = window.inner_size();
+        if initial_size.width != 0 && initial_size.height != 0 {
+            gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
+        }
 
         // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
         let fonts = load_system_fonts().map_err(AppError::Renderer)?;
@@ -595,8 +718,21 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.terminal = Some(terminal);
-        self.init_widget_runtime();
+        let mut winit_adapter = WinitAdapter::new();
+        winit_adapter.set_scale_factor(window.scale_factor() as f32);
+        self.runtime.winit_adapter = Some(winit_adapter);
+        let initial_effects = self.init_widget_runtime();
         self.runtime.window = Some(window.clone());
+        let initial_size = window.inner_size();
+        self.frame
+            .scheduler
+            .set_drawable(initial_size.width != 0 && initial_size.height != 0);
+        Self::apply_runtime_effects(
+            &mut self.frame.scheduler,
+            event_loop,
+            &window,
+            initial_effects,
+        );
         self.request_redraw(RedrawReason::Input);
         Ok(())
     }
@@ -614,8 +750,46 @@ impl App {
         }
     }
 
+    fn apply_runtime_effects(
+        scheduler: &mut FrameScheduler,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        effects: RuntimeEffects,
+    ) {
+        if let Some(control_flow) = effects.control_flow {
+            scheduler.set_control_flow(frame_control_flow_for_effect(control_flow));
+            event_loop.set_control_flow(control_flow_for_effect(control_flow));
+        }
+        if let Some(cursor) = effects.cursor {
+            window.set_cursor(cursor_icon_for_effect(cursor));
+        }
+        if let Some(ImeEffect { allowed, position }) = effects.ime {
+            if let Some(allowed) = allowed {
+                window.set_ime_allowed(allowed);
+            }
+            if let Some(position) = position {
+                let (position, size) = ime_cursor_area(position);
+                window.set_ime_cursor_area(position, size);
+            }
+        }
+        if let Some(clipboard) = effects.clipboard {
+            apply_clipboard_effect(clipboard);
+        }
+        if effects.request_redraw {
+            Self::wake_redraw(scheduler, window, RedrawReason::Input);
+        }
+    }
+
     fn set_control_flow(&self, event_loop: &ActiveEventLoop) {
-        match self.frame.scheduler.control_flow() {
+        let main = self.frame.scheduler.control_flow();
+        let control_flow = self
+            .runtime
+            .dialog
+            .control_flow()
+            .map_or(main, |confirmation| {
+                arbitrate_control_flow(main, confirmation)
+            });
+        match control_flow {
             FrameControlFlow::Wait => event_loop.set_control_flow(ControlFlow::Wait),
             FrameControlFlow::WaitUntil(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -624,7 +798,32 @@ impl App {
         }
     }
 
-    fn render_frame(&mut self) {
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+        if self.runtime.window.as_ref().is_some_and(|window| {
+            let size = window.inner_size();
+            size.width == 0 || size.height == 0
+        }) {
+            self.frame.scheduler.set_drawable(false);
+            return;
+        }
+        self.frame.scheduler.set_drawable(true);
+
+        let update_effects = self
+            .runtime
+            .widget_runtime
+            .as_mut()
+            .map(|runtime| runtime.update(Instant::now()));
+        if let Some(update_effects) = update_effects
+            && let Some(window) = self.runtime.window.as_ref()
+        {
+            Self::apply_runtime_effects(
+                &mut self.frame.scheduler,
+                event_loop,
+                window,
+                update_effects,
+            );
+        }
+
         let status;
         let reconfigure_after_present;
         {
@@ -735,7 +934,10 @@ impl App {
     }
 
     /// Initializes the widget runtime with a terminal CustomPaint root.
-    fn init_widget_runtime(&mut self) {
+    ///
+    /// The returned effects are produced during the bootstrap focus transition
+    /// and must be applied after the native window is available.
+    fn init_widget_runtime(&mut self) -> RuntimeEffects {
         use harbor_widget::widgets::custom_paint::CustomPaint;
 
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
@@ -755,10 +957,17 @@ impl App {
         let mut runtime = harbor_widget::runtime::Runtime::new();
         runtime.set_root(custom_paint);
         runtime.init_renderer(gpu.device(), gpu.format());
-        runtime.update(Instant::now());
+        let mut initial_effects = runtime.update(Instant::now());
         runtime.focus_first_focusable();
 
+        // Bootstrap focus is a local widget-state transition, not a native
+        // focus event. Consume its deferred CustomPaint notification now so
+        // the first native window event cannot replay it.
+        runtime.drain_external_input();
+        initial_effects.merge(runtime.take_pending_effects());
+
         self.runtime.widget_runtime = Some(runtime);
+        initial_effects
     }
 }
 
@@ -843,13 +1052,12 @@ mod tests {
         config: &'frame mut wgpu::SurfaceConfiguration,
     ) {
         use harbor_widget::{
-            effects::RuntimeEffects,
             renderer::Viewport,
             runtime::Runtime,
-            winit::{FrameOutcome, WinitAdapter, WinitFrameTarget},
+            winit::{FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget},
         };
 
-        let _: fn(&mut WinitAdapter, &mut Runtime, &WindowEvent) -> RuntimeEffects =
+        let _: fn(&mut WinitAdapter, &mut Runtime, &WindowEvent) -> WinitEventOutcome =
             WinitAdapter::handle_event;
         let mut runtime = Runtime::new();
         let mut adapter = WinitAdapter::new();
@@ -955,6 +1163,42 @@ mod tests {
     fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
         use tracing_subscriber::layer::SubscriberExt;
         let capture = LifecycleCapture::new();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, capture)
+    }
+
+    #[derive(Clone, Default)]
+    struct ClipboardCapture {
+        events: Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    }
+
+    impl<S> tracing_subscriber::layer::Layer<S> for ClipboardCapture
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if !event.metadata().target().contains("app") {
+                return;
+            }
+            let mut fields = std::collections::HashMap::new();
+            event.record(&mut FieldRecorder {
+                fields: &mut fields,
+            });
+            self.events
+                .lock()
+                .expect("clipboard capture lock")
+                .push(fields);
+        }
+    }
+
+    fn with_clipboard_capture<R>(f: impl FnOnce() -> R) -> (R, ClipboardCapture) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let capture = ClipboardCapture::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let result = tracing::subscriber::with_default(subscriber, f);
         (result, capture)
@@ -1166,5 +1410,168 @@ mod tests {
             redraw_reason_for_app_event(AppEvent::TerminalOutputReady),
             Some(RedrawReason::TerminalOutput)
         );
+    }
+
+    #[test]
+    fn terminal_keypress_wake_classification_excludes_ime_commits_and_other_events() {
+        use harbor_widget::input::event::{Key as WidgetKey, Modifiers};
+
+        assert!(is_terminal_key_press(&UiEvent::Keyboard(
+            KeyboardEvent::KeyDown {
+                key: WidgetKey::Enter,
+                modifiers: Modifiers::default(),
+            }
+        )));
+        assert!(!is_terminal_key_press(&UiEvent::Keyboard(
+            KeyboardEvent::Ime("text".into())
+        )));
+        assert!(!is_terminal_key_press(&UiEvent::Keyboard(
+            KeyboardEvent::KeyUp {
+                key: WidgetKey::Enter,
+                modifiers: Modifiers::default(),
+            }
+        )));
+    }
+
+    #[test]
+    fn control_flow_arbitration_prefers_poll_then_earliest_deadline() {
+        // Arrange
+        let now = Instant::now();
+        let early = now + Duration::from_secs(1);
+        let late = now + Duration::from_secs(2);
+
+        // Act and assert each arbitration combination independently.
+        assert_eq!(
+            arbitrate_control_flow(FrameControlFlow::Wait, FrameControlFlow::Wait),
+            FrameControlFlow::Wait
+        );
+        assert_eq!(
+            arbitrate_control_flow(
+                FrameControlFlow::WaitUntil(late),
+                FrameControlFlow::WaitUntil(early),
+            ),
+            FrameControlFlow::WaitUntil(early)
+        );
+        assert_eq!(
+            arbitrate_control_flow(FrameControlFlow::WaitUntil(early), FrameControlFlow::Wait),
+            FrameControlFlow::WaitUntil(early)
+        );
+        assert_eq!(
+            arbitrate_control_flow(FrameControlFlow::Poll, FrameControlFlow::WaitUntil(late)),
+            FrameControlFlow::Poll
+        );
+        assert_eq!(
+            arbitrate_control_flow(FrameControlFlow::WaitUntil(late), FrameControlFlow::Poll),
+            FrameControlFlow::Poll
+        );
+    }
+
+    #[test]
+    fn clipboard_log_metadata_excludes_write_payload() {
+        let secret = "private clipboard contents";
+        assert_eq!(
+            clipboard_log_metadata(&ClipboardEffect::write(secret)),
+            ("write", secret.len())
+        );
+        assert_eq!(clipboard_log_metadata(&ClipboardEffect::Read), ("read", 0));
+    }
+
+    #[test]
+    fn clipboard_effects_are_explicitly_deferred_without_a_discarding_read() {
+        assert_eq!(
+            apply_clipboard_effect(ClipboardEffect::Read),
+            ClipboardHostAction::Deferred(ClipboardEffect::Read)
+        );
+        assert_eq!(
+            apply_clipboard_effect(ClipboardEffect::write("copied")),
+            ClipboardHostAction::Deferred(ClipboardEffect::write("copied"))
+        );
+    }
+
+    #[test]
+    fn clipboard_warning_logs_metadata_without_write_payload() {
+        // Arrange: use a value that would make accidental payload logging obvious.
+        let secret = "clipboard-secret-not-for-logs";
+
+        // Act: defer the effect under a scoped tracing subscriber.
+        let (action, capture) =
+            with_clipboard_capture(|| apply_clipboard_effect(ClipboardEffect::write(secret)));
+
+        // Assert: the host action remains deferred and the warning exposes only
+        // operation metadata, never the clipboard contents.
+        assert_eq!(
+            action,
+            ClipboardHostAction::Deferred(ClipboardEffect::write(secret))
+        );
+        let events = capture.events.lock().expect("clipboard events lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].get("operation"), Some(&"write".to_string()));
+        assert_eq!(events[0].get("byte_len"), Some(&secret.len().to_string()));
+        assert!(!format!("{events:?}").contains(secret));
+    }
+
+    #[test]
+    fn runtime_effect_host_mapping_is_pure_and_complete_without_native_handles() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            control_flow_for_effect(ControlFlowEffect::Wait),
+            ControlFlow::Wait
+        );
+        assert_eq!(
+            control_flow_for_effect(ControlFlowEffect::WaitUntil(deadline)),
+            ControlFlow::WaitUntil(deadline)
+        );
+        assert_eq!(
+            control_flow_for_effect(ControlFlowEffect::Poll),
+            ControlFlow::Poll
+        );
+
+        let cursor_mappings = [
+            (CursorEffect::Reset, CursorIcon::Default),
+            (CursorEffect::Set(CursorShape::Default), CursorIcon::Default),
+            (CursorEffect::Set(CursorShape::Pointer), CursorIcon::Pointer),
+            (CursorEffect::Set(CursorShape::Text), CursorIcon::Text),
+            (
+                CursorEffect::Set(CursorShape::Crosshair),
+                CursorIcon::Crosshair,
+            ),
+            (CursorEffect::Set(CursorShape::Grab), CursorIcon::Grab),
+            (
+                CursorEffect::Set(CursorShape::Grabbing),
+                CursorIcon::Grabbing,
+            ),
+            (
+                CursorEffect::Set(CursorShape::NotAllowed),
+                CursorIcon::NotAllowed,
+            ),
+            (
+                CursorEffect::Set(CursorShape::ResizeHorizontal),
+                CursorIcon::EwResize,
+            ),
+            (
+                CursorEffect::Set(CursorShape::ResizeVertical),
+                CursorIcon::NsResize,
+            ),
+        ];
+        for (effect, expected) in cursor_mappings {
+            assert_eq!(cursor_icon_for_effect(effect), expected);
+        }
+        assert_eq!(
+            ime_cursor_area(Point::new(12.5, 8.0)),
+            (LogicalPosition::new(12.5, 8.0), LogicalSize::new(1.0, 1.0))
+        );
+
+        let effects = RuntimeEffects {
+            request_redraw: true,
+            control_flow: Some(ControlFlowEffect::Poll),
+            cursor: Some(CursorEffect::Set(CursorShape::Text)),
+            ime: Some(ImeEffect::set_allowed(true)),
+            clipboard: Some(ClipboardEffect::write("copied")),
+        };
+        assert!(effects.request_redraw);
+        assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));
+        assert_eq!(effects.cursor, Some(CursorEffect::Set(CursorShape::Text)));
+        assert_eq!(effects.ime, Some(ImeEffect::set_allowed(true)));
+        assert_eq!(effects.clipboard, Some(ClipboardEffect::write("copied")));
     }
 }

@@ -40,12 +40,19 @@ pub(crate) struct FrameScheduler {
     activity: FrameActivity,
     deadline: Option<Instant>,
     redraw_pending: bool,
+    /// Latest runtime-requested control flow, retained across callbacks.
+    control_flow_override: Option<FrameControlFlow>,
+    /// True while the native window cannot acquire a drawable surface.
+    suspended: bool,
 }
 
 impl FrameScheduler {
     pub(crate) fn wake(&mut self, reason: RedrawReason) -> bool {
         if reason == RedrawReason::Active {
             self.activity = FrameActivity::Active;
+        }
+        if self.suspended {
+            return false;
         }
         let was_pending = self.redraw_pending;
         self.redraw_pending = true;
@@ -78,10 +85,27 @@ impl FrameScheduler {
     }
 
     pub(crate) fn should_request_continuous_redraw(&self) -> bool {
-        self.activity == FrameActivity::Active && !self.redraw_pending
+        !self.suspended && self.activity == FrameActivity::Active && !self.redraw_pending
+    }
+
+    pub(crate) fn set_drawable(&mut self, drawable: bool) {
+        self.suspended = !drawable;
+        if !drawable {
+            self.redraw_pending = false;
+        }
+    }
+
+    pub(crate) fn set_control_flow(&mut self, control_flow: FrameControlFlow) {
+        self.control_flow_override = Some(control_flow);
     }
 
     pub(crate) fn control_flow(&self) -> FrameControlFlow {
+        if self.suspended {
+            return FrameControlFlow::Wait;
+        }
+        if let Some(control_flow) = self.control_flow_override {
+            return control_flow;
+        }
         match self.activity {
             FrameActivity::Active => FrameControlFlow::Poll,
             FrameActivity::Deadline => FrameControlFlow::WaitUntil(
@@ -122,6 +146,76 @@ mod tests {
     }
 
     #[test]
+    fn independent_window_schedulers_do_not_suppress_each_other() {
+        let mut main = FrameScheduler::default();
+        let mut confirmation = FrameScheduler::default();
+
+        assert!(main.wake(RedrawReason::Input));
+        assert!(confirmation.wake(RedrawReason::Resize));
+        assert!(main.redraw_pending());
+        assert!(confirmation.redraw_pending());
+
+        main.redraw_requested();
+        assert!(!main.redraw_pending());
+        assert!(confirmation.redraw_pending());
+    }
+
+    #[test]
+    fn each_window_can_rewake_after_only_its_own_redraw_is_observed() {
+        // Arrange: both native windows have independently pending redraws.
+        let mut main = FrameScheduler::default();
+        let mut confirmation = FrameScheduler::default();
+        assert!(main.wake(RedrawReason::Input));
+        assert!(confirmation.wake(RedrawReason::Resize));
+
+        // Act: present the main window, then request another main frame.
+        main.redraw_requested();
+        assert!(main.wake(RedrawReason::Input));
+
+        // Assert: the confirmation request stayed coalesced and can be
+        // reissued only after confirmation itself presents.
+        assert!(!confirmation.wake(RedrawReason::Resize));
+        confirmation.redraw_requested();
+        assert!(confirmation.wake(RedrawReason::Resize));
+        assert!(main.redraw_pending());
+    }
+
+    #[test]
+    fn should_rewake_confirmation_after_surface_recovery_redraw_is_observed() {
+        // Arrange
+        let mut confirmation = FrameScheduler::default();
+
+        // Act
+        let first_wake = confirmation.wake(RedrawReason::SurfaceRecovery);
+        let coalesced_wake = confirmation.wake(RedrawReason::SurfaceRecovery);
+        confirmation.redraw_requested();
+        let next_wake = confirmation.wake(RedrawReason::SurfaceRecovery);
+
+        // Assert
+        assert!(first_wake);
+        assert!(!coalesced_wake);
+        assert!(next_wake);
+        assert!(confirmation.redraw_pending());
+    }
+
+    #[test]
+    fn should_bound_confirmation_recovery_and_suboptimal_wakes_until_presented() {
+        // Arrange
+        let mut confirmation = FrameScheduler::default();
+
+        // Act
+        let recovery_wake = confirmation.wake(RedrawReason::SurfaceRecovery);
+        let suboptimal_wake = confirmation.wake(RedrawReason::SurfaceSuboptimal);
+        confirmation.redraw_requested();
+        let retry_wake = confirmation.wake(RedrawReason::SurfaceSuboptimal);
+
+        // Assert
+        assert!(recovery_wake);
+        assert!(!suboptimal_wake);
+        assert!(retry_wake);
+    }
+
+    #[test]
     fn selects_idle_deadline_and_active_control_flows() {
         let mut scheduler = FrameScheduler::default();
         assert_eq!(scheduler.control_flow(), FrameControlFlow::Wait);
@@ -141,6 +235,47 @@ mod tests {
         scheduler.set_deadline(None);
         assert_eq!(scheduler.activity(), FrameActivity::Idle);
         assert_eq!(scheduler.control_flow(), FrameControlFlow::Wait);
+    }
+
+    #[test]
+    fn runtime_control_flow_override_persists_across_activity_changes() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        // Act
+        scheduler.set_control_flow(FrameControlFlow::WaitUntil(deadline));
+        scheduler.set_active(true);
+        scheduler.set_deadline(Some(deadline + Duration::from_secs(1)));
+
+        // Assert
+        assert_eq!(
+            scheduler.control_flow(),
+            FrameControlFlow::WaitUntil(deadline)
+        );
+
+        // Act: a later runtime request replaces the retained override.
+        scheduler.set_control_flow(FrameControlFlow::Poll);
+        scheduler.set_active(false);
+        scheduler.set_deadline(None);
+
+        // Assert
+        assert_eq!(scheduler.control_flow(), FrameControlFlow::Poll);
+    }
+
+    #[test]
+    fn suspended_scheduler_drops_pending_redraw_and_rewakes_on_restore() {
+        let mut scheduler = FrameScheduler::default();
+        assert!(scheduler.wake(RedrawReason::Input));
+
+        scheduler.set_drawable(false);
+        assert!(!scheduler.redraw_pending());
+        assert!(!scheduler.wake(RedrawReason::Resize));
+        assert_eq!(scheduler.control_flow(), FrameControlFlow::Wait);
+
+        scheduler.set_drawable(true);
+        assert!(scheduler.wake(RedrawReason::Resize));
+        assert!(scheduler.redraw_pending());
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber, reconcile_children,
     unmount_fiber,
 };
-use crate::input::event::{PointerPhase, UiEvent};
+use crate::input::event::{FocusEvent, PointerPhase, UiEvent};
 use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
@@ -12,7 +12,9 @@ use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
-use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
+use crate::signal::{
+    RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
+};
 use crate::text::TextRunCache;
 use crate::view::{BuildCx, Component};
 use crate::widgets::text_label;
@@ -22,23 +24,46 @@ use std::time::Instant;
 
 // ── External input trampoline ──────────────────────────────────────────────
 
-// Thread-local queue for external input events.
+// Thread-local queues for external input events, grouped by owning Runtime.
 //
 // Written by `CustomPaint::handle_event` during the event walk and drained
-// by `Runtime::drain_external_input` after the walk completes.
+// by `Runtime::drain_external_input` after the walk completes. The active
+// Runtime scope is required so two window runtimes on the same thread cannot
+// consume each other's deferred input.
 thread_local! {
     static PENDING_EXTERNAL_INPUT: std::cell::RefCell<
-        Vec<(crate::scene::primitive::ExternalDrawId, crate::input::event::UiEvent)>,
-    > = const { std::cell::RefCell::new(Vec::new()) };
+        HashMap<
+            RuntimeId,
+            Vec<(crate::scene::primitive::ExternalDrawId, crate::input::event::UiEvent)>,
+        >,
+    > = std::cell::RefCell::new(HashMap::new());
 }
 
 /// Called by CustomPaint::handle_event during event routing.
-/// Queues an event for deferred delivery to the external input handler.
+/// Queues an event for deferred delivery to the active Runtime's host.
+///
+/// Calls outside a Runtime dispatch are ignored because there is no safe
+/// owner for the event; CustomPaint always runs inside `Runtime::dispatch`.
 pub fn queue_external_input(
     id: crate::scene::primitive::ExternalDrawId,
     event: crate::input::event::UiEvent,
 ) {
-    PENDING_EXTERNAL_INPUT.with(|q| q.borrow_mut().push((id, event)));
+    let Some(runtime_id) = active_runtime_id() else {
+        return;
+    };
+    PENDING_EXTERNAL_INPUT.with(|queues| {
+        queues
+            .borrow_mut()
+            .entry(runtime_id)
+            .or_default()
+            .push((id, event));
+    });
+}
+
+fn remove_external_input(runtime_id: RuntimeId) {
+    PENDING_EXTERNAL_INPUT.with(|queues| {
+        queues.borrow_mut().remove(&runtime_id);
+    });
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
@@ -60,6 +85,7 @@ pub struct Runtime {
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     input: InputState,
+    pending_effects: RuntimeEffects,
 }
 
 impl Default for Runtime {
@@ -83,6 +109,7 @@ impl Runtime {
             current_viewport: None,
             external_draws: HashMap::new(),
             input: InputState::new(),
+            pending_effects: RuntimeEffects::default(),
         }
     }
 
@@ -123,14 +150,15 @@ impl Runtime {
     ///
     /// Returns the platform-neutral effects produced by this update.
     pub fn update(&mut self, _now: Instant) -> RuntimeEffects {
+        let mut effects = std::mem::take(&mut self.pending_effects);
         let dirty = take_dirty(self.runtime_id);
 
         if dirty.is_empty() {
-            return RuntimeEffects::default();
+            return effects;
         }
 
         let Some(root_id) = self.root_id else {
-            return RuntimeEffects::default();
+            return effects;
         };
 
         let old_children = self
@@ -141,7 +169,8 @@ impl Runtime {
 
         self.rebuild_root(root_id, &old_children);
 
-        RuntimeEffects::request_redraw()
+        effects.merge(RuntimeEffects::request_redraw());
+        effects
     }
 
     /// Marks work originating outside the runtime as pending.
@@ -375,11 +404,33 @@ impl Runtime {
     /// Routes the event through capture → target → bubble phases,
     /// then applies any commands issued by handlers.
     pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> RuntimeEffects {
+        let _scope = RuntimeScope::enter(self.runtime_id);
         let needs_redraw = self.route_event(&event);
         if needs_redraw && let Some(root_id) = self.root_id {
             mark_dirty_for(self.runtime_id, root_id);
         }
         RuntimeEffects::from_redraw(needs_redraw)
+    }
+
+    /// Cancels every pointer currently captured by a widget.
+    ///
+    /// Hosts use this at lifecycle boundaries such as window focus loss so a
+    /// widget cannot observe a later button-up from a different interaction.
+    pub fn cancel_pointer_captures(&mut self, position: Point) -> RuntimeEffects {
+        let pointer_ids = self.input.captured_pointer_ids();
+        let mut effects = RuntimeEffects::default();
+        for pointer_id in pointer_ids {
+            effects.merge(self.dispatch(
+                UiEvent::Pointer(crate::input::event::PointerEvent::new(
+                    position,
+                    PointerPhase::Cancel,
+                    crate::input::event::PointerButton::Left,
+                    pointer_id,
+                )),
+                Instant::now(),
+            ));
+        }
+        effects
     }
 
     /// Core event routing: hit test → capture → target → bubble → apply.
@@ -479,8 +530,15 @@ impl Runtime {
 
     /// Apply accumulated EventCtx commands and return whether repaint is needed.
     fn finish_event(&mut self, mut ctx: EventCtx) -> bool {
+        let previous_focus = self.input.focused;
         let needs_paint = self.input.apply(ctx.take_commands(), &self.arena);
-        needs_paint || ctx.needs_paint()
+        let next_focus = self.input.focused;
+        let focus_needs_paint = if previous_focus != next_focus {
+            self.notify_focus_transition(previous_focus, next_focus)
+        } else {
+            false
+        };
+        needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
     /// Call handle_event on a fiber, setting up EventCtx with the fiber id.
@@ -622,6 +680,13 @@ impl Runtime {
         self.pending_delta.as_ref()
     }
 
+    /// Takes effects produced by a programmatic runtime operation before the
+    /// next update turn. Hosts can apply these immediately when the runtime is
+    /// otherwise idle.
+    pub fn take_pending_effects(&mut self) -> RuntimeEffects {
+        std::mem::take(&mut self.pending_effects)
+    }
+
     /// Drains queued external input events produced by focusable CustomPaint
     /// widgets during the last event dispatch.
     pub fn drain_external_input(
@@ -630,7 +695,12 @@ impl Runtime {
         crate::scene::primitive::ExternalDrawId,
         crate::input::event::UiEvent,
     )> {
-        PENDING_EXTERNAL_INPUT.with(|q| std::mem::take(&mut *q.borrow_mut()))
+        PENDING_EXTERNAL_INPUT.with(|queues| {
+            queues
+                .borrow_mut()
+                .remove(&self.runtime_id)
+                .unwrap_or_default()
+        })
     }
 
     /// Returns a reference to the InputState.
@@ -646,7 +716,7 @@ impl Runtime {
 
     /// Programmatically sets the focused fiber for keyboard event routing.
     pub fn set_focus(&mut self, id: FiberId) {
-        self.input.focused = Some(id);
+        self.transition_focus(Some(id));
     }
 
     /// Scans the fiber tree and focuses the first focusable widget.
@@ -656,7 +726,7 @@ impl Runtime {
             return false;
         };
         if let Some(fid) = self.find_first_focusable(root_id) {
-            self.input.focused = Some(fid);
+            self.transition_focus(Some(fid));
             true
         } else {
             false
@@ -682,7 +752,45 @@ impl Runtime {
 
     /// Clears the focused fiber.
     pub fn clear_focus(&mut self) {
-        self.input.focused = None;
+        self.transition_focus(None);
+    }
+
+    /// Applies a programmatic focus transition and notifies both endpoints.
+    fn transition_focus(&mut self, next: Option<FiberId>) {
+        let previous = self.input.focused;
+        if previous == next {
+            return;
+        }
+        self.input.focused = next;
+        let _scope = RuntimeScope::enter(self.runtime_id);
+        if self.notify_focus_transition(previous, next)
+            && let Some(root_id) = self.root_id
+        {
+            mark_dirty_for(self.runtime_id, root_id);
+            self.pending_effects.merge(RuntimeEffects::request_redraw());
+        }
+    }
+
+    fn notify_focus_transition(
+        &mut self,
+        previous: Option<FiberId>,
+        next: Option<FiberId>,
+    ) -> bool {
+        let mut needs_paint = previous != next;
+        if let Some(fiber_id) = previous {
+            needs_paint |= self.notify_focus(fiber_id, FocusEvent::Lost);
+        }
+        if let Some(fiber_id) = next {
+            needs_paint |= self.notify_focus(fiber_id, FocusEvent::Gained);
+        }
+        needs_paint
+    }
+
+    fn notify_focus(&mut self, fiber_id: FiberId, event: FocusEvent) -> bool {
+        let mut ctx = EventCtx::new();
+        self.invoke_handler(fiber_id, &UiEvent::Focus(event), &mut ctx);
+        let needs_paint = self.input.apply(ctx.take_commands(), &self.arena);
+        needs_paint || ctx.needs_paint()
     }
 
     /// Returns true if any modal FocusScope is currently active in the tree.
@@ -719,6 +827,7 @@ impl Drop for Runtime {
             unmount_fiber(&mut self.arena, root_id);
         }
         remove_runtime(self.runtime_id);
+        remove_external_input(self.runtime_id);
     }
 }
 
@@ -729,6 +838,7 @@ mod tests {
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
     };
     use crate::widgets::button::Button;
+    use crate::widgets::custom_paint::CustomPaint;
     use crate::widgets::focus_scope::FocusScope;
     use crate::widgets::sized_box::SizedBox;
     use std::sync::Arc;
@@ -916,6 +1026,40 @@ mod tests {
         assert!(rt.root_id().is_none());
         assert!(rt.pending_delta().is_none());
         assert!(rt.input().focused.is_none());
+    }
+
+    #[test]
+    fn focus_transition_notifies_old_and_new_fibers_and_requests_redraw() {
+        let mut rt = Runtime::new();
+        rt.set_root(
+            FocusScope::new()
+                .child(CustomPaint::new(1))
+                .child(CustomPaint::new(2)),
+        );
+        rt.update(now());
+        assert!(rt.focus_first_focusable());
+        rt.drain_external_input();
+
+        let first = rt.input().focused;
+        let effects = rt.dispatch(
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: Key::Tab,
+                modifiers: Modifiers::default(),
+            }),
+            now(),
+        );
+
+        assert!(effects.request_redraw);
+        assert_ne!(rt.input().focused, first);
+        let focus_events = rt.drain_external_input();
+        assert!(focus_events.iter().any(|(_, event)| matches!(
+            event,
+            UiEvent::Focus(crate::input::event::FocusEvent::Lost)
+        )));
+        assert!(focus_events.iter().any(|(_, event)| matches!(
+            event,
+            UiEvent::Focus(crate::input::event::FocusEvent::Gained)
+        )));
     }
 
     #[test]

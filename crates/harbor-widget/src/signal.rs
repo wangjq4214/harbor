@@ -46,8 +46,12 @@ impl Drop for RuntimeScope {
     }
 }
 
+pub(crate) fn active_runtime_id() -> Option<RuntimeId> {
+    ACTIVE_RUNTIME.with(Cell::get)
+}
+
 fn active_runtime() -> RuntimeId {
-    ACTIVE_RUNTIME.with(Cell::get).unwrap_or(DEFAULT_RUNTIME_ID)
+    active_runtime_id().unwrap_or(DEFAULT_RUNTIME_ID)
 }
 
 /// Inserts a FiberId into a specific Runtime's dirty set.

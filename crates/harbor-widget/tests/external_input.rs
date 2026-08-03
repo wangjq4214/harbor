@@ -35,12 +35,16 @@ fn key_down(key: Key) -> UiEvent {
 
 #[test]
 fn should_queue_and_drain_external_input_round_trip() {
-    // Arrange: queue a known event via the public trampoline
+    // Arrange: CustomPaint queues only while its owning Runtime is dispatching.
     let event = key_down(Key::Enter);
-    harbor_widget::runtime::queue_external_input(42, event.clone());
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(42));
+    rt.update(now());
+    assert!(rt.focus_first_focusable());
+    rt.drain_external_input();
+    rt.dispatch(event.clone(), now());
 
-    // Act: drain
-    let rt = Runtime::new();
+    // Act: drain the owning Runtime
     let drained = rt.drain_external_input();
 
     // Assert: exactly one event with correct id and payload
@@ -51,11 +55,14 @@ fn should_queue_and_drain_external_input_round_trip() {
 
 #[test]
 fn should_drain_clears_queue() {
-    // Arrange: queue two events
-    harbor_widget::runtime::queue_external_input(1, key_down(Key::Tab));
-    harbor_widget::runtime::queue_external_input(2, key_down(Key::Space));
-
-    let rt = Runtime::new();
+    // Arrange: queue two events during one Runtime dispatch sequence.
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(1));
+    rt.update(now());
+    assert!(rt.focus_first_focusable());
+    rt.drain_external_input();
+    rt.dispatch(key_down(Key::Tab), now());
+    rt.dispatch(key_down(Key::Space), now());
 
     // Act: first drain
     let first = rt.drain_external_input();
@@ -68,19 +75,30 @@ fn should_drain_clears_queue() {
 
 #[test]
 fn should_support_multiple_draw_ids() {
-    // Arrange: queue events for different draw IDs
-    harbor_widget::runtime::queue_external_input(10, key_down(Key::ArrowUp));
-    harbor_widget::runtime::queue_external_input(20, key_down(Key::ArrowDown));
-    harbor_widget::runtime::queue_external_input(10, key_down(Key::Enter));
+    // Arrange: two Runtime instances queue independently on the same thread.
+    let mut first = Runtime::new();
+    first.set_root(CustomPaint::new(10));
+    first.update(now());
+    assert!(first.focus_first_focusable());
+    first.drain_external_input();
+    first.dispatch(key_down(Key::ArrowUp), now());
+    first.dispatch(key_down(Key::Enter), now());
 
-    let rt = Runtime::new();
-    let drained = rt.drain_external_input();
+    let mut second = Runtime::new();
+    second.set_root(CustomPaint::new(20));
+    second.update(now());
+    assert!(second.focus_first_focusable());
+    second.drain_external_input();
+    second.dispatch(key_down(Key::ArrowDown), now());
 
-    // Assert: all three events present, in order
-    assert_eq!(drained.len(), 3);
-    assert_eq!(drained[0].0, 10);
-    assert_eq!(drained[1].0, 20);
-    assert_eq!(drained[2].0, 10);
+    // Assert: neither Runtime can drain the other's events.
+    let first_events = first.drain_external_input();
+    let second_events = second.drain_external_input();
+    assert_eq!(first_events.len(), 2);
+    assert_eq!(first_events[0].0, 10);
+    assert_eq!(first_events[1].0, 10);
+    assert_eq!(second_events.len(), 1);
+    assert_eq!(second_events[0].0, 20);
 }
 
 #[test]
@@ -91,6 +109,18 @@ fn should_drain_empty_when_no_events_queued() {
 }
 
 #[test]
+fn should_ignore_events_queued_without_an_active_runtime_dispatch() {
+    // Arrange: the trampoline is called outside Runtime::dispatch.
+    harbor_widget::runtime::queue_external_input(404, key_down(Key::Enter));
+
+    // Act: inspect a fresh Runtime's queue.
+    let rt = Runtime::new();
+
+    // Assert: an unowned event is not retained or assigned to a later Runtime.
+    assert!(rt.drain_external_input().is_empty());
+}
+
+#[test]
 fn should_support_pointer_events() {
     let pe = pointer_event(
         Point::new(100.0, 200.0),
@@ -98,11 +128,13 @@ fn should_support_pointer_events() {
         PointerButton::Left,
         7,
     );
-    harbor_widget::runtime::queue_external_input(99, pe.clone());
-
-    let rt = Runtime::new();
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(99));
+    rt.update(now());
+    assert!(rt.focus_first_focusable());
+    rt.drain_external_input();
+    rt.dispatch(pe.clone(), now());
     let drained = rt.drain_external_input();
-
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].0, 99);
     assert_eq!(drained[0].1, pe);
@@ -118,6 +150,7 @@ fn should_queue_event_when_custom_paint_dispatches_through_runtime() {
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
+    rt.drain_external_input();
 
     // Act: dispatch a keyboard event through runtime (CustomPaint handles it,
     // queues to external input trampoline)
@@ -146,6 +179,7 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
 
     assert!(rt.focus_first_focusable());
     assert_eq!(rt.input().focused, Some(root_id));
+    rt.drain_external_input();
     rt.dispatch(key_down(Key::Enter), now());
     assert_eq!(rt.drain_external_input().len(), 1);
 
@@ -175,6 +209,7 @@ fn should_queue_multiple_custom_paint_events_across_dispatch() {
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
+    rt.drain_external_input();
 
     // Act: dispatch events via Runtime (CustomPaint queues them)
     rt.dispatch(key_down(Key::Enter), now());
@@ -211,6 +246,7 @@ fn should_queue_pointer_events_from_custom_paint() {
         ),
         now(),
     );
+    rt.drain_external_input();
     rt.dispatch(
         pointer_event(
             Point::new(400.0, 300.0),
@@ -222,7 +258,7 @@ fn should_queue_pointer_events_from_custom_paint() {
     );
 
     let drained = rt.drain_external_input();
-    assert_eq!(drained.len(), 2);
+    assert_eq!(drained.len(), 1);
     for (id, _event) in &drained {
         assert_eq!(*id, 3);
     }
@@ -263,6 +299,7 @@ fn should_drain_empty_between_dispatches_when_already_drained() {
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
+    rt.drain_external_input();
 
     // First dispatch
     rt.dispatch(key_down(Key::Tab), now());
@@ -304,6 +341,7 @@ fn should_queue_focus_events_from_custom_paint() {
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
+    rt.drain_external_input();
 
     let focus = UiEvent::Focus(harbor_widget::input::event::FocusEvent::Gained);
     rt.dispatch(focus.clone(), now());
@@ -397,6 +435,7 @@ fn should_only_queue_for_focused_custom_paint() {
     // Set focus on the root (which is CustomPaint)
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
+    rt.drain_external_input();
 
     // Keyboard event: should route to focused CustomPaint, which queues
     rt.dispatch(key_down(Key::Space), now());

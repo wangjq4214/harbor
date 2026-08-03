@@ -110,7 +110,7 @@ impl AnyView for PreviewPane {
         prims
     }
 
-    fn handle_event(&self, event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
+    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         match event {
             UiEvent::Pointer(ptr) => match ptr.phase {
                 PointerPhase::Wheel { dy, .. } => {
@@ -118,7 +118,10 @@ impl AnyView for PreviewPane {
                     let max_offset =
                         self.wrapped_lines.len().saturating_sub(self.visible_lines) as isize;
                     let new = (current + dy as isize).clamp(0, max_offset.max(0));
-                    self.scroll_offset.store(new as usize, Ordering::Relaxed);
+                    if new != current {
+                        self.scroll_offset.store(new as usize, Ordering::Relaxed);
+                        ctx.invalidate_paint();
+                    }
                     EventHandled::Handled
                 }
                 _ => EventHandled::Ignored,
@@ -228,6 +231,7 @@ mod tests {
         let result = pane.handle_event(&event, &mut ctx, rect);
         assert_eq!(result, EventHandled::Handled);
         assert_eq!(offset.load(Ordering::Relaxed), 8);
+        assert!(ctx.needs_paint());
     }
 
     #[test]
@@ -246,6 +250,7 @@ mod tests {
         let result = pane.handle_event(&event, &mut ctx, rect);
         assert_eq!(result, EventHandled::Handled);
         assert_eq!(offset.load(Ordering::Relaxed), 3);
+        assert!(ctx.needs_paint());
     }
 
     #[test]
@@ -263,6 +268,7 @@ mod tests {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         pane.handle_event(&event, &mut ctx, rect);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
+        assert!(!ctx.needs_paint());
     }
 
     #[test]
@@ -280,6 +286,7 @@ mod tests {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         pane.handle_event(&event, &mut ctx, rect);
         assert_eq!(offset.load(Ordering::Relaxed), 5);
+        assert!(!ctx.needs_paint());
     }
 
     #[test]
@@ -331,5 +338,6 @@ mod tests {
         pane.handle_event(&event, &mut ctx, rect);
         // total_lines=2, visible_lines=10 → max=0
         assert_eq!(offset.load(Ordering::Relaxed), 0);
+        assert!(!ctx.needs_paint());
     }
 }

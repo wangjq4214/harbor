@@ -16,7 +16,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use super::translate::winit_to_uievent;
+use crate::event::{FrameControlFlow, FrameScheduler, RedrawReason};
 use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
 use harbor_widget::runtime::Runtime;
@@ -28,6 +28,7 @@ use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::winit::WinitAdapter;
 
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;
@@ -83,10 +84,35 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_chars: usize) -> Vec<String>
 }
 
 /// Adjusts a shared scroll offset by `delta` lines, clamped to `[0, max]`.
-fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) {
+fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) -> bool {
     let current = offset.load(Ordering::Relaxed) as isize;
     let new = (current + delta).clamp(0, max as isize);
+    if new == current {
+        return false;
+    }
     offset.store(new as usize, Ordering::Relaxed);
+    true
+}
+
+fn confirmation_resize_redraw_reason(
+    scale_factor_changed: bool,
+    width: u32,
+    height: u32,
+) -> Option<RedrawReason> {
+    if scale_factor_changed || (width != 0 && height != 0) {
+        Some(RedrawReason::Resize)
+    } else {
+        None
+    }
+}
+
+fn mark_surface_recovery_attempt(attempted: &mut bool) -> bool {
+    if *attempted {
+        false
+    } else {
+        *attempted = true;
+        true
+    }
 }
 
 // ── ConfirmationResult ──────────────────────────────────────────────────────
@@ -110,6 +136,11 @@ pub(crate) struct ConfirmationWindow {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     runtime: Runtime,
+    adapter: WinitAdapter,
+    /// Redraw coalescing state owned exclusively by this native window.
+    scheduler: FrameScheduler,
+    /// Limits surface-failure recovery to one self-scheduled retry.
+    surface_recovery_attempted: bool,
     raw_text: String,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
@@ -191,12 +222,13 @@ impl ConfirmationWindow {
 
         // Surface config uses physical pixel dimensions.
         let physical_size = window.inner_size();
+        let drawable = physical_size.width != 0 && physical_size.height != 0;
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            width: physical_size.width,
-            height: physical_size.height,
+            width: physical_size.width.max(1),
+            height: physical_size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
@@ -241,17 +273,28 @@ impl ConfirmationWindow {
             scale,
         );
         runtime.set_viewport(viewport);
-        runtime.update(std::time::Instant::now());
+        let mut initial_effects = runtime.update(std::time::Instant::now());
 
-        // Set focus on the Cancel button (first focusable widget).
+        // Set focus on the Cancel button (first focusable widget) and apply
+        // the effects produced by the programmatic focus transition.
         runtime.focus_first_focusable();
-        window.request_redraw();
+        initial_effects.merge(runtime.take_pending_effects());
+
+        let mut scheduler = FrameScheduler::default();
+        scheduler.set_drawable(drawable);
+        super::App::apply_runtime_effects(&mut scheduler, event_loop, &window, initial_effects);
+
+        let mut adapter = WinitAdapter::new();
+        adapter.set_scale_factor(window.scale_factor() as f32);
 
         ConfirmationWindow {
             window,
             surface,
             surface_config,
             runtime,
+            adapter,
+            scheduler,
+            surface_recovery_attempted: false,
             raw_text,
             cancelled,
             confirmed,
@@ -266,6 +309,10 @@ impl ConfirmationWindow {
         self.window.id()
     }
 
+    pub(crate) fn control_flow(&self) -> FrameControlFlow {
+        self.scheduler.control_flow()
+    }
+
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
     pub(crate) fn raw_text(&self) -> &str {
         &self.raw_text
@@ -273,14 +320,18 @@ impl ConfirmationWindow {
 
     /// Handles a winit event for this window.
     ///
-    /// Translates winit events to Widget UiEvents, dispatches to the
-    /// Runtime, and checks the confirmation/cancellation flags.
-    /// Window-level shortcuts: Escape/n → cancel, y → confirm.
+    /// Adapts supported input through this window's Runtime and checks the
+    /// confirmation/cancellation flags. Window-level shortcuts: Escape/n →
+    /// cancel, y → confirm.
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f32,
+        event_loop: &ActiveEventLoop,
     ) -> ConfirmationResult {
+        if matches!(event, WindowEvent::RedrawRequested) {
+            self.scheduler.redraw_requested();
+        }
+
         match event {
             WindowEvent::CloseRequested => return ConfirmationResult::Cancelled,
 
@@ -304,36 +355,38 @@ impl ConfirmationWindow {
                     .wrapped_lines
                     .len()
                     .saturating_sub(PREVIEW_VISIBLE_LINES);
-                match &key_event.logical_key {
+                let scrolled = match &key_event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => {
-                        scroll_preview(&self.preview_scroll_offset, -1, max_scroll);
+                        scroll_preview(&self.preview_scroll_offset, -1, max_scroll)
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        scroll_preview(&self.preview_scroll_offset, 1, max_scroll);
+                        scroll_preview(&self.preview_scroll_offset, 1, max_scroll)
                     }
                     Key::Named(NamedKey::PageUp) => {
                         let lines = -((PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize);
-                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
+                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll)
                     }
                     Key::Named(NamedKey::PageDown) => {
                         let lines = (PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize;
-                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
+                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll)
                     }
-                    _ => {}
+                    _ => false,
+                };
+                if scrolled {
+                    self.request_redraw(RedrawReason::Input);
                 }
             }
 
             _ => {}
         }
 
-        // Translate to UiEvent and dispatch.
-        if let Some(ui_event) = winit_to_uievent(
-            event,
-            scale_factor,
-            winit::keyboard::ModifiersState::default(),
-        ) {
-            self.runtime.dispatch(ui_event, std::time::Instant::now());
-        }
+        let outcome = self.adapter.handle_event(&mut self.runtime, event);
+        super::App::apply_runtime_effects(
+            &mut self.scheduler,
+            event_loop,
+            &self.window,
+            outcome.effects,
+        );
 
         if self.confirmed.load(Ordering::SeqCst) {
             ConfirmationResult::Confirmed
@@ -347,32 +400,53 @@ impl ConfirmationWindow {
     /// Renders one frame: update Runtime, register text runs, encode, submit, present.
     pub(crate) fn render(
         &mut self,
+        event_loop: &ActiveEventLoop,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         glyph_fn: &harbor_widget::text::GlyphFn<'_>,
     ) {
-        // Ensure layout is up-to-date before encode.
-        self.runtime.update(std::time::Instant::now());
+        let physical_size = self.window.inner_size();
+        if physical_size.width == 0 || physical_size.height == 0 {
+            self.scheduler.set_drawable(false);
+            return;
+        }
+        self.scheduler.set_drawable(true);
+
+        // Ensure layout is up-to-date before encode and apply any host effects
+        // produced while rebuilding the widget tree.
+        let update_effects = self.runtime.update(std::time::Instant::now());
+        super::App::apply_runtime_effects(
+            &mut self.scheduler,
+            event_loop,
+            &self.window,
+            update_effects,
+        );
 
         // Register any text runs queued by widgets during the paint pass.
         self.runtime.register_pending_text_runs(glyph_fn);
 
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(o) => o,
-            wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
+        let (output, suboptimal) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(o) => (o, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(o) => (o, true),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 let physical_size = self.window.inner_size();
+                if physical_size.width == 0 || physical_size.height == 0 {
+                    self.scheduler.set_drawable(false);
+                    return;
+                }
                 let scale = self.window.scale_factor() as f32;
                 self.surface_config.width = physical_size.width;
                 self.surface_config.height = physical_size.height;
                 self.surface.configure(device, &self.surface_config);
-                // Update viewport for the reconfigured surface
                 self.runtime
                     .set_viewport(harbor_widget::renderer::Viewport::new(
                         physical_size.width,
                         physical_size.height,
                         scale,
                     ));
+                if mark_surface_recovery_attempt(&mut self.surface_recovery_attempted) {
+                    self.request_redraw(RedrawReason::SurfaceRecovery);
+                }
                 return;
             }
             wgpu::CurrentSurfaceTexture::Timeout
@@ -423,28 +497,78 @@ impl ConfirmationWindow {
 
         queue.submit(Some(encoder.finish()));
         queue.present(output);
+
+        if suboptimal {
+            let physical_size = self.window.inner_size();
+            if physical_size.width != 0 && physical_size.height != 0 {
+                self.surface_config.width = physical_size.width;
+                self.surface_config.height = physical_size.height;
+                self.surface.configure(device, &self.surface_config);
+            }
+            if mark_surface_recovery_attempt(&mut self.surface_recovery_attempted) {
+                self.request_redraw(RedrawReason::SurfaceSuboptimal);
+            }
+        } else {
+            self.surface_recovery_attempted = false;
+        }
     }
 
     /// Handles DPI scale factor changes.
-    pub(crate) fn scale_factor_changed(&mut self, device: &wgpu::Device, scale_factor: f64) {
+    pub(crate) fn scale_factor_changed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        device: &wgpu::Device,
+        scale_factor: f64,
+    ) {
         let sf = scale_factor as f32;
+        self.adapter.set_scale_factor(sf);
         let physical_size = self.window.inner_size();
+        if physical_size.width == 0 || physical_size.height == 0 {
+            self.surface_recovery_attempted = false;
+            self.scheduler.set_drawable(false);
+            return;
+        }
+        self.scheduler.set_drawable(true);
         self.surface_config.width = physical_size.width;
         self.surface_config.height = physical_size.height;
         let viewport =
             harbor_widget::renderer::Viewport::new(physical_size.width, physical_size.height, sf);
         self.runtime.set_viewport(viewport);
-        self.surface.configure(device, &self.surface_config);
-        self.runtime.update(std::time::Instant::now());
+        if physical_size.width != 0 && physical_size.height != 0 {
+            self.surface.configure(device, &self.surface_config);
+            self.surface_recovery_attempted = false;
+        }
+        let update_effects = self.runtime.update(std::time::Instant::now());
+        super::App::apply_runtime_effects(
+            &mut self.scheduler,
+            event_loop,
+            &self.window,
+            update_effects,
+        );
+        if confirmation_resize_redraw_reason(true, physical_size.width, physical_size.height)
+            .is_some()
+        {
+            self.request_redraw(RedrawReason::Resize);
+        }
     }
 
     /// Handles resize events.
-    pub(crate) fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    pub(crate) fn resize(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) {
         if width == 0 || height == 0 {
+            self.surface_recovery_attempted = false;
+            self.scheduler.set_drawable(false);
             return;
         }
+        self.scheduler.set_drawable(true);
         self.surface_config.width = width;
         self.surface_config.height = height;
+        self.surface_recovery_attempted = false;
         self.surface.configure(device, &self.surface_config);
         let viewport = harbor_widget::renderer::Viewport::new(
             width,
@@ -452,7 +576,21 @@ impl ConfirmationWindow {
             self.window.scale_factor() as f32,
         );
         self.runtime.set_viewport(viewport);
-        self.runtime.update(std::time::Instant::now());
+        let update_effects = self.runtime.update(std::time::Instant::now());
+        super::App::apply_runtime_effects(
+            &mut self.scheduler,
+            event_loop,
+            &self.window,
+            update_effects,
+        );
+        if confirmation_resize_redraw_reason(false, width, height).is_some() {
+            self.request_redraw(RedrawReason::Resize);
+        }
+    }
+
+    /// Wakes only the confirmation window; the main App scheduler is unrelated.
+    fn request_redraw(&mut self, reason: RedrawReason) {
+        super::App::wake_redraw(&mut self.scheduler, &self.window, reason);
     }
 }
 
@@ -500,6 +638,38 @@ fn build_confirmation_root(
 mod tests {
     use super::*;
     use harbor_widget::view::{BuildCx, Component};
+
+    #[test]
+    fn resize_and_dpi_changes_route_redraw_to_confirmation_window() {
+        assert_eq!(
+            confirmation_resize_redraw_reason(false, 600, 500),
+            Some(RedrawReason::Resize)
+        );
+        assert_eq!(
+            confirmation_resize_redraw_reason(true, 0, 0),
+            Some(RedrawReason::Resize)
+        );
+        assert_eq!(confirmation_resize_redraw_reason(false, 0, 500), None);
+    }
+
+    #[test]
+    fn confirmation_surface_recovery_is_one_shot_until_reset() {
+        let mut attempted = false;
+        assert!(mark_surface_recovery_attempt(&mut attempted));
+        assert!(!mark_surface_recovery_attempt(&mut attempted));
+        attempted = false;
+        assert!(mark_surface_recovery_attempt(&mut attempted));
+    }
+
+    #[test]
+    fn minimized_confirmation_resize_is_not_redrawn_without_a_dpi_change() {
+        // Arrange: a zero-sized native resize represents a minimized window.
+        // Act: classify it without a scale-factor change.
+        let reason = confirmation_resize_redraw_reason(false, 0, 0);
+
+        // Assert: only a real size or DPI change targets confirmation redraw.
+        assert_eq!(reason, None);
+    }
 
     #[test]
     fn centers_dialog_in_main_window() {
@@ -873,52 +1043,93 @@ mod tests {
     // ── scroll_preview ──────────────────────────────────────────────────
 
     #[test]
-    fn should_not_change_offset_when_delta_is_zero() {
+    fn should_not_invalidate_redraw_when_scroll_delta_does_not_change_offset() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, 0, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 0, 10);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 5);
     }
 
     #[test]
-    fn should_increment_offset_when_delta_is_positive() {
+    fn should_report_redraw_invalidation_when_keyboard_scroll_changes_offset() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, 3, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 3, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 8);
     }
 
     #[test]
-    fn should_decrement_offset_when_delta_is_negative() {
+    fn should_decrement_offset_when_keyboard_scroll_moves_toward_start() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, -3, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, -3, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 2);
     }
 
     #[test]
-    fn should_clamp_offset_at_zero_when_decrementing_below_zero() {
+    fn should_invalidate_redraw_when_negative_keyboard_scroll_is_clamped_to_a_new_offset() {
+        // Arrange
         let offset = AtomicUsize::new(1);
-        scroll_preview(&offset, -5, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, -5, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn should_clamp_offset_at_max_when_incrementing_beyond_max() {
+    fn should_invalidate_redraw_when_positive_keyboard_scroll_is_clamped_to_a_new_offset() {
+        // Arrange
         let offset = AtomicUsize::new(8);
-        scroll_preview(&offset, 5, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 5, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 10);
     }
 
     #[test]
-    fn should_keep_offset_at_zero_when_max_is_zero() {
+    fn should_not_invalidate_redraw_when_keyboard_scroll_has_no_range() {
+        // Arrange
         let offset = AtomicUsize::new(0);
-        scroll_preview(&offset, 3, 0);
+
+        // Act
+        let changed = scroll_preview(&offset, 3, 0);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn should_clamp_negative_offset_to_zero_when_max_is_zero() {
-        // Even with a negative delta, when max=0 the result stays at 0.
+    fn should_not_invalidate_redraw_when_negative_keyboard_scroll_is_at_zero_boundary() {
+        // Arrange: even with a negative delta, max=0 keeps the offset at zero.
         let offset = AtomicUsize::new(0);
-        scroll_preview(&offset, -3, 0);
+
+        // Act
+        let changed = scroll_preview(&offset, -3, 0);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
