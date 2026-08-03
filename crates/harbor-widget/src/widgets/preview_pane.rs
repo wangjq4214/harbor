@@ -113,7 +113,7 @@ impl AnyView for PreviewPane {
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         match event {
             UiEvent::Pointer(ptr) => match ptr.phase {
-                PointerPhase::Wheel { dy, .. } => {
+                PointerPhase::WheelLine { dy, .. } | PointerPhase::WheelPixel { dy, .. } => {
                     let current = self.scroll_offset.load(Ordering::Relaxed) as isize;
                     let max_offset =
                         self.wrapped_lines.len().saturating_sub(self.visible_lines) as isize;
@@ -222,7 +222,7 @@ mod tests {
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
         let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
             Point::ZERO,
-            PointerPhase::Wheel { dx: 0.0, dy: 3.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: 3.0 },
             crate::input::event::PointerButton::Left,
             0,
         ));
@@ -235,13 +235,37 @@ mod tests {
     }
 
     #[test]
+    fn should_scroll_when_wheel_pixel_arrives() {
+        // Arrange
+        let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
+        let offset = Arc::new(AtomicUsize::new(4));
+        let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
+        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 2.0 },
+            crate::input::event::PointerButton::Left,
+            0,
+        ));
+        let mut ctx = EventCtx::new();
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
+
+        // Act
+        let result = pane.handle_event(&event, &mut ctx, rect);
+
+        // Assert
+        assert_eq!(result, EventHandled::Handled);
+        assert_eq!(offset.load(Ordering::Relaxed), 6);
+        assert!(ctx.needs_paint());
+    }
+
+    #[test]
     fn wheel_up_decrements_offset() {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
         let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
             Point::ZERO,
-            PointerPhase::Wheel { dx: 0.0, dy: -2.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: -2.0 },
             crate::input::event::PointerButton::Left,
             0,
         ));
@@ -260,7 +284,7 @@ mod tests {
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
         let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
             Point::ZERO,
-            PointerPhase::Wheel { dx: 0.0, dy: -5.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: -5.0 },
             crate::input::event::PointerButton::Left,
             0,
         ));
@@ -278,7 +302,7 @@ mod tests {
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
         let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
             Point::ZERO,
-            PointerPhase::Wheel { dx: 0.0, dy: 10.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
             crate::input::event::PointerButton::Left,
             0,
         ));
@@ -329,7 +353,7 @@ mod tests {
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
         let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
             Point::ZERO,
-            PointerPhase::Wheel { dx: 0.0, dy: 5.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: 5.0 },
             crate::input::event::PointerButton::Left,
             0,
         ));

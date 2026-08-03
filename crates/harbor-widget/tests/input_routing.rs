@@ -699,7 +699,7 @@ fn should_not_crash_on_wheel_event() {
     let req = rt.dispatch(
         UiEvent::Pointer(PointerEvent::new(
             Point::new(46.0, 16.0),
-            PointerPhase::Wheel { dx: 0.0, dy: 10.0 },
+            PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
             PointerButton::Left,
             0,
         )),

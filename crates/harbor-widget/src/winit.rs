@@ -300,15 +300,16 @@ impl WinitAdapter {
                 )))
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x, *y),
-                    MouseScrollDelta::PixelDelta(position) => {
-                        (position.x as f32, position.y as f32)
-                    }
+                let phase = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => PointerPhase::WheelLine { dx: *x, dy: *y },
+                    MouseScrollDelta::PixelDelta(position) => PointerPhase::WheelPixel {
+                        dx: position.x as f32,
+                        dy: position.y as f32,
+                    },
                 };
                 Some(UiEvent::Pointer(PointerEvent::new(
                     self.logical_pointer_position(),
-                    PointerPhase::Wheel { dx, dy },
+                    phase,
                     PointerButton::Left,
                     0,
                 )))
@@ -1017,7 +1018,7 @@ mod tests {
             line,
             UiEvent::Pointer(PointerEvent::new(
                 Point::new(12.0, 18.0),
-                PointerPhase::Wheel { dx: 1.5, dy: -2.0 },
+                PointerPhase::WheelLine { dx: 1.5, dy: -2.0 },
                 PointerButton::Left,
                 0,
             ))
@@ -1034,7 +1035,7 @@ mod tests {
             pixel,
             UiEvent::Pointer(PointerEvent::new(
                 Point::new(12.0, 18.0),
-                PointerPhase::Wheel { dx: 3.0, dy: 4.0 },
+                PointerPhase::WheelPixel { dx: 3.0, dy: 4.0 },
                 PointerButton::Left,
                 0,
             ))
@@ -1183,7 +1184,7 @@ mod tests {
             adapter.convert_event(&wheel).unwrap(),
             UiEvent::Pointer(PointerEvent::new(
                 Point::new(40.0, 20.0),
-                PointerPhase::Wheel { dx: 1.0, dy: 2.0 },
+                PointerPhase::WheelLine { dx: 1.0, dy: 2.0 },
                 PointerButton::Left,
                 0,
             ))

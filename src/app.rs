@@ -10,9 +10,8 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize},
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
-    keyboard::{Key, ModifiersState, NamedKey},
     window::{CursorIcon, Window, WindowId},
 };
 
@@ -26,7 +25,7 @@ use harbor_terminal::{
 use harbor_widget::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ImeEffect, RuntimeEffects,
 };
-use harbor_widget::input::event::{KeyboardEvent, UiEvent};
+use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
 use harbor_widget::winit::WinitAdapter;
 
@@ -59,43 +58,19 @@ pub(crate) fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScrollbackNavigation {
-    PageUp,
-    PageDown,
-    Top,
-    Bottom,
-}
-
-fn scrollback_navigation(
-    logical_key: &Key,
-    modifiers: ModifiersState,
-    is_alt_screen: bool,
-) -> Option<ScrollbackNavigation> {
-    if is_alt_screen
-        || modifiers.shift_key()
-        || modifiers.control_key()
-        || modifiers.alt_key()
-        || modifiers.super_key()
-    {
-        return None;
-    }
-
-    match logical_key {
-        Key::Named(NamedKey::PageUp) => Some(ScrollbackNavigation::PageUp),
-        Key::Named(NamedKey::PageDown) => Some(ScrollbackNavigation::PageDown),
-        Key::Named(NamedKey::Home) => Some(ScrollbackNavigation::Top),
-        Key::Named(NamedKey::End) => Some(ScrollbackNavigation::Bottom),
-        _ => None,
-    }
-}
-
 fn routes_terminal_input(
     gate_active: bool,
     event_draw_id: harbor_terminal::ExternalDrawId,
     terminal_draw_id: harbor_terminal::ExternalDrawId,
+    event: &UiEvent,
 ) -> bool {
-    !gate_active && event_draw_id == terminal_draw_id
+    if event_draw_id != terminal_draw_id {
+        return false;
+    }
+    if !gate_active {
+        return true;
+    }
+    is_terminal_wheel(event)
 }
 
 fn route_terminal_inputs(
@@ -106,7 +81,7 @@ fn route_terminal_inputs(
 ) -> bool {
     let mut routed = false;
     for (event_draw_id, event) in events {
-        if routes_terminal_input(gate_active, event_draw_id, terminal_draw_id) {
+        if routes_terminal_input(gate_active, event_draw_id, terminal_draw_id, &event) {
             routed = true;
             handle(event);
         }
@@ -116,6 +91,32 @@ fn route_terminal_inputs(
 
 fn is_terminal_key_press(event: &UiEvent) -> bool {
     matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
+}
+
+fn is_terminal_wheel(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::Pointer(pointer)
+            if matches!(
+                pointer.phase,
+                PointerPhase::WheelLine { .. } | PointerPhase::WheelPixel { .. }
+            )
+    )
+}
+
+fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
+    // KeyDown always wakes (PTY write / scrollback nav). Wheel wakes only when
+    // the viewport actually moves — checked at the delivery site.
+    is_terminal_key_press(event)
+}
+
+/// Post-delivery redraw wake: KeyDown always; wheel only when `view_offset` moved.
+fn needs_redraw_wake_after_delivery(
+    key_wakes: bool,
+    offset_before: Option<usize>,
+    offset_after: usize,
+) -> bool {
+    key_wakes || matches!(offset_before, Some(before) if before != offset_after)
 }
 
 fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
@@ -484,31 +485,6 @@ impl ApplicationHandler<AppEvent> for App {
             self.frame.scheduler.set_active(false);
         }
 
-        if let WindowEvent::KeyboardInput { event: kbd, .. } = &event
-            && kbd.state == ElementState::Pressed
-        {
-            let snapshot = terminal.lock().unwrap().drain_and_snapshot();
-            if let Some(navigation) = scrollback_navigation(
-                &kbd.logical_key,
-                self.runtime
-                    .winit_adapter
-                    .as_ref()
-                    .map(WinitAdapter::modifiers)
-                    .unwrap_or_default(),
-                snapshot.is_alt,
-            ) {
-                let mut terminal = terminal.lock().unwrap();
-                match navigation {
-                    ScrollbackNavigation::PageUp => terminal.scroll_viewport_up(snapshot.rows),
-                    ScrollbackNavigation::PageDown => terminal.scroll_viewport_down(snapshot.rows),
-                    ScrollbackNavigation::Top => terminal.scroll_viewport_to_top(),
-                    ScrollbackNavigation::Bottom => terminal.scroll_viewport_to_bottom(),
-                }
-                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-                return;
-            }
-        }
-
         if matches!(&event, WindowEvent::CloseRequested) {
             tracing::info!("close requested");
             event_loop.exit();
@@ -535,24 +511,33 @@ impl ApplicationHandler<AppEvent> for App {
             );
             if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                 let draw_id = terminal.lock().unwrap().draw_id();
-                let terminal_key_press = std::cell::Cell::new(false);
+                let needs_redraw_wake = std::cell::Cell::new(false);
                 let routed = route_terminal_inputs(
                     gate_active,
                     draw_id,
                     widget_runtime.drain_external_input(),
                     |external_event| {
-                        if is_terminal_key_press(&external_event) {
-                            terminal_key_press.set(true);
-                        }
-                        if let Err(error) = terminal.lock().unwrap().handle_event(external_event) {
+                        let mut terminal = terminal.lock().unwrap();
+                        let wheel = is_terminal_wheel(&external_event);
+                        let offset_before = wheel.then(|| terminal.screen().view_offset());
+                        let key_wakes = wakes_redraw_for_routed_input(&external_event);
+                        if let Err(error) = terminal.handle_event(external_event) {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to write terminal input");
+                        }
+                        if needs_redraw_wake_after_delivery(
+                            key_wakes,
+                            offset_before,
+                            terminal.screen().view_offset(),
+                        ) {
+                            needs_redraw_wake.set(true);
                         }
                     },
                 );
                 // CustomPaint does not necessarily invalidate paint for a
-                // terminal keypress. Preserve the old scheduler wake, but
-                // only for an actually routed KeyDown (not IME suppression).
-                if routed && terminal_key_press.get() {
+                // terminal keypress or wheel. Preserve the old scheduler wake
+                // for routed KeyDown and for wheels that actually moved the
+                // viewport (alt-screen / zero-line wheels stay silent).
+                if routed && needs_redraw_wake.get() {
                     Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
                 }
             }
@@ -619,26 +604,6 @@ impl ApplicationHandler<AppEvent> for App {
                 tracing::trace!("redraw requested");
                 self.frame.scheduler.redraw_requested();
                 self.render_frame(event_loop);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let snapshot = terminal.lock().unwrap().drain_and_snapshot();
-                if snapshot.is_alt {
-                    return;
-                }
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as isize,
-                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as isize,
-                };
-                if lines > 0 {
-                    terminal.lock().unwrap().scroll_viewport_up(lines as usize);
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-                } else if lines < 0 {
-                    terminal
-                        .lock()
-                        .unwrap()
-                        .scroll_viewport_down(lines.unsigned_abs());
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
-                }
             }
             _ => {}
         }
@@ -1034,11 +999,6 @@ fn paint_gdi_background(window: &Window) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::keyboard::{Key, ModifiersState, NamedKey};
-
-    fn key(name: NamedKey) -> Key {
-        Key::Named(name)
-    }
 
     // Compile-only coverage for the feature-gated Host contract. The fixture is
     // intentionally never called: its parameters are borrowed by the caller,
@@ -1340,51 +1300,63 @@ mod tests {
     }
 
     #[test]
-    fn bare_navigation_keys_are_owned_in_normal_screen() {
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::PageUp), ModifiersState::default(), false),
-            Some(ScrollbackNavigation::PageUp)
-        );
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::PageDown), ModifiersState::default(), false),
-            Some(ScrollbackNavigation::PageDown)
-        );
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::Home), ModifiersState::default(), false),
-            Some(ScrollbackNavigation::Top)
-        );
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::End), ModifiersState::default(), false),
-            Some(ScrollbackNavigation::Bottom)
-        );
+    fn external_input_requires_matching_draw_id_and_allows_wheel_when_gated() {
+        use harbor_widget::input::event::{
+            Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
+            UiEvent,
+        };
+        use harbor_widget::layout::Point;
+
+        let key = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let wheel = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            PointerButton::Left,
+            0,
+        ));
+
+        assert!(routes_terminal_input(false, 7, 7, &key));
+        assert!(!routes_terminal_input(false, 6, 7, &key));
+        assert!(!routes_terminal_input(true, 7, 7, &key));
+        assert!(routes_terminal_input(true, 7, 7, &wheel));
+        assert!(!routes_terminal_input(true, 6, 7, &wheel));
     }
 
     #[test]
-    fn modified_or_alt_screen_navigation_is_not_owned() {
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::PageUp), ModifiersState::SHIFT, false),
-            None
-        );
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::Home), ModifiersState::CONTROL, false),
-            None
-        );
-        assert_eq!(
-            scrollback_navigation(&key(NamedKey::End), ModifiersState::default(), true),
-            None
-        );
+    fn should_reject_non_wheel_pointer_when_gate_active() {
+        use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+        use harbor_widget::layout::Point;
+
+        // Arrange
+        let move_event = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        ));
+        let wheel_pixel = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            PointerButton::Left,
+            0,
+        ));
+
+        // Act / Assert
+        assert!(!routes_terminal_input(true, 7, 7, &move_event));
+        assert!(routes_terminal_input(true, 7, 7, &wheel_pixel));
+        assert!(routes_terminal_input(false, 7, 7, &move_event));
     }
 
     #[test]
-    fn external_input_requires_matching_draw_id_and_an_open_gate() {
-        assert!(routes_terminal_input(false, 7, 7));
-        assert!(!routes_terminal_input(false, 6, 7));
-        assert!(!routes_terminal_input(true, 7, 7));
-    }
-
-    #[test]
-    fn routes_only_matching_external_input_when_gate_is_open() {
-        use harbor_widget::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, UiEvent};
+    fn routes_keyboard_when_gate_open_and_wheel_when_gated() {
+        use harbor_widget::input::event::{
+            Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
+            UiEvent,
+        };
+        use harbor_widget::layout::Point;
 
         let matching = UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: WidgetKey::Enter,
@@ -1394,14 +1366,21 @@ mod tests {
             key: WidgetKey::Escape,
             modifiers: Modifiers::default(),
         });
+        let wheel = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            PointerButton::Left,
+            0,
+        ));
         let mut routed = Vec::new();
 
         route_terminal_inputs(false, 7, [(6, other), (7, matching.clone())], |event| {
             routed.push(event)
         });
         route_terminal_inputs(true, 7, [(7, matching.clone())], |event| routed.push(event));
+        route_terminal_inputs(true, 7, [(7, wheel.clone())], |event| routed.push(event));
 
-        assert_eq!(routed, vec![matching]);
+        assert_eq!(routed, vec![matching, wheel]);
     }
 
     #[test]
@@ -1414,7 +1393,10 @@ mod tests {
 
     #[test]
     fn terminal_keypress_wake_classification_excludes_ime_commits_and_other_events() {
-        use harbor_widget::input::event::{Key as WidgetKey, Modifiers};
+        use harbor_widget::input::event::{
+            Key as WidgetKey, Modifiers, PointerButton, PointerEvent, PointerPhase,
+        };
+        use harbor_widget::layout::Point;
 
         assert!(is_terminal_key_press(&UiEvent::Keyboard(
             KeyboardEvent::KeyDown {
@@ -1431,6 +1413,86 @@ mod tests {
                 modifiers: Modifiers::default(),
             }
         )));
+
+        let wheel = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            PointerButton::Left,
+            0,
+        ));
+        assert!(is_terminal_wheel(&wheel));
+        assert!(!wakes_redraw_for_routed_input(&wheel));
+        assert!(!is_terminal_key_press(&wheel));
+    }
+
+    #[test]
+    fn should_wake_redraw_for_keydown_only_wheel_needs_viewport_change() {
+        use harbor_widget::input::event::{
+            Key as WidgetKey, Modifiers, PointerButton, PointerEvent, PointerPhase,
+        };
+        use harbor_widget::layout::Point;
+
+        // Arrange
+        let key_down = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let key_up = UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: WidgetKey::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let wheel_line = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            PointerButton::Left,
+            0,
+        ));
+        let wheel_pixel = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            PointerButton::Left,
+            0,
+        ));
+        let move_event = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        ));
+
+        // Act / Assert — classification helpers only; wheel redraw depends on
+        // view_offset changing at the delivery site.
+        assert!(wakes_redraw_for_routed_input(&key_down));
+        assert!(!wakes_redraw_for_routed_input(&key_up));
+        assert!(!wakes_redraw_for_routed_input(&wheel_line));
+        assert!(!wakes_redraw_for_routed_input(&wheel_pixel));
+        assert!(is_terminal_wheel(&wheel_line));
+        assert!(is_terminal_wheel(&wheel_pixel));
+        assert!(!wakes_redraw_for_routed_input(&move_event));
+        assert!(!is_terminal_wheel(&move_event));
+    }
+
+    #[test]
+    fn should_wake_after_delivery_when_keydown_regardless_of_offset() {
+        // Arrange / Act / Assert
+        assert!(needs_redraw_wake_after_delivery(true, None, 0));
+        assert!(needs_redraw_wake_after_delivery(true, Some(3), 3));
+        assert!(needs_redraw_wake_after_delivery(true, Some(0), 5));
+    }
+
+    #[test]
+    fn should_wake_after_delivery_when_wheel_moves_viewport() {
+        // Arrange / Act / Assert
+        assert!(needs_redraw_wake_after_delivery(false, Some(0), 3));
+        assert!(needs_redraw_wake_after_delivery(false, Some(6), 3));
+    }
+
+    #[test]
+    fn should_not_wake_after_delivery_when_wheel_leaves_viewport_unchanged() {
+        // Arrange / Act / Assert — zero-delta, clamp, or alt-screen: offset same
+        assert!(!needs_redraw_wake_after_delivery(false, Some(0), 0));
+        assert!(!needs_redraw_wake_after_delivery(false, Some(12), 12));
+        assert!(!needs_redraw_wake_after_delivery(false, None, 5));
     }
 
     #[test]

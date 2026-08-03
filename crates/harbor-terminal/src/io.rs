@@ -13,7 +13,7 @@ use std::{
 
 use harbor_pty::PtyControl;
 use harbor_types::{AltScreenAction, TerminalSize};
-use harbor_widget::input::event::UiEvent;
+use harbor_widget::input::event::{Key, KeyboardEvent, PointerPhase, UiEvent};
 
 use crate::input::TerminalInputEncoder;
 use crate::parser::TerminalParser;
@@ -237,13 +237,22 @@ impl TerminalIo {
 
     // ── event handling ────────────────────────────────────────────────
 
-    /// Drains new output, encodes a widget event using current modes, and writes it to the PTY.
+    /// Drains new output, interprets scrollback navigation / wheel, then encodes
+    /// remaining events for the PTY.
     pub(crate) fn handle_event(
         &mut self,
         screen: &mut Screen,
         event: UiEvent,
     ) -> anyhow::Result<()> {
         self.drain(screen);
+
+        if Self::try_scrollback_key(screen, &event) {
+            return Ok(());
+        }
+        if Self::try_scrollback_wheel(screen, &event) {
+            return Ok(());
+        }
+
         let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) else {
             return Ok(());
         };
@@ -251,6 +260,70 @@ impl TerminalIo {
         // shell response are visible immediately after browsing scrollback.
         screen.scroll_to_bottom();
         self.write_pty(&bytes)
+    }
+
+    /// Bare PageUp/PageDown/Home/End navigate scrollback on the primary screen.
+    fn try_scrollback_key(screen: &mut Screen, event: &UiEvent) -> bool {
+        let UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) = event else {
+            return false;
+        };
+        if screen.is_alt() || modifiers.shift || modifiers.ctrl || modifiers.alt || modifiers.meta {
+            return false;
+        }
+
+        match key {
+            Key::PageUp => {
+                screen.scroll_up(screen.rows());
+                true
+            }
+            Key::PageDown => {
+                screen.scroll_down(screen.rows());
+                true
+            }
+            Key::Home => {
+                let scroll_count = screen.scroll_count();
+                screen.scroll_up(scroll_count);
+                true
+            }
+            Key::End => {
+                screen.scroll_to_bottom();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Wheel events scroll the primary-screen viewport; alt-screen wheels are
+    /// consumed without PTY write. Terminal owns line/pixel → row conversion.
+    fn try_scrollback_wheel(screen: &mut Screen, event: &UiEvent) -> bool {
+        let UiEvent::Pointer(pointer) = event else {
+            return false;
+        };
+        let (dy, is_pixel) = match pointer.phase {
+            PointerPhase::WheelLine { dy, .. } => (dy, false),
+            PointerPhase::WheelPixel { dy, .. } => (dy, true),
+            _ => return false,
+        };
+
+        if screen.is_alt() {
+            return true;
+        }
+
+        let lines = Self::wheel_to_lines(dy, is_pixel);
+        if lines > 0 {
+            screen.scroll_up(lines as usize);
+        } else if lines < 0 {
+            screen.scroll_down(lines.unsigned_abs());
+        }
+        true
+    }
+
+    fn wheel_to_lines(dy: f32, is_pixel: bool) -> isize {
+        if is_pixel {
+            (dy / 20.0) as isize
+        } else {
+            (dy * 3.0) as isize
+        }
     }
 
     // ── mode control ──────────────────────────────────────────────────

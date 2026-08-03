@@ -322,7 +322,7 @@ fn should_queue_wheel_events_from_custom_paint() {
 
     let wheel = UiEvent::Pointer(PointerEvent::new(
         Point::ZERO,
-        PointerPhase::Wheel { dx: 0.0, dy: 10.0 },
+        PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
         PointerButton::Left,
         0,
     ));
