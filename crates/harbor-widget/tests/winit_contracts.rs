@@ -507,8 +507,9 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
     let focus_loss = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
 
     // Assert: captures are released, and stale touch endings cannot activate the button.
+    // Touch starts already own the outstanding redraw edge; focus-loss work coalesces.
     assert!(focus_loss.is_handled());
-    assert!(focus_loss.effects.request_redraw);
+    assert!(!focus_loss.effects.request_redraw);
     assert_eq!(runtime.input().captor((1 << 63) | 1), None);
     assert_eq!(runtime.input().captor((1 << 63) | 2), None);
     for pointer_id in [31, 47] {

@@ -169,3 +169,66 @@ fn should_coalesce_repeated_external_invalidations_into_one_update() {
     assert!(runtime.update(Instant::now()).request_redraw);
     assert!(!runtime.update(Instant::now()).request_redraw);
 }
+
+#[test]
+fn control_flow_arbitrate_is_commutative_and_prefers_poll_then_earliest_deadline() {
+    let now = Instant::now();
+    let early = now + Duration::from_secs(1);
+    let late = now + Duration::from_secs(2);
+
+    assert_eq!(
+        ControlFlowEffect::Wait.arbitrate(ControlFlowEffect::Wait),
+        ControlFlowEffect::Wait
+    );
+    assert_eq!(
+        ControlFlowEffect::WaitUntil(late).arbitrate(ControlFlowEffect::WaitUntil(early)),
+        ControlFlowEffect::WaitUntil(early)
+    );
+    assert_eq!(
+        ControlFlowEffect::WaitUntil(early).arbitrate(ControlFlowEffect::WaitUntil(late)),
+        ControlFlowEffect::WaitUntil(early)
+    );
+    assert_eq!(
+        ControlFlowEffect::WaitUntil(early).arbitrate(ControlFlowEffect::WaitUntil(early)),
+        ControlFlowEffect::WaitUntil(early)
+    );
+    assert_eq!(
+        ControlFlowEffect::WaitUntil(early).arbitrate(ControlFlowEffect::Wait),
+        ControlFlowEffect::WaitUntil(early)
+    );
+    assert_eq!(
+        ControlFlowEffect::Wait.arbitrate(ControlFlowEffect::WaitUntil(early)),
+        ControlFlowEffect::WaitUntil(early)
+    );
+    assert_eq!(
+        ControlFlowEffect::Poll.arbitrate(ControlFlowEffect::WaitUntil(late)),
+        ControlFlowEffect::Poll
+    );
+    assert_eq!(
+        ControlFlowEffect::WaitUntil(late).arbitrate(ControlFlowEffect::Poll),
+        ControlFlowEffect::Poll
+    );
+    assert_eq!(
+        ControlFlowEffect::Poll.arbitrate(ControlFlowEffect::Wait),
+        ControlFlowEffect::Poll
+    );
+    assert_eq!(
+        ControlFlowEffect::Wait.arbitrate(ControlFlowEffect::Poll),
+        ControlFlowEffect::Poll
+    );
+    assert_eq!(
+        ControlFlowEffect::Poll.arbitrate(ControlFlowEffect::Poll),
+        ControlFlowEffect::Poll
+    );
+
+    // Sequential merge still keeps the later turn; arbitration is independent.
+    let mut earlier = RuntimeEffects {
+        control_flow: Some(ControlFlowEffect::Poll),
+        ..RuntimeEffects::default()
+    };
+    earlier.merge(RuntimeEffects {
+        control_flow: Some(ControlFlowEffect::Wait),
+        ..RuntimeEffects::default()
+    });
+    assert_eq!(earlier.control_flow, Some(ControlFlowEffect::Wait));
+}

@@ -15,7 +15,7 @@ use winit::{
     window::{CursorIcon, Window, WindowId},
 };
 
-use crate::event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason};
+use crate::event::AppEvent;
 use confirmation::ConfirmationWindow;
 use harbor_pty::PtyEndpoints;
 use harbor_terminal::{
@@ -23,7 +23,8 @@ use harbor_terminal::{
     surface_disposition,
 };
 use harbor_widget::effects::{
-    ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ImeEffect, RuntimeEffects,
+    ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ExternalInvalidation, ImeEffect,
+    RuntimeEffects,
 };
 use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
@@ -119,9 +120,10 @@ fn needs_redraw_wake_after_delivery(
     key_wakes || matches!(offset_before, Some(before) if before != offset_after)
 }
 
-fn redraw_reason_for_app_event(event: AppEvent) -> Option<RedrawReason> {
+/// Maps host wake events to source-agnostic runtime invalidation.
+fn external_invalidation_for_app_event(event: AppEvent) -> Option<ExternalInvalidation> {
     match event {
-        AppEvent::TerminalOutputReady => Some(RedrawReason::TerminalOutput),
+        AppEvent::TerminalOutputReady => Some(ExternalInvalidation::new()),
     }
 }
 
@@ -130,31 +132,6 @@ fn control_flow_for_effect(effect: ControlFlowEffect) -> ControlFlow {
         ControlFlowEffect::Wait => ControlFlow::Wait,
         ControlFlowEffect::WaitUntil(deadline) => ControlFlow::WaitUntil(deadline),
         ControlFlowEffect::Poll => ControlFlow::Poll,
-    }
-}
-
-fn frame_control_flow_for_effect(effect: ControlFlowEffect) -> FrameControlFlow {
-    match effect {
-        ControlFlowEffect::Wait => FrameControlFlow::Wait,
-        ControlFlowEffect::WaitUntil(deadline) => FrameControlFlow::WaitUntil(deadline),
-        ControlFlowEffect::Poll => FrameControlFlow::Poll,
-    }
-}
-
-fn arbitrate_control_flow(
-    main: FrameControlFlow,
-    confirmation: FrameControlFlow,
-) -> FrameControlFlow {
-    match (main, confirmation) {
-        (FrameControlFlow::Poll, _) | (_, FrameControlFlow::Poll) => FrameControlFlow::Poll,
-        (FrameControlFlow::WaitUntil(main), FrameControlFlow::WaitUntil(confirmation)) => {
-            FrameControlFlow::WaitUntil(main.min(confirmation))
-        }
-        (FrameControlFlow::WaitUntil(deadline), FrameControlFlow::Wait)
-        | (FrameControlFlow::Wait, FrameControlFlow::WaitUntil(deadline)) => {
-            FrameControlFlow::WaitUntil(deadline)
-        }
-        (FrameControlFlow::Wait, FrameControlFlow::Wait) => FrameControlFlow::Wait,
     }
 }
 
@@ -192,16 +169,22 @@ fn clipboard_log_metadata(effect: &ClipboardEffect) -> (&'static str, usize) {
     }
 }
 
-/// Keeps clipboard effects at the platform-neutral boundary until a host
-/// result channel exists. In particular, a read is never performed and then
-/// discarded by this application shell.
-fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
-    let (operation, byte_len) = clipboard_log_metadata(&effect);
+/// Logs a clipboard effect that remains deferred until a host result channel
+/// exists. In particular, a read is never performed and then discarded by this
+/// application shell.
+fn log_deferred_clipboard_effect(effect: &ClipboardEffect) {
+    let (operation, byte_len) = clipboard_log_metadata(effect);
     tracing::warn!(
         operation,
         byte_len,
         "clipboard effect deferred: host result channel is not implemented"
     );
+}
+
+/// Keeps an owned clipboard effect at the platform-neutral boundary until a
+/// host result channel exists.
+fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
+    log_deferred_clipboard_effect(&effect);
     ClipboardHostAction::Deferred(effect)
 }
 
@@ -230,8 +213,8 @@ impl DialogOverlay {
         self.window.as_ref().map(|w| w.window_id())
     }
 
-    fn control_flow(&self) -> Option<FrameControlFlow> {
-        self.window.as_ref().map(ConfirmationWindow::control_flow)
+    fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
+        self.window.as_mut().map(|window| window.about_to_wait(now))
     }
 
     /// Dispatches a window event to the active confirmation dialog.
@@ -298,9 +281,8 @@ struct AppRuntime {
     dialog: DialogOverlay,
 }
 
-/// State governing scheduling and surface recovery.
+/// Host frame lifecycle telemetry and surface-recovery bookkeeping.
 struct FrameState {
-    scheduler: FrameScheduler,
     surface_recovery_attempted: bool,
     /// Set after the first successful surface present.
     first_present_at: Option<Instant>,
@@ -332,10 +314,6 @@ impl FrameState {
     }
 
     /// Emits `steady_state` once after the documented dwell past first present.
-    fn maybe_emit_steady_state(&mut self) {
-        self.maybe_emit_steady_state_at(Instant::now());
-    }
-
     fn maybe_emit_steady_state_at(&mut self, now: Instant) {
         if self.steady_state_emitted {
             return;
@@ -356,25 +334,23 @@ impl FrameState {
         );
     }
 
-    /// Arm a one-shot WaitUntil so idle Latin DHAT runs observe `steady_state`
-    /// near the documented dwell without requiring input.
-    fn schedule_steady_state_deadline(&mut self) {
-        self.schedule_steady_state_deadline_at(Instant::now());
+    /// Returns the future font-lifecycle telemetry deadline, or emits the
+    /// marker when due. Does not choose a winit control-flow mode.
+    fn next_steady_state_deadline(&mut self) -> Option<Instant> {
+        self.next_steady_state_deadline_at(Instant::now())
     }
 
-    fn schedule_steady_state_deadline_at(&mut self, now: Instant) {
+    fn next_steady_state_deadline_at(&mut self, now: Instant) -> Option<Instant> {
         if self.steady_state_emitted {
-            return;
+            return None;
         }
-        let Some(presented_at) = self.first_present_at else {
-            return;
-        };
+        let presented_at = self.first_present_at?;
         let deadline = presented_at + FONT_STEADY_STATE_DWELL;
         if now >= deadline {
             self.maybe_emit_steady_state_at(now);
-            return;
+            return None;
         }
-        self.scheduler.set_deadline(Some(deadline));
+        Some(deadline)
     }
 }
 
@@ -408,21 +384,47 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     /// Handles redraw wakes posted by the terminal reader thread.
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
-        if let Some(reason) = redraw_reason_for_app_event(event) {
-            self.request_redraw(reason);
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        let Some(invalidation) = external_invalidation_for_app_event(event) else {
+            return;
+        };
+        let (Some(adapter), Some(runtime), Some(window)) = (
+            self.runtime.winit_adapter.as_mut(),
+            self.runtime.widget_runtime.as_mut(),
+            self.runtime.window.as_ref(),
+        ) else {
+            return;
+        };
+        let effects = adapter.invalidate_external(runtime, invalidation);
+        Self::apply_window_effects(window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
         }
     }
 
     /// Called when the event loop is about to block.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.frame.scheduler.set_deadline(None);
-        if self.frame.scheduler.should_request_continuous_redraw() {
-            self.request_redraw(RedrawReason::Active);
+        let now = Instant::now();
+        let host_deadline = self.frame.next_steady_state_deadline();
+
+        let mut combined_flow = ControlFlowEffect::Wait;
+        if let (Some(adapter), Some(runtime), Some(window)) = (
+            self.runtime.winit_adapter.as_mut(),
+            self.runtime.widget_runtime.as_mut(),
+            self.runtime.window.as_ref(),
+        ) {
+            let main_effects = adapter.about_to_wait(runtime, now, host_deadline);
+            Self::apply_window_effects(window, &main_effects);
+            if let Some(flow) = main_effects.control_flow {
+                combined_flow = flow;
+            }
         }
-        self.frame.maybe_emit_steady_state();
-        self.frame.schedule_steady_state_deadline();
-        self.set_control_flow(event_loop);
+
+        if let Some(confirmation_flow) = self.runtime.dialog.about_to_wait(now) {
+            combined_flow = combined_flow.arbitrate(confirmation_flow);
+        }
+
+        Self::apply_control_flow(event_loop, combined_flow);
     }
 
     /// Dispatches window-level events: resize, redraw, close, and terminal input.
@@ -442,7 +444,7 @@ impl ApplicationHandler<AppEvent> for App {
             );
             match result.outcome {
                 DialogOutcome::Cancelled => {
-                    self.request_redraw(RedrawReason::Input);
+                    self.request_main_frame(event_loop);
                     return;
                 }
                 DialogOutcome::Confirmed(raw_text) => {
@@ -457,7 +459,7 @@ impl ApplicationHandler<AppEvent> for App {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
                         }
                     }
-                    self.request_redraw(RedrawReason::Input);
+                    self.request_main_frame(event_loop);
                     return;
                 }
                 DialogOutcome::None => {}
@@ -481,10 +483,6 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        if matches!(&event, WindowEvent::Focused(false)) {
-            self.frame.scheduler.set_active(false);
-        }
-
         if matches!(&event, WindowEvent::CloseRequested) {
             tracing::info!("close requested");
             event_loop.exit();
@@ -503,12 +501,10 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(outcome) = outcome
             && outcome.handled
         {
-            Self::apply_runtime_effects(
-                &mut self.frame.scheduler,
-                event_loop,
-                window,
-                outcome.effects,
-            );
+            Self::apply_window_effects(window, &outcome.effects);
+            if let Some(control_flow) = outcome.effects.control_flow {
+                Self::apply_control_flow(event_loop, control_flow);
+            }
             if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
                 let draw_id = terminal.lock().unwrap().draw_id();
                 let needs_redraw_wake = std::cell::Cell::new(false);
@@ -534,11 +530,18 @@ impl ApplicationHandler<AppEvent> for App {
                     },
                 );
                 // CustomPaint does not necessarily invalidate paint for a
-                // terminal keypress or wheel. Preserve the old scheduler wake
-                // for routed KeyDown and for wheels that actually moved the
+                // terminal keypress or wheel. Request a host retry frame for
+                // routed KeyDown and for wheels that actually moved the
                 // viewport (alt-screen / zero-line wheels stay silent).
-                if routed && needs_redraw_wake.get() {
-                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                if routed
+                    && needs_redraw_wake.get()
+                    && let Some(adapter) = self.runtime.winit_adapter.as_mut()
+                {
+                    let effects = adapter.request_frame();
+                    Self::apply_window_effects(window, &effects);
+                    if let Some(control_flow) = effects.control_flow {
+                        Self::apply_control_flow(event_loop, control_flow);
+                    }
                 }
             }
         }
@@ -548,28 +551,33 @@ impl ApplicationHandler<AppEvent> for App {
                 tracing::trace!(width = size.width, height = size.height, "window resized");
                 self.frame.surface_recovery_attempted = false;
                 if size.width == 0 || size.height == 0 {
-                    self.frame.scheduler.set_drawable(false);
+                    if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+                        adapter.set_drawable(false);
+                    }
                     return;
                 }
-                self.frame.scheduler.set_drawable(true);
+                if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+                    adapter.set_drawable(true);
+                }
                 gpu.resize(size.width, size.height);
                 let mut terminal = terminal.lock().unwrap();
                 let terminal_size = terminal.terminal_size(gpu);
                 terminal.resize_gpu(terminal_size, gpu);
-                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                if let (Some(adapter), Some(widget_runtime)) = (
+                    self.runtime.winit_adapter.as_mut(),
+                    self.runtime.widget_runtime.as_mut(),
+                ) {
                     let scale = window.scale_factor() as f32;
                     let viewport =
                         harbor_widget::renderer::Viewport::new(size.width, size.height, scale);
                     widget_runtime.set_viewport(viewport);
-                    let effects = widget_runtime.update(Instant::now());
-                    Self::apply_runtime_effects(
-                        &mut self.frame.scheduler,
-                        event_loop,
-                        window,
-                        effects,
-                    );
+                    let mut effects = adapter.fold_effects(widget_runtime.update(Instant::now()));
+                    effects.merge(adapter.request_frame());
+                    Self::apply_window_effects(window, &effects);
+                    if let Some(control_flow) = effects.control_flow {
+                        Self::apply_control_flow(event_loop, control_flow);
+                    }
                 }
-                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 tracing::trace!(?scale_factor, "main window scale factor changed");
@@ -577,33 +585,61 @@ impl ApplicationHandler<AppEvent> for App {
                 let size = window.inner_size();
                 self.frame.surface_recovery_attempted = false;
                 if size.width == 0 || size.height == 0 {
-                    self.frame.scheduler.set_drawable(false);
+                    if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+                        adapter.set_drawable(false);
+                    }
                     return;
                 }
-                self.frame.scheduler.set_drawable(true);
+                if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+                    adapter.set_drawable(true);
+                }
                 let (physical_width, physical_height) = (size.width, size.height);
                 gpu.resize(physical_width, physical_height);
-                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                if let (Some(adapter), Some(widget_runtime)) = (
+                    self.runtime.winit_adapter.as_mut(),
+                    self.runtime.widget_runtime.as_mut(),
+                ) {
                     let viewport = harbor_widget::renderer::Viewport::new(
                         physical_width,
                         physical_height,
                         scale,
                     );
                     widget_runtime.set_viewport(viewport);
-                    let effects = widget_runtime.update(Instant::now());
-                    Self::apply_runtime_effects(
-                        &mut self.frame.scheduler,
-                        event_loop,
-                        window,
-                        effects,
-                    );
+                    let mut effects = adapter.fold_effects(widget_runtime.update(Instant::now()));
+                    effects.merge(adapter.request_frame());
+                    Self::apply_window_effects(window, &effects);
+                    if let Some(control_flow) = effects.control_flow {
+                        Self::apply_control_flow(event_loop, control_flow);
+                    }
                 }
-                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
-                self.frame.scheduler.redraw_requested();
-                self.render_frame(event_loop);
+                let now = Instant::now();
+                if let (Some(adapter), Some(widget_runtime), Some(window)) = (
+                    self.runtime.winit_adapter.as_mut(),
+                    self.runtime.widget_runtime.as_mut(),
+                    self.runtime.window.as_ref(),
+                ) {
+                    let effects = adapter.redraw_requested(widget_runtime, now);
+                    Self::apply_window_effects(window, &effects);
+                    if let Some(control_flow) = effects.control_flow {
+                        Self::apply_control_flow(event_loop, control_flow);
+                    }
+                }
+                if self.render_frame(event_loop) {
+                    let now = Instant::now();
+                    if let (Some(adapter), Some(window)) = (
+                        self.runtime.winit_adapter.as_mut(),
+                        self.runtime.window.as_ref(),
+                    ) {
+                        let completion = adapter.frame_completed(now);
+                        Self::apply_window_effects(window, &completion);
+                        if let Some(control_flow) = completion.control_flow {
+                            Self::apply_control_flow(event_loop, control_flow);
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -624,7 +660,6 @@ impl App {
                 dialog: DialogOverlay { window: None },
             },
             frame: FrameState {
-                scheduler: FrameScheduler::default(),
                 surface_recovery_attempted: false,
                 first_present_at: None,
                 steady_state_emitted: false,
@@ -685,46 +720,24 @@ impl App {
         self.runtime.terminal = Some(terminal);
         let mut winit_adapter = WinitAdapter::new();
         winit_adapter.set_scale_factor(window.scale_factor() as f32);
+        let initial_size = window.inner_size();
+        winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
         self.runtime.winit_adapter = Some(winit_adapter);
         let initial_effects = self.init_widget_runtime();
         self.runtime.window = Some(window.clone());
-        let initial_size = window.inner_size();
-        self.frame
-            .scheduler
-            .set_drawable(initial_size.width != 0 && initial_size.height != 0);
-        Self::apply_runtime_effects(
-            &mut self.frame.scheduler,
-            event_loop,
-            &window,
-            initial_effects,
-        );
-        self.request_redraw(RedrawReason::Input);
+        if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+            let mut effects = adapter.fold_effects(initial_effects);
+            effects.merge(adapter.request_frame());
+            Self::apply_window_effects(&window, &effects);
+            if let Some(control_flow) = effects.control_flow {
+                Self::apply_control_flow(event_loop, control_flow);
+            }
+        }
         Ok(())
     }
 
-    fn request_redraw(&mut self, reason: RedrawReason) {
-        if let Some(window) = self.runtime.window.as_ref() {
-            Self::wake_redraw(&mut self.frame.scheduler, window, reason);
-        }
-    }
-
-    fn wake_redraw(scheduler: &mut FrameScheduler, window: &Window, reason: RedrawReason) {
-        if scheduler.wake(reason) {
-            tracing::trace!(?reason, "requesting redraw");
-            window.request_redraw();
-        }
-    }
-
-    fn apply_runtime_effects(
-        scheduler: &mut FrameScheduler,
-        event_loop: &ActiveEventLoop,
-        window: &Window,
-        effects: RuntimeEffects,
-    ) {
-        if let Some(control_flow) = effects.control_flow {
-            scheduler.set_control_flow(frame_control_flow_for_effect(control_flow));
-            event_loop.set_control_flow(control_flow_for_effect(control_flow));
-        }
+    /// Applies adapter-authorized window effects without calculating wait policy.
+    pub(crate) fn apply_window_effects(window: &Window, effects: &RuntimeEffects) {
         if let Some(cursor) = effects.cursor {
             window.set_cursor(cursor_icon_for_effect(cursor));
         }
@@ -737,65 +750,57 @@ impl App {
                 window.set_ime_cursor_area(position, size);
             }
         }
-        if let Some(clipboard) = effects.clipboard {
-            apply_clipboard_effect(clipboard);
+        if let Some(clipboard) = effects.clipboard.as_ref() {
+            log_deferred_clipboard_effect(clipboard);
         }
         if effects.request_redraw {
-            Self::wake_redraw(scheduler, window, RedrawReason::Input);
+            tracing::trace!("requesting redraw");
+            window.request_redraw();
         }
     }
 
-    fn set_control_flow(&self, event_loop: &ActiveEventLoop) {
-        let main = self.frame.scheduler.control_flow();
-        let control_flow = self
-            .runtime
-            .dialog
-            .control_flow()
-            .map_or(main, |confirmation| {
-                arbitrate_control_flow(main, confirmation)
-            });
-        match control_flow {
-            FrameControlFlow::Wait => event_loop.set_control_flow(ControlFlow::Wait),
-            FrameControlFlow::WaitUntil(deadline) => {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
-            FrameControlFlow::Poll => event_loop.set_control_flow(ControlFlow::Poll),
+    fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFlowEffect) {
+        event_loop.set_control_flow(control_flow_for_effect(effect));
+    }
+
+    fn request_main_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(adapter), Some(window)) = (
+            self.runtime.winit_adapter.as_mut(),
+            self.runtime.window.as_ref(),
+        ) else {
+            return;
+        };
+        let effects = adapter.request_frame();
+        Self::apply_window_effects(window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
         }
     }
 
-    fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+    /// Encodes and presents one App-owned frame. Returns whether presentation succeeded.
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.runtime.window.as_ref().is_some_and(|window| {
             let size = window.inner_size();
             size.width == 0 || size.height == 0
         }) {
-            self.frame.scheduler.set_drawable(false);
-            return;
+            if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+                adapter.set_drawable(false);
+            }
+            return false;
         }
-        self.frame.scheduler.set_drawable(true);
-
-        let update_effects = self
-            .runtime
-            .widget_runtime
-            .as_mut()
-            .map(|runtime| runtime.update(Instant::now()));
-        if let Some(update_effects) = update_effects
-            && let Some(window) = self.runtime.window.as_ref()
-        {
-            Self::apply_runtime_effects(
-                &mut self.frame.scheduler,
-                event_loop,
-                window,
-                update_effects,
-            );
+        if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
+            adapter.set_drawable(true);
         }
 
         let status;
         let reconfigure_after_present;
+        let presented;
+        let mut request_recovery_frame = false;
         {
             let (Some(gpu), Some(terminal)) =
                 (self.runtime.gpu.as_mut(), self.runtime.terminal.as_ref())
             else {
-                return;
+                return false;
             };
             if let Ok(mut terminal) = terminal.lock() {
                 terminal.drain_pty();
@@ -812,90 +817,133 @@ impl App {
                 wgpu::CurrentSurfaceTexture::Validation => SurfaceStatus::Validation,
             };
             let disposition = surface_disposition(status);
-            let (output, reconfigure) = match (frame, disposition) {
+            enum Acquire {
+                Present {
+                    output: wgpu::SurfaceTexture,
+                    reconfigure: bool,
+                },
+                Recover,
+                Skip,
+            }
+            let acquire = match (frame, disposition) {
                 (wgpu::CurrentSurfaceTexture::Success(output), SurfaceDisposition::Present) => {
-                    (output, false)
+                    Acquire::Present {
+                        output,
+                        reconfigure: false,
+                    }
                 }
                 (
                     wgpu::CurrentSurfaceTexture::Suboptimal(output),
                     SurfaceDisposition::PresentAndReconfigure,
                 ) => {
                     tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
-                    (output, true)
+                    Acquire::Present {
+                        output,
+                        reconfigure: true,
+                    }
                 }
                 (_, SurfaceDisposition::ReconfigureAndRedraw) => {
                     tracing::warn!(?status, "surface requires reconfiguration");
                     if !self.frame.surface_recovery_attempted {
                         self.frame.surface_recovery_attempted = true;
                         gpu.reconfigure();
-                        self.request_redraw(RedrawReason::SurfaceRecovery);
+                        Acquire::Recover
                     } else {
                         tracing::warn!(?status, "surface recovery deferred until external wake");
+                        Acquire::Skip
                     }
-                    return;
                 }
                 (_, SurfaceDisposition::Skip) => {
                     tracing::debug!(?status, "surface frame skipped");
-                    return;
+                    Acquire::Skip
                 }
                 _ => unreachable!("surface disposition must match texture status"),
             };
-            reconfigure_after_present = reconfigure;
 
-            let view = output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = gpu
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            match acquire {
+                Acquire::Skip => {
+                    reconfigure_after_present = false;
+                    presented = false;
+                }
+                Acquire::Recover => {
+                    reconfigure_after_present = false;
+                    presented = false;
+                    request_recovery_frame = true;
+                }
+                Acquire::Present {
+                    output,
+                    reconfigure,
+                } => {
+                    reconfigure_after_present = reconfigure;
+                    let view = output
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut encoder = gpu
+                        .device()
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(bg_wgpu(harbor_config::BACKGROUND)),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
+                    {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("render pass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(bg_wgpu(
+                                            harbor_config::BACKGROUND,
+                                        )),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                                multiview_mask: None,
+                            });
 
-                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-                    let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
-                    let (physical_w, physical_h) = gpu.surface_size();
-                    let viewport =
-                        harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
+                        if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                            let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
+                            let (physical_w, physical_h) = gpu.surface_size();
+                            let viewport = harbor_widget::renderer::Viewport::new(
+                                physical_w, physical_h, scale,
+                            );
 
-                    with_current_gpu(gpu, || {
-                        widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
-                    });
+                            with_current_gpu(gpu, || {
+                                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
+                            });
+                        }
+                    }
+
+                    let command_buffer = encoder.finish();
+                    gpu.queue().submit(Some(command_buffer));
+                    gpu.present(output);
+                    tracing::trace!(?status, "surface frame presented");
+                    presented = true;
                 }
             }
+        }
 
-            let command_buffer = encoder.finish();
-            gpu.queue().submit(Some(command_buffer));
-            gpu.present(output);
-            tracing::trace!(?status, "surface frame presented");
+        if !presented {
+            if request_recovery_frame {
+                self.request_main_frame(event_loop);
+            }
+            return false;
         }
 
         self.frame.mark_first_present();
-        self.frame.schedule_steady_state_deadline();
+        let _ = self.frame.next_steady_state_deadline();
         if reconfigure_after_present && !self.frame.surface_recovery_attempted {
             self.frame.surface_recovery_attempted = true;
             if let Some(gpu) = self.runtime.gpu.as_mut() {
                 gpu.reconfigure();
             }
-            self.request_redraw(RedrawReason::SurfaceSuboptimal);
+            self.request_main_frame(event_loop);
         } else if status == SurfaceStatus::Success {
             self.frame.surface_recovery_attempted = false;
         }
+        true
     }
 
     /// Initializes the widget runtime with a terminal CustomPaint root.
@@ -1036,7 +1084,6 @@ mod tests {
 
     fn empty_frame() -> FrameState {
         FrameState {
-            scheduler: FrameScheduler::default(),
             surface_recovery_attempted: false,
             first_present_at: None,
             steady_state_emitted: false,
@@ -1233,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn should_arm_scheduler_deadline_when_first_present_marked() {
+    fn should_return_future_deadline_when_first_present_marked() {
         // Arrange
         let mut frame = empty_frame();
         let presented_at = Instant::now();
@@ -1241,25 +1288,22 @@ mod tests {
 
         // Act
         frame.mark_first_present_at(presented_at);
-        frame.schedule_steady_state_deadline_at(presented_at);
+        let deadline = frame.next_steady_state_deadline_at(presented_at);
 
         // Assert
-        assert_eq!(
-            frame.scheduler.control_flow(),
-            FrameControlFlow::WaitUntil(expected_deadline)
-        );
+        assert_eq!(deadline, Some(expected_deadline));
     }
 
     #[test]
-    fn should_not_arm_deadline_when_first_present_missing() {
+    fn should_return_no_deadline_when_first_present_missing() {
         // Arrange
         let mut frame = empty_frame();
 
         // Act
-        frame.schedule_steady_state_deadline_at(Instant::now());
+        let deadline = frame.next_steady_state_deadline_at(Instant::now());
 
         // Assert
-        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
+        assert_eq!(deadline, None);
     }
 
     #[test]
@@ -1270,9 +1314,9 @@ mod tests {
         let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
 
         // Act
-        let (_, capture) = with_lifecycle_capture(|| {
+        let (deadline, capture) = with_lifecycle_capture(|| {
             frame.mark_first_present_at(presented_at);
-            frame.schedule_steady_state_deadline_at(after_dwell);
+            frame.next_steady_state_deadline_at(after_dwell)
         });
 
         // Assert
@@ -1280,11 +1324,11 @@ mod tests {
             capture.phases(),
             vec!["first_present".to_string(), "steady_state".to_string()]
         );
-        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
+        assert_eq!(deadline, None);
     }
 
     #[test]
-    fn should_not_arm_deadline_when_steady_state_already_emitted() {
+    fn should_return_no_deadline_when_steady_state_already_emitted() {
         // Arrange
         let mut frame = empty_frame();
         let presented_at = Instant::now();
@@ -1293,10 +1337,10 @@ mod tests {
         frame.maybe_emit_steady_state_at(after_dwell);
 
         // Act
-        frame.schedule_steady_state_deadline_at(after_dwell);
+        let deadline = frame.next_steady_state_deadline_at(after_dwell);
 
         // Assert
-        assert_eq!(frame.scheduler.control_flow(), FrameControlFlow::Wait);
+        assert_eq!(deadline, None);
     }
 
     #[test]
@@ -1384,10 +1428,10 @@ mod tests {
     }
 
     #[test]
-    fn terminal_output_event_requests_terminal_output_redraw() {
+    fn terminal_output_event_maps_only_to_generic_external_invalidation() {
         assert_eq!(
-            redraw_reason_for_app_event(AppEvent::TerminalOutputReady),
-            Some(RedrawReason::TerminalOutput)
+            external_invalidation_for_app_event(AppEvent::TerminalOutputReady),
+            Some(ExternalInvalidation::new())
         );
     }
 
@@ -1504,27 +1548,24 @@ mod tests {
 
         // Act and assert each arbitration combination independently.
         assert_eq!(
-            arbitrate_control_flow(FrameControlFlow::Wait, FrameControlFlow::Wait),
-            FrameControlFlow::Wait
+            ControlFlowEffect::Wait.arbitrate(ControlFlowEffect::Wait),
+            ControlFlowEffect::Wait
         );
         assert_eq!(
-            arbitrate_control_flow(
-                FrameControlFlow::WaitUntil(late),
-                FrameControlFlow::WaitUntil(early),
-            ),
-            FrameControlFlow::WaitUntil(early)
+            ControlFlowEffect::WaitUntil(late).arbitrate(ControlFlowEffect::WaitUntil(early)),
+            ControlFlowEffect::WaitUntil(early)
         );
         assert_eq!(
-            arbitrate_control_flow(FrameControlFlow::WaitUntil(early), FrameControlFlow::Wait),
-            FrameControlFlow::WaitUntil(early)
+            ControlFlowEffect::WaitUntil(early).arbitrate(ControlFlowEffect::Wait),
+            ControlFlowEffect::WaitUntil(early)
         );
         assert_eq!(
-            arbitrate_control_flow(FrameControlFlow::Poll, FrameControlFlow::WaitUntil(late)),
-            FrameControlFlow::Poll
+            ControlFlowEffect::Poll.arbitrate(ControlFlowEffect::WaitUntil(late)),
+            ControlFlowEffect::Poll
         );
         assert_eq!(
-            arbitrate_control_flow(FrameControlFlow::WaitUntil(late), FrameControlFlow::Poll),
-            FrameControlFlow::Poll
+            ControlFlowEffect::WaitUntil(late).arbitrate(ControlFlowEffect::Poll),
+            ControlFlowEffect::Poll
         );
     }
 

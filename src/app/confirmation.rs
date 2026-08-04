@@ -16,9 +16,9 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::event::{FrameControlFlow, FrameScheduler, RedrawReason};
 use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
+use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
@@ -29,6 +29,7 @@ use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::winit::WinitAdapter;
+use std::time::Instant;
 
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;
@@ -94,16 +95,8 @@ fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) -> bool {
     true
 }
 
-fn confirmation_resize_redraw_reason(
-    scale_factor_changed: bool,
-    width: u32,
-    height: u32,
-) -> Option<RedrawReason> {
-    if scale_factor_changed || (width != 0 && height != 0) {
-        Some(RedrawReason::Resize)
-    } else {
-        None
-    }
+fn confirmation_needs_resize_redraw(scale_factor_changed: bool, width: u32, height: u32) -> bool {
+    scale_factor_changed || (width != 0 && height != 0)
 }
 
 fn mark_surface_recovery_attempt(attempted: &mut bool) -> bool {
@@ -136,9 +129,8 @@ pub(crate) struct ConfirmationWindow {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     runtime: Runtime,
+    /// Per-window winit integration, including redraw coalescing.
     adapter: WinitAdapter,
-    /// Redraw coalescing state owned exclusively by this native window.
-    scheduler: FrameScheduler,
     /// Limits surface-failure recovery to one self-scheduled retry.
     surface_recovery_attempted: bool,
     raw_text: String,
@@ -280,12 +272,21 @@ impl ConfirmationWindow {
         runtime.focus_first_focusable();
         initial_effects.merge(runtime.take_pending_effects());
 
-        let mut scheduler = FrameScheduler::default();
-        scheduler.set_drawable(drawable);
-        super::App::apply_runtime_effects(&mut scheduler, event_loop, &window, initial_effects);
-
         let mut adapter = WinitAdapter::new();
         adapter.set_scale_factor(window.scale_factor() as f32);
+        adapter.set_drawable(drawable);
+        let mut effects = adapter.fold_effects(initial_effects);
+        effects.merge(adapter.request_frame());
+        super::App::apply_window_effects(&window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            event_loop.set_control_flow(match control_flow {
+                ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
+                ControlFlowEffect::WaitUntil(deadline) => {
+                    winit::event_loop::ControlFlow::WaitUntil(deadline)
+                }
+                ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
+            });
+        }
 
         ConfirmationWindow {
             window,
@@ -293,7 +294,6 @@ impl ConfirmationWindow {
             surface_config,
             runtime,
             adapter,
-            scheduler,
             surface_recovery_attempted: false,
             raw_text,
             cancelled,
@@ -309,8 +309,11 @@ impl ConfirmationWindow {
         self.window.id()
     }
 
-    pub(crate) fn control_flow(&self) -> FrameControlFlow {
-        self.scheduler.control_flow()
+    /// Applies idle redraw effects to this window and returns its wait request.
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> ControlFlowEffect {
+        let effects = self.adapter.about_to_wait(&mut self.runtime, now, None);
+        super::App::apply_window_effects(&self.window, &effects);
+        effects.control_flow.unwrap_or(ControlFlowEffect::Wait)
     }
 
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
@@ -329,7 +332,13 @@ impl ConfirmationWindow {
         event_loop: &ActiveEventLoop,
     ) -> ConfirmationResult {
         if matches!(event, WindowEvent::RedrawRequested) {
-            self.scheduler.redraw_requested();
+            let effects = self
+                .adapter
+                .redraw_requested(&mut self.runtime, Instant::now());
+            super::App::apply_window_effects(&self.window, &effects);
+            if let Some(control_flow) = effects.control_flow {
+                Self::apply_control_flow(event_loop, control_flow);
+            }
         }
 
         match event {
@@ -373,7 +382,7 @@ impl ConfirmationWindow {
                     _ => false,
                 };
                 if scrolled {
-                    self.request_redraw(RedrawReason::Input);
+                    self.request_frame(event_loop);
                 }
             }
 
@@ -381,12 +390,10 @@ impl ConfirmationWindow {
         }
 
         let outcome = self.adapter.handle_event(&mut self.runtime, event);
-        super::App::apply_runtime_effects(
-            &mut self.scheduler,
-            event_loop,
-            &self.window,
-            outcome.effects,
-        );
+        super::App::apply_window_effects(&self.window, &outcome.effects);
+        if let Some(control_flow) = outcome.effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
 
         if self.confirmed.load(Ordering::SeqCst) {
             ConfirmationResult::Confirmed
@@ -407,21 +414,12 @@ impl ConfirmationWindow {
     ) {
         let physical_size = self.window.inner_size();
         if physical_size.width == 0 || physical_size.height == 0 {
-            self.scheduler.set_drawable(false);
+            self.adapter.set_drawable(false);
             return;
         }
-        self.scheduler.set_drawable(true);
+        self.adapter.set_drawable(true);
 
-        // Ensure layout is up-to-date before encode and apply any host effects
-        // produced while rebuilding the widget tree.
-        let update_effects = self.runtime.update(std::time::Instant::now());
-        super::App::apply_runtime_effects(
-            &mut self.scheduler,
-            event_loop,
-            &self.window,
-            update_effects,
-        );
-
+        // Frame-start update already ran in handle_event for RedrawRequested.
         // Register any text runs queued by widgets during the paint pass.
         self.runtime.register_pending_text_runs(glyph_fn);
 
@@ -431,7 +429,7 @@ impl ConfirmationWindow {
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 let physical_size = self.window.inner_size();
                 if physical_size.width == 0 || physical_size.height == 0 {
-                    self.scheduler.set_drawable(false);
+                    self.adapter.set_drawable(false);
                     return;
                 }
                 let scale = self.window.scale_factor() as f32;
@@ -445,7 +443,7 @@ impl ConfirmationWindow {
                         scale,
                     ));
                 if mark_surface_recovery_attempt(&mut self.surface_recovery_attempted) {
-                    self.request_redraw(RedrawReason::SurfaceRecovery);
+                    self.request_frame(event_loop);
                 }
                 return;
             }
@@ -498,6 +496,12 @@ impl ConfirmationWindow {
         queue.submit(Some(encoder.finish()));
         queue.present(output);
 
+        let completion = self.adapter.frame_completed(Instant::now());
+        super::App::apply_window_effects(&self.window, &completion);
+        if let Some(control_flow) = completion.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+
         if suboptimal {
             let physical_size = self.window.inner_size();
             if physical_size.width != 0 && physical_size.height != 0 {
@@ -506,7 +510,7 @@ impl ConfirmationWindow {
                 self.surface.configure(device, &self.surface_config);
             }
             if mark_surface_recovery_attempt(&mut self.surface_recovery_attempted) {
-                self.request_redraw(RedrawReason::SurfaceSuboptimal);
+                self.request_frame(event_loop);
             }
         } else {
             self.surface_recovery_attempted = false;
@@ -525,10 +529,10 @@ impl ConfirmationWindow {
         let physical_size = self.window.inner_size();
         if physical_size.width == 0 || physical_size.height == 0 {
             self.surface_recovery_attempted = false;
-            self.scheduler.set_drawable(false);
+            self.adapter.set_drawable(false);
             return;
         }
-        self.scheduler.set_drawable(true);
+        self.adapter.set_drawable(true);
         self.surface_config.width = physical_size.width;
         self.surface_config.height = physical_size.height;
         let viewport =
@@ -538,17 +542,15 @@ impl ConfirmationWindow {
             self.surface.configure(device, &self.surface_config);
             self.surface_recovery_attempted = false;
         }
-        let update_effects = self.runtime.update(std::time::Instant::now());
-        super::App::apply_runtime_effects(
-            &mut self.scheduler,
-            event_loop,
-            &self.window,
-            update_effects,
-        );
-        if confirmation_resize_redraw_reason(true, physical_size.width, physical_size.height)
-            .is_some()
-        {
-            self.request_redraw(RedrawReason::Resize);
+        let mut effects = self
+            .adapter
+            .fold_effects(self.runtime.update(Instant::now()));
+        if confirmation_needs_resize_redraw(true, physical_size.width, physical_size.height) {
+            effects.merge(self.adapter.request_frame());
+        }
+        super::App::apply_window_effects(&self.window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
         }
     }
 
@@ -562,10 +564,10 @@ impl ConfirmationWindow {
     ) {
         if width == 0 || height == 0 {
             self.surface_recovery_attempted = false;
-            self.scheduler.set_drawable(false);
+            self.adapter.set_drawable(false);
             return;
         }
-        self.scheduler.set_drawable(true);
+        self.adapter.set_drawable(true);
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface_recovery_attempted = false;
@@ -576,21 +578,35 @@ impl ConfirmationWindow {
             self.window.scale_factor() as f32,
         );
         self.runtime.set_viewport(viewport);
-        let update_effects = self.runtime.update(std::time::Instant::now());
-        super::App::apply_runtime_effects(
-            &mut self.scheduler,
-            event_loop,
-            &self.window,
-            update_effects,
-        );
-        if confirmation_resize_redraw_reason(false, width, height).is_some() {
-            self.request_redraw(RedrawReason::Resize);
+        let mut effects = self
+            .adapter
+            .fold_effects(self.runtime.update(Instant::now()));
+        if confirmation_needs_resize_redraw(false, width, height) {
+            effects.merge(self.adapter.request_frame());
+        }
+        super::App::apply_window_effects(&self.window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
         }
     }
 
     /// Wakes only the confirmation window; the main App scheduler is unrelated.
-    fn request_redraw(&mut self, reason: RedrawReason) {
-        super::App::wake_redraw(&mut self.scheduler, &self.window, reason);
+    fn request_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let effects = self.adapter.request_frame();
+        super::App::apply_window_effects(&self.window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+    }
+
+    fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFlowEffect) {
+        event_loop.set_control_flow(match effect {
+            ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
+            ControlFlowEffect::WaitUntil(deadline) => {
+                winit::event_loop::ControlFlow::WaitUntil(deadline)
+            }
+            ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
+        });
     }
 }
 
@@ -641,15 +657,9 @@ mod tests {
 
     #[test]
     fn resize_and_dpi_changes_route_redraw_to_confirmation_window() {
-        assert_eq!(
-            confirmation_resize_redraw_reason(false, 600, 500),
-            Some(RedrawReason::Resize)
-        );
-        assert_eq!(
-            confirmation_resize_redraw_reason(true, 0, 0),
-            Some(RedrawReason::Resize)
-        );
-        assert_eq!(confirmation_resize_redraw_reason(false, 0, 500), None);
+        assert!(confirmation_needs_resize_redraw(false, 600, 500));
+        assert!(confirmation_needs_resize_redraw(true, 0, 0));
+        assert!(!confirmation_needs_resize_redraw(false, 0, 500));
     }
 
     #[test]
@@ -665,10 +675,10 @@ mod tests {
     fn minimized_confirmation_resize_is_not_redrawn_without_a_dpi_change() {
         // Arrange: a zero-sized native resize represents a minimized window.
         // Act: classify it without a scale-factor change.
-        let reason = confirmation_resize_redraw_reason(false, 0, 0);
+        let needs_redraw = confirmation_needs_resize_redraw(false, 0, 0);
 
         // Assert: only a real size or DPI change targets confirmation redraw.
-        assert_eq!(reason, None);
+        assert!(!needs_redraw);
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod layout;
 pub mod renderer;
 pub mod runtime;
 pub mod scene;
+mod scheduler;
 pub mod signal;
 pub mod text;
 pub mod view;

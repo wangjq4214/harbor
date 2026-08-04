@@ -29,6 +29,22 @@ impl ControlFlowEffect {
     pub const fn poll() -> Self {
         Self::Poll
     }
+
+    /// Combines two independent window wait requests.
+    ///
+    /// `Poll` dominates, otherwise the earliest `WaitUntil` dominates `Wait`.
+    /// This is distinct from sequential [`RuntimeEffects::merge`], which keeps
+    /// the later turn's control-flow request.
+    pub fn arbitrate(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Poll, _) | (_, Self::Poll) => Self::Poll,
+            (Self::WaitUntil(left), Self::WaitUntil(right)) => Self::WaitUntil(left.min(right)),
+            (Self::WaitUntil(deadline), Self::Wait) | (Self::Wait, Self::WaitUntil(deadline)) => {
+                Self::WaitUntil(deadline)
+            }
+            (Self::Wait, Self::Wait) => Self::Wait,
+        }
+    }
 }
 
 /// Platform-neutral cursor shapes understood by the host adapter.

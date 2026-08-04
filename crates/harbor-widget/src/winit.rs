@@ -1,10 +1,10 @@
 //! Optional winit integration contracts.
 //!
 //! This module owns the per-window state needed to adapt winit events into the
-//! platform-independent widget runtime. Host policy (close requests, window
-//! routing, and scheduling) remains outside this feature-gated module.
+//! platform-independent widget runtime, including per-window frame scheduling.
+//! Host policy (close requests and window routing) remains outside this module.
 
-use crate::effects::RuntimeEffects;
+use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::input::event::{
     FocusEvent, Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent,
     PointerPhase, UiEvent,
@@ -12,6 +12,7 @@ use crate::input::event::{
 use crate::layout::Point;
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
+use crate::scheduler::FrameScheduler;
 use std::time::Instant;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey};
@@ -74,6 +75,8 @@ pub struct WinitAdapter {
     /// Suppresses touch releases for contacts that were active on focus loss.
     quarantined_touches: Vec<(winit::event::DeviceId, u64)>,
     next_touch_pointer_id: u64,
+    /// Per-window redraw coalescing and idle wait policy.
+    scheduler: FrameScheduler,
 }
 
 impl Default for WinitAdapter {
@@ -83,7 +86,7 @@ impl Default for WinitAdapter {
 }
 
 impl WinitAdapter {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             modifiers: ModifiersState::empty(),
             mouse_position: Point::ZERO,
@@ -95,6 +98,7 @@ impl WinitAdapter {
             active_mouse_buttons: [false; 3],
             quarantined_touches: Vec::new(),
             next_touch_pointer_id: 1,
+            scheduler: FrameScheduler::default(),
         }
     }
 
@@ -110,8 +114,69 @@ impl WinitAdapter {
         self.modifiers
     }
 
+    /// Updates whether this window can acquire a drawable surface.
+    pub fn set_drawable(&mut self, drawable: bool) {
+        self.scheduler.set_drawable(drawable);
+    }
+
+    /// Folds a raw runtime effect batch through the per-window scheduler.
+    pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
+        self.scheduler
+            .schedule(effects, FrameScheduler::RUNTIME_WAKE)
+    }
+
+    /// Forwards source-agnostic host work through runtime external invalidation
+    /// and the per-window scheduler.
+    pub fn invalidate_external(
+        &mut self,
+        runtime: &mut Runtime,
+        work: ExternalInvalidation,
+    ) -> RuntimeEffects {
+        let core_effects = runtime.invalidate_external(work);
+        self.scheduler
+            .schedule(core_effects, FrameScheduler::EXTERNAL_WAKE)
+    }
+
+    /// Observes `RedrawRequested`: runs a runtime update and consumes the
+    /// outstanding redraw edge with the current frame.
+    pub fn redraw_requested(&mut self, runtime: &mut Runtime, now: Instant) -> RuntimeEffects {
+        let core_effects = runtime.update(now);
+        self.scheduler.frame_started(core_effects)
+    }
+
+    /// Observes successful presentation and may request an active continuation.
+    pub fn frame_completed(&mut self, now: Instant) -> RuntimeEffects {
+        self.scheduler.frame_completed(now)
+    }
+
+    /// Runs an idle turn: folds dirty Fiber work, then calculates wait policy.
+    pub fn about_to_wait(
+        &mut self,
+        runtime: &mut Runtime,
+        now: Instant,
+        host_deadline: Option<Instant>,
+    ) -> RuntimeEffects {
+        let dirty_effects = runtime.update(now);
+        let mut scheduled = self
+            .scheduler
+            .schedule(dirty_effects, FrameScheduler::RUNTIME_WAKE);
+        // Control-flow from the dirty turn was folded into scheduler state.
+        // The idle calculation owns the host-facing wait mode (including host
+        // deadlines and due-deadline normalization), so drop the raw CF here
+        // before merging redraw/cursor/IME/clipboard side effects.
+        scheduled.control_flow = None;
+        self.scheduler
+            .about_to_wait(now, host_deadline)
+            .merged(&scheduled)
+    }
+
+    /// Requests a generic host retry frame (surface recovery until T0006).
+    pub fn request_frame(&mut self) -> RuntimeEffects {
+        self.scheduler.request_frame()
+    }
+
     /// Handles one window event and returns whether it was supported plus any
-    /// effects produced by the widget runtime.
+    /// effects produced by the widget runtime, folded through the scheduler.
     pub fn handle_event(
         &mut self,
         runtime: &mut Runtime,
@@ -152,8 +217,12 @@ impl WinitAdapter {
             self.ime_enabled = false;
             self.ime_preedit = None;
             self.touch_contacts.clear();
+            effects.merge(RuntimeEffects {
+                control_flow: Some(crate::effects::ControlFlowEffect::Wait),
+                ..RuntimeEffects::default()
+            });
         }
-        WinitEventOutcome::handled(effects)
+        WinitEventOutcome::handled(self.fold_effects(effects))
     }
 
     fn quarantine_pointer_event(&mut self, event: &WindowEvent) -> bool {
@@ -262,7 +331,7 @@ impl WinitAdapter {
                 WinitEventOutcome::unhandled()
             };
         };
-        WinitEventOutcome::handled(runtime.dispatch(ui_event, Instant::now()))
+        WinitEventOutcome::handled(self.fold_effects(runtime.dispatch(ui_event, Instant::now())))
     }
 
     fn convert_event(&mut self, event: &WindowEvent) -> Option<UiEvent> {
@@ -1300,13 +1369,14 @@ mod tests {
         runtime.update(Instant::now());
         let mut adapter = WinitAdapter::new();
 
-        adapter.handle_event(
+        let hover = adapter.handle_event(
             &mut runtime,
             &WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(4.0, 4.0),
             },
         );
+        assert!(hover.effects.request_redraw);
         adapter.handle_event(
             &mut runtime,
             &WindowEvent::MouseInput {
@@ -1316,7 +1386,8 @@ mod tests {
             },
         );
         let focus_loss = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
-        assert!(focus_loss.effects.request_redraw);
+        // Hover already owns the outstanding redraw edge; later cancel work coalesces.
+        assert!(!focus_loss.effects.request_redraw);
         assert!(runtime.input().captor(0).is_none());
 
         adapter.handle_event(
