@@ -375,6 +375,16 @@ impl GpuContext {
         self.reconfigure();
     }
 
+    /// Main window surface borrowed by the frame integration.
+    pub fn surface(&self) -> &wgpu::Surface<'static> {
+        &self.surface
+    }
+
+    /// Current main-window surface configuration.
+    pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
+        &self.config
+    }
+
     /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
@@ -429,18 +439,7 @@ impl GpuContext {
         surface.get_capabilities(&self.adapter)
     }
 
-    // ── surface operations ──────────────────────────────────────────────
-
-    /// Gets the current frame surface texture.  See `CurrentSurfaceTexture`
-    /// variant docs for how to handle each status.
-    pub fn get_current_texture(&self) -> wgpu::CurrentSurfaceTexture {
-        self.surface.get_current_texture()
-    }
-
-    /// Presents the frame after command submission.
-    pub fn present(&self, surface_texture: wgpu::SurfaceTexture) {
-        self.queue.present(surface_texture);
-    }
+    // ── startup surface operations ───────────────────────────────────────
 
     /// Acquires the surface texture, submits a single clear-color render pass,
     /// and presents the frame. No-ops on non-`Success` variants to keep the

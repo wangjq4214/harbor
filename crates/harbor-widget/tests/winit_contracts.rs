@@ -1,5 +1,6 @@
 #![cfg(feature = "winit")]
 
+use harbor_widget::effects::RuntimeEffects;
 use harbor_widget::input::event::{
     KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
@@ -27,7 +28,7 @@ fn borrowed_frame_contract<'frame, 'surface>(
     surface: &'frame wgpu::Surface<'surface>,
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
-    config: &'frame mut wgpu::SurfaceConfiguration,
+    config: &'frame wgpu::SurfaceConfiguration,
     event: &WindowEvent,
 ) {
     let target = WinitFrameTarget::new(
@@ -52,7 +53,8 @@ fn borrowed_frame_contract<'frame, 'surface>(
     let outcome: WinitEventOutcome = adapter.handle_event(&mut runtime, event);
     assert!(outcome.handled);
     assert!(outcome.effects.is_noop());
-    assert_eq!(adapter.render(&mut runtime, target), FrameOutcome::Deferred);
+    let outcome = adapter.render(&mut runtime, target);
+    assert!(outcome.effects().is_noop());
 }
 
 #[test]
@@ -63,15 +65,33 @@ fn adapters_have_independent_state() {
 }
 
 #[test]
-fn frame_outcomes_classify_fatal_and_nonfatal_results() {
-    assert!(FrameOutcome::presented().is_presented());
-    assert!(!FrameOutcome::skipped().is_fatal());
-    assert!(!FrameOutcome::deferred().is_fatal());
-    assert!(FrameOutcome::recovery_required().is_recovery_required());
+fn frame_outcomes_classify_variants_and_preserve_effects() {
+    // Arrange: one host-visible effect batch is attached to every outcome kind.
+    let effects = RuntimeEffects::request_redraw();
 
-    let outcome = FrameOutcome::fatal(FrameError::out_of_memory());
-    assert!(outcome.is_fatal());
-    assert_eq!(outcome, FrameOutcome::Fatal(FrameError::OutOfMemory));
+    // Act: construct each public frame outcome variant.
+    let presented = FrameOutcome::presented(effects.clone());
+    let suboptimal = FrameOutcome::presented_suboptimal(effects.clone());
+    let skipped = FrameOutcome::skipped(effects.clone());
+    let recovery = FrameOutcome::recovery_required(effects.clone());
+    let fatal = FrameOutcome::fatal(FrameError::out_of_memory(), effects.clone());
+
+    // Assert: classification and effect extraction are independent of outcome kind.
+    assert!(presented.is_presented());
+    assert!(!presented.is_suboptimal());
+    assert_eq!(presented.effects(), &effects);
+    assert!(suboptimal.is_presented());
+    assert!(suboptimal.is_suboptimal());
+    assert_eq!(suboptimal.effects(), &effects);
+    assert!(!skipped.is_presented());
+    assert!(!skipped.is_fatal());
+    assert_eq!(skipped.effects(), &effects);
+    assert!(recovery.is_recovery_required());
+    assert_eq!(recovery.effects(), &effects);
+    assert!(fatal.is_fatal());
+    assert_eq!(fatal.fatal_error(), Some(&FrameError::OutOfMemory));
+    assert_eq!(fatal.effects(), &effects);
+    assert_eq!(fatal.into_effects(), effects);
 }
 
 #[test]

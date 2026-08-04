@@ -10,9 +10,11 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, ExternalDrawFn, Primitive};
 use harbor_widget::scene::{SceneDelta, SceneItem};
 use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::padding::Padding;
+use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::stack::Stack;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 // ── GPU helpers ─────────────────────────────────────────────────────────────
@@ -75,6 +77,106 @@ fn create_render_pass<'a>(
         timestamp_writes: None,
         multiview_mask: None,
     })
+}
+
+fn create_solid_pipeline(device: &wgpu::Device) -> Arc<wgpu::RenderPipeline> {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("custom-paint clipping test shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+                @vertex
+                fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+                    var positions = array<vec2<f32>, 3>(
+                        vec2<f32>(-1.0, -1.0),
+                        vec2<f32>(3.0, -1.0),
+                        vec2<f32>(-1.0, 3.0),
+                    );
+                    return vec4<f32>(positions[index], 0.0, 1.0);
+                }
+
+                @fragment
+                fn fs_main() -> @location(0) vec4<f32> {
+                    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+                }
+            "#
+            .into(),
+        ),
+    });
+    Arc::new(
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("custom-paint clipping test pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        }),
+    )
+}
+
+fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+    const SIZE: u32 = 32;
+    const BYTES_PER_ROW: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("custom-paint clipping test readback"),
+        size: (SIZE * BYTES_PER_ROW) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(BYTES_PER_ROW),
+                rows_per_image: Some(SIZE),
+            },
+        },
+        wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+
+    let slice = buffer.slice(..);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).unwrap();
+    });
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    receiver.recv().unwrap().unwrap();
+    let bytes = slice
+        .get_mapped_range()
+        .expect("readback buffer should be mapped")
+        .to_vec();
+    buffer.unmap();
+    bytes
 }
 
 fn make_viewport() -> Viewport {
@@ -396,30 +498,14 @@ fn should_handle_zero_count_gracefully() {
 // ── Runtime::encode with External primitives ────────────────────────────────
 
 #[test]
-fn should_invoke_external_draw_with_correct_rect_and_scissor() {
+fn should_invoke_external_draw_with_correct_rect() {
     let Some((device, _queue)) = try_create_device() else {
         return;
     };
 
-    // Use a viewport scaled so the scissor fits within the 256x256 render target.
-    // For 1x scale, a 200x150 logical rect → 200x150 physical, well within 256x256.
-    let viewport = Viewport::new(256, 256, 1.0);
-
-    // External rect at logical (10, 20), size (200, 150)
+    // External rect at logical (10, 20), size (200, 150).
     let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(200.0, 150.0));
 
-    // Physical coordinates computed by encode():
-    let phys_x = (rect.min.x * viewport.scale_factor) as u32;
-    let phys_y = (rect.min.y * viewport.scale_factor) as u32;
-    let phys_w = ((rect.size().width * viewport.scale_factor).ceil() as u32).max(1);
-    let phys_h = ((rect.size().height * viewport.scale_factor).ceil() as u32).max(1);
-
-    assert_eq!(phys_x, 10);
-    assert_eq!(phys_y, 20);
-    assert_eq!(phys_w, 200);
-    assert_eq!(phys_h, 150);
-
-    // Verify the scissor is set and restored in correct sequence
     let callback_called = AtomicBool::new(false);
 
     let external_draw: &harbor_widget::scene::primitive::ExternalDrawFn<'_> =
@@ -436,11 +522,7 @@ fn should_invoke_external_draw_with_correct_rect_and_scissor() {
     {
         let mut pass = create_render_pass(&device, &mut encoder);
 
-        // Simulate the encode scissor → callback → restore sequence
-        pass.set_scissor_rect(phys_x, phys_y, phys_w, phys_h);
         external_draw(42, rect, &mut pass);
-        // Restore full scissor (as encode does)
-        pass.set_scissor_rect(0, 0, viewport.physical_size.0, viewport.physical_size.1);
     }
     encoder.finish();
 
@@ -519,6 +601,141 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     // Assert: each External primitive resolves its matching retained handler.
     assert_eq!(first_draw_id.load(Ordering::SeqCst), 1);
     assert_eq!(second_draw_id.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitives() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: retained CustomPaint handlers are interleaved with real Widget
+    // quad primitives. Padding gives each callback a distinct exact rectangle.
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let rects = Arc::new(Mutex::new(Vec::new()));
+    let make_handler = |order: Arc<Mutex<Vec<u64>>>, rects: Arc<Mutex<Vec<Rect>>>| {
+        Arc::new(move |draw_id, rect, _pass: &mut wgpu::RenderPass<'_>| {
+            order.lock().unwrap().push(draw_id);
+            rects.lock().unwrap().push(rect);
+        }) as Arc<ExternalDrawFn<'static>>
+    };
+    let viewport = Viewport::new(256, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::RED))
+            .child(
+                Padding::new(4.0, 4.0, 4.0, 4.0)
+                    .child(CustomPaint::new(1).handler(make_handler(order.clone(), rects.clone()))),
+            )
+            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::GREEN))
+            .child(
+                Padding::new(8.0, 8.0, 8.0, 8.0)
+                    .child(CustomPaint::new(2).handler(make_handler(order.clone(), rects.clone()))),
+            )
+            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::BLUE))
+            .child(
+                Padding::new(12.0, 12.0, 12.0, 12.0)
+                    .child(CustomPaint::new(3).handler(make_handler(order.clone(), rects.clone()))),
+            ),
+    );
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    // Act: encode the retained scene in one render pass.
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    encoder.finish();
+
+    // Assert: callbacks retain paint order and receive their exact rectangles.
+    assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        *rects.lock().unwrap(),
+        vec![
+            Rect::from_min_size(Point::new(4.0, 4.0), Size::new(24.0, 24.0)),
+            Rect::from_min_size(Point::new(8.0, 8.0), Size::new(24.0, 24.0)),
+            Rect::from_min_size(Point::new(12.0, 12.0), Size::new(24.0, 24.0)),
+        ]
+    );
+}
+
+#[test]
+fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: draw a full-target triangle through a CustomPaint padded into a 16×16 region.
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("custom-paint clipping test target"),
+        size: wgpu::Extent3d {
+            width: 32,
+            height: 32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let pipeline = create_solid_pipeline(&device);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass| {
+        pass.set_pipeline(&pipeline);
+        pass.draw(0..3, 0..1);
+    });
+    let viewport = Viewport::new(32, 32, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(CustomPaint::new(1).handler(handler)))
+            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED)),
+    );
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    // Act: encode the full-target external draw through Runtime's scissor boundary.
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("custom-paint clipping test pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    queue.submit(Some(encoder.finish()));
+
+    // Assert: the external draw is clipped to 8..24, and the following quad
+    // paints at the origin after Runtime restores the full viewport scissor.
+    let pixels = read_texture(&device, &queue, &target);
+    let pixel = |x: u32, y: u32| {
+        let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
+        &pixels[offset..offset + 4]
+    };
+    assert_eq!(pixel(16, 16), &[0, 255, 0, 255]);
+    assert_eq!(pixel(4, 4), &[0, 0, 255, 255]);
+    assert_eq!(pixel(24, 16), &[0, 0, 0, 0]);
 }
 
 #[test]

@@ -611,18 +611,191 @@ fn keyboard_to_uievent(
 }
 
 impl WinitAdapter {
-    /// Attempts one integration frame.
-    ///
-    /// Frame acquisition, encoding, submission, and presentation are deferred
-    /// to the presentation slice. A deferred result makes that absence of
-    /// behavior explicit rather than pretending a frame was presented.
+    /// Executes one complete integration frame.
     pub fn render<'frame, 'surface>(
         &mut self,
-        _runtime: &mut Runtime,
-        _target: WinitFrameTarget<'frame, 'surface>,
+        runtime: &mut Runtime,
+        target: WinitFrameTarget<'frame, 'surface>,
     ) -> FrameOutcome {
-        FrameOutcome::Deferred
+        let effects = self.redraw_requested(runtime, Instant::now());
+        let acquisition = classify_surface_texture(target.surface().get_current_texture());
+
+        self.finish_acquisition(effects, acquisition, |output| {
+            execute_wgpu_frame(runtime, &target, output)
+        })
     }
+
+    fn finish_acquisition<T>(
+        &mut self,
+        effects: RuntimeEffects,
+        acquisition: FrameAcquisition<T>,
+        present: impl FnOnce(T) -> Result<(), FrameError>,
+    ) -> FrameOutcome {
+        match (acquisition.kind(), acquisition) {
+            (FrameAcquisitionKind::Presented, FrameAcquisition::Presented(output)) => {
+                self.finish_presentable(effects, output, false, present)
+            }
+            (FrameAcquisitionKind::Suboptimal, FrameAcquisition::Suboptimal(output)) => {
+                self.finish_presentable(effects, output, true, present)
+            }
+            (FrameAcquisitionKind::RecoveryRequired, FrameAcquisition::RecoveryRequired) => {
+                FrameOutcome::recovery_required(effects)
+            }
+            (FrameAcquisitionKind::Skipped, FrameAcquisition::Skipped) => {
+                FrameOutcome::skipped(effects)
+            }
+            _ => unreachable!("acquisition kind must match its classification"),
+        }
+    }
+
+    fn finish_presentable<T>(
+        &mut self,
+        mut effects: RuntimeEffects,
+        output: T,
+        suboptimal: bool,
+        present: impl FnOnce(T) -> Result<(), FrameError>,
+    ) -> FrameOutcome {
+        if let Err(error) = present(output) {
+            return FrameOutcome::fatal(error, effects);
+        }
+        effects.merge(self.frame_completed(Instant::now()));
+        if suboptimal {
+            FrameOutcome::presented_suboptimal(effects)
+        } else {
+            FrameOutcome::presented(effects)
+        }
+    }
+}
+
+/// The acquisition classification used by the frame lifecycle policy.
+///
+/// Native wgpu statuses are mapped to this private seam before presentation,
+/// allowing the policy to be tested without constructing a native Surface.
+enum FrameAcquisition<T> {
+    Presented(T),
+    Suboptimal(T),
+    RecoveryRequired,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameAcquisitionKind {
+    Presented,
+    Suboptimal,
+    RecoveryRequired,
+    Skipped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresentableKind {
+    Presented,
+    Suboptimal,
+}
+
+impl<T> FrameAcquisition<T> {
+    fn kind(&self) -> FrameAcquisitionKind {
+        match self {
+            Self::Presented(_) => FrameAcquisitionKind::Presented,
+            Self::Suboptimal(_) => FrameAcquisitionKind::Suboptimal,
+            Self::RecoveryRequired => FrameAcquisitionKind::RecoveryRequired,
+            Self::Skipped => FrameAcquisitionKind::Skipped,
+        }
+    }
+}
+
+fn classify_presentable<T>(output: T, kind: PresentableKind) -> FrameAcquisition<T> {
+    match kind {
+        PresentableKind::Presented => FrameAcquisition::Presented(output),
+        PresentableKind::Suboptimal => FrameAcquisition::Suboptimal(output),
+    }
+}
+
+fn classify_surface_texture(
+    texture: wgpu::CurrentSurfaceTexture,
+) -> FrameAcquisition<wgpu::SurfaceTexture> {
+    match texture {
+        wgpu::CurrentSurfaceTexture::Success(output) => {
+            classify_presentable(output, PresentableKind::Presented)
+        }
+        wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
+            classify_presentable(output, PresentableKind::Suboptimal)
+        }
+        wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+            FrameAcquisition::RecoveryRequired
+        }
+        wgpu::CurrentSurfaceTexture::Timeout
+        | wgpu::CurrentSurfaceTexture::Occluded
+        | wgpu::CurrentSurfaceTexture::Validation => FrameAcquisition::Skipped,
+    }
+}
+
+/// Runs the fixed GPU operation sequence for a presentable frame.
+///
+/// Keeping the sequence closure-driven makes the ordering contract testable
+/// without constructing a native window or surface.
+fn execute_presented_frame<T, V, C, E>(
+    acquire: impl FnOnce() -> Result<T, E>,
+    create_view: impl FnOnce(&T) -> V,
+    encode: impl FnOnce(V) -> Result<C, E>,
+    submit: impl FnOnce(C),
+    notify: impl FnOnce(),
+    present: impl FnOnce(T),
+) -> Result<(), E> {
+    let texture = acquire()?;
+    let view = create_view(&texture);
+    let command = encode(view)?;
+    submit(command);
+    notify();
+    present(texture);
+    Ok(())
+}
+
+fn execute_wgpu_frame(
+    runtime: &mut Runtime,
+    target: &WinitFrameTarget<'_, '_>,
+    output: wgpu::SurfaceTexture,
+) -> Result<(), FrameError> {
+    execute_presented_frame(
+        || Ok(output),
+        |output| {
+            output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        },
+        |view| {
+            let mut encoder =
+                target
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("harbor main frame encoder"),
+                    });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("harbor main render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(target.clear_color()),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                runtime.encode(target.queue(), &mut pass, target.viewport().clone());
+            }
+            Ok(encoder.finish())
+        },
+        |command| {
+            target.queue().submit(Some(command));
+        },
+        || target.window().pre_present_notify(),
+        |output| target.queue().present(output),
+    )
 }
 
 /// Borrowed host resources valid for one frame.
@@ -636,7 +809,7 @@ pub struct WinitFrameTarget<'frame, 'surface> {
     surface: &'frame wgpu::Surface<'surface>,
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
-    config: &'frame mut wgpu::SurfaceConfiguration,
+    config: &'frame wgpu::SurfaceConfiguration,
     viewport: Viewport,
     clear_color: wgpu::Color,
 }
@@ -647,7 +820,7 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
         surface: &'frame wgpu::Surface<'surface>,
         device: &'frame wgpu::Device,
         queue: &'frame wgpu::Queue,
-        config: &'frame mut wgpu::SurfaceConfiguration,
+        config: &'frame wgpu::SurfaceConfiguration,
         viewport: Viewport,
         clear_color: wgpu::Color,
     ) -> Self {
@@ -682,10 +855,6 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
         self.config
     }
 
-    pub fn config_mut(&mut self) -> &mut wgpu::SurfaceConfiguration {
-        self.config
-    }
-
     pub fn viewport(&self) -> &Viewport {
         &self.viewport
     }
@@ -696,46 +865,77 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
 }
 
 /// The host-visible result of one attempted frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FrameOutcome {
-    Presented,
-    Skipped,
-    Deferred,
-    RecoveryRequired,
-    Fatal(FrameError),
+    Presented(RuntimeEffects),
+    PresentedSuboptimal(RuntimeEffects),
+    Skipped(RuntimeEffects),
+    RecoveryRequired(RuntimeEffects),
+    Fatal(FrameError, RuntimeEffects),
 }
 
 impl FrameOutcome {
-    pub const fn presented() -> Self {
-        Self::Presented
+    pub const fn presented(effects: RuntimeEffects) -> Self {
+        Self::Presented(effects)
     }
 
-    pub const fn skipped() -> Self {
-        Self::Skipped
+    pub const fn presented_suboptimal(effects: RuntimeEffects) -> Self {
+        Self::PresentedSuboptimal(effects)
     }
 
-    pub const fn deferred() -> Self {
-        Self::Deferred
+    pub const fn skipped(effects: RuntimeEffects) -> Self {
+        Self::Skipped(effects)
     }
 
-    pub const fn recovery_required() -> Self {
-        Self::RecoveryRequired
+    pub const fn recovery_required(effects: RuntimeEffects) -> Self {
+        Self::RecoveryRequired(effects)
     }
 
-    pub const fn fatal(error: FrameError) -> Self {
-        Self::Fatal(error)
+    pub const fn fatal(error: FrameError, effects: RuntimeEffects) -> Self {
+        Self::Fatal(error, effects)
+    }
+
+    pub const fn effects(&self) -> &RuntimeEffects {
+        match self {
+            Self::Presented(effects)
+            | Self::PresentedSuboptimal(effects)
+            | Self::Skipped(effects)
+            | Self::RecoveryRequired(effects)
+            | Self::Fatal(_, effects) => effects,
+        }
+    }
+
+    pub fn into_effects(self) -> RuntimeEffects {
+        match self {
+            Self::Presented(effects)
+            | Self::PresentedSuboptimal(effects)
+            | Self::Skipped(effects)
+            | Self::RecoveryRequired(effects)
+            | Self::Fatal(_, effects) => effects,
+        }
     }
 
     pub const fn is_fatal(&self) -> bool {
-        matches!(self, Self::Fatal(_))
+        matches!(self, Self::Fatal(_, _))
     }
 
     pub const fn is_presented(&self) -> bool {
-        matches!(self, Self::Presented)
+        matches!(self, Self::Presented(_) | Self::PresentedSuboptimal(_))
+    }
+
+    pub const fn is_suboptimal(&self) -> bool {
+        matches!(self, Self::PresentedSuboptimal(_))
     }
 
     pub const fn is_recovery_required(&self) -> bool {
-        matches!(self, Self::RecoveryRequired)
+        matches!(self, Self::RecoveryRequired(_))
+    }
+
+    pub const fn fatal_error(&self) -> Option<&FrameError> {
+        match self {
+            Self::Fatal(error, _) => Some(error),
+            _ => None,
+        }
     }
 }
 
@@ -779,6 +979,209 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use winit::dpi::PhysicalPosition;
+
+    #[test]
+    fn presented_frame_operations_are_ordered_and_stop_on_acquire_or_encode_error() {
+        use std::cell::RefCell;
+
+        let order = RefCell::new(Vec::new());
+        let result = execute_presented_frame(
+            || {
+                order.borrow_mut().push("acquire");
+                Ok::<_, &'static str>("texture")
+            },
+            |_| {
+                order.borrow_mut().push("view");
+                "view"
+            },
+            |_| {
+                order.borrow_mut().push("encode");
+                Ok::<_, &'static str>("command")
+            },
+            |_| order.borrow_mut().push("submit"),
+            || order.borrow_mut().push("pre_present_notify"),
+            |_| order.borrow_mut().push("present"),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            *order.borrow(),
+            vec![
+                "acquire",
+                "view",
+                "encode",
+                "submit",
+                "pre_present_notify",
+                "present"
+            ]
+        );
+
+        let order = RefCell::new(Vec::new());
+        let result = execute_presented_frame(
+            || {
+                order.borrow_mut().push("acquire");
+                Err::<&str, _>("acquire")
+            },
+            |_| {
+                order.borrow_mut().push("view");
+                "view"
+            },
+            |_| {
+                order.borrow_mut().push("encode");
+                Ok::<_, &'static str>("command")
+            },
+            |_| order.borrow_mut().push("submit"),
+            || order.borrow_mut().push("pre_present_notify"),
+            |_| order.borrow_mut().push("present"),
+        );
+        assert_eq!(result, Err("acquire"));
+        assert_eq!(*order.borrow(), vec!["acquire"]);
+
+        let order = RefCell::new(Vec::new());
+        let result = execute_presented_frame(
+            || {
+                order.borrow_mut().push("acquire");
+                Ok::<_, &'static str>("texture")
+            },
+            |_| {
+                order.borrow_mut().push("view");
+                "view"
+            },
+            |_| {
+                order.borrow_mut().push("encode");
+                Err::<&str, _>("encode")
+            },
+            |_| order.borrow_mut().push("submit"),
+            || order.borrow_mut().push("pre_present_notify"),
+            |_| order.borrow_mut().push("present"),
+        );
+        assert_eq!(result, Err("encode"));
+        assert_eq!(*order.borrow(), vec!["acquire", "view", "encode"]);
+    }
+
+    #[test]
+    fn surface_texture_statuses_share_production_classification() {
+        // wgpu keeps SurfaceTexture construction private, so Success and
+        // Suboptimal exercise the shared payload classification seam directly.
+        assert_eq!(
+            classify_presentable("success", PresentableKind::Presented).kind(),
+            FrameAcquisitionKind::Presented
+        );
+        assert_eq!(
+            classify_presentable("suboptimal", PresentableKind::Suboptimal).kind(),
+            FrameAcquisitionKind::Suboptimal
+        );
+        assert_eq!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost).kind(),
+            FrameAcquisitionKind::RecoveryRequired
+        );
+        assert_eq!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated).kind(),
+            FrameAcquisitionKind::RecoveryRequired
+        );
+        assert_eq!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout).kind(),
+            FrameAcquisitionKind::Skipped
+        );
+        assert_eq!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded).kind(),
+            FrameAcquisitionKind::Skipped
+        );
+        assert_eq!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation).kind(),
+            FrameAcquisitionKind::Skipped
+        );
+    }
+
+    #[test]
+    fn acquisition_policy_returns_frame_start_effects_and_completes_only_presented_frames() {
+        use crate::effects::{ControlFlowEffect, CursorEffect, CursorShape};
+        use std::cell::Cell;
+
+        let frame_start = RuntimeEffects {
+            request_redraw: true,
+            control_flow: Some(ControlFlowEffect::wait_until(Instant::now())),
+            cursor: Some(CursorEffect::set_cursor(CursorShape::Pointer)),
+            ..RuntimeEffects::default()
+        };
+
+        // A non-presenting acquisition returns exactly the frame-start batch;
+        // it neither invokes presentation nor consumes the active continuation.
+        for acquisition in [
+            FrameAcquisition::<&str>::Skipped,
+            FrameAcquisition::<&str>::RecoveryRequired,
+        ] {
+            let mut adapter = WinitAdapter::new();
+            adapter.fold_effects(RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::poll()),
+                ..RuntimeEffects::default()
+            });
+            let present_count = Cell::new(0);
+            let outcome = adapter.finish_acquisition(frame_start.clone(), acquisition, |_| {
+                present_count.set(present_count.get() + 1);
+                Ok(())
+            });
+
+            assert_eq!(outcome.effects(), &frame_start);
+            assert!(!outcome.is_presented());
+            assert_eq!(present_count.get(), 0);
+
+            // The active continuation is still available because the skipped
+            // or recovery branch did not call frame_completed.
+            let continuation = adapter.frame_completed(Instant::now());
+            assert!(continuation.request_redraw);
+            assert_eq!(continuation.control_flow, Some(ControlFlowEffect::Poll));
+        }
+
+        for (acquisition, expected_suboptimal) in [
+            (FrameAcquisition::Presented("success"), false),
+            (FrameAcquisition::Suboptimal("suboptimal"), true),
+        ] {
+            let mut adapter = WinitAdapter::new();
+            adapter.fold_effects(RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::poll()),
+                ..RuntimeEffects::default()
+            });
+            let present_count = Cell::new(0);
+            let outcome = adapter.finish_acquisition(frame_start.clone(), acquisition, |label| {
+                assert_eq!(
+                    label,
+                    if expected_suboptimal {
+                        "suboptimal"
+                    } else {
+                        "success"
+                    }
+                );
+                present_count.set(present_count.get() + 1);
+                Ok(())
+            });
+
+            assert!(outcome.is_presented());
+            assert_eq!(outcome.is_suboptimal(), expected_suboptimal);
+            assert_eq!(present_count.get(), 1);
+            assert!(outcome.effects().request_redraw);
+            assert_eq!(
+                outcome.effects().control_flow,
+                Some(ControlFlowEffect::Poll)
+            );
+            assert_eq!(outcome.effects().cursor, frame_start.cursor);
+        }
+
+        // An execution failure is not a completed presentation, so it keeps
+        // only frame-start effects and leaves completion available to the host.
+        let mut adapter = WinitAdapter::new();
+        adapter.fold_effects(RuntimeEffects {
+            control_flow: Some(ControlFlowEffect::poll()),
+            ..RuntimeEffects::default()
+        });
+        let failed = adapter.finish_acquisition(
+            frame_start.clone(),
+            FrameAcquisition::Presented("failed"),
+            |_| Err(FrameError::other("encode")),
+        );
+        assert!(failed.is_fatal());
+        assert_eq!(failed.effects(), &frame_start);
+        assert!(adapter.frame_completed(Instant::now()).request_redraw);
+    }
 
     #[test]
     fn outcomes_distinguish_supported_noop_and_unsupported_events() {

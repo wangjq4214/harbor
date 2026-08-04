@@ -18,17 +18,14 @@ use winit::{
 use crate::event::AppEvent;
 use confirmation::ConfirmationWindow;
 use harbor_pty::PtyEndpoints;
-use harbor_terminal::{
-    GpuContext, SurfaceDisposition, SurfaceStatus, Terminal, TextMetrics, load_system_fonts,
-    surface_disposition,
-};
+use harbor_terminal::{GpuContext, Terminal, TextMetrics, load_system_fonts};
 use harbor_widget::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ExternalInvalidation, ImeEffect,
     RuntimeEffects,
 };
 use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
-use harbor_widget::winit::WinitAdapter;
+use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
@@ -615,31 +612,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 tracing::trace!("redraw requested");
-                let now = Instant::now();
-                if let (Some(adapter), Some(widget_runtime), Some(window)) = (
-                    self.runtime.winit_adapter.as_mut(),
-                    self.runtime.widget_runtime.as_mut(),
-                    self.runtime.window.as_ref(),
-                ) {
-                    let effects = adapter.redraw_requested(widget_runtime, now);
-                    Self::apply_window_effects(window, &effects);
-                    if let Some(control_flow) = effects.control_flow {
-                        Self::apply_control_flow(event_loop, control_flow);
-                    }
-                }
-                if self.render_frame(event_loop) {
-                    let now = Instant::now();
-                    if let (Some(adapter), Some(window)) = (
-                        self.runtime.winit_adapter.as_mut(),
-                        self.runtime.window.as_ref(),
-                    ) {
-                        let completion = adapter.frame_completed(now);
-                        Self::apply_window_effects(window, &completion);
-                        if let Some(control_flow) = completion.control_flow {
-                            Self::apply_control_flow(event_loop, control_flow);
-                        }
-                    }
-                }
+                self.render_frame(event_loop);
             }
             _ => {}
         }
@@ -777,173 +750,94 @@ impl App {
         }
     }
 
-    /// Encodes and presents one App-owned frame. Returns whether presentation succeeded.
-    fn render_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        if self.runtime.window.as_ref().is_some_and(|window| {
-            let size = window.inner_size();
-            size.width == 0 || size.height == 0
-        }) {
+    /// Runs one borrowed main-window frame through the winit integration.
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = self.runtime.window.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
             if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
                 adapter.set_drawable(false);
             }
-            return false;
+            return;
         }
         if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
             adapter.set_drawable(true);
         }
 
-        let status;
-        let reconfigure_after_present;
-        let presented;
-        let mut request_recovery_frame = false;
+        if let Some(terminal) = self.runtime.terminal.as_ref()
+            && let Ok(mut terminal) = terminal.lock()
         {
-            let (Some(gpu), Some(terminal)) =
-                (self.runtime.gpu.as_mut(), self.runtime.terminal.as_ref())
-            else {
-                return false;
-            };
-            if let Ok(mut terminal) = terminal.lock() {
-                terminal.drain_pty();
-            }
+            terminal.drain_pty();
+        }
 
-            let frame = gpu.get_current_texture();
-            status = match &frame {
-                wgpu::CurrentSurfaceTexture::Success(_) => SurfaceStatus::Success,
-                wgpu::CurrentSurfaceTexture::Suboptimal(_) => SurfaceStatus::Suboptimal,
-                wgpu::CurrentSurfaceTexture::Lost => SurfaceStatus::Lost,
-                wgpu::CurrentSurfaceTexture::Outdated => SurfaceStatus::Outdated,
-                wgpu::CurrentSurfaceTexture::Timeout => SurfaceStatus::Timeout,
-                wgpu::CurrentSurfaceTexture::Occluded => SurfaceStatus::Occluded,
-                wgpu::CurrentSurfaceTexture::Validation => SurfaceStatus::Validation,
-            };
-            let disposition = surface_disposition(status);
-            enum Acquire {
-                Present {
-                    output: wgpu::SurfaceTexture,
-                    reconfigure: bool,
-                },
-                Recover,
-                Skip,
+        let Some(outcome) = (|| {
+            let gpu = self.runtime.gpu.as_ref()?;
+            let adapter = self.runtime.winit_adapter.as_mut()?;
+            let widget_runtime = self.runtime.widget_runtime.as_mut()?;
+            let scale = window.scale_factor() as f32;
+            let (physical_width, physical_height) = gpu.surface_size();
+            let target = WinitFrameTarget::new(
+                window,
+                gpu.surface(),
+                gpu.device(),
+                gpu.queue(),
+                gpu.surface_config(),
+                harbor_widget::renderer::Viewport::new(physical_width, physical_height, scale),
+                bg_wgpu(harbor_config::BACKGROUND),
+            );
+            Some(with_current_gpu(gpu, || {
+                adapter.render(widget_runtime, target)
+            }))
+        })() else {
+            return;
+        };
+
+        let effects = outcome.effects().clone();
+        Self::apply_window_effects(window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+
+        match outcome {
+            FrameOutcome::Presented(_) => {
+                self.frame.mark_first_present();
+                let _ = self.frame.next_steady_state_deadline();
+                self.frame.surface_recovery_attempted = false;
             }
-            let acquire = match (frame, disposition) {
-                (wgpu::CurrentSurfaceTexture::Success(output), SurfaceDisposition::Present) => {
-                    Acquire::Present {
-                        output,
-                        reconfigure: false,
-                    }
-                }
-                (
-                    wgpu::CurrentSurfaceTexture::Suboptimal(output),
-                    SurfaceDisposition::PresentAndReconfigure,
-                ) => {
-                    tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
-                    Acquire::Present {
-                        output,
-                        reconfigure: true,
-                    }
-                }
-                (_, SurfaceDisposition::ReconfigureAndRedraw) => {
-                    tracing::warn!(?status, "surface requires reconfiguration");
-                    if !self.frame.surface_recovery_attempted {
-                        self.frame.surface_recovery_attempted = true;
+            FrameOutcome::PresentedSuboptimal(_) => {
+                tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
+                self.frame.mark_first_present();
+                let _ = self.frame.next_steady_state_deadline();
+                if !self.frame.surface_recovery_attempted {
+                    self.frame.surface_recovery_attempted = true;
+                    if let Some(gpu) = self.runtime.gpu.as_mut() {
                         gpu.reconfigure();
-                        Acquire::Recover
-                    } else {
-                        tracing::warn!(?status, "surface recovery deferred until external wake");
-                        Acquire::Skip
                     }
+                    self.request_main_frame(event_loop);
                 }
-                (_, SurfaceDisposition::Skip) => {
-                    tracing::debug!(?status, "surface frame skipped");
-                    Acquire::Skip
-                }
-                _ => unreachable!("surface disposition must match texture status"),
-            };
-
-            match acquire {
-                Acquire::Skip => {
-                    reconfigure_after_present = false;
-                    presented = false;
-                }
-                Acquire::Recover => {
-                    reconfigure_after_present = false;
-                    presented = false;
-                    request_recovery_frame = true;
-                }
-                Acquire::Present {
-                    output,
-                    reconfigure,
-                } => {
-                    reconfigure_after_present = reconfigure;
-                    let view = output
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut encoder = gpu
-                        .device()
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-                    {
-                        let mut render_pass =
-                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("render pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(bg_wgpu(
-                                            harbor_config::BACKGROUND,
-                                        )),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
-                            });
-
-                        if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-                            let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
-                            let (physical_w, physical_h) = gpu.surface_size();
-                            let viewport = harbor_widget::renderer::Viewport::new(
-                                physical_w, physical_h, scale,
-                            );
-
-                            with_current_gpu(gpu, || {
-                                widget_runtime.encode(gpu.queue(), &mut render_pass, viewport);
-                            });
-                        }
+            }
+            FrameOutcome::RecoveryRequired(_) => {
+                tracing::warn!("surface requires reconfiguration");
+                if !self.frame.surface_recovery_attempted {
+                    self.frame.surface_recovery_attempted = true;
+                    if let Some(gpu) = self.runtime.gpu.as_mut() {
+                        gpu.reconfigure();
                     }
-
-                    let command_buffer = encoder.finish();
-                    gpu.queue().submit(Some(command_buffer));
-                    gpu.present(output);
-                    tracing::trace!(?status, "surface frame presented");
-                    presented = true;
+                    self.request_main_frame(event_loop);
+                } else {
+                    tracing::warn!("surface recovery deferred until external wake");
                 }
             }
-        }
-
-        if !presented {
-            if request_recovery_frame {
-                self.request_main_frame(event_loop);
+            FrameOutcome::Skipped(_) => {
+                tracing::debug!("surface frame skipped");
             }
-            return false;
-        }
-
-        self.frame.mark_first_present();
-        let _ = self.frame.next_steady_state_deadline();
-        if reconfigure_after_present && !self.frame.surface_recovery_attempted {
-            self.frame.surface_recovery_attempted = true;
-            if let Some(gpu) = self.runtime.gpu.as_mut() {
-                gpu.reconfigure();
+            FrameOutcome::Fatal(error, _) => {
+                tracing::error!(?error, "fatal main-window frame error");
+                event_loop.exit();
             }
-            self.request_main_frame(event_loop);
-        } else if status == SurfaceStatus::Success {
-            self.frame.surface_recovery_attempted = false;
         }
-        true
     }
 
     /// Initializes the widget runtime with a terminal CustomPaint root.
@@ -1057,7 +951,7 @@ mod tests {
         surface: &'frame wgpu::Surface<'surface>,
         device: &'frame wgpu::Device,
         queue: &'frame wgpu::Queue,
-        config: &'frame mut wgpu::SurfaceConfiguration,
+        config: &'frame wgpu::SurfaceConfiguration,
     ) {
         use harbor_widget::{
             renderer::Viewport,
