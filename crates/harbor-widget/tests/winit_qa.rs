@@ -363,7 +363,7 @@ fn should_request_redraw_when_programmatic_focus_changes() {
     let lost = runtime.update(Instant::now());
 
     // Assert
-    assert_eq!(runtime.input().focused, None);
+    assert_eq!(runtime.input().focused(), None);
     assert!(gained.request_redraw);
     assert!(lost.request_redraw);
 }
@@ -580,9 +580,9 @@ fn main_and_confirmation_focus_redraw_effects_are_owned_by_their_runtimes() {
     assert!(main_loss.effects.request_redraw);
     assert!(confirmation_loss.is_handled());
     assert!(confirmation_loss.effects.request_redraw);
-    assert_eq!(main_runtime.input().focused, main_runtime.root_id());
+    assert_eq!(main_runtime.input().focused(), main_runtime.root_id());
     assert_eq!(
-        confirmation_runtime.input().focused,
+        confirmation_runtime.input().focused(),
         confirmation_runtime.root_id()
     );
 

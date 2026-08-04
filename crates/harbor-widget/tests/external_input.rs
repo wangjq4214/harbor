@@ -178,7 +178,7 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
     let root_id = rt.root_id().unwrap();
 
     assert!(rt.focus_first_focusable());
-    assert_eq!(rt.input().focused, Some(root_id));
+    assert_eq!(rt.input().focused(), Some(root_id));
     rt.drain_external_input();
     rt.dispatch(key_down(Key::Enter), now());
     assert_eq!(rt.drain_external_input().len(), 1);
@@ -193,7 +193,7 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
         ),
         now(),
     );
-    assert_eq!(rt.input().focused, Some(root_id));
+    assert_eq!(rt.input().focused(), Some(root_id));
     rt.drain_external_input();
 
     rt.dispatch(key_down(Key::Escape), now());
@@ -395,15 +395,15 @@ fn should_support_child_widgets_in_runtime() {
 
     // CustomPaint with one child
     assert_eq!(
-        root_fiber.children.len(),
+        root_fiber.children().len(),
         1,
         "CustomPaint should have one child fiber"
     );
 
     // Child should have layout_rect
-    let child = arena.get(root_fiber.children[0]).unwrap();
+    let child = arena.get(root_fiber.children()[0]).unwrap();
     assert!(
-        child.layout_rect.is_some(),
+        child.layout_rect().is_some(),
         "child should have a layout rect"
     );
 }
@@ -420,7 +420,7 @@ fn should_handle_custom_paint_without_children() {
     let arena = rt.arena();
     let fiber = arena.get(root_id).unwrap();
     assert!(
-        fiber.layout_rect.is_some(),
+        fiber.layout_rect().is_some(),
         "CustomPaint should have a layout rect"
     );
 }

@@ -37,8 +37,8 @@ fn sized_box_layout_integration() {
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
     let fiber = arena.get(root_id).unwrap();
-    assert!(fiber.layout_rect.is_some(), "root should have layout_rect");
-    let rect = fiber.layout_rect.unwrap();
+    assert!(fiber.layout_rect().is_some(), "root should have layout_rect");
+    let rect = fiber.layout_rect().unwrap();
     assert_eq!(rect.min, Point::ZERO);
     assert_eq!(rect.size(), Size::new(100.0, 50.0));
 }
@@ -80,7 +80,7 @@ fn set_root_twice_replaces_tree() {
     assert!(req.request_redraw);
 
     let fiber = rt.arena().get(second_root).unwrap();
-    assert_eq!(fiber.layout_rect.unwrap().size(), Size::new(200.0, 100.0));
+    assert_eq!(fiber.layout_rect().unwrap().size(), Size::new(200.0, 100.0));
 }
 
 #[test]
@@ -98,12 +98,12 @@ fn nested_sized_box_produces_correct_layout_rects() {
     let root = arena.get(root_id).unwrap();
 
     // Root (Wrapper container) should have 200x200
-    assert_eq!(root.layout_rect.unwrap().size(), Size::new(200.0, 200.0));
+    assert_eq!(root.layout_rect().unwrap().size(), Size::new(200.0, 200.0));
 
     // Child (inner SizedBox) should have 50x25
-    assert_eq!(root.children.len(), 1, "root should have one child");
-    let child = arena.get(root.children[0]).unwrap();
-    assert_eq!(child.layout_rect.unwrap().size(), Size::new(50.0, 25.0));
+    assert_eq!(root.children().len(), 1, "root should have one child");
+    let child = arena.get(root.children()[0]).unwrap();
+    assert_eq!(child.layout_rect().unwrap().size(), Size::new(50.0, 25.0));
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn viewport_change_preserves_correct_layout_rect() {
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
     let fiber = arena.get(root_id).unwrap();
-    let rect = fiber.layout_rect.unwrap();
+    let rect = fiber.layout_rect().unwrap();
     // SizedBox(100, 50) fits within 200x150 viewport
     assert_eq!(rect.size(), Size::new(100.0, 50.0));
 }
@@ -321,7 +321,7 @@ fn multiple_set_root_without_update_works() {
 
     let root_id = rt.root_id().unwrap();
     let fiber = rt.arena().get(root_id).unwrap();
-    assert_eq!(fiber.layout_rect.unwrap().size(), Size::new(300.0, 150.0));
+    assert_eq!(fiber.layout_rect().unwrap().size(), Size::new(300.0, 150.0));
 }
 
 // ── Padding with zero in all directions ──────────────────────────────────────
@@ -342,11 +342,11 @@ fn zero_padding_is_noop_at_runtime_level() {
     let arena = rt.arena();
     let root = arena.get(root_id).unwrap();
     // Padding own size = child size (100x50) with zero inset
-    assert_eq!(root.layout_rect.unwrap().size(), Size::new(100.0, 50.0));
+    assert_eq!(root.layout_rect().unwrap().size(), Size::new(100.0, 50.0));
 
     // Child should be at (0,0) and have same size
-    let child = arena.get(root.children[0]).unwrap();
-    assert_eq!(child.layout_rect.unwrap().size(), Size::new(100.0, 50.0));
+    let child = arena.get(root.children()[0]).unwrap();
+    assert_eq!(child.layout_rect().unwrap().size(), Size::new(100.0, 50.0));
 }
 
 // ── Align widget at runtime ─────────────────────────────────────────────────
@@ -365,11 +365,11 @@ fn align_center_integration() {
     let arena = rt.arena();
     let root = arena.get(root_id).unwrap();
     // Align fills 800x600 (default viewport) in loose constraints
-    assert_eq!(root.layout_rect.unwrap().size(), Size::new(800.0, 600.0));
+    assert_eq!(root.layout_rect().unwrap().size(), Size::new(800.0, 600.0));
 
     // Child should be centered
-    let child = arena.get(root.children[0]).unwrap();
-    let child_rect = child.layout_rect.unwrap();
+    let child = arena.get(root.children()[0]).unwrap();
+    let child_rect = child.layout_rect().unwrap();
     assert_eq!(child_rect.size(), Size::new(50.0, 50.0));
     assert_eq!(child_rect.min, Point::new(375.0, 275.0)); // (800-50)/2, (600-50)/2
 }
@@ -394,15 +394,15 @@ fn row_cross_axis_center_integration() {
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
     let root = arena.get(root_id).unwrap();
-    assert_eq!(root.layout_rect.unwrap().size(), Size::new(100.0, 100.0));
+    assert_eq!(root.layout_rect().unwrap().size(), Size::new(100.0, 100.0));
 
     // First child (20 tall) centered in 100
-    let child0 = arena.get(root.children[0]).unwrap();
-    assert_eq!(child0.layout_rect.unwrap().min, Point::new(0.0, 40.0));
+    let child0 = arena.get(root.children()[0]).unwrap();
+    assert_eq!(child0.layout_rect().unwrap().min, Point::new(0.0, 40.0));
 
     // Second child (100 tall) at y=0
-    let child1 = arena.get(root.children[1]).unwrap();
-    assert_eq!(child1.layout_rect.unwrap().min, Point::new(50.0, 0.0));
+    let child1 = arena.get(root.children()[1]).unwrap();
+    assert_eq!(child1.layout_rect().unwrap().min, Point::new(50.0, 0.0));
 }
 
 // ── Stack with background at runtime ─────────────────────────────────────────

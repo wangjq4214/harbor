@@ -785,10 +785,10 @@ fn should_clear_focus_programmatically() {
 
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
-    assert!(rt.input().focused.is_some());
+    assert!(rt.input().focused().is_some());
 
     rt.clear_focus();
-    assert!(rt.input().focused.is_none());
+    assert!(rt.input().focused().is_none());
 }
 
 // ── Runtime with no root edge cases ─────────────────────────────────────────

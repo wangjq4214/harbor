@@ -1,23 +1,25 @@
+mod event_router;
+mod frame_encoder;
+
 use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber, reconcile_children,
     unmount_fiber,
 };
-use crate::input::event::{FocusEvent, PointerPhase, UiEvent};
+use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Point, Size};
 use crate::renderer::Viewport;
-use crate::renderer::quad::QuadRenderer;
-use crate::renderer::text_renderer::TextRenderer;
-use crate::scene::primitive::{ExternalDrawContext, ExternalDrawFn, ExternalDrawId};
+use crate::runtime::event_router::EventRouter;
+use crate::runtime::frame_encoder::FrameEncoder;
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
 };
 use crate::text::TextRunCache;
 use crate::view::{BuildCx, Component};
-use crate::widgets::text_label;
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -70,21 +72,19 @@ fn remove_external_input(runtime_id: RuntimeId) {
 
 /// Top-level widget tree scheduler.
 ///
-/// Owns the fiber tree and orchestrates reconcile -> layout -> paint cycles
-/// as well as input event routing.
+/// Owns the fiber tree and orchestrates reconcile → layout → paint cycles,
+/// delegating input routing to [`EventRouter`] and GPU encode to [`FrameEncoder`].
 pub struct Runtime {
     runtime_id: RuntimeId,
     arena: FiberArena,
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
     scene_graph: SceneGraph,
-    renderer: Option<QuadRenderer>,
-    text_renderer: Option<TextRenderer>,
-    text_run_cache: TextRunCache,
     pending_delta: Option<SceneDelta>,
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
-    input: InputState,
+    events: EventRouter,
+    encoder: FrameEncoder,
     pending_effects: RuntimeEffects,
 }
 
@@ -102,13 +102,11 @@ impl Runtime {
             root_id: None,
             root_component: None,
             scene_graph: SceneGraph::new(),
-            renderer: None,
-            text_renderer: None,
-            text_run_cache: TextRunCache::new(),
             pending_delta: None,
             current_viewport: None,
             external_draws: HashMap::new(),
-            input: InputState::new(),
+            events: EventRouter::new(),
+            encoder: FrameEncoder::new(),
             pending_effects: RuntimeEffects::default(),
         }
     }
@@ -237,8 +235,7 @@ impl Runtime {
         self.run_paint_pass();
 
         // Clean input state
-        self.input.clear_focus_if_dead(&self.arena);
-        self.input.clear_capture_if_dead(&self.arena);
+        self.events.clear_dead_targets(&self.arena);
     }
 
     /// Returns the viewport installed for the current frame, if any.
@@ -249,7 +246,7 @@ impl Runtime {
     /// Initializes the GPU renderer. Must be called after a wgpu Device is
     /// available and before the first call to `encode()`.
     pub fn init_renderer(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
-        self.renderer = Some(QuadRenderer::new(device, format));
+        self.encoder.init_renderer(device, format);
     }
 
     /// Initializes the text renderer with the shared glyph atlas.
@@ -262,130 +259,28 @@ impl Runtime {
         bind_group_layout: &wgpu::BindGroupLayout,
         bind_group: &wgpu::BindGroup,
     ) {
-        self.text_renderer = Some(TextRenderer::new(
-            device,
-            format,
-            bind_group_layout,
-            bind_group,
-        ));
+        self.encoder
+            .init_text_renderer(device, format, bind_group_layout, bind_group);
     }
 
     /// Applies the pending SceneDelta to the GPU renderers and encodes draw
     /// calls into the RenderPass. No-op if the quad renderer hasn't been
     /// initialized or there is no pending delta.
-    ///
-    /// Processes Quad, Border, Text, and External primitives in paint order.
-    /// Text primitives are rendered via the TextRenderer (if initialized).
-    /// External primitives invoke their registered handlers between quad/text batches.
     pub fn encode<'a>(
         &'a mut self,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
     ) {
-        let renderer = match self.renderer.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
-
-        if let Some(ref delta) = self.pending_delta {
-            self.current_viewport = Some(viewport.clone());
-            renderer.update(queue, delta, &viewport);
-            if let Some(ref mut tr) = self.text_renderer {
-                tr.update(queue, delta, &self.text_run_cache, &viewport);
-            }
-        }
-
-        let raw_items = self.scene_graph.items();
-
-        let has_external = !self.external_draws.is_empty()
-            && raw_items.iter().any(|it| {
-                matches!(
-                    it.primitive,
-                    crate::scene::primitive::Primitive::External { .. }
-                )
-            });
-
-        let has_text = self.text_renderer.is_some()
-            && raw_items.iter().any(|it| {
-                matches!(
-                    it.primitive,
-                    crate::scene::primitive::Primitive::Text { .. }
-                )
-            });
-
-        // Fast path: only quad/border primitives.
-        if !has_external && !has_text {
-            renderer.encode(pass);
-            return;
-        }
-
-        // Slow path: iterate paint-order, interleaving quad ranges, text, and external.
-        let mut quad_range_start: Option<u32> = None;
-        let mut quad_range_end: u32 = 0;
-
-        for item in raw_items {
-            match &item.primitive {
-                crate::scene::primitive::Primitive::External { draw, rect } => {
-                    // Flush accumulated quad range.
-                    if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
-                    }
-
-                    // Invoke the registered external handler with scissor.
-                    if let Some(cb) = self.external_draws.get(draw) {
-                        let context = ExternalDrawContext::new(*rect, viewport.clone());
-                        if context.is_empty() {
-                            continue;
-                        }
-                        let (phys_x, phys_y, phys_w, phys_h) = context.scissor_rect();
-                        pass.set_scissor_rect(phys_x, phys_y, phys_w, phys_h);
-                        cb(*draw, &context, pass);
-                        pass.set_scissor_rect(
-                            0,
-                            0,
-                            viewport.physical_size.0,
-                            viewport.physical_size.1,
-                        );
-                    }
-                }
-                crate::scene::primitive::Primitive::Text { .. } => {
-                    // Flush accumulated quad range.
-                    if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
-                    }
-
-                    // Render text run.
-                    if let Some(ref tr) = self.text_renderer {
-                        tr.encode_item(pass, item.id);
-                    }
-                }
-                _ => {
-                    // Quad or Border — track its instance slot for batching.
-                    if let Some(slot) = renderer.slot_of(item.id) {
-                        match quad_range_start {
-                            None => {
-                                quad_range_start = Some(slot);
-                                quad_range_end = slot;
-                            }
-                            Some(_) => {
-                                quad_range_end = quad_range_end.max(slot);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Flush trailing quad range.
-        if let Some(start) = quad_range_start {
-            let count = quad_range_end - start + 1;
-            renderer.encode_range(pass, start, count);
-        }
+        self.encoder.encode(
+            queue,
+            pass,
+            viewport,
+            &self.scene_graph,
+            &mut self.pending_delta,
+            &mut self.current_viewport,
+            &self.external_draws,
+        );
     }
 
     /// Signals that the viewport has changed (e.g., due to window resize).
@@ -415,7 +310,9 @@ impl Runtime {
     /// then applies any commands issued by handlers.
     pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> RuntimeEffects {
         let _scope = RuntimeScope::enter(self.runtime_id);
-        let needs_redraw = self.route_event(&event);
+        let needs_redraw = self
+            .events
+            .route_event(&self.arena, self.root_id, &event);
         if needs_redraw && let Some(root_id) = self.root_id {
             mark_dirty_for(self.runtime_id, root_id);
         }
@@ -427,7 +324,7 @@ impl Runtime {
     /// Hosts use this at lifecycle boundaries such as window focus loss so a
     /// widget cannot observe a later button-up from a different interaction.
     pub fn cancel_pointer_captures(&mut self, position: Point) -> RuntimeEffects {
-        let pointer_ids = self.input.captured_pointer_ids();
+        let pointer_ids = self.events.input().captured_pointer_ids();
         let mut effects = RuntimeEffects::default();
         for pointer_id in pointer_ids {
             effects.merge(self.dispatch(
@@ -443,201 +340,6 @@ impl Runtime {
         effects
     }
 
-    /// Core event routing: hit test → capture → target → bubble → apply.
-    /// Returns true if a repaint is needed.
-    fn route_event(&mut self, event: &UiEvent) -> bool {
-        let Some(root_id) = self.root_id else {
-            return false;
-        };
-
-        // 1. Determine target
-        let target: Option<FiberId> = match event {
-            UiEvent::Pointer(pe) => {
-                // Pointer Cancel: release capture and route to captor one last time
-                if pe.phase == PointerPhase::Cancel {
-                    if let Some(captor) = self.input.captor(pe.pointer_id) {
-                        self.input.apply(
-                            vec![crate::input::event_ctx::EventCommand::ReleasePointer(
-                                pe.pointer_id,
-                            )],
-                            &self.arena,
-                        );
-                        if self.arena.contains(captor) {
-                            return self.route_to_single(captor, event);
-                        }
-                    }
-                    return false;
-                }
-                // If this pointer is captured, bypass hit test
-                if let Some(captor) = self.input.captor(pe.pointer_id) {
-                    if self.arena.contains(captor) {
-                        Some(captor)
-                    } else {
-                        // Captor is dead — release capture and fall through
-                        self.input.apply(
-                            std::mem::take(&mut EventCtx::new().take_commands()),
-                            &self.arena,
-                        );
-                        None
-                    }
-                } else {
-                    self.hit_test_walk(root_id, pe.position)
-                }
-            }
-            UiEvent::Keyboard(_) | UiEvent::Focus(_) => self.input.focused,
-        };
-
-        // 2. Build ancestor path from root to target.
-        // For keyboard/focus events with no focused widget, include the
-        // root so root-level FocusScope can still intercept Tab.
-        let path = if target.is_none() && matches!(event, UiEvent::Keyboard(_) | UiEvent::Focus(_))
-        {
-            vec![root_id]
-        } else {
-            self.build_ancestor_path(target)
-        };
-
-        // 3. Walk phases
-        let mut ctx = EventCtx::new();
-
-        // Capture phase: root → target (excluding target)
-        for &ancestor_id in path.iter().take(path.len().saturating_sub(1)) {
-            if self.is_modal_block(ancestor_id, target) {
-                return self.finish_event(ctx);
-            }
-            self.invoke_handler(ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(ctx);
-            }
-        }
-
-        // Target phase
-        if let Some(tid) = target {
-            self.invoke_handler(tid, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(ctx);
-            }
-        }
-
-        // Bubble phase: target → root (excluding target)
-        for &ancestor_id in path.iter().take(path.len().saturating_sub(1)).rev() {
-            self.invoke_handler(ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(ctx);
-            }
-        }
-
-        self.finish_event(ctx)
-    }
-
-    /// Route an event to a single fiber (capture → target → bubble within
-    /// just that fiber). Used for Pointer Cancel delivery to captor.
-    fn route_to_single(&mut self, fiber_id: FiberId, event: &UiEvent) -> bool {
-        let mut ctx = EventCtx::new();
-        self.invoke_handler(fiber_id, event, &mut ctx);
-        self.finish_event(ctx)
-    }
-
-    /// Apply accumulated EventCtx commands and return whether repaint is needed.
-    fn finish_event(&mut self, mut ctx: EventCtx) -> bool {
-        let previous_focus = self.input.focused;
-        let needs_paint = self.input.apply(ctx.take_commands(), &self.arena);
-        let next_focus = self.input.focused;
-        let focus_needs_paint = if previous_focus != next_focus {
-            self.notify_focus_transition(previous_focus, next_focus)
-        } else {
-            false
-        };
-        needs_paint || ctx.needs_paint() || focus_needs_paint
-    }
-
-    /// Call handle_event on a fiber, setting up EventCtx with the fiber id.
-    fn invoke_handler(&mut self, fiber_id: FiberId, event: &UiEvent, ctx: &mut EventCtx) {
-        let rect = self.arena.get(fiber_id).and_then(|f| f.layout_rect);
-        let view = self.arena.get(fiber_id).and_then(|f| f.view.clone());
-
-        if let (Some(view), Some(rect)) = (view, rect) {
-            ctx.set_current_fiber(fiber_id);
-            view.handle_event(event, ctx, rect);
-        }
-    }
-
-    /// Hit test: reverse-paint-order DFS walk.
-    /// Returns the topmost fiber whose hit_test returns true.
-    fn hit_test_walk(&self, fiber_id: FiberId, point: Point) -> Option<FiberId> {
-        let fiber = self.arena.get(fiber_id)?;
-        let rect = fiber.layout_rect?;
-
-        // Coarse check: point must be within this fiber's rect
-        if !rect.contains(point) {
-            return None;
-        }
-
-        // Children in reverse order (topmost / last-painted first).
-        // Clone necessary to release the immutable borrow before recursing.
-        let children = fiber.children.clone();
-        for &child_id in children.iter().rev() {
-            if let Some(hit) = self.hit_test_walk(child_id, point) {
-                return Some(hit);
-            }
-        }
-
-        // Check self: point in local coordinates
-        let local_point = Point::new(point.x - rect.min.x, point.y - rect.min.y);
-        let local_rect = Rect::from_min_size(Point::ZERO, rect.size());
-        if let Some(ref view) = fiber.view
-            && view.hit_test(local_point, local_rect)
-        {
-            return Some(fiber_id);
-        }
-
-        None
-    }
-
-    /// Builds the ancestor chain from root to the given target.
-    fn build_ancestor_path(&self, target: Option<FiberId>) -> Vec<FiberId> {
-        let mut path = Vec::new();
-        let mut current = target;
-        while let Some(id) = current {
-            path.push(id);
-            current = self.arena.get(id).and_then(|f| f.parent);
-        }
-        path.reverse();
-        path
-    }
-
-    /// Checks whether `ancestor` is a modal scope that blocks events
-    /// targeting `target`.
-    fn is_modal_block(&self, ancestor: FiberId, target: Option<FiberId>) -> bool {
-        let fiber = match self.arena.get(ancestor) {
-            Some(f) => f,
-            None => return false,
-        };
-
-        let is_modal = fiber.view.as_ref().is_some_and(|v| v.is_modal_scope());
-
-        if !is_modal {
-            return false;
-        }
-
-        // Block if target is not a descendant of this modal scope
-        !self.is_descendant_of(target, ancestor)
-    }
-
-    /// Returns true if `descendant` is in the subtree rooted at `ancestor`.
-    fn is_descendant_of(&self, descendant: Option<FiberId>, ancestor: FiberId) -> bool {
-        let mut current = descendant;
-        while let Some(id) = current {
-            if id == ancestor {
-                return true;
-            }
-            current = self.arena.get(id).and_then(|f| f.parent);
-        }
-        false
-    }
-
-    // ── Internal ─────────────────────────────────────────────────────────
-
     fn run_paint_pass(&mut self) {
         let Some(root_id) = self.root_id else {
             return;
@@ -652,25 +354,7 @@ impl Runtime {
     /// Drains thread-local pending text runs and registers them with the cache.
     /// Must be called after the paint pass (during `update`) and before `encode`.
     pub fn register_pending_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
-        let pending = text_label::drain_pending_text_runs();
-        if pending.is_empty() {
-            return;
-        }
-
-        let metrics = crate::text::current_metrics().unwrap_or(crate::text::TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 0.0,
-            underline_thickness: 1.5,
-            strikethrough_position: 0.0,
-            strikethrough_thickness: 1.5,
-        });
-
-        for (id, text, _color) in &pending {
-            self.text_run_cache
-                .register_with_id(*id, text, &metrics, glyph_fn);
-        }
+        self.encoder.register_pending_text_runs(glyph_fn);
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -715,13 +399,13 @@ impl Runtime {
 
     /// Returns a reference to the InputState.
     pub fn input(&self) -> &InputState {
-        &self.input
+        self.events.input()
     }
 
     /// Returns a mutable reference to the TextRunCache.
     /// The host uses this to look up glyph data for text rendering.
     pub fn text_run_cache(&mut self) -> &mut TextRunCache {
-        &mut self.text_run_cache
+        self.encoder.text_run_cache()
     }
 
     /// Programmatically sets the focused fiber for keyboard event routing.
@@ -735,29 +419,12 @@ impl Runtime {
         let Some(root_id) = self.root_id else {
             return false;
         };
-        if let Some(fid) = self.find_first_focusable(root_id) {
+        if let Some(fid) = EventRouter::find_first_focusable(&self.arena, root_id) {
             self.transition_focus(Some(fid));
             true
         } else {
             false
         }
-    }
-
-    fn find_first_focusable(&self, fiber_id: FiberId) -> Option<FiberId> {
-        let fiber = self.arena.get(fiber_id)?;
-        // Check self
-        if let Some(ref view) = fiber.view
-            && view.is_focusable()
-        {
-            return Some(fiber_id);
-        }
-        // Check children in order
-        for &child_id in &fiber.children {
-            if let Some(fid) = self.find_first_focusable(child_id) {
-                return Some(fid);
-            }
-        }
-        None
     }
 
     /// Clears the focused fiber.
@@ -767,40 +434,13 @@ impl Runtime {
 
     /// Applies a programmatic focus transition and notifies both endpoints.
     fn transition_focus(&mut self, next: Option<FiberId>) {
-        let previous = self.input.focused;
-        if previous == next {
-            return;
-        }
-        self.input.focused = next;
         let _scope = RuntimeScope::enter(self.runtime_id);
-        if self.notify_focus_transition(previous, next)
+        if self.events.transition_focus(&self.arena, next)
             && let Some(root_id) = self.root_id
         {
             mark_dirty_for(self.runtime_id, root_id);
             self.pending_effects.merge(RuntimeEffects::request_redraw());
         }
-    }
-
-    fn notify_focus_transition(
-        &mut self,
-        previous: Option<FiberId>,
-        next: Option<FiberId>,
-    ) -> bool {
-        let mut needs_paint = previous != next;
-        if let Some(fiber_id) = previous {
-            needs_paint |= self.notify_focus(fiber_id, FocusEvent::Lost);
-        }
-        if let Some(fiber_id) = next {
-            needs_paint |= self.notify_focus(fiber_id, FocusEvent::Gained);
-        }
-        needs_paint
-    }
-
-    fn notify_focus(&mut self, fiber_id: FiberId, event: FocusEvent) -> bool {
-        let mut ctx = EventCtx::new();
-        self.invoke_handler(fiber_id, &UiEvent::Focus(event), &mut ctx);
-        let needs_paint = self.input.apply(ctx.take_commands(), &self.arena);
-        needs_paint || ctx.needs_paint()
     }
 
     /// Returns true if any modal FocusScope is currently active in the tree.
@@ -810,23 +450,39 @@ impl Runtime {
         let Some(root_id) = self.root_id else {
             return false;
         };
-        self.tree_has_modal(root_id)
+        EventRouter::tree_has_modal(&self.arena, root_id)
     }
 
+    // ── Test / internal façades (delegate to EventRouter) ───────────────
+
+    #[cfg(test)]
+    fn route_event(&mut self, event: &UiEvent) -> bool {
+        self.events.route_event(&self.arena, self.root_id, event)
+    }
+
+    #[cfg(test)]
+    fn route_to_single(&mut self, fiber_id: FiberId, event: &UiEvent) -> bool {
+        self.events.route_to_single(&self.arena, fiber_id, event)
+    }
+
+    #[cfg(test)]
+    fn finish_event(&mut self, ctx: EventCtx) -> bool {
+        self.events.finish_event(&self.arena, ctx)
+    }
+
+    #[cfg(test)]
+    fn build_ancestor_path(&self, target: Option<FiberId>) -> Vec<FiberId> {
+        EventRouter::build_ancestor_path(&self.arena, target)
+    }
+
+    #[cfg(test)]
+    fn is_descendant_of(&self, descendant: Option<FiberId>, ancestor: FiberId) -> bool {
+        EventRouter::is_descendant_of(&self.arena, descendant, ancestor)
+    }
+
+    #[cfg(test)]
     fn tree_has_modal(&self, fiber_id: FiberId) -> bool {
-        let fiber = match self.arena.get(fiber_id) {
-            Some(f) => f,
-            None => return false,
-        };
-        if fiber.view.as_ref().is_some_and(|v| v.is_modal_scope()) {
-            return true;
-        }
-        for &child_id in &fiber.children {
-            if self.tree_has_modal(child_id) {
-                return true;
-            }
-        }
-        false
+        EventRouter::tree_has_modal(&self.arena, fiber_id)
     }
 }
 
@@ -1380,7 +1036,7 @@ mod tests {
     #[test]
     fn should_register_text_runs_queued_by_update_before_the_frame_can_encode() {
         // Arrange: discard any stale thread-local work and build a text-producing root.
-        let _ = text_label::drain_pending_text_runs();
+        let _ = crate::widgets::text_label::drain_pending_text_runs();
         let mut rt = Runtime::new();
         rt.set_root(TextLabel::new("Confirm paste?"));
 

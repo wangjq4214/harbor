@@ -941,14 +941,14 @@ mod tests {
         // FocusScope > Padding > Column > ... > Row > [Button("Cancel"), SizedBox, Button("Paste")].
         // Depth-first traversal hits Cancel (leftmost Button) first.
         assert!(found, "expected a focusable widget (Cancel button)");
-        assert!(rt.input().focused.is_some(), "focused should be set");
+        assert!(rt.input().focused().is_some(), "focused should be set");
 
         // Verify the focused widget is a Button (without being able to read
         // the label from outside the crate, the structure guarantees it is Cancel).
-        let focused_id = rt.input().focused.unwrap();
+        let focused_id = rt.input().focused().unwrap();
         let fiber = rt.arena().get(focused_id).unwrap();
         assert_eq!(
-            fiber.widget_type,
+            fiber.widget_type(),
             std::any::TypeId::of::<harbor_widget::widgets::button::Button>(),
             "focused widget should be a Button"
         );

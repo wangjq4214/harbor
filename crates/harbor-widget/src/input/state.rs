@@ -9,8 +9,8 @@ use std::collections::HashMap;
 /// Commands accumulated by `EventCtx` during the event walk are applied
 /// atomically via `apply()` after the walk completes.
 pub struct InputState {
-    pub focused: Option<FiberId>,
-    pub hovered: Option<FiberId>,
+    pub(crate) focused: Option<FiberId>,
+    pub(crate) hovered: Option<FiberId>,
     pointer_captures: HashMap<u64, FiberId>,
 }
 
@@ -27,6 +27,16 @@ impl InputState {
             hovered: None,
             pointer_captures: HashMap::new(),
         }
+    }
+
+    /// Fiber currently receiving keyboard / focus events, if any.
+    pub fn focused(&self) -> Option<FiberId> {
+        self.focused
+    }
+
+    /// Fiber currently under the pointer, if tracked.
+    pub fn hovered(&self) -> Option<FiberId> {
+        self.hovered
     }
 
     /// Returns the fiber that has captured the given pointer, if any.
