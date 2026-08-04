@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec: 0004-widget-runtime-host-simplification](../../spec/0004-widget-runtime-host-simplification.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

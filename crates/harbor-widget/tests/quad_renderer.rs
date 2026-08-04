@@ -7,7 +7,7 @@ use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::renderer::quad::QuadRenderer;
 use harbor_widget::runtime::Runtime;
-use harbor_widget::scene::primitive::{Color, ExternalDrawFn, Primitive};
+use harbor_widget::scene::primitive::{Color, ExternalDrawContext, ExternalDrawFn, Primitive};
 use harbor_widget::scene::{SceneDelta, SceneItem};
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::padding::Padding;
@@ -498,6 +498,37 @@ fn should_handle_zero_count_gracefully() {
 // ── Runtime::encode with External primitives ────────────────────────────────
 
 #[test]
+fn should_skip_external_draw_when_scissor_rect_is_empty() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Runtime encode test");
+        return;
+    };
+
+    // Arrange: CustomPaint fills the full viewport; handler must not run at zero size.
+    let invoked = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&invoked);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_draw_id, _context, _pass| {
+        observed.store(true, Ordering::SeqCst);
+    });
+    let viewport = Viewport::new(0, 256, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(CustomPaint::new(99).handler(handler));
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+        runtime.encode(&queue, &mut pass, viewport);
+    }
+    encoder.finish();
+
+    // Assert
+    assert!(!invoked.load(Ordering::SeqCst));
+}
+
+#[test]
 fn should_invoke_external_draw_with_correct_rect() {
     let Some((device, _queue)) = try_create_device() else {
         return;
@@ -512,17 +543,18 @@ fn should_invoke_external_draw_with_correct_rect() {
         &|draw_id, cb_rect, _pass| {
             callback_called.store(true, Ordering::SeqCst);
             assert_eq!(draw_id, 42);
-            assert_eq!(cb_rect.min.x, 10.0);
-            assert_eq!(cb_rect.min.y, 20.0);
-            assert_eq!(cb_rect.size().width, 200.0);
-            assert_eq!(cb_rect.size().height, 150.0);
+            assert_eq!(cb_rect.logical_rect.min.x, 10.0);
+            assert_eq!(cb_rect.logical_rect.min.y, 20.0);
+            assert_eq!(cb_rect.logical_rect.size().width, 200.0);
+            assert_eq!(cb_rect.logical_rect.size().height, 150.0);
         };
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
+        let context = ExternalDrawContext::new(rect, Viewport::new(256, 256, 1.0));
 
-        external_draw(42, rect, &mut pass);
+        external_draw(42, &context, &mut pass);
     }
     encoder.finish();
 
@@ -539,7 +571,7 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
     // Arrange: a Runtime whose root CustomPaint registers a handler.
     let invoked_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let observed_draw_id = Arc::clone(&invoked_draw_id);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _context, _pass| {
         observed_draw_id.store(draw_id, Ordering::SeqCst);
     });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -572,12 +604,12 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     // Arrange: two handlers retained by CustomPaint children built through Stack.
     let first_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let first_observed = Arc::clone(&first_draw_id);
-    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _context, _pass| {
         first_observed.store(draw_id, Ordering::SeqCst);
     });
     let second_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let second_observed = Arc::clone(&second_draw_id);
-    let second_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _rect, _pass| {
+    let second_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _context, _pass| {
         second_observed.store(draw_id, Ordering::SeqCst);
     });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -615,10 +647,12 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     let order = Arc::new(Mutex::new(Vec::new()));
     let rects = Arc::new(Mutex::new(Vec::new()));
     let make_handler = |order: Arc<Mutex<Vec<u64>>>, rects: Arc<Mutex<Vec<Rect>>>| {
-        Arc::new(move |draw_id, rect, _pass: &mut wgpu::RenderPass<'_>| {
-            order.lock().unwrap().push(draw_id);
-            rects.lock().unwrap().push(rect);
-        }) as Arc<ExternalDrawFn<'static>>
+        Arc::new(
+            move |draw_id: u64, context: &ExternalDrawContext, _pass: &mut wgpu::RenderPass<'_>| {
+                order.lock().unwrap().push(draw_id);
+                rects.lock().unwrap().push(context.logical_rect);
+            },
+        ) as Arc<ExternalDrawFn<'static>>
     };
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();

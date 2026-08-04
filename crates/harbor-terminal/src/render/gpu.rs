@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -94,36 +95,6 @@ impl UploadPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SurfaceStatus {
-    Success,
-    Suboptimal,
-    Lost,
-    Outdated,
-    Timeout,
-    Occluded,
-    Validation,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SurfaceDisposition {
-    Present,
-    PresentAndReconfigure,
-    ReconfigureAndRedraw,
-    Skip,
-}
-
-pub fn surface_disposition(status: SurfaceStatus) -> SurfaceDisposition {
-    match status {
-        SurfaceStatus::Success => SurfaceDisposition::Present,
-        SurfaceStatus::Suboptimal => SurfaceDisposition::PresentAndReconfigure,
-        SurfaceStatus::Lost | SurfaceStatus::Outdated => SurfaceDisposition::ReconfigureAndRedraw,
-        SurfaceStatus::Timeout | SurfaceStatus::Occluded | SurfaceStatus::Validation => {
-            SurfaceDisposition::Skip
-        }
-    }
-}
-
 #[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
 compile_error!("backend-dx12 and backend-vulkan cannot be enabled together");
 
@@ -149,38 +120,6 @@ fn selected_backends() -> wgpu::Backends {
 #[cfg(test)]
 mod surface_tests {
     use super::*;
-
-    #[test]
-    fn surface_statuses_have_non_blocking_dispositions() {
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Success),
-            SurfaceDisposition::Present
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Suboptimal),
-            SurfaceDisposition::PresentAndReconfigure
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Lost),
-            SurfaceDisposition::ReconfigureAndRedraw
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Outdated),
-            SurfaceDisposition::ReconfigureAndRedraw
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Timeout),
-            SurfaceDisposition::Skip
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Occluded),
-            SurfaceDisposition::Skip
-        );
-        assert_eq!(
-            surface_disposition(SurfaceStatus::Validation),
-            SurfaceDisposition::Skip
-        );
-    }
 
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
@@ -252,7 +191,10 @@ pub struct GpuContext {
     /// Fixed adaptive policy used by cell-grid upload paths.
     upload_policy: UploadPolicy,
     /// Surface configuration (format, size, present mode).
-    config: wgpu::SurfaceConfiguration,
+    ///
+    /// Interior mutability lets the winit integration reconfigure during a frame
+    /// while CustomPaint still borrows this context shared via the Host TLS seam.
+    config: RefCell<wgpu::SurfaceConfiguration>,
     /// Shared untextured colored-quad pipeline (background / decoration / selection).
     colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
 }
@@ -348,31 +290,29 @@ impl GpuContext {
             device,
             queue,
             upload_policy: UploadPolicy::default(),
-            config,
+            config: RefCell::new(config),
             colored_quad_pipeline,
         })
     }
 
-    /// Reconfigures the surface with its current dimensions.
-    pub fn reconfigure(&mut self) {
-        tracing::debug!(
-            width = self.config.width,
-            height = self.config.height,
-            "reconfiguring surface"
-        );
-        self.surface.configure(&self.device, &self.config);
+    /// Frame-scoped borrow of Host-owned presentation resources.
+    pub fn borrow_frame(&self) -> (&wgpu::Surface<'static>, &wgpu::Device, &wgpu::Queue) {
+        (&self.surface, &self.device, &self.queue)
     }
 
-    /// Reconfigures the surface for a new window size.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            tracing::trace!("ignored zero-sized resize");
-            return;
-        }
-        self.config.width = width;
-        self.config.height = height;
-        tracing::trace!(width, height, "gpu context resized");
-        self.reconfigure();
+    /// Updates the Host-owned surface configuration and applies it.
+    ///
+    /// Called by the winit integration through a frame-scoped configure seam.
+    pub fn configure_size(&self, width: u32, height: u32) {
+        debug_assert!(
+            width > 0 && height > 0,
+            "zero-sized configure is refused by the adapter"
+        );
+        let mut config = self.config.borrow_mut();
+        config.width = width;
+        config.height = height;
+        tracing::debug!(width, height, "configuring surface");
+        self.surface.configure(&self.device, &config);
     }
 
     /// Main window surface borrowed by the frame integration.
@@ -380,19 +320,15 @@ impl GpuContext {
         &self.surface
     }
 
-    /// Current main-window surface configuration.
-    pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
-        &self.config
-    }
-
     /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        self.config.borrow().format
     }
 
     /// Current surface dimensions `(width, height)`.
     pub fn surface_size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        let config = self.config.borrow();
+        (config.width, config.height)
     }
 
     pub fn upload_plan(

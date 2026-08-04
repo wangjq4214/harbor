@@ -15,8 +15,6 @@ pub struct Background {
     dirty: bool,
     rows: usize,
     cols: usize,
-    cell_width: f32,
-    line_height: f32,
 }
 
 impl Background {
@@ -48,13 +46,17 @@ impl Background {
             dirty: true,
             rows,
             cols,
-            cell_width,
-            line_height,
         };
 
         // Build initial vertex data and upload.
-        let (surf_w, surf_h) = gpu.surface_size();
-        let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+        let (surface_w, surface_h) = gpu.surface_size();
+        let viewport = RenderViewport::with_surface(
+            cell_width,
+            line_height,
+            (surface_w, surface_h),
+            (surface_w, surface_h),
+        );
+        let verts = layer.build_all_vertices(snap, &viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
         layer
@@ -62,39 +64,23 @@ impl Background {
 
     /// Builds background vertices for a single row's cells.
     pub fn build_background_row_vertices(
-        cell_width: f32,
-        line_height: f32,
         row: usize,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<ColoredVertex> {
-        Self::build_background_range_vertices(
-            cell_width,
-            line_height,
-            row,
-            0,
-            snap.cols,
-            snap,
-            surf_w,
-            surf_h,
-        )
+        Self::build_background_range_vertices(row, 0, snap.cols, snap, viewport)
     }
 
     /// Builds background vertices for a slice of columns in a single row `[start_col, end_col)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_background_range_vertices(
-        cell_width: f32,
-        line_height: f32,
         row: usize,
         start_col: usize,
         end_col: usize,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity((end_col - start_col) * 6);
-        let viewport = RenderViewport::new(cell_width, line_height);
+        let (surf_w, surf_h) = viewport.surface_dimensions();
         for col in start_col..end_col {
             let cell = snap.cell(row, col);
             let inverse = cell.attrs.contains(CellAttrs::INVERSE);
@@ -122,21 +108,17 @@ impl Background {
     fn build_all_vertices(
         &self,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
         for row in 0..snap.rows {
-            verts.extend(Self::build_background_row_vertices(
-                self.cell_width,
-                self.line_height,
-                row,
-                snap,
-                surf_w,
-                surf_h,
-            ));
+            verts.extend(Self::build_background_row_vertices(row, snap, viewport));
         }
         verts
+    }
+
+    pub fn invalidate_projection(&mut self) {
+        self.dirty = true;
     }
 
     pub fn prepare_with_dirty(
@@ -144,8 +126,8 @@ impl Background {
         gpu: &GpuContext,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
+        viewport: &RenderViewport,
     ) {
-        let (surf_w, surf_h) = gpu.surface_size();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<ColoredVertex>();
         let plan = gpu.upload_plan(
@@ -173,26 +155,23 @@ impl Background {
                     &vec![ColoredVertex::default(); new_cap.max(1)],
                 );
             }
-            let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+            let verts = self.build_all_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
             self.cols = snap.cols;
         } else if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding background draw batch (full)");
-            let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+            let verts = self.build_all_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
             for range in dirty_ranges {
                 let range_verts = Self::build_background_range_vertices(
-                    self.cell_width,
-                    self.line_height,
                     range.row,
                     range.start_col,
                     range.end_col,
                     snap,
-                    surf_w as f32,
-                    surf_h as f32,
+                    viewport,
                 );
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
@@ -208,9 +187,14 @@ impl Background {
         self.dirty = false;
     }
 
-    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        snap: Option<&TerminalSnapshot>,
+        viewport: &RenderViewport,
+    ) {
         if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
+            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges, viewport);
         }
     }
 
@@ -222,10 +206,6 @@ impl Background {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
-    }
-
-    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }
 
@@ -247,7 +227,8 @@ mod tests {
         assert_eq!(cell.fg, Color::Named(1), "fg should be red (ANSI 31)");
 
         let snap = screen.terminal_snapshot();
-        let verts = Background::build_background_row_vertices(10.0, 20.0, 0, &snap, 800.0, 600.0);
+        let viewport = RenderViewport::new(10.0, 20.0);
+        let verts = Background::build_background_row_vertices(0, &snap, &viewport);
 
         let expected = Color::Named(1).to_rgba();
         assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");

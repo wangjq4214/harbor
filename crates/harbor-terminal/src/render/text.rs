@@ -4,8 +4,8 @@ use anyhow::Result;
 use wgpu::util::DeviceExt;
 
 use super::gpu::{self, GpuContext, TexturedVertex, UploadMode};
-use crate::{CellAttrs, Color, DirtyRange, TerminalSize};
-use harbor_config::TEXT_PADDING;
+use crate::render::RenderViewport;
+use crate::{CellAttrs, Color, DirtyRange};
 use harbor_text::atlas::MAX_ATLAS_SIZE;
 use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, TextMetrics};
 
@@ -266,8 +266,8 @@ impl Text {
         fonts: FontBook,
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
     ) -> Result<Self> {
-        let (surf_w, surf_h) = gpu.surface_size();
         let bind_group_layout = gpu::create_texture_bind_group_layout(gpu.device());
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format(), &bind_group_layout);
 
@@ -297,25 +297,15 @@ impl Text {
             cols,
         };
 
-        let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+        let verts = layer.build_all_vertices(snap, viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
 
         Ok(layer)
     }
 
-    pub fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
-        let (w, h) = gpu.surface_size();
-        let avail_w = (w as f32 - 2.0 * TEXT_PADDING).max(0.0);
-        let avail_h = (h as f32 - 2.0 * TEXT_PADDING).max(0.0);
-
-        let cols = (avail_w / self.metrics.cell_width).floor() as usize;
-        let rows = (avail_h / self.metrics.line_height).floor() as usize;
-
-        TerminalSize {
-            rows: rows.max(1),
-            cols: cols.max(1),
-        }
+    pub fn invalidate_projection(&mut self) {
+        self.dirty = true;
     }
 
     fn collect_all_chars(snap: &TerminalSnapshot) -> Vec<char> {
@@ -351,8 +341,7 @@ impl Text {
         &self,
         row: usize,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
         self.build_range_vertices(
             &DirtyRange {
@@ -361,8 +350,7 @@ impl Text {
                 end_col: snap.cols,
             },
             snap,
-            surf_w,
-            surf_h,
+            viewport,
         )
     }
 
@@ -370,9 +358,9 @@ impl Text {
         &self,
         range: &DirtyRange,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
+        let (surf_w, surf_h) = viewport.surface_dimensions();
         let mut verts = Vec::with_capacity((range.end_col - range.start_col) * 6);
         for col in range.start_col..range.end_col {
             let cell = snap.cell(range.row, col);
@@ -381,10 +369,8 @@ impl Text {
                 && glyph.width > 0
                 && glyph.height > 0
             {
-                let cell_x = TEXT_PADDING + col as f32 * self.metrics.cell_width;
-                let baseline = TEXT_PADDING
-                    + self.metrics.ascent.ceil()
-                    + range.row as f32 * self.metrics.line_height;
+                let (cell_x, cell_y) = viewport.cell_pos(range.row, col);
+                let baseline = cell_y + self.metrics.ascent.ceil();
                 let mut glyph_left = cell_x + glyph.bearing_x as f32;
                 let glyph_bottom = baseline - glyph.bearing_y as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -427,12 +413,11 @@ impl Text {
     fn build_all_vertices(
         &self,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
         let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
         for row in 0..snap.rows {
-            verts.extend(self.build_row_vertices(row, snap, surf_w, surf_h));
+            verts.extend(self.build_row_vertices(row, snap, viewport));
         }
         verts
     }
@@ -485,8 +470,8 @@ impl Text {
         gpu: &GpuContext,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
+        viewport: &RenderViewport,
     ) {
-        let (surf_w, surf_h) = gpu.surface_size();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
@@ -513,7 +498,7 @@ impl Text {
                 self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
             let plan = gpu.upload_plan(snap.rows, snap.cols, bytes_per_cell, dirty_ranges, true);
-            let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+            let verts = self.build_all_vertices(snap, viewport);
             debug_assert_eq!(plan.mode, UploadMode::Full);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
@@ -539,13 +524,12 @@ impl Text {
 
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding text draw batch (full)");
-            let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
+            let verts = self.build_all_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
-                let range_verts =
-                    self.build_range_vertices(range, snap, surf_w as f32, surf_h as f32);
+                let range_verts = self.build_range_vertices(range, snap, viewport);
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
@@ -559,9 +543,14 @@ impl Text {
         self.dirty = false;
     }
 
-    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        snap: Option<&TerminalSnapshot>,
+        viewport: &RenderViewport,
+    ) {
         if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
+            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges, viewport);
         }
     }
 
@@ -573,10 +562,6 @@ impl Text {
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
         }
-    }
-
-    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
     }
 }
 

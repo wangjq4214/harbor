@@ -57,6 +57,66 @@ struct TouchContact {
     position: Point,
 }
 
+/// Per-window drawable viewport, configuration dirtiness, and recovery budget.
+struct SurfaceState {
+    viewport: Viewport,
+    configuration_dirty: bool,
+    recovery_attempted: bool,
+}
+
+impl SurfaceState {
+    fn new(width: u32, height: u32, scale: f32) -> Self {
+        Self {
+            viewport: Viewport::new(width, height, scale),
+            configuration_dirty: width > 0 && height > 0,
+            recovery_attempted: false,
+        }
+    }
+
+    fn viewport(&self) -> &Viewport {
+        &self.viewport
+    }
+
+    fn update(&mut self, width: u32, height: u32, scale: f32) -> bool {
+        let next = Viewport::new(width, height, scale);
+        if self.viewport == next {
+            return false;
+        }
+        self.viewport = next;
+        self.configuration_dirty = true;
+        self.recovery_attempted = false;
+        true
+    }
+
+    fn can_acquire(&self) -> bool {
+        self.viewport.is_drawable()
+    }
+
+    fn configuration_dirty(&self) -> bool {
+        self.configuration_dirty
+    }
+
+    fn mark_configured(&mut self) {
+        self.configuration_dirty = false;
+    }
+
+    fn allow_recovery_retry(&mut self) -> bool {
+        if self.recovery_attempted {
+            return false;
+        }
+        self.recovery_attempted = true;
+        true
+    }
+
+    fn reset_after_success(&mut self) {
+        self.recovery_attempted = false;
+    }
+
+    fn reset_recovery_budget(&mut self) {
+        self.recovery_attempted = false;
+    }
+}
+
 /// Per-window state for the winit integration.
 pub struct WinitAdapter {
     modifiers: ModifiersState,
@@ -77,6 +137,8 @@ pub struct WinitAdapter {
     next_touch_pointer_id: u64,
     /// Per-window redraw coalescing and idle wait policy.
     scheduler: FrameScheduler,
+    /// Drawable viewport and surface configuration policy.
+    surface_state: SurfaceState,
 }
 
 impl Default for WinitAdapter {
@@ -87,10 +149,19 @@ impl Default for WinitAdapter {
 
 impl WinitAdapter {
     pub fn new() -> Self {
+        Self::with_surface(0, 0, 1.0)
+    }
+
+    /// Creates an adapter with initial physical size and scale factor.
+    pub fn with_surface(width: u32, height: u32, scale: f32) -> Self {
         Self {
             modifiers: ModifiersState::empty(),
             mouse_position: Point::ZERO,
-            scale_factor: 1.0,
+            scale_factor: if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            },
             ime_enabled: false,
             ime_preedit: None,
             touch_contacts: Vec::new(),
@@ -99,7 +170,19 @@ impl WinitAdapter {
             quarantined_touches: Vec::new(),
             next_touch_pointer_id: 1,
             scheduler: FrameScheduler::default(),
+            surface_state: SurfaceState::new(width, height, scale),
         }
+    }
+
+    /// Creates an adapter initialized from the window's current size and scale.
+    pub fn from_window(window: &Window) -> Self {
+        let size = window.inner_size();
+        Self::with_surface(size.width, size.height, window.scale_factor() as f32)
+    }
+
+    /// Returns the adapter's current viewport descriptor.
+    pub fn viewport(&self) -> &Viewport {
+        self.surface_state.viewport()
     }
 
     /// Sets the current window scale factor used for physical pointer input.
@@ -132,6 +215,7 @@ impl WinitAdapter {
         runtime: &mut Runtime,
         work: ExternalInvalidation,
     ) -> RuntimeEffects {
+        self.surface_state.reset_recovery_budget();
         let core_effects = runtime.invalidate_external(work);
         self.scheduler
             .schedule(core_effects, FrameScheduler::EXTERNAL_WAKE)
@@ -170,18 +254,37 @@ impl WinitAdapter {
             .merged(&scheduled)
     }
 
-    /// Requests a generic host retry frame (surface recovery until T0006).
+    /// Requests a host retry frame (for example after routed terminal input).
     pub fn request_frame(&mut self) -> RuntimeEffects {
         self.scheduler.request_frame()
     }
 
     /// Handles one window event and returns whether it was supported plus any
     /// effects produced by the widget runtime, folded through the scheduler.
+    ///
+    /// Prefer [`Self::handle_event_with_size`] when the host can supply the
+    /// window's current physical size so scale-factor changes combine with
+    /// post-DPI dimensions rather than a stale SurfaceState snapshot.
     pub fn handle_event(
         &mut self,
         runtime: &mut Runtime,
         event: &WindowEvent,
     ) -> WinitEventOutcome {
+        self.handle_event_with_size(runtime, event, None)
+    }
+
+    /// Like [`Self::handle_event`], but accepts the host's current physical
+    /// window size for resize/DPI lifecycle transitions.
+    pub fn handle_event_with_size(
+        &mut self,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+        physical_size: Option<(u32, u32)>,
+    ) -> WinitEventOutcome {
+        if let Some(outcome) = self.handle_lifecycle_event(runtime, event, physical_size) {
+            return outcome;
+        }
+
         if self.quarantine_pointer_event(event) {
             return WinitEventOutcome::handled(RuntimeEffects::default());
         }
@@ -196,9 +299,7 @@ impl WinitAdapter {
 
         let state_only = matches!(
             event,
-            WindowEvent::ModifiersChanged(_)
-                | WindowEvent::ScaleFactorChanged { .. }
-                | WindowEvent::Ime(_)
+            WindowEvent::ModifiersChanged(_) | WindowEvent::Ime(_)
         );
         let Some(ui_event) = self.convert_event(event) else {
             return if state_only {
@@ -223,6 +324,54 @@ impl WinitAdapter {
             });
         }
         WinitEventOutcome::handled(self.fold_effects(effects))
+    }
+
+    fn handle_lifecycle_event(
+        &mut self,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+        physical_size: Option<(u32, u32)>,
+    ) -> Option<WinitEventOutcome> {
+        match event {
+            WindowEvent::Resized(size) => Some(self.handle_surface_transition(
+                runtime,
+                size.width,
+                size.height,
+                self.scale_factor,
+            )),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.set_scale_factor(*scale_factor as f32);
+                // Combine the new scale with the host's current physical size
+                // when available. Falling back to SurfaceState is only for
+                // headless tests that omit a window size hint.
+                let (width, height) = physical_size_for_scale_change(
+                    physical_size,
+                    self.surface_state.viewport().physical_size,
+                );
+                Some(self.handle_surface_transition(runtime, width, height, self.scale_factor))
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_surface_transition(
+        &mut self,
+        runtime: &mut Runtime,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> WinitEventOutcome {
+        let changed = self.surface_state.update(width, height, scale);
+        runtime.set_viewport(self.surface_state.viewport().clone());
+        self.set_drawable(self.surface_state.can_acquire());
+        self.surface_state.reset_recovery_budget();
+
+        let mut effects = RuntimeEffects::default();
+        if changed && self.surface_state.can_acquire() {
+            effects.merge(self.fold_effects(runtime.update(Instant::now())));
+            effects.merge(self.request_frame());
+        }
+        WinitEventOutcome::handled(effects)
     }
 
     fn quarantine_pointer_event(&mut self, event: &WindowEvent) -> bool {
@@ -338,10 +487,6 @@ impl WinitAdapter {
         match event {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
-                None
-            }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.set_scale_factor(*scale_factor as f32);
                 None
             }
             WindowEvent::Ime(ime) => self.convert_ime(ime),
@@ -515,6 +660,12 @@ fn ime_suppresses_keyboard(
         && matches!(logical_key, Key::Character(_))
 }
 
+/// Prefer the host-supplied physical size on DPI change; fall back to the
+/// adapter's last known size only when the host omitted a hint (headless tests).
+fn physical_size_for_scale_change(host: Option<(u32, u32)>, current: (u32, u32)) -> (u32, u32) {
+    host.unwrap_or(current)
+}
+
 fn mouse_button_index(button: MouseButton) -> Option<usize> {
     match button {
         MouseButton::Left => Some(0),
@@ -615,16 +766,62 @@ impl WinitAdapter {
     pub fn render<'frame, 'surface>(
         &mut self,
         runtime: &mut Runtime,
-        target: WinitFrameTarget<'frame, 'surface>,
+        mut target: WinitFrameTarget<'frame, 'surface>,
     ) -> FrameOutcome {
         let effects = self.redraw_requested(runtime, Instant::now());
+
+        if !self.surface_state.can_acquire() {
+            return FrameOutcome::skipped(effects);
+        }
+
+        if self.surface_state.configuration_dirty() {
+            target.reconfigure(self.surface_state.viewport());
+            self.surface_state.mark_configured();
+        }
+
         let acquisition = classify_surface_texture(target.surface().get_current_texture());
 
-        self.finish_acquisition(effects, acquisition, |output| {
-            execute_wgpu_frame(runtime, &target, output)
-        })
+        match acquisition {
+            FrameAcquisition::Presented(output) => {
+                let outcome = self.finish_presentable(effects, output, false, |output| {
+                    execute_wgpu_frame(runtime, &target, output)
+                });
+                if outcome.is_presented() {
+                    self.surface_state.reset_after_success();
+                }
+                outcome
+            }
+            FrameAcquisition::Suboptimal(output) => {
+                let outcome = self.finish_presentable(effects, output, true, |output| {
+                    execute_wgpu_frame(runtime, &target, output)
+                });
+                target.reconfigure(self.surface_state.viewport());
+                if outcome.is_fatal() || !outcome.is_presented() {
+                    return outcome;
+                }
+                let mut final_effects = outcome.into_effects();
+                if self.surface_state.allow_recovery_retry() {
+                    final_effects.merge(self.request_frame());
+                }
+                FrameOutcome::presented_suboptimal(final_effects)
+            }
+            FrameAcquisition::RecoveryRequired => {
+                target.reconfigure(self.surface_state.viewport());
+                let mut recovery_effects = effects;
+                if self.surface_state.allow_recovery_retry() {
+                    recovery_effects.merge(self.request_frame());
+                }
+                FrameOutcome::recovery_required(recovery_effects)
+            }
+            FrameAcquisition::Skipped => FrameOutcome::skipped(effects),
+        }
     }
 
+    /// Test seam for acquisition disposition without a native surface.
+    ///
+    /// Mirrors production recovery/retry policy from [`Self::render`], omitting
+    /// only Host-owned surface reconfiguration.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn finish_acquisition<T>(
         &mut self,
         effects: RuntimeEffects,
@@ -633,13 +830,29 @@ impl WinitAdapter {
     ) -> FrameOutcome {
         match (acquisition.kind(), acquisition) {
             (FrameAcquisitionKind::Presented, FrameAcquisition::Presented(output)) => {
-                self.finish_presentable(effects, output, false, present)
+                let outcome = self.finish_presentable(effects, output, false, present);
+                if outcome.is_presented() {
+                    self.surface_state.reset_after_success();
+                }
+                outcome
             }
             (FrameAcquisitionKind::Suboptimal, FrameAcquisition::Suboptimal(output)) => {
-                self.finish_presentable(effects, output, true, present)
+                let outcome = self.finish_presentable(effects, output, true, present);
+                if outcome.is_fatal() || !outcome.is_presented() {
+                    return outcome;
+                }
+                let mut final_effects = outcome.into_effects();
+                if self.surface_state.allow_recovery_retry() {
+                    final_effects.merge(self.request_frame());
+                }
+                FrameOutcome::presented_suboptimal(final_effects)
             }
             (FrameAcquisitionKind::RecoveryRequired, FrameAcquisition::RecoveryRequired) => {
-                FrameOutcome::recovery_required(effects)
+                let mut recovery_effects = effects;
+                if self.surface_state.allow_recovery_retry() {
+                    recovery_effects.merge(self.request_frame());
+                }
+                FrameOutcome::recovery_required(recovery_effects)
             }
             (FrameAcquisitionKind::Skipped, FrameAcquisition::Skipped) => {
                 FrameOutcome::skipped(effects)
@@ -679,6 +892,7 @@ enum FrameAcquisition<T> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum FrameAcquisitionKind {
     Presented,
     Suboptimal,
@@ -693,6 +907,7 @@ enum PresentableKind {
 }
 
 impl<T> FrameAcquisition<T> {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn kind(&self) -> FrameAcquisitionKind {
         match self {
             Self::Presented(_) => FrameAcquisitionKind::Presented,
@@ -755,6 +970,10 @@ fn execute_wgpu_frame(
     target: &WinitFrameTarget<'_, '_>,
     output: wgpu::SurfaceTexture,
 ) -> Result<(), FrameError> {
+    let viewport = runtime
+        .current_viewport()
+        .cloned()
+        .unwrap_or_else(|| Viewport::new(1, 1, 1.0));
     execute_presented_frame(
         || Ok(output),
         |output| {
@@ -786,7 +1005,7 @@ fn execute_wgpu_frame(
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                runtime.encode(target.queue(), &mut pass, target.viewport().clone());
+                runtime.encode(target.queue(), &mut pass, viewport);
             }
             Ok(encoder.finish())
         },
@@ -802,15 +1021,17 @@ fn execute_wgpu_frame(
 ///
 /// The separate `surface` lifetime describes the lifetime carried by the wgpu
 /// surface itself, while `frame` describes the borrow of that surface and the
-/// other host resources. This value is consumed by a frame call and cannot be
-/// retained by either the runtime or adapter.
+/// other host resources. Configuration mutation is framed as a Host-owned
+/// callback so encode can share the same GpuContext via the temporary
+/// CustomPaint GPU scope without aliasing a mutable configuration borrow.
+/// This value is consumed by a frame call and cannot be retained by either
+/// the runtime or adapter.
 pub struct WinitFrameTarget<'frame, 'surface> {
     window: &'frame Window,
     surface: &'frame wgpu::Surface<'surface>,
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
-    config: &'frame wgpu::SurfaceConfiguration,
-    viewport: Viewport,
+    configure: &'frame mut dyn FnMut(u32, u32),
     clear_color: wgpu::Color,
 }
 
@@ -820,8 +1041,7 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
         surface: &'frame wgpu::Surface<'surface>,
         device: &'frame wgpu::Device,
         queue: &'frame wgpu::Queue,
-        config: &'frame wgpu::SurfaceConfiguration,
-        viewport: Viewport,
+        configure: &'frame mut dyn FnMut(u32, u32),
         clear_color: wgpu::Color,
     ) -> Self {
         Self {
@@ -829,10 +1049,17 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
             surface,
             device,
             queue,
-            config,
-            viewport,
+            configure,
             clear_color,
         }
+    }
+
+    pub fn reconfigure(&mut self, viewport: &Viewport) {
+        assert!(
+            viewport.is_drawable(),
+            "refusing zero-sized surface configure"
+        );
+        (self.configure)(viewport.physical_size.0, viewport.physical_size.1);
     }
 
     pub fn window(&self) -> &'frame Window {
@@ -849,14 +1076,6 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
 
     pub fn queue(&self) -> &'frame wgpu::Queue {
         self.queue
-    }
-
-    pub fn config(&self) -> &wgpu::SurfaceConfiguration {
-        self.config
-    }
-
-    pub fn viewport(&self) -> &Viewport {
-        &self.viewport
     }
 
     pub fn clear_color(&self) -> wgpu::Color {
@@ -1093,6 +1312,370 @@ mod tests {
     }
 
     #[test]
+    fn surface_state_tracks_drawable_transitions_and_recovery_budget() {
+        let mut state = SurfaceState::new(800, 600, 1.0);
+        assert!(state.can_acquire());
+        assert!(state.update(800, 600, 2.0));
+        assert!(state.configuration_dirty());
+        assert!(!state.recovery_attempted);
+        assert!(state.allow_recovery_retry());
+        assert!(!state.allow_recovery_retry());
+        state.reset_after_success();
+        assert!(state.allow_recovery_retry());
+
+        state.update(0, 600, 2.0);
+        assert!(!state.can_acquire());
+        state.reset_recovery_budget();
+        assert!(state.allow_recovery_retry());
+    }
+
+    #[test]
+    fn should_return_false_when_surface_state_update_receives_same_viewport() {
+        // Arrange
+        let mut state = SurfaceState::new(800, 600, 1.0);
+        state.mark_configured();
+
+        // Act
+        let changed = state.update(800, 600, 1.0);
+
+        // Assert
+        assert!(!changed);
+        assert!(!state.configuration_dirty());
+    }
+
+    #[test]
+    fn should_clear_configuration_dirty_when_surface_state_is_marked_configured() {
+        // Arrange
+        let mut state = SurfaceState::new(800, 600, 1.0);
+        assert!(state.configuration_dirty());
+
+        // Act
+        state.mark_configured();
+
+        // Assert
+        assert!(!state.configuration_dirty());
+    }
+
+    #[test]
+    fn should_start_without_configuration_dirty_for_zero_sized_surface() {
+        // Arrange / Act
+        let state = SurfaceState::new(0, 0, 1.0);
+
+        // Assert
+        assert!(!state.configuration_dirty());
+        assert!(!state.can_acquire());
+    }
+
+    #[test]
+    fn should_reset_recovery_budget_when_surface_state_viewport_changes() {
+        // Arrange
+        let mut state = SurfaceState::new(800, 600, 1.0);
+        assert!(state.allow_recovery_retry());
+        assert!(!state.allow_recovery_retry());
+
+        // Act
+        assert!(state.update(1024, 768, 1.0));
+
+        // Assert
+        assert!(state.allow_recovery_retry());
+    }
+
+    #[test]
+    fn should_update_adapter_and_runtime_viewport_when_window_is_resized() {
+        // Arrange
+        use crate::runtime::Runtime;
+        use winit::dpi::PhysicalSize;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        let resized = WindowEvent::Resized(PhysicalSize::new(1024, 768));
+
+        // Act
+        let outcome = adapter.handle_event(&mut runtime, &resized);
+
+        // Assert
+        assert!(outcome.is_handled());
+        assert_eq!(adapter.viewport().physical_size, (1024, 768));
+        assert_eq!(
+            runtime.current_viewport().map(|vp| vp.physical_size),
+            Some((1024, 768))
+        );
+        assert!(outcome.effects.request_redraw);
+    }
+
+    #[test]
+    fn should_prefer_host_physical_size_on_scale_change() {
+        // Arrange / Act / Assert: DPI events must not keep the pre-DPI physical size.
+        assert_eq!(
+            physical_size_for_scale_change(Some((1600, 1200)), (800, 600)),
+            (1600, 1200)
+        );
+        assert_eq!(physical_size_for_scale_change(None, (800, 600)), (800, 600));
+    }
+
+    #[test]
+    fn should_combine_host_physical_size_when_scale_factor_changes() {
+        // Arrange: DPI change often arrives before Resized; the host supplies
+        // window.inner_size() so logical layout does not use a stale physical.
+        // (WindowEvent::ScaleFactorChanged cannot be constructed outside winit,
+        // so this exercises the same transition the lifecycle handler applies.)
+        use crate::runtime::Runtime;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        adapter.set_scale_factor(2.0);
+
+        // Act
+        let outcome = adapter.handle_surface_transition(&mut runtime, 1600, 1200, 2.0);
+
+        // Assert
+        assert!(outcome.is_handled());
+        assert_eq!(adapter.viewport().physical_size, (1600, 1200));
+        assert!((adapter.viewport().scale_factor - 2.0).abs() < f32::EPSILON);
+        assert_eq!(
+            runtime.current_viewport().map(|vp| vp.physical_size),
+            Some((1600, 1200))
+        );
+        assert!(outcome.effects.request_redraw);
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_resize_reports_same_viewport() {
+        // Arrange
+        use crate::runtime::Runtime;
+        use winit::dpi::PhysicalSize;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+        );
+
+        // Act
+        let outcome = adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+        );
+
+        // Assert
+        assert!(outcome.is_handled());
+        assert!(!outcome.effects.request_redraw);
+    }
+
+    #[test]
+    fn should_mark_surface_non_drawable_when_resized_to_zero_extent() {
+        // Arrange
+        use crate::runtime::Runtime;
+        use winit::dpi::PhysicalSize;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+
+        // Act
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(0, 600)),
+        );
+
+        // Assert
+        assert!(!adapter.viewport().is_drawable());
+        assert_eq!(
+            runtime.current_viewport().map(|vp| vp.physical_size),
+            Some((0, 600))
+        );
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_resized_to_zero_extent() {
+        // Arrange
+        use crate::runtime::Runtime;
+        use winit::dpi::PhysicalSize;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+
+        // Act
+        let outcome = adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(0, 600)),
+        );
+
+        // Assert: zero-size suspends acquisition without scheduling a frame.
+        assert!(outcome.is_handled());
+        assert!(!outcome.effects.request_redraw);
+    }
+
+    #[test]
+    fn should_request_redraw_when_restored_from_zero_extent() {
+        // Arrange
+        use crate::runtime::Runtime;
+        use winit::dpi::PhysicalSize;
+
+        let mut adapter = WinitAdapter::with_surface(0, 0, 1.0);
+        let mut runtime = Runtime::new();
+        adapter.handle_event(&mut runtime, &WindowEvent::Resized(PhysicalSize::new(0, 0)));
+
+        // Act
+        let outcome = adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+        );
+
+        // Assert
+        assert!(outcome.is_handled());
+        assert!(adapter.viewport().is_drawable());
+        assert!(outcome.effects.request_redraw);
+    }
+
+    #[test]
+    fn should_request_one_recovery_frame_when_acquisition_is_lost() {
+        // Arrange
+        use crate::runtime::Runtime;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        let frame_start = RuntimeEffects::default();
+
+        // Act
+        let first = adapter.finish_acquisition(
+            frame_start.clone(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+        // Host consumes the recovery redraw before the next acquisition attempt.
+        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+        let second = adapter.finish_acquisition(
+            frame_start,
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+
+        // Assert: one internal retry, then wait for an external wake.
+        assert!(first.is_recovery_required());
+        assert!(first.effects().request_redraw);
+        assert!(second.is_recovery_required());
+        assert!(!second.effects().request_redraw);
+    }
+
+    #[test]
+    fn should_reset_recovery_budget_when_external_invalidation_arrives() {
+        // Arrange
+        use crate::effects::ExternalInvalidation;
+        use crate::runtime::Runtime;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        let exhausted = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+        assert!(exhausted.effects().request_redraw);
+        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+        let blocked = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+        assert!(!blocked.effects().request_redraw);
+
+        // Act: a fresh external wake restores the one-retry budget.
+        let _ = adapter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+        let retry = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+
+        // Assert
+        assert!(retry.is_recovery_required());
+        assert!(retry.effects().request_redraw);
+    }
+
+    #[test]
+    fn should_not_request_recovery_frame_when_acquisition_is_skipped() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let outcome = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::Skipped,
+            |_| Ok(()),
+        );
+
+        // Assert: timeout/occluded/validation skip without completion or retry.
+        assert!(!outcome.is_presented());
+        assert!(!outcome.is_recovery_required());
+        assert!(!outcome.effects().request_redraw);
+    }
+
+    #[test]
+    fn should_request_recovery_frame_when_presentation_is_suboptimal() {
+        // Arrange
+        use crate::runtime::Runtime;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+
+        // Act
+        let first = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::Suboptimal("ok"),
+            |_| Ok(()),
+        );
+        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+        let second = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::Suboptimal("ok"),
+            |_| Ok(()),
+        );
+
+        // Assert
+        assert!(first.is_presented());
+        assert!(first.is_suboptimal());
+        assert!(first.effects().request_redraw);
+        assert!(second.is_presented());
+        assert!(second.is_suboptimal());
+        assert!(!second.effects().request_redraw);
+    }
+
+    #[test]
+    fn should_restore_recovery_budget_after_successful_presentation() {
+        // Arrange
+        use crate::runtime::Runtime;
+
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut runtime = Runtime::new();
+        let exhausted = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+        assert!(exhausted.effects().request_redraw);
+        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+
+        // Act: a successful present resets the one-retry budget.
+        let presented = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::Presented("ok"),
+            |_| Ok(()),
+        );
+        let retry = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| Ok(()),
+        );
+
+        // Assert
+        assert!(presented.is_presented());
+        assert!(retry.is_recovery_required());
+        assert!(retry.effects().request_redraw);
+    }
+
+    #[test]
     fn acquisition_policy_returns_frame_start_effects_and_completes_only_presented_frames() {
         use crate::effects::{ControlFlowEffect, CursorEffect, CursorShape};
         use std::cell::Cell;
@@ -1104,32 +1687,55 @@ mod tests {
             ..RuntimeEffects::default()
         };
 
-        // A non-presenting acquisition returns exactly the frame-start batch;
-        // it neither invokes presentation nor consumes the active continuation.
-        for acquisition in [
-            FrameAcquisition::<&str>::Skipped,
-            FrameAcquisition::<&str>::RecoveryRequired,
-        ] {
+        // A skipped acquisition returns exactly the frame-start batch and does
+        // not invoke presentation or consume the active continuation.
+        {
             let mut adapter = WinitAdapter::new();
             adapter.fold_effects(RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::poll()),
                 ..RuntimeEffects::default()
             });
             let present_count = Cell::new(0);
-            let outcome = adapter.finish_acquisition(frame_start.clone(), acquisition, |_| {
-                present_count.set(present_count.get() + 1);
-                Ok(())
-            });
+            let outcome = adapter.finish_acquisition(
+                frame_start.clone(),
+                FrameAcquisition::<&str>::Skipped,
+                |_| {
+                    present_count.set(present_count.get() + 1);
+                    Ok(())
+                },
+            );
 
             assert_eq!(outcome.effects(), &frame_start);
             assert!(!outcome.is_presented());
             assert_eq!(present_count.get(), 0);
 
-            // The active continuation is still available because the skipped
-            // or recovery branch did not call frame_completed.
             let continuation = adapter.frame_completed(Instant::now());
             assert!(continuation.request_redraw);
             assert_eq!(continuation.control_flow, Some(ControlFlowEffect::Poll));
+        }
+
+        // RecoveryRequired grants one retry edge; that pending redraw means the
+        // scheduler has already consumed the continuation opportunity.
+        {
+            let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+            adapter.fold_effects(RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::poll()),
+                ..RuntimeEffects::default()
+            });
+            let present_count = Cell::new(0);
+            let outcome = adapter.finish_acquisition(
+                RuntimeEffects::default(),
+                FrameAcquisition::<&str>::RecoveryRequired,
+                |_| {
+                    present_count.set(present_count.get() + 1);
+                    Ok(())
+                },
+            );
+
+            assert!(outcome.is_recovery_required());
+            assert!(outcome.effects().request_redraw);
+            assert_eq!(present_count.get(), 0);
+            assert!(!adapter.frame_completed(Instant::now()).request_redraw);
         }
 
         for (acquisition, expected_suboptimal) in [

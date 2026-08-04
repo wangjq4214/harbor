@@ -1407,6 +1407,81 @@ fn should_return_false_and_preserve_size_when_resize_if_changed_has_same_dimensi
 }
 
 #[test]
+fn should_derive_grid_size_from_external_draw_allocation() {
+    // Arrange: CustomPaint allocation is smaller than the full surface.
+    use crate::{RenderViewport, TextMetrics};
+    use harbor_widget::layout::{Point, Rect, Size};
+    use harbor_widget::renderer::Viewport;
+    use harbor_widget::scene::primitive::ExternalDrawContext;
+
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 16.0,
+        underline_thickness: 2.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 2.0,
+    };
+    let context = ExternalDrawContext::new(
+        Rect::from_min_size(Point::new(20.0, 10.0), Size::new(400.0, 240.0)),
+        Viewport::new(800, 600, 1.0),
+    );
+    let viewport = RenderViewport::from_external(&context, &metrics);
+    let grid = viewport.compute_grid_size();
+    let mut terminal = Terminal::new_headless(24, 80);
+
+    // Act
+    let changed = terminal.resize_if_changed(grid);
+
+    // Assert
+    assert!(changed);
+    assert_eq!(terminal.screen().rows(), grid.rows);
+    assert_eq!(terminal.screen().cols(), grid.cols);
+    assert_ne!((grid.rows, grid.cols), (24, 80));
+}
+
+#[test]
+fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
+    // Arrange: scale-only / geometry change that preserves qualitative grid size.
+    use crate::{RenderViewport, TextMetrics};
+    use harbor_widget::layout::{Point, Rect, Size};
+    use harbor_widget::renderer::Viewport;
+    use harbor_widget::scene::primitive::ExternalDrawContext;
+
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 16.0,
+        underline_thickness: 2.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 2.0,
+    };
+    let first = ExternalDrawContext::new(
+        Rect::from_min_size(Point::ZERO, Size::new(800.0, 480.0)),
+        Viewport::new(800, 600, 1.0),
+    );
+    let second = ExternalDrawContext::new(
+        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(800.0, 480.0)),
+        Viewport::new(820, 620, 1.0),
+    );
+    let first_grid = RenderViewport::from_external(&first, &metrics).compute_grid_size();
+    let second_grid = RenderViewport::from_external(&second, &metrics).compute_grid_size();
+    assert_eq!(first_grid, second_grid);
+
+    let mut terminal = Terminal::new_headless(first_grid.rows, first_grid.cols);
+
+    // Act
+    let changed = terminal.resize_if_changed(second_grid);
+
+    // Assert: PTY/screen resize is skipped when rows/cols are unchanged.
+    assert!(!changed);
+    assert_eq!(terminal.screen().rows(), first_grid.rows);
+    assert_eq!(terminal.screen().cols(), first_grid.cols);
+}
+
+#[test]
 fn should_reset_scroll_snap_suppression_when_resized() {
     // Arrange
     let mut terminal = Terminal::new_headless(24, 80);

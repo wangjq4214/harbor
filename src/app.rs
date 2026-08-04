@@ -278,9 +278,8 @@ struct AppRuntime {
     dialog: DialogOverlay,
 }
 
-/// Host frame lifecycle telemetry and surface-recovery bookkeeping.
+/// Host frame lifecycle telemetry.
 struct FrameState {
-    surface_recovery_attempted: bool,
     /// Set after the first successful surface present.
     first_present_at: Option<Instant>,
     /// Once-only gate for the steady-state dwell marker.
@@ -464,7 +463,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let gate_active = self.runtime.dialog.is_active();
 
-        let (Some(gpu), Some(terminal), Some(window)) = (
+        let (Some(_gpu), Some(terminal), Some(window)) = (
             self.runtime.gpu.as_mut(),
             self.runtime.terminal.as_ref(),
             self.runtime.window.as_ref(),
@@ -491,7 +490,12 @@ impl ApplicationHandler<AppEvent> for App {
             self.runtime.widget_runtime.as_mut(),
         ) {
             (Some(adapter), Some(widget_runtime)) => {
-                Some(adapter.handle_event(widget_runtime, &event))
+                let size = window.inner_size();
+                Some(adapter.handle_event_with_size(
+                    widget_runtime,
+                    &event,
+                    Some((size.width, size.height)),
+                ))
             }
             _ => None,
         };
@@ -543,78 +547,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
 
-        match event {
-            WindowEvent::Resized(size) => {
-                tracing::trace!(width = size.width, height = size.height, "window resized");
-                self.frame.surface_recovery_attempted = false;
-                if size.width == 0 || size.height == 0 {
-                    if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-                        adapter.set_drawable(false);
-                    }
-                    return;
-                }
-                if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-                    adapter.set_drawable(true);
-                }
-                gpu.resize(size.width, size.height);
-                let mut terminal = terminal.lock().unwrap();
-                let terminal_size = terminal.terminal_size(gpu);
-                terminal.resize_gpu(terminal_size, gpu);
-                if let (Some(adapter), Some(widget_runtime)) = (
-                    self.runtime.winit_adapter.as_mut(),
-                    self.runtime.widget_runtime.as_mut(),
-                ) {
-                    let scale = window.scale_factor() as f32;
-                    let viewport =
-                        harbor_widget::renderer::Viewport::new(size.width, size.height, scale);
-                    widget_runtime.set_viewport(viewport);
-                    let mut effects = adapter.fold_effects(widget_runtime.update(Instant::now()));
-                    effects.merge(adapter.request_frame());
-                    Self::apply_window_effects(window, &effects);
-                    if let Some(control_flow) = effects.control_flow {
-                        Self::apply_control_flow(event_loop, control_flow);
-                    }
-                }
-            }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                tracing::trace!(?scale_factor, "main window scale factor changed");
-                let scale = scale_factor as f32;
-                let size = window.inner_size();
-                self.frame.surface_recovery_attempted = false;
-                if size.width == 0 || size.height == 0 {
-                    if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-                        adapter.set_drawable(false);
-                    }
-                    return;
-                }
-                if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-                    adapter.set_drawable(true);
-                }
-                let (physical_width, physical_height) = (size.width, size.height);
-                gpu.resize(physical_width, physical_height);
-                if let (Some(adapter), Some(widget_runtime)) = (
-                    self.runtime.winit_adapter.as_mut(),
-                    self.runtime.widget_runtime.as_mut(),
-                ) {
-                    let viewport = harbor_widget::renderer::Viewport::new(
-                        physical_width,
-                        physical_height,
-                        scale,
-                    );
-                    widget_runtime.set_viewport(viewport);
-                    let mut effects = adapter.fold_effects(widget_runtime.update(Instant::now()));
-                    effects.merge(adapter.request_frame());
-                    Self::apply_window_effects(window, &effects);
-                    if let Some(control_flow) = effects.control_flow {
-                        Self::apply_control_flow(event_loop, control_flow);
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                tracing::trace!("redraw requested");
-                self.render_frame(event_loop);
-            }
-            _ => {}
+        if let WindowEvent::RedrawRequested = event {
+            tracing::trace!("redraw requested");
+            self.render_frame(event_loop);
         }
     }
 }
@@ -633,7 +568,6 @@ impl App {
                 dialog: DialogOverlay { window: None },
             },
             frame: FrameState {
-                surface_recovery_attempted: false,
                 first_present_at: None,
                 steady_state_emitted: false,
             },
@@ -686,18 +620,19 @@ impl App {
                     .is_ok()
             },
         );
+        // Terminal is UI-thread-only (not Send/Sync); Arc is required so the
+        // CustomPaint ExternalDrawFn can share ownership with AppRuntime.
+        #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
 
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.terminal = Some(terminal);
-        let mut winit_adapter = WinitAdapter::new();
-        winit_adapter.set_scale_factor(window.scale_factor() as f32);
-        let initial_size = window.inner_size();
+        let mut winit_adapter = WinitAdapter::from_window(&window);
         winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
         self.runtime.winit_adapter = Some(winit_adapter);
-        let initial_effects = self.init_widget_runtime();
         self.runtime.window = Some(window.clone());
+        let initial_effects = self.init_widget_runtime();
         if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
             let mut effects = adapter.fold_effects(initial_effects);
             effects.merge(adapter.request_frame());
@@ -723,8 +658,8 @@ impl App {
                 window.set_ime_cursor_area(position, size);
             }
         }
-        if let Some(clipboard) = effects.clipboard.as_ref() {
-            log_deferred_clipboard_effect(clipboard);
+        if let Some(clipboard) = effects.clipboard.clone() {
+            let _ = apply_clipboard_effect(clipboard);
         }
         if effects.request_redraw {
             tracing::trace!("requesting redraw");
@@ -755,16 +690,6 @@ impl App {
         let Some(window) = self.runtime.window.as_ref() else {
             return;
         };
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-                adapter.set_drawable(false);
-            }
-            return;
-        }
-        if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-            adapter.set_drawable(true);
-        }
 
         if let Some(terminal) = self.runtime.terminal.as_ref()
             && let Ok(mut terminal) = terminal.lock()
@@ -776,18 +701,21 @@ impl App {
             let gpu = self.runtime.gpu.as_ref()?;
             let adapter = self.runtime.winit_adapter.as_mut()?;
             let widget_runtime = self.runtime.widget_runtime.as_mut()?;
-            let scale = window.scale_factor() as f32;
-            let (physical_width, physical_height) = gpu.surface_size();
-            let target = WinitFrameTarget::new(
-                window,
-                gpu.surface(),
-                gpu.device(),
-                gpu.queue(),
-                gpu.surface_config(),
-                harbor_widget::renderer::Viewport::new(physical_width, physical_height, scale),
-                bg_wgpu(harbor_config::BACKGROUND),
-            );
+            // Install the thread-local GPU pointer before borrowing frame
+            // resources so CustomPaint can resolve GpuContext during encode.
+            // Configuration updates go through GpuContext::configure_size so
+            // encode never aliases a mutable SurfaceConfiguration borrow.
             Some(with_current_gpu(gpu, || {
+                let mut configure = |width, height| gpu.configure_size(width, height);
+                let (surface, device, queue) = gpu.borrow_frame();
+                let target = WinitFrameTarget::new(
+                    window,
+                    surface,
+                    device,
+                    queue,
+                    &mut configure,
+                    bg_wgpu(harbor_config::BACKGROUND),
+                );
                 adapter.render(widget_runtime, target)
             }))
         })() else {
@@ -800,43 +728,12 @@ impl App {
             Self::apply_control_flow(event_loop, control_flow);
         }
 
-        match outcome {
-            FrameOutcome::Presented(_) => {
-                self.frame.mark_first_present();
-                let _ = self.frame.next_steady_state_deadline();
-                self.frame.surface_recovery_attempted = false;
-            }
-            FrameOutcome::PresentedSuboptimal(_) => {
-                tracing::warn!("surface texture suboptimal; presenting then reconfiguring");
-                self.frame.mark_first_present();
-                let _ = self.frame.next_steady_state_deadline();
-                if !self.frame.surface_recovery_attempted {
-                    self.frame.surface_recovery_attempted = true;
-                    if let Some(gpu) = self.runtime.gpu.as_mut() {
-                        gpu.reconfigure();
-                    }
-                    self.request_main_frame(event_loop);
-                }
-            }
-            FrameOutcome::RecoveryRequired(_) => {
-                tracing::warn!("surface requires reconfiguration");
-                if !self.frame.surface_recovery_attempted {
-                    self.frame.surface_recovery_attempted = true;
-                    if let Some(gpu) = self.runtime.gpu.as_mut() {
-                        gpu.reconfigure();
-                    }
-                    self.request_main_frame(event_loop);
-                } else {
-                    tracing::warn!("surface recovery deferred until external wake");
-                }
-            }
-            FrameOutcome::Skipped(_) => {
-                tracing::debug!("surface frame skipped");
-            }
-            FrameOutcome::Fatal(error, _) => {
-                tracing::error!(?error, "fatal main-window frame error");
-                event_loop.exit();
-            }
+        if outcome.is_presented() {
+            self.frame.mark_first_present();
+            let _ = self.frame.next_steady_state_deadline();
+        } else if let FrameOutcome::Fatal(error, _) = outcome {
+            tracing::error!(?error, "fatal main-window frame error");
+            event_loop.exit();
         }
     }
 
@@ -850,20 +747,30 @@ impl App {
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
         let draw_id = terminal_arc.lock().unwrap().draw_id();
 
+        // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
+        #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<harbor_widget::scene::primitive::ExternalDrawFn<'static>> =
-            Arc::new(move |id, rect, pass| {
+            Arc::new(move |id, context, pass| {
                 current_gpu(|gpu| {
                     if let Ok(mut term) = terminal_arc.lock() {
-                        term.render(id, rect, pass, gpu);
+                        term.render(id, context, pass, gpu);
                     }
                 });
             });
 
         let custom_paint = CustomPaint::new(draw_id).handler(handler);
         let gpu = self.runtime.gpu.as_ref().unwrap();
+        let window = self.runtime.window.as_ref().unwrap();
+        let initial_size = window.inner_size();
+        let initial_viewport = harbor_widget::renderer::Viewport::new(
+            initial_size.width,
+            initial_size.height,
+            window.scale_factor() as f32,
+        );
         let mut runtime = harbor_widget::runtime::Runtime::new();
         runtime.set_root(custom_paint);
         runtime.init_renderer(gpu.device(), gpu.format());
+        runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
         runtime.focus_first_focusable();
 
@@ -951,16 +858,22 @@ mod tests {
         surface: &'frame wgpu::Surface<'surface>,
         device: &'frame wgpu::Device,
         queue: &'frame wgpu::Queue,
-        config: &'frame wgpu::SurfaceConfiguration,
+        configure: &'frame mut dyn FnMut(u32, u32),
     ) {
         use harbor_widget::{
-            renderer::Viewport,
             runtime::Runtime,
             winit::{FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget},
         };
 
+        type HandleEventWithSize = fn(
+            &mut WinitAdapter,
+            &mut Runtime,
+            &WindowEvent,
+            Option<(u32, u32)>,
+        ) -> WinitEventOutcome;
         let _: fn(&mut WinitAdapter, &mut Runtime, &WindowEvent) -> WinitEventOutcome =
             WinitAdapter::handle_event;
+        let _: HandleEventWithSize = WinitAdapter::handle_event_with_size;
         let mut runtime = Runtime::new();
         let mut adapter = WinitAdapter::new();
         let target = WinitFrameTarget::new(
@@ -968,8 +881,7 @@ mod tests {
             surface,
             device,
             queue,
-            config,
-            Viewport::new(1, 1, 1.0),
+            configure,
             wgpu::Color::BLACK,
         );
         let outcome: FrameOutcome = adapter.render(&mut runtime, target);
@@ -978,7 +890,6 @@ mod tests {
 
     fn empty_frame() -> FrameState {
         FrameState {
-            surface_recovery_attempted: false,
             first_present_at: None,
             steady_state_emitted: false,
         }

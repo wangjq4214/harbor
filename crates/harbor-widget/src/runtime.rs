@@ -10,7 +10,7 @@ use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
+use crate::scene::primitive::{ExternalDrawContext, ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
@@ -241,6 +241,11 @@ impl Runtime {
         self.input.clear_capture_if_dead(&self.arena);
     }
 
+    /// Returns the viewport installed for the current frame, if any.
+    pub fn current_viewport(&self) -> Option<&Viewport> {
+        self.current_viewport.as_ref()
+    }
+
     /// Initializes the GPU renderer. Must be called after a wgpu Device is
     /// available and before the first call to `encode()`.
     pub fn init_renderer(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
@@ -331,14 +336,13 @@ impl Runtime {
 
                     // Invoke the registered external handler with scissor.
                     if let Some(cb) = self.external_draws.get(draw) {
-                        let phys_x = (rect.min.x * viewport.scale_factor) as u32;
-                        let phys_y = (rect.min.y * viewport.scale_factor) as u32;
-                        let phys_w =
-                            ((rect.size().width * viewport.scale_factor).ceil() as u32).max(1);
-                        let phys_h =
-                            ((rect.size().height * viewport.scale_factor).ceil() as u32).max(1);
+                        let context = ExternalDrawContext::new(*rect, viewport.clone());
+                        if context.is_empty() {
+                            continue;
+                        }
+                        let (phys_x, phys_y, phys_w, phys_h) = context.scissor_rect();
                         pass.set_scissor_rect(phys_x, phys_y, phys_w, phys_h);
-                        cb(*draw, *rect, pass);
+                        cb(*draw, &context, pass);
                         pass.set_scissor_rect(
                             0,
                             0,
@@ -385,9 +389,14 @@ impl Runtime {
     }
 
     /// Signals that the viewport has changed (e.g., due to window resize).
-    /// Marks the root fiber as LAYOUT_DIRTY so the next update re-lays out
-    /// at the new size.
-    pub fn set_viewport(&mut self, viewport: Viewport) {
+    ///
+    /// Stores every physical/scale transition, including zero size. Marks the
+    /// root fiber as LAYOUT_DIRTY only when the viewport actually changes.
+    /// Returns `true` when the stored viewport changed.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
+        if self.current_viewport.as_ref() == Some(&viewport) {
+            return false;
+        }
         self.current_viewport = Some(viewport);
         if let Some(root_id) = self.root_id {
             if let Some(fiber) = self.arena.get_mut(root_id) {
@@ -395,6 +404,7 @@ impl Runtime {
             }
             mark_dirty_for(self.runtime_id, root_id);
         }
+        true
     }
 
     // ── Input ───────────────────────────────────────────────────────────
@@ -1026,6 +1036,74 @@ mod tests {
         assert!(rt.root_id().is_none());
         assert!(rt.pending_delta().is_none());
         assert!(rt.input().focused.is_none());
+        assert!(rt.current_viewport().is_none());
+    }
+
+    #[test]
+    fn should_store_viewport_and_report_change_when_set_viewport_differs() {
+        // Arrange
+        let mut rt = Runtime::new();
+        let viewport = Viewport::new(800, 600, 1.0);
+
+        // Act
+        let changed = rt.set_viewport(viewport.clone());
+        let unchanged = rt.set_viewport(viewport.clone());
+
+        // Assert
+        assert!(changed);
+        assert!(!unchanged);
+        assert_eq!(rt.current_viewport(), Some(&viewport));
+    }
+
+    #[test]
+    fn should_store_zero_sized_viewport_without_rejecting_it() {
+        // Arrange
+        let mut rt = Runtime::new();
+        let viewport = Viewport::new(0, 0, 1.0);
+
+        // Act
+        assert!(rt.set_viewport(viewport.clone()));
+
+        // Assert
+        assert_eq!(rt.current_viewport(), Some(&viewport));
+        assert!(!rt.current_viewport().unwrap().is_drawable());
+    }
+
+    #[test]
+    fn should_report_change_when_scale_changes_with_constant_physical_size() {
+        // Arrange
+        let mut rt = Runtime::new();
+        assert!(rt.set_viewport(Viewport::new(800, 600, 1.0)));
+
+        // Act
+        let changed = rt.set_viewport(Viewport::new(800, 600, 2.0));
+
+        // Assert
+        assert!(changed);
+        assert_eq!(rt.current_viewport().map(|vp| vp.scale_factor), Some(2.0));
+        assert_eq!(
+            rt.current_viewport().map(|vp| vp.logical_size),
+            Some(crate::layout::Size::new(400.0, 300.0))
+        );
+    }
+
+    #[test]
+    fn should_dirty_layout_when_scale_only_viewport_changes() {
+        // Arrange
+        use crate::widgets::sized_box::SizedBox;
+
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)));
+        rt.set_viewport(Viewport::new(800, 600, 1.0));
+        assert!(rt.update(now()).request_redraw);
+        assert!(!rt.update(now()).request_redraw);
+
+        // Act
+        assert!(rt.set_viewport(Viewport::new(800, 600, 2.0)));
+        let effects = rt.update(now());
+
+        // Assert
+        assert!(effects.request_redraw);
     }
 
     #[test]

@@ -11,10 +11,7 @@ pub mod text;
 pub use background::Background;
 pub use cursor::Cursor;
 pub use decoration::Decoration;
-pub use gpu::{
-    GpuContext, SurfaceDisposition, SurfaceStatus, UploadMode, UploadPlan, UploadPolicy,
-    surface_disposition,
-};
+pub use gpu::{GpuContext, UploadMode, UploadPlan, UploadPolicy};
 pub use layout::RenderViewport;
 pub use pipeline::TerminalRenderPipeline;
 pub use scrollbar::Scrollbar;

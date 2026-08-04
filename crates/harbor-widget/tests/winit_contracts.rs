@@ -4,7 +4,6 @@ use harbor_widget::effects::RuntimeEffects;
 use harbor_widget::input::event::{
     KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
-use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
@@ -28,7 +27,7 @@ fn borrowed_frame_contract<'frame, 'surface>(
     surface: &'frame wgpu::Surface<'surface>,
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
-    config: &'frame wgpu::SurfaceConfiguration,
+    configure: &'frame mut dyn FnMut(u32, u32),
     event: &WindowEvent,
 ) {
     let target = WinitFrameTarget::new(
@@ -36,25 +35,41 @@ fn borrowed_frame_contract<'frame, 'surface>(
         surface,
         device,
         queue,
-        config,
-        Viewport::new(800, 600, 1.0),
+        configure,
         wgpu::Color::BLACK,
     );
-    assert_eq!(target.viewport().physical_size, (800, 600));
     let _ = target.window();
     let _ = target.surface();
     let _ = target.device();
     let _ = target.queue();
-    let _ = target.config();
     let _ = target.clear_color();
 
     let mut runtime = Runtime::new();
-    let mut adapter = WinitAdapter::new();
+    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
     let outcome: WinitEventOutcome = adapter.handle_event(&mut runtime, event);
     assert!(outcome.handled);
     assert!(outcome.effects.is_noop());
     let outcome = adapter.render(&mut runtime, target);
     assert!(outcome.effects().is_noop());
+}
+
+#[test]
+fn should_update_runtime_viewport_when_adapter_handles_resized_event() {
+    // Arrange
+    let mut runtime = Runtime::new();
+    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+    let event = WindowEvent::Resized(winit::dpi::PhysicalSize::new(640, 480));
+
+    // Act
+    let outcome = adapter.handle_event(&mut runtime, &event);
+
+    // Assert
+    assert!(outcome.handled);
+    assert_eq!(
+        runtime.current_viewport().map(|vp| vp.physical_size),
+        Some((640, 480))
+    );
+    assert_eq!(adapter.viewport().physical_size, (640, 480));
 }
 
 #[test]
@@ -133,7 +148,6 @@ fn adapter_reports_unsupported_events_without_dispatching_them() {
     let unsupported = [
         WindowEvent::RedrawRequested,
         WindowEvent::CloseRequested,
-        WindowEvent::Resized(winit::dpi::PhysicalSize::new(800, 600)),
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,

@@ -16,9 +16,25 @@ pub struct Viewport {
     pub scale_factor: f32,
 }
 
+impl PartialEq for Viewport {
+    fn eq(&self, other: &Self) -> bool {
+        self.physical_size == other.physical_size
+            && self.scale_factor.to_bits() == other.scale_factor.to_bits()
+    }
+}
+
+impl Eq for Viewport {}
+
 impl Viewport {
     /// Creates a new Viewport with the given physical size and scale factor.
+    ///
+    /// Non-finite or non-positive scale factors are normalized to `1.0`.
     pub fn new(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
+        let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
         let logical_width = physical_width as f32 / scale_factor;
         let logical_height = physical_height as f32 / scale_factor;
         Viewport {
@@ -26,6 +42,11 @@ impl Viewport {
             physical_size: (physical_width, physical_height),
             scale_factor,
         }
+    }
+
+    /// Returns true when both physical dimensions are non-zero.
+    pub fn is_drawable(&self) -> bool {
+        self.physical_size.0 > 0 && self.physical_size.1 > 0
     }
 
     /// Converts a dp Rect to NDC coordinates.
@@ -166,6 +187,41 @@ mod tests {
         assert!((ndc[1] - 0.5).abs() < 0.01);
         assert!((ndc[2] - 0.25).abs() < 0.01);
         assert!((ndc[3] - (-0.1666)).abs() < 0.01);
+    }
+
+    #[test]
+    fn should_report_drawable_only_when_both_physical_dimensions_are_non_zero() {
+        // Arrange
+        let drawable = Viewport::new(800, 600, 1.0);
+        let zero_width = Viewport::new(0, 600, 1.0);
+        let zero_height = Viewport::new(800, 0, 1.0);
+
+        // Assert
+        assert!(drawable.is_drawable());
+        assert!(!zero_width.is_drawable());
+        assert!(!zero_height.is_drawable());
+    }
+
+    #[test]
+    fn should_normalize_invalid_scale_factor_to_one() {
+        // Arrange / Act
+        let viewport = Viewport::new(800, 600, f32::NAN);
+
+        // Assert
+        assert_eq!(viewport.scale_factor, 1.0);
+        assert_eq!(viewport.logical_size, Size::new(800.0, 600.0));
+    }
+
+    #[test]
+    fn should_compare_viewports_by_physical_size_and_scale_only() {
+        // Arrange
+        let first = Viewport::new(800, 600, 2.0);
+        let same = Viewport::new(800, 600, 2.0);
+        let different_scale = Viewport::new(800, 600, 1.0);
+
+        // Assert
+        assert_eq!(first, same);
+        assert_ne!(first, different_scale);
     }
 
     #[test]

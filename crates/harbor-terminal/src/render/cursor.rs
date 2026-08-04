@@ -150,7 +150,12 @@ impl Cursor {
         })
     }
 
-    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        snap: Option<&TerminalSnapshot>,
+        viewport: &RenderViewport,
+    ) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
             self.last_cursor = None;
@@ -172,8 +177,7 @@ impl Cursor {
         }
 
         if self.visible && snap.cursor_x < snap.cols && snap.cursor_y < snap.rows {
-            let (surf_w, surf_h) = gpu.surface_size();
-            let viewport = RenderViewport::new(self.cell_width, self.line_height);
+            let (surf_w, surf_h) = viewport.surface_dimensions();
             let (cell_x, cell_y) = viewport.cell_pos(snap.cursor_y, snap.cursor_x);
 
             let (left, top, right, bottom) = match self.shape {
@@ -213,8 +217,8 @@ impl Cursor {
                 1.0,
                 1.0, // UV unused, shader outputs solid color
                 [1.0; 4],
-                surf_w as f32,
-                surf_h as f32,
+                surf_w,
+                surf_h,
             );
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;
@@ -242,7 +246,7 @@ impl Cursor {
         pass.draw(0..self.vertex_count, 0..1);
     }
 
-    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+    pub fn invalidate_projection(&mut self) {
         self.dirty = true;
     }
 }

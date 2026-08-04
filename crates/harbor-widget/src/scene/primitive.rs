@@ -1,4 +1,5 @@
 use crate::layout::{Point, Rect};
+use crate::renderer::Viewport;
 
 // ── Color ───────────────────────────────────────────────────────────────────
 
@@ -53,13 +54,79 @@ impl Color {
 pub type TextRunId = u64;
 pub type ExternalDrawId = u64;
 
+/// Immutable geometry context for one retained external draw invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalDrawContext {
+    /// Logical allocation in dp.
+    pub logical_rect: Rect,
+    /// Current frame viewport (physical size and scale).
+    pub viewport: Viewport,
+}
+
+impl ExternalDrawContext {
+    pub fn new(logical_rect: Rect, viewport: Viewport) -> Self {
+        Self {
+            logical_rect,
+            viewport,
+        }
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.viewport.scale_factor
+    }
+
+    pub fn surface_size(&self) -> (u32, u32) {
+        self.viewport.physical_size
+    }
+
+    /// Physical allocation origin and size within the full surface (pixels).
+    pub fn physical_allocation(&self) -> (f32, f32, u32, u32) {
+        let scale = self.scale_factor();
+        let left = (self.logical_rect.min.x * scale).floor();
+        let top = (self.logical_rect.min.y * scale).floor();
+        let right = (self.logical_rect.max.x * scale).ceil();
+        let bottom = (self.logical_rect.max.y * scale).ceil();
+        let width = (right - left).max(0.0) as u32;
+        let height = (bottom - top).max(0.0) as u32;
+        (left.max(0.0), top.max(0.0), width, height)
+    }
+
+    /// Clamped physical scissor `(x, y, width, height)` for wgpu.
+    pub fn scissor_rect(&self) -> (u32, u32, u32, u32) {
+        let scale = self.scale_factor();
+        let (surf_w, surf_h) = self.surface_size();
+        if surf_w == 0 || surf_h == 0 {
+            return (0, 0, 0, 0);
+        }
+
+        let left = (self.logical_rect.min.x * scale).floor() as i64;
+        let top = (self.logical_rect.min.y * scale).floor() as i64;
+        let right = (self.logical_rect.max.x * scale).ceil() as i64;
+        let bottom = (self.logical_rect.max.y * scale).ceil() as i64;
+
+        let clip_left = left.clamp(0, surf_w as i64);
+        let clip_top = top.clamp(0, surf_h as i64);
+        let clip_right = right.clamp(0, surf_w as i64);
+        let clip_bottom = bottom.clamp(0, surf_h as i64);
+
+        let width = (clip_right - clip_left).max(0) as u32;
+        let height = (clip_bottom - clip_top).max(0) as u32;
+        (clip_left as u32, clip_top as u32, width, height)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let (_, _, w, h) = self.scissor_rect();
+        w == 0 || h == 0
+    }
+}
+
 /// Signature for an external draw callback.
 ///
 /// Called by [`Runtime::encode`] when a [`Primitive::External`] is encountered.
-/// The callback receives the draw ID, the layout rect in logical dp, and the
-/// active RenderPass (with scissor already set).
+/// The callback receives the draw ID, the geometry context, and the active
+/// RenderPass (with scissor already set).
 pub type ExternalDrawFn<'a> =
-    dyn Fn(ExternalDrawId, crate::layout::Rect, &mut wgpu::RenderPass<'_>) + 'a;
+    dyn Fn(ExternalDrawId, &ExternalDrawContext, &mut wgpu::RenderPass<'_>) + 'a;
 
 /// Standardized draw input produced by widgets during the paint pass.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +156,8 @@ pub enum Primitive {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{Point, Rect};
+    use crate::renderer::Viewport;
 
     #[test]
     fn color_constants() {
@@ -108,5 +177,112 @@ mod tests {
             a: 0.9,
         };
         assert_eq!(c.to_array(), [0.5, 0.25, 0.75, 0.9]);
+    }
+
+    #[test]
+    fn should_report_physical_allocation_from_logical_rect_at_scale() {
+        // Arrange
+        let rect = Rect::from_min_size(
+            Point::new(10.0, 5.0),
+            crate::layout::Size::new(200.0, 100.0),
+        );
+        let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 2.0));
+
+        // Act
+        let (origin_x, origin_y, width, height) = context.physical_allocation();
+
+        // Assert: logical dp is multiplied by scale and floored/ceiled to pixels.
+        assert_eq!((origin_x, origin_y), (20.0, 10.0));
+        assert_eq!((width, height), (400, 200));
+        assert_eq!(context.scale_factor(), 2.0);
+        assert_eq!(context.surface_size(), (800, 600));
+    }
+
+    #[test]
+    fn should_clamp_scissor_rect_to_surface_bounds() {
+        // Arrange: rect extends past the right/bottom edge of the surface.
+        let rect = Rect::from_min_size(
+            Point::new(750.0, 550.0),
+            crate::layout::Size::new(100.0, 100.0),
+        );
+        let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 1.0));
+
+        // Act
+        let (x, y, width, height) = context.scissor_rect();
+
+        // Assert
+        assert_eq!((x, y, width, height), (750, 550, 50, 50));
+        assert!(!context.is_empty());
+    }
+
+    #[test]
+    fn should_report_empty_when_surface_or_scissor_has_zero_extent() {
+        // Arrange
+        let rect =
+            Rect::from_min_size(Point::new(10.0, 10.0), crate::layout::Size::new(50.0, 50.0));
+        let zero_surface = ExternalDrawContext::new(rect, Viewport::new(0, 600, 1.0));
+        let zero_rect = ExternalDrawContext::new(
+            Rect::from_min_size(Point::ZERO, crate::layout::Size::ZERO),
+            Viewport::new(800, 600, 1.0),
+        );
+
+        // Assert
+        assert!(zero_surface.is_empty());
+        assert_eq!(zero_surface.scissor_rect(), (0, 0, 0, 0));
+        assert!(zero_rect.is_empty());
+    }
+
+    #[test]
+    fn should_clamp_negative_logical_origin_to_zero_in_physical_allocation() {
+        // Arrange: logical rect starts off-surface.
+        let rect = Rect::from_min_size(
+            Point::new(-10.0, -5.0),
+            crate::layout::Size::new(40.0, 30.0),
+        );
+        let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 1.0));
+
+        // Act
+        let (origin_x, origin_y, width, height) = context.physical_allocation();
+
+        // Assert: origin is clamped; size still spans the unclamped logical extent.
+        assert_eq!((origin_x, origin_y), (0.0, 0.0));
+        assert_eq!((width, height), (40, 30));
+    }
+
+    #[test]
+    fn should_round_fractional_logical_rect_outward_to_physical_pixels() {
+        // Arrange: fractional dp edges must floor origin and ceil extent.
+        let rect = Rect::from_min_size(
+            Point::new(10.25, 5.75),
+            crate::layout::Size::new(20.5, 15.25),
+        );
+        let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 2.0));
+
+        // Act
+        let (origin_x, origin_y, width, height) = context.physical_allocation();
+        let scissor = context.scissor_rect();
+
+        // Assert: physical left/top floor, right/bottom ceil.
+        // 10.25×2=20.5→20, 5.75×2=11.5→11; 30.75×2=61.5→62, 21×2=42→42
+        assert_eq!((origin_x, origin_y), (20.0, 11.0));
+        assert_eq!((width, height), (42, 31));
+        assert_eq!(scissor, (20, 11, 42, 31));
+    }
+
+    #[test]
+    fn should_compute_scissor_at_2x_scale_within_surface() {
+        // Arrange
+        let rect = Rect::from_min_size(
+            Point::new(100.0, 50.0),
+            crate::layout::Size::new(200.0, 100.0),
+        );
+        let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 2.0));
+
+        // Act
+        let scissor = context.scissor_rect();
+
+        // Assert
+        assert_eq!(scissor, (200, 100, 400, 200));
+        assert!(!context.is_empty());
     }
 }

@@ -389,7 +389,12 @@ impl ConfirmationWindow {
             _ => {}
         }
 
-        let outcome = self.adapter.handle_event(&mut self.runtime, event);
+        let size = self.window.inner_size();
+        let outcome = self.adapter.handle_event_with_size(
+            &mut self.runtime,
+            event,
+            Some((size.width, size.height)),
+        );
         super::App::apply_window_effects(&self.window, &outcome.effects);
         if let Some(control_flow) = outcome.effects.control_flow {
             Self::apply_control_flow(event_loop, control_flow);
