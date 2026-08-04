@@ -766,9 +766,22 @@ impl WinitAdapter {
     pub fn render<'frame, 'surface>(
         &mut self,
         runtime: &mut Runtime,
+        target: WinitFrameTarget<'frame, 'surface>,
+    ) -> FrameOutcome {
+        self.render_with_prepare(runtime, target, |_| {})
+    }
+
+    /// Executes one complete integration frame after the runtime update and
+    /// before GPU encoding. Hosts use this to register frame-local resources
+    /// produced during the update without owning presentation policy.
+    pub fn render_with_prepare<'frame, 'surface>(
+        &mut self,
+        runtime: &mut Runtime,
         mut target: WinitFrameTarget<'frame, 'surface>,
+        prepare: impl FnOnce(&mut Runtime),
     ) -> FrameOutcome {
         let effects = self.redraw_requested(runtime, Instant::now());
+        prepare(runtime);
 
         if !self.surface_state.can_acquire() {
             return FrameOutcome::skipped(effects);

@@ -95,23 +95,32 @@ impl UploadPolicy {
     }
 }
 
-#[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
-compile_error!("backend-dx12 and backend-vulkan cannot be enabled together");
-
 fn selected_backends() -> wgpu::Backends {
-    #[cfg(feature = "backend-dx12")]
+    #[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
+    {
+        wgpu::Backends::DX12 | wgpu::Backends::VULKAN
+    }
+    #[cfg(all(feature = "backend-dx12", not(feature = "backend-vulkan")))]
     {
         wgpu::Backends::DX12
     }
-    #[cfg(feature = "backend-vulkan")]
+    #[cfg(all(not(feature = "backend-dx12"), feature = "backend-vulkan"))]
     {
         wgpu::Backends::VULKAN
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(
+        not(feature = "backend-dx12"),
+        not(feature = "backend-vulkan"),
+        target_os = "windows"
+    ))]
     {
         wgpu::Backends::GL
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(
+        not(feature = "backend-dx12"),
+        not(feature = "backend-vulkan"),
+        not(target_os = "windows")
+    ))]
     {
         wgpu::Backends::all()
     }

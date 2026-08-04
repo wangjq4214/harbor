@@ -851,6 +851,7 @@ mod tests {
     use crate::widgets::custom_paint::CustomPaint;
     use crate::widgets::focus_scope::FocusScope;
     use crate::widgets::sized_box::SizedBox;
+    use crate::widgets::text_label::TextLabel;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
@@ -1374,6 +1375,22 @@ mod tests {
             "cache should have one registered text run"
         );
         assert!(!rt.text_run_cache().is_empty(), "cache should not be empty");
+    }
+
+    #[test]
+    fn should_register_text_runs_queued_by_update_before_the_frame_can_encode() {
+        // Arrange: discard any stale thread-local work and build a text-producing root.
+        let _ = text_label::drain_pending_text_runs();
+        let mut rt = Runtime::new();
+        rt.set_root(TextLabel::new("Confirm paste?"));
+
+        // Act: update performs the paint pass, then frame preparation registers its text.
+        rt.update(now());
+        assert!(rt.text_run_cache().is_empty());
+        rt.register_pending_text_runs(&|_ch| None);
+
+        // Assert: text produced during the update is available before encoding.
+        assert!(!rt.text_run_cache().is_empty());
     }
 
     #[test]

@@ -54,22 +54,61 @@ fn borrowed_frame_contract<'frame, 'surface>(
 }
 
 #[test]
-fn should_update_runtime_viewport_when_adapter_handles_resized_event() {
+fn should_update_confirmation_viewport_when_resized_event_includes_current_size() {
     // Arrange
     let mut runtime = Runtime::new();
     let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
     let event = WindowEvent::Resized(winit::dpi::PhysicalSize::new(640, 480));
 
     // Act
-    let outcome = adapter.handle_event(&mut runtime, &event);
+    let outcome = adapter.handle_event_with_size(&mut runtime, &event, Some((640, 480)));
 
     // Assert
     assert!(outcome.handled);
     assert_eq!(
-        runtime.current_viewport().map(|vp| vp.physical_size),
+        runtime
+            .current_viewport()
+            .map(|viewport| viewport.physical_size),
         Some((640, 480))
     );
     assert_eq!(adapter.viewport().physical_size, (640, 480));
+}
+
+#[test]
+fn should_keep_main_viewport_drawable_when_confirmation_is_resized_to_zero() {
+    // Arrange
+    let mut main_runtime = Runtime::new();
+    let mut confirmation_runtime = Runtime::new();
+    let main_adapter = WinitAdapter::with_surface(800, 600, 1.0);
+    let mut confirmation_adapter = WinitAdapter::with_surface(600, 500, 1.0);
+    main_runtime.set_viewport(main_adapter.viewport().clone());
+    confirmation_runtime.set_viewport(confirmation_adapter.viewport().clone());
+    let minimized = WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0));
+
+    // Act
+    let outcome = confirmation_adapter.handle_event_with_size(
+        &mut confirmation_runtime,
+        &minimized,
+        Some((0, 0)),
+    );
+
+    // Assert
+    assert!(outcome.is_handled());
+    assert!(!outcome.effects.request_redraw);
+    assert_eq!(
+        confirmation_runtime
+            .current_viewport()
+            .map(|viewport| viewport.physical_size),
+        Some((0, 0))
+    );
+    assert_eq!(confirmation_adapter.viewport().physical_size, (0, 0));
+    assert_eq!(
+        main_runtime
+            .current_viewport()
+            .map(|viewport| viewport.physical_size),
+        Some((800, 600))
+    );
+    assert_eq!(main_adapter.viewport().physical_size, (800, 600));
 }
 
 #[test]

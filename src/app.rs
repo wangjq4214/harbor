@@ -10,22 +10,25 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize},
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
+    keyboard::{Key, ModifiersState},
     window::{CursorIcon, Window, WindowId},
 };
 
 use crate::event::AppEvent;
 use confirmation::ConfirmationWindow;
 use harbor_pty::PtyEndpoints;
-use harbor_terminal::{GpuContext, Terminal, TextMetrics, load_system_fonts};
+use harbor_terminal::{
+    GpuContext, InputModes, PasteDisposition, Terminal, TextMetrics, load_system_fonts,
+};
 use harbor_widget::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ExternalInvalidation, ImeEffect,
     RuntimeEffects,
 };
 use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
-use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
+use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
@@ -87,6 +90,21 @@ fn route_terminal_inputs(
     routed
 }
 
+/// Encodes the unchanged confirmation text with the modes current at the
+/// moment of confirmation, then performs exactly one Host-owned PTY write.
+fn write_confirmation_outcome<E>(
+    outcome: &DialogOutcome,
+    input_modes: InputModes,
+    write: impl FnOnce(&[u8]) -> Result<(), E>,
+) -> Result<bool, E> {
+    let Some(raw_text) = outcome.confirmed_text() else {
+        return Ok(false);
+    };
+    let bytes = input_modes.paste(raw_text.as_bytes());
+    write(bytes.as_ref())?;
+    Ok(true)
+}
+
 fn is_terminal_key_press(event: &UiEvent) -> bool {
     matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
 }
@@ -115,6 +133,18 @@ fn needs_redraw_wake_after_delivery(
     offset_after: usize,
 ) -> bool {
     key_wakes || matches!(offset_before, Some(before) if before != offset_after)
+}
+
+fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("v"))
+    )
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
@@ -194,6 +224,16 @@ enum DialogOutcome {
     None,
     Cancelled,
     Confirmed(String),
+    Fatal(FrameError),
+}
+
+impl DialogOutcome {
+    fn confirmed_text(&self) -> Option<&str> {
+        match self {
+            Self::Confirmed(raw_text) => Some(raw_text),
+            Self::None | Self::Cancelled | Self::Fatal(_) => None,
+        }
+    }
 }
 
 /// Owns the optional paste-confirmation dialog and mediates its lifecycle.
@@ -238,29 +278,26 @@ impl DialogOverlay {
                     && let (Some(gpu), Some(terminal)) = (gpu, terminal)
                 {
                     let term = terminal.lock().unwrap();
-                    confirmation.render(event_loop, gpu.device(), gpu.queue(), &|ch| {
+                    let frame = confirmation.render(gpu.device(), gpu.queue(), &|ch| {
                         term.text_glyph(ch).copied()
                     });
+                    confirmation.apply_frame_effects(&frame, event_loop);
+                    if let Some(error) = frame.fatal_error().cloned() {
+                        DialogOutcome::Fatal(error)
+                    } else {
+                        self.window = Some(confirmation);
+                        DialogOutcome::None
+                    }
+                } else {
+                    self.window = Some(confirmation);
+                    DialogOutcome::None
                 }
-                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event
-                    && let Some(gpu) = gpu
-                {
-                    confirmation.scale_factor_changed(event_loop, gpu.device(), *scale_factor);
-                }
-                if let WindowEvent::Resized(size) = event
-                    && let Some(gpu) = gpu
-                {
-                    confirmation.resize(event_loop, gpu.device(), size.width, size.height);
-                }
-                self.window = Some(confirmation);
-                DialogOutcome::None
             }
         };
         DialogResult { outcome }
     }
 
     /// Installs a new confirmation dialog, replacing any existing one.
-    #[allow(dead_code)]
     fn open(&mut self, confirmation: ConfirmationWindow) {
         self.window = Some(confirmation);
     }
@@ -438,24 +475,30 @@ impl ApplicationHandler<AppEvent> for App {
                 self.runtime.gpu.as_ref(),
                 self.runtime.terminal.as_ref(),
             );
-            match result.outcome {
+            match &result.outcome {
                 DialogOutcome::Cancelled => {
                     self.request_main_frame(event_loop);
                     return;
                 }
-                DialogOutcome::Confirmed(raw_text) => {
+                DialogOutcome::Confirmed(_) => {
                     if let Some(terminal) = self.runtime.terminal.as_ref()
                         && let Ok(mut terminal) = terminal.lock()
                     {
-                        let bytes = terminal
-                            .drain_and_snapshot()
-                            .input_modes
-                            .paste(raw_text.as_bytes());
-                        if let Err(error) = terminal.write_pty(&bytes) {
+                        let input_modes = terminal.drain_and_snapshot().input_modes;
+                        if let Err(error) =
+                            write_confirmation_outcome(&result.outcome, input_modes, |bytes| {
+                                terminal.write_pty(bytes)
+                            })
+                        {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
                         }
                     }
                     self.request_main_frame(event_loop);
+                    return;
+                }
+                DialogOutcome::Fatal(error) => {
+                    tracing::error!(?error, "fatal confirmation-window frame error");
+                    event_loop.exit();
                     return;
                 }
                 DialogOutcome::None => {}
@@ -482,6 +525,16 @@ impl ApplicationHandler<AppEvent> for App {
         if matches!(&event, WindowEvent::CloseRequested) {
             tracing::info!("close requested");
             event_loop.exit();
+            return;
+        }
+
+        if self
+            .runtime
+            .winit_adapter
+            .as_ref()
+            .is_some_and(|adapter| is_paste_shortcut(&event, adapter.modifiers()))
+        {
+            self.paste_from_clipboard(event_loop);
             return;
         }
 
@@ -683,6 +736,69 @@ impl App {
         if let Some(control_flow) = effects.control_flow {
             Self::apply_control_flow(event_loop, control_flow);
         }
+    }
+
+    /// Reads the clipboard and either writes a safe direct paste or opens the
+    /// native confirmation window for a multiline paste requiring confirmation.
+    fn paste_from_clipboard(&mut self, event_loop: &ActiveEventLoop) {
+        let raw_text =
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to read clipboard text");
+                    return;
+                }
+            };
+
+        let confirmation = {
+            let (Some(gpu), Some(main_window), Some(terminal)) = (
+                self.runtime.gpu.as_ref(),
+                self.runtime.window.as_deref(),
+                self.runtime.terminal.as_ref(),
+            ) else {
+                return;
+            };
+            let Ok(mut terminal) = terminal.lock() else {
+                tracing::warn!("terminal lock unavailable for clipboard paste");
+                return;
+            };
+            let input_modes = terminal.drain_and_snapshot().input_modes;
+
+            match PasteDisposition::decide(input_modes, &raw_text) {
+                PasteDisposition::SendDirect => {
+                    if let Err(error) =
+                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
+                    {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+                    }
+                    return;
+                }
+                PasteDisposition::Confirm { raw_text } => {
+                    terminal.ensure_glyphs(&raw_text, gpu);
+                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
+                        terminal.text_metrics().copied(),
+                        terminal.text_bind_group_layout(),
+                        terminal.text_bind_group(),
+                    ) else {
+                        tracing::warn!(
+                            "terminal text resources unavailable for paste confirmation"
+                        );
+                        return;
+                    };
+                    ConfirmationWindow::new(
+                        raw_text,
+                        event_loop,
+                        gpu,
+                        metrics,
+                        text_bind_group_layout,
+                        text_bind_group,
+                        Some(main_window),
+                    )
+                }
+            }
+        };
+
+        self.runtime.dialog.open(confirmation);
     }
 
     /// Runs one borrowed main-window frame through the winit integration.
@@ -1238,6 +1354,90 @@ mod tests {
             external_invalidation_for_app_event(AppEvent::TerminalOutputReady),
             Some(ExternalInvalidation::new())
         );
+    }
+
+    #[test]
+    fn confirmed_paste_writes_unchanged_raw_text_with_current_modes() {
+        let outcome = DialogOutcome::Confirmed("first\r\nsecond\t\x1b[A".to_owned());
+        let mut writes = Vec::new();
+
+        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |bytes| {
+            writes.push(bytes.to_vec());
+            Ok::<_, ()>(())
+        })
+        .expect("capture writer succeeds");
+
+        assert!(wrote);
+        assert_eq!(writes, vec![b"first\r\nsecond\t\x1b[A".to_vec()]);
+    }
+
+    #[test]
+    fn confirmed_paste_uses_bracketed_mode_current_at_confirmation_time() {
+        let outcome = DialogOutcome::Confirmed("first\nsecond".to_owned());
+        let mut writes = Vec::new();
+        let modes = InputModes {
+            bracketed_paste: true,
+            ..InputModes::default()
+        };
+
+        let wrote = write_confirmation_outcome(&outcome, modes, |bytes| {
+            writes.push(bytes.to_vec());
+            Ok::<_, ()>(())
+        })
+        .expect("capture writer succeeds");
+
+        assert!(wrote);
+        assert_eq!(writes, vec![b"\x1b[200~first\nsecond\x1b[201~".to_vec()]);
+    }
+
+    #[test]
+    fn cancelled_or_closed_confirmation_never_calls_the_writer() {
+        for outcome in [DialogOutcome::Cancelled, DialogOutcome::None] {
+            let wrote = write_confirmation_outcome(
+                &outcome,
+                InputModes::default(),
+                |_| -> Result<(), ()> {
+                    panic!("cancelled and native-close outcomes must not write to the PTY")
+                },
+            )
+            .expect("no-write outcome cannot fail");
+            assert!(!wrote);
+        }
+    }
+
+    #[test]
+    fn should_not_write_to_pty_when_confirmation_frame_is_fatal() {
+        // Arrange
+        let outcome = DialogOutcome::Fatal(FrameError::out_of_memory());
+        let write_attempts = std::cell::Cell::new(0);
+
+        // Act
+        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
+            write_attempts.set(write_attempts.get() + 1);
+            Ok::<_, ()>(())
+        })
+        .expect("fatal outcome cannot invoke the writer");
+
+        // Assert
+        assert!(!wrote);
+        assert_eq!(write_attempts.get(), 0);
+    }
+
+    #[test]
+    fn should_return_the_writer_error_after_one_confirmed_paste_attempt() {
+        // Arrange
+        let outcome = DialogOutcome::Confirmed("paste".to_owned());
+        let write_attempts = std::cell::Cell::new(0);
+
+        // Act
+        let result = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
+            write_attempts.set(write_attempts.get() + 1);
+            Err::<(), _>("PTY disconnected")
+        });
+
+        // Assert
+        assert_eq!(result, Err("PTY disconnected"));
+        assert_eq!(write_attempts.get(), 1);
     }
 
     #[test]
