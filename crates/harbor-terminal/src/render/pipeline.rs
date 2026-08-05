@@ -1,10 +1,13 @@
 use crate::damage::DirtyRange;
-use crate::render::{Background, Cursor, Decoration, GpuContext, Scrollbar, Selection, Text};
+use crate::render::{
+    Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection, Text,
+};
 use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
-use harbor_types::{TerminalSize, TerminalSnapshot, UpdateDamage};
+use harbor_types::{TerminalSnapshot, UpdateDamage};
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
+    viewport: RenderViewport,
     pub background: Background,
     pub text: Text,
     pub decoration: Decoration,
@@ -20,14 +23,22 @@ impl TerminalRenderPipeline {
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
     ) -> anyhow::Result<Self> {
+        let (surface_w, surface_h) = gpu.surface_size();
+        let viewport = RenderViewport::with_surface(
+            metrics.cell_width,
+            metrics.line_height,
+            (surface_w, surface_h),
+            (surface_w, surface_h),
+        );
         let background = Background::new(gpu, snap, metrics.cell_width, metrics.line_height);
-        let text = Text::new(gpu, font_book, metrics, snap)?;
+        let text = Text::new(gpu, font_book, metrics, snap, &viewport)?;
         let decoration = Decoration::new(gpu, snap, metrics);
         let selection = Selection::new(gpu, metrics.cell_width, metrics.line_height);
         let cursor = Cursor::new(gpu, metrics);
-        let scrollbar = Scrollbar::new(gpu, snap);
+        let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
+            viewport,
             background,
             text,
             decoration,
@@ -37,12 +48,32 @@ impl TerminalRenderPipeline {
         })
     }
 
+    pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) {
+        let viewport_changed = self.viewport != viewport;
+        if !viewport_changed && !grid_changed {
+            return;
+        }
+        self.viewport = viewport;
+        if grid_changed {
+            self.selection.resize_grid();
+        }
+        if viewport_changed || grid_changed {
+            self.background.invalidate_projection();
+            self.text.invalidate_projection();
+            self.decoration.invalidate_projection();
+            self.selection.invalidate_projection();
+            self.cursor.invalidate_projection();
+            self.scrollbar.invalidate_projection();
+        }
+    }
+
     pub fn prepare(
         &mut self,
         gpu: &GpuContext,
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
     ) {
+        let viewport = self.viewport;
         if let Some(damage) = damage {
             let full_ranges;
             let dirty_ranges = match damage {
@@ -58,17 +89,20 @@ impl TerminalRenderPipeline {
                     &full_ranges
                 }
             };
-            self.background.prepare_with_dirty(gpu, snap, dirty_ranges);
-            self.text.prepare_with_dirty(gpu, snap, dirty_ranges);
-            self.decoration.prepare_with_dirty(gpu, snap, dirty_ranges);
+            self.background
+                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
+            self.text
+                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
+            self.decoration
+                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
         } else {
-            self.background.prepare(gpu, Some(snap));
-            self.text.prepare(gpu, Some(snap));
-            self.decoration.prepare(gpu, Some(snap));
+            self.background.prepare(gpu, Some(snap), &viewport);
+            self.text.prepare(gpu, Some(snap), &viewport);
+            self.decoration.prepare(gpu, Some(snap), &viewport);
         }
-        self.selection.prepare(gpu, Some(snap));
-        self.cursor.prepare(gpu, Some(snap));
-        self.scrollbar.prepare(gpu, Some(snap));
+        self.selection.prepare(gpu, Some(snap), &viewport);
+        self.cursor.prepare(gpu, Some(snap), &viewport);
+        self.scrollbar.prepare(gpu, Some(snap), &viewport);
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
@@ -78,19 +112,6 @@ impl TerminalRenderPipeline {
         self.selection.draw(pass);
         self.cursor.draw(pass);
         self.scrollbar.draw(pass);
-    }
-
-    pub fn resize(&mut self, gpu: &GpuContext) {
-        self.background.resize(gpu, (0, 0));
-        self.text.resize(gpu, (0, 0));
-        self.decoration.resize(gpu, (0, 0));
-        self.selection.resize(gpu, (0, 0));
-        self.cursor.resize(gpu, (0, 0));
-        self.scrollbar.resize(gpu, (0, 0));
-    }
-
-    pub fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
-        self.text.terminal_size(gpu)
     }
 
     pub fn metrics(&self) -> &TextMetrics {

@@ -1,5 +1,6 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
 
 /// Insets a single child by padding and optionally draws a background.
@@ -31,8 +32,7 @@ impl Padding {
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        let mut cx = BuildCx::stub();
-        self.children.push(child.build(&mut cx));
+        self.children.push(View::deferred(child));
         self
     }
 }
@@ -52,11 +52,7 @@ impl AnyView for Padding {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Child intrinsic sizes are computed bottom-up by layout_fiber;
         // we report a best-effort estimate here. When no children exist,
         // the padding insets themselves define the minimum size.
@@ -78,6 +74,7 @@ impl AnyView for Padding {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let child_size = child_sizes.first().copied().unwrap_or(Size::ZERO);
         let own_width = (child_size.width + self.left + self.right)
@@ -93,7 +90,7 @@ impl AnyView for Padding {
         }
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         match self.background {
             Some(color) => vec![Primitive::Quad {
                 rect,
@@ -116,7 +113,11 @@ mod tests {
             Padding::new(10.0, 10.0, 10.0, 10.0).child(SizedBox::new(Size::new(100.0, 50.0)));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0)];
-        let (own, positions) = padding.layout_children(constraints, &child_sizes);
+        let (own, positions) = padding.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(120.0, 70.0));
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0], Point::new(10.0, 10.0));
@@ -128,7 +129,11 @@ mod tests {
             Padding::new(10.0, 10.0, 10.0, 10.0).child(SizedBox::new(Size::new(100.0, 50.0)));
         let constraints = BoxConstraints::tight(Size::new(50.0, 50.0));
         let child_sizes = vec![Size::new(100.0, 50.0)];
-        let (own, _positions) = padding.layout_children(constraints, &child_sizes);
+        let (own, _positions) = padding.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         // Clamped to tight 50x50
         assert_eq!(own, Size::new(50.0, 50.0));
     }
@@ -137,7 +142,7 @@ mod tests {
     fn padding_paint_primitives_with_background() {
         let padding = Padding::new(5.0, 5.0, 5.0, 5.0).background(Color::RED);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
-        let prims = padding.paint_primitives(rect);
+        let prims = padding.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
     }
 
@@ -145,7 +150,7 @@ mod tests {
     fn padding_paint_primitives_without_background() {
         let padding = Padding::new(5.0, 5.0, 5.0, 5.0);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
-        let prims = padding.paint_primitives(rect);
+        let prims = padding.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 
@@ -154,7 +159,11 @@ mod tests {
         let padding = Padding::new(5.0, 10.0, 15.0, 20.0);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0)];
-        let (own, positions) = padding.layout_children(constraints, &child_sizes);
+        let (own, positions) = padding.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(130.0, 70.0)); // 100+20+10=130, 50+5+15=70
         assert_eq!(positions[0], Point::new(20.0, 5.0));
     }
@@ -164,7 +173,11 @@ mod tests {
         let padding = Padding::new(0.0, 0.0, 0.0, 0.0).child(SizedBox::new(Size::new(100.0, 50.0)));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0)];
-        let (own, positions) = padding.layout_children(constraints, &child_sizes);
+        let (own, positions) = padding.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         // Own size equals child size with zero padding
         assert_eq!(own, Size::new(100.0, 50.0));
         assert_eq!(positions[0], Point::ZERO);
@@ -174,7 +187,8 @@ mod tests {
     fn padding_no_child() {
         let padding = Padding::new(10.0, 10.0, 10.0, 10.0);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let (own, positions) = padding.layout_children(constraints, &[]);
+        let (own, positions) =
+            padding.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
         // Own size is padding only (0 child + 10 + 10)
         assert_eq!(own.width, 20.0);
         assert_eq!(own.height, 20.0);
@@ -188,7 +202,11 @@ mod tests {
             Padding::new(10.0, 10.0, 10.0, 10.0).child(SizedBox::new(Size::new(500.0, 500.0)));
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(500.0, 500.0)];
-        let (own, _positions) = padding.layout_children(constraints, &child_sizes);
+        let (own, _positions) = padding.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         // Clamped to tight 200x200
         assert_eq!(own, Size::new(200.0, 200.0));
     }

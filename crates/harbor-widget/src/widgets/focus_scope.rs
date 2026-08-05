@@ -1,6 +1,7 @@
 use crate::input::event::{Key, KeyboardEvent, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 
 /// A container that manages Tab/Shift+Tab focus traversal within its subtree.
@@ -33,8 +34,7 @@ impl FocusScope {
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        let mut cx = BuildCx::stub();
-        self.children.push(child.build(&mut cx));
+        self.children.push(View::deferred(child));
         self
     }
 }
@@ -54,11 +54,7 @@ impl AnyView for FocusScope {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // FocusScope delegates to children — it's a passthrough container
         let child_size = self
             .children
@@ -72,6 +68,7 @@ impl AnyView for FocusScope {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let own = constraints.constrain(Size::new(constraints.max.width, constraints.max.height));
         let positions = vec![Point::ZERO; child_sizes.len()];
@@ -204,7 +201,7 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
         let scope = FocusScope::new().child(SizedBox::new(Size::new(100.0, 50.0)));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = scope.intrinsic_size(constraints);
+        let size = scope.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // FocusScope fills available max space
         assert_eq!(size, Size::new(800.0, 600.0));
     }
@@ -213,7 +210,7 @@ mod tests {
     fn focus_scope_intrinsic_size_without_child() {
         let scope = FocusScope::new();
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = scope.intrinsic_size(constraints);
+        let size = scope.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Without a child, FocusScope reports zero
         assert_eq!(size, Size::ZERO);
     }
@@ -223,7 +220,11 @@ mod tests {
         let scope = FocusScope::new();
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0)];
-        let (own, positions) = scope.layout_children(constraints, &child_sizes);
+        let (own, positions) = scope.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(800.0, 600.0));
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0], Point::ZERO);
@@ -233,7 +234,8 @@ mod tests {
     fn focus_scope_layout_children_empty() {
         let scope = FocusScope::new();
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let (own, positions) = scope.layout_children(constraints, &[]);
+        let (own, positions) =
+            scope.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(own, Size::new(800.0, 600.0));
         assert!(positions.is_empty());
     }

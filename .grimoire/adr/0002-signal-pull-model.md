@@ -1,6 +1,6 @@
 # Pull-Based Dirty-Flag Signal Model
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2025-07-16
 
 ## Context

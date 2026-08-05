@@ -1,6 +1,6 @@
 # CustomPaint Provider-by-ID Integration
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-07-24
 
 ## Context

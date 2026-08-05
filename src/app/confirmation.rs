@@ -1,7 +1,5 @@
 //! Secondary winit window for paste confirmation rendered by Widget Runtime.
 
-#![allow(dead_code, clippy::too_many_arguments)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use winit::{
@@ -16,9 +14,9 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use super::translate::winit_to_uievent;
 use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
+use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
@@ -28,6 +26,8 @@ use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
+use std::time::Instant;
 
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;
@@ -83,10 +83,33 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_chars: usize) -> Vec<String>
 }
 
 /// Adjusts a shared scroll offset by `delta` lines, clamped to `[0, max]`.
-fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) {
+fn scroll_preview(offset: &AtomicUsize, delta: isize, max: usize) -> bool {
     let current = offset.load(Ordering::Relaxed) as isize;
     let new = (current + delta).clamp(0, max as isize);
+    if new == current {
+        return false;
+    }
     offset.store(new as usize, Ordering::Relaxed);
+    true
+}
+
+fn shortcut_result(key: &Key) -> Option<ConfirmationResult> {
+    match key {
+        Key::Named(NamedKey::Escape) => Some(ConfirmationResult::Cancelled),
+        Key::Character(ch) if ch == "n" || ch == "N" => Some(ConfirmationResult::Cancelled),
+        Key::Character(ch) if ch == "y" || ch == "Y" => Some(ConfirmationResult::Confirmed),
+        _ => None,
+    }
+}
+
+fn confirmation_result(confirmed: &AtomicBool, cancelled: &AtomicBool) -> ConfirmationResult {
+    if confirmed.load(Ordering::SeqCst) {
+        ConfirmationResult::Confirmed
+    } else if cancelled.load(Ordering::SeqCst) {
+        ConfirmationResult::Cancelled
+    } else {
+        ConfirmationResult::None
+    }
 }
 
 // ── ConfirmationResult ──────────────────────────────────────────────────────
@@ -110,19 +133,19 @@ pub(crate) struct ConfirmationWindow {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     runtime: Runtime,
+    /// Per-window winit integration, including input, scheduling, viewport,
+    /// and surface-recovery state.
+    adapter: WinitAdapter,
     raw_text: String,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
     wrapped_lines: Vec<String>,
     preview_scroll_offset: Arc<AtomicUsize>,
-    preview_line_height: f32,
-    preview_max_chars: usize,
 }
 
 impl ConfirmationWindow {
     pub(crate) fn new(
         raw_text: String,
-        wrapped_lines: Vec<String>,
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
         metrics: TextMetrics,
@@ -135,8 +158,8 @@ impl ConfirmationWindow {
         let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
             .floor() as usize;
         let max_chars = max_chars.max(1);
+        let wrapped_lines = wrap_preview_text(&raw_text, max_chars);
         let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
-        let preview_line_height = metrics.line_height;
 
         let mut window_attrs = Window::default_attributes()
             .with_title("")
@@ -191,12 +214,13 @@ impl ConfirmationWindow {
 
         // Surface config uses physical pixel dimensions.
         let physical_size = window.inner_size();
+        let drawable = physical_size.width != 0 && physical_size.height != 0;
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            width: physical_size.width,
-            height: physical_size.height,
+            width: physical_size.width.max(1),
+            height: physical_size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode,
             view_formats: vec![],
@@ -208,10 +232,7 @@ impl ConfirmationWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
 
-        // Set up thread-local metrics for this thread.
-        harbor_widget::text::set_current_metrics(metrics);
-
-        let mut runtime = Runtime::new();
+        let mut runtime = Runtime::with_text_metrics(metrics);
 
         let confirm_root = build_confirmation_root(
             line_count,
@@ -219,6 +240,7 @@ impl ConfirmationWindow {
             Arc::clone(&preview_scroll_offset),
             Arc::clone(&cancelled),
             Arc::clone(&confirmed),
+            metrics.line_height,
         );
         runtime.set_root(confirm_root);
 
@@ -233,32 +255,41 @@ impl ConfirmationWindow {
             text_bind_group,
         );
 
-        // Trigger initial build + layout with physical size and actual scale factor.
-        let scale = window.scale_factor() as f32;
-        let viewport = harbor_widget::renderer::Viewport::new(
-            physical_size.width,
-            physical_size.height,
-            scale,
-        );
-        runtime.set_viewport(viewport);
-        runtime.update(std::time::Instant::now());
+        // Each native window has an independent adapter, including its viewport,
+        // input state, scheduler, and surface-recovery budget.
+        let mut adapter = WinitAdapter::from_window(&window);
+        adapter.set_drawable(drawable);
+        runtime.set_viewport(adapter.viewport().clone());
+        let mut initial_effects = runtime.update(std::time::Instant::now());
 
-        // Set focus on the Cancel button (first focusable widget).
+        // Set focus on the Cancel button (first focusable widget) and apply
+        // the effects produced by the programmatic focus transition.
         runtime.focus_first_focusable();
-        window.request_redraw();
+        initial_effects.merge(runtime.take_pending_effects());
+        let mut effects = adapter.fold_effects(initial_effects);
+        effects.merge(adapter.request_frame());
+        super::App::apply_window_effects(&window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            event_loop.set_control_flow(match control_flow {
+                ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
+                ControlFlowEffect::WaitUntil(deadline) => {
+                    winit::event_loop::ControlFlow::WaitUntil(deadline)
+                }
+                ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
+            });
+        }
 
         ConfirmationWindow {
             window,
             surface,
             surface_config,
             runtime,
+            adapter,
             raw_text,
             cancelled,
             confirmed,
             wrapped_lines,
             preview_scroll_offset,
-            preview_line_height,
-            preview_max_chars: max_chars,
         }
     }
 
@@ -266,193 +297,140 @@ impl ConfirmationWindow {
         self.window.id()
     }
 
+    /// Applies idle redraw effects to this window and returns its wait request.
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> ControlFlowEffect {
+        let effects = self.adapter.about_to_wait(&mut self.runtime, now, None);
+        super::App::apply_window_effects(&self.window, &effects);
+        effects.control_flow.unwrap_or(ControlFlowEffect::Wait)
+    }
+
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
     pub(crate) fn raw_text(&self) -> &str {
         &self.raw_text
     }
 
-    /// Handles a winit event for this window.
-    ///
-    /// Translates winit events to Widget UiEvents, dispatches to the
-    /// Runtime, and checks the confirmation/cancellation flags.
-    /// Window-level shortcuts: Escape/n → cancel, y → confirm.
+    /// Routes this window's supported event through its own Runtime integration.
+    /// Confirmation shortcuts and preview scrolling remain application policy.
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f32,
+        event_loop: &ActiveEventLoop,
     ) -> ConfirmationResult {
-        match event {
-            WindowEvent::CloseRequested => return ConfirmationResult::Cancelled,
+        if matches!(event, WindowEvent::CloseRequested) {
+            return ConfirmationResult::Cancelled;
+        }
 
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } if key_event.state == ElementState::Pressed => {
-                // ── y / n / Escape shortcuts ──────────────────────────
-                match &key_event.logical_key {
-                    Key::Named(NamedKey::Escape) => return ConfirmationResult::Cancelled,
-                    Key::Character(ch) if ch == "n" || ch == "N" => {
-                        return ConfirmationResult::Cancelled;
-                    }
-                    Key::Character(ch) if ch == "y" || ch == "Y" => {
-                        return ConfirmationResult::Confirmed;
-                    }
-                    _ => {}
-                }
-
-                // ── Keyboard scroll (works regardless of focus) ───────
-                let max_scroll = self
-                    .wrapped_lines
-                    .len()
-                    .saturating_sub(PREVIEW_VISIBLE_LINES);
-                match &key_event.logical_key {
-                    Key::Named(NamedKey::ArrowUp) => {
-                        scroll_preview(&self.preview_scroll_offset, -1, max_scroll);
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        scroll_preview(&self.preview_scroll_offset, 1, max_scroll);
-                    }
-                    Key::Named(NamedKey::PageUp) => {
-                        let lines = -((PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize);
-                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
-                    }
-                    Key::Named(NamedKey::PageDown) => {
-                        let lines = (PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize;
-                        scroll_preview(&self.preview_scroll_offset, lines, max_scroll);
-                    }
-                    _ => {}
-                }
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = event
+            && key_event.state == ElementState::Pressed
+        {
+            if let Some(result) = shortcut_result(&key_event.logical_key) {
+                return result;
             }
 
-            _ => {}
+            let max_scroll = self
+                .wrapped_lines
+                .len()
+                .saturating_sub(PREVIEW_VISIBLE_LINES);
+            let scrolled = match &key_event.logical_key {
+                Key::Named(NamedKey::ArrowUp) => {
+                    scroll_preview(&self.preview_scroll_offset, -1, max_scroll)
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    scroll_preview(&self.preview_scroll_offset, 1, max_scroll)
+                }
+                Key::Named(NamedKey::PageUp) => scroll_preview(
+                    &self.preview_scroll_offset,
+                    -((PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize),
+                    max_scroll,
+                ),
+                Key::Named(NamedKey::PageDown) => scroll_preview(
+                    &self.preview_scroll_offset,
+                    (PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize,
+                    max_scroll,
+                ),
+                _ => false,
+            };
+            if scrolled {
+                self.request_frame(event_loop);
+            }
         }
 
-        // Translate to UiEvent and dispatch.
-        if let Some(ui_event) = winit_to_uievent(
+        let size = self.window.inner_size();
+        let outcome = self.adapter.handle_event_with_size(
+            &mut self.runtime,
             event,
-            scale_factor,
-            winit::keyboard::ModifiersState::default(),
-        ) {
-            self.runtime.dispatch(ui_event, std::time::Instant::now());
+            Some((size.width, size.height)),
+        );
+        super::App::apply_window_effects(&self.window, &outcome.effects);
+        if let Some(control_flow) = outcome.effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
         }
 
-        if self.confirmed.load(Ordering::SeqCst) {
-            ConfirmationResult::Confirmed
-        } else if self.cancelled.load(Ordering::SeqCst) {
-            ConfirmationResult::Cancelled
-        } else {
-            ConfirmationResult::None
-        }
+        confirmation_result(&self.confirmed, &self.cancelled)
     }
 
-    /// Renders one frame: update Runtime, register text runs, encode, submit, present.
+    /// Presents one frame through the shared winit integration using borrowed
+    /// confirmation resources and shared Device, Queue, and text atlas data.
     pub(crate) fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         glyph_fn: &harbor_widget::text::GlyphFn<'_>,
-    ) {
-        // Ensure layout is up-to-date before encode.
-        self.runtime.update(std::time::Instant::now());
-
-        // Register any text runs queued by widgets during the paint pass.
-        self.runtime.register_pending_text_runs(glyph_fn);
-
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(o) => o,
-            wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                let physical_size = self.window.inner_size();
-                let scale = self.window.scale_factor() as f32;
-                self.surface_config.width = physical_size.width;
-                self.surface_config.height = physical_size.height;
-                self.surface.configure(device, &self.surface_config);
-                // Update viewport for the reconfigured surface
-                self.runtime
-                    .set_viewport(harbor_widget::renderer::Viewport::new(
-                        physical_size.width,
-                        physical_size.height,
-                        scale,
-                    ));
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return,
+    ) -> FrameOutcome {
+        let ConfirmationWindow {
+            window,
+            surface,
+            surface_config,
+            runtime,
+            adapter,
+            ..
+        } = self;
+        let mut configure = |width, height| {
+            surface_config.width = width;
+            surface_config.height = height;
+            surface.configure(device, surface_config);
         };
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("confirmation window"),
-        });
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("confirmation pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            let physical_size = self.window.inner_size();
-            let scale = self.window.scale_factor() as f32;
-            let viewport = harbor_widget::renderer::Viewport::new(
-                physical_size.width,
-                physical_size.height,
-                scale,
-            );
-            self.runtime.encode(queue, &mut pass, viewport);
-        }
-
-        queue.submit(Some(encoder.finish()));
-        queue.present(output);
-    }
-
-    /// Handles DPI scale factor changes.
-    pub(crate) fn scale_factor_changed(&mut self, device: &wgpu::Device, scale_factor: f64) {
-        let sf = scale_factor as f32;
-        let physical_size = self.window.inner_size();
-        self.surface_config.width = physical_size.width;
-        self.surface_config.height = physical_size.height;
-        let viewport =
-            harbor_widget::renderer::Viewport::new(physical_size.width, physical_size.height, sf);
-        self.runtime.set_viewport(viewport);
-        self.surface.configure(device, &self.surface_config);
-        self.runtime.update(std::time::Instant::now());
-    }
-
-    /// Handles resize events.
-    pub(crate) fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(device, &self.surface_config);
-        let viewport = harbor_widget::renderer::Viewport::new(
-            width,
-            height,
-            self.window.scale_factor() as f32,
+        let target = WinitFrameTarget::new(
+            window,
+            surface,
+            device,
+            queue,
+            &mut configure,
+            wgpu::Color::BLACK,
         );
-        self.runtime.set_viewport(viewport);
-        self.runtime.update(std::time::Instant::now());
+        adapter.render_with_prepare(runtime, target, |runtime| {
+            runtime.prepare_text_runs(glyph_fn);
+        })
+    }
+
+    /// Applies host-visible effects for this confirmation window only.
+    pub(crate) fn apply_frame_effects(&self, frame: &FrameOutcome, event_loop: &ActiveEventLoop) {
+        let effects = frame.effects();
+        super::App::apply_window_effects(&self.window, effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+    }
+
+    /// Wakes only the confirmation window; the main App scheduler is unrelated.
+    fn request_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let effects = self.adapter.request_frame();
+        super::App::apply_window_effects(&self.window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+    }
+
+    fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFlowEffect) {
+        event_loop.set_control_flow(match effect {
+            ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
+            ControlFlowEffect::WaitUntil(deadline) => {
+                winit::event_loop::ControlFlow::WaitUntil(deadline)
+            }
+            ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
+        });
     }
 }
 
@@ -462,11 +440,9 @@ fn build_confirmation_root(
     scroll_offset: Arc<AtomicUsize>,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
+    line_height: f32,
 ) -> impl harbor_widget::view::Component {
     let header_text = format!("Paste {} lines?", line_count);
-    let line_height = harbor_widget::text::current_metrics()
-        .map(|m| m.line_height)
-        .unwrap_or(20.0);
 
     FocusScope::new().child(
         Padding::new(24.0, 16.0, 24.0, 16.0).child(
@@ -540,7 +516,7 @@ mod tests {
         let wrapped = vec!["hello".to_string()];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(5, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(5, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -643,7 +619,7 @@ mod tests {
         let wrapped: Vec<String> = vec![];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(0, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(0, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -655,38 +631,18 @@ mod tests {
         let wrapped = vec!["x".to_string()];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(usize::MAX, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(usize::MAX, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
 
-    // ── handle_event key-matching (replicated pure logic) ──────────────
-    //
-    // handle_event itself requires a fully constructed ConfirmationWindow
-    // (OS window + GPU surface). The key-to-result mapping is pure and
-    // can be tested by replicating the match arms that handle_event uses.
-
-    /// Replicates the key-match logic from handle_event for testing.
-    fn map_key_to_result(key: &winit::keyboard::Key) -> Option<ConfirmationResult> {
-        match key {
-            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
-                Some(ConfirmationResult::Cancelled)
-            }
-            winit::keyboard::Key::Character(ch) if ch == "n" || ch == "N" => {
-                Some(ConfirmationResult::Cancelled)
-            }
-            winit::keyboard::Key::Character(ch) if ch == "y" || ch == "Y" => {
-                Some(ConfirmationResult::Confirmed)
-            }
-            _ => None,
-        }
-    }
+    // ── Confirmation shortcuts ───────────────────────────────────────
 
     #[test]
     fn should_return_confirmed_on_lowercase_y() {
         let key = winit::keyboard::Key::Character("y".into());
         assert!(matches!(
-            map_key_to_result(&key),
+            shortcut_result(&key),
             Some(ConfirmationResult::Confirmed)
         ));
     }
@@ -695,7 +651,7 @@ mod tests {
     fn should_return_confirmed_on_uppercase_y() {
         let key = winit::keyboard::Key::Character("Y".into());
         assert!(matches!(
-            map_key_to_result(&key),
+            shortcut_result(&key),
             Some(ConfirmationResult::Confirmed)
         ));
     }
@@ -704,7 +660,7 @@ mod tests {
     fn should_return_cancelled_on_lowercase_n() {
         let key = winit::keyboard::Key::Character("n".into());
         assert!(matches!(
-            map_key_to_result(&key),
+            shortcut_result(&key),
             Some(ConfirmationResult::Cancelled)
         ));
     }
@@ -713,7 +669,7 @@ mod tests {
     fn should_return_cancelled_on_uppercase_n() {
         let key = winit::keyboard::Key::Character("N".into());
         assert!(matches!(
-            map_key_to_result(&key),
+            shortcut_result(&key),
             Some(ConfirmationResult::Cancelled)
         ));
     }
@@ -722,7 +678,7 @@ mod tests {
     fn should_return_cancelled_on_escape() {
         let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
         assert!(matches!(
-            map_key_to_result(&key),
+            shortcut_result(&key),
             Some(ConfirmationResult::Cancelled)
         ));
     }
@@ -730,28 +686,17 @@ mod tests {
     #[test]
     fn should_return_none_on_unrecognized_key() {
         let key = winit::keyboard::Key::Character("x".into());
-        assert!(map_key_to_result(&key).is_none());
+        assert!(shortcut_result(&key).is_none());
     }
 
-    // ── Flag priority ─────────────────────────────────────────────────
-
-    /// Replicates the flag-check logic from handle_event for testing.
-    fn check_flags(confirmed: &AtomicBool, cancelled: &AtomicBool) -> ConfirmationResult {
-        if confirmed.load(Ordering::SeqCst) {
-            ConfirmationResult::Confirmed
-        } else if cancelled.load(Ordering::SeqCst) {
-            ConfirmationResult::Cancelled
-        } else {
-            ConfirmationResult::None
-        }
-    }
+    // ── Confirmation result priority ─────────────────────────────────
 
     #[test]
     fn should_return_none_when_neither_flag_is_set() {
         let confirmed = AtomicBool::new(false);
         let cancelled = AtomicBool::new(false);
         assert!(matches!(
-            check_flags(&confirmed, &cancelled),
+            confirmation_result(&confirmed, &cancelled),
             ConfirmationResult::None
         ));
     }
@@ -761,7 +706,7 @@ mod tests {
         let confirmed = AtomicBool::new(true);
         let cancelled = AtomicBool::new(false);
         assert!(matches!(
-            check_flags(&confirmed, &cancelled),
+            confirmation_result(&confirmed, &cancelled),
             ConfirmationResult::Confirmed
         ));
     }
@@ -771,7 +716,7 @@ mod tests {
         let confirmed = AtomicBool::new(false);
         let cancelled = AtomicBool::new(true);
         assert!(matches!(
-            check_flags(&confirmed, &cancelled),
+            confirmation_result(&confirmed, &cancelled),
             ConfirmationResult::Cancelled
         ));
     }
@@ -783,7 +728,7 @@ mod tests {
         let confirmed = AtomicBool::new(true);
         let cancelled = AtomicBool::new(true);
         assert!(matches!(
-            check_flags(&confirmed, &cancelled),
+            confirmation_result(&confirmed, &cancelled),
             ConfirmationResult::Confirmed
         ));
     }
@@ -873,52 +818,93 @@ mod tests {
     // ── scroll_preview ──────────────────────────────────────────────────
 
     #[test]
-    fn should_not_change_offset_when_delta_is_zero() {
+    fn should_not_invalidate_redraw_when_scroll_delta_does_not_change_offset() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, 0, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 0, 10);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 5);
     }
 
     #[test]
-    fn should_increment_offset_when_delta_is_positive() {
+    fn should_report_redraw_invalidation_when_keyboard_scroll_changes_offset() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, 3, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 3, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 8);
     }
 
     #[test]
-    fn should_decrement_offset_when_delta_is_negative() {
+    fn should_decrement_offset_when_keyboard_scroll_moves_toward_start() {
+        // Arrange
         let offset = AtomicUsize::new(5);
-        scroll_preview(&offset, -3, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, -3, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 2);
     }
 
     #[test]
-    fn should_clamp_offset_at_zero_when_decrementing_below_zero() {
+    fn should_invalidate_redraw_when_negative_keyboard_scroll_is_clamped_to_a_new_offset() {
+        // Arrange
         let offset = AtomicUsize::new(1);
-        scroll_preview(&offset, -5, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, -5, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn should_clamp_offset_at_max_when_incrementing_beyond_max() {
+    fn should_invalidate_redraw_when_positive_keyboard_scroll_is_clamped_to_a_new_offset() {
+        // Arrange
         let offset = AtomicUsize::new(8);
-        scroll_preview(&offset, 5, 10);
+
+        // Act
+        let changed = scroll_preview(&offset, 5, 10);
+
+        // Assert
+        assert!(changed);
         assert_eq!(offset.load(Ordering::Relaxed), 10);
     }
 
     #[test]
-    fn should_keep_offset_at_zero_when_max_is_zero() {
+    fn should_not_invalidate_redraw_when_keyboard_scroll_has_no_range() {
+        // Arrange
         let offset = AtomicUsize::new(0);
-        scroll_preview(&offset, 3, 0);
+
+        // Act
+        let changed = scroll_preview(&offset, 3, 0);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
     #[test]
-    fn should_clamp_negative_offset_to_zero_when_max_is_zero() {
-        // Even with a negative delta, when max=0 the result stays at 0.
+    fn should_not_invalidate_redraw_when_negative_keyboard_scroll_is_at_zero_boundary() {
+        // Arrange: even with a negative delta, max=0 keeps the offset at zero.
         let offset = AtomicUsize::new(0);
-        scroll_preview(&offset, -3, 0);
+
+        // Act
+        let changed = scroll_preview(&offset, -3, 0);
+
+        // Assert
+        assert!(!changed);
         assert_eq!(offset.load(Ordering::Relaxed), 0);
     }
 
@@ -939,7 +925,7 @@ mod tests {
         let scroll = Arc::new(AtomicUsize::new(0));
 
         // Arrange: build root and set in runtime.
-        let root = build_confirmation_root(1, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(1, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut rt = Runtime::new();
         rt.set_root(root);
         rt.update(Instant::now());
@@ -951,14 +937,14 @@ mod tests {
         // FocusScope > Padding > Column > ... > Row > [Button("Cancel"), SizedBox, Button("Paste")].
         // Depth-first traversal hits Cancel (leftmost Button) first.
         assert!(found, "expected a focusable widget (Cancel button)");
-        assert!(rt.input().focused.is_some(), "focused should be set");
+        assert!(rt.input().focused().is_some(), "focused should be set");
 
         // Verify the focused widget is a Button (without being able to read
         // the label from outside the crate, the structure guarantees it is Cancel).
-        let focused_id = rt.input().focused.unwrap();
+        let focused_id = rt.input().focused().unwrap();
         let fiber = rt.arena().get(focused_id).unwrap();
         assert_eq!(
-            fiber.widget_type,
+            fiber.widget_type(),
             std::any::TypeId::of::<harbor_widget::widgets::button::Button>(),
             "focused widget should be a Button"
         );

@@ -26,7 +26,8 @@ pub enum PointerPhase {
     Move,
     Up,
     Cancel,
-    Wheel { dx: f32, dy: f32 },
+    WheelLine { dx: f32, dy: f32 },
+    WheelPixel { dx: f32, dy: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,8 +190,10 @@ mod tests {
     }
 
     #[test]
-    fn pointer_phase_wheel_carries_delta() {
-        let phase = PointerPhase::Wheel { dx: 0.0, dy: 10.0 };
-        assert_eq!(phase, PointerPhase::Wheel { dx: 0.0, dy: 10.0 });
+    fn pointer_phase_wheel_line_and_pixel_carry_delta() {
+        let line = PointerPhase::WheelLine { dx: 0.0, dy: 10.5 };
+        assert_eq!(line, PointerPhase::WheelLine { dx: 0.0, dy: 10.5 });
+        let pixel = PointerPhase::WheelPixel { dx: 1.0, dy: 40.0 };
+        assert_eq!(pixel, PointerPhase::WheelPixel { dx: 1.0, dy: 40.0 });
     }
 }

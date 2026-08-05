@@ -1,5 +1,6 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
 
 /// A fixed-size widget with optional background color.
@@ -43,11 +44,7 @@ impl AnyView for SizedBox {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(self.size)
     }
 
@@ -55,14 +52,15 @@ impl AnyView for SizedBox {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         (
-            self.intrinsic_size(constraints),
+            self.intrinsic_size(constraints, metrics),
             vec![Point::ZERO; child_sizes.len()],
         )
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         match self.color {
             Some(color) => vec![Primitive::Quad {
                 rect,
@@ -90,7 +88,7 @@ mod tests {
     fn intrinsic_size() {
         let sb = SizedBox::new(Size::new(100.0, 50.0));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = sb.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(100.0, 50.0));
     }
 
@@ -98,7 +96,7 @@ mod tests {
     fn intrinsic_size_clamped() {
         let sb = SizedBox::new(Size::new(1000.0, 50.0));
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
-        let size = sb.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(500.0, 500.0));
     }
 
@@ -106,7 +104,7 @@ mod tests {
     fn paint_primitives_with_color() {
         let sb = SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED);
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
-        let prims = sb.paint_primitives(rect);
+        let prims = sb.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
         match &prims[0] {
             Primitive::Quad {
@@ -126,7 +124,7 @@ mod tests {
     fn paint_primitives_without_color() {
         let sb = SizedBox::new(Size::new(100.0, 50.0));
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
-        let prims = sb.paint_primitives(rect);
+        let prims = sb.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 
@@ -134,7 +132,8 @@ mod tests {
     fn layout_children() {
         let sb = SizedBox::new(Size::new(100.0, 50.0));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let (size, positions) = sb.layout_children(constraints, &[]);
+        let (size, positions) =
+            sb.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(100.0, 50.0));
         assert!(positions.is_empty());
     }

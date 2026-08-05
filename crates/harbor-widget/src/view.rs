@@ -4,6 +4,7 @@ use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
 use crate::signal::{Hook, Signal};
+use crate::text::TextMetrics;
 use std::any::TypeId;
 use std::sync::Arc;
 
@@ -112,35 +113,29 @@ pub(crate) trait AnyView: 'static {
     /// The TypeId of the concrete implementation, used for reconciliation.
     fn widget_type(&self) -> TypeId;
 
-    /// Rebuilds this view, returning a new View with potentially updated
-    /// children. The returned children are reconciled against existing
-    /// child Fibers by the runtime.
-    fn build(self: Box<Self>, cx: &mut BuildCx) -> View;
+    /// Computes the intrinsic size given layout constraints and Runtime-owned
+    /// text metrics.
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
 
-    /// Computes the intrinsic size given layout constraints.
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size;
-
-    /// Registers external draw handlers retained by this view.
-    fn register_external_draws(&self, _cx: &mut BuildCx) {}
-
-    /// Computes the layout of this widget given child intrinsic sizes.
-    /// Returns own size and child origins (relative to self).
-    /// Default: positions all children at origin with own size from intrinsic_size.
+    /// Computes the layout of this widget given child intrinsic sizes and
+    /// Runtime-owned text metrics. Returns own size and child origins (relative
+    /// to self). Default: positions all children at origin with own size from
+    /// intrinsic_size.
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let _ = child_sizes;
-        let size = self.intrinsic_size(constraints);
+        let size = self.intrinsic_size(constraints, metrics);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (size, positions)
     }
 
-    /// Returns Primitives to draw for this widget given its layout rect.
-    /// Default: no primitives (invisible).
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
-        let _ = rect;
+    /// Returns Primitives to draw for this widget given its layout rect and
+    /// Runtime-owned text metrics. Default: no primitives (invisible).
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        let _ = (rect, metrics);
         vec![]
     }
 
@@ -177,53 +172,83 @@ pub(crate) trait AnyView: 'static {
 
 /// An opaque, discardable UI description with optional Key.
 ///
+/// The payload of a [`View`], either an already-built widget tree or a
+/// component that must be built after reconciliation assigns it a Fiber.
+#[derive(Clone)]
+pub(crate) enum ViewContents {
+    Concrete(Arc<dyn AnyView>),
+    Deferred {
+        component: Arc<dyn Component>,
+        widget_type: TypeId,
+    },
+}
+
 /// Produced by `Component::build` and consumed by the reconciliation system.
 #[derive(Clone)]
 pub struct View {
-    pub(crate) inner: Arc<dyn AnyView>,
+    pub(crate) contents: ViewContents,
     explicit_key: Option<Key>,
     pub(crate) children: Vec<View>,
 }
 
 impl View {
-    /// Creates a new View wrapping the given AnyView implementation.
+    /// Creates a new View wrapping the given already-built AnyView tree.
     // AnyView is pub(crate); private_bounds is intentional — this is the
     // public API surface for crate-internal widget types.
     #[allow(private_bounds)]
     pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
         View {
-            inner: Arc::new(inner),
+            contents: ViewContents::Concrete(Arc::new(inner)),
             explicit_key: key,
             children,
         }
     }
 
-    /// Returns the key for this view, checking the explicit key first,
-    /// then falling back to the inner view's key.
-    pub fn key(&self) -> Option<&Key> {
-        self.explicit_key.as_ref().or_else(|| self.inner.key())
-    }
-
-    /// Returns the TypeId of the widget that produced this view.
-    pub fn widget_type(&self) -> TypeId {
-        self.inner.widget_type()
-    }
-
-    /// Registers external draw handlers retained by descendant views.
-    pub(crate) fn register_child_external_draws(&self, cx: &mut BuildCx) {
-        for child in &self.children {
-            child.register_external_draws(cx);
+    /// Defers building a component until reconciliation assigns it a Fiber.
+    ///
+    /// The concrete component TypeId is retained so deferred views reconcile
+    /// with the same identity as their eventual Fiber.
+    pub fn deferred<C: Component + 'static>(component: C) -> Self {
+        View {
+            contents: ViewContents::Deferred {
+                component: Arc::new(component),
+                widget_type: TypeId::of::<C>(),
+            },
+            explicit_key: None,
+            children: vec![],
         }
     }
 
-    fn register_external_draws(&self, cx: &mut BuildCx) {
-        self.inner.register_external_draws(cx);
-        self.register_child_external_draws(cx);
+    /// Returns the key for this view, checking the explicit key first,
+    /// then falling back to the concrete view's key.
+    pub fn key(&self) -> Option<&Key> {
+        self.explicit_key.as_ref().or_else(|| match &self.contents {
+            ViewContents::Concrete(inner) => inner.key(),
+            ViewContents::Deferred { .. } => None,
+        })
     }
 
-    /// Consumes the View and returns its components.
+    /// Returns the TypeId used for reconciliation.
+    pub fn widget_type(&self) -> TypeId {
+        match &self.contents {
+            ViewContents::Concrete(inner) => inner.widget_type(),
+            ViewContents::Deferred { widget_type, .. } => *widget_type,
+        }
+    }
+
+    /// Consumes a concrete View and returns its components.
     pub(crate) fn decompose(self) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
-        (self.inner, self.children, self.explicit_key)
+        match self.contents {
+            ViewContents::Concrete(inner) => (inner, self.children, self.explicit_key),
+            ViewContents::Deferred { .. } => {
+                panic!("deferred Views must be materialized by reconciliation")
+            }
+        }
+    }
+
+    /// Consumes this View into the data reconciliation needs to materialize it.
+    pub(crate) fn into_parts(self) -> (ViewContents, Vec<View>, Option<Key>) {
+        (self.contents, self.children, self.explicit_key)
     }
 }
 
@@ -249,17 +274,7 @@ mod tests {
             TypeId::of::<Self>()
         }
 
-        fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-            View::new(
-                KeyedTestView {
-                    inner_key: self.inner_key.clone(),
-                },
-                vec![],
-                None,
-            )
-        }
-
-        fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+        fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
             constraints.constrain(Size::new(1.0, 1.0))
         }
     }
@@ -407,7 +422,7 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
         let sb = SizedBox::new(Size::new(100.0, 50.0));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = sb.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(100.0, 50.0));
     }
 
@@ -416,7 +431,7 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
         let sb = SizedBox::new(Size::new(1000.0, 50.0));
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
-        let size = sb.intrinsic_size(constraints);
+        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Both dimensions clamped to tight 500x500 constraint
         assert_eq!(size, Size::new(500.0, 500.0));
     }

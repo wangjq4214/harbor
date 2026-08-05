@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext};
 use crate::SelectionModel;
+use crate::render::RenderViewport;
 use arboard::Clipboard;
 use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
 
@@ -100,9 +101,9 @@ impl Selection {
     fn build_vertices(
         &self,
         snap: &TerminalSnapshot,
-        surf_w: f32,
-        surf_h: f32,
+        viewport: &RenderViewport,
     ) -> Vec<ColoredVertex> {
+        let (surf_w, surf_h) = viewport.surface_dimensions();
         let Some(bounds) = self.model.bounds() else {
             return Vec::new();
         };
@@ -137,10 +138,7 @@ impl Selection {
             let col_end = if g == eg { ec } else { cols.saturating_sub(1) };
 
             for col in col_start..=col_end {
-                let left = TEXT_PADDING + col as f32 * self.cell_width;
-                let top = TEXT_PADDING + display_row as f32 * self.line_height;
-                let right = left + self.cell_width;
-                let bottom = top + self.line_height;
+                let (left, top, right, bottom) = viewport.cell_bounds(display_row, col);
                 let quad = ColoredVertex::from_pixel_rect(
                     left,
                     top,
@@ -156,7 +154,21 @@ impl Selection {
         verts
     }
 
-    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn invalidate_projection(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn resize_grid(&mut self) {
+        self.model.clear();
+        self.dirty = true;
+    }
+
+    pub fn prepare(
+        &mut self,
+        gpu: &GpuContext,
+        snap: Option<&TerminalSnapshot>,
+        viewport: &RenderViewport,
+    ) {
         if !self.dirty {
             return;
         }
@@ -172,8 +184,7 @@ impl Selection {
             let cols = snap.cols;
             self.ensure_capacity(gpu, rows, cols);
 
-            let (surf_w, surf_h) = gpu.surface_size();
-            let verts = self.build_vertices(snap, surf_w as f32, surf_h as f32);
+            let verts = self.build_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.vertex_count = verts.len() as u32;
         } else {
@@ -188,11 +199,5 @@ impl Selection {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);
-    }
-
-    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        // Grid dimensions changed; old selection coordinates are stale.
-        self.model.clear();
-        self.dirty = true;
     }
 }

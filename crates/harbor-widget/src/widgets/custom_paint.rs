@@ -2,6 +2,7 @@ use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 use std::sync::Arc;
 
@@ -34,8 +35,7 @@ impl CustomPaint {
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        let mut cx = BuildCx::stub();
-        self.children.push(child.build(&mut cx));
+        self.children.push(View::deferred(child));
         self
     }
 }
@@ -58,32 +58,23 @@ impl AnyView for CustomPaint {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill available space so the terminal occupies the full viewport.
         constraints.max
-    }
-
-    fn register_external_draws(&self, cx: &mut BuildCx) {
-        if let Some(handler) = &self.handler {
-            cx.register_external_draw(self.draw_id, Arc::clone(handler));
-        }
     }
 
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let own = constraints.max;
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         vec![Primitive::External {
             draw: self.draw_id,
             rect,
@@ -123,7 +114,7 @@ mod tests {
     fn custom_paint_paint_primitives_contains_external() {
         let cp = CustomPaint::new(42);
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(800.0, 600.0));
-        let prims = cp.paint_primitives(rect);
+        let prims = cp.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
         match &prims[0] {
             Primitive::External { draw, rect: r } => {
@@ -138,7 +129,7 @@ mod tests {
     fn custom_paint_fills_max_constraints() {
         let cp = CustomPaint::new(1);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = cp.intrinsic_size(constraints);
+        let size = cp.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(800.0, 600.0));
     }
 

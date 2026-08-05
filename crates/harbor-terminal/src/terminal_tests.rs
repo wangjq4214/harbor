@@ -1407,6 +1407,81 @@ fn should_return_false_and_preserve_size_when_resize_if_changed_has_same_dimensi
 }
 
 #[test]
+fn should_derive_grid_size_from_external_draw_allocation() {
+    // Arrange: CustomPaint allocation is smaller than the full surface.
+    use crate::{RenderViewport, TextMetrics};
+    use harbor_widget::layout::{Point, Rect, Size};
+    use harbor_widget::renderer::Viewport;
+    use harbor_widget::scene::primitive::ExternalDrawContext;
+
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 16.0,
+        underline_thickness: 2.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 2.0,
+    };
+    let context = ExternalDrawContext::new(
+        Rect::from_min_size(Point::new(20.0, 10.0), Size::new(400.0, 240.0)),
+        Viewport::new(800, 600, 1.0),
+    );
+    let viewport = RenderViewport::from_external(&context, &metrics);
+    let grid = viewport.compute_grid_size();
+    let mut terminal = Terminal::new_headless(24, 80);
+
+    // Act
+    let changed = terminal.resize_if_changed(grid);
+
+    // Assert
+    assert!(changed);
+    assert_eq!(terminal.screen().rows(), grid.rows);
+    assert_eq!(terminal.screen().cols(), grid.cols);
+    assert_ne!((grid.rows, grid.cols), (24, 80));
+}
+
+#[test]
+fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
+    // Arrange: scale-only / geometry change that preserves qualitative grid size.
+    use crate::{RenderViewport, TextMetrics};
+    use harbor_widget::layout::{Point, Rect, Size};
+    use harbor_widget::renderer::Viewport;
+    use harbor_widget::scene::primitive::ExternalDrawContext;
+
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 16.0,
+        underline_thickness: 2.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 2.0,
+    };
+    let first = ExternalDrawContext::new(
+        Rect::from_min_size(Point::ZERO, Size::new(800.0, 480.0)),
+        Viewport::new(800, 600, 1.0),
+    );
+    let second = ExternalDrawContext::new(
+        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(800.0, 480.0)),
+        Viewport::new(820, 620, 1.0),
+    );
+    let first_grid = RenderViewport::from_external(&first, &metrics).compute_grid_size();
+    let second_grid = RenderViewport::from_external(&second, &metrics).compute_grid_size();
+    assert_eq!(first_grid, second_grid);
+
+    let mut terminal = Terminal::new_headless(first_grid.rows, first_grid.cols);
+
+    // Act
+    let changed = terminal.resize_if_changed(second_grid);
+
+    // Assert: PTY/screen resize is skipped when rows/cols are unchanged.
+    assert!(!changed);
+    assert_eq!(terminal.screen().rows(), first_grid.rows);
+    assert_eq!(terminal.screen().cols(), first_grid.cols);
+}
+
+#[test]
 fn should_reset_scroll_snap_suppression_when_resized() {
     // Arrange
     let mut terminal = Terminal::new_headless(24, 80);
@@ -1947,6 +2022,310 @@ fn terminal_input_returns_scrollback_to_live_viewport() {
 
     assert_eq!(terminal.screen().view_offset(), 0);
     assert_eq!(written.lock().unwrap().as_slice(), b"x");
+}
+
+#[test]
+fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..12 {
+        terminal.process_output(b"line\r\n");
+    }
+    let rows = terminal.screen().rows();
+    let scroll_count = terminal.screen().scroll_count();
+    assert!(scroll_count > rows);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageUp,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), rows);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageDown,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Home,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), scroll_count);
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::End,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn modified_or_alt_screen_navigation_encodes_to_pty() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..8 {
+        terminal.process_output(b"line\r\n");
+    }
+
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageUp,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(!written.lock().unwrap().is_empty());
+    written.lock().unwrap().clear();
+
+    terminal.process_output(b"\x1b[?1049h");
+    assert!(terminal.is_alt_screen());
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Home,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+    assert!(!written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn wheel_line_and_pixel_convert_to_viewport_lines() {
+    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+    use harbor_widget::layout::Point;
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..12 {
+        terminal.process_output(b"line\r\n");
+    }
+
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 3);
+
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 5);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
+    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+    use harbor_widget::layout::Point;
+
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..8 {
+        terminal.process_output(b"line\r\n");
+    }
+
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: 10.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(written.lock().unwrap().is_empty());
+
+    terminal.process_output(b"\x1b[?1049h");
+    let offset_before = terminal.screen().view_offset();
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), offset_before);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
+    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+    use harbor_widget::layout::Point;
+
+    // Arrange — live bottom (offset 0); further scroll-down must not move
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..12 {
+        terminal.process_output(b"line\r\n");
+    }
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    // Act
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+
+    // Assert — clamped: Host would skip redraw wake
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(written.lock().unwrap().is_empty());
+
+    // Arrange — scroll to top, then wheel further up
+    let scroll_count = terminal.screen().scroll_count();
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 40.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    let at_top = terminal.screen().view_offset();
+    assert_eq!(at_top, scroll_count);
+
+    // Act
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+
+    // Assert
+    assert_eq!(terminal.screen().view_offset(), at_top);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
+    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+    use harbor_widget::layout::Point;
+
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..12 {
+        terminal.process_output(b"line\r\n");
+    }
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 6);
+
+    // Act — line delta -1 → 3 rows down; pixel -20 → 1 row down
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 3);
+
+    terminal
+        .handle_event(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::WheelPixel { dx: 0.0, dy: -20.0 },
+            PointerButton::Left,
+            0,
+        )))
+        .unwrap();
+
+    // Assert
+    assert_eq!(terminal.screen().view_offset(), 2);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn should_encode_navigation_to_pty_when_ctrl_or_alt_modifier_set() {
+    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
+
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    for _ in 0..8 {
+        terminal.process_output(b"line\r\n");
+    }
+
+    // Act / Assert — ctrl PageUp encodes, does not scroll
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageUp,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(!written.lock().unwrap().is_empty());
+    written.lock().unwrap().clear();
+
+    // Act / Assert — alt PageDown encodes, does not scroll
+    terminal
+        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageDown,
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+        }))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(!written.lock().unwrap().is_empty());
 }
 
 #[test]

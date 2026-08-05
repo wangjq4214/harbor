@@ -9,8 +9,8 @@ use std::collections::HashMap;
 /// Commands accumulated by `EventCtx` during the event walk are applied
 /// atomically via `apply()` after the walk completes.
 pub struct InputState {
-    pub focused: Option<FiberId>,
-    pub hovered: Option<FiberId>,
+    pub(crate) focused: Option<FiberId>,
+    pub(crate) hovered: Option<FiberId>,
     pointer_captures: HashMap<u64, FiberId>,
 }
 
@@ -29,15 +29,31 @@ impl InputState {
         }
     }
 
+    /// Fiber currently receiving keyboard / focus events, if any.
+    pub fn focused(&self) -> Option<FiberId> {
+        self.focused
+    }
+
+    /// Fiber currently under the pointer, if tracked.
+    pub fn hovered(&self) -> Option<FiberId> {
+        self.hovered
+    }
+
     /// Returns the fiber that has captured the given pointer, if any.
     pub fn captor(&self, pointer_id: u64) -> Option<FiberId> {
         self.pointer_captures.get(&pointer_id).copied()
+    }
+
+    /// Returns all pointer ids currently captured by widgets.
+    pub(crate) fn captured_pointer_ids(&self) -> Vec<u64> {
+        self.pointer_captures.keys().copied().collect()
     }
 
     /// Applies accumulated EventCtx commands after the event walk.
     /// Returns true if a paint invalidation was requested.
     pub(crate) fn apply(&mut self, commands: Vec<EventCommand>, arena: &FiberArena) -> bool {
         let mut needs_paint = false;
+        let mut navigated_scopes = Vec::new();
         for cmd in commands {
             match cmd {
                 EventCommand::RequestFocus(id) => {
@@ -50,6 +66,13 @@ impl InputState {
                     self.pointer_captures.remove(&pointer_id);
                 }
                 EventCommand::NavigateFocus { scope, forward } => {
+                    // A FocusScope can see one key event in both capture and
+                    // bubble phases. Apply one navigation per scope/dir for
+                    // that event rather than immediately wrapping back.
+                    if navigated_scopes.contains(&(scope, forward)) {
+                        continue;
+                    }
+                    navigated_scopes.push((scope, forward));
                     let next = Self::find_next_focusable(arena, scope, self.focused, forward);
                     self.focused = next;
                 }

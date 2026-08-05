@@ -77,13 +77,17 @@ pub struct Runtime { /* private */ }
 
 impl Runtime {
     pub fn set_root(&mut self, root: impl Component + 'static);
-    pub fn dispatch(&mut self, event: UiEvent, now: Instant) -> FrameRequest;
-    pub fn update(&mut self, now: Instant) -> FrameRequest;
+    pub fn dispatch(&mut self, event: UiEvent, now: Instant) -> RuntimeEffects;
+    pub fn update(&mut self, now: Instant) -> RuntimeEffects;
     pub fn encode(&mut self, frame: &mut UiFrame<'_>);
 }
 ```
 
-`UiFrame` 由宿主创建，提供 `Device`、`Queue`、`CommandEncoder`、目标 `TextureView`、logical/physical viewport 和 scale factor。`harbor-widget` 可依赖 wgpu，但不得依赖 winit 或现有 terminal model。
+`RuntimeEffects` 是宿主可合并的、平台无关的请求批次；例如 `request_redraw` 和控制流、光标、IME、剪贴板操作都只表达数据，不直接调用平台 API。
+
+winit 接缝位于 feature-gated 的 `harbor_widget::winit` 模块。启用 `winit` feature 后，宿主可使用 `WinitAdapter` 处理窗口级调用，并将 `WinitFrameTarget` 传给帧方法。`WinitFrameTarget` 只借用宿主的 `Window`、`Surface`、`Device`、`Queue` 和可变 surface configuration（同时携带 viewport 与 clear color）；它是一次调用的 borrowed frame target，`Runtime` 和 adapter 不得保存或取得这些资源的所有权。
+
+`UiFrame` 由宿主创建，提供 `Device`、`Queue`、`CommandEncoder`、目标 `TextureView`、logical/physical viewport 和 scale factor。`harbor-widget` 可依赖 wgpu，但核心 Runtime 不依赖 winit 或现有 terminal model。
 
 ## 5. Fiber 与重构
 

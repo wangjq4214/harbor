@@ -28,6 +28,80 @@ impl SceneDelta {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.modified.is_empty()
     }
+
+    /// Incorporates a later delta so this delta still applies to the original
+    /// renderer baseline.
+    pub(crate) fn coalesce(&mut self, later: SceneDelta) {
+        enum Change {
+            Added(SceneItem),
+            Removed,
+            Modified(SceneItem),
+        }
+
+        let mut changes = Vec::new();
+        for item in self.added.drain(..) {
+            changes.push((item.id, Change::Added(item)));
+        }
+        for item in self.modified.drain(..) {
+            changes.push((item.id, Change::Modified(item)));
+        }
+        for id in self.removed.drain(..) {
+            changes.push((id, Change::Removed));
+        }
+
+        for item in later.added {
+            if let Some((_, change)) = changes.iter_mut().find(|(id, _)| *id == item.id) {
+                // An item removed since the renderer baseline already has a
+                // slot, so reintroducing it is an in-place modification.
+                *change = if matches!(&*change, Change::Removed) {
+                    Change::Modified(item)
+                } else {
+                    Change::Added(item)
+                };
+            } else {
+                changes.push((item.id, Change::Added(item)));
+            }
+        }
+
+        for item in later.modified {
+            if let Some((_, change)) = changes.iter_mut().find(|(id, _)| *id == item.id) {
+                // Keep an unencoded addition as an addition, but replace it
+                // with its latest contents.
+                *change = if matches!(&*change, Change::Added(_)) {
+                    Change::Added(item)
+                } else {
+                    Change::Modified(item)
+                };
+            } else {
+                changes.push((item.id, Change::Modified(item)));
+            }
+        }
+
+        for id in later.removed {
+            if let Some(index) = changes
+                .iter()
+                .position(|(existing_id, _)| *existing_id == id)
+            {
+                if matches!(&changes[index].1, Change::Added(_)) {
+                    // The renderer never saw this item, so its addition and
+                    // removal cancel out.
+                    changes.remove(index);
+                } else {
+                    changes[index].1 = Change::Removed;
+                }
+            } else {
+                changes.push((id, Change::Removed));
+            }
+        }
+
+        for (id, change) in changes {
+            match change {
+                Change::Added(item) => self.added.push(item),
+                Change::Removed => self.removed.push(id),
+                Change::Modified(item) => self.modified.push(item),
+            }
+        }
+    }
 }
 
 // ── SceneGraph ──────────────────────────────────────────────────────────────
@@ -61,24 +135,39 @@ impl SceneGraph {
 
         let old_ids: HashSet<u64> = self.items.iter().map(|i| i.id).collect();
         let old_by_id: HashMap<u64, &SceneItem> = self.items.iter().map(|i| (i.id, i)).collect();
+        let mut reserved_ids = old_ids.clone();
+        reserved_ids.extend(
+            incoming
+                .iter()
+                .filter_map(|item| (item.id != 0).then_some(item.id)),
+        );
 
         let mut new_items = Vec::new();
         let mut seen_ids: HashSet<u64> = HashSet::new();
         let mut next_id = self.next_id;
 
         for mut item in incoming {
-            if item.id != 0 && old_ids.contains(&item.id) {
-                let old = old_by_id[&item.id];
+            if item.id != 0 {
                 seen_ids.insert(item.id);
-                if old.paint_order != item.paint_order || old.primitive != item.primitive {
-                    modified.push(item.clone());
+                if let Some(old) = old_by_id.get(&item.id) {
+                    if old.paint_order != item.paint_order || old.primitive != item.primitive {
+                        modified.push(item.clone());
+                    }
+                } else {
+                    added.push(item.clone());
                 }
                 new_items.push(item);
             } else {
-                let new_id = next_id;
-                next_id += 1;
-                item.id = new_id;
-                seen_ids.insert(new_id);
+                while next_id == 0 || !reserved_ids.insert(next_id) {
+                    next_id = next_id
+                        .checked_add(1)
+                        .expect("scene item ID allocator exhausted");
+                }
+                item.id = next_id;
+                next_id = next_id
+                    .checked_add(1)
+                    .expect("scene item ID allocator exhausted");
+                seen_ids.insert(item.id);
                 added.push(item.clone());
                 new_items.push(item);
             }
@@ -152,6 +241,79 @@ mod tests {
         assert_eq!(delta.modified.len(), 0);
         assert_eq!(delta.added[0].id, 1); // first alloc starts at 1
         assert_eq!(graph.item_count(), 1);
+    }
+
+    #[test]
+    fn diff_preserves_initial_stable_ids_and_skips_them_when_allocating_fallback_ids() {
+        let mut graph = SceneGraph::new();
+        let delta = graph.diff(vec![make_quad(1, 0, 0.0, 0.0), make_quad(0, 1, 100.0, 0.0)]);
+
+        assert_eq!(
+            delta.added.iter().map(|item| item.id).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(
+            graph.items().iter().map(|item| item.id).collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_unencoded_addition_with_latest_item() {
+        let initial = make_quad(1, 0, 0.0, 0.0);
+        let latest = make_quad(1, 0, 50.0, 50.0);
+        let mut delta = SceneDelta {
+            added: vec![initial],
+            removed: vec![],
+            modified: vec![],
+        };
+
+        delta.coalesce(SceneDelta {
+            added: vec![],
+            removed: vec![],
+            modified: vec![latest.clone()],
+        });
+
+        assert_eq!(delta.added, vec![latest]);
+        assert!(delta.removed.is_empty());
+        assert!(delta.modified.is_empty());
+    }
+
+    #[test]
+    fn coalesce_cancels_unencoded_add_then_remove() {
+        let mut delta = SceneDelta {
+            added: vec![make_quad(1, 0, 0.0, 0.0)],
+            removed: vec![],
+            modified: vec![],
+        };
+
+        delta.coalesce(SceneDelta {
+            added: vec![],
+            removed: vec![1],
+            modified: vec![],
+        });
+
+        assert!(delta.is_empty());
+    }
+
+    #[test]
+    fn coalesce_composes_removed_then_added_and_modified_then_removed() {
+        let restored = make_quad(2, 0, 50.0, 50.0);
+        let mut delta = SceneDelta {
+            added: vec![],
+            removed: vec![2],
+            modified: vec![make_quad(1, 0, 0.0, 0.0)],
+        };
+
+        delta.coalesce(SceneDelta {
+            added: vec![restored.clone()],
+            removed: vec![1],
+            modified: vec![],
+        });
+
+        assert!(delta.added.is_empty());
+        assert_eq!(delta.removed, vec![1]);
+        assert_eq!(delta.modified, vec![restored]);
     }
 
     #[test]

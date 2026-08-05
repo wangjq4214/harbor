@@ -1,5 +1,5 @@
 use crate::renderer::Viewport;
-use crate::scene::SceneDelta;
+use crate::scene::SceneGraph;
 use crate::scene::primitive::Color;
 use crate::text::{GlyphLayout, TextRunCache};
 use std::borrow::Cow;
@@ -199,75 +199,39 @@ impl TextRenderer {
         }
     }
 
-    /// Applies a SceneDelta, allocating instance buffer space for new/modified
-    /// Text items and freeing space for removed ones.
+    /// Rebuilds text instance offsets from the retained scene.
+    ///
+    /// Repacking every changed frame makes modified runs safe even when their
+    /// glyph counts change, and drops offsets for removed scene items.
     pub fn update(
         &mut self,
         queue: &wgpu::Queue,
-        delta: &SceneDelta,
+        scene_graph: &SceneGraph,
         run_cache: &TextRunCache,
         viewport: &Viewport,
     ) {
-        // Remove stale items
-        for id in &delta.removed {
-            self.id_to_offset.remove(id);
-        }
+        self.id_to_offset.clear();
+        let mut next_offset = 0;
 
-        // Start allocation after the highest existing offset, so new items
-        // don't overwrite instance data of items that persist from previous
-        // frames.
-        let mut next_offset: u32 = self
-            .id_to_offset
-            .values()
-            .map(|&(start, count)| start + count)
-            .max()
-            .unwrap_or(0);
-
-        // Build new offset map from the delta
-        for item in &delta.added {
-            if let crate::scene::primitive::Primitive::Text { run, origin, color } = &item.primitive
-                && let Some(run_data) = run_cache.get(*run)
+        for item in scene_graph.items() {
+            if let crate::scene::primitive::Primitive::Text { origin, color, .. } = &item.primitive
+                && let Some(run_data) = run_cache.get(item.id)
             {
                 let count = run_data.glyphs.len() as u32;
                 if count == 0 {
                     continue;
                 }
-                let start = next_offset;
+
+                self.write_instances(
+                    queue,
+                    next_offset,
+                    run_data.glyphs.as_slice(),
+                    *origin,
+                    *color,
+                    viewport,
+                );
+                self.id_to_offset.insert(item.id, (next_offset, count));
                 next_offset += count;
-
-                // Write instances
-                self.write_instances(
-                    queue,
-                    start,
-                    run_data.glyphs.as_slice(),
-                    *origin,
-                    *color,
-                    viewport,
-                );
-
-                self.id_to_offset.insert(item.id, (start, count));
-            }
-        }
-
-        // For modified items, update in place
-        for item in &delta.modified {
-            if let crate::scene::primitive::Primitive::Text { run, origin, color } = &item.primitive
-                && let Some(&(start, count)) = self.id_to_offset.get(&item.id)
-                && let Some(run_data) = run_cache.get(*run)
-            {
-                let new_count = run_data.glyphs.len() as u32;
-                if new_count != count {
-                    // Count changed — skip (rare: text content changed)
-                    continue;
-                }
-                self.write_instances(
-                    queue,
-                    start,
-                    run_data.glyphs.as_slice(),
-                    *origin,
-                    *color,
-                    viewport,
-                );
             }
         }
     }

@@ -23,8 +23,7 @@ pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
-    SurfaceDisposition, SurfaceStatus, TerminalRenderPipeline, Text, UploadMode, UploadPlan,
-    UploadPolicy, surface_disposition,
+    TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
 };
 pub use screen::{
     AltScreenAction, Cell, CellAttrs, CharacterProtection, Color, CursorShape, CursorStyleArg,
@@ -82,8 +81,13 @@ impl Terminal {
     /// Calculates the grid dimensions used by a rendered terminal at the current surface size.
     pub fn terminal_size_for(gpu: &GpuContext, metrics: &TextMetrics) -> TerminalSize {
         let (width, height) = gpu.surface_size();
-        RenderViewport::new(metrics.cell_width, metrics.line_height)
-            .compute_grid_size(width, height)
+        RenderViewport::with_surface(
+            metrics.cell_width,
+            metrics.line_height,
+            (width, height),
+            (width, height),
+        )
+        .compute_grid_size()
     }
 
     /// Creates a headless Terminal without GPU or PTY resources (for parser tests).
@@ -134,16 +138,24 @@ impl Terminal {
     pub fn render(
         &mut self,
         draw_id: ExternalDrawId,
-        _rect: harbor_widget::layout::Rect,
+        context: &harbor_widget::scene::primitive::ExternalDrawContext,
         pass: &mut wgpu::RenderPass,
         gpu: &GpuContext,
     ) {
         if draw_id != self.draw_id {
             return;
         }
+        let Some(metrics) = self.text_metrics().copied() else {
+            return;
+        };
+        let viewport = RenderViewport::from_external(context, &metrics);
+        let grid = viewport.compute_grid_size();
+        let grid_changed = self.resize_if_changed(grid);
         self.io.drain(&mut self.screen);
-        self.prepare(gpu, None);
-        if let Some(renderer) = &self.renderer {
+        let snap = self.screen.terminal_snapshot();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.sync_viewport(viewport, grid_changed);
+            renderer.prepare(gpu, &snap, None);
             renderer.draw(pass);
         }
     }
@@ -153,24 +165,6 @@ impl Terminal {
     /// Resizes the terminal grid and forwards changed dimensions to its PTY.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         self.resize_if_changed(TerminalSize { rows, cols });
-    }
-
-    pub fn resize_gpu(&mut self, size: TerminalSize, gpu: &GpuContext) {
-        self.resize_if_changed(size);
-        if let Some(renderer) = &mut self.renderer {
-            renderer.resize(gpu);
-        }
-    }
-
-    pub fn terminal_size(&self, gpu: &GpuContext) -> TerminalSize {
-        if let Some(renderer) = &self.renderer {
-            renderer.terminal_size(gpu)
-        } else {
-            TerminalSize {
-                rows: self.screen.rows(),
-                cols: self.screen.cols(),
-            }
-        }
     }
 
     // ── text / glyphs ─────────────────────────────────────────────────
