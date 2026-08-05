@@ -1,7 +1,7 @@
 # PTY I/O and Input Events
 
 **Ticket ID:** T0004
-**Source:** [Spec: 0002-terminal-render-consolidation](../spec/0002-terminal-render-consolidation.md)
+**Source:** [Spec: 0002-terminal-render-consolidation](../../spec/0002-terminal-render-consolidation.md)
 **Status:** Todo
 
 ## Goal

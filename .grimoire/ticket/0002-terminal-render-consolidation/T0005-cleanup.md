@@ -1,7 +1,7 @@
 # Cleanup
 
 **Ticket ID:** T0005
-**Source:** [Spec: 0002-terminal-render-consolidation](../spec/0002-terminal-render-consolidation.md)
+**Source:** [Spec: 0002-terminal-render-consolidation](../../spec/0002-terminal-render-consolidation.md)
 **Status:** Done
 
 ## Goal
