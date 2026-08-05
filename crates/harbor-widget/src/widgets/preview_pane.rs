@@ -5,9 +5,8 @@ use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
-use crate::text::current_metrics;
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
-use crate::widgets::text_label;
 
 /// A read-only monospace text preview widget.
 ///
@@ -65,12 +64,8 @@ impl AnyView for PreviewPane {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        let cell_width = current_metrics().map(|m| m.cell_width).unwrap_or(10.0);
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        let cell_width = metrics.cell_width;
         let max_line_chars = self
             .wrapped_lines
             .iter()
@@ -86,23 +81,23 @@ impl AnyView for PreviewPane {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = self.intrinsic_size(constraints);
+        let own = self.intrinsic_size(constraints, metrics);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         let offset = self.scroll_offset.load(Ordering::Relaxed);
         let end = (offset + self.visible_lines).min(self.wrapped_lines.len());
         let capacity = end.saturating_sub(offset);
         let mut prims = Vec::with_capacity(capacity);
         for i in offset..end {
             let line = &self.wrapped_lines[i];
-            let run_id = text_label::queue_text_run(line, self.color);
             let y = rect.min.y + (i - offset) as f32 * self.line_height;
             prims.push(Primitive::Text {
-                run: run_id,
+                text: Arc::from(line.as_str()),
                 origin: Point::new(rect.min.x, y),
                 color: self.color,
             });
@@ -134,28 +129,18 @@ impl AnyView for PreviewPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::TextMetrics;
-
-    fn test_metrics() {
-        crate::text::set_current_metrics(TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 0.0,
-            underline_thickness: 1.5,
-            strikethrough_position: 0.0,
-            strikethrough_thickness: 1.5,
-        });
+    fn test_metrics() -> TextMetrics {
+        crate::runtime::DEFAULT_TEXT_METRICS
     }
 
     #[test]
     fn intrinsic_size_reflects_widest_line() {
-        test_metrics();
+        let metrics = test_metrics();
         let lines = vec!["hello".to_string(), "longer line!".to_string()];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset, 20.0, 10);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = pane.intrinsic_size(constraints);
+        let size = pane.intrinsic_size(constraints, &metrics);
         // "longer line!" = 12 chars * 10.0 + 4.0 = 124.0
         assert!((size.width - 124.0).abs() < 1.0);
         assert!((size.height - 200.0).abs() < 1.0); // 10 * 20.0
@@ -163,12 +148,12 @@ mod tests {
 
     #[test]
     fn intrinsic_size_empty_lines() {
-        test_metrics();
+        let metrics = test_metrics();
         let lines: Vec<String> = vec![];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset, 20.0, 10);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = pane.intrinsic_size(constraints);
+        let size = pane.intrinsic_size(constraints, &metrics);
         // Empty: 0 chars * 10.0 + 4.0 = 4.0
         assert!((size.width - 4.0).abs() < 1.0);
         assert!((size.height - 200.0).abs() < 1.0);
@@ -180,7 +165,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(2));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect);
+        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         // visible_lines=3, offset=2 → lines 2, 3, 4
         assert_eq!(prims.len(), 3);
         for (i, prim) in prims.iter().enumerate() {
@@ -200,7 +185,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(4));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect);
+        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Only 1 visible line (index 4)
         assert_eq!(prims.len(), 1);
     }
@@ -211,7 +196,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(10));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect);
+        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 

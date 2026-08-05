@@ -1,5 +1,6 @@
 use super::{FiberArena, FiberId};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::text::TextMetrics;
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ pub(crate) fn layout_fiber(
     id: FiberId,
     constraints: BoxConstraints,
     origin: Point,
+    metrics: &TextMetrics,
 ) {
     // Phase 1: collect child intrinsic sizes (bottom-up)
     let child_specs: Vec<(FiberId, Size)> = {
@@ -26,7 +28,7 @@ pub(crate) fn layout_fiber(
                 child
                     .view
                     .as_ref()
-                    .map(|v| v.intrinsic_size(constraints))
+                    .map(|v| v.intrinsic_size(constraints, metrics))
                     .unwrap_or(Size::ZERO)
             } else {
                 Size::ZERO
@@ -47,7 +49,7 @@ pub(crate) fn layout_fiber(
         fiber
             .view
             .as_ref()
-            .map(|v| v.layout_children(constraints, &sizes))
+            .map(|v| v.layout_children(constraints, &sizes, metrics))
             .unwrap_or((constraints.constrain(Size::ZERO), vec![]))
     };
 
@@ -60,7 +62,6 @@ pub(crate) fn layout_fiber(
     for ((cid, _child_size), child_pos) in child_specs.iter().zip(child_origins.iter()) {
         let child_origin = Point::new(origin.x + child_pos.x, origin.y + child_pos.y);
         let child_constraints = BoxConstraints::loose(own_size);
-        layout_fiber(arena, *cid, child_constraints, child_origin);
+        layout_fiber(arena, *cid, child_constraints, child_origin, metrics);
     }
 }
-

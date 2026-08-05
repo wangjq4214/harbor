@@ -1,5 +1,6 @@
 use crate::layout::{Point, Rect};
 use crate::renderer::Viewport;
+use std::sync::Arc;
 
 // ── Color ───────────────────────────────────────────────────────────────────
 
@@ -137,7 +138,7 @@ pub enum Primitive {
         corner_radius: f32,
     },
     Text {
-        run: TextRunId,
+        text: Arc<str>,
         origin: Point,
         color: Color,
     },

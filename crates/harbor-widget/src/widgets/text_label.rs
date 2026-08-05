@@ -1,40 +1,17 @@
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{Color, Primitive, TextRunId};
-use crate::text::current_metrics;
+use crate::scene::primitive::{Color, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
-
-// ── Thread-local text run registration ─────────────────────────────────────
-
-thread_local! {
-    /// Queue of (text, color) pairs to register after the paint pass.
-    /// Keyed by a placeholder id assigned during paint.
-    static PENDING_TEXT_RUNS: std::cell::RefCell<
-        Vec<(TextRunId, String, crate::scene::primitive::Color)>,
-    > = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-static NEXT_TEXT_RUN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// Assigns a provisional TextRunId and queues the text for later registration.
-pub(crate) fn queue_text_run(text: &str, color: Color) -> TextRunId {
-    let id = NEXT_TEXT_RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    PENDING_TEXT_RUNS.with(|q| q.borrow_mut().push((id, text.to_owned(), color)));
-    id
-}
-
-/// Drains queued text runs. Called by Runtime after the paint pass.
-pub(crate) fn drain_pending_text_runs() -> Vec<(TextRunId, String, Color)> {
-    PENDING_TEXT_RUNS.with(|q| std::mem::take(&mut *q.borrow_mut()))
-}
+use std::sync::Arc;
 
 // ── TextLabel ───────────────────────────────────────────────────────────────
 
 /// A non-interactive widget that displays a single line of monospace text.
 ///
-/// Uses the thread-local `TextMetrics` for intrinsic size computation.
-/// Produces a [`Primitive::Text`] during the paint pass.
+/// Uses Runtime-owned `TextMetrics` for intrinsic size computation.
+/// Produces a [`Primitive::Text`] with its text payload during the paint pass.
 #[derive(Clone)]
 pub struct TextLabel {
     text: String,
@@ -72,20 +49,7 @@ impl AnyView for TextLabel {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        let metrics = current_metrics().unwrap_or(TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 0.0,
-            underline_thickness: 1.5,
-            strikethrough_position: 0.0,
-            strikethrough_thickness: 1.5,
-        });
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let width = self.text.len() as f32 * metrics.cell_width + 4.0;
         let height = metrics.line_height;
         constraints.constrain(Size::new(width, height))
@@ -95,16 +59,16 @@ impl AnyView for TextLabel {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = self.intrinsic_size(constraints);
+        let own = self.intrinsic_size(constraints, metrics);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
-        let run_id = queue_text_run(&self.text, self.color);
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         vec![Primitive::Text {
-            run: run_id,
+            text: Arc::from(self.text.as_str()),
             origin: rect.min,
             color: self.color,
         }]
@@ -115,9 +79,6 @@ impl AnyView for TextLabel {
     }
 }
 
-// Re-import for the fallback intrinsic size
-use crate::text::TextMetrics;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,7 +87,7 @@ mod tests {
     fn text_label_intrinsic_size_uses_cell_width() {
         let label = TextLabel::new("Hello");
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = label.intrinsic_size(constraints);
+        let size = label.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Default metrics: cell_width=10.0, line_height=20.0
         // "Hello" = 5 chars * 10.0 + 4.0 padding = 54.0
         assert!((size.width - 54.0).abs() < 1.0);
@@ -137,7 +98,7 @@ mod tests {
     fn text_label_empty_text_min_width() {
         let label = TextLabel::new("");
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = label.intrinsic_size(constraints);
+        let size = label.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Empty text: 0 chars * 10.0 + 4.0 padding = 4.0
         assert!((size.width - 4.0).abs() < 1.0);
     }
@@ -146,7 +107,7 @@ mod tests {
     fn text_label_paint_produces_text_primitive() {
         let label = TextLabel::new("Hi");
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(100.0, 30.0));
-        let prims = label.paint_primitives(rect);
+        let prims = label.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
         match &prims[0] {
             Primitive::Text { origin, color, .. } => {
@@ -182,7 +143,7 @@ mod tests {
         };
         let label = TextLabel::new("X").color(color);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(10.0, 20.0));
-        let prims = label.paint_primitives(rect);
+        let prims = label.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         match &prims[0] {
             Primitive::Text { color: c, .. } => {
                 assert_eq!(*c, color);

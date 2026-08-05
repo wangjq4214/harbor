@@ -1,5 +1,6 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
 
 /// Overlay container. Positions all children at the same origin (0,0).
@@ -29,8 +30,7 @@ impl Stack {
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        let mut cx = BuildCx::stub();
-        self.children.push(child.build(&mut cx));
+        self.children.push(View::deferred(child));
         self
     }
 }
@@ -50,11 +50,7 @@ impl AnyView for Stack {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(Size::ZERO)
     }
 
@@ -62,6 +58,7 @@ impl AnyView for Stack {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let max_width = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
         let max_height = child_sizes.iter().map(|s| s.height).fold(0.0, f32::max);
@@ -70,7 +67,7 @@ impl AnyView for Stack {
         (own, positions)
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         self.background
             .map(|c| Primitive::Quad {
                 rect,
@@ -94,7 +91,11 @@ mod tests {
             .child(SizedBox::new(Size::new(80.0, 40.0)));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0), Size::new(80.0, 40.0)];
-        let (own, positions) = stack.layout_children(constraints, &child_sizes);
+        let (own, positions) = stack.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(100.0, 50.0));
         assert_eq!(positions.len(), 2);
         assert_eq!(positions[0], Point::ZERO);
@@ -105,7 +106,8 @@ mod tests {
     fn stack_empty() {
         let stack = Stack::new();
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let (own, positions) = stack.layout_children(constraints, &[]);
+        let (own, positions) =
+            stack.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(own, Size::ZERO);
         assert!(positions.is_empty());
     }
@@ -114,7 +116,7 @@ mod tests {
     fn stack_background_paint() {
         let stack = Stack::new().background(Color::GREEN);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 100.0));
-        let prims = stack.paint_primitives(rect);
+        let prims = stack.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
         match &prims[0] {
             Primitive::Quad { color, .. } => assert_eq!(*color, Color::GREEN),
@@ -126,7 +128,7 @@ mod tests {
     fn stack_no_background_paint() {
         let stack = Stack::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 100.0));
-        let prims = stack.paint_primitives(rect);
+        let prims = stack.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 
@@ -135,7 +137,11 @@ mod tests {
         let stack = Stack::new().child(SizedBox::new(Size::new(1000.0, 1000.0)));
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(1000.0, 1000.0)];
-        let (own, positions) = stack.layout_children(constraints, &child_sizes);
+        let (own, positions) = stack.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(500.0, 500.0));
         assert_eq!(positions[0], Point::ZERO);
     }
@@ -152,7 +158,11 @@ mod tests {
             Size::new(80.0, 80.0),
             Size::new(60.0, 60.0),
         ];
-        let (own, positions) = stack.layout_children(constraints, &child_sizes);
+        let (own, positions) = stack.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(100.0, 100.0)); // max child size
         assert_eq!(positions.len(), 3);
         // All at origin

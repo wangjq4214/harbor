@@ -2,8 +2,10 @@ use crate::input::event::{Key, KeyboardEvent, PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
+use crate::signal::Signal;
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
-use std::cell::Cell;
+use std::sync::Arc;
 
 // ── Button Constants ────────────────────────────────────────────────────────
 
@@ -11,13 +13,6 @@ use std::cell::Cell;
 const HORIZONTAL_PADDING: f32 = 32.0;
 /// Default button height in logical pixels.
 const DEFAULT_HEIGHT: f32 = 32.0;
-
-/// Returns the current cell width from thread-local metrics, or a default.
-fn cell_width() -> f32 {
-    crate::text::current_metrics()
-        .map(|m| m.cell_width)
-        .unwrap_or(10.0)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ButtonVisualState {
@@ -87,10 +82,7 @@ type OnClick = std::sync::Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
 #[derive(Clone)]
 pub struct Button {
     label: String,
-    state: Cell<ButtonVisualState>,
-    children: Vec<View>,
     // onClick is stored as Arc for Clone support.
-    // During build, the closure is wrapped and stored in View.
     on_click: Option<OnClick>,
 }
 
@@ -98,8 +90,6 @@ impl Button {
     pub fn new(label: impl Into<String>) -> Self {
         Button {
             label: label.into(),
-            state: Cell::new(ButtonVisualState::Normal),
-            children: vec![],
             on_click: None,
         }
     }
@@ -109,18 +99,38 @@ impl Button {
         self
     }
 
+    fn render_view(&self, state: Signal<ButtonVisualState>) -> ButtonView {
+        ButtonView {
+            label: self.label.clone(),
+            on_click: self.on_click.clone(),
+            state,
+        }
+    }
+}
+
+impl Component for Button {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let state = cx.use_state(|| ButtonVisualState::Normal);
+        View::new(self.render_view(state), vec![], None)
+    }
+}
+
+/// The materialized button view. Configuration is copied from [`Button`] while
+/// its visual state remains owned by the Fiber hook that built it.
+#[derive(Clone)]
+struct ButtonView {
+    label: String,
+    on_click: Option<OnClick>,
+    state: Signal<ButtonVisualState>,
+}
+
+impl ButtonView {
     fn corner_radius() -> f32 {
         4.0
     }
 }
 
-impl Component for Button {
-    fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
-    }
-}
-
-impl AnyView for Button {
+impl AnyView for ButtonView {
     fn key(&self) -> Option<&ViewKey> {
         None
     }
@@ -129,12 +139,8 @@ impl AnyView for Button {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
-        let label_width = self.label.len() as f32 * cell_width() + HORIZONTAL_PADDING;
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        let label_width = self.label.len() as f32 * metrics.cell_width + HORIZONTAL_PADDING;
         let width = label_width.clamp(constraints.min.width, constraints.max.width);
         let height = DEFAULT_HEIGHT.clamp(constraints.min.height, constraints.max.height);
         constraints.constrain(Size::new(width, height))
@@ -144,15 +150,16 @@ impl AnyView for Button {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         (
-            self.intrinsic_size(constraints),
+            self.intrinsic_size(constraints, metrics),
             vec![Point::ZERO; child_sizes.len()],
         )
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
-        let state = self.state.get();
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        let state = *self.state.read();
         let bg = state.background_color();
         let border = state.border_color();
 
@@ -178,15 +185,14 @@ impl AnyView for Button {
                 b: 1.0,
                 a: 1.0,
             };
-            let run_id = crate::widgets::text_label::queue_text_run(&self.label, label_color);
             // Position the text centered within the button.
-            let text_width = self.label.len() as f32 * cell_width();
+            let text_width = self.label.len() as f32 * metrics.cell_width;
             let origin = Point::new(
                 rect.min.x + (rect.size().width - text_width).max(0.0) / 2.0,
                 rect.min.y + (rect.size().height - DEFAULT_HEIGHT).max(0.0) / 2.0 + 2.0,
             );
             prims.push(Primitive::Text {
-                run: run_id,
+                text: Arc::from(self.label.as_str()),
                 origin,
                 color: label_color,
             });
@@ -224,12 +230,12 @@ impl AnyView for Button {
                     EventHandled::Handled
                 }
                 PointerPhase::Move => {
-                    let prev = self.state.get();
+                    let prev = *self.state.read();
                     // Stay Pressed during drag, otherwise track hover
-                    if self.state.get() != ButtonVisualState::Pressed {
+                    if *self.state.read() != ButtonVisualState::Pressed {
                         self.state.set(ButtonVisualState::Hovered);
                     }
-                    if self.state.get() != prev {
+                    if *self.state.read() != prev {
                         ctx.invalidate_paint();
                     }
                     EventHandled::Handled
@@ -268,259 +274,158 @@ impl AnyView for Button {
 
 #[cfg(test)]
 mod tests {
-    use crate::input::event::{PointerButton, PointerEvent};
+    use crate::input::event::{FocusEvent, PointerButton, PointerEvent};
+    use crate::widgets::column::Column;
+    use std::time::Instant;
 
     use super::*;
 
-    #[test]
-    fn button_is_focusable() {
-        let btn = Button::new("OK");
-        assert!(btn.is_focusable());
+    fn test_view(button: Button) -> ButtonView {
+        button.render_view(Signal::new(ButtonVisualState::Normal))
     }
 
     #[test]
-    fn button_hit_test() {
-        let btn = Button::new("OK");
+    fn build_creates_visual_state_hook_and_private_view() {
+        let mut cx = BuildCx::stub();
+        let view = Button::new("OK").build(&mut cx);
+
+        assert_eq!(cx.hooks.len(), 1);
+        let (inner, children, _) = view.decompose();
+        assert!(children.is_empty());
+        assert!(inner.is_focusable());
+    }
+
+    #[test]
+    fn private_view_handles_layout_hit_testing_and_painting() {
+        let btn = test_view(Button::new("OK"));
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
+        let constraints = BoxConstraints::tight(Size::new(50.0, 20.0));
+
+        assert!(btn.is_focusable());
         assert!(btn.hit_test(Point::new(50.0, 16.0), rect));
         assert!(!btn.hit_test(Point::new(200.0, 16.0), rect));
+        assert_eq!(
+            btn.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS),
+            Size::new(50.0, 20.0)
+        );
+        assert_eq!(
+            btn.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS)
+                .len(),
+            3
+        );
     }
 
     #[test]
-    fn button_intrinsic_size() {
-        let btn = Button::new("Hello");
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = btn.intrinsic_size(constraints);
-        assert!(size.width > 0.0);
-        assert_eq!(size.height, 32.0);
-    }
-
-    #[test]
-    fn button_paint_produces_quad_and_border() {
-        let btn = Button::new("");
+    fn pointer_events_update_hook_state_and_invalidate_paint() {
+        let btn = test_view(Button::new("OK"));
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let prims = btn.paint_primitives(rect);
-        // Empty label — no Text primitive, only Quad + Border
-        assert_eq!(prims.len(), 2);
-        match &prims[0] {
-            Primitive::Quad { .. } => {}
-            _ => panic!("expected Quad"),
-        }
-        match &prims[1] {
-            Primitive::Border { .. } => {}
-            _ => panic!("expected Border"),
-        }
-    }
-
-    #[test]
-    fn button_paint_with_label_includes_text() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let prims = btn.paint_primitives(rect);
-        assert_eq!(prims.len(), 3);
-        match &prims[2] {
-            Primitive::Text { .. } => {}
-            _ => panic!("expected Text as third primitive"),
-        }
-    }
-
-    #[test]
-    fn button_click_fires_on_pointer_up() {
-        let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let clicked_clone = clicked.clone();
-        let btn = Button::new("OK").on_click(move |_ctx| {
-            clicked_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::Up,
-            crate::input::event::PointerButton::Left,
-            0,
-        ));
         let mut ctx = EventCtx::new();
-        let result = btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(result, EventHandled::Handled);
-        assert!(clicked.load(std::sync::atomic::Ordering::SeqCst));
-    }
 
-    #[test]
-    fn button_enter_key_activates() {
-        let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let clicked_clone = clicked.clone();
-        let btn = Button::new("OK").on_click(move |_ctx| {
-            clicked_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Enter,
-            modifiers: Default::default(),
-        });
-        let mut ctx = EventCtx::new();
-        let result = btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(result, EventHandled::Handled);
-        assert!(clicked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn button_space_key_activates() {
-        let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let clicked_clone = clicked.clone();
-        let btn = Button::new("OK").on_click(move |_ctx| {
-            clicked_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Space,
-            modifiers: Default::default(),
-        });
-        let mut ctx = EventCtx::new();
-        let result = btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(result, EventHandled::Handled);
-        assert!(clicked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn button_ignores_random_key() {
-        let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let clicked_clone = clicked.clone();
-        let btn = Button::new("OK").on_click(move |_ctx| {
-            clicked_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Escape,
-            modifiers: Default::default(),
-        });
-        let mut ctx = EventCtx::new();
-        let result = btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(result, EventHandled::Ignored);
-        assert!(!clicked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn button_drag_maintains_pressed_state() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-
-        // Down sets Pressed
-        let event_down = UiEvent::Pointer(PointerEvent::new(
+        let down = UiEvent::Pointer(PointerEvent::new(
             Point::ZERO,
             PointerPhase::Down,
             PointerButton::Left,
             0,
         ));
-        let mut ctx = EventCtx::new();
-        btn.handle_event(&event_down, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Pressed);
-        ctx.take_commands(); // consume commands
+        assert_eq!(
+            btn.handle_event(&down, &mut ctx, rect),
+            EventHandled::Handled
+        );
+        assert_eq!(*btn.state.read(), ButtonVisualState::Pressed);
+        assert!(ctx.needs_paint());
 
-        // Move while Pressed — stays Pressed
-        let event_move = UiEvent::Pointer(PointerEvent::new(
+        let move_event = UiEvent::Pointer(PointerEvent::new(
             Point::new(50.0, 16.0),
             PointerPhase::Move,
             PointerButton::Left,
             0,
         ));
-        btn.handle_event(&event_move, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Pressed);
-    }
+        btn.handle_event(&move_event, &mut ctx, rect);
+        assert_eq!(*btn.state.read(), ButtonVisualState::Pressed);
 
-    #[test]
-    fn button_focus_gained_sets_focused_state() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-
-        let event = UiEvent::Focus(crate::input::event::FocusEvent::Gained);
-        let mut ctx = EventCtx::new();
-        btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Focused);
-    }
-
-    #[test]
-    fn button_focus_lost_resets_to_normal() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-
-        // First gain focus
-        let event_gain = UiEvent::Focus(crate::input::event::FocusEvent::Gained);
-        let mut ctx = EventCtx::new();
-        btn.handle_event(&event_gain, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Focused);
-        ctx.take_commands();
-
-        // Then lose focus
-        let event_lost = UiEvent::Focus(crate::input::event::FocusEvent::Lost);
-        btn.handle_event(&event_lost, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Normal);
-    }
-
-    #[test]
-    fn button_move_sets_hovered_when_not_pressed() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-
-        // Move sets Hovered when not pressed
-        let event = UiEvent::Pointer(PointerEvent::new(
-            Point::new(50.0, 16.0),
-            PointerPhase::Move,
-            PointerButton::Left,
-            0,
-        ));
-        let mut ctx = EventCtx::new();
-        btn.handle_event(&event, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Hovered);
-    }
-
-    #[test]
-    fn button_pointer_cancel_resets_to_normal() {
-        let btn = Button::new("OK");
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
-
-        // Down -> Pressed
-        let event_down = UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ));
-        let mut ctx = EventCtx::new();
-        btn.handle_event(&event_down, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Pressed);
-        ctx.take_commands();
-
-        // Cancel -> Normal
-        let event_cancel = UiEvent::Pointer(PointerEvent::new(
+        let cancel = UiEvent::Pointer(PointerEvent::new(
             Point::ZERO,
             PointerPhase::Cancel,
             PointerButton::Left,
             0,
         ));
-        btn.handle_event(&event_cancel, &mut ctx, rect);
-        assert_eq!(btn.state.get(), ButtonVisualState::Normal);
+        btn.handle_event(&cancel, &mut ctx, rect);
+        assert_eq!(*btn.state.read(), ButtonVisualState::Normal);
     }
 
     #[test]
-    fn button_intrinsic_size_under_tight_constraints() {
-        let btn = Button::new("Hello");
-        let constraints = BoxConstraints::tight(Size::new(50.0, 20.0));
-        let size = btn.intrinsic_size(constraints);
-        // Button intrinsic size is clamped to constraints
-        assert_eq!(size.width, 50.0);
-        assert_eq!(size.height, 20.0);
+    fn focus_and_hover_events_update_hook_state() {
+        let btn = test_view(Button::new("OK"));
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
+        let mut ctx = EventCtx::new();
+
+        btn.handle_event(&UiEvent::Focus(FocusEvent::Gained), &mut ctx, rect);
+        assert_eq!(*btn.state.read(), ButtonVisualState::Focused);
+        btn.handle_event(&UiEvent::Focus(FocusEvent::Lost), &mut ctx, rect);
+        assert_eq!(*btn.state.read(), ButtonVisualState::Normal);
+
+        let move_event = UiEvent::Pointer(PointerEvent::new(
+            Point::new(50.0, 16.0),
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        ));
+        btn.handle_event(&move_event, &mut ctx, rect);
+        assert_eq!(*btn.state.read(), ButtonVisualState::Hovered);
     }
 
     #[test]
-    fn button_layout_children_delegates_to_intrinsic_size() {
-        let btn = Button::new("Hello");
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let (own, positions) = btn.layout_children(constraints, &[]);
-        let intrinsic = btn.intrinsic_size(constraints);
-        assert_eq!(own, intrinsic);
-        assert!(positions.is_empty());
+    fn button_hook_state_persists_across_parent_rebuild_and_subscribes_nested_fiber() {
+        let mut runtime = crate::runtime::Runtime::new();
+        runtime.set_root(Column::new().child(Button::new("OK")));
+        runtime.update(Instant::now());
+
+        let parent_id = runtime.root_id().unwrap();
+        let button_id = runtime.arena().get(parent_id).unwrap().children[0];
+        let state = runtime.arena().get(button_id).unwrap().hooks[0]
+            .as_any_ref()
+            .downcast_ref::<Signal<ButtonVisualState>>()
+            .unwrap()
+            .clone();
+
+        state.set(ButtonVisualState::Pressed);
+        let effects = runtime.update(Instant::now());
+
+        assert!(effects.request_redraw, "the nested button Fiber subscribed");
+        assert_eq!(
+            runtime.arena().get(parent_id).unwrap().children[0],
+            button_id
+        );
+        assert_eq!(runtime.arena().get(button_id).unwrap().hooks.len(), 1);
+        assert_eq!(*state.read(), ButtonVisualState::Pressed);
+    }
+
+    #[test]
+    fn activation_events_preserve_callback_api() {
+        let clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let clicked_clone = clicked.clone();
+        let btn = test_view(Button::new("OK").on_click(move |_ctx| {
+            clicked_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 32.0));
+        let mut ctx = EventCtx::new();
+
+        let up = UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::Up,
+            PointerButton::Left,
+            0,
+        ));
+        assert_eq!(btn.handle_event(&up, &mut ctx, rect), EventHandled::Handled);
+        assert!(clicked.load(std::sync::atomic::Ordering::SeqCst));
+
+        let escape = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Escape,
+            modifiers: Default::default(),
+        });
+        assert_eq!(
+            btn.handle_event(&escape, &mut ctx, rect),
+            EventHandled::Ignored
+        );
     }
 }

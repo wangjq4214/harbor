@@ -3,8 +3,8 @@ mod frame_encoder;
 
 use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
-    DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber, reconcile_children,
-    unmount_fiber,
+    DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
+    reconcile_children_with_external_draws, unmount_fiber,
 };
 use crate::input::event::{PointerPhase, UiEvent};
 #[cfg(test)]
@@ -19,7 +19,7 @@ use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
 };
-use crate::text::TextRunCache;
+use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
 use crate::view::{BuildCx, Component};
 use hashbrown::HashMap;
 use std::sync::Arc;
@@ -71,16 +71,30 @@ fn remove_external_input(runtime_id: RuntimeId) {
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
+/// Documented fallback metrics used by [`Runtime::new`].
+pub const DEFAULT_TEXT_METRICS: TextMetrics = TextMetrics {
+    cell_width: 10.0,
+    line_height: 20.0,
+    ascent: 16.0,
+    underline_position: 0.0,
+    underline_thickness: 1.5,
+    strikethrough_position: 0.0,
+    strikethrough_thickness: 1.5,
+};
+
 /// Top-level widget tree scheduler.
 ///
-/// Owns the fiber tree and orchestrates reconcile → layout → paint cycles,
-/// delegating input routing to [`EventRouter`] and GPU encode to [`FrameEncoder`].
+/// Owns the fiber tree, text metrics, and text run cache lifecycle while
+/// orchestrating reconcile → layout → paint cycles. Input routing and GPU
+/// encoding are delegated to [`EventRouter`] and [`FrameEncoder`].
 pub struct Runtime {
     runtime_id: RuntimeId,
     arena: FiberArena,
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
+    text_metrics: TextMetrics,
     scene_graph: SceneGraph,
+    next_scene_item_id: u64,
     pending_delta: Option<SceneDelta>,
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
@@ -96,19 +110,46 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    /// Creates a Runtime with the documented fallback text metrics.
     pub fn new() -> Self {
+        Self::with_text_metrics(DEFAULT_TEXT_METRICS)
+    }
+
+    /// Creates a Runtime that owns the supplied text metrics.
+    pub fn with_text_metrics(text_metrics: TextMetrics) -> Self {
         Runtime {
             runtime_id: RuntimeId::new(),
             arena: FiberArena::new(),
             root_id: None,
             root_component: None,
+            text_metrics,
             scene_graph: SceneGraph::new(),
+            next_scene_item_id: 1,
             pending_delta: None,
             current_viewport: None,
             external_draws: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
             pending_effects: RuntimeEffects::default(),
+        }
+    }
+
+    /// Returns the text metrics owned by this Runtime.
+    pub fn text_metrics(&self) -> &TextMetrics {
+        &self.text_metrics
+    }
+
+    /// Replaces this Runtime's text metrics and marks the root layout dirty.
+    pub fn set_text_metrics(&mut self, text_metrics: TextMetrics) {
+        if text_metrics_equal(&self.text_metrics, &text_metrics) {
+            return;
+        }
+        self.text_metrics = text_metrics;
+        if let Some(root_id) = self.root_id {
+            if let Some(fiber) = self.arena.get_mut(root_id) {
+                fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
+            }
+            mark_dirty_for(self.runtime_id, root_id);
         }
     }
 
@@ -198,9 +239,6 @@ impl Runtime {
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
-        view.register_child_external_draws(&mut cx);
-        self.external_draws.clear();
-        self.external_draws.extend(cx.external_draws.drain(..));
         let widget_type = view.widget_type();
         let key = view.key().cloned();
         let (inner, children, _explicit_key) = view.decompose();
@@ -215,10 +253,18 @@ impl Runtime {
         }
 
         // Reconcile children
-        let new_children = reconcile_children(&mut self.arena, root_id, old_children, children);
+        let new_children = reconcile_children_with_external_draws(
+            &mut self.arena,
+            root_id,
+            old_children,
+            children,
+            &mut cx.external_draws,
+        );
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.children = new_children;
         }
+        self.external_draws.clear();
+        self.external_draws.extend(cx.external_draws.drain(..));
 
         // Layout
         let viewport_size = self
@@ -227,7 +273,13 @@ impl Runtime {
             .map(|v| v.logical_size)
             .unwrap_or(Size::new(800.0, 600.0));
         let constraints = BoxConstraints::loose(viewport_size);
-        layout_fiber(&mut self.arena, root_id, constraints, Point::ZERO);
+        layout_fiber(
+            &mut self.arena,
+            root_id,
+            constraints,
+            Point::ZERO,
+            &self.text_metrics,
+        );
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.flags.remove(DirtyFlags::LAYOUT_DIRTY);
         }
@@ -346,16 +398,36 @@ impl Runtime {
             return;
         };
 
-        let items = paint_fiber(&self.arena, root_id, 0);
+        let items = paint_fiber(
+            &mut self.arena,
+            root_id,
+            0,
+            &mut self.next_scene_item_id,
+            &self.text_metrics,
+        );
         let delta = self.scene_graph.diff(items);
 
-        self.pending_delta = Some(delta);
+        if let Some(pending_delta) = &mut self.pending_delta {
+            pending_delta.coalesce(delta);
+        } else {
+            self.pending_delta = Some(delta);
+        }
     }
 
-    /// Drains thread-local pending text runs and registers them with the cache.
-    /// Must be called after the paint pass (during `update`) and before `encode`.
+    /// Prepares cached glyph layouts from the current retained scene.
+    ///
+    /// Call after the paint pass and before encoding with the glyph lookup that
+    /// matches the active atlas.
+    pub fn prepare_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
+        self.encoder
+            .prepare_text_runs(&self.scene_graph, &self.text_metrics, glyph_fn);
+    }
+
+    /// Backwards-compatible spelling for [`Self::prepare_text_runs`].
+    ///
+    /// This no longer reads a pending queue or thread-local state.
     pub fn register_pending_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
-        self.encoder.register_pending_text_runs(glyph_fn);
+        self.prepare_text_runs(glyph_fn);
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -516,6 +588,128 @@ mod tests {
 
     fn now() -> Instant {
         Instant::now()
+    }
+
+    #[test]
+    fn unencoded_repaint_preserves_scene_ids_and_initial_additions() {
+        use crate::scene::primitive::Color;
+
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED));
+        let scene_ids: Vec<u64> = rt.scene_graph.items().iter().map(|item| item.id).collect();
+
+        rt.run_paint_pass();
+
+        assert_eq!(
+            rt.scene_graph
+                .items()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            scene_ids
+        );
+        let delta = rt.pending_delta().unwrap();
+        assert_eq!(
+            delta.added.iter().map(|item| item.id).collect::<Vec<_>>(),
+            scene_ids
+        );
+        assert!(delta.removed.is_empty());
+        assert!(delta.modified.is_empty());
+    }
+
+    #[test]
+    fn unencoded_modified_item_remains_added_with_its_latest_contents() {
+        use crate::effects::ExternalInvalidation;
+        use crate::scene::primitive::Color;
+        use crate::view::{BuildCx, Component, View};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct ColorToggle(Rc<Cell<bool>>);
+
+        impl Component for ColorToggle {
+            fn build(&self, cx: &mut BuildCx) -> View {
+                SizedBox::new(Size::new(100.0, 50.0))
+                    .color(if self.0.get() {
+                        Color::BLUE
+                    } else {
+                        Color::RED
+                    })
+                    .build(cx)
+            }
+        }
+
+        let blue = Rc::new(Cell::new(false));
+        let mut rt = Runtime::new();
+        rt.set_root(ColorToggle(Rc::clone(&blue)));
+        let scene_id = rt.scene_graph.items()[0].id;
+
+        blue.set(true);
+        rt.invalidate_external(ExternalInvalidation::new());
+        rt.update(now());
+
+        let delta = rt.pending_delta().unwrap();
+        assert_eq!(delta.added.len(), 1);
+        assert_eq!(delta.added[0].id, scene_id);
+        assert_eq!(delta.added[0], rt.scene_graph.items()[0]);
+        assert!(delta.removed.is_empty());
+        assert!(delta.modified.is_empty());
+    }
+
+    #[test]
+    fn nested_deferred_component_preserves_state_and_subscribes_its_fiber() {
+        use crate::signal::Signal;
+        use crate::view::{BuildCx, Component, View};
+        use crate::widgets::column::Column;
+        use crate::widgets::padding::Padding;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct StatefulChild {
+            signal: Rc<RefCell<Option<Signal<u32>>>>,
+            observed_values: Rc<RefCell<Vec<u32>>>,
+        }
+
+        impl Component for StatefulChild {
+            fn build(&self, cx: &mut BuildCx) -> View {
+                let state = cx.use_state(|| 0u32);
+                self.observed_values.borrow_mut().push(*state.read());
+                *self.signal.borrow_mut() = Some(state);
+                SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+            }
+        }
+
+        let signal = Rc::new(RefCell::new(None));
+        let observed_values = Rc::new(RefCell::new(Vec::new()));
+        let child = StatefulChild {
+            signal: Rc::clone(&signal),
+            observed_values: Rc::clone(&observed_values),
+        };
+        let mut rt = Runtime::new();
+        rt.set_root(Column::new().child(Padding::new(1.0, 1.0, 1.0, 1.0).child(child)));
+
+        let root_id = rt.root_id().unwrap();
+        let padding_id = rt.arena().get(root_id).unwrap().children[0];
+        let child_id = rt.arena().get(padding_id).unwrap().children[0];
+        assert_eq!(rt.arena().get(child_id).unwrap().hooks.len(), 1);
+        assert_eq!(observed_values.borrow().as_slice(), &[0]);
+
+        let state = signal.borrow().as_ref().unwrap().clone();
+        state.set(7);
+        let effects = rt.update(now());
+
+        assert!(
+            effects.request_redraw,
+            "the nested Fiber subscribed to its state"
+        );
+        assert_eq!(observed_values.borrow().last(), Some(&7));
+        let rebuilt_padding = rt.arena().get(root_id).unwrap().children[0];
+        assert_eq!(
+            rt.arena().get(rebuilt_padding).unwrap().children[0],
+            child_id
+        );
+        assert_eq!(rt.arena().get(child_id).unwrap().hooks.len(), 1);
     }
 
     // ── is_descendant_of ───────────────────────────────────────────────
@@ -921,6 +1115,7 @@ mod tests {
             id,
             BoxConstraints::loose(Size::new(800.0, 600.0)),
             Point::ZERO,
+            &DEFAULT_TEXT_METRICS,
         );
         // No panic = pass
     }
@@ -1011,58 +1206,82 @@ mod tests {
         assert!(rt.input().focused.is_none(), "focused should remain None");
     }
 
-    // ── register_pending_text_runs ─────────────────────────────────────
+    // ── text run preparation ───────────────────────────────────────────
 
     #[test]
-    fn should_register_queued_text_run_in_cache() {
-        use crate::scene::primitive::Color;
-        // Arrange: queue a text run via the thread-local mechanism
-        let text = "Hello";
-        let color = Color::WHITE;
-        crate::widgets::text_label::queue_text_run(text, color);
-
+    fn text_preparation_reuses_unchanged_scene_runs_and_releases_removed_runs() {
         let mut rt = Runtime::new();
+        rt.set_root(TextLabel::new("Confirm paste?"));
+        rt.prepare_text_runs(&|_ch| None);
+        assert_eq!(rt.text_run_cache().len(), 1);
 
-        // Act
-        rt.register_pending_text_runs(&|_ch| None);
+        // Preparing an unchanged retained scene must not allocate another run.
+        rt.prepare_text_runs(&|_ch| None);
+        assert_eq!(rt.text_run_cache().len(), 1);
 
-        // Assert: the cache should contain one run
-        assert_eq!(
-            rt.text_run_cache().len(),
-            1,
-            "cache should have one registered text run"
-        );
-        assert!(!rt.text_run_cache().is_empty(), "cache should not be empty");
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.prepare_text_runs(&|_ch| None);
+        assert!(rt.text_run_cache().is_empty());
     }
 
     #[test]
-    fn should_register_text_runs_queued_by_update_before_the_frame_can_encode() {
-        // Arrange: discard any stale thread-local work and build a text-producing root.
-        let _ = crate::widgets::text_label::drain_pending_text_runs();
+    fn text_metrics_are_isolated_per_runtime_and_relayout_the_owner() {
+        let mut narrow = DEFAULT_TEXT_METRICS;
+        narrow.cell_width = 4.0;
+        let mut wide = DEFAULT_TEXT_METRICS;
+        wide.cell_width = 20.0;
+
+        let mut first = Runtime::with_text_metrics(narrow);
+        let mut second = Runtime::with_text_metrics(wide);
+        first.set_root(TextLabel::new("text"));
+        second.set_root(TextLabel::new("text"));
+
+        assert_eq!(
+            first
+                .arena()
+                .get(first.root_id().unwrap())
+                .unwrap()
+                .layout_rect()
+                .unwrap()
+                .size()
+                .width,
+            20.0
+        );
+        assert_eq!(
+            second
+                .arena()
+                .get(second.root_id().unwrap())
+                .unwrap()
+                .layout_rect()
+                .unwrap()
+                .size()
+                .width,
+            84.0
+        );
+
+        first.set_text_metrics(wide);
+        assert!(first.update(now()).request_redraw);
+        assert_eq!(
+            first
+                .arena()
+                .get(first.root_id().unwrap())
+                .unwrap()
+                .layout_rect()
+                .unwrap()
+                .size()
+                .width,
+            84.0
+        );
+        assert_eq!(second.text_metrics().cell_width, 20.0);
+    }
+
+    #[test]
+    fn legacy_text_preparation_spelling_forwards_to_scene_preparation() {
         let mut rt = Runtime::new();
         rt.set_root(TextLabel::new("Confirm paste?"));
 
-        // Act: update performs the paint pass, then frame preparation registers its text.
-        rt.update(now());
-        assert!(rt.text_run_cache().is_empty());
         rt.register_pending_text_runs(&|_ch| None);
 
-        // Assert: text produced during the update is available before encoding.
-        assert!(!rt.text_run_cache().is_empty());
-    }
-
-    #[test]
-    fn should_be_noop_when_no_pending_text_runs() {
-        // Arrange
-        let mut rt = Runtime::new();
-
-        // Act
-        rt.register_pending_text_runs(&|_ch| None);
-
-        // Assert
-        assert!(
-            rt.text_run_cache().is_empty(),
-            "cache should remain empty when no runs are pending"
-        );
+        assert_eq!(rt.text_run_cache().len(), 1);
     }
 }

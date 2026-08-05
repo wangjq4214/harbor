@@ -1,5 +1,6 @@
 use crate::layout::{Alignment, BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
+use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
 
 /// Single-child positioner within parent bounds according to Alignment.
@@ -25,8 +26,7 @@ impl Align {
     }
 
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        let mut cx = BuildCx::stub();
-        self.children.push(child.build(&mut cx));
+        self.children.push(View::deferred(child));
         self
     }
 }
@@ -46,11 +46,7 @@ impl AnyView for Align {
         std::any::TypeId::of::<Self>()
     }
 
-    fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-        View::new(*self, vec![], None)
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints) -> Size {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Align fills available space
         constraints.max
     }
@@ -59,6 +55,7 @@ impl AnyView for Align {
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
+        _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let own = Size::new(
             constraints.max.width.max(constraints.min.width),
@@ -74,7 +71,7 @@ impl AnyView for Align {
         (own, vec![Point::new(x, y)])
     }
 
-    fn paint_primitives(&self, rect: Rect) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         self.background
             .map(|c| Primitive::Quad {
                 rect,
@@ -96,7 +93,11 @@ mod tests {
         let align = Align::new(Alignment::Center).child(SizedBox::new(Size::new(50.0, 50.0)));
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
-        let (own, positions) = align.layout_children(constraints, &child_sizes);
+        let (own, positions) = align.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(200.0, 200.0));
         assert_eq!(positions[0], Point::new(75.0, 75.0));
     }
@@ -106,7 +107,11 @@ mod tests {
         let align = Align::new(Alignment::Start).child(SizedBox::new(Size::new(50.0, 50.0)));
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
-        let (_own, positions) = align.layout_children(constraints, &child_sizes);
+        let (_own, positions) = align.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(positions[0], Point::ZERO);
     }
 
@@ -115,7 +120,11 @@ mod tests {
         let align = Align::new(Alignment::End).child(SizedBox::new(Size::new(50.0, 50.0)));
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
-        let (_own, positions) = align.layout_children(constraints, &child_sizes);
+        let (_own, positions) = align.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(positions[0], Point::new(150.0, 150.0));
     }
 
@@ -123,7 +132,8 @@ mod tests {
     fn align_empty() {
         let align = Align::new(Alignment::Center);
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
-        let (own, positions) = align.layout_children(constraints, &[]);
+        let (own, positions) =
+            align.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(own, Size::new(200.0, 200.0));
         assert!(positions.is_empty());
     }
@@ -133,7 +143,11 @@ mod tests {
         let align = Align::new(Alignment::Center).child(SizedBox::new(Size::new(300.0, 300.0)));
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(300.0, 300.0)];
-        let (own, positions) = align.layout_children(constraints, &child_sizes);
+        let (own, positions) = align.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         assert_eq!(own, Size::new(200.0, 200.0));
         // Child larger than own: center offset clamped to 0
         assert_eq!(positions[0], Point::ZERO);
@@ -143,7 +157,7 @@ mod tests {
     fn align_background_paint() {
         let align = Align::new(Alignment::Center).background(Color::BLUE);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
-        let prims = align.paint_primitives(rect);
+        let prims = align.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
         match &prims[0] {
             Primitive::Quad { color, .. } => assert_eq!(*color, Color::BLUE),
@@ -155,7 +169,7 @@ mod tests {
     fn align_no_background_paint() {
         let align = Align::new(Alignment::Center);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
-        let prims = align.paint_primitives(rect);
+        let prims = align.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 
@@ -164,7 +178,11 @@ mod tests {
         let align = Align::new(Alignment::Start).child(SizedBox::new(Size::new(50.0, 50.0)));
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
-        let (own, positions) = align.layout_children(constraints, &child_sizes);
+        let (own, positions) = align.layout_children(
+            constraints,
+            &child_sizes,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
         // With loose constraints, Align fills max
         assert_eq!(own, Size::new(800.0, 600.0));
         assert_eq!(positions[0], Point::ZERO);

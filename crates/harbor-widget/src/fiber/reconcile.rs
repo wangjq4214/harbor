@@ -1,5 +1,7 @@
 use super::{DirtyFlags, Fiber, FiberArena, FiberId};
-use crate::view::View;
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
+use crate::view::{BuildCx, View, ViewContents};
+use std::sync::Arc;
 
 // ── Reconciliation ───────────────────────────────────────────────────────────
 
@@ -24,39 +26,125 @@ pub(crate) fn unmount_fiber(arena: &mut FiberArena, id: FiberId) {
 
 /// Creates a new Fiber from a View and recursively reconciles its children.
 /// Pass `None` for `parent_id` for root-level fibers.
+#[cfg(test)]
 pub(crate) fn create_fiber_from_view(
     arena: &mut FiberArena,
     parent_id: Option<FiberId>,
     view: View,
 ) -> FiberId {
+    create_fiber_from_view_with_external_draws(arena, parent_id, view, &mut Vec::new())
+}
+
+fn create_fiber_from_view_with_external_draws(
+    arena: &mut FiberArena,
+    parent_id: Option<FiberId>,
+    view: View,
+    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+) -> FiberId {
     let key = view.key().cloned();
     let widget_type = view.widget_type();
-    let (inner, children, _key) = view.decompose();
 
-    let mut fiber = Fiber::new(key, widget_type, Some(inner));
+    let mut fiber = Fiber::new(key, widget_type, None);
     fiber.parent = parent_id;
     fiber.flags.insert(DirtyFlags::BUILD_DIRTY);
     fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
     let id = arena.insert(fiber);
 
-    // Reconcile children of the new fiber
-    let new_children = reconcile_children(arena, id, &[], children);
-    if let Some(f) = arena.get_mut(id) {
-        f.children = new_children;
+    reconcile_fiber(arena, id, view, external_draws);
+    id
+}
+
+/// Builds a deferred view in its assigned Fiber, then reconciles the concrete
+/// tree that it returns. Its hook vector is restored before its descendants are
+/// reconciled, so state stays owned by the same Fiber across updates.
+fn reconcile_fiber(
+    arena: &mut FiberArena,
+    id: FiberId,
+    view: View,
+    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+) {
+    let (contents, children, _key) = view.into_parts();
+    match contents {
+        ViewContents::Concrete(inner) => {
+            reconcile_concrete_fiber(arena, id, inner, children, None, external_draws);
+        }
+        ViewContents::Deferred { component, .. } => {
+            let hooks = std::mem::take(&mut arena.get_mut(id).unwrap().hooks);
+            let mut cx = BuildCx {
+                current_fiber: Some(id),
+                hooks,
+                hook_index: 0,
+                external_draws: Vec::new(),
+            };
+            let materialized = component.build(&mut cx);
+            external_draws.append(&mut cx.external_draws);
+            let hooks = cx.hooks;
+            let (inner, materialized_children, _key) = materialized.decompose();
+            reconcile_concrete_fiber(
+                arena,
+                id,
+                inner,
+                materialized_children,
+                Some(hooks),
+                external_draws,
+            );
+        }
+    }
+}
+
+fn reconcile_concrete_fiber(
+    arena: &mut FiberArena,
+    id: FiberId,
+    inner: Arc<dyn crate::view::AnyView>,
+    children: Vec<View>,
+    hooks: Option<Vec<Box<dyn crate::signal::Hook>>>,
+    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+) {
+    let old_children = arena
+        .get(id)
+        .map(|fiber| fiber.children.clone())
+        .unwrap_or_default();
+
+    if let Some(fiber) = arena.get_mut(id) {
+        fiber.view = Some(inner);
+        if let Some(hooks) = hooks {
+            fiber.hooks = hooks;
+        }
     }
 
-    id
+    let new_children =
+        reconcile_children_with_external_draws(arena, id, &old_children, children, external_draws);
+    if let Some(fiber) = arena.get_mut(id) {
+        fiber.children = new_children;
+    }
 }
 
 /// Reconciles a parent fiber's children against new Views.
 ///
 /// Matches old and new children by position, widget type, and key.
 /// Returns the new list of child FiberIds.
+#[cfg(test)]
 pub(crate) fn reconcile_children(
     arena: &mut FiberArena,
     parent_id: FiberId,
     old_children: &[FiberId],
     new_views: Vec<View>,
+) -> Vec<FiberId> {
+    reconcile_children_with_external_draws(
+        arena,
+        parent_id,
+        old_children,
+        new_views,
+        &mut Vec::new(),
+    )
+}
+
+pub(crate) fn reconcile_children_with_external_draws(
+    arena: &mut FiberArena,
+    parent_id: FiberId,
+    old_children: &[FiberId],
+    new_views: Vec<View>,
+    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
 ) -> Vec<FiberId> {
     let max_len = old_children.len().max(new_views.len());
     let mut new_child_ids = Vec::with_capacity(max_len);
@@ -77,30 +165,17 @@ pub(crate) fn reconcile_children(
                 };
 
                 if can_reuse {
-                    // Reuse the old fiber -- update view and reconcile children
-                    let (inner, view_children, _key) = view.decompose();
-
-                    let grand_old = arena
-                        .get(old_id)
-                        .map(|f| f.children.clone())
-                        .unwrap_or_default();
-
-                    if let Some(fiber) = arena.get_mut(old_id) {
-                        fiber.view = Some(inner);
-                    }
-
-                    let new_grandchildren =
-                        reconcile_children(arena, old_id, &grand_old, view_children);
-
-                    if let Some(fiber) = arena.get_mut(old_id) {
-                        fiber.children = new_grandchildren;
-                    }
-
+                    reconcile_fiber(arena, old_id, view, external_draws);
                     new_child_ids.push(old_id);
                 } else {
                     // Type or key mismatch -- unmount old, create new
                     unmount_fiber(arena, old_id);
-                    let new_id = create_fiber_from_view(arena, Some(parent_id), view);
+                    let new_id = create_fiber_from_view_with_external_draws(
+                        arena,
+                        Some(parent_id),
+                        view,
+                        external_draws,
+                    );
                     new_child_ids.push(new_id);
                 }
             }
@@ -110,7 +185,12 @@ pub(crate) fn reconcile_children(
             }
             (None, Some(view)) => {
                 // New child with no matching old fiber
-                let new_id = create_fiber_from_view(arena, Some(parent_id), view);
+                let new_id = create_fiber_from_view_with_external_draws(
+                    arena,
+                    Some(parent_id),
+                    view,
+                    external_draws,
+                );
                 new_child_ids.push(new_id);
             }
             (None, None) => unreachable!("loop bound is max(old, new) so at least one is Some"),
@@ -119,4 +199,3 @@ pub(crate) fn reconcile_children(
 
     new_child_ids
 }
-

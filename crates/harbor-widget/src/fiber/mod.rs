@@ -9,14 +9,14 @@ pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
 
 pub(crate) use layout::layout_fiber;
 pub(crate) use paint::paint_fiber;
-pub(crate) use reconcile::{reconcile_children, unmount_fiber};
+pub(crate) use reconcile::{reconcile_children_with_external_draws, unmount_fiber};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::{BoxConstraints, Point, Size};
     use crate::signal::{PENDING_DIRTY, Signal};
-    use crate::view::{AnyView, BuildCx, Key, View};
+    use crate::view::{AnyView, Key, View};
     pub(crate) use reconcile::{create_fiber_from_view, reconcile_children, unmount_fiber};
     use std::any::TypeId;
 
@@ -27,6 +27,36 @@ mod tests {
 
     fn clear_dirty_queue() {
         PENDING_DIRTY.with(|q| q.borrow_mut().clear());
+    }
+
+    fn layout_fiber(
+        arena: &mut FiberArena,
+        id: FiberId,
+        constraints: BoxConstraints,
+        origin: Point,
+    ) {
+        super::layout_fiber(
+            arena,
+            id,
+            constraints,
+            origin,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
+    }
+
+    fn paint_fiber(
+        arena: &mut FiberArena,
+        id: FiberId,
+        base_order: u32,
+        next_scene_item_id: &mut u64,
+    ) -> Vec<crate::scene::SceneItem> {
+        super::paint_fiber(
+            arena,
+            id,
+            base_order,
+            next_scene_item_id,
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        )
     }
 
     // ── DirtyFlags ─────────────────────────────────────────────────────
@@ -152,10 +182,7 @@ mod tests {
         fn widget_type(&self) -> TypeId {
             TypeId::of::<Self>()
         }
-        fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-            View::new(TestView(self.0.clone(), vec![]), self.1, None)
-        }
-        fn intrinsic_size(&self, c: BoxConstraints) -> Size {
+        fn intrinsic_size(&self, c: BoxConstraints, _metrics: &crate::text::TextMetrics) -> Size {
             c.constrain(Size::new(10.0, 10.0))
         }
     }
@@ -177,10 +204,7 @@ mod tests {
         fn widget_type(&self) -> TypeId {
             TypeId::of::<Self>()
         }
-        fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-            View::new(OtherView, vec![], None)
-        }
-        fn intrinsic_size(&self, c: BoxConstraints) -> Size {
+        fn intrinsic_size(&self, c: BoxConstraints, _metrics: &crate::text::TextMetrics) -> Size {
             c.constrain(Size::new(20.0, 20.0))
         }
     }
@@ -191,7 +215,6 @@ mod tests {
 
     #[derive(Clone)]
     struct KeyedTestView {
-        name: String,
         key: Key,
     }
 
@@ -202,30 +225,13 @@ mod tests {
         fn widget_type(&self) -> TypeId {
             TypeId::of::<Self>()
         }
-        fn build(self: Box<Self>, _cx: &mut BuildCx) -> View {
-            View::new(
-                KeyedTestView {
-                    name: self.name.clone(),
-                    key: self.key.clone(),
-                },
-                vec![],
-                None,
-            )
-        }
-        fn intrinsic_size(&self, c: BoxConstraints) -> Size {
+        fn intrinsic_size(&self, c: BoxConstraints, _metrics: &crate::text::TextMetrics) -> Size {
             c.constrain(Size::new(20.0, 20.0))
         }
     }
 
-    fn keyed_test_view(name: &str, key: &str) -> View {
-        View::new(
-            KeyedTestView {
-                name: name.to_string(),
-                key: Key::new(key),
-            },
-            vec![],
-            None,
-        )
+    fn keyed_test_view(_name: &str, key: &str) -> View {
+        View::new(KeyedTestView { key: Key::new(key) }, vec![], None)
     }
 
     #[test]
@@ -461,9 +467,16 @@ mod tests {
             Point::ZERO,
         );
 
-        let items = paint_fiber(&arena, fiber_id, 0);
+        let mut next_scene_item_id = 1;
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut next_scene_item_id);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].paint_order, 0);
+
+        arena.get_mut(fiber_id).unwrap().view =
+            Some(std::sync::Arc::new(SizedBox::new(Size::new(100.0, 50.0))));
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut next_scene_item_id);
+        assert!(items.is_empty());
+        assert!(arena.get(fiber_id).unwrap().scene_item_ids.is_empty());
     }
 
     #[test]
@@ -492,7 +505,7 @@ mod tests {
             Point::ZERO,
         );
 
-        let items = paint_fiber(&arena, fiber_id, 0);
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut 1);
         // Each child has one prim (Quad), plus parent has 0 (no background)
         assert_eq!(items.len(), 3);
         // Paint order should be sequential: 0, 1, 2
@@ -539,7 +552,7 @@ mod tests {
             Point::ZERO,
         );
 
-        let items = paint_fiber(&arena, fiber_id, 0);
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut 1);
         // Parent background (paint_order 0) + child quad (paint_order 1)
         assert_eq!(items.len(), 2);
         assert_eq!(
@@ -576,7 +589,7 @@ mod tests {
             Point::ZERO,
         );
 
-        let items = paint_fiber(&arena, fiber_id, 0);
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut 1);
         // Row has no background, Padding has background, SizedBox has color
         // Paint order: Row (0 prims), then Padding (1 prim), then SizedBox (1 prim) = 2
         assert_eq!(items.len(), 2, "padding bg + sized box color = 2 prims");
@@ -609,7 +622,7 @@ mod tests {
             Point::ZERO,
         );
 
-        let items = paint_fiber(&arena, fiber_id, 0);
+        let items = paint_fiber(&mut arena, fiber_id, 0, &mut 1);
         // Stack background + 2 children = 3
         assert_eq!(items.len(), 3);
         // Paint order: stack bg (0), first child (1), second child (2)
@@ -665,7 +678,7 @@ mod tests {
         let id = arena.insert(fiber);
         arena.remove(id);
 
-        let items = paint_fiber(&arena, id, 0);
+        let items = paint_fiber(&mut arena, id, 0, &mut 1);
         assert!(items.is_empty());
     }
 
@@ -690,7 +703,7 @@ mod tests {
         );
 
         // Paint with non-zero base_order
-        let items = paint_fiber(&arena, fiber_id, 10);
+        let items = paint_fiber(&mut arena, fiber_id, 10, &mut 1);
         assert_eq!(items.len(), 1);
         assert_eq!(
             items[0].paint_order, 10,

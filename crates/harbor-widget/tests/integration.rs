@@ -422,9 +422,11 @@ fn stack_with_background_paint_count() {
     rt.update(Instant::now());
 
     let delta = rt.pending_delta().unwrap();
-    // After update, the scene delta should reflect the current widget tree.
-    // The exact distribution (added vs modified) depends on scene diff internals,
-    // but the total scene item count is deterministic.
-    let total_changed = delta.added.len() + delta.modified.len() + delta.removed.len();
-    assert!(total_changed > 0, "expected scene changes after update");
+    assert_eq!(
+        delta.added.len(),
+        3,
+        "an unchanged repaint must retain the initial additions until encode"
+    );
+    assert!(delta.removed.is_empty());
+    assert!(delta.modified.is_empty());
 }

@@ -5,8 +5,7 @@ use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::primitive::{ExternalDrawContext, ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
-use crate::text::TextRunCache;
-use crate::widgets::text_label;
+use crate::text::{GlyphFn, TextMetrics, TextRunCache};
 use hashbrown::HashMap;
 use std::sync::Arc;
 
@@ -60,27 +59,24 @@ impl FrameEncoder {
         &mut self.text_run_cache
     }
 
-    /// Drains thread-local pending text runs and registers them with the cache.
-    pub(crate) fn register_pending_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
-        let pending = text_label::drain_pending_text_runs();
-        if pending.is_empty() {
-            return;
+    /// Prepares cached glyph layouts from the current retained scene.
+    ///
+    /// Scene item IDs are the cache keys, so a repeated preparation pass leaves
+    /// unchanged text in place and releases entries for removed text items.
+    pub(crate) fn prepare_text_runs(
+        &mut self,
+        scene_graph: &SceneGraph,
+        metrics: &TextMetrics,
+        glyph_fn: &GlyphFn<'_>,
+    ) {
+        let mut live_ids = Vec::new();
+        for item in scene_graph.items() {
+            if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
+                self.text_run_cache.upsert(item.id, text, metrics, glyph_fn);
+                live_ids.push(item.id);
+            }
         }
-
-        let metrics = crate::text::current_metrics().unwrap_or(crate::text::TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 0.0,
-            underline_thickness: 1.5,
-            strikethrough_position: 0.0,
-            strikethrough_thickness: 1.5,
-        });
-
-        for (id, text, _color) in &pending {
-            self.text_run_cache
-                .register_with_id(*id, text, &metrics, glyph_fn);
-        }
+        self.text_run_cache.retain_live_ids(live_ids);
     }
 
     /// Applies a pending SceneDelta and encodes draw calls in paint order.
@@ -100,7 +96,7 @@ impl FrameEncoder {
             *scene.current_viewport = Some(viewport.clone());
             renderer.update(queue, delta, &viewport);
             if let Some(ref mut tr) = self.text_renderer {
-                tr.update(queue, delta, &self.text_run_cache, &viewport);
+                tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
             }
         }
 

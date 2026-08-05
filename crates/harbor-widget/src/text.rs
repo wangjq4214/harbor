@@ -2,48 +2,9 @@
 
 use crate::layout::Point;
 use crate::scene::primitive::TextRunId;
-use hashbrown::HashMap;
-use std::cell::RefCell;
+use hashbrown::{HashMap, HashSet};
 
 pub use harbor_text::{AtlasGlyph, AtlasUv, TextMetrics};
-
-// ── Thread-local metrics ────────────────────────────────────────────────────
-
-// Thread-local TextMetrics for widget intrinsic size computation.
-thread_local! {
-    static CURRENT_METRICS: RefCell<Option<TextMetrics>> = const { RefCell::new(None) };
-}
-
-/// Sets the TextMetrics for widget layout on this thread.
-/// Widgets like TextLabel read this during `intrinsic_size`.
-pub fn set_current_metrics(metrics: TextMetrics) {
-    CURRENT_METRICS.with(|m| *m.borrow_mut() = Some(metrics));
-}
-
-/// Returns a copy of the current TextMetrics, if set.
-pub fn current_metrics() -> Option<TextMetrics> {
-    CURRENT_METRICS.with(|m| *m.borrow())
-}
-
-// ── Thread-local glyph lookup ──────────────────────────────────────────────
-
-type CurrentGlyphFn = RefCell<Option<Box<dyn Fn(char) -> Option<AtlasGlyph>>>>;
-
-thread_local! {
-    static CURRENT_GLYPH_FN: CurrentGlyphFn = const { RefCell::new(None) };
-}
-
-/// Sets the glyph lookup function for text run registration on this thread.
-pub fn set_current_glyph_fn(f: Box<dyn Fn(char) -> Option<AtlasGlyph>>) {
-    CURRENT_GLYPH_FN.with(|g| *g.borrow_mut() = Some(f));
-}
-
-/// Invokes the current glyph function, if set.
-pub fn current_glyph(ch: char) -> Option<AtlasGlyph> {
-    CURRENT_GLYPH_FN.with(|g| g.borrow().as_ref().map(|f| f(ch)).unwrap_or(None))
-}
-
-// ── GlyphLookup ─────────────────────────────────────────────────────────────
 
 /// Function type for looking up an AtlasGlyph for a character.
 pub type GlyphFn<'a> = dyn Fn(char) -> Option<AtlasGlyph> + 'a;
@@ -69,23 +30,31 @@ pub struct GlyphLayout {
 
 // ── TextRunData ─────────────────────────────────────────────────────────────
 
-/// Cached glyph layout data for a single text run.
+/// Cached glyph layout data for a single scene text item.
 #[derive(Clone, Debug)]
 pub struct TextRunData {
     pub glyphs: Vec<GlyphLayout>,
 }
 
+#[derive(Clone)]
+struct CachedTextRun {
+    text: String,
+    metrics: TextMetrics,
+    data: TextRunData,
+}
+
 // ── TextRunCache ────────────────────────────────────────────────────────────
 
-/// Caches positioned glyph data keyed by [`TextRunId`].
+/// Caches positioned glyph data by stable scene item ID.
 ///
-/// Populated during the paint pass when widgets register text runs,
-/// and consumed during encode by the [`TextRenderer`] to produce
-/// GPU glyph instances.
+/// The Runtime prepares this cache from its retained scene immediately before
+/// encoding. A run is rebuilt only when its text or metrics change, and stale
+/// scene IDs are removed as part of the same preparation pass.
 pub struct TextRunCache {
-    runs: HashMap<TextRunId, TextRunData>,
+    runs: HashMap<TextRunId, CachedTextRun>,
+    // Kept for the legacy anonymous registration helper. Runtime-owned scene
+    // preparation always supplies a stable SceneItem id via `upsert`.
     next_id: TextRunId,
-    /// Deduplication: maps (text_hash, metrics_hash) → existing TextRunId.
     dedup: HashMap<(u64, u64), TextRunId>,
 }
 
@@ -104,34 +73,57 @@ impl TextRunCache {
         }
     }
 
-    /// Registers a text string and returns a `TextRunId`.
+    /// Inserts or updates the run for a stable scene item ID.
     ///
-    /// Computes monospace glyph positions by advancing `cell_width` per
-    /// character. Characters with no glyph (closure returns `None`) are
-    /// skipped — the pen advances but no glyph quad is emitted.
-    ///
-    /// If the same (text, metrics) pair was previously registered,
-    /// returns the existing `TextRunId` instead of recomputing.
-    pub fn register(
+    /// Returns `true` when glyph layout was rebuilt and `false` when the
+    /// existing text and metrics already matched.
+    pub fn upsert(
         &mut self,
+        id: TextRunId,
         text: &str,
         metrics: &TextMetrics,
         glyph_fn: &GlyphFn<'_>,
-    ) -> TextRunId {
-        let key = Self::dedup_key(text, metrics);
-        if let Some(&existing_id) = self.dedup.get(&key) {
-            return existing_id;
+    ) -> bool {
+        if self
+            .runs
+            .get(&id)
+            .is_some_and(|run| run.text == text && text_metrics_equal(&run.metrics, metrics))
+        {
+            return false;
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
-        self.register_with_id(id, text, metrics, glyph_fn);
-        self.dedup.insert(key, id);
-        id
+        // A compatibility registration may have associated this ID with a
+        // previous key. Scene IDs own their current contents.
+        self.dedup.retain(|_, registered_id| *registered_id != id);
+        self.runs.insert(
+            id,
+            CachedTextRun {
+                text: text.to_owned(),
+                metrics: *metrics,
+                data: Self::layout_run(text, metrics, glyph_fn),
+            },
+        );
+        true
     }
 
-    /// Registers a text string under a specific `TextRunId`.
-    /// Used when the id is assigned externally (e.g., by the widget paint pass).
+    /// Removes every run whose stable scene item ID is no longer live.
+    pub fn retain_live_ids(&mut self, live_ids: impl IntoIterator<Item = TextRunId>) {
+        let live_ids: HashSet<TextRunId> = live_ids.into_iter().collect();
+        self.runs.retain(|id, _| live_ids.contains(id));
+        self.dedup
+            .retain(|_, registered_id| self.runs.contains_key(registered_id));
+    }
+
+    /// Removes one run by its stable scene item ID.
+    pub fn remove(&mut self, id: TextRunId) -> Option<TextRunData> {
+        self.dedup.retain(|_, registered_id| *registered_id != id);
+        self.runs.remove(&id).map(|run| run.data)
+    }
+
+    /// Registers a run under a caller-supplied ID.
+    ///
+    /// This is retained as a compatibility spelling for [`Self::upsert`]. New
+    /// Runtime code should use `upsert` with a SceneItem ID directly.
     pub fn register_with_id(
         &mut self,
         id: TextRunId,
@@ -139,39 +131,39 @@ impl TextRunCache {
         metrics: &TextMetrics,
         glyph_fn: &GlyphFn<'_>,
     ) {
-        let mut glyphs = Vec::with_capacity(text.len());
-        let mut pen_x: f32 = 0.0;
-        let cell_w = metrics.cell_width;
-        let baseline_y = metrics.ascent;
-
-        for ch in text.chars() {
-            if let Some(g) = glyph_fn(ch)
-                && g.width > 0
-                && g.height > 0
-            {
-                let origin = Point::new(
-                    pen_x + g.bearing_x as f32,
-                    baseline_y - g.bearing_y as f32 - g.height as f32,
-                );
-                glyphs.push(GlyphLayout {
-                    origin,
-                    width: g.width as f32,
-                    height: g.height as f32,
-                    uv_left: g.uv.left,
-                    uv_top: g.uv.top,
-                    uv_right: g.uv.right,
-                    uv_bottom: g.uv.bottom,
-                });
-            }
-            pen_x += cell_w;
-        }
-
-        self.runs.insert(id, TextRunData { glyphs });
+        self.upsert(id, text, metrics, glyph_fn);
     }
 
-    /// Returns the cached glyph data for a run.
+    /// Registers a run with an anonymous ID.
+    ///
+    /// This legacy helper is not used by Runtime scene preparation. It remains
+    /// available for inexpensive source compatibility with cache-only callers.
+    pub fn register(
+        &mut self,
+        text: &str,
+        metrics: &TextMetrics,
+        glyph_fn: &GlyphFn<'_>,
+    ) -> TextRunId {
+        let key = Self::dedup_key(text, metrics);
+        if let Some(&existing_id) = self.dedup.get(&key)
+            && self.runs.contains_key(&existing_id)
+        {
+            return existing_id;
+        }
+
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("text run ID allocator exhausted");
+        self.upsert(id, text, metrics, glyph_fn);
+        self.dedup.insert(key, id);
+        id
+    }
+
+    /// Returns the cached glyph data for a stable scene item ID.
     pub fn get(&self, id: TextRunId) -> Option<&TextRunData> {
-        self.runs.get(&id)
+        self.runs.get(&id).map(|run| &run.data)
     }
 
     /// Clears all cached runs.
@@ -190,7 +182,34 @@ impl TextRunCache {
         self.runs.is_empty()
     }
 
-    /// Computes a dedup key from text content and metrics.
+    fn layout_run(text: &str, metrics: &TextMetrics, glyph_fn: &GlyphFn<'_>) -> TextRunData {
+        let mut glyphs = Vec::with_capacity(text.len());
+        let mut pen_x = 0.0;
+
+        for ch in text.chars() {
+            if let Some(g) = glyph_fn(ch)
+                && g.width > 0
+                && g.height > 0
+            {
+                glyphs.push(GlyphLayout {
+                    origin: Point::new(
+                        pen_x + g.bearing_x as f32,
+                        metrics.ascent - g.bearing_y as f32 - g.height as f32,
+                    ),
+                    width: g.width as f32,
+                    height: g.height as f32,
+                    uv_left: g.uv.left,
+                    uv_top: g.uv.top,
+                    uv_right: g.uv.right,
+                    uv_bottom: g.uv.bottom,
+                });
+            }
+            pen_x += metrics.cell_width;
+        }
+
+        TextRunData { glyphs }
+    }
+
     fn dedup_key(text: &str, metrics: &TextMetrics) -> (u64, u64) {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -201,10 +220,24 @@ impl TextRunCache {
         metrics.cell_width.to_bits().hash(&mut h);
         metrics.line_height.to_bits().hash(&mut h);
         metrics.ascent.to_bits().hash(&mut h);
+        metrics.underline_position.to_bits().hash(&mut h);
+        metrics.underline_thickness.to_bits().hash(&mut h);
+        metrics.strikethrough_position.to_bits().hash(&mut h);
+        metrics.strikethrough_thickness.to_bits().hash(&mut h);
         let metrics_hash = h.finish();
 
         (text_hash, metrics_hash)
     }
+}
+
+pub(crate) fn text_metrics_equal(left: &TextMetrics, right: &TextMetrics) -> bool {
+    left.cell_width.to_bits() == right.cell_width.to_bits()
+        && left.line_height.to_bits() == right.line_height.to_bits()
+        && left.ascent.to_bits() == right.ascent.to_bits()
+        && left.underline_position.to_bits() == right.underline_position.to_bits()
+        && left.underline_thickness.to_bits() == right.underline_thickness.to_bits()
+        && left.strikethrough_position.to_bits() == right.strikethrough_position.to_bits()
+        && left.strikethrough_thickness.to_bits() == right.strikethrough_thickness.to_bits()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -274,9 +307,7 @@ mod tests {
         let id = cache.register("ABC", &test_metrics(), &test_glyph_fn);
         let run = cache.get(id).unwrap();
         assert_eq!(run.glyphs.len(), 3);
-        // Second glyph should be at x = cell_width
         assert!((run.glyphs[1].origin.x - 10.0).abs() < 0.01);
-        // Third glyph at 2 * cell_width
         assert!((run.glyphs[2].origin.x - 20.0).abs() < 0.01);
     }
 
@@ -294,6 +325,34 @@ mod tests {
         let id1 = cache.register("A", &test_metrics(), &test_glyph_fn);
         let id2 = cache.register("B", &test_metrics(), &test_glyph_fn);
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn upsert_only_rebuilds_changed_scene_runs() {
+        let mut cache = TextRunCache::new();
+        let metrics = test_metrics();
+
+        assert!(cache.upsert(42, "A", &metrics, &test_glyph_fn));
+        assert!(!cache.upsert(42, "A", &metrics, &test_glyph_fn));
+        assert_eq!(cache.len(), 1);
+
+        assert!(cache.upsert(42, "AB", &metrics, &test_glyph_fn));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(42).unwrap().glyphs.len(), 2);
+    }
+
+    #[test]
+    fn retain_live_ids_releases_removed_scene_runs() {
+        let mut cache = TextRunCache::new();
+        let metrics = test_metrics();
+        cache.upsert(1, "A", &metrics, &test_glyph_fn);
+        cache.upsert(2, "B", &metrics, &test_glyph_fn);
+
+        cache.retain_live_ids([2]);
+
+        assert!(cache.get(1).is_none());
+        assert!(cache.get(2).is_some());
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]
@@ -345,7 +404,6 @@ mod tests {
         let mut cache = TextRunCache::new();
         let id = cache.register("X", &test_metrics(), &fn_zero_width);
         let run = cache.get(id).unwrap();
-        // width=0 should be skipped despite height>0
         assert!(run.glyphs.is_empty());
     }
 }

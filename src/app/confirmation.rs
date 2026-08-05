@@ -232,10 +232,7 @@ impl ConfirmationWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
 
-        // Set up thread-local metrics for this thread.
-        harbor_widget::text::set_current_metrics(metrics);
-
-        let mut runtime = Runtime::new();
+        let mut runtime = Runtime::with_text_metrics(metrics);
 
         let confirm_root = build_confirmation_root(
             line_count,
@@ -243,6 +240,7 @@ impl ConfirmationWindow {
             Arc::clone(&preview_scroll_offset),
             Arc::clone(&cancelled),
             Arc::clone(&confirmed),
+            metrics.line_height,
         );
         runtime.set_root(confirm_root);
 
@@ -403,7 +401,7 @@ impl ConfirmationWindow {
             wgpu::Color::BLACK,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.register_pending_text_runs(glyph_fn);
+            runtime.prepare_text_runs(glyph_fn);
         })
     }
 
@@ -442,11 +440,9 @@ fn build_confirmation_root(
     scroll_offset: Arc<AtomicUsize>,
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
+    line_height: f32,
 ) -> impl harbor_widget::view::Component {
     let header_text = format!("Paste {} lines?", line_count);
-    let line_height = harbor_widget::text::current_metrics()
-        .map(|m| m.line_height)
-        .unwrap_or(20.0);
 
     FocusScope::new().child(
         Padding::new(24.0, 16.0, 24.0, 16.0).child(
@@ -520,7 +516,7 @@ mod tests {
         let wrapped = vec!["hello".to_string()];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(5, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(5, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -623,7 +619,7 @@ mod tests {
         let wrapped: Vec<String> = vec![];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(0, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(0, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -635,7 +631,7 @@ mod tests {
         let wrapped = vec!["x".to_string()];
         let scroll = Arc::new(AtomicUsize::new(0));
 
-        let root = build_confirmation_root(usize::MAX, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(usize::MAX, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut cx = BuildCx::stub();
         let _view = root.build(&mut cx);
     }
@@ -929,7 +925,7 @@ mod tests {
         let scroll = Arc::new(AtomicUsize::new(0));
 
         // Arrange: build root and set in runtime.
-        let root = build_confirmation_root(1, wrapped, scroll, cancelled, confirmed);
+        let root = build_confirmation_root(1, wrapped, scroll, cancelled, confirmed, 20.0);
         let mut rt = Runtime::new();
         rt.set_root(root);
         rt.update(Instant::now());
