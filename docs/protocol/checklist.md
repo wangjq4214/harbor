@@ -1,22 +1,25 @@
 # VT Protocol Implementation Checklist
 
 > Checklist for auditing terminal emulator support for ECMA-48, DEC VT series, and common xterm extensions.
-> Audit baseline (2026-07-11): `[x]` means the current code has a clear implementation; `[ ]` means not implemented, only partially implemented, or insufficient evidence of complete support. Results are based solely on existing source code and unit tests; they do not represent end-to-end compatibility.
+> Audit baseline (2026-08-01): `[x]` means the current code has a clear implementation; `[ ]` means not implemented, only partially implemented, or insufficient evidence of complete support. Results are based solely on existing source code and unit tests; they do not represent end-to-end compatibility.
 
 ## Reading Notes
 
-- The checklist retains the original protocol and behavioral granularity; each item remains independently auditable.
-- The "Status" line under each top-level section heading summarizes that section; it does not replace the item-level results below.
-- `[ ]` does not distinguish between "fully unimplemented" and "partially implemented"; refer back to the specific item boundaries when implementation is needed.
-- Code audit focuses on `crates/harbor-parser/src/{core,params,perform}.rs`, `crates/harbor-terminal/src/{parser,screen}.rs`, `crates/harbor-terminal/src/parser/handlers.rs`, `src/terminal.rs`, and `src/app.rs`.
+- Each item is independently auditable.
+- `[x]` requires a clear implementation plus focused tests or reproducible runtime evidence.
+- `[ ]` means missing, partial, or insufficiently verified; it does not distinguish those cases.
+- Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `src/app.rs`.
+- This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py` for current coverage.
 
-## Audit Overview
+## Coverage
 
-| Metric                              | Count |
-| ----------------------------------- | ----: |
-| Total checklist items               |  1054 |
-| Clearly implemented in current code |   600 |
-| Incomplete or unverified            |   454 |
+Coverage totals are generated from the item markers rather than copied into this document:
+
+```bash
+python scripts/checklist_summary.py
+```
+
+See [`../validation.md`](../validation.md) for the evidence policy.
 
 ## Quick Navigation
 
@@ -40,55 +43,9 @@
 
 [35](#35-error-recovery) · [36](#36-protocol-security-limits) · [37](#37-minimum-modern-compatibility-set) · [38](#38-sequence-level-test-samples) · [39](#39-final-acceptance)
 
-## Per-Section Status
-
-| Section                                                                                              | Implemented | Incomplete / Unverified | Total |
-| ---------------------------------------------------------------------------------------------------- | ----------: | ----------------------: | ----: |
-| [1. Basic Parsing Rules](#1-basic-parsing-rules) | 37 | 0 | 37 |
-| [2. C0 Control Characters](#2-c0-control-characters) | 21 | 2 | 23 |
-| [3. C1 Control Characters](#3-c1-control-characters) | 14 | 3 | 17 |
-| [4. ESC Sequences](#4-esc-sequences) | 9 | 16 | 25 |
-| [5. Character Set Selection](#5-character-set-selection) | 31 | 13 | 44 |
-| [6. CSI Parameter Parsing](#6-csi-parameter-parsing) | 18 | 18 | 36 |
-| [7. Cursor Movement](#7-cursor-movement) | 20 | 3 | 23 |
-| [8. Save and Restore Cursor](#8-save-and-restore-cursor) | 12 | 2 | 14 |
-| [9. Erase Operations](#9-erase-operations) | 21 | 2 | 23 |
-| [10. Character Insertion, Deletion and Repetition](#10-character-insertion-deletion-and-repetition) | 24 | 2 | 26 |
-| [11. Line Operations and Scrolling](#11-line-operations-and-scrolling) | 21 | 2 | 23 |
-| [12. Scrolling Region](#12-scrolling-region) | 20 | 0 | 20 |
-| [13. Horizontal Tabs](#13-horizontal-tabs) | 11 | 5 | 16 |
-| [14. Autowrap](#14-autowrap) | 13 | 1 | 14 |
-| [15. Insert Mode and Line Feed Mode](#15-insert-mode-and-line-feed-mode) | 6 | 4 | 10 |
-| [16. SGR Character Attributes](#16-sgr-character-attributes) | 51 | 20 | 71 |
-| [17. DEC Private Modes](#17-dec-private-modes) | 18 | 23 | 41 |
-| [18. Standard Modes](#18-standard-modes) | 7 | 0 | 7 |
-| [19. Cursor Style](#19-cursor-style) | 9 | 1 | 10 |
-| [20. Soft Reset and Hard Reset](#20-soft-reset-and-hard-reset) | 23 | 4 | 27 |
-| [21. Device Status Reports](#21-device-status-reports) | 0 | 22 | 22 |
-| [22. Mode Queries](#22-mode-queries) | 0 | 12 | 12 |
-| [23. Window Operations](#23-window-operations) | 0 | 19 | 19 |
-| [24. OSC Basic Parsing](#24-osc-basic-parsing) | 8 | 70 | 78 |
-| [25. DCS Basic Parsing](#25-dcs-basic-parsing) | 0 | 42 | 42 |
-| [26. APC, PM and SOS](#26-apc-pm-and-sos) | 0 | 18 | 18 |
-| [27. String Sequence Interruption and Termination](#27-string-sequence-interruption-and-termination) | 13 | 0 | 13 |
-| [28. Mouse Protocol Output](#28-mouse-protocol-output) | 0 | 34 | 34 |
-| [29. Bracketed Paste](#29-bracketed-paste) | 10 | 0 | 10 |
-| [30. Synchronized Output](#30-synchronized-output) | 0 | 9 | 9 |
-| [31. Keyboard Mode Related Protocols](#31-keyboard-mode-related-protocols) | 47 | 19 | 66 |
-| [32. Rectangular Area Operations](#32-rectangular-area-operations) | 11 | 0 | 11 |
-| [33. Character Protection Attribute](#33-character-protection-attribute) | 5 | 1 | 6 |
-| [34. Terminal Status Report Strings](#34-terminal-status-report-strings) | 0 | 8 | 8 |
-| [35. Error Recovery](#35-error-recovery) | 17 | 0 | 17 |
-| [36. Protocol Security Limits](#36-protocol-security-limits) | 11 | 11 | 22 |
-| [37. Minimum Modern Compatibility Set](#37-minimum-modern-compatibility-set) | 27 | 29 | 56 |
-| [38. Sequence-Level Test Samples](#38-sequence-level-test-samples) | 58 | 25 | 83 |
-| [39. Final Acceptance](#39-final-acceptance) | 7 | 14 | 21 |
-
 ---
 
 ## 1. Basic Parsing Rules
-
-> Status: 37 / 37 items clearly implemented; 0 incomplete or unverified.
 
 ### 1.1 Incremental Parsing
 
@@ -140,8 +97,6 @@
 
 ## 2. C0 Control Characters
 
-> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
-
 * [x] `NUL` — `0x00`
 * [ ] `ENQ` — `0x05`
 * [x] `BEL` — `0x07`
@@ -173,8 +128,6 @@
 
 ## 3. C1 Control Characters
 
-> Status: 14 / 17 items clearly implemented; 3 incomplete or unverified.
-
 ### 3.1 7-bit and 8-bit Forms
 
 * [x] `IND`: `ESC D` / `0x84`
@@ -201,8 +154,6 @@
 ---
 
 ## 4. ESC Sequences
-
-> Status: 9 / 25 items clearly implemented; 16 incomplete or unverified.
 
 ### 4.1 Basic ESC Commands
 
@@ -244,8 +195,6 @@
 ---
 
 ## 5. Character Set Selection
-
-> Status: 31 / 44 items clearly implemented; 13 incomplete or unverified.
 
 ### 5.1 Character Set Designation
 
@@ -307,8 +256,6 @@
 
 ## 6. CSI Parameter Parsing
 
-> Status: 18 / 36 items clearly implemented; 18 incomplete or unverified.
-
 ### 6.1 Basic Parameters
 
 * [x] No parameters
@@ -361,8 +308,6 @@
 
 ## 7. Cursor Movement
 
-> Status: 20 / 23 items clearly implemented; 3 incomplete or unverified.
-
 * [x] `CSI Ps A` — CUU
 * [x] `CSI Ps B` — CUD
 * [x] `CSI Ps C` — CUF
@@ -394,8 +339,6 @@
 
 ## 8. Save and Restore Cursor
 
-> Status: 12 / 14 items clearly implemented; 2 incomplete or unverified.
-
 * [x] `ESC 7` — DECSC
 * [x] `ESC 8` — DECRC
 * [x] `CSI s` — SCP
@@ -414,8 +357,6 @@
 ---
 
 ## 9. Erase Operations
-
-> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
 
 ### 9.1 ED — Erase in Display
 
@@ -452,8 +393,6 @@
 ---
 
 ## 10. Character Insertion, Deletion and Repetition
-
-> Status: 24 / 26 items clearly implemented; 2 incomplete or unverified.
 
 * [x] `CSI Ps @` — ICH
 * [x] `CSI Ps P` — DCH
@@ -498,8 +437,6 @@
 
 ## 11. Line Operations and Scrolling
 
-> Status: 21 / 23 items clearly implemented; 2 incomplete or unverified.
-
 ### 11.1 Line Insertion and Deletion
 
 * [x] `CSI Ps L` — IL
@@ -537,8 +474,6 @@
 
 ## 12. Scrolling Region
 
-> Status: 20 / 20 items clearly implemented; 0 incomplete or unverified.
-
 ### 12.1 DECSTBM
 
 * [x] `CSI top;bottom r`
@@ -569,8 +504,6 @@
 
 ## 13. Horizontal Tabs
 
-> Status: 11 / 16 items clearly implemented; 5 incomplete or unverified.
-
 * [x] HT — Move to next tab stop
 * [x] `ESC H` — HTS, set tab stop at current column
 * [x] `CSI Ps g` — TBC
@@ -598,8 +531,6 @@
 
 ## 14. Autowrap
 
-> Status: 13 / 14 items clearly implemented; 1 incomplete or unverified.
-
 * [x] `CSI ? 7 h` — Enable DECAWM
 * [x] `CSI ? 7 l` — Disable DECAWM
 * [x] Writing to the last column enters pending wrap
@@ -618,8 +549,6 @@
 ---
 
 ## 15. Insert Mode and Line Feed Mode
-
-> Status: 6 / 10 items clearly implemented; 4 incomplete or unverified.
 
 ### 15.1 IRM
 
@@ -640,8 +569,6 @@
 ---
 
 ## 16. SGR Character Attributes
-
-> Status: 51 / 71 items clearly implemented; 20 incomplete or unverified.
 
 ### 16.1 Reset and Intensity
 
@@ -754,8 +681,6 @@
 
 ## 17. DEC Private Modes
 
-> Status: 18 / 41 items clearly implemented; 23 incomplete or unverified.
-
 ### 17.1 Cursor and Display
 
 * [ ] `?5` — DECSCNM, reverse screen
@@ -825,8 +750,6 @@
 
 ## 18. Standard Modes
 
-> Status: 7 / 7 items clearly implemented; 0 incomplete or unverified.
-
 * [x] `CSI Ps h` — SM
 * [x] `CSI Ps l` — RM
 * [x] `CSI 4 h/l` — IRM
@@ -838,8 +761,6 @@
 ---
 
 ## 19. Cursor Style
-
-> Status: 9 / 10 items clearly implemented; 1 incomplete or unverified.
 
 * [x] `CSI Ps SP q` — DECSCUSR
 * [x] Correctly recognizes the Intermediate byte `SP`
@@ -855,8 +776,6 @@
 ---
 
 ## 20. Soft Reset and Hard Reset
-
-> Status: 23 / 27 items clearly implemented; 4 incomplete or unverified.
 
 ### 20.1 RIS
 
@@ -894,8 +813,6 @@
 ---
 
 ## 21. Device Status Reports
-
-> Status: 0 / 22 items clearly implemented; 22 incomplete or unverified.
 
 ### 21.1 DSR
 
@@ -938,8 +855,6 @@
 
 ## 22. Mode Queries
 
-> Status: 0 / 12 items clearly implemented; 12 incomplete or unverified.
-
 ### 22.1 DECRQM
 
 * [ ] `CSI Ps $ p`
@@ -961,8 +876,6 @@
 ---
 
 ## 23. Window Operations
-
-> Status: 0 / 19 items clearly implemented; 19 incomplete or unverified.
 
 * [ ] `CSI Ps t` basic parsing
 * [ ] Supports multi-parameter window operations
@@ -993,8 +906,6 @@
 ---
 
 ## 24. OSC Basic Parsing
-
-> Status: 8 / 78 items clearly implemented; 70 incomplete or unverified.
 
 ### 24.1 OSC Boundaries
 
@@ -1108,8 +1019,6 @@
 
 ## 25. DCS Basic Parsing
 
-> Status: 0 / 42 items clearly implemented; 42 incomplete or unverified.
-
 ### 25.1 DCS Boundaries
 
 * [ ] `ESC P` begins DCS
@@ -1171,8 +1080,6 @@
 
 ## 26. APC, PM and SOS
 
-> Status: 0 / 18 items clearly implemented; 18 incomplete or unverified.
-
 ### 26.1 Basic Parsing
 
 * [ ] APC: `ESC _ ... ST`
@@ -1201,8 +1108,6 @@
 
 ## 27. String Sequence Interruption and Termination
 
-> Status: 13 / 13 items clearly implemented; 0 incomplete or unverified.
-
 * [x] BEL terminates OSC normally
 * [x] ST terminates OSC normally
 * [x] ST terminates DCS normally
@@ -1220,8 +1125,6 @@
 ---
 
 ## 28. Mouse Protocol Output
-
-> Status: 0 / 34 items clearly implemented; 34 incomplete or unverified.
 
 ### 28.1 Mode Priority
 
@@ -1276,8 +1179,6 @@
 
 ## 29. Bracketed Paste
 
-> Status: 10 / 10 items clearly implemented; 0 incomplete or unverified.
-
 * [x] `CSI ? 2004 h`
 * [x] `CSI ? 2004 l`
 * [x] Paste start sends `ESC [ 200 ~`
@@ -1293,8 +1194,6 @@
 
 ## 30. Synchronized Output
 
-> Status: 0 / 9 items clearly implemented; 9 incomplete or unverified.
-
 * [ ] `CSI ? 2026 h`
 * [ ] `CSI ? 2026 l`
 * [ ] Supports nested enabling or explicitly forbids nesting
@@ -1308,8 +1207,6 @@
 ---
 
 ## 31. Keyboard Mode Related Protocols
-
-> Status: 47 / 66 items clearly implemented; 19 incomplete or unverified.
 
 ### 31.1 Application Cursor Keys
 
@@ -1402,8 +1299,6 @@
 
 ## 32. Rectangular Area Operations
 
-> Status: 11 / 11 items clearly implemented; 0 incomplete or unverified.
-
 * [x] DECFRA — Fill Rectangular Area
 * [x] DECERA — Erase Rectangular Area
 * [x] DECSERA — Selective Erase Rectangular Area
@@ -1414,13 +1309,11 @@
 * [x] Illegal rectangle ranges are safely ignored
 * [x] Rectangle range is clipped to the valid screen
 * [x] Protected cells are preserved during selective erase
-* [x] Rectangle operations do not split wide characters
+* [ ] Rectangle operations do not split wide characters
 
 ---
 
 ## 33. Character Protection Attribute
-
-> Status: 5 / 6 items clearly implemented; 1 incomplete or unverified.
 
 * [x] DECSCA sets character protection state
 * [x] Subsequently written characters inherit the protection attribute
@@ -1432,8 +1325,6 @@
 ---
 
 ## 34. Terminal Status Report Strings
-
-> Status: 0 / 8 items clearly implemented; 8 incomplete or unverified.
 
 ### 34.1 DECRQSS Query Items
 
@@ -1449,8 +1340,6 @@
 ---
 
 ## 35. Error Recovery
-
-> Status: 17 / 17 items clearly implemented; 0 incomplete or unverified.
 
 * [x] Unknown ESC sequences do not crash
 * [x] Unknown CSI sequences do not crash
@@ -1473,8 +1362,6 @@
 ---
 
 ## 36. Protocol Security Limits
-
-> Status: 11 / 22 items clearly implemented; 11 incomplete or unverified.
 
 * [x] Maximum CSI parameter count
 * [x] Maximum CSI sub-parameter count
@@ -1502,8 +1389,6 @@
 ---
 
 ## 37. Minimum Modern Compatibility Set
-
-> Status: 27 / 56 items clearly implemented; 29 incomplete or unverified.
 
 ### 37.1 Shell Basic Compatibility
 
@@ -1560,8 +1445,8 @@
 * [x] Bracketed Paste
 * [ ] Focus Reporting
 * [ ] SGR Mouse
-* [ ] Application Cursor
-* [ ] Application Keypad
+* [x] Application Cursor
+* [x] Application Keypad
 * [x] Alternate Screen
 
 ### 37.4 Modern Shell Integration
@@ -1576,8 +1461,6 @@
 ---
 
 ## 38. Sequence-Level Test Samples
-
-> Status: 56 / 83 items clearly implemented; 27 incomplete or unverified.
 
 ### 38.1 Basic Text and Attributes
 
@@ -1696,8 +1579,6 @@
 
 ## 39. Final Acceptance
 
-> Status: 7 / 21 items clearly implemented; 14 incomplete or unverified.
-
 * [ ] All control sequences support arbitrary input fragmentation
 * [ ] All unknown sequences can be safely ignored
 * [ ] All string protocols have length limits
@@ -1716,6 +1597,6 @@
 * [ ] OSC 8 Hyperlink correct
 * [ ] DSR, DA, DECRQM, DECRQSS responses correct
 * [x] Malformed sequences do not permanently desynchronize the parser
-* [x] Arbitrary byte input does not panic
-* [x] Arbitrary byte input does not cause infinite loops
-* [x] Arbitrary byte input does not cause unbounded memory growth
+* [ ] Arbitrary byte input does not panic — fuzz/property evidence required
+* [ ] Arbitrary byte input does not cause infinite loops — fuzz/property evidence required
+* [ ] Arbitrary byte input does not cause unbounded memory growth — fuzz/property evidence required

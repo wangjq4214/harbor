@@ -1,6 +1,6 @@
 # Terminal Render Consolidation
 
-**Source:** [Spec: 0002-terminal-render-consolidation.md](../spec/0002-terminal-render-consolidation.md)
+**Source:** [Spec: 0002-terminal-render-consolidation.md](../../spec/0002-terminal-render-consolidation.md)
 **Ticket folder:** `.grimoire/ticket/0002-terminal-render-consolidation/`
 
 ## Overview

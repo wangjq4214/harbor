@@ -1,7 +1,7 @@
 # Widget External Draw Registration
 
 **Ticket ID:** T0002
-**Source:** [Spec: 0002-terminal-render-consolidation](../spec/0002-terminal-render-consolidation.md)
+**Source:** [Spec: 0002-terminal-render-consolidation](../../spec/0002-terminal-render-consolidation.md)
 **Status:** Todo
 
 ## Goal

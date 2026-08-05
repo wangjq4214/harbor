@@ -45,7 +45,7 @@ Characters missing from either the system-selected or configured primary face re
 - [ ] Glyphs from different native faces cannot collide even when their glyph IDs are equal.
 - [ ] Fallback rendering leaves cell width, line height, ascent, underline, and strikethrough metrics unchanged.
 - [ ] Mixed-script rendering survives incremental upload, full atlas rebuild/eviction, resize, and DPI-change tests.
-- [ ] No hard-coded CJK candidate, `'中'` probe, `fontdb`, or full-file parser is invoked by fallback resolution.
+- [ ] No hard-coded CJK candidate, representative CJK probe, `fontdb`, or full-file parser is invoked by fallback resolution.
 
 ## Out of Scope
 

@@ -1,7 +1,7 @@
 # Terminal Absorb Rendering
 
 **Ticket ID:** T0003
-**Source:** [Spec: 0002-terminal-render-consolidation](../spec/0002-terminal-render-consolidation.md)
+**Source:** [Spec: 0002-terminal-render-consolidation](../../spec/0002-terminal-render-consolidation.md)
 **Status:** Done
 
 ## Goal

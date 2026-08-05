@@ -15,7 +15,7 @@ Merge `harbor-render` GPU rendering into `harbor-terminal`, making the terminal 
 ```
 harbor-parser (VtHandler + Params + Parser)
      └─► harbor-terminal (Screen + wgpu rendering + PTY I/O)
-           └─► CustomPaint widget (harbor-widget) ──► app (一行设根)
+           └─► CustomPaint widget (harbor-widget) ──► app (single root assignment)
 ```
 
 `harbor-terminal` owns the screen grid, the VT parser bridge, all wgpu rendering pipelines (glyph atlas, cursor quad, scrollbar, selection highlight, background, decoration), and an internal I/O thread for PTY read. It does NOT own `GpuContext`, `wgpu::Device`, or a window — those are injected at render time by `CustomPaint`.
