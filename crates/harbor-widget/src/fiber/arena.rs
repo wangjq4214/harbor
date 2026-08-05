@@ -69,8 +69,6 @@ pub struct Fiber {
     pub(crate) parent: Option<FiberId>,
     pub(crate) flags: DirtyFlags,
     pub(crate) layout_rect: Option<Rect>,
-    /// SceneItem ids owned by this fiber (for incremental paint tracking).
-    pub(crate) scene_item_ids: Vec<u64>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
 }
@@ -90,7 +88,6 @@ impl Fiber {
             parent: None,
             flags: DirtyFlags::NONE,
             layout_rect: None,
-            scene_item_ids: Vec::new(),
             view,
         }
     }
@@ -167,4 +164,3 @@ impl FiberArena {
         self.fibers.contains_key(id)
     }
 }
-

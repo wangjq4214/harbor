@@ -10,6 +10,14 @@ use crate::widgets::text_label;
 use hashbrown::HashMap;
 use std::sync::Arc;
 
+/// Scene graph inputs required to encode one GPU frame.
+pub(crate) struct EncodeScene<'a> {
+    pub(crate) scene_graph: &'a SceneGraph,
+    pub(crate) pending_delta: &'a mut Option<SceneDelta>,
+    pub(crate) current_viewport: &'a mut Option<Viewport>,
+    pub(crate) external_draws: &'a HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
+}
+
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.
 ///
 /// Lifecycle: created empty with the Runtime; renderers are initialized once a
@@ -81,27 +89,24 @@ impl FrameEncoder {
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
-        scene_graph: &SceneGraph,
-        pending_delta: &mut Option<SceneDelta>,
-        current_viewport: &mut Option<Viewport>,
-        external_draws: &HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
+        scene: EncodeScene<'_>,
     ) {
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
             None => return,
         };
 
-        if let Some(delta) = pending_delta.as_ref() {
-            *current_viewport = Some(viewport.clone());
+        if let Some(delta) = scene.pending_delta.as_ref() {
+            *scene.current_viewport = Some(viewport.clone());
             renderer.update(queue, delta, &viewport);
             if let Some(ref mut tr) = self.text_renderer {
                 tr.update(queue, delta, &self.text_run_cache, &viewport);
             }
         }
 
-        let raw_items = scene_graph.items();
+        let raw_items = scene.scene_graph.items();
 
-        let has_external = !external_draws.is_empty()
+        let has_external = !scene.external_draws.is_empty()
             && raw_items.iter().any(|it| {
                 matches!(
                     it.primitive,
@@ -134,7 +139,7 @@ impl FrameEncoder {
                         quad_range_end = 0;
                     }
 
-                    if let Some(cb) = external_draws.get(draw) {
+                    if let Some(cb) = scene.external_draws.get(draw) {
                         let context = ExternalDrawContext::new(*rect, viewport.clone());
                         if context.is_empty() {
                             continue;

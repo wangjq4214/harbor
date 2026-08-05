@@ -10,8 +10,7 @@ mod surface;
 
 use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::input::event::{
-    FocusEvent, Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent,
-    PointerPhase, UiEvent,
+    FocusEvent, KeyboardEvent, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
 use crate::layout::Point;
 use crate::renderer::Viewport;
@@ -603,7 +602,7 @@ mod tests {
         classify_surface_texture, execute_presented_frame,
     };
     use super::*;
-    use crate::input::event::{KeyboardEvent, PointerPhase};
+    use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
     use crate::widgets::button::Button;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

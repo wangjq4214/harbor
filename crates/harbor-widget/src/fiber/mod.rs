@@ -9,7 +9,7 @@ pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
 
 pub(crate) use layout::layout_fiber;
 pub(crate) use paint::paint_fiber;
-pub(crate) use reconcile::{create_fiber_from_view, reconcile_children, unmount_fiber};
+pub(crate) use reconcile::{reconcile_children, unmount_fiber};
 
 #[cfg(test)]
 mod tests {
@@ -17,6 +17,7 @@ mod tests {
     use crate::layout::{BoxConstraints, Point, Size};
     use crate::signal::{PENDING_DIRTY, Signal};
     use crate::view::{AnyView, BuildCx, Key, View};
+    pub(crate) use reconcile::{create_fiber_from_view, reconcile_children, unmount_fiber};
     use std::any::TypeId;
 
     /// Helper: returns None for root fibers that have no parent.

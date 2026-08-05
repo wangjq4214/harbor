@@ -7,12 +7,13 @@ use crate::fiber::{
     unmount_fiber,
 };
 use crate::input::event::{PointerPhase, UiEvent};
+#[cfg(test)]
 use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Size};
 use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
-use crate::runtime::frame_encoder::FrameEncoder;
+use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
@@ -276,10 +277,12 @@ impl Runtime {
             queue,
             pass,
             viewport,
-            &self.scene_graph,
-            &mut self.pending_delta,
-            &mut self.current_viewport,
-            &self.external_draws,
+            EncodeScene {
+                scene_graph: &self.scene_graph,
+                pending_delta: &mut self.pending_delta,
+                current_viewport: &mut self.current_viewport,
+                external_draws: &self.external_draws,
+            },
         );
     }
 
@@ -310,9 +313,7 @@ impl Runtime {
     /// then applies any commands issued by handlers.
     pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> RuntimeEffects {
         let _scope = RuntimeScope::enter(self.runtime_id);
-        let needs_redraw = self
-            .events
-            .route_event(&self.arena, self.root_id, &event);
+        let needs_redraw = self.events.route_event(&self.arena, self.root_id, &event);
         if needs_redraw && let Some(root_id) = self.root_id {
             mark_dirty_for(self.runtime_id, root_id);
         }
@@ -503,6 +504,7 @@ mod tests {
     use crate::input::event::{
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
     };
+    use crate::input::event_ctx::EventCtx;
     use crate::widgets::button::Button;
     use crate::widgets::custom_paint::CustomPaint;
     use crate::widgets::focus_scope::FocusScope;
