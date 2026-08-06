@@ -22,7 +22,10 @@ pub(super) fn ime_suppresses_keyboard(
 
 /// Prefer the host-supplied physical size on DPI change; fall back to the
 /// adapter's last known size only when the host omitted a hint (headless tests).
-pub(super) fn physical_size_for_scale_change(host: Option<(u32, u32)>, current: (u32, u32)) -> (u32, u32) {
+pub(super) fn physical_size_for_scale_change(
+    host: Option<(u32, u32)>,
+    current: (u32, u32),
+) -> (u32, u32) {
     host.unwrap_or(current)
 }
 

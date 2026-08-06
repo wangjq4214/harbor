@@ -208,17 +208,9 @@ impl Cursor {
             };
 
             let vertices = TexturedVertex::from_pixel_rect(
-                left,
-                top,
-                right,
-                bottom,
-                0.0,
-                0.0,
-                1.0,
+                left, top, right, bottom, 0.0, 0.0, 1.0,
                 1.0, // UV unused, shader outputs solid color
-                [1.0; 4],
-                surf_w,
-                surf_h,
+                [1.0; 4], surf_w, surf_h,
             );
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;
