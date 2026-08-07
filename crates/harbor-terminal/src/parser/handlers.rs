@@ -49,15 +49,15 @@ impl VtHandler for ScreenHandler<'_> {
         }
 
         if !intermediates.is_empty() {
-            if intermediates == [b' '] && action == b'q' {
+            if intermediates == *b" " && action == b'q' {
                 self.screen
                     .set_cursor_style(CursorStyleArg::from_param(params.get_or(0, 1)));
-            } else if intermediates == [b'!'] && action == b'p' {
+            } else if intermediates == *b"!" && action == b'p' {
                 self.screen.soft_reset();
-            } else if intermediates == [b'"'] && action == b'q' {
+            } else if intermediates == *b"\"" && action == b'q' {
                 self.screen
                     .set_character_protection(CharacterProtection::from_param(params.get_or(0, 0)));
-            } else if intermediates == [b'$'] {
+            } else if intermediates == *b"$" {
                 match action {
                     b'z' => self.screen.decera(params),
                     b'{' => self.screen.decsera(params),
@@ -150,9 +150,9 @@ impl VtHandler for ScreenHandler<'_> {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8) {
         if !intermediates.is_empty() {
-            if intermediates == [b'('] {
+            if intermediates == *b"(" {
                 self.screen.designate_g0(byte);
-            } else if intermediates == [b')'] {
+            } else if intermediates == *b")" {
                 self.screen.designate_g1(byte);
             } else {
                 tracing::warn!(
