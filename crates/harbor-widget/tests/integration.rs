@@ -37,7 +37,10 @@ fn sized_box_layout_integration() {
     let root_id = rt.root_id().unwrap();
     let arena = rt.arena();
     let fiber = arena.get(root_id).unwrap();
-    assert!(fiber.layout_rect().is_some(), "root should have layout_rect");
+    assert!(
+        fiber.layout_rect().is_some(),
+        "root should have layout_rect"
+    );
     let rect = fiber.layout_rect().unwrap();
     assert_eq!(rect.min, Point::ZERO);
     assert_eq!(rect.size(), Size::new(100.0, 50.0));

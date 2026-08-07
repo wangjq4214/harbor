@@ -945,7 +945,9 @@ mod tests {
 
     fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
         let capture = LifecycleCapture::new();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.clone())
+            .with(tracing_subscriber::filter::LevelFilter::INFO);
         let result = tracing::subscriber::with_default(subscriber, f);
         (result, capture)
     }

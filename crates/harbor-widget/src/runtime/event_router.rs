@@ -63,10 +63,8 @@ impl EventRouter {
                     if arena.contains(captor) {
                         Some(captor)
                     } else {
-                        self.input.apply(
-                            std::mem::take(&mut EventCtx::new().take_commands()),
-                            arena,
-                        );
+                        self.input
+                            .apply(std::mem::take(&mut EventCtx::new().take_commands()), arena);
                         None
                     }
                 } else {
@@ -135,11 +133,7 @@ impl EventRouter {
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
-    pub(crate) fn transition_focus(
-        &mut self,
-        arena: &FiberArena,
-        next: Option<FiberId>,
-    ) -> bool {
+    pub(crate) fn transition_focus(&mut self, arena: &FiberArena, next: Option<FiberId>) -> bool {
         let previous = self.input.focused;
         if previous == next {
             return false;
@@ -171,10 +165,7 @@ impl EventRouter {
         needs_paint || ctx.needs_paint()
     }
 
-    pub(crate) fn find_first_focusable(
-        arena: &FiberArena,
-        fiber_id: FiberId,
-    ) -> Option<FiberId> {
+    pub(crate) fn find_first_focusable(arena: &FiberArena, fiber_id: FiberId) -> Option<FiberId> {
         let fiber = arena.get(fiber_id)?;
         if let Some(ref view) = fiber.view
             && view.is_focusable()
@@ -235,10 +226,7 @@ impl EventRouter {
         None
     }
 
-    pub(crate) fn build_ancestor_path(
-        arena: &FiberArena,
-        target: Option<FiberId>,
-    ) -> Vec<FiberId> {
+    pub(crate) fn build_ancestor_path(arena: &FiberArena, target: Option<FiberId>) -> Vec<FiberId> {
         let mut path = Vec::new();
         let mut current = target;
         while let Some(id) = current {
@@ -283,12 +271,7 @@ impl EventRouter {
         false
     }
 
-    fn invoke_handler(
-        arena: &FiberArena,
-        fiber_id: FiberId,
-        event: &UiEvent,
-        ctx: &mut EventCtx,
-    ) {
+    fn invoke_handler(arena: &FiberArena, fiber_id: FiberId, event: &UiEvent, ctx: &mut EventCtx) {
         let rect = arena.get(fiber_id).and_then(|f| f.layout_rect);
         let view = arena.get(fiber_id).and_then(|f| f.view.clone());
 
