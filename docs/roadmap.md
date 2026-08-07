@@ -97,14 +97,14 @@ No arbitrary-byte input panics, stalls indefinitely, or grows parser memory beyo
 
 ### Remaining work
 
-- Normalize wide cells across erase, insert, delete, line, and rectangle operations.
+- Wide cells are normalized across erase, insert, delete, line, scroll, and rectangle operations; retain regression coverage for margins, protection, overlap, and damage tracking.
 - Add soft-wrap metadata and define reset/resize behavior.
 - Complete pending-wrap tests across cursor movement, controls, erase, resize, and reset.
 - Verify insert mode, horizontal margins, tabs, protection, alternate-screen isolation, RIS, and DECSTR as complete state transitions.
 
 ### Exit gate
 
-Editing operations cannot leave orphan wide-cell continuations, and reset/mode transitions restore documented state deterministically.
+Editing operations preserve the wide-cell invariant, and reset/mode transitions restore documented state deterministically.
 
 ## P3 — Core Compatibility Slice
 

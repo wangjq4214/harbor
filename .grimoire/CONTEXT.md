@@ -293,9 +293,38 @@ Project domain concepts and terminology.
 - **Synonyms:** Terminal Engine
 - **Relationships:**
   - contains Screen state
+  - contains Wide Cell invariant
   - contains Parser (from harbor-parser)
   - wrapped by CustomPaint
   - depends on wgpu, harbor-parser, harbor-text
+
+### Wide Cell
+- **Definition:** A terminal grid representation in which a double-width glyph occupies a base cell and an adjacent continuation cell.
+- **Synonyms:** Wide Character Cell, Wide Glyph
+- **Relationships:**
+  - belongs to Screen state
+  - normalized by Wide Cell Normalization
+
+### Wide Cell Normalization
+- **Definition:** The shared screen-editing rule that cleans or preserves a complete wide glyph whenever an operation touches either half of it.
+- **Synonyms:** Wide-Cell Normalization
+- **Relationships:**
+  - applies to Screen Editing Operation
+  - preserves Damage Tracking
+  - respects Protected Cell
+  - implemented by VtEditEngine helpers
+
+### Screen Editing Operation
+- **Definition:** A terminal screen mutation such as erase, character insertion or deletion, line movement, scrolling, or DEC rectangular editing.
+- **Relationships:**
+  - uses Wide Cell Normalization
+  - produces Damage Tracking updates
+
+### Wide Cell Invariant
+- **Definition:** A screen-row consistency rule requiring every continuation cell to have its corresponding wide-glyph base and every wide-glyph base to have an adjacent continuation cell within the row boundary.
+- **Relationships:**
+  - validated by Screen Tests
+  - maintained by Wide Cell Normalization
 
 ### CustomPaint
 - **Definition:** A widget that explicitly marks an "escape hatch" from the normal widget rendering path. It produces a `Primitive::External` with an `ExternalDrawId`, delegating actual rendering to an externally registered handler (e.g., Terminal). During `build()`, it registers its draw handler into `BuildCx` so the Runtime can call it during encode.

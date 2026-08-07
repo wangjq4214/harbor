@@ -135,6 +135,123 @@ impl VtEditEngine {
         }
     }
 
+    /// Returns the complete valid wide-glyph range containing `col`.
+    fn wide_range(normal: &NormalBuf, row: usize, col: usize) -> Option<(usize, usize)> {
+        let cols = normal.cols();
+        let cell = normal.cell(row, col);
+        if cell.wide_continuation {
+            let base = col.checked_sub(1)?;
+            return (UnicodeWidthChar::width(normal.cell(row, base).ch).unwrap_or(0) == 2)
+                .then_some((base, col));
+        }
+        (UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2
+            && col + 1 < cols
+            && normal.cell(row, col + 1).wide_continuation)
+            .then_some((col, col + 1))
+    }
+
+    /// Expands an exclusive row range to include complete wide glyphs without
+    /// crossing the supplied inclusive bounds, and marks every touched cell dirty.
+    fn normalize_touched_range(
+        &self,
+        normal: &mut NormalBuf,
+        row: usize,
+        start: usize,
+        end: usize,
+        left: usize,
+        right: usize,
+    ) -> (usize, usize) {
+        let mut start = start.clamp(left, right + 1);
+        let mut end = end.clamp(left, right + 1);
+        if start >= end {
+            return (start, end);
+        }
+        for col in start..end {
+            if let Some((base, continuation)) = Self::wide_range(normal, row, col)
+                && base >= left
+                && continuation <= right
+            {
+                start = start.min(base);
+                end = end.max(continuation + 1);
+            }
+        }
+        normal.mark_range_dirty(row, start, end);
+        (start, end)
+    }
+
+    /// Removes malformed wide-cell fragments in a bounded row region.
+    ///
+    /// A valid glyph which crosses a boundary is deliberately left alone. We
+    /// cannot repair the other half without mutating outside the operation's
+    /// bounds, so boundary-crossing glyphs are excluded from the operation.
+    fn normalize_row_region(&self, normal: &mut NormalBuf, row: usize, left: usize, right: usize) {
+        let mut col = left;
+        while col <= right {
+            if let Some((_, continuation)) = Self::wide_range(normal, row, col) {
+                col = continuation + 1;
+                continue;
+            }
+            let cell = normal.cell(row, col);
+            if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+                *normal.cell_mut(row, col) = self.erase_cell();
+            }
+            col += 1;
+        }
+    }
+
+    fn has_boundary_wide(
+        normal: &NormalBuf,
+        row: usize,
+        start: usize,
+        end: usize,
+        left: usize,
+        right: usize,
+    ) -> bool {
+        (start..end).any(|col| {
+            Self::wide_range(normal, row, col).is_some_and(|(base, continuation)| {
+                (base < left || continuation > right) && base < end && continuation >= start
+            })
+        })
+    }
+
+    fn erase_row_range(
+        &self,
+        normal: &mut NormalBuf,
+        row: usize,
+        start: usize,
+        end: usize,
+        left: usize,
+        right: usize,
+        selective: bool,
+    ) {
+        let (start, end) = self.normalize_touched_range(normal, row, start, end, left, right);
+        let erase = self.erase_cell();
+        let mut col = start;
+        while col < end {
+            if let Some((base, continuation)) = Self::wide_range(normal, row, col) {
+                if base < left || continuation > right {
+                    // Never erase only the in-bound half of a boundary glyph.
+                    col = continuation + 1;
+                    continue;
+                }
+                if !selective
+                    || (!normal.cell(row, base).protected
+                        && !normal.cell(row, continuation).protected)
+                {
+                    *normal.cell_mut(row, base) = erase;
+                    *normal.cell_mut(row, continuation) = erase;
+                }
+                col = continuation + 1;
+            } else {
+                if !selective || !normal.cell(row, col).protected {
+                    *normal.cell_mut(row, col) = erase;
+                }
+                col += 1;
+            }
+        }
+        self.normalize_row_region(normal, row, left, right);
+    }
+
     // ── SGR ───────────────────────────────────────────────────────
 
     pub(crate) fn set_sgr(&mut self, params: &Params) {
@@ -341,14 +458,19 @@ impl VtEditEngine {
             cursor.modes.pending_wrap = false;
         }
 
-        let right_limit = if cursor.margins.enabled {
-            cursor.margins.right
+        let (left_limit, right_limit) = if cursor.margins.enabled {
+            (cursor.margins.left, cursor.margins.right)
         } else {
-            normal.cols().saturating_sub(1)
+            (0, normal.cols().saturating_sub(1))
         };
 
-        // 2. Clamp cursor if autowrap is off to prevent overflow
-        if !cursor.modes.autowrap && cursor.cursor.x >= right_limit {
+        // 2. Ignore writes outside active horizontal bounds. A cursor can be
+        // positioned there while origin mode is disabled, but printing must
+        // not mutate cells beyond DECLRMM.
+        if cursor.cursor.x < left_limit || cursor.cursor.x > right_limit {
+            return;
+        }
+        if !cursor.modes.autowrap && cursor.cursor.x == right_limit {
             cursor.cursor.x = right_limit;
         }
 
@@ -361,8 +483,26 @@ impl VtEditEngine {
             self.newline_inner(normal, cursor);
             cursor.modes.pending_wrap = false;
         }
+        let start_x = cursor.cursor.x;
+        // Do not split a glyph crossing an active margin. Leaving the whole
+        // pair intact is safer than mutating its out-of-bounds half.
+        if (start_x..start_x + width).any(|col| {
+            Self::wide_range(normal, cursor.cursor.y, col)
+                .is_some_and(|(base, continuation)| base < left_limit || continuation > right_limit)
+        }) {
+            return;
+        }
+
         if cursor.modes.insert {
-            self.insert_chars(normal, cursor, width);
+            // ICH resolves a continuation to its base so the complete glyph
+            // moves. Print at that same effective insertion column rather than
+            // clearing the shifted glyph at the old continuation column.
+            let insert_col = Self::wide_range(normal, cursor.cursor.y, start_x)
+                .map_or(start_x, |(base, _)| base);
+            if !self.insert_chars(normal, cursor, width) {
+                return;
+            }
+            cursor.cursor.x = insert_col;
         }
 
         let start_x = cursor.cursor.x;
@@ -371,12 +511,24 @@ impl VtEditEngine {
         } else {
             start_x
         };
-        let end_col = (start_x + width + 1).min(normal.cols());
+        let end_col = (start_x + width + 1).min(right_limit + 1);
         normal.mark_range_dirty(cursor.cursor.y, start_col, end_col);
 
-        self.clear_cell_for_write(normal, cursor.cursor.y, cursor.cursor.x);
+        self.clear_cell_for_write(
+            normal,
+            cursor.cursor.y,
+            cursor.cursor.x,
+            left_limit,
+            right_limit,
+        );
         if width == 2 && cursor.cursor.x < right_limit {
-            self.clear_cell_for_write(normal, cursor.cursor.y, cursor.cursor.x + 1);
+            self.clear_cell_for_write(
+                normal,
+                cursor.cursor.y,
+                cursor.cursor.x + 1,
+                left_limit,
+                right_limit,
+            );
         }
 
         let cell = normal.live_cell_mut(cursor.cursor.y, cursor.cursor.x);
@@ -419,21 +571,25 @@ impl VtEditEngine {
         }
     }
 
-    /// Clears the target cell *and* any joined cell from a double-width glyph that overlaps it.
-    fn clear_cell_for_write(&self, normal: &mut NormalBuf, row: usize, col: usize) {
-        if normal.cell(row, col).wide_continuation {
-            if col > 0 {
-                *normal.cell_mut(row, col - 1) = Cell::default();
+    /// Clears the target cell and its joined cell, provided the complete glyph
+    /// is inside the active horizontal bounds.
+    fn clear_cell_for_write(
+        &self,
+        normal: &mut NormalBuf,
+        row: usize,
+        col: usize,
+        left: usize,
+        right: usize,
+    ) {
+        if let Some((base, continuation)) = Self::wide_range(normal, row, col) {
+            if base < left || continuation > right {
+                return;
             }
-            *normal.cell_mut(row, col) = Cell::default();
+            *normal.cell_mut(row, base) = Cell::default();
+            *normal.cell_mut(row, continuation) = Cell::default();
             return;
         }
 
-        if UnicodeWidthChar::width(normal.cell(row, col).ch).unwrap_or(0) == 2
-            && col + 1 < normal.cols()
-        {
-            *normal.cell_mut(row, col + 1) = Cell::default();
-        }
         *normal.cell_mut(row, col) = Cell::default();
     }
 
@@ -451,58 +607,45 @@ impl VtEditEngine {
             return;
         }
         cursor.modes.pending_wrap = false;
-        let cell = self.erase_cell();
-        let cols = normal.cols();
-        let (left_col, right_col) = if cursor.margins.enabled {
+        let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
-            (0, cols - 1)
+            (0, normal.cols() - 1)
         };
-
         match mode {
             0 => {
-                normal.mark_range_dirty(cursor.cursor.y, cursor.cursor.x, right_col + 1);
-                let ring_row = normal.display_to_ring(cursor.cursor.y);
-                let start = ring_row * cols + cursor.cursor.x;
-                let end = ring_row * cols + right_col + 1;
-                normal.fill_linear_range_with(start, end, cell);
+                self.erase_row_range(
+                    normal,
+                    cursor.cursor.y,
+                    cursor.cursor.x,
+                    right + 1,
+                    left,
+                    right,
+                    false,
+                );
                 for row in cursor.cursor.y + 1..normal.rows() {
-                    normal.mark_row_dirty(row);
-                    let r_row = normal.display_to_ring(row);
-                    normal.fill_linear_range_with(
-                        r_row * cols + left_col,
-                        r_row * cols + right_col + 1,
-                        cell,
-                    );
+                    self.erase_row_range(normal, row, left, right + 1, left, right, false);
                 }
             }
             1 => {
                 for row in 0..cursor.cursor.y {
-                    normal.mark_row_dirty(row);
-                    let r_row = normal.display_to_ring(row);
-                    normal.fill_linear_range_with(
-                        r_row * cols + left_col,
-                        r_row * cols + right_col + 1,
-                        cell,
-                    );
+                    self.erase_row_range(normal, row, left, right + 1, left, right, false);
                 }
-                normal.mark_range_dirty(cursor.cursor.y, left_col, cursor.cursor.x + 1);
-                let ring_row = normal.display_to_ring(cursor.cursor.y);
-                let start = ring_row * cols + left_col;
-                let end = ring_row * cols + cursor.cursor.x + 1;
-                normal.fill_linear_range_with(start, end, cell);
+                self.erase_row_range(
+                    normal,
+                    cursor.cursor.y,
+                    left,
+                    cursor.cursor.x + 1,
+                    left,
+                    right,
+                    false,
+                );
             }
             2 => {
                 for row in 0..normal.rows() {
-                    let r_row = normal.display_to_ring(row);
-                    normal.fill_linear_range_with(
-                        r_row * cols + left_col,
-                        r_row * cols + right_col + 1,
-                        cell,
-                    );
+                    self.erase_row_range(normal, row, left, right + 1, left, right, false);
                 }
                 cursor.home_cursor();
-                normal.mark_all_dirty();
             }
             _ => {}
         }
@@ -520,35 +663,38 @@ impl VtEditEngine {
             return;
         }
         cursor.modes.pending_wrap = false;
-        let cell = self.erase_cell();
-        let ring_row = normal.display_to_ring(cursor.cursor.y);
-        let cols = normal.cols();
-        let (left_col, right_col) = if cursor.margins.enabled {
+        let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
-            (0, cols - 1)
+            (0, normal.cols() - 1)
         };
-        let start = ring_row * cols + left_col;
-        let cursor_idx = ring_row * cols + cursor.cursor.x;
-        let end = ring_row * cols + right_col + 1;
         match mode {
-            0 => normal.mark_range_dirty(
+            0 => self.erase_row_range(
+                normal,
                 cursor.cursor.y,
-                cursor.cursor.x.saturating_sub(1),
-                right_col + 1,
+                cursor.cursor.x,
+                right + 1,
+                left,
+                right,
+                false,
             ),
-            1 => {
-                normal.mark_range_dirty(cursor.cursor.y, left_col, (cursor.cursor.x + 2).min(cols))
-            }
-            2 => normal.mark_range_dirty(cursor.cursor.y, left_col, right_col + 1),
-            _ => {}
+            1 => self.erase_row_range(
+                normal,
+                cursor.cursor.y,
+                left,
+                cursor.cursor.x + 1,
+                left,
+                right,
+                false,
+            ),
+            2 => self.erase_row_range(normal, cursor.cursor.y, left, right + 1, left, right, false),
+            _ => return,
         }
-        match mode {
-            0 => normal.fill_linear_range_with(cursor_idx, end, cell),
-            1 => normal.fill_linear_range_with(start, cursor_idx + 1, cell),
-            2 => normal.fill_linear_range_with(start, end, cell),
-            _ => {}
-        }
+        normal.mark_range_dirty(
+            cursor.cursor.y,
+            cursor.cursor.x.saturating_sub(1).max(left),
+            right + 1,
+        );
     }
 
     pub(crate) fn erase_chars(
@@ -563,24 +709,31 @@ impl VtEditEngine {
             return;
         }
         cursor.modes.pending_wrap = false;
-        let cell = self.erase_cell();
-        let n = if n == 0 { 1 } else { n };
-        let ring_row = normal.display_to_ring(cursor.cursor.y);
-        let cols = normal.cols();
-        let right_col = if cursor.margins.enabled {
+        let right = if cursor.margins.enabled {
             cursor.margins.right
         } else {
-            cols - 1
+            normal.cols() - 1
         };
-        let end_col = (cursor.cursor.x + n).min(right_col + 1);
+        let left = if cursor.margins.enabled {
+            cursor.margins.left
+        } else {
+            0
+        };
+        let end = (cursor.cursor.x + n.max(1)).min(right + 1);
+        self.erase_row_range(
+            normal,
+            cursor.cursor.y,
+            cursor.cursor.x,
+            end,
+            left,
+            right,
+            false,
+        );
         normal.mark_range_dirty(
             cursor.cursor.y,
-            cursor.cursor.x.saturating_sub(1),
-            (end_col + 1).min(cols),
+            cursor.cursor.x.saturating_sub(1).max(left),
+            (end + 1).min(right + 1),
         );
-        let start = ring_row * cols + cursor.cursor.x;
-        let end = (start + n).min(ring_row * cols + right_col + 1);
-        normal.fill_linear_range_with(start, end, cell);
     }
 
     // ── selective erase ───────────────────────────────────────────
@@ -596,40 +749,43 @@ impl VtEditEngine {
         {
             return;
         }
-        let erase = self.erase_cell();
-        let cols = normal.cols();
-        let (left_col, right_col) = if cursor.margins.enabled {
+        let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
-            (0, cols - 1)
+            (0, normal.cols() - 1)
         };
-
         match mode {
             0 => {
-                normal.selective_erase_row_range(
+                self.erase_row_range(
+                    normal,
                     cursor.cursor.y,
                     cursor.cursor.x,
-                    right_col + 1,
-                    erase,
+                    right + 1,
+                    left,
+                    right,
+                    true,
                 );
                 for row in cursor.cursor.y + 1..normal.rows() {
-                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
+                    self.erase_row_range(normal, row, left, right + 1, left, right, true);
                 }
             }
             1 => {
                 for row in 0..cursor.cursor.y {
-                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
+                    self.erase_row_range(normal, row, left, right + 1, left, right, true);
                 }
-                normal.selective_erase_row_range(
+                self.erase_row_range(
+                    normal,
                     cursor.cursor.y,
-                    left_col,
+                    left,
                     cursor.cursor.x + 1,
-                    erase,
+                    left,
+                    right,
+                    true,
                 );
             }
             2 => {
                 for row in 0..normal.rows() {
-                    normal.selective_erase_row_range(row, left_col, right_col + 1, erase);
+                    self.erase_row_range(normal, row, left, right + 1, left, right, true);
                 }
             }
             _ => {}
@@ -647,60 +803,72 @@ impl VtEditEngine {
         {
             return;
         }
-        let erase = self.erase_cell();
-        let cols = normal.cols();
-        let (left_col, right_col) = if cursor.margins.enabled {
+        let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
-            (0, cols - 1)
+            (0, normal.cols() - 1)
         };
         match mode {
-            0 => {
-                normal.selective_erase_row_range(
-                    cursor.cursor.y,
-                    cursor.cursor.x,
-                    right_col + 1,
-                    erase,
-                );
-            }
-            1 => {
-                normal.selective_erase_row_range(
-                    cursor.cursor.y,
-                    left_col,
-                    cursor.cursor.x + 1,
-                    erase,
-                );
-            }
-            2 => {
-                normal.selective_erase_row_range(cursor.cursor.y, left_col, right_col + 1, erase);
-            }
+            0 => self.erase_row_range(
+                normal,
+                cursor.cursor.y,
+                cursor.cursor.x,
+                right + 1,
+                left,
+                right,
+                true,
+            ),
+            1 => self.erase_row_range(
+                normal,
+                cursor.cursor.y,
+                left,
+                cursor.cursor.x + 1,
+                left,
+                right,
+                true,
+            ),
+            2 => self.erase_row_range(normal, cursor.cursor.y, left, right + 1, left, right, true),
             _ => {}
         }
     }
 
     // ── insert / delete chars ─────────────────────────────────────
 
+    /// Inserts blank cells and reports whether the shift was applied.
+    ///
+    /// A caller in insert mode must not fall back to overwrite when a
+    /// boundary-crossing wide glyph makes the bounded shift unsafe.
     pub(crate) fn insert_chars(
         &mut self,
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         n: usize,
-    ) {
+    ) -> bool {
         cursor.modes.pending_wrap = false;
         let n = if n == 0 { 1 } else { n };
-        let col = cursor.cursor.x;
+        let requested_col = cursor.cursor.x;
         let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
             (0, normal.cols() - 1)
         };
-        normal.mark_range_dirty(cursor.cursor.y, col.saturating_sub(1), right + 1);
-        if col < left || col > right {
-            return;
+        normal.mark_range_dirty(cursor.cursor.y, requested_col.saturating_sub(1), right + 1);
+        if requested_col < left || requested_col > right {
+            return false;
         }
+        // Insert before the complete glyph when the cursor is on its
+        // continuation; otherwise the base would remain behind the shift.
+        let col = Self::wide_range(normal, cursor.cursor.y, requested_col)
+            .map_or(requested_col, |(base, _)| base);
         let n = n.min(right - col + 1);
         if n == 0 {
-            return;
+            return false;
+        }
+        // Shifting a margin region containing a boundary-crossing glyph would
+        // overwrite its in-bound half and orphan the untouched outside half.
+        // Leave the whole operation alone under the bounded policy.
+        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
+            return false;
         }
         let ring_row = normal.display_to_ring(cursor.cursor.y);
         let row_start = ring_row * normal.cols();
@@ -713,6 +881,8 @@ impl VtEditEngine {
         }
 
         normal.fill_linear_range_with(row_start + col, row_start + col + n, self.erase_cell());
+        self.normalize_row_region(normal, cursor.cursor.y, left, right);
+        true
     }
 
     pub(crate) fn delete_chars(
@@ -737,18 +907,27 @@ impl VtEditEngine {
         if n == 0 {
             return;
         }
+        // A shift cannot safely move a region containing a glyph straddling
+        // either active horizontal boundary.
+        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
+            return;
+        }
+        // Resolve the complete deletion range before mutating the row. In
+        // particular, a cursor on a continuation deletes its base as well.
+        let (delete_start, delete_end) =
+            self.normalize_touched_range(normal, cursor.cursor.y, col, col + n, left, right);
+        let delete_width = delete_end - delete_start;
         let ring_row = normal.display_to_ring(cursor.cursor.y);
         let row_start = ring_row * normal.cols();
-
-        let src_start = row_start + col + n;
+        let src_start = row_start + delete_end;
         let src_end = row_start + right + 1;
-        let dst = row_start + col;
+        let dst = row_start + delete_start;
         if src_start < src_end {
             normal.copy_linear_range(src_start, src_end, dst);
         }
-
-        let blank_start = row_start + right + 1 - n;
-        normal.fill_linear_range_with(blank_start, blank_start + n, self.erase_cell());
+        let blank_start = row_start + right + 1 - delete_width;
+        normal.fill_linear_range_with(blank_start, blank_start + delete_width, self.erase_cell());
+        self.normalize_row_region(normal, cursor.cursor.y, left, right);
     }
 
     // ── insert / delete lines ─────────────────────────────────────
@@ -799,6 +978,9 @@ impl VtEditEngine {
         for i in 0..n {
             normal.fill_row_with(cursor.cursor.y + i, self.erase_cell());
         }
+        for row in cursor.cursor.y..=cursor.scroll_region.bottom {
+            self.normalize_row_region(normal, row, 0, normal.cols() - 1);
+        }
         cursor.cursor.x = 0;
     }
 
@@ -848,6 +1030,9 @@ impl VtEditEngine {
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, self.erase_cell());
         }
+        for row in cursor.cursor.y..=cursor.scroll_region.bottom {
+            self.normalize_row_region(normal, row, 0, normal.cols() - 1);
+        }
         cursor.cursor.x = 0;
     }
 
@@ -891,6 +1076,9 @@ impl VtEditEngine {
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, self.erase_cell());
         }
+        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
+            self.normalize_row_region(normal, row, 0, normal.cols() - 1);
+        }
     }
 
     pub(crate) fn scroll_down_region(
@@ -931,6 +1119,9 @@ impl VtEditEngine {
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.top + i, self.erase_cell());
         }
+        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
+            self.normalize_row_region(normal, row, 0, normal.cols() - 1);
+        }
     }
 
     // ── margin-rect scroll helpers ────────────────────────────────
@@ -959,6 +1150,9 @@ impl VtEditEngine {
                 *normal.cell_mut(row, col) = blank;
             }
         }
+        for row in top..=bottom {
+            self.normalize_row_region(normal, row, cursor.margins.left, cursor.margins.right);
+        }
     }
 
     fn scroll_margin_rect_down(
@@ -984,6 +1178,9 @@ impl VtEditEngine {
             for col in cursor.margins.left..=cursor.margins.right {
                 *normal.cell_mut(row, col) = blank;
             }
+        }
+        for row in top..=bottom {
+            self.normalize_row_region(normal, row, cursor.margins.left, cursor.margins.right);
         }
     }
 
@@ -1023,6 +1220,11 @@ impl VtEditEngine {
             normal.copy_ring_range(src_start, src_end, dst);
             normal.fill_row_with(cursor.scroll_region.bottom, self.erase_cell());
         }
+        if !cursor.margins.enabled {
+            for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
+                self.normalize_row_region(normal, row, 0, normal.cols() - 1);
+            }
+        }
         cursor.cursor.y = cursor.scroll_region.bottom;
     }
 
@@ -1048,12 +1250,8 @@ impl VtEditEngine {
         else {
             return;
         };
-        let erase = self.erase_cell();
         for row in t..=b {
-            normal.mark_range_dirty(row, l, r + 1);
-            for col in l..=r {
-                *normal.cell_mut(row, col) = erase;
-            }
+            self.erase_row_range(normal, row, l, r + 1, 0, normal.cols() - 1, false);
         }
     }
 
@@ -1077,15 +1275,8 @@ impl VtEditEngine {
         else {
             return;
         };
-        let erase = self.erase_cell();
         for row in t..=b {
-            normal.mark_range_dirty(row, l, r + 1);
-            for col in l..=r {
-                let cell = normal.cell_mut(row, col);
-                if !cell.protected {
-                    *cell = erase;
-                }
-            }
+            self.erase_row_range(normal, row, l, r + 1, 0, normal.cols() - 1, true);
         }
     }
 
@@ -1126,10 +1317,12 @@ impl VtEditEngine {
         };
 
         for row in t..=b {
-            normal.mark_range_dirty(row, l, r + 1);
-            for col in l..=r {
+            let (start, end) =
+                self.normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
+            for col in start..end {
                 *normal.cell_mut(row, col) = cell;
             }
+            self.normalize_row_region(normal, row, 0, normal.cols() - 1);
         }
     }
 
@@ -1172,30 +1365,81 @@ impl VtEditEngine {
         let height = sb - st + 1;
         let width = sr - sl + 1;
 
+        let erase = self.erase_cell();
         let mut temp = Vec::with_capacity(height * width);
         for row in st..=sb {
             for col in sl..=sr {
-                temp.push(*normal.cell(row, col));
+                let complete = match Self::wide_range(normal, row, col) {
+                    Some((base, continuation)) => base >= sl && continuation <= sr,
+                    None => {
+                        !normal.cell(row, col).wide_continuation
+                            && UnicodeWidthChar::width(normal.cell(row, col).ch).unwrap_or(0) != 2
+                    }
+                };
+                temp.push(if complete {
+                    *normal.cell(row, col)
+                } else {
+                    erase
+                });
             }
         }
 
-        let max_rows = normal.rows();
-        let max_cols = normal.cols();
+        // Destination coordinates use the same bounds as resolve_rect:
+        // origin-off copies use the full screen, while origin-on copies are
+        // confined to the scroll region and active horizontal margins.
+        let (dest_top, dest_bottom, dest_left, dest_right) = if cursor.modes.origin {
+            (
+                cursor.scroll_region.top,
+                cursor.scroll_region.bottom,
+                cursor.margins.left,
+                cursor.margins.right,
+            )
+        } else {
+            (0, normal.rows() - 1, 0, normal.cols() - 1)
+        };
+        let Some(dest_row_end) = dt_start.checked_add(height) else {
+            return;
+        };
+        let Some(dest_col_end) = dl_start.checked_add(width) else {
+            return;
+        };
+        let row_start = dt_start.max(dest_top);
+        let row_end = dest_row_end.min(dest_bottom + 1);
+        let col_start = dl_start.max(dest_left);
+        let col_end = dest_col_end.min(dest_right + 1);
+        if row_start >= row_end || col_start >= col_end {
+            return;
+        }
 
-        for h in 0..height {
-            let dest_row = dt_start + h;
-            if dest_row >= max_rows {
-                break;
-            }
-            normal.mark_range_dirty(dest_row, dl_start, (dl_start + width).min(max_cols));
-            for w in 0..width {
-                let dest_col = dl_start + w;
-                if dest_col >= max_cols {
-                    break;
+        for dest_row in row_start..row_end {
+            let h = dest_row - dt_start;
+            self.erase_row_range(
+                normal, dest_row, col_start, col_end, dest_left, dest_right, false,
+            );
+            for dest_col in col_start..col_end {
+                let w = dest_col - dl_start;
+                // A pre-existing pair crossing the active destination edge is
+                // indivisible. The erase helper leaves it intact; keep the
+                // write from replacing its in-bound half as well.
+                if Self::wide_range(normal, dest_row, dest_col).is_some_and(
+                    |(base, continuation)| base < dest_left || continuation > dest_right,
+                ) {
+                    continue;
                 }
-                let src_cell = temp[h * width + w];
-                *normal.cell_mut(dest_row, dest_col) = src_cell;
+                let mut cell = temp[h * width + w];
+                if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+                    let pair_in_bounds = if cell.wide_continuation {
+                        dest_col > col_start && dest_col > dest_left
+                    } else {
+                        dest_col + 1 < col_end && dest_col < dest_right
+                    };
+                    if !pair_in_bounds {
+                        cell = erase;
+                    }
+                }
+                *normal.cell_mut(dest_row, dest_col) = cell;
             }
+            self.normalize_row_region(normal, dest_row, dest_left, dest_right);
         }
     }
 
@@ -1221,8 +1465,9 @@ impl VtEditEngine {
         };
 
         for row in t..=b {
-            normal.mark_range_dirty(row, l, r + 1);
-            for col in l..=r {
+            let (start, end) =
+                self.normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
+            for col in start..end {
                 let cell = normal.cell_mut(row, col);
                 for code in params.iter_flat().skip(4).flatten() {
                     cell.apply_sgr(code);
@@ -1253,8 +1498,9 @@ impl VtEditEngine {
         };
 
         for row in t..=b {
-            normal.mark_range_dirty(row, l, r + 1);
-            for col in l..=r {
+            let (start, end) =
+                self.normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
+            for col in start..end {
                 let cell = normal.cell_mut(row, col);
                 for code in params.iter_flat().skip(4).flatten() {
                     cell.toggle_sgr(code);
