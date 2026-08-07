@@ -368,7 +368,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Erase range correctly includes or excludes the cursor cell
 * [x] Erase uses current erase attributes
 * [x] Erase does not unconditionally move the cursor
-* [ ] Erasing a wide character does not leave orphaned continuation cells
+* [x] Erasing a wide character does not leave orphaned continuation cells
 
 ### 9.2 EL — Erase in Line
 
@@ -406,7 +406,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Content beyond the right margin is discarded
 * [x] Newly inserted cells use the current erase attributes
 * [x] Operation occurs only within the valid left/right margins
-* [ ] Wide characters are not split in half
+* [x] Wide characters are not split in half
 
 ### 10.2 DCH
 
@@ -414,7 +414,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Content on the right is shifted left
 * [x] End of line is filled with erase attributes
 * [x] Operation occurs only within the valid left/right margins
-* [ ] Deleting any part of a wide character fully cleans up that character
+* [x] Deleting any part of a wide character fully cleans up that character
 
 ### 10.3 ECH
 
@@ -556,7 +556,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `CSI 4 l` — Disable Insert Mode
 * [ ] Printing characters in Insert Mode performs insertion first
 * [ ] Insertion is limited to the current valid horizontal area
-* [ ] Wide character insertion does not break cell consistency
+* [x] Wide character insertion does not break cell consistency
 
 ### 15.2 LNM
 
@@ -1309,7 +1309,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Illegal rectangle ranges are safely ignored
 * [x] Rectangle range is clipped to the valid screen
 * [x] Protected cells are preserved during selective erase
-* [ ] Rectangle operations do not split wide characters
+* [x] Rectangle operations do not split wide characters
 
 ---
 
