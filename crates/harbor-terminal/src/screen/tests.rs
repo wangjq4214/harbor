@@ -2648,7 +2648,10 @@ fn alt_screen_restores_all_state_groups() {
     );
     assert_eq!(screen.pen_state.charsets.g0, b'0', "g0 charset restored");
     assert_eq!(screen.pen_state.charsets.g1, b'A', "g1 charset restored");
-    assert_eq!(screen.pen_state.charsets.active, 1, "active charset restored");
+    assert_eq!(
+        screen.pen_state.charsets.active, 1,
+        "active charset restored"
+    );
     // Move cursor away, then restore_cursor proves saved cursor survived alt
     screen.cursor.cursor.x = 0;
     screen.cursor.cursor.y = 0;

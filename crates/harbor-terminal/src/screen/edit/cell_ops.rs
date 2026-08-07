@@ -28,11 +28,7 @@ impl CellOps {
     // ── wide-glyph helpers ────────────────────────────────────────
 
     /// Returns the complete valid wide-glyph range containing `col`.
-    pub(crate) fn wide_range(
-        normal: &NormalBuf,
-        row: usize,
-        col: usize,
-    ) -> Option<(usize, usize)> {
+    pub(crate) fn wide_range(normal: &NormalBuf, row: usize, col: usize) -> Option<(usize, usize)> {
         let cols = normal.cols();
         let cell = normal.cell(row, col);
         if cell.wide_continuation {
@@ -121,8 +117,7 @@ impl CellOps {
         (left, right): (usize, usize),
         selective: bool,
     ) {
-        let (start, end) =
-            Self::normalize_touched_range(normal, row, start, end, left, right);
+        let (start, end) = Self::normalize_touched_range(normal, row, start, end, left, right);
         let erase = pen_state.erase_cell();
         let mut col = start;
         while col < end {
@@ -177,7 +172,13 @@ impl CellOps {
             }
         }
         for row in top..=bottom {
-            Self::normalize_row_region(pen_state, normal, row, cursor.margins.left, cursor.margins.right);
+            Self::normalize_row_region(
+                pen_state,
+                normal,
+                row,
+                cursor.margins.left,
+                cursor.margins.right,
+            );
         }
     }
 
@@ -206,7 +207,13 @@ impl CellOps {
             }
         }
         for row in top..=bottom {
-            Self::normalize_row_region(pen_state, normal, row, cursor.margins.left, cursor.margins.right);
+            Self::normalize_row_region(
+                pen_state,
+                normal,
+                row,
+                cursor.margins.left,
+                cursor.margins.right,
+            );
         }
     }
 
@@ -577,7 +584,11 @@ impl CellOps {
             normal.copy_linear_range(src_start, src_end, dst);
         }
         let blank_start = row_start + right + 1 - delete_width;
-        normal.fill_linear_range_with(blank_start, blank_start + delete_width, pen_state.erase_cell());
+        normal.fill_linear_range_with(
+            blank_start,
+            blank_start + delete_width,
+            pen_state.erase_cell(),
+        );
         Self::normalize_row_region(pen_state, normal, cursor.cursor.y, left, right);
     }
 
@@ -799,8 +810,7 @@ impl CellOps {
                 cursor.scroll_region.bottom,
                 1,
             );
-        } else if cursor.scroll_region.top == 0
-            && cursor.scroll_region.bottom == normal.rows() - 1
+        } else if cursor.scroll_region.top == 0 && cursor.scroll_region.bottom == normal.rows() - 1
         {
             normal.scroll_up_full_screen(1, pen_state.erase_cell());
         } else {
@@ -924,14 +934,8 @@ impl CellOps {
         };
 
         for row in t..=b {
-            let (start, end) = Self::normalize_touched_range(
-                normal,
-                row,
-                l,
-                r + 1,
-                0,
-                normal.cols() - 1,
-            );
+            let (start, end) =
+                Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
                 *normal.cell_mut(row, col) = cell;
             }
@@ -1055,11 +1059,7 @@ impl CellOps {
         }
     }
 
-    pub(crate) fn deccara(
-        normal: &mut NormalBuf,
-        cursor: &CursorEngine,
-        params: &Params,
-    ) {
+    pub(crate) fn deccara(normal: &mut NormalBuf, cursor: &CursorEngine, params: &Params) {
         let top = params.get_or(0, 0);
         let left = params.get_or(1, 0);
         let bottom = params.get_or(2, 0);
@@ -1076,14 +1076,8 @@ impl CellOps {
         };
 
         for row in t..=b {
-            let (start, end) = Self::normalize_touched_range(
-                normal,
-                row,
-                l,
-                r + 1,
-                0,
-                normal.cols() - 1,
-            );
+            let (start, end) =
+                Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
                 let cell = normal.cell_mut(row, col);
                 for code in params.iter_flat().skip(4).flatten() {
@@ -1093,11 +1087,7 @@ impl CellOps {
         }
     }
 
-    pub(crate) fn decrara(
-        normal: &mut NormalBuf,
-        cursor: &CursorEngine,
-        params: &Params,
-    ) {
+    pub(crate) fn decrara(normal: &mut NormalBuf, cursor: &CursorEngine, params: &Params) {
         let top = params.get_or(0, 0);
         let left = params.get_or(1, 0);
         let bottom = params.get_or(2, 0);
@@ -1114,14 +1104,8 @@ impl CellOps {
         };
 
         for row in t..=b {
-            let (start, end) = Self::normalize_touched_range(
-                normal,
-                row,
-                l,
-                r + 1,
-                0,
-                normal.cols() - 1,
-            );
+            let (start, end) =
+                Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
                 let cell = normal.cell_mut(row, col);
                 for code in params.iter_flat().skip(4).flatten() {

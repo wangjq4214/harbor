@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::super::cursor::CursorEngine;
 use super::cell_ops::CellOps;
-use super::pen_state::{map_dec_graphics, PenState};
+use super::pen_state::{PenState, map_dec_graphics};
 
 /// Stateless namespace for writing characters to the grid.
 pub(crate) struct CellWriter;
@@ -40,12 +40,26 @@ impl CellWriter {
         };
 
         // 2. Prepare: handle pending wrap, clamp, and insert-mode shift.
-        if !Self::prepare_position(normal, cursor, pen_state, ch, width, (left_limit, right_limit)) {
+        if !Self::prepare_position(
+            normal,
+            cursor,
+            pen_state,
+            ch,
+            width,
+            (left_limit, right_limit),
+        ) {
             return;
         };
 
         // 3. Commit the glyph to the grid.
-        Self::commit_cell(pen_state, normal, cursor, ch, width, (left_limit, right_limit));
+        Self::commit_cell(
+            pen_state,
+            normal,
+            cursor,
+            ch,
+            width,
+            (left_limit, right_limit),
+        );
 
         // 4. Advance cursor and set pending_wrap.
         Self::advance_cursor(cursor, width, (left_limit, right_limit));
@@ -204,11 +218,7 @@ impl CellWriter {
     // ── helpers for write_char ────────────────────────────────────
 
     /// Internal helper: handles the line-feed / index portion of newline for write_char.
-    fn newline_inner(
-        pen_state: &mut PenState,
-        normal: &mut NormalBuf,
-        cursor: &mut CursorEngine,
-    ) {
+    fn newline_inner(pen_state: &mut PenState, normal: &mut NormalBuf, cursor: &mut CursorEngine) {
         if cursor.index_needs_scroll() {
             CellOps::scroll_region_up_one_inner(pen_state, normal, cursor);
         } else {
