@@ -605,7 +605,7 @@ fn resize_clamps_margins_and_updates_tab_stops() {
     screen.cursor.margins.left = 8;
     screen.cursor.margins.right = 11;
     screen.clear_tab_stops(3);
-    screen.edit.tab_stops.0[4] = true;
+    screen.pen_state.tab_stops.0[4] = true;
 
     screen.resize(2, 6);
     assert_eq!(
@@ -613,21 +613,21 @@ fn resize_clamps_margins_and_updates_tab_stops() {
         (5, 5)
     );
     assert_eq!(
-        screen.edit.tab_stops.0,
+        screen.pen_state.tab_stops.0,
         vec![false, false, false, false, true, false]
     );
 
     screen.resize(2, 18);
     assert!(
-        screen.edit.tab_stops.0[4],
+        screen.pen_state.tab_stops.0[4],
         "existing tab stops must be preserved"
     );
     assert!(
-        screen.edit.tab_stops.0[8],
+        screen.pen_state.tab_stops.0[8],
         "new default tab stop at column 8"
     );
     assert!(
-        screen.edit.tab_stops.0[16],
+        screen.pen_state.tab_stops.0[16],
         "new default tab stop at column 16"
     );
 }
@@ -942,15 +942,15 @@ fn save_restore_cursor_roundtrips() {
     screen.save_cursor();
     screen.cursor.cursor.x = 2;
     screen.cursor.cursor.y = 3;
-    screen.edit.pen.fg = Color::Named(1);
-    screen.edit.pen.bg = Color::Named(2);
-    screen.edit.pen.attrs.set(CellAttrs::BOLD);
+    screen.pen_state.pen.fg = Color::Named(1);
+    screen.pen_state.pen.bg = Color::Named(2);
+    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.restore_cursor();
     assert_eq!(screen.cursor.cursor.x, 0);
     assert_eq!(screen.cursor.cursor.y, 0);
-    assert_eq!(screen.edit.pen.fg, Color::Default);
-    assert_eq!(screen.edit.pen.bg, Color::Default);
-    assert_eq!(screen.edit.pen.attrs, CellAttrs::default());
+    assert_eq!(screen.pen_state.pen.fg, Color::Default);
+    assert_eq!(screen.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
 }
 
 #[test]
@@ -1047,16 +1047,16 @@ fn resize_preserves_saved_cursor() {
     // Move cursor away and set SGR.
     screen.cursor.cursor.y = 4;
     screen.cursor.cursor.x = 7;
-    screen.edit.pen.fg = Color::Named(1);
-    screen.edit.pen.bg = Color::Named(2);
-    screen.edit.pen.attrs.set(CellAttrs::BOLD);
+    screen.pen_state.pen.fg = Color::Named(1);
+    screen.pen_state.pen.bg = Color::Named(2);
+    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.resize(3, 5); // smaller — saved cursor must be clamped
     screen.restore_cursor();
     assert_eq!(screen.cursor.cursor.x, 0, "saved x clamped to 0.min(4)");
     assert_eq!(screen.cursor.cursor.y, 0, "saved y clamped to 0.min(2)");
-    assert_eq!(screen.edit.pen.fg, Color::Default);
-    assert_eq!(screen.edit.pen.bg, Color::Default);
-    assert_eq!(screen.edit.pen.attrs, CellAttrs::default());
+    assert_eq!(screen.pen_state.pen.fg, Color::Default);
+    assert_eq!(screen.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
 
     // Save at non-home, resize larger, restore → original position preserved.
     let mut screen = Screen::new(2, 5);
@@ -1157,7 +1157,7 @@ fn selected_text_empty_selection() {
 #[test]
 fn erase_line_preserves_current_bg() {
     let mut screen = Screen::new(1, 4);
-    screen.edit.pen.bg = Color::Named(4); // blue
+    screen.pen_state.pen.bg = Color::Named(4); // blue
     screen.write_char('a');
     screen.cursor.cursor.x = 0;
     screen.erase_line(0);
@@ -1173,7 +1173,7 @@ fn erase_line_preserves_current_bg() {
 #[test]
 fn erase_display_mode_0_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.edit.pen.bg = Color::Named(2); // green
+    screen.pen_state.pen.bg = Color::Named(2); // green
     screen.cursor.cursor.y = 0;
     screen.cursor.cursor.x = 1;
     screen.erase_display(0);
@@ -1190,7 +1190,7 @@ fn erase_display_mode_0_preserves_current_bg() {
 #[test]
 fn erase_display_mode_1_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.edit.pen.bg = Color::Rgb(64, 128, 255);
+    screen.pen_state.pen.bg = Color::Rgb(64, 128, 255);
     screen.cursor.cursor.y = 1;
     screen.cursor.cursor.x = 1;
     screen.erase_display(1);
@@ -1207,7 +1207,7 @@ fn erase_display_mode_1_preserves_current_bg() {
 #[test]
 fn erase_display_mode_2_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.edit.pen.bg = Color::Bright(7);
+    screen.pen_state.pen.bg = Color::Bright(7);
     screen.erase_display(2);
     for row in 0..2 {
         for col in 0..3 {
@@ -1223,7 +1223,7 @@ fn erase_display_mode_2_preserves_current_bg() {
 #[test]
 fn erase_chars_preserves_current_bg() {
     let mut screen = Screen::new(1, 4);
-    screen.edit.pen.bg = Color::Named(1); // red
+    screen.pen_state.pen.bg = Color::Named(1); // red
     screen.cursor.cursor.x = 1;
     screen.erase_chars(2);
     assert_eq!(
@@ -1243,9 +1243,9 @@ fn erase_chars_preserves_current_bg() {
 #[test]
 fn erase_uses_current_fg_too() {
     let mut screen = Screen::new(1, 3);
-    screen.edit.pen.fg = Color::Named(3); // yellow
-    screen.edit.pen.bg = Color::Named(4); // blue
-    screen.edit.pen.attrs.set(CellAttrs::BOLD);
+    screen.pen_state.pen.fg = Color::Named(3); // yellow
+    screen.pen_state.pen.bg = Color::Named(4); // blue
+    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.erase_line(2);
     for col in 0..3 {
         let cell = screen.cell(0, col);
@@ -1261,7 +1261,7 @@ fn erase_uses_current_fg_too() {
 #[test]
 fn reset_display_uses_default_not_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.edit.pen.bg = Color::Named(4); // blue
+    screen.pen_state.pen.bg = Color::Named(4); // blue
     screen.reset_display();
     for row in 0..2 {
         for col in 0..3 {
@@ -1463,9 +1463,9 @@ fn test_tab_stops_hts_tbc() {
 #[test]
 fn test_erase_background_filling() {
     let mut screen = Screen::new(3, 5);
-    screen.edit.pen.bg = Color::Named(4); // Blue
-    screen.edit.pen.fg = Color::Named(1); // Red
-    screen.edit.pen.attrs.set(CellAttrs::ITALIC);
+    screen.pen_state.pen.bg = Color::Named(4); // Blue
+    screen.pen_state.pen.fg = Color::Named(1); // Red
+    screen.pen_state.pen.attrs.set(CellAttrs::ITALIC);
 
     // Erase exposed cells in insert_chars
     screen.cursor.cursor.x = 0;
@@ -1486,9 +1486,9 @@ fn test_selective_erase_protection() {
     // Write "abcde" with 'c' protected
     screen.write_char('a');
     screen.write_char('b');
-    screen.edit.pen.protected = true;
+    screen.pen_state.pen.protected = true;
     screen.write_char('c');
-    screen.edit.pen.protected = false;
+    screen.pen_state.pen.protected = false;
     screen.write_char('d');
     screen.write_char('e');
     assert_eq!(screen.row_text(0), "abcde");
@@ -1514,8 +1514,8 @@ fn test_selective_erase_protection() {
 #[test]
 fn test_soft_reset_decstr() {
     let mut screen = Screen::new(5, 5);
-    screen.edit.pen.bg = Color::Named(4);
-    screen.edit.pen.fg = Color::Named(1);
+    screen.pen_state.pen.bg = Color::Named(4);
+    screen.pen_state.pen.fg = Color::Named(1);
     screen.cursor.modes.origin = true;
     screen.cursor.modes.autowrap = false;
     screen.cursor.margins.enabled = true;
@@ -1530,8 +1530,8 @@ fn test_soft_reset_decstr() {
     screen.soft_reset();
 
     // Modes and attributes should be reset
-    assert_eq!(screen.edit.pen.bg, Color::Default);
-    assert_eq!(screen.edit.pen.fg, Color::Default);
+    assert_eq!(screen.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.pen_state.pen.fg, Color::Default);
     assert!(!screen.cursor.modes.origin);
     assert!(screen.cursor.modes.autowrap);
     assert!(!screen.cursor.margins.enabled);
@@ -1605,33 +1605,33 @@ fn scrolling_preserves_the_column_chosen_by_the_caller() {
 #[test]
 fn test_decsca_protected_attr() {
     let mut screen = Screen::new(5, 5);
-    assert!(!screen.edit.pen.protected);
+    assert!(!screen.pen_state.pen.protected);
     screen.set_character_protection(harbor_types::CharacterProtection::Protected);
-    assert!(screen.edit.pen.protected);
+    assert!(screen.pen_state.pen.protected);
     screen.set_character_protection(harbor_types::CharacterProtection::Unprotected);
-    assert!(!screen.edit.pen.protected);
+    assert!(!screen.pen_state.pen.protected);
 }
 
 #[test]
 fn test_decstr_csi_dispatch() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(5, 5);
-    screen.edit.pen.bg = Color::Named(4);
+    screen.pen_state.pen.bg = Color::Named(4);
 
     // Dispatch soft reset CSI ! p
     parser.put_bytes(&mut screen, b"\x1b[!p");
-    assert_eq!(screen.edit.pen.bg, Color::Default);
+    assert_eq!(screen.pen_state.pen.bg, Color::Default);
 }
 
 #[test]
 fn test_decsca_csi_dispatch() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(5, 5);
-    assert!(!screen.edit.pen.protected);
+    assert!(!screen.pen_state.pen.protected);
 
     // Dispatch DECSCA 1 (protected on): CSI 1 " q
     parser.put_bytes(&mut screen, b"\x1b[1\"q");
-    assert!(screen.edit.pen.protected);
+    assert!(screen.pen_state.pen.protected);
 }
 
 #[test]
@@ -2206,7 +2206,7 @@ fn deccra_rejects_partial_wide_source_and_handles_overlapping_snapshot() {
         screen
             .dirty_ranges()
             .iter()
-            .any(|range| { range.row == 1 && range.start_col <= 0 && range.end_col > 0 })
+            .any(|range| { range.row == 1 && range.start_col == 0 && range.end_col > 0 })
     );
 
     // Act — copy a complete source over an overlapping destination.
@@ -2605,12 +2605,12 @@ fn alt_screen_restores_all_state_groups() {
     assert!(!screen.cursor.cursor.visible, "cursor visible restored");
     // Pen
     assert!(
-        screen.edit.pen.attrs.contains(CellAttrs::BOLD),
+        screen.pen_state.pen.attrs.contains(CellAttrs::BOLD),
         "SGR bold restored"
     );
-    assert_eq!(screen.edit.pen.fg, Color::Named(1), "SGR fg restored");
-    assert_eq!(screen.edit.pen.bg, Color::Named(2), "SGR bg restored");
-    assert!(screen.edit.pen.protected, "pen protected restored");
+    assert_eq!(screen.pen_state.pen.fg, Color::Named(1), "SGR fg restored");
+    assert_eq!(screen.pen_state.pen.bg, Color::Named(2), "SGR bg restored");
+    assert!(screen.pen_state.pen.protected, "pen protected restored");
     // ScrollRegion
     assert_eq!(
         screen.cursor.scroll_region.top, 1,
@@ -2639,16 +2639,16 @@ fn alt_screen_restores_all_state_groups() {
         "application keypad restored"
     );
     // TabStops
-    assert!(screen.edit.tab_stops.0[5], "tab stop restored");
+    assert!(screen.pen_state.tab_stops.0[5], "tab stop restored");
     // CharacterSets
     assert_eq!(
-        screen.edit.charsets.last_char,
+        screen.pen_state.charsets.last_char,
         Some('X'),
         "last_char restored"
     );
-    assert_eq!(screen.edit.charsets.g0, b'0', "g0 charset restored");
-    assert_eq!(screen.edit.charsets.g1, b'A', "g1 charset restored");
-    assert_eq!(screen.edit.charsets.active, 1, "active charset restored");
+    assert_eq!(screen.pen_state.charsets.g0, b'0', "g0 charset restored");
+    assert_eq!(screen.pen_state.charsets.g1, b'A', "g1 charset restored");
+    assert_eq!(screen.pen_state.charsets.active, 1, "active charset restored");
     // Move cursor away, then restore_cursor proves saved cursor survived alt
     screen.cursor.cursor.x = 0;
     screen.cursor.cursor.y = 0;

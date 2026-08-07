@@ -6,19 +6,18 @@
 
 use crate::InputModes;
 use crate::normal_buf::NormalBuf;
-use harbor_types::{CellAttrs, Color, CursorShape};
+use harbor_types::CursorShape;
 
-use super::edit::{Pen, Rect};
+use super::edit::Rect;
 
 /// Saved terminal state for cursor save/restore (DECSC/DECRC). Captures the cursor position
-/// and SGR attributes so the screen can be restored after a screen-altering operation.
+/// and mode flags so the screen can be restored after a screen-altering operation.
+///
+/// Pen attributes (colors + cell attrs) are saved/restored separately by `PenState`.
 #[derive(Debug, Clone)]
 pub(crate) struct SavedCursor {
     pub(crate) cursor_x: usize,
     pub(crate) cursor_y: usize,
-    pub(crate) fg: Color,
-    pub(crate) bg: Color,
-    pub(crate) attrs: CellAttrs,
     pub(crate) origin_mode: bool,
     pub(crate) autowrap: bool,
     pub(crate) pending_wrap: bool,
@@ -447,30 +446,42 @@ impl CursorEngine {
 
     // ── cursor save / restore ─────────────────────────────────────
 
-    pub(crate) fn save_cursor(&mut self, pen: &Pen) {
+    /// Saves cursor position and mode flags (DECSC).
+    /// Pen attributes are saved separately via `PenState::save_pen()`.
+    pub(crate) fn save_cursor_position(&mut self) {
         self.cursor.saved = Some(SavedCursor {
             cursor_x: self.cursor.x,
             cursor_y: self.cursor.y,
-            fg: pen.fg,
-            bg: pen.bg,
-            attrs: pen.attrs,
             origin_mode: self.modes.origin,
             autowrap: self.modes.autowrap,
             pending_wrap: self.modes.pending_wrap,
         });
     }
 
-    pub(crate) fn restore_cursor(&mut self, pen: &mut Pen) {
+    /// Restores cursor position and mode flags (DECRC).
+    /// Pen attributes are restored separately via `PenState::restore_pen()`.
+    pub(crate) fn restore_cursor_position(&mut self) {
         if let Some(saved) = &self.cursor.saved {
             self.cursor.x = saved.cursor_x;
             self.cursor.y = saved.cursor_y;
-            pen.fg = saved.fg;
-            pen.bg = saved.bg;
-            pen.attrs = saved.attrs;
             self.modes.origin = saved.origin_mode;
             self.modes.autowrap = saved.autowrap;
             self.modes.pending_wrap = saved.pending_wrap;
         }
+    }
+
+    // ── reset ────────────────────────────────────────────────────
+
+    /// Resets cursor position, scroll region, margins, and terminal modes
+    /// to defaults for the given grid dimensions.
+    pub(crate) fn reset(&mut self, rows: usize, cols: usize) {
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+        self.cursor.visible = true;
+        self.cursor.saved = None;
+        self.scroll_region = ScrollRegion::full(rows);
+        self.margins = Margins::full(cols);
+        self.modes = TerminalModes::default();
     }
 
     // ── helpers for cross-engine methods ──────────────────────────

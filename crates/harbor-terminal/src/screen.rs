@@ -1,7 +1,9 @@
-//! Terminal screen: thin coordinator delegating to three internal engines.
+//! Terminal screen: thin coordinator delegating to internal engines.
 //!
 //! - [`cursor::CursorEngine`] — cursor position, scroll region, margins, modes
-//! - [`edit::VtEditEngine`]   — pen (SGR), tab stops, charsets, cell mutations
+//! - [`edit::PenState`]       — pen (SGR), tab stops, charsets, erase-cell helper
+//! - [`edit::CellOps`]        — cell-level mutations (erase, insert, delete, scroll, DEC rects)
+//! - [`edit::CellWriter`]     — character writing (write_char and helpers)
 //! - [`alt::AltScreenStack`]  — alt-screen flag and pending request
 //!
 //! `Screen` keeps the public API stable; most methods are one-line
@@ -21,7 +23,7 @@ use harbor_parser::Params;
 
 use self::alt::AltScreenStack;
 use self::cursor::CursorEngine;
-use self::edit::{TabStops, VtEditEngine};
+use self::edit::{CellOps, CellWriter, PenState};
 
 pub use self::reader::ScreenReader;
 
@@ -48,8 +50,8 @@ pub struct Screen {
     normal: NormalBuf,
     /// Cursor position, scroll region, margins, and terminal modes.
     cursor: CursorEngine,
-    /// Pen state, tab stops, and character-set designations.
-    edit: VtEditEngine,
+    /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
+    pen_state: PenState,
     /// Alt-screen flag and pending request.
     alt: AltScreenStack,
     /// Saved normal-screen state while the alternate screen is active.
@@ -63,7 +65,7 @@ impl Screen {
         Self {
             normal: NormalBuf::new(rows, cols),
             cursor: CursorEngine::new(rows, cols),
-            edit: VtEditEngine::new(cols),
+            pen_state: PenState::new(cols),
             alt: AltScreenStack::new(),
             alt_saved: None,
         }
@@ -260,7 +262,7 @@ impl Screen {
         let cols = cols.max(1);
         self.normal.resize(rows, cols);
         self.cursor.clamp_to_grid(rows, cols);
-        self.edit.tab_stops.resize(cols);
+        self.pen_state.tab_stops.resize(cols);
         if let Some(saved) = &mut self.alt_saved {
             saved.resize(rows, cols);
         }
@@ -357,81 +359,79 @@ impl Screen {
     // ── SGR / charsets / protection ────────────────────────────────────
 
     pub fn set_sgr(&mut self, params: &Params) {
-        self.edit.set_sgr(params);
+        self.pen_state.set_sgr(params);
     }
 
     pub fn set_sgr_slice(&mut self, slice: &[Option<usize>]) {
-        self.edit.set_sgr_slice(slice);
+        self.pen_state.set_sgr_slice(slice);
     }
 
     pub fn designate_g0(&mut self, charset: u8) {
-        self.edit.designate_g0(charset);
+        self.pen_state.designate_g0(charset);
     }
 
     pub fn designate_g1(&mut self, charset: u8) {
-        self.edit.designate_g1(charset);
+        self.pen_state.designate_g1(charset);
     }
 
     pub fn set_active_charset(&mut self, active: u8) {
-        self.edit.set_active_charset(active);
+        self.pen_state.set_active_charset(active);
     }
 
     pub fn set_character_protection(&mut self, arg: CharacterProtection) {
-        self.edit.set_character_protection(arg);
+        self.pen_state.set_character_protection(arg);
     }
 
     // ── erase ──────────────────────────────────────────────────────────
 
     pub fn erase_display(&mut self, mode: usize) {
-        // We need to split borrows: self.edit needs &mut self, self.cursor needs &mut self.
-        // destructure to satisfy borrow checker.
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.erase_display(normal, cursor, mode);
+        CellOps::erase_display(pen_state, normal, cursor, mode);
     }
 
     pub fn erase_line(&mut self, mode: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.erase_line(normal, cursor, mode);
+        CellOps::erase_line(pen_state, normal, cursor, mode);
     }
 
     pub fn erase_chars(&mut self, n: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.erase_chars(normal, cursor, n);
+        CellOps::erase_chars(pen_state, normal, cursor, n);
     }
 
     pub fn selective_erase_display(&mut self, mode: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.selective_erase_display(normal, cursor, mode);
+        CellOps::selective_erase_display(pen_state, normal, cursor, mode);
     }
 
     pub fn selective_erase_line(&mut self, mode: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.selective_erase_line(normal, cursor, mode);
+        CellOps::selective_erase_line(pen_state, normal, cursor, mode);
     }
 
     // ── insert / delete ────────────────────────────────────────────────
@@ -440,40 +440,40 @@ impl Screen {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.insert_chars(normal, cursor, n);
+        CellOps::insert_chars(pen_state, normal, cursor, n);
     }
 
     pub fn delete_chars(&mut self, n: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.delete_chars(normal, cursor, n);
+        CellOps::delete_chars(pen_state, normal, cursor, n);
     }
 
     pub fn insert_lines(&mut self, n: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.insert_lines(normal, cursor, n);
+        CellOps::insert_lines(pen_state, normal, cursor, n);
     }
 
     pub fn delete_lines(&mut self, n: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.delete_lines(normal, cursor, n);
+        CellOps::delete_lines(pen_state, normal, cursor, n);
     }
 
     // ── scroll region (CSI S / CSI T) ──────────────────────────────────
@@ -482,20 +482,20 @@ impl Screen {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.scroll_up_region(normal, cursor, n);
+        CellOps::scroll_up_region(pen_state, normal, cursor, n);
     }
 
     pub fn scroll_down_region(&mut self, n: usize) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.scroll_down_region(normal, cursor, n);
+        CellOps::scroll_down_region(pen_state, normal, cursor, n);
     }
 
     // ── DEC rectangle ops ──────────────────────────────────────────────
@@ -504,80 +504,72 @@ impl Screen {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.decera(normal, cursor, params);
+        CellOps::decera(pen_state, normal, cursor, params);
     }
 
     pub fn decsera(&mut self, params: &Params) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.decsera(normal, cursor, params);
+        CellOps::decsera(pen_state, normal, cursor, params);
     }
 
     pub fn decfra(&mut self, params: &Params) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.decfra(normal, cursor, params);
+        CellOps::decfra(pen_state, normal, cursor, params);
     }
 
     pub fn deccra(&mut self, params: &Params) {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.deccra(normal, cursor, params);
+        CellOps::deccra(pen_state, normal, cursor, params);
     }
 
     pub fn deccara(&mut self, params: &Params) {
-        let Screen {
-            normal,
-            cursor,
-            edit,
-            ..
-        } = self;
-        edit.deccara(normal, cursor, params);
+        let Screen { normal, cursor, .. } = self;
+        CellOps::deccara(normal, cursor, params);
     }
 
     pub fn decrara(&mut self, params: &Params) {
-        let Screen {
-            normal,
-            cursor,
-            edit,
-            ..
-        } = self;
-        edit.decrara(normal, cursor, params);
+        let Screen { normal, cursor, .. } = self;
+        CellOps::decrara(normal, cursor, params);
     }
 
     // ── tab stops ──────────────────────────────────────────────────────
 
     pub fn set_tab_stop(&mut self) {
-        self.edit.set_tab_stop(self.cursor.cursor.x);
+        self.pen_state.set_tab_stop(self.cursor.cursor.x);
     }
 
     pub fn clear_tab_stops(&mut self, mode: usize) {
-        self.edit.clear_tab_stops(self.cursor.cursor.x, mode);
+        self.pen_state.clear_tab_stops(self.cursor.cursor.x, mode);
     }
 
     // ── cursor save / restore ──────────────────────────────────────────
 
     pub fn save_cursor(&mut self) {
-        self.cursor.save_cursor(&self.edit.pen);
+        self.cursor.save_cursor_position();
+        self.pen_state.save_pen();
     }
 
     pub fn restore_cursor(&mut self) {
-        self.cursor.restore_cursor(&mut self.edit.pen);
+        self.cursor.restore_cursor_position();
+        self.pen_state.restore_pen();
     }
 
     // ── write_char (coordinator) ───────────────────────────────────────
@@ -586,10 +578,10 @@ impl Screen {
         let Screen {
             normal,
             cursor,
-            edit,
+            pen_state,
             ..
         } = self;
-        edit.write_char(normal, cursor, ch);
+        CellWriter::write_char(pen_state, normal, cursor, ch);
     }
 
     // ── horizontal_tab (coordinator) ───────────────────────────────────
@@ -603,7 +595,7 @@ impl Screen {
         };
         let mut target = right_limit;
         for col in (self.cursor.cursor.x + 1)..=right_limit {
-            if col < self.edit.tab_stops.0.len() && self.edit.tab_stops.0[col] {
+            if col < self.pen_state.tab_stops.0.len() && self.pen_state.tab_stops.0[col] {
                 target = col;
                 break;
             }
@@ -613,11 +605,11 @@ impl Screen {
             let Screen {
                 normal,
                 cursor,
-                edit,
+                pen_state,
                 ..
             } = self;
             for _ in 0..spaces {
-                edit.write_char(normal, cursor, ' ');
+                CellWriter::write_char(pen_state, normal, cursor, ' ');
             }
         }
     }
@@ -625,17 +617,17 @@ impl Screen {
     // ── repeat_char (coordinator) ──────────────────────────────────────
 
     pub fn repeat_char(&mut self, n: usize) {
-        if let Some(ch) = self.edit.charsets.last_char {
+        if let Some(ch) = self.pen_state.charsets.last_char {
             let n = if n == 0 { 1 } else { n };
             let count = n.min(self.normal.cols());
             let Screen {
                 normal,
                 cursor,
-                edit,
+                pen_state,
                 ..
             } = self;
             for _ in 0..count {
-                edit.write_char(normal, cursor, ch);
+                CellWriter::write_char(pen_state, normal, cursor, ch);
             }
         }
     }
@@ -685,25 +677,17 @@ impl Screen {
                 let Screen {
                     normal,
                     cursor,
-                    edit,
+                    pen_state,
                     ..
                 } = self;
-                let top = cursor.scroll_region.top;
-                let bottom = cursor.scroll_region.bottom;
-                let height = bottom - top + 1;
-                if 1 < height {
-                    for dst_row in ((top + 1)..=bottom).rev() {
-                        let src_row = dst_row - 1;
-                        for col in cursor.margins.left..=cursor.margins.right {
-                            let cell = *normal.cell(src_row, col);
-                            *normal.cell_mut(dst_row, col) = cell;
-                        }
-                    }
-                }
-                let blank = edit.erase_cell();
-                for col in cursor.margins.left..=cursor.margins.right {
-                    *normal.cell_mut(top, col) = blank;
-                }
+                CellOps::scroll_margin_rect_down(
+                    pen_state,
+                    normal,
+                    cursor,
+                    cursor.scroll_region.top,
+                    cursor.scroll_region.bottom,
+                    1,
+                );
             } else {
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
@@ -713,7 +697,7 @@ impl Screen {
                 let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
                 self.normal.copy_ring_range(src_start, src_end, dst);
                 self.normal
-                    .fill_row_with(self.cursor.scroll_region.top, self.edit.erase_cell());
+                    .fill_row_with(self.cursor.scroll_region.top, self.pen_state.erase_cell());
             }
         } else if self.cursor.cursor.y > 0 {
             self.cursor.cursor.y -= 1;
@@ -740,29 +724,22 @@ impl Screen {
             let Screen {
                 normal,
                 cursor,
-                edit,
+                pen_state,
                 ..
             } = self;
-            let top = cursor.scroll_region.top;
-            let bottom = cursor.scroll_region.bottom;
-            let height = bottom - top + 1;
-            if 1 < height {
-                for dst_row in top..=(bottom - 1) {
-                    let src_row = dst_row + 1;
-                    for col in cursor.margins.left..=cursor.margins.right {
-                        let cell = *normal.cell(src_row, col);
-                        *normal.cell_mut(dst_row, col) = cell;
-                    }
-                }
-            }
-            let blank = edit.erase_cell();
-            for col in cursor.margins.left..=cursor.margins.right {
-                *normal.cell_mut(bottom, col) = blank;
-            }
+            CellOps::scroll_margin_rect_up(
+                pen_state,
+                normal,
+                cursor,
+                cursor.scroll_region.top,
+                cursor.scroll_region.bottom,
+                1,
+            );
         } else if self.cursor.scroll_region.top == 0
             && self.cursor.scroll_region.bottom == self.normal.rows() - 1
         {
-            self.normal.scroll_up_full_screen(1, self.edit.erase_cell());
+            self.normal
+                .scroll_up_full_screen(1, self.pen_state.erase_cell());
         } else {
             let tr = self.normal.total_rows();
             let vis = self.normal.visible_start();
@@ -771,8 +748,10 @@ impl Screen {
             let src_end = ((vis + self.cursor.scroll_region.bottom + 1) % tr) * c;
             let dst = ((vis + self.cursor.scroll_region.top) % tr) * c;
             self.normal.copy_ring_range(src_start, src_end, dst);
-            self.normal
-                .fill_row_with(self.cursor.scroll_region.bottom, self.edit.erase_cell());
+            self.normal.fill_row_with(
+                self.cursor.scroll_region.bottom,
+                self.pen_state.erase_cell(),
+            );
         }
         self.cursor.cursor.y = self.cursor.scroll_region.bottom;
     }
@@ -783,31 +762,19 @@ impl Screen {
         self.alt.mark_inactive();
         self.alt_saved = None;
 
+        let rows = self.normal.rows();
+        let cols = self.normal.cols();
         self.normal.fill_all();
-        self.cursor.cursor.x = 0;
-        self.cursor.cursor.y = 0;
-        self.cursor.cursor.visible = true;
-        self.edit.pen = self::edit::Pen::reset();
-        self.cursor.scroll_region = self::cursor::ScrollRegion::full(self.normal.rows());
-        self.cursor.margins = self::cursor::Margins::full(self.normal.cols());
-        self.cursor.modes = self::cursor::TerminalModes::default();
-        self.edit.charsets.reset();
-        self.edit.tab_stops = TabStops::new(self.normal.cols());
-        self.cursor.cursor.saved = None;
+        self.cursor.reset(rows, cols);
+        self.pen_state.reset(cols);
         self.mark_all_dirty();
     }
 
     pub fn soft_reset(&mut self) {
-        self.edit.pen = self::edit::Pen::reset();
-        self.cursor.scroll_region = self::cursor::ScrollRegion::full(self.normal.rows());
-        self.cursor.margins = self::cursor::Margins::full(self.normal.cols());
-        self.cursor.modes = self::cursor::TerminalModes::default();
-
-        self.cursor.cursor.saved = None;
-        self.edit.charsets.last_char = None;
-        self.cursor.cursor.x = 0;
-        self.cursor.cursor.y = 0;
-        self.cursor.cursor.visible = true;
+        let rows = self.normal.rows();
+        let cols = self.normal.cols();
+        self.cursor.reset(rows, cols);
+        self.pen_state.soft_reset();
     }
 
     // ── misc ───────────────────────────────────────────────────────────
