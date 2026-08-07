@@ -56,6 +56,8 @@ pub struct Screen {
     alt: AltScreenStack,
     /// Saved normal-screen state while the alternate screen is active.
     alt_saved: Option<Box<Screen>>,
+    /// Outgoing VT replies buffer.
+    pub(crate) replies: Vec<u8>,
 }
 
 impl Screen {
@@ -68,6 +70,7 @@ impl Screen {
             pen_state: PenState::new(cols),
             alt: AltScreenStack::new(),
             alt_saved: None,
+            replies: Vec::new(),
         }
     }
 
@@ -117,6 +120,39 @@ impl Screen {
 
     pub fn cursor_visible(&self) -> bool {
         self.cursor.cursor_visible()
+    }
+
+    pub fn push_reply(&mut self, reply: &[u8]) {
+        if self.replies.len() + reply.len() <= 1024 {
+            self.replies.extend_from_slice(reply);
+        } else {
+            tracing::warn!("Terminal reply buffer limit (1024 bytes) reached. Discarding reply.");
+        }
+    }
+
+    pub fn drain_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
+    }
+
+    /// Returns the 1-based (row, col) coordinates relative to origin/margins if DECOM is enabled.
+    pub fn cpr_coordinates(&self) -> (usize, usize) {
+        let row = if self.cursor.modes.origin {
+            self.cursor
+                .cursor_y(&self.normal)
+                .saturating_sub(self.cursor.scroll_region.top)
+                + 1
+        } else {
+            self.cursor.cursor_y(&self.normal) + 1
+        };
+        let col = if self.cursor.modes.origin && self.cursor.margins.enabled {
+            self.cursor
+                .cursor_x()
+                .saturating_sub(self.cursor.margins.left)
+                + 1
+        } else {
+            self.cursor.cursor_x() + 1
+        };
+        (row, col)
     }
 
     pub fn set_cursor_style(&mut self, arg: CursorStyleArg) {

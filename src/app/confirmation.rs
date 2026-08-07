@@ -18,6 +18,7 @@ use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
+use harbor_widget::text::GlyphFn;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::focus_scope::FocusScope;
@@ -377,7 +378,7 @@ impl ConfirmationWindow {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        glyph_fn: &harbor_widget::text::GlyphFn<'_>,
+        glyph_fn: &GlyphFn,
     ) -> FrameOutcome {
         let ConfirmationWindow {
             window,

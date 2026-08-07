@@ -43,6 +43,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 [35](#35-error-recovery) · [36](#36-protocol-security-limits) · [37](#37-minimum-modern-compatibility-set) · [38](#38-sequence-level-test-samples) · [39](#39-final-acceptance)
 
+
 ---
 
 ## 1. Basic Parsing Rules
@@ -814,16 +815,17 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ## 21. Device Status Reports
 
+
 ### 21.1 DSR
 
-* [ ] `CSI 5 n` — Request device status
-* [ ] Responds with `CSI 0 n`
-* [ ] `CSI 6 n` — Request cursor position
-* [ ] Responds with `CSI row;col R`
-* [ ] Response coordinates use 1-based
-* [ ] Response coordinates match target compatibility behavior under Origin Mode
-* [ ] `CSI ? 6 n` — DEC Private CPR
-* [ ] Private CPR response format is correct
+* [x] `CSI 5 n` — Request device status
+* [x] Responds with `CSI 0 n`
+* [x] `CSI 6 n` — Request cursor position
+* [x] Responds with `CSI row;col R`
+* [x] Response coordinates use 1-based
+* [x] Response coordinates match target compatibility behavior under Origin Mode
+* [x] `CSI ? 6 n` — DEC Private CPR
+* [x] Private CPR response format is correct
 
 ### 21.2 Primary Device Attributes
 

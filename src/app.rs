@@ -28,6 +28,7 @@ use harbor_widget::effects::{
 };
 use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
+use harbor_widget::text::GlyphFn;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
@@ -260,7 +261,7 @@ impl DialogOverlay {
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
-        terminal: Option<&Arc<Mutex<Terminal>>>,
+        glyph_fn: Option<&GlyphFn>,
     ) -> DialogResult {
         let Some(mut confirmation) = self.window.take() else {
             return DialogResult {
@@ -275,12 +276,9 @@ impl DialogOverlay {
             }
             confirmation::ConfirmationResult::None => {
                 if matches!(event, WindowEvent::RedrawRequested)
-                    && let (Some(gpu), Some(terminal)) = (gpu, terminal)
+                    && let (Some(gpu), Some(glyph_fn)) = (gpu, glyph_fn)
                 {
-                    let term = terminal.lock().unwrap();
-                    let frame = confirmation.render(gpu.device(), gpu.queue(), &|ch| {
-                        term.text_glyph(ch).copied()
-                    });
+                    let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_fn);
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
                         DialogOutcome::Fatal(error)
@@ -469,12 +467,18 @@ impl ApplicationHandler<AppEvent> for App {
     ) {
         let dialog_window_id = self.runtime.dialog.window_id();
         if dialog_window_id == Some(window_id) {
-            let result = self.runtime.dialog.handle_event(
-                &event,
-                event_loop,
-                self.runtime.gpu.as_ref(),
-                self.runtime.terminal.as_ref(),
-            );
+            let result = {
+                let term_guard = self.runtime.terminal.as_ref().map(|t| t.lock().unwrap());
+                let dialog = &mut self.runtime.dialog;
+                let gpu = self.runtime.gpu.as_ref();
+                match term_guard.as_ref() {
+                    Some(terminal) => {
+                        let glyph_fn = |ch| terminal.text_glyph(ch).copied();
+                        dialog.handle_event(&event, event_loop, gpu, Some(&glyph_fn))
+                    }
+                    None => dialog.handle_event(&event, event_loop, gpu, None),
+                }
+            };
             match &result.outcome {
                 DialogOutcome::Cancelled => {
                     self.request_main_frame(event_loop);

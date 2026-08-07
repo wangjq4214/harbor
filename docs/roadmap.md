@@ -29,7 +29,7 @@ Repository hygiene is also incomplete: a Windows CI workflow is still required, 
 | P1    | Bounded parser contract with fuzz/property evidence   | In progress | P0                     |
 | P2    | Correct terminal state and screen invariants          | In progress | P1                     |
 | P3    | Core shell, Vim, less, and tmux sequence slice        | In progress | P1, P2                 |
-| P4    | Terminal replies and capability queries               | Planned     | P0, P1, P2             |
+| P4    | Terminal replies and capability queries               | In progress | P0, P1, P2             |
 | P5    | Useful and secure OSC/DCS behavior                    | In progress | P1, P2, P4             |
 | P6    | Focus, mouse, and complete IME interaction            | In progress | P2, P3, P5             |
 | P7    | Windows performance, stability, and daily-use release | In progress | P3, P5, P6             |

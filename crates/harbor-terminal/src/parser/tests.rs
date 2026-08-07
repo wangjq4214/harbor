@@ -279,3 +279,106 @@ fn csi_save_restore_cursor() {
     assert_eq!(screen.cursor_y(), 3, "RCP should restore row");
     assert_eq!(screen.cursor_x(), 5, "RCP should restore col");
 }
+
+// ── DSR / CPR Terminal Replies (CSI 5 n / CSI 6 n / CSI ? 6 n) ──
+
+#[test]
+fn dsr_status_report_replies_ok() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[5n");
+    let replies = screen.drain_replies();
+    assert_eq!(replies, b"\x1b[0n");
+}
+
+#[test]
+fn cpr_standard_report_absolute_coordinates() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    // Place cursor at 0-based (y=3, x=5) -> 1-based (row=4, col=6)
+    move_to(&mut parser, &mut screen, 4, 6);
+    feed(&mut parser, &mut screen, b"\x1b[6n");
+    let replies = screen.drain_replies();
+    assert_eq!(replies, b"\x1b[4;6R");
+}
+
+#[test]
+fn cpr_private_report_absolute_coordinates() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    // Place cursor at 0-based (y=2, x=7) -> 1-based (row=3, col=8)
+    move_to(&mut parser, &mut screen, 3, 8);
+    feed(&mut parser, &mut screen, b"\x1b[?6n");
+    let replies = screen.drain_replies();
+    assert_eq!(replies, b"\x1b[?3;8R");
+}
+
+#[test]
+fn cpr_with_decom_and_margins_combos() {
+    let mut screen = Screen::new(20, 30);
+    let mut parser = TerminalParser::default();
+
+    // 1. Enable vertical scroll margins (rows 5 to 15, 1-based)
+    feed(&mut parser, &mut screen, b"\x1b[5;15r");
+
+    // 2. Enable left/right margins (cols 8 to 22, 1-based)
+    // First enable Declrmm mode 69 (margin_mode)
+    feed(&mut parser, &mut screen, b"\x1b[?69h");
+    feed(&mut parser, &mut screen, b"\x1b[8;22s");
+
+    // 3. Enable Origin Mode (DECOM, private mode 6)
+    feed(&mut parser, &mut screen, b"\x1b[?6h");
+
+    // Origin mode is now active, so cursor homed to top-left of margins (y=4, x=7, 0-based)
+    assert_eq!(screen.cursor_y(), 4);
+    assert_eq!(screen.cursor_x(), 7);
+
+    // CPR should report (1, 1) relative to margin origins
+    feed(&mut parser, &mut screen, b"\x1b[6n");
+    assert_eq!(screen.drain_replies(), b"\x1b[1;1R");
+
+    // Move cursor relative to margins (row 3, col 4 relative to margins, which is y=6, x=10 absolute)
+    feed(&mut parser, &mut screen, b"\x1b[3;4H");
+    assert_eq!(screen.cursor_y(), 6);
+    assert_eq!(screen.cursor_x(), 10);
+
+    // CPR should report relative coords (3, 4)
+    feed(&mut parser, &mut screen, b"\x1b[6n");
+    assert_eq!(screen.drain_replies(), b"\x1b[3;4R");
+
+    // 4. Disable Left/Right Margin mode (Declrmm mode 69)
+    feed(&mut parser, &mut screen, b"\x1b[?69l");
+
+    // Disabling mode 69 homes the cursor (in DECOM -> y=scroll_region.top, x=left_margin=0)
+    assert_eq!(screen.cursor_y(), 4);
+    assert_eq!(screen.cursor_x(), 0);
+
+    // Move cursor to relative (3, 11) -> absolute (y=6, x=10) since left margin is now 0.
+    feed(&mut parser, &mut screen, b"\x1b[3;11H");
+    assert_eq!(screen.cursor_y(), 6);
+    assert_eq!(screen.cursor_x(), 10);
+
+    // Now left/right margin mode is inactive, but DECOM is still active.
+    // So vertical is relative (y=6 - top=4 + 1 = 3).
+    // Horizontal is absolute (x=10 + 1 = 11).
+    feed(&mut parser, &mut screen, b"\x1b[6n");
+    assert_eq!(screen.drain_replies(), b"\x1b[3;11R");
+}
+
+#[test]
+fn replies_buffer_exceeding_cap_discards() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Send DSR queries repeatedly to fill up the buffer.
+    // Each reply to CSI 5 n is "\x1b[0n" (4 bytes).
+    // 1024 / 4 = 256 replies can fit. The 257th reply should be discarded.
+    let mut sequence = Vec::new();
+    for _ in 0..300 {
+        sequence.extend_from_slice(b"\x1b[5n");
+    }
+    feed(&mut parser, &mut screen, &sequence);
+    let replies = screen.drain_replies();
+    assert_eq!(replies.len(), 1024);
+    assert_eq!(screen.drain_replies().len(), 0);
+}
