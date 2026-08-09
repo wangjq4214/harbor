@@ -829,29 +829,29 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 21.2 Primary Device Attributes
 
-* [ ] `CSI c`
-* [ ] `CSI 0 c`
-* [ ] Returns Primary DA
-* [ ] Return value only declares actually supported capabilities
-* [ ] Does not return unimplemented advanced feature flags
+* [x] `CSI c`
+* [x] `CSI 0 c`
+* [x] Returns Primary DA
+* [x] Return value only declares actually supported capabilities
+* [x] Does not return unimplemented advanced feature flags
 
 ### 21.3 Secondary Device Attributes
 
-* [ ] `CSI > c`
-* [ ] `CSI > 0 c`
-* [ ] Returns `CSI > Pp;Pv;Pc c`
-* [ ] Terminal type, version and ROM field format is stable
+* [x] `CSI > c`
+* [x] `CSI > 0 c`
+* [x] Returns `CSI > Pp;Pv;Pc c`
+* [x] Terminal type, version and ROM field format is stable
 
 ### 21.4 Tertiary Device Attributes
 
-* [ ] `CSI = c`
+* [x] `CSI = c`
 * [ ] Optionally supports Tertiary DA
-* [ ] Safely ignored when unsupported
+* [x] Safely ignored when unsupported
 
 ### 21.5 DECID
 
-* [ ] `ESC Z`
-* [ ] Response is compatible with Primary DA
+* [x] `ESC Z`
+* [x] Response is compatible with Primary DA
 
 ---
 

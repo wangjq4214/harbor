@@ -8,7 +8,7 @@ enum Callback {
         params: Params,
         intermediates: Vec<u8>,
         action: u8,
-        private: bool,
+        private_marker: Option<u8>,
     },
     Esc {
         intermediates: Vec<u8>,
@@ -42,12 +42,18 @@ impl VtHandler for RecordingHandler {
         self.callbacks.push(Callback::Execute(byte));
     }
 
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], action: u8, private: bool) {
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        intermediates: &[u8],
+        action: u8,
+        private_marker: Option<u8>,
+    ) {
         self.callbacks.push(Callback::Csi {
             params: *params,
             intermediates: intermediates.to_vec(),
             action,
-            private,
+            private_marker,
         });
     }
 
@@ -107,7 +113,7 @@ fn should_expose_root_api_and_preserve_csi_params_when_private_csi_is_dispatched
             params,
             intermediates,
             action,
-            private,
+            private_marker,
         },
     ] = handler.callbacks.as_slice()
     else {
@@ -115,13 +121,112 @@ fn should_expose_root_api_and_preserve_csi_params_when_private_csi_is_dispatched
     };
     assert_eq!(*intermediates, []);
     assert_eq!(*action, b'm');
-    assert!(*private);
+    assert_eq!(*private_marker, Some(b'?'));
     assert_eq!(params.len(), 2);
     assert_eq!(params.get(0), Some(1));
     assert_eq!(params.sub_params_len(1), Some(3));
     assert_eq!(params.get_sub_param(1, 0), None);
     assert_eq!(params.get_sub_param(1, 1), Some(2));
     assert_eq!(params.get_sub_param(1, 2), Some(3));
+}
+
+#[test]
+fn should_preserve_each_csi_private_marker_when_prefix_is_present_or_absent() {
+    // Arrange — cover the ordinary CSI form and every supported private prefix.
+    let cases = [
+        (b"\x1b[0m".as_slice(), None),
+        (b"\x1b[?0m".as_slice(), Some(b'?')),
+        (b"\x1b[>0m".as_slice(), Some(b'>')),
+        (b"\x1b[<0m".as_slice(), Some(b'<')),
+        (b"\x1b[=0m".as_slice(), Some(b'=')),
+    ];
+
+    // Act — parse each sequence through the public parser and recording handler.
+    let observed_markers = cases
+        .iter()
+        .map(|(sequence, _)| {
+            let mut parser = Parser::default();
+            let mut handler = RecordingHandler::default();
+            feed(&mut parser, &mut handler, sequence);
+
+            let [Callback::Csi { private_marker, .. }] = handler.callbacks.as_slice() else {
+                panic!("expected one CSI callback, got {:?}", handler.callbacks);
+            };
+            *private_marker
+        })
+        .collect::<Vec<_>>();
+
+    // Assert — the callback preserves None, '?', '>', '<', and '=' exactly.
+    let expected_markers = cases.iter().map(|(_, marker)| *marker).collect::<Vec<_>>();
+    assert_eq!(observed_markers, expected_markers);
+}
+
+#[test]
+fn should_suppress_csi_dispatch_when_private_marker_arrives_after_parameters() {
+    // Arrange
+    let mut parser = Parser::default();
+    let mut handler = RecordingHandler::default();
+
+    // Act
+    feed(&mut parser, &mut handler, b"\x1b[0>c\x1b[5m");
+
+    // Assert — the malformed CSI is consumed, while the following valid CSI dispatches.
+    assert_eq!(
+        handler.callbacks,
+        vec![Callback::Csi {
+            params: Params::from(&[Some(5)][..]),
+            intermediates: Vec::new(),
+            action: b'm',
+            private_marker: None,
+        }]
+    );
+}
+
+#[test]
+fn should_suppress_csi_dispatch_when_private_marker_is_repeated() {
+    // Arrange
+    let mut parser = Parser::default();
+    let mut handler = RecordingHandler::default();
+
+    // Act
+    feed(&mut parser, &mut handler, b"\x1b[>>0c\x1b[5m");
+
+    // Assert — a repeated marker cannot become a valid private prefix or leak state.
+    assert_eq!(
+        handler.callbacks,
+        vec![Callback::Csi {
+            params: Params::from(&[Some(5)][..]),
+            intermediates: Vec::new(),
+            action: b'm',
+            private_marker: None,
+        }]
+    );
+}
+
+#[test]
+fn should_consume_malformed_dcs_when_private_marker_is_late_or_repeated() {
+    // Arrange
+    let malformed_sequences = [
+        b"\x1bP0>qpayload\x1b\\Z".as_slice(),
+        b"\x1bP>>0qpayload\x1b\\Z".as_slice(),
+    ];
+
+    // Act
+    let callbacks = malformed_sequences
+        .iter()
+        .map(|sequence| {
+            let mut parser = Parser::default();
+            let mut handler = RecordingHandler::default();
+            feed(&mut parser, &mut handler, sequence);
+            handler.callbacks
+        })
+        .collect::<Vec<_>>();
+
+    // Assert — malformed DCS payloads are swallowed through ST, then text resumes.
+    assert_eq!(
+        callbacks,
+        vec![vec![Callback::Print('Z')], vec![Callback::Print('Z')]]
+    );
 }
 
 #[test]

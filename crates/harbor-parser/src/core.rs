@@ -265,7 +265,7 @@ impl Parser {
                 self.state = State::CsiParam;
             }
             b';' => {
-                self.csi.push_current();
+                self.csi.push_separator();
                 self.state = State::CsiParam;
             }
             0x3a => {
@@ -294,9 +294,9 @@ impl Parser {
 
     fn csi_param<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
-            0x3c..=0x3f => self.csi.set_private(byte),
+            0x3c..=0x3f => self.csi.set_malformed(),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
-            b';' => self.csi.push_current(),
+            b';' => self.csi.push_separator(),
             0x3a => self.csi.push_colon(),
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);
@@ -373,11 +373,7 @@ impl Parser {
         let private_marker = self.csi.private_marker();
         let malformed = self.csi.malformed();
         if !malformed {
-            match private_marker {
-                None => handler.csi_dispatch(&params, &intermediates, action, false),
-                Some(b'?') => handler.csi_dispatch(&params, &intermediates, action, true),
-                Some(_) => {}
-            }
+            handler.csi_dispatch(&params, &intermediates, action, private_marker);
         }
         self.clear_csi();
         self.enter_ground();
@@ -456,7 +452,7 @@ impl Parser {
                 self.state = State::DcsParam;
             }
             b';' => {
-                self.csi.push_current();
+                self.csi.push_separator();
                 self.state = State::DcsParam;
             }
             0x3a => {
@@ -487,9 +483,9 @@ impl Parser {
 
     fn dcs_param<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
-            0x3c..=0x3f => self.csi.set_private(byte),
+            0x3c..=0x3f => self.csi.set_malformed(),
             b'0'..=b'9' => self.csi.push_digit(byte - b'0'),
-            b';' => self.csi.push_current(),
+            b';' => self.csi.push_separator(),
             0x3a => self.csi.push_colon(),
             0x20..=0x2f => {
                 self.csi.push_intermediate(byte);

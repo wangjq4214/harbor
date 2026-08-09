@@ -1,5 +1,6 @@
 //! Streaming VT parser: bridge between `harbor_parser` core and `Screen`.
 
+mod device_attributes;
 mod handlers;
 
 #[cfg(test)]

@@ -108,6 +108,8 @@ pub(crate) struct CsiAccumulator {
     current_param: Param,
     /// Holds the private marker byte (e.g. b'?', b'>', b'<', b'=') or 0 if none.
     private: u8,
+    /// Whether the most recent byte ended a parameter slot with a semicolon.
+    separator_pending: bool,
     /// Set when a parameter or intermediate byte violates expected CSI syntax.
     malformed: bool,
     intermediates: [u8; MAX_INTERMEDIATES],
@@ -177,6 +179,13 @@ impl CsiAccumulator {
             self.len += 1;
         }
         self.current_param = Param::default();
+        self.separator_pending = false;
+    }
+
+    /// Finishes a semicolon-separated parameter and remembers the trailing slot.
+    pub fn push_separator(&mut self) {
+        self.push_current();
+        self.separator_pending = true;
     }
 
     pub fn push_digit(&mut self, digit: u8) {
@@ -187,6 +196,7 @@ impl CsiAccumulator {
             self.malformed = true;
         }
         self.current = Some(value);
+        self.separator_pending = false;
     }
 
     pub fn push_intermediate(&mut self, byte: u8) {
@@ -200,7 +210,11 @@ impl CsiAccumulator {
 
     /// Finalize params before dispatch: push trailing current if needed.
     pub fn finalize_params(&mut self) {
-        if self.current.is_some() || self.current_param.len > 0 || self.len == 0 {
+        if self.current.is_some()
+            || self.current_param.len > 0
+            || self.separator_pending
+            || self.len == 0
+        {
             self.push_current();
         }
     }

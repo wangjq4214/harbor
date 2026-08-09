@@ -1,5 +1,6 @@
 //! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
+use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
 use crate::screen::Screen;
 use harbor_parser::{Params, VtHandler};
 use harbor_types::{CharacterProtection, CursorStyleArg};
@@ -27,34 +28,61 @@ impl VtHandler for ScreenHandler<'_> {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], action: u8, private: bool) {
-        if private {
-            match action {
-                b'h' | b'l' => {
-                    let enabled = action == b'h';
-                    for param in params.iter_flat().flatten() {
-                        self.screen.set_private_mode(param, enabled);
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        intermediates: &[u8],
+        action: u8,
+        private_marker: Option<u8>,
+    ) {
+        match private_marker {
+            Some(b'?') => {
+                match action {
+                    b'h' | b'l' => {
+                        let enabled = action == b'h';
+                        for param in params.iter_flat().flatten() {
+                            self.screen.set_private_mode(param, enabled);
+                        }
+                    }
+                    b'J' => self.screen.selective_erase_display(params.get_or(0, 0)),
+                    b'K' => self.screen.selective_erase_line(params.get_or(0, 0)),
+                    b'n' => {
+                        let mode = params.get_or(0, 0);
+                        if mode == 6 {
+                            // Private CPR (Cursor Position Report)
+                            let (row, col) = self.screen.cpr_coordinates();
+                            let reply = format!("\x1b[?{};{}R", row, col);
+                            self.screen.push_reply(reply.as_bytes());
+                        }
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "unsupported private CSI sequence: params={:?} final=0x{action:02x}",
+                            params.iter_flat().collect::<Vec<_>>(),
+                        );
                     }
                 }
-                b'J' => self.screen.selective_erase_display(params.get_or(0, 0)),
-                b'K' => self.screen.selective_erase_line(params.get_or(0, 0)),
-                b'n' => {
-                    let mode = params.get_or(0, 0);
-                    if mode == 6 {
-                        // Private CPR (Cursor Position Report)
-                        let (row, col) = self.screen.cpr_coordinates();
-                        let reply = format!("\x1b[?{};{}R", row, col);
-                        self.screen.push_reply(reply.as_bytes());
-                    }
-                }
-                _ => {
-                    tracing::warn!(
-                        "unsupported private CSI sequence: params={:?} final=0x{action:02x}",
-                        params.iter_flat().collect::<Vec<_>>(),
-                    );
-                }
+                return;
             }
-            return;
+            Some(b'>') => {
+                if intermediates.is_empty()
+                    && action == b'c'
+                    && SecondaryDeviceAttributes::accepts(params)
+                {
+                    let reply = SecondaryDeviceAttributes::reply();
+                    self.screen.push_reply(&reply);
+                }
+                return;
+            }
+            Some(b'=') => return,
+            Some(marker) => {
+                tracing::warn!(
+                    "unsupported CSI private marker 0x{marker:02x}: params={:?} final=0x{action:02x}",
+                    params.iter_flat().collect::<Vec<_>>(),
+                );
+                return;
+            }
+            None => {}
         }
 
         if !intermediates.is_empty() {
@@ -89,6 +117,12 @@ impl VtHandler for ScreenHandler<'_> {
         }
 
         match action {
+            b'c' => {
+                if PrimaryDeviceAttributes::accepts(params) {
+                    let reply = PrimaryDeviceAttributes::reply();
+                    self.screen.push_reply(&reply);
+                }
+            }
             b'A' => self.screen.cursor_up(params.get_or(0, 1)),
             b'B' => self.screen.cursor_down(params.get_or(0, 1)),
             b'C' => self.screen.cursor_right(params.get_or(0, 1)),
@@ -214,6 +248,10 @@ impl VtHandler for ScreenHandler<'_> {
             }
             b'>' => {
                 self.screen.set_application_keypad(false);
+            }
+            b'Z' => {
+                let reply = PrimaryDeviceAttributes::reply();
+                self.screen.push_reply(&reply);
             }
             _ => {
                 tracing::warn!("unsupported escape sequence: ESC 0x{byte:02x}");
