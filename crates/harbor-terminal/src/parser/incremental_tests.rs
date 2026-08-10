@@ -7,7 +7,7 @@ use harbor_parser::{Params, Parser, VtHandler};
 
 #[derive(Default)]
 struct CsiRecorder {
-    dispatches: Vec<(bool, Vec<Option<usize>>, u8)>,
+    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, u8)>,
 }
 
 impl VtHandler for CsiRecorder {
@@ -15,9 +15,18 @@ impl VtHandler for CsiRecorder {
 
     fn execute(&mut self, _byte: u8) {}
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], action: u8, private: bool) {
-        self.dispatches
-            .push((private, params.iter_flat().collect::<Vec<_>>(), action));
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        action: u8,
+        private_marker: Option<u8>,
+    ) {
+        self.dispatches.push((
+            private_marker,
+            params.iter_flat().collect::<Vec<_>>(),
+            action,
+        ));
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _byte: u8) {}
@@ -45,14 +54,17 @@ struct ScreenSnap {
     cursor_x: usize,
     cursor_y: usize,
     rows: Vec<String>,
+    replies: Vec<u8>,
 }
 
-fn snap(screen: &Screen) -> ScreenSnap {
+fn snap(screen: &mut Screen) -> ScreenSnap {
     let rows = (0..screen.rows()).map(|r| screen.row_text(r)).collect();
+    let replies = screen.drain_replies();
     ScreenSnap {
         cursor_x: screen.cursor_x(),
         cursor_y: screen.cursor_y(),
         rows,
+        replies,
     }
 }
 
@@ -85,14 +97,14 @@ fn run_bulk(rows: usize, cols: usize, data: &[u8]) -> ScreenSnap {
     let mut screen = Screen::new(rows, cols);
     let mut parser = TerminalParser::default();
     feed_all(&mut parser, &mut screen, data);
-    snap(&screen)
+    snap(&mut screen)
 }
 
 fn run_chunked(rows: usize, cols: usize, data: &[u8], chunk: usize) -> ScreenSnap {
     let mut screen = Screen::new(rows, cols);
     let mut parser = TerminalParser::default();
     feed_chunks(&mut parser, &mut screen, data, chunk);
-    snap(&screen)
+    snap(&mut screen)
 }
 
 fn assert_chunk_equiv(rows: usize, cols: usize, data: &[u8]) {
@@ -158,6 +170,25 @@ fn chunk_equiv_utf8_multibyte() {
 fn chunk_equiv_mixed_stream() {
     let data = b"ab\x1b[2;2Hcd\x1b]0;t\x07ef\x1b[1Axy";
     assert_chunk_equiv(10, 40, data);
+}
+
+#[test]
+fn should_preserve_device_attribute_replies_when_stream_is_chunked() {
+    // Arrange
+    let data = b"\x1b[c\x1b[>0c\x1bZ";
+    let chunk_sizes = [1usize, 2, 3, 7];
+
+    // Act
+    let bulk = run_bulk(5, 40, data);
+    let chunked = chunk_sizes
+        .iter()
+        .map(|chunk| run_chunked(5, 40, data, *chunk))
+        .collect::<Vec<_>>();
+
+    // Assert
+    for (chunk, result) in chunk_sizes.iter().zip(chunked) {
+        assert_eq!(result, bulk, "chunk size {chunk} diverged from bulk");
+    }
 }
 
 #[test]
@@ -350,27 +381,40 @@ fn string_cancellation() {
 }
 
 #[test]
-fn csi_dispatch_filters_non_dec_private_markers_and_clears_state() {
+fn should_preserve_csi_private_markers_when_sequences_are_dispatched() {
+    // Arrange
     let mut parser = Parser::default();
     let mut recorder = CsiRecorder::default();
 
-    feed_core(&mut parser, &mut recorder, b"\x1b[>1");
-    assert!(recorder.dispatches.is_empty());
-
+    // Act
     feed_core(
         &mut parser,
         &mut recorder,
-        b"m\x1b[?2m\x1b[<3m\x1b[=4m\x1b[5m",
+        b"\x1b[>1m\x1b[?2m\x1b[<3m\x1b[=4m\x1b[5m",
     );
 
-    feed_core(&mut parser, &mut recorder, b"\x1b[?9\x18\x1b[6m");
-
+    // Assert
     assert_eq!(
         recorder.dispatches,
         vec![
-            (true, vec![Some(2)], b'm'),
-            (false, vec![Some(5)], b'm'),
-            (false, vec![Some(6)], b'm'),
+            (Some(b'>'), vec![Some(1)], b'm'),
+            (Some(b'?'), vec![Some(2)], b'm'),
+            (Some(b'<'), vec![Some(3)], b'm'),
+            (Some(b'='), vec![Some(4)], b'm'),
+            (None, vec![Some(5)], b'm'),
         ]
     );
+}
+
+#[test]
+fn should_clear_csi_state_when_sequence_is_cancelled_before_dispatch() {
+    // Arrange
+    let mut parser = Parser::default();
+    let mut recorder = CsiRecorder::default();
+
+    // Act
+    feed_core(&mut parser, &mut recorder, b"\x1b[?9\x18\x1b[6m");
+
+    // Assert
+    assert_eq!(recorder.dispatches, vec![(None, vec![Some(6)], b'm')]);
 }

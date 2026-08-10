@@ -5,6 +5,13 @@ fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
     parser.put_bytes(screen, seq);
 }
 
+fn replies_for(query: &[u8]) -> Vec<u8> {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, query);
+    screen.drain_replies()
+}
+
 /// Move cursor to (row, col) 1-based via `CSI row;col H`.
 fn move_to(parser: &mut TerminalParser, screen: &mut Screen, row: usize, col: usize) {
     feed(parser, screen, format!("\x1b[{row};{col}H").as_bytes());
@@ -363,6 +370,278 @@ fn cpr_with_decom_and_margins_combos() {
     // Horizontal is absolute (x=10 + 1 = 11).
     feed(&mut parser, &mut screen, b"\x1b[6n");
     assert_eq!(screen.drain_replies(), b"\x1b[3;11R");
+}
+
+#[test]
+fn should_reply_with_primary_device_attributes_when_query_is_omitted() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?62;6;17;22;28c");
+}
+
+#[test]
+fn should_reply_with_primary_device_attributes_when_query_parameter_is_zero() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[0c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?62;6;17;22;28c");
+}
+
+#[test]
+fn should_reply_with_secondary_device_attributes_when_query_is_omitted() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[>c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[>1;1;0c");
+}
+
+#[test]
+fn should_reply_with_secondary_device_attributes_when_query_parameter_is_zero() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[>0c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[>1;1;0c");
+}
+
+#[test]
+fn should_produce_no_reply_when_device_attributes_parameter_is_nonzero() {
+    // Arrange
+    let queries = [b"\x1b[1c".as_slice(), b"\x1b[>1c".as_slice()];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert
+    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_produce_no_reply_when_device_attributes_parameters_are_multiple() {
+    // Arrange
+    let queries = [b"\x1b[0;0c".as_slice(), b"\x1b[>0;0c".as_slice()];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert
+    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_produce_no_reply_when_device_attributes_parameter_has_subparameters() {
+    // Arrange
+    let queries = [b"\x1b[0:0c".as_slice(), b"\x1b[>0:0c".as_slice()];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert
+    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_produce_no_reply_when_device_attributes_query_is_malformed() {
+    // Arrange
+    let queries = [b"\x1b[999999c".as_slice(), b"\x1b[>999999c".as_slice()];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert
+    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_not_dispatch_late_or_duplicate_private_markers() {
+    // Arrange
+    let queries = [b"\x1b[0>c".as_slice(), b"\x1b[>>0c".as_slice()];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert
+    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_leave_screen_unchanged_when_tertiary_device_attributes_is_requested() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"visible");
+    let before = (screen.row_text(0), screen.cursor_x(), screen.cursor_y());
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[=c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"");
+    assert_eq!(
+        (screen.row_text(0), screen.cursor_x(), screen.cursor_y()),
+        before
+    );
+}
+
+#[test]
+fn should_produce_no_reply_when_unsupported_device_attributes_marker_is_used() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[<c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"");
+}
+
+#[test]
+fn should_match_primary_device_attributes_reply_when_decid_is_requested() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[c");
+    let primary_reply = screen.drain_replies();
+    feed(&mut parser, &mut screen, b"\x1bZ");
+    let decid_reply = screen.drain_replies();
+
+    // Assert
+    assert_eq!(decid_reply, primary_reply);
+}
+
+#[test]
+fn should_produce_no_reply_when_eight_bit_device_attributes_is_received_in_default_mode() {
+    // Arrange
+    let queries = [
+        b"\x9bc".as_slice(),
+        b"\x9b>c".as_slice(),
+        b"\x9b=c".as_slice(),
+    ];
+
+    // Act
+    let replies = queries
+        .iter()
+        .map(|query| replies_for(query))
+        .collect::<Vec<_>>();
+
+    // Assert — 8-bit primary, secondary, and tertiary forms are unrecognized here.
+    assert_eq!(replies, vec![Vec::new(), Vec::new(), Vec::new()]);
+}
+
+#[test]
+fn should_ignore_late_or_repeated_markers_when_sequence_is_split_across_chunks() {
+    // Arrange
+    let cases = [
+        (b"\x1b[0".as_slice(), b">cOK".as_slice()),
+        (b"\x1b[>".as_slice(), b">0cOK".as_slice()),
+    ];
+
+    // Act
+    let outcomes = cases
+        .iter()
+        .map(|(first, second)| {
+            let mut screen = Screen::new(10, 20);
+            let mut parser = TerminalParser::default();
+            feed(&mut parser, &mut screen, first);
+            feed(&mut parser, &mut screen, second);
+            (screen.drain_replies(), screen.row_text(0))
+        })
+        .collect::<Vec<_>>();
+
+    // Assert — each malformed query is consumed without a reply and text recovers.
+    assert_eq!(
+        outcomes,
+        vec![(Vec::new(), "OK                  ".to_owned()); 2]
+    );
+}
+
+#[test]
+fn should_treat_eight_bit_device_attributes_as_unrecognized_and_resume_text() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let c1_csi = [0x9b];
+
+    // Act — feed the unrecognized 8-bit introducer separately from its final byte.
+    feed(&mut parser, &mut screen, &c1_csi);
+    feed(&mut parser, &mut screen, b"cVISIBLE");
+
+    // Assert — no DA reply is generated and subsequent printable input is preserved.
+    assert_eq!(screen.drain_replies(), Vec::new());
+    assert!(screen.row_text(0).contains("cVISIBLE"));
+}
+
+#[test]
+fn should_accept_primary_reply_when_buffer_has_exact_remaining_capacity() {
+    // Arrange
+    let reply = b"\x1b[?62;6;17;22;28c";
+    let prefix = vec![b'x'; 1024 - reply.len()];
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    screen.push_reply(&prefix);
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[c");
+
+    // Assert
+    let replies = screen.drain_replies();
+    assert_eq!(replies.len(), 1024);
+    assert_eq!(&replies[..prefix.len()], prefix.as_slice());
+    assert_eq!(&replies[prefix.len()..], reply);
+}
+
+#[test]
+fn should_drop_primary_reply_when_buffer_is_one_byte_short() {
+    // Arrange
+    let reply = b"\x1b[?62;6;17;22;28c";
+    let prefix = vec![b'x'; 1024 - reply.len() + 1];
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    screen.push_reply(&prefix);
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[c");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), prefix);
 }
 
 #[test]

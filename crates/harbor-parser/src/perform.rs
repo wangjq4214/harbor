@@ -10,8 +10,14 @@ pub trait VtHandler {
 
     fn execute(&mut self, byte: u8);
 
-    /// `private` is true only for DEC-private (`CSI ?`) sequences.
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], action: u8, private: bool);
+    /// The optional marker preserves the CSI private prefix (`?`, `>`, `<`, or `=`).
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        intermediates: &[u8],
+        action: u8,
+        private_marker: Option<u8>,
+    );
 
     fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8);
 

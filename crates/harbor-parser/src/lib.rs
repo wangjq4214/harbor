@@ -14,7 +14,7 @@
 //!     fn print(&mut self, ch: char) { /* … */ }
 //!     fn execute(&mut self, byte: u8) { /* … */ }
 //!     // … remaining methods
-//!     # fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: u8, _: bool) {}
+//!     # fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: u8, _: Option<u8>) {}
 //!     # fn esc_dispatch(&mut self, _: &[u8], _: u8) {}
 //!     # fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
 //!     # fn dcs_hook(&mut self, _: &Params, _: &[u8], _: u8) {}

@@ -1,6 +1,6 @@
 # ADR-0017: Platform-neutral terminal replies via Screen buffer
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-08-06
 
 ## Context
