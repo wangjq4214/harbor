@@ -26,8 +26,9 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FACE_TYPE, DWRITE_FONT_FILE_TYPE,
     DWRITE_FONT_SIMULATIONS_NONE, DWRITE_FONT_STRETCH, DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_GLYPH_METRICS, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_READING_DIRECTION_LEFT_TO_RIGHT, DWRITE_RENDERING_MODE_ALIASED,
+    DWRITE_GLYPH_METRICS, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_ENABLED,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_READING_DIRECTION_LEFT_TO_RIGHT,
+    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
     DWRITE_TEXTURE_ALIASED_1x1, DWriteCreateFactory, IDWriteFactory, IDWriteFactory2,
     IDWriteFontCollection, IDWriteFontFace, IDWriteFontFace1, IDWriteFontFace3,
     IDWriteFontFallback, IDWriteFontFile, IDWriteLocalizedStrings, IDWriteNumberSubstitution,
@@ -502,14 +503,15 @@ impl GlyphRasterizer {
             bidiLevel: 0,
         };
 
-        let base_factory: IDWriteFactory = self.factory.cast()?;
+        let base_factory: IDWriteFactory2 = self.factory.cast()?;
         let analysis_result = unsafe {
             base_factory.CreateGlyphRunAnalysis(
                 &glyph_run,
-                1.0,
                 None,
-                DWRITE_RENDERING_MODE_ALIASED,
+                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                 DWRITE_MEASURING_MODE_NATURAL,
+                DWRITE_GRID_FIT_MODE_ENABLED,
+                DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
                 0.0,
                 0.0,
             )
@@ -1145,6 +1147,24 @@ mod tests {
         assert!(bounds.width > 0);
         assert!(bounds.height > 0);
         assert_eq!(bitmap.len(), bounds.width * bounds.height);
+    }
+
+    #[test]
+    fn should_return_partial_coverage_when_rasterizing_latin() {
+        let state = open_primary();
+        let key = expect_available(state.resolve('A', harbor_config::FONT_SIZE, 0));
+        let (_, bitmap) = state.rasterize(key);
+        let min = bitmap.iter().copied().min();
+        let max = bitmap.iter().copied().max();
+        let partial_count = bitmap
+            .iter()
+            .filter(|&&alpha| alpha > 0 && alpha < u8::MAX)
+            .count();
+        assert!(
+            partial_count > 0,
+            "grayscale antialiasing should produce partial pixel coverage; min={min:?}, max={max:?}, partial_count={partial_count}, len={}",
+            bitmap.len()
+        );
     }
 
     #[test]
