@@ -228,16 +228,16 @@ impl Cell {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CursorShape {
+    #[default]
     Block,
     Underline,
-    #[default]
     Bar,
 }
 
 /// Parameter for DECSCUSR (CSI Ps SP q) — cursor style.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CursorStyleArg {
-    /// Ps = 1: blinking block (default).
+    /// Ps = 0 or 1: blinking block (default).
     #[default]
     BlinkingBlock,
     /// Ps = 2: steady (non-blinking) block.
@@ -246,7 +246,7 @@ pub enum CursorStyleArg {
     BlinkingUnderline,
     /// Ps = 4: steady underline.
     SteadyUnderline,
-    /// Ps = 0 or 5: blinking bar.
+    /// Ps = 5: blinking bar.
     BlinkingBar,
     /// Ps = 6: steady bar.
     SteadyBar,
@@ -256,11 +256,11 @@ impl CursorStyleArg {
     /// Convert from a DECSCUSR Ps parameter, falling back to `BlinkingBlock`.
     pub fn from_param(ps: usize) -> Self {
         match ps {
-            1 => Self::BlinkingBlock,
+            0 | 1 => Self::BlinkingBlock,
             2 => Self::SteadyBlock,
             3 => Self::BlinkingUnderline,
             4 => Self::SteadyUnderline,
-            0 | 5 => Self::BlinkingBar,
+            5 => Self::BlinkingBar,
             6 => Self::SteadyBar,
             _ => Self::default(),
         }
@@ -496,4 +496,35 @@ pub enum UpdateDamage {
     Ranges(Vec<DirtyRange>),
     /// The renderer must upload the complete visible grid.
     FullUpload,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CursorShape, CursorStyleArg};
+
+    #[test]
+    fn cursor_shape_default_is_block() {
+        assert_eq!(CursorShape::default(), CursorShape::Block);
+    }
+
+    #[test]
+    fn cursor_style_from_param_maps_canonical_values() {
+        assert_eq!(CursorStyleArg::from_param(0), CursorStyleArg::BlinkingBlock);
+        assert_eq!(CursorStyleArg::from_param(1), CursorStyleArg::BlinkingBlock);
+        assert_eq!(CursorStyleArg::from_param(2), CursorStyleArg::SteadyBlock);
+        assert_eq!(
+            CursorStyleArg::from_param(3),
+            CursorStyleArg::BlinkingUnderline
+        );
+        assert_eq!(
+            CursorStyleArg::from_param(4),
+            CursorStyleArg::SteadyUnderline
+        );
+        assert_eq!(CursorStyleArg::from_param(5), CursorStyleArg::BlinkingBar);
+        assert_eq!(CursorStyleArg::from_param(6), CursorStyleArg::SteadyBar);
+        assert_eq!(
+            CursorStyleArg::from_param(99),
+            CursorStyleArg::BlinkingBlock
+        );
+    }
 }

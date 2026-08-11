@@ -122,6 +122,49 @@ impl Screen {
         self.cursor.cursor_visible()
     }
 
+    /// Current SGR foreground, background, and attributes as observed for DECRQSS.
+    pub(crate) fn current_sgr(&self) -> (Color, Color, CellAttrs) {
+        (
+            self.pen_state.pen.fg,
+            self.pen_state.pen.bg,
+            self.pen_state.pen.attrs,
+        )
+    }
+
+    /// 1-based inclusive DECSTBM top/bottom bounds.
+    pub(crate) fn scroll_region(&self) -> (usize, usize) {
+        (
+            self.cursor.scroll_region.top + 1,
+            self.cursor.scroll_region.bottom + 1,
+        )
+    }
+
+    /// 1-based inclusive saved DECSLRM left/right bounds.
+    pub(crate) fn left_right_margins(&self) -> (usize, usize) {
+        (self.cursor.margins.left + 1, self.cursor.margins.right + 1)
+    }
+
+    /// Canonical DECSCUSR style derived from current shape and blink.
+    pub(crate) fn cursor_style(&self) -> CursorStyleArg {
+        match (self.cursor.cursor.shape, self.cursor.cursor.blink) {
+            (CursorShape::Block, true) => CursorStyleArg::BlinkingBlock,
+            (CursorShape::Block, false) => CursorStyleArg::SteadyBlock,
+            (CursorShape::Underline, true) => CursorStyleArg::BlinkingUnderline,
+            (CursorShape::Underline, false) => CursorStyleArg::SteadyUnderline,
+            (CursorShape::Bar, true) => CursorStyleArg::BlinkingBar,
+            (CursorShape::Bar, false) => CursorStyleArg::SteadyBar,
+        }
+    }
+
+    /// Current DECSCA protection applied to newly written cells.
+    pub(crate) fn character_protection(&self) -> CharacterProtection {
+        if self.pen_state.pen.protected {
+            CharacterProtection::Protected
+        } else {
+            CharacterProtection::Unprotected
+        }
+    }
+
     pub fn push_reply(&mut self, reply: &[u8]) {
         if self.replies.len() + reply.len() <= 1024 {
             self.replies.extend_from_slice(reply);

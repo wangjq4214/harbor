@@ -37,7 +37,7 @@ impl VtHandler for CsiRecorder {
 
     fn dcs_put(&mut self, _byte: u8) {}
 
-    fn dcs_unhook(&mut self) {}
+    fn dcs_unhook(&mut self, _terminated: bool) {}
 
     fn start_string(&mut self, _kind: u8) {}
 }

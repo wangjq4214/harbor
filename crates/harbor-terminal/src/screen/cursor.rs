@@ -296,8 +296,12 @@ impl CursorEngine {
             self.cursor.y = absolute_row.clamp(self.scroll_region.top, self.scroll_region.bottom);
 
             let relative_col = col_1_based.saturating_sub(1);
-            let absolute_col = self.margins.left.saturating_add(relative_col);
-            self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
+            if self.margins.enabled {
+                let absolute_col = self.margins.left.saturating_add(relative_col);
+                self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
+            } else {
+                self.cursor.x = relative_col.min(normal.cols().saturating_sub(1));
+            }
         } else {
             let row = row_1_based.saturating_sub(1).min(normal.rows() - 1);
             let col = col_1_based.saturating_sub(1).min(normal.cols() - 1);
@@ -310,8 +314,12 @@ impl CursorEngine {
         self.modes.pending_wrap = false;
         if self.modes.origin {
             let relative_col = col_1_based.saturating_sub(1);
-            let absolute_col = self.margins.left.saturating_add(relative_col);
-            self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
+            if self.margins.enabled {
+                let absolute_col = self.margins.left.saturating_add(relative_col);
+                self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
+            } else {
+                self.cursor.x = relative_col.min(normal.cols().saturating_sub(1));
+            }
         } else {
             self.cursor.x = col_1_based.saturating_sub(1).min(normal.cols() - 1);
         }
@@ -340,7 +348,11 @@ impl CursorEngine {
     pub(crate) fn home_cursor(&mut self) {
         if self.modes.origin {
             self.cursor.y = self.scroll_region.top;
-            self.cursor.x = self.margins.left;
+            self.cursor.x = if self.margins.enabled {
+                self.margins.left
+            } else {
+                0
+            };
         } else {
             self.cursor.y = 0;
             self.cursor.x = 0;
@@ -404,7 +416,7 @@ impl CursorEngine {
     /// `false` if it should be handled by the caller (e.g. alt-screen).
     pub(crate) fn set_private_mode(
         &mut self,
-        normal: &NormalBuf,
+        _normal: &NormalBuf,
         param: usize,
         enabled: bool,
     ) -> bool {
@@ -420,10 +432,6 @@ impl CursorEngine {
             25 => self.cursor.visible = enabled,
             69 => {
                 self.margins.enabled = enabled;
-                if !enabled {
-                    self.margins.left = 0;
-                    self.margins.right = normal.cols().saturating_sub(1);
-                }
                 self.home_cursor();
             }
             _ => return false,
@@ -518,11 +526,16 @@ impl CursorEngine {
         right: usize,
     ) -> Option<Rect> {
         let (top_bound, bottom_bound, left_bound, right_bound) = if self.modes.origin {
+            let (left_bound, right_bound) = if self.margins.enabled {
+                (self.margins.left, self.margins.right)
+            } else {
+                (0, normal.cols().saturating_sub(1))
+            };
             (
                 self.scroll_region.top,
                 self.scroll_region.bottom,
-                self.margins.left,
-                self.margins.right,
+                left_bound,
+                right_bound,
             )
         } else {
             (0, normal.rows() - 1, 0, normal.cols() - 1)

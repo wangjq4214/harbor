@@ -1330,6 +1330,7 @@ fn test_origin_mode_positioning() {
     let mut screen = Screen::new(5, 5);
     screen.cursor.scroll_region.top = 1;
     screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.margins.enabled = true;
     screen.cursor.margins.left = 1;
     screen.cursor.margins.right = 3;
 
@@ -1353,6 +1354,69 @@ fn test_origin_mode_positioning() {
     screen.set_cursor(100, 100);
     assert_eq!(screen.cursor.cursor.y, 3);
     assert_eq!(screen.cursor.cursor.x, 3);
+}
+
+#[test]
+fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
+    // Arrange — saved margin bounds remain, but DECLRMM is off.
+    let mut screen = Screen::new(5, 5);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.margins.enabled = false;
+    screen.cursor.margins.left = 1;
+    screen.cursor.margins.right = 3;
+    screen.cursor.modes.origin = true;
+
+    // Act
+    screen.set_cursor(1, 1);
+    // Assert — row is region-relative; column ignores saved left margin.
+    assert_eq!(screen.cursor.cursor.y, 1);
+    assert_eq!(screen.cursor.cursor.x, 0);
+
+    // Act
+    screen.home_cursor();
+    // Assert
+    assert_eq!(screen.cursor.cursor.y, 1);
+    assert_eq!(screen.cursor.cursor.x, 0);
+
+    // Act
+    screen.set_cursor(2, 3);
+    // Assert
+    assert_eq!(screen.cursor.cursor.y, 2);
+    assert_eq!(screen.cursor.cursor.x, 2);
+}
+
+#[test]
+fn should_expose_decrqss_getters_for_sgr_regions_style_and_protection() {
+    // Arrange
+    let mut screen = Screen::new(10, 20);
+    screen.set_sgr_slice(&[Some(1), Some(31), Some(44)]);
+    screen.set_scroll_region(2, 8);
+    screen.set_private_mode(69, true);
+    screen.set_left_right_margins(3, 15);
+    screen.set_cursor_style(harbor_types::CursorStyleArg::SteadyUnderline);
+    screen.set_character_protection(harbor_types::CharacterProtection::Protected);
+
+    // Act / Assert — public Screen observation surface used by DECRQSS.
+    let (fg, bg, attrs) = screen.current_sgr();
+    assert_eq!(fg, Color::Named(1));
+    assert_eq!(bg, Color::Named(4));
+    assert!(attrs.contains(CellAttrs::BOLD));
+    assert_eq!(screen.scroll_region(), (2, 8));
+    assert_eq!(screen.left_right_margins(), (3, 15));
+    assert_eq!(
+        screen.cursor_style(),
+        harbor_types::CursorStyleArg::SteadyUnderline
+    );
+    assert_eq!(
+        screen.character_protection(),
+        harbor_types::CharacterProtection::Protected
+    );
+
+    // Act — disabling DECLRMM must preserve saved margins for later queries.
+    screen.set_private_mode(69, false);
+    // Assert
+    assert_eq!(screen.left_right_margins(), (3, 15));
 }
 
 #[test]
@@ -2791,4 +2855,27 @@ fn alt_screen_exit_marks_all_dirty() {
         assert_eq!(range.start_col, 0);
         assert_eq!(range.end_col, 10);
     }
+}
+
+#[test]
+fn should_use_full_width_for_rectangular_ops_after_declrmm_disabled() {
+    let mut parser = crate::parser::TerminalParser::default();
+    let mut screen = Screen::new(5, 5);
+
+    for _ in 0..25 {
+        screen.write_char('a');
+    }
+    // Establish custom margins, then disable DECLRMM while keeping DECOM.
+    parser.put_bytes(&mut screen, b"\x1b[?69h\x1b[2;4s\x1b[?6h\x1b[?69l");
+
+    // Default DECERA under origin mode must erase the full width of the scroll region.
+    parser.put_bytes(&mut screen, b"\x1b[1;1;5;5$z");
+    assert_eq!(screen.row_text(0), "     ");
+    assert_eq!(screen.row_text(1), "     ");
+    assert_eq!(screen.row_text(2), "     ");
+    assert_eq!(screen.row_text(3), "     ");
+    assert_eq!(screen.row_text(4), "     ");
+
+    // Saved margin bounds remain queryable for DECRQSS despite DECLRMM being off.
+    assert_eq!(screen.left_right_margins(), (2, 4));
 }

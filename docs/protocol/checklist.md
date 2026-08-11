@@ -1039,13 +1039,13 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 25.2 DECRQSS
 
-* [ ] `DCS $ q Pt ST`
-* [ ] Request SGR state
-* [ ] Request scrolling region state
-* [ ] Request left/right margin state
-* [ ] Success response format is correct
-* [ ] Failure response format is correct
-* [ ] Response content is escaped and length-limited
+* [x] `DCS $ q Pt ST`
+* [x] Request SGR state
+* [x] Request scrolling region state
+* [x] Request left/right margin state
+* [x] Success response format is correct
+* [x] Failure response format is correct
+* [x] Response content is escaped and length-limited
 
 ### 25.3 XTGETTCAP
 
@@ -1330,14 +1330,14 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 34.1 DECRQSS Query Items
 
-* [ ] SGR
-* [ ] DECSTBM
-* [ ] DECSLRM
-* [ ] DECSCUSR
-* [ ] DECSCA
-* [ ] Querying a supported item returns success
-* [ ] Querying an unsupported item returns failure
-* [ ] Response sequences can be correctly parsed by other VT parsers
+* [x] SGR
+* [x] DECSTBM
+* [x] DECSLRM
+* [x] DECSCUSR
+* [x] DECSCA
+* [x] Querying a supported item returns success
+* [x] Querying an unsupported item returns failure
+* [x] Response sequences can be correctly parsed by other VT parsers
 
 ---
 

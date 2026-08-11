@@ -1,6 +1,7 @@
 //! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
 use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
+use super::status_strings::DecrqssRequest;
 use crate::screen::Screen;
 use harbor_parser::{Params, VtHandler};
 use harbor_types::{CharacterProtection, CursorStyleArg};
@@ -8,6 +9,7 @@ use harbor_types::{CharacterProtection, CursorStyleArg};
 /// Applies recognized VT actions to a `Screen`.
 pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
+    pub decrqss: &'a mut DecrqssRequest,
 }
 
 impl VtHandler for ScreenHandler<'_> {
@@ -267,19 +269,20 @@ impl VtHandler for ScreenHandler<'_> {
         }
     }
 
-    fn dcs_hook(&mut self, _params: &Params, _intermediates: &[u8], _action: u8) {
-        tracing::trace!("DCS hook (no-op)");
+    fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
+        self.decrqss.hook(params, intermediates, action);
     }
 
-    fn dcs_put(&mut self, _byte: u8) {
-        // Consume-only: payload never reaches the screen.
+    fn dcs_put(&mut self, byte: u8) {
+        self.decrqss.put(byte);
     }
 
-    fn dcs_unhook(&mut self) {
-        tracing::trace!("DCS/string unhook (no-op)");
+    fn dcs_unhook(&mut self, terminated: bool) {
+        self.decrqss.finish(self.screen, terminated);
     }
 
     fn start_string(&mut self, kind: u8) {
-        tracing::trace!("start string family 0x{kind:02x} (no-op)");
+        self.decrqss.cancel();
+        tracing::trace!("start string family 0x{kind:02x}");
     }
 }

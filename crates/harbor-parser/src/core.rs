@@ -145,9 +145,9 @@ impl Parser {
     }
 
     /// End a hooked string sequence, calling `dcs_unhook` only if a hook is active.
-    fn end_hooked<H: VtHandler>(&mut self, handler: &mut H) {
+    fn end_hooked<H: VtHandler>(&mut self, handler: &mut H, terminated: bool) {
         if self.hooked {
-            handler.dcs_unhook();
+            handler.dcs_unhook(terminated);
             self.hooked = false;
         }
         self.string_len = 0;
@@ -558,12 +558,12 @@ impl Parser {
     fn dcs_passthrough<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x18 | 0x1a => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, false);
                 self.enter_ground();
             }
             0x1b => self.state = State::DcsEscape,
             0x9c if self.c1_enabled => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, true);
                 self.enter_ground();
             }
             _ => self.put_string_byte(handler, byte),
@@ -574,7 +574,7 @@ impl Parser {
         match byte {
             0x18 | 0x1a => {
                 // Only unhook if a hook lifecycle was started (final received).
-                self.end_hooked(handler);
+                self.end_hooked(handler, false);
                 self.enter_ground();
             }
             0x1b => {
@@ -582,7 +582,7 @@ impl Parser {
                 self.state = State::DcsEscape;
             }
             0x9c if self.c1_enabled => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, true);
                 self.enter_ground();
             }
             _ => {
@@ -594,11 +594,11 @@ impl Parser {
     fn dcs_escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, true);
                 self.enter_ground();
             }
             0x18 | 0x1a => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, false);
                 self.enter_ground();
             }
             0x1b => self.state = State::DcsEscape,
@@ -619,12 +619,12 @@ impl Parser {
     fn sos_pm_apc_string<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             0x18 | 0x1a => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, false);
                 self.enter_ground();
             }
             0x1b => self.state = State::SosPmApcEscape,
             0x9c if self.c1_enabled => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, true);
                 self.enter_ground();
             }
             _ => self.put_string_byte(handler, byte),
@@ -634,11 +634,11 @@ impl Parser {
     fn sos_pm_apc_escape<H: VtHandler>(&mut self, handler: &mut H, byte: u8) {
         match byte {
             b'\\' | 0x9c if byte == b'\\' || self.c1_enabled => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, true);
                 self.enter_ground();
             }
             0x18 | 0x1a => {
-                self.end_hooked(handler);
+                self.end_hooked(handler, false);
                 self.enter_ground();
             }
             0x1b => self.state = State::SosPmApcEscape,

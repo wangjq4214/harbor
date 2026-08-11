@@ -384,6 +384,14 @@ Project domain concepts and terminology.
   - communicates with Secondary DA
   - communicates with DSR
   - communicates with CPR
+  - communicates with DECRQSS
+
+### DECRQSS
+- **Definition:** A VT status-query protocol that Harbor accepts as 7-bit `DCS $ q Pt ST` and answers through TerminalReply for SGR, DECSTBM, DECSLRM, DECSCUSR, and DECSCA state.
+- **Synonyms:** Request Status String
+- **Relationships:**
+  - depends on TerminalReply
+  - references Screen state
 
 ### CPR
 - **Definition:** A VT control sequence reply containing the current line and column coordinates of the terminal cursor.
