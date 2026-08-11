@@ -974,7 +974,11 @@ impl CellOps {
         };
         let dl_start = if cursor.modes.origin {
             let c = dest_left.saturating_sub(1);
-            cursor.margins.left + c
+            if cursor.margins.enabled {
+                cursor.margins.left + c
+            } else {
+                c
+            }
         } else {
             dest_left.saturating_sub(1)
         };
@@ -1002,11 +1006,16 @@ impl CellOps {
         }
 
         let (dest_top, dest_bottom, dest_left, dest_right) = if cursor.modes.origin {
+            let (left, right) = if cursor.margins.enabled {
+                (cursor.margins.left, cursor.margins.right)
+            } else {
+                (0, normal.cols().saturating_sub(1))
+            };
             (
                 cursor.scroll_region.top,
                 cursor.scroll_region.bottom,
-                cursor.margins.left,
-                cursor.margins.right,
+                left,
+                right,
             )
         } else {
             (0, normal.rows() - 1, 0, normal.cols() - 1)

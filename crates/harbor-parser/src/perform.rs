@@ -29,7 +29,11 @@ pub trait VtHandler {
 
     fn dcs_put(&mut self, byte: u8);
 
-    fn dcs_unhook(&mut self);
+    /// Ends a hooked DCS/APC/PM/SOS string.
+    ///
+    /// `terminated` is `true` for a completed 7-bit or enabled 8-bit ST, and
+    /// `false` when CAN/SUB cancels the string.
+    fn dcs_unhook(&mut self, terminated: bool);
 
     /// APC/PM/SOS start; payload via `dcs_put` until `dcs_unhook`.
     /// `kind` is introducer final (`b'_'`, `b'^'`, `b'X'`).

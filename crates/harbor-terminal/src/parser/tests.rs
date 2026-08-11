@@ -1,5 +1,6 @@
 use super::*;
 use crate::screen::{CursorShape, Screen};
+use harbor_parser::Params;
 
 fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
     parser.put_bytes(screen, seq);
@@ -169,11 +170,11 @@ fn decscusr_ps2_is_steady_block() {
 }
 
 #[test]
-fn decscusr_ps0_is_blinking_bar() {
+fn decscusr_ps0_is_blinking_block() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
     feed(&mut parser, &mut screen, b"\x1b[0 q");
-    assert_eq!(screen.cursor_shape(), CursorShape::Bar);
+    assert_eq!(screen.cursor_shape(), CursorShape::Block);
     assert!(screen.cursor_blink());
 }
 
@@ -187,9 +188,9 @@ fn decscusr_ps1_is_blinking_block() {
 }
 
 #[test]
-fn initial_cursor_shape_is_bar() {
+fn initial_cursor_shape_is_block() {
     let screen = Screen::new(10, 10);
-    assert_eq!(screen.cursor_shape(), CursorShape::Bar);
+    assert_eq!(screen.cursor_shape(), CursorShape::Block);
     assert!(screen.cursor_blink());
 }
 
@@ -660,4 +661,280 @@ fn replies_buffer_exceeding_cap_discards() {
     let replies = screen.drain_replies();
     assert_eq!(replies.len(), 1024);
     assert_eq!(screen.drain_replies().len(), 0);
+}
+
+// ── DECRQSS (DCS $ q Pt ST) ─────────────────────────────────────────────
+
+#[derive(Default)]
+struct DcsRecorder {
+    params: Option<Params>,
+    intermediates: Vec<u8>,
+    action: Option<u8>,
+    payload: Vec<u8>,
+    terminated: Option<bool>,
+    hook_count: usize,
+    put_count: usize,
+    unhook_count: usize,
+}
+
+impl harbor_parser::VtHandler for DcsRecorder {
+    fn print(&mut self, _ch: char) {}
+    fn execute(&mut self, _byte: u8) {}
+    fn csi_dispatch(
+        &mut self,
+        _params: &Params,
+        _intermediates: &[u8],
+        _action: u8,
+        _private_marker: Option<u8>,
+    ) {
+    }
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _byte: u8) {}
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
+        self.hook_count += 1;
+        self.params = Some(*params);
+        self.intermediates = intermediates.to_vec();
+        self.action = Some(action);
+    }
+    fn dcs_put(&mut self, byte: u8) {
+        self.put_count += 1;
+        self.payload.push(byte);
+    }
+    fn dcs_unhook(&mut self, terminated: bool) {
+        self.unhook_count += 1;
+        self.terminated = Some(terminated);
+    }
+    fn start_string(&mut self, _kind: u8) {}
+}
+
+fn assert_decrqss_round_trip(reply: &[u8], expected_ps: usize, expected_payload: &[u8]) {
+    let mut parser = harbor_parser::Parser::default();
+    let mut recorder = DcsRecorder::default();
+    for &byte in reply {
+        parser.advance(&mut recorder, byte);
+    }
+    assert_eq!(recorder.hook_count, 1);
+    assert_eq!(recorder.unhook_count, 1);
+    assert_eq!(recorder.terminated, Some(true));
+    assert_eq!(recorder.action, Some(b'r'));
+    assert_eq!(recorder.intermediates, b"$");
+    let params = recorder.params.expect("DCS hook params");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params.get(0), Some(expected_ps));
+    assert_eq!(recorder.payload, expected_payload);
+}
+
+fn decrqss(pt: &[u8]) -> Vec<u8> {
+    let mut req = b"\x1bP$q".to_vec();
+    req.extend_from_slice(pt);
+    req.extend_from_slice(b"\x1b\\");
+    req
+}
+
+fn success_reply(status: &[u8]) -> Vec<u8> {
+    let mut reply = b"\x1bP1$r".to_vec();
+    reply.extend_from_slice(status);
+    reply.extend_from_slice(b"\x1b\\");
+    reply
+}
+
+const FAILURE_REPLY: &[u8] = b"\x1bP0$r\x1b\\";
+
+#[test]
+fn decrqss_default_sgr_returns_reset() {
+    let reply = replies_for(&decrqss(b"m"));
+    assert_eq!(reply, success_reply(b"0m"));
+    assert_decrqss_round_trip(&reply, 1, b"0m");
+}
+
+#[test]
+fn decrqss_sgr_reports_attrs_and_color_families() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m",
+    );
+    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    let reply = screen.drain_replies();
+    assert_eq!(reply, success_reply(b"0;1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m"));
+    assert_decrqss_round_trip(&reply, 1, b"0;1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m");
+}
+
+#[test]
+fn decrqss_reports_regions_margins_cursor_and_protection() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    feed(&mut parser, &mut screen, b"\x1b[2;8r");
+    feed(&mut parser, &mut screen, &decrqss(b"r"));
+    let reply = screen.drain_replies();
+    assert_eq!(reply, success_reply(b"2;8r"));
+    assert_decrqss_round_trip(&reply, 1, b"2;8r");
+
+    feed(&mut parser, &mut screen, b"\x1b[?69h\x1b[3;15s");
+    feed(&mut parser, &mut screen, &decrqss(b"s"));
+    let reply = screen.drain_replies();
+    assert_eq!(reply, success_reply(b"3;15s"));
+
+    // Saved margins remain queryable after mode 69 is disabled.
+    feed(&mut parser, &mut screen, b"\x1b[?69l");
+    feed(&mut parser, &mut screen, &decrqss(b"s"));
+    assert_eq!(screen.drain_replies(), success_reply(b"3;15s"));
+
+    for (seq, status) in [
+        (b"\x1b[1 q".as_slice(), b"1 q".as_slice()),
+        (b"\x1b[2 q", b"2 q"),
+        (b"\x1b[3 q", b"3 q"),
+        (b"\x1b[4 q", b"4 q"),
+        (b"\x1b[5 q", b"5 q"),
+        (b"\x1b[6 q", b"6 q"),
+    ] {
+        feed(&mut parser, &mut screen, seq);
+        feed(&mut parser, &mut screen, &decrqss(b" q"));
+        assert_eq!(screen.drain_replies(), success_reply(status));
+    }
+
+    feed(&mut parser, &mut screen, b"\x1b[1\"q");
+    feed(&mut parser, &mut screen, &decrqss(b"\"q"));
+    assert_eq!(screen.drain_replies(), success_reply(b"1\"q"));
+    feed(&mut parser, &mut screen, b"\x1b[0\"q");
+    feed(&mut parser, &mut screen, &decrqss(b"\"q"));
+    assert_eq!(screen.drain_replies(), success_reply(b"0\"q"));
+}
+
+#[test]
+fn decrqss_unsupported_or_empty_pt_returns_failure_without_state_change() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[1;4;31m\x1b[2;8r\x1b[5 q");
+    let before_shape = screen.cursor_shape();
+    let before_blink = screen.cursor_blink();
+    let before_x = screen.cursor_x();
+    let before_y = screen.cursor_y();
+
+    for pt in [b"".as_slice(), b"x".as_slice(), b"mm".as_slice()] {
+        feed(&mut parser, &mut screen, &decrqss(pt));
+        let reply = screen.drain_replies();
+        assert_eq!(reply, FAILURE_REPLY);
+        assert_decrqss_round_trip(&reply, 0, b"");
+        assert_eq!(screen.cursor_shape(), before_shape);
+        assert_eq!(screen.cursor_blink(), before_blink);
+        assert_eq!(screen.cursor_x(), before_x);
+        assert_eq!(screen.cursor_y(), before_y);
+    }
+}
+
+#[test]
+fn decrqss_nonmatching_dcs_is_consume_only() {
+    let reply = replies_for(b"\x1bP1$q m\x1b\\OK");
+    assert_eq!(reply, Vec::<u8>::new());
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1bPqpayload\x1b\\Z");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+    assert!(screen.row_text(0).contains('Z'));
+}
+
+#[test]
+fn decrqss_cancellation_produces_no_reply() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1bP$qm\x18OK");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+    assert!(screen.row_text(0).contains("OK"));
+
+    feed(&mut parser, &mut screen, b"\x1bP$qm\x1aOK");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+}
+
+#[test]
+fn decrqss_pt_overflow_and_followup_query_do_not_succeed_from_prefix() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let mut oversized = b"\x1bP$q".to_vec();
+    oversized.extend(std::iter::repeat(b'm').take(17));
+    oversized.extend_from_slice(b"\x1b\\");
+    feed(&mut parser, &mut screen, &oversized);
+    assert_eq!(screen.drain_replies(), FAILURE_REPLY);
+
+    // A later DECRQSS after failure still succeeds from live state, not the truncated Pt.
+    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    assert_eq!(screen.drain_replies(), success_reply(b"0m"));
+}
+
+#[test]
+fn decrqss_chunking_matches_bulk_including_split_st() {
+    let request = decrqss(b"m");
+    let expected = success_reply(b"0m");
+
+    for chunk in [1usize, 2, 3, 7] {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        for part in request.chunks(chunk) {
+            feed(&mut parser, &mut screen, part);
+        }
+        assert_eq!(screen.drain_replies(), expected);
+    }
+
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let split_at = request.len() - 1; // before final '\\'
+    feed(&mut parser, &mut screen, &request[..split_at]);
+    feed(&mut parser, &mut screen, &request[split_at..]);
+    assert_eq!(screen.drain_replies(), expected);
+}
+
+#[test]
+fn decrqss_apc_isolation_and_reply_capacity() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    // Cancel an in-flight DECRQSS, then run APC — no delayed reply may appear.
+    feed(&mut parser, &mut screen, b"\x1bP$qm\x18\x1b_payload\x1b\\");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+
+    let reply = success_reply(b"0m");
+    let prefix = vec![b'x'; 1024 - reply.len()];
+    screen.push_reply(&prefix);
+    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    let replies = screen.drain_replies();
+    assert_eq!(&replies[prefix.len()..], reply.as_slice());
+
+    let prefix = vec![b'x'; 1024 - reply.len() + 1];
+    screen.push_reply(&prefix);
+    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    assert_eq!(screen.drain_replies(), prefix);
+}
+
+#[test]
+fn decrqss_pm_sos_isolation_and_request_replacement() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    for intro in [
+        b"\x1b^payload\x1b\\".as_slice(),
+        b"\x1bXpayload\x1b\\".as_slice(),
+    ] {
+        feed(&mut parser, &mut screen, b"\x1bP$qm\x18");
+        feed(&mut parser, &mut screen, intro);
+        assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+    }
+
+    // Cancelled mid-flight request is fully replaced by a later successful DECRQSS.
+    feed(&mut parser, &mut screen, b"\x1bP$qx\x18");
+    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    assert_eq!(screen.drain_replies(), success_reply(b"0m"));
+}
+
+#[test]
+fn decrqss_parser_string_cap_overflow_still_fails() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let mut oversized = b"\x1bP$q".to_vec();
+    oversized.extend(std::iter::repeat(b'a').take(5000));
+    oversized.extend_from_slice(b"\x1b\\OK");
+    feed(&mut parser, &mut screen, &oversized);
+    assert_eq!(screen.drain_replies(), FAILURE_REPLY);
+    assert!(screen.row_text(0).contains("OK"));
 }

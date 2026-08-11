@@ -19,7 +19,7 @@
 //!     # fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
 //!     # fn dcs_hook(&mut self, _: &Params, _: &[u8], _: u8) {}
 //!     # fn dcs_put(&mut self, _: u8) {}
-//!     # fn dcs_unhook(&mut self) {}
+//!     # fn dcs_unhook(&mut self, _: bool) {}
 //!     # fn start_string(&mut self, _: u8) {}
 //! }
 //!

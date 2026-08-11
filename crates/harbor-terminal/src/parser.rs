@@ -2,6 +2,7 @@
 
 mod device_attributes;
 mod handlers;
+mod status_strings;
 
 #[cfg(test)]
 mod incremental_tests;
@@ -12,6 +13,7 @@ use crate::screen::Screen;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
 use harbor_types::AltScreenAction;
+use status_strings::DecrqssRequest;
 
 /// Streaming terminal parser.
 ///
@@ -20,6 +22,7 @@ use harbor_types::AltScreenAction;
 #[derive(Debug, Default)]
 pub struct TerminalParser {
     inner: Parser,
+    decrqss: DecrqssRequest,
 }
 
 /// Result of feeding bytes through the parser.
@@ -39,7 +42,10 @@ impl TerminalParser {
     pub fn put_bytes(&mut self, screen: &mut Screen, bytes: &[u8]) -> PutResult {
         for (i, &byte) in bytes.iter().enumerate() {
             {
-                let mut handler = ScreenHandler { screen };
+                let mut handler = ScreenHandler {
+                    screen,
+                    decrqss: &mut self.decrqss,
+                };
                 self.inner.advance(&mut handler, byte);
             }
             if screen.alt_request().is_some() {

@@ -24,7 +24,7 @@ enum Callback {
         action: u8,
     },
     DcsPut(u8),
-    DcsUnhook,
+    DcsUnhook(bool),
     StartString(u8),
 }
 
@@ -83,8 +83,8 @@ impl VtHandler for RecordingHandler {
         self.callbacks.push(Callback::DcsPut(byte));
     }
 
-    fn dcs_unhook(&mut self) {
-        self.callbacks.push(Callback::DcsUnhook);
+    fn dcs_unhook(&mut self, terminated: bool) {
+        self.callbacks.push(Callback::DcsUnhook(terminated));
     }
 
     fn start_string(&mut self, kind: u8) {
@@ -280,7 +280,7 @@ fn should_emit_dcs_lifecycle_callbacks_when_payload_is_st_terminated() {
             },
             Callback::DcsPut(b'h'),
             Callback::DcsPut(b'i'),
-            Callback::DcsUnhook,
+            Callback::DcsUnhook(true),
         ]
     );
 }
@@ -301,7 +301,7 @@ fn should_emit_string_lifecycle_callbacks_when_apc_is_st_terminated() {
             Callback::StartString(b'_'),
             Callback::DcsPut(b'a'),
             Callback::DcsPut(b'b'),
-            Callback::DcsUnhook,
+            Callback::DcsUnhook(true),
         ]
     );
 }
@@ -328,7 +328,109 @@ fn should_preserve_dcs_intermediate_bytes() {
             Callback::DcsPut(b'o'),
             Callback::DcsPut(b'a'),
             Callback::DcsPut(b'd'),
-            Callback::DcsUnhook,
+            Callback::DcsUnhook(true),
+            Callback::Print('Z'),
+        ]
+    );
+}
+
+#[test]
+fn should_report_dcs_cancellation_when_can_or_sub_terminates_payload() {
+    for cancel in [0x18u8, 0x1au8] {
+        let mut parser = Parser::default();
+        let mut handler = RecordingHandler::default();
+        let mut bytes = b"\x1bP$qm".to_vec();
+        bytes.push(cancel);
+        bytes.extend_from_slice(b"Z");
+        feed(&mut parser, &mut handler, &bytes);
+
+        assert_eq!(
+            handler.callbacks,
+            vec![
+                Callback::DcsHook {
+                    params: Params::from(&[None][..]),
+                    intermediates: vec![b'$'],
+                    action: b'q',
+                },
+                Callback::DcsPut(b'm'),
+                Callback::DcsUnhook(false),
+                Callback::Print('Z'),
+            ]
+        );
+    }
+}
+
+#[test]
+fn should_report_string_cancellation_when_can_or_sub_terminates_apc_pm_or_sos() {
+    // Arrange / Act / Assert — string-family hooks end with terminated=false on CAN/SUB.
+    for (introducer, kind) in [(b'_', b'_'), (b'^', b'^'), (b'X', b'X')] {
+        for cancel in [0x18u8, 0x1au8] {
+            let mut parser = Parser::default();
+            let mut handler = RecordingHandler::default();
+            let mut bytes = vec![0x1b, introducer, b'a'];
+            bytes.push(cancel);
+            bytes.extend_from_slice(b"Z");
+            feed(&mut parser, &mut handler, &bytes);
+
+            assert_eq!(
+                handler.callbacks,
+                vec![
+                    Callback::StartString(kind),
+                    Callback::DcsPut(b'a'),
+                    Callback::DcsUnhook(false),
+                    Callback::Print('Z'),
+                ]
+            );
+        }
+    }
+}
+
+#[test]
+fn should_report_dcs_completion_when_eight_bit_st_terminates_payload() {
+    // Arrange
+    let mut parser = Parser::default();
+    parser.set_c1_enabled(true);
+    let mut handler = RecordingHandler::default();
+
+    // Act — DCS payload ended by enabled 8-bit ST (0x9C).
+    feed(&mut parser, &mut handler, b"\x1bP$qm\x9cZ");
+
+    // Assert
+    assert_eq!(
+        handler.callbacks,
+        vec![
+            Callback::DcsHook {
+                params: Params::from(&[None][..]),
+                intermediates: vec![b'$'],
+                action: b'q',
+            },
+            Callback::DcsPut(b'm'),
+            Callback::DcsUnhook(true),
+            Callback::Print('Z'),
+        ]
+    );
+}
+
+#[test]
+fn should_report_dcs_cancellation_when_can_arrives_during_escape() {
+    // Arrange
+    let mut parser = Parser::default();
+    let mut handler = RecordingHandler::default();
+
+    // Act — ESC enters DCS escape; CAN cancels instead of completing ST.
+    feed(&mut parser, &mut handler, b"\x1bP$qm\x1b\x18Z");
+
+    // Assert
+    assert_eq!(
+        handler.callbacks,
+        vec![
+            Callback::DcsHook {
+                params: Params::from(&[None][..]),
+                intermediates: vec![b'$'],
+                action: b'q',
+            },
+            Callback::DcsPut(b'm'),
+            Callback::DcsUnhook(false),
             Callback::Print('Z'),
         ]
     );
