@@ -447,3 +447,17 @@ Project domain concepts and terminology.
   - references Secondary DA
   - references Tertiary DA
   - references DECID
+
+### DECRQM
+- **Definition:** A VT request for the state of one standard or DEC private terminal mode, encoded as `CSI Ps $ p` or `CSI ? Ps $ p`.
+- **Synonyms:** DEC Request Mode
+- **Relationships:**
+  - depends on TerminalReply
+  - communicates with DECRPM
+
+### DECRPM
+- **Definition:** A VT response reporting a queried standard or DEC private mode as set, reset, permanently set, permanently reset, or unknown.
+- **Synonyms:** DEC Report Mode
+- **Relationships:**
+  - references DECRQM
+  - implements TerminalReply

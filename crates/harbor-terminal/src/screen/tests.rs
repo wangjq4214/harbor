@@ -2879,3 +2879,16 @@ fn should_use_full_width_for_rectangular_ops_after_declrmm_disabled() {
     // Saved margin bounds remain queryable for DECRQSS despite DECLRMM being off.
     assert_eq!(screen.left_right_margins(), (2, 4));
 }
+
+#[test]
+fn alt_screen_transitions_preserve_pending_replies() {
+    let mut screen = Screen::new(5, 10);
+    screen.push_reply(b"before");
+
+    screen.enter_alt();
+    screen.push_reply(b"during");
+
+    screen.exit_alt();
+
+    assert_eq!(screen.drain_replies(), b"beforeduring");
+}

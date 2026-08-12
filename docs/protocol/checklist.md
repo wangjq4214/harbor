@@ -859,21 +859,21 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 22.1 DECRQM
 
-* [ ] `CSI Ps $ p`
-* [ ] `CSI ? Ps $ p`
-* [ ] Correctly recognizes Intermediate `$`
-* [ ] Queries standard modes
-* [ ] Queries DEC Private Modes
+* [x] `CSI Ps $ p`
+* [x] `CSI ? Ps $ p`
+* [x] Correctly recognizes Intermediate `$`
+* [x] Queries standard modes
+* [x] Queries DEC Private Modes
 
 ### 22.2 DECRPM Response
 
-* [ ] `CSI Ps;1 $ y` — Set
-* [ ] `CSI Ps;2 $ y` — Reset
-* [ ] `CSI Ps;3 $ y` — Permanently Set
-* [ ] `CSI Ps;4 $ y` — Permanently Reset
-* [ ] `CSI Ps;0 $ y` — Unknown
-* [ ] Private Mode response preserves `?`
-* [ ] Querying an unknown mode does not return an error state
+* [x] `CSI Ps;1 $ y` — Set
+* [x] `CSI Ps;2 $ y` — Reset
+* [x] `CSI Ps;3 $ y` — Permanently Set
+* [x] `CSI Ps;4 $ y` — Permanently Reset
+* [x] `CSI Ps;0 $ y` — Unknown
+* [x] Private Mode response preserves `?`
+* [x] Querying an unknown mode does not return an error state
 
 ---
 

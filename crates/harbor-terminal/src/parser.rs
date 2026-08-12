@@ -2,6 +2,7 @@
 
 mod device_attributes;
 mod handlers;
+mod mode_query;
 mod status_strings;
 
 #[cfg(test)]

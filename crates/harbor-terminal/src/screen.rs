@@ -38,6 +38,38 @@ pub use harbor_types::CursorShape;
 pub use harbor_types::CursorStyleArg;
 pub use harbor_types::SelectionBounds;
 
+/// State reported by DECRPM for a queried terminal mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    dead_code,
+    reason = "DECRPM reserves statuses 3 and 4, but no modeled mode is permanently fixed yet."
+)]
+pub(crate) enum ModeStatus {
+    Unknown,
+    Set,
+    Reset,
+    PermanentlySet,
+    PermanentlyReset,
+}
+
+impl ModeStatus {
+    pub(crate) const fn code(self) -> usize {
+        match self {
+            Self::Unknown => 0,
+            Self::Set => 1,
+            Self::Reset => 2,
+            Self::PermanentlySet => 3,
+            Self::PermanentlyReset => 4,
+        }
+    }
+}
+
+impl From<bool> for ModeStatus {
+    fn from(enabled: bool) -> Self {
+        if enabled { Self::Set } else { Self::Reset }
+    }
+}
+
 // ── Screen ────────────────────────────────────────────────────────────
 
 /// Visible terminal screen state rendered by the text pipeline.
@@ -321,16 +353,20 @@ impl Screen {
         }
         let rows = self.rows();
         let cols = self.cols();
+        let replies = std::mem::take(&mut self.replies);
         let saved = std::mem::replace(self, Self::new(rows, cols));
+        self.replies = replies;
         self.alt_saved = Some(Box::new(saved));
         self.alt.mark_active();
     }
 
     pub fn exit_alt(&mut self) {
+        let replies = std::mem::take(&mut self.replies);
         if let Some(saved) = self.alt_saved.take() {
             *self = *saved;
             self.mark_all_dirty();
         }
+        self.replies = replies;
         self.alt.mark_inactive();
     }
 
@@ -429,6 +465,19 @@ impl Screen {
         if !self.cursor.set_standard_mode(param, enabled) {
             tracing::warn!("unsupported standard mode: {}", param);
         }
+    }
+
+    pub(crate) fn mode_status(&self, private: bool, param: usize) -> ModeStatus {
+        let enabled = if private {
+            if param == 1049 {
+                Some(self.is_alt())
+            } else {
+                self.cursor.private_mode_enabled(param)
+            }
+        } else {
+            self.cursor.standard_mode_enabled(param)
+        };
+        enabled.map(ModeStatus::from).unwrap_or(ModeStatus::Unknown)
     }
 
     pub fn set_application_keypad(&mut self, enabled: bool) {

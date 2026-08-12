@@ -1,9 +1,22 @@
 use super::*;
-use crate::screen::{CursorShape, Screen};
+use crate::screen::{AltScreenAction, CursorShape, Screen};
 use harbor_parser::Params;
 
 fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
     parser.put_bytes(screen, seq);
+}
+
+fn feed_with_alt_transitions(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
+    let mut remaining = seq;
+    while !remaining.is_empty() {
+        let result = parser.put_bytes(screen, remaining);
+        remaining = &remaining[result.consumed..];
+        match result.alt_request {
+            Some(AltScreenAction::Enter) => screen.enter_alt(),
+            Some(AltScreenAction::Exit) => screen.exit_alt(),
+            None => {}
+        }
+    }
 }
 
 fn replies_for(query: &[u8]) -> Vec<u8> {
@@ -937,4 +950,129 @@ fn decrqss_parser_string_cap_overflow_still_fails() {
     feed(&mut parser, &mut screen, &oversized);
     assert_eq!(screen.drain_replies(), FAILURE_REPLY);
     assert!(screen.row_text(0).contains("OK"));
+}
+
+// ── DECRQM / DECRPM (CSI Ps $ p / CSI Ps ; Ps $ y) ─────────────────────
+
+#[test]
+fn should_report_standard_mode_states() {
+    for &(param, default) in &[(4, 2), (20, 2)] {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[{param};{default}$y").into_bytes()
+        );
+
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[{param}h").as_bytes(),
+        );
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[{param};1$y").into_bytes()
+        );
+
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[{param}l").as_bytes(),
+        );
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[{param};2$y").into_bytes()
+        );
+    }
+}
+
+#[test]
+fn should_report_private_mode_states_with_private_marker() {
+    for &(param, default) in &[(1, 2), (6, 2), (7, 1), (25, 1), (66, 2), (69, 2), (2004, 2)] {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[?{param};{default}$y").into_bytes()
+        );
+
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}h").as_bytes(),
+        );
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[?{param};1$y").into_bytes()
+        );
+    }
+
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+    feed(&mut parser, &mut screen, b"\x1b[?1049$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1049;1$y");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+    feed(&mut parser, &mut screen, b"\x1b[?1049$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1049;2$y");
+}
+
+#[test]
+fn should_report_unknown_modes_and_ignore_malformed_queries() {
+    assert_eq!(replies_for(b"\x1b[999$p"), b"\x1b[999;0$y");
+    assert_eq!(replies_for(b"\x1b[?999$p"), b"\x1b[?999;0$y");
+    for query in [
+        b"\x1b[$p".as_slice(),
+        b"\x1b[4;20$p",
+        b"\x1b[4:1$p",
+        b"\x1b[>4$p",
+    ] {
+        assert_eq!(replies_for(query), Vec::new(), "{query:?}");
+    }
+}
+
+#[test]
+fn should_bound_and_preserve_mode_reports_across_alt_transitions() {
+    let reply = b"\x1b[?2004;2$y";
+    let prefix = vec![b'x'; 1024 - reply.len()];
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    screen.push_reply(&prefix);
+    feed(&mut parser, &mut screen, b"\x1b[?2004$p");
+    assert_eq!(screen.drain_replies().len(), 1024);
+
+    let too_full = vec![b'x'; 1024 - reply.len() + 1];
+    screen.push_reply(&too_full);
+    feed(&mut parser, &mut screen, b"\x1b[?2004$p");
+    assert_eq!(screen.drain_replies(), too_full);
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?2004$p\x1b[?1049h");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2004;2$y");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?2004$p\x1b[?1049l");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2004;2$y");
 }

@@ -1,6 +1,7 @@
 //! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
 use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
+use super::mode_query::ModeQuery;
 use super::status_strings::DecrqssRequest;
 use crate::screen::Screen;
 use harbor_parser::{Params, VtHandler};
@@ -37,6 +38,16 @@ impl VtHandler for ScreenHandler<'_> {
         action: u8,
         private_marker: Option<u8>,
     ) {
+        if intermediates == b"$" && action == b'p' && matches!(private_marker, None | Some(b'?')) {
+            if let Some(param) = ModeQuery::param(params) {
+                let private = private_marker == Some(b'?');
+                let reply =
+                    ModeQuery::reply(param, self.screen.mode_status(private, param), private);
+                self.screen.push_reply(&reply);
+            }
+            return;
+        }
+
         match private_marker {
             Some(b'?') => {
                 match action {

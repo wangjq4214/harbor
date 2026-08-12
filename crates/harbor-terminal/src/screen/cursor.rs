@@ -448,6 +448,27 @@ impl CursorEngine {
         true
     }
 
+    pub(crate) fn private_mode_enabled(&self, param: usize) -> Option<bool> {
+        match param {
+            1 => Some(self.modes.application_cursor),
+            6 => Some(self.modes.origin),
+            7 => Some(self.modes.autowrap),
+            25 => Some(self.cursor.visible),
+            66 => Some(self.modes.application_keypad),
+            69 => Some(self.margins.enabled),
+            2004 => Some(self.modes.bracketed_paste),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn standard_mode_enabled(&self, param: usize) -> Option<bool> {
+        match param {
+            4 => Some(self.modes.insert),
+            20 => Some(self.modes.line_feed),
+            _ => None,
+        }
+    }
+
     pub(crate) fn set_application_keypad(&mut self, enabled: bool) {
         self.modes.application_keypad = enabled;
     }

@@ -7,7 +7,7 @@ use harbor_parser::{Params, Parser, VtHandler};
 
 #[derive(Default)]
 struct CsiRecorder {
-    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, u8)>,
+    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, Vec<u8>, u8)>,
 }
 
 impl VtHandler for CsiRecorder {
@@ -18,13 +18,14 @@ impl VtHandler for CsiRecorder {
     fn csi_dispatch(
         &mut self,
         params: &Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         action: u8,
         private_marker: Option<u8>,
     ) {
         self.dispatches.push((
             private_marker,
             params.iter_flat().collect::<Vec<_>>(),
+            intermediates.to_vec(),
             action,
         ));
     }
@@ -397,11 +398,11 @@ fn should_preserve_csi_private_markers_when_sequences_are_dispatched() {
     assert_eq!(
         recorder.dispatches,
         vec![
-            (Some(b'>'), vec![Some(1)], b'm'),
-            (Some(b'?'), vec![Some(2)], b'm'),
-            (Some(b'<'), vec![Some(3)], b'm'),
-            (Some(b'='), vec![Some(4)], b'm'),
-            (None, vec![Some(5)], b'm'),
+            (Some(b'>'), vec![Some(1)], Vec::new(), b'm'),
+            (Some(b'?'), vec![Some(2)], Vec::new(), b'm'),
+            (Some(b'<'), vec![Some(3)], Vec::new(), b'm'),
+            (Some(b'='), vec![Some(4)], Vec::new(), b'm'),
+            (None, vec![Some(5)], Vec::new(), b'm'),
         ]
     );
 }
@@ -416,5 +417,32 @@ fn should_clear_csi_state_when_sequence_is_cancelled_before_dispatch() {
     feed_core(&mut parser, &mut recorder, b"\x1b[?9\x18\x1b[6m");
 
     // Assert
-    assert_eq!(recorder.dispatches, vec![(None, vec![Some(6)], b'm')]);
+    assert_eq!(
+        recorder.dispatches,
+        vec![(None, vec![Some(6)], Vec::new(), b'm')]
+    );
+}
+
+#[test]
+fn should_round_trip_private_mode_report_through_second_parser() {
+    let mut screen = Screen::new(10, 20);
+    let mut terminal_parser = TerminalParser::default();
+    feed_all(&mut terminal_parser, &mut screen, b"\x1b[?2004$p");
+    let reply = screen.drain_replies();
+
+    assert_eq!(reply, b"\x1b[?2004;2$y");
+
+    let mut reply_parser = Parser::default();
+    let mut recorder = CsiRecorder::default();
+    feed_core(&mut reply_parser, &mut recorder, &reply);
+
+    assert_eq!(
+        recorder.dispatches,
+        vec![(Some(b'?'), vec![Some(2004), Some(2)], b"$".to_vec(), b'y')]
+    );
+}
+
+#[test]
+fn should_preserve_mode_query_replies_when_stream_is_chunked() {
+    assert_chunk_equiv(5, 40, b"\x1b[4$p\x1b[?7$p");
 }
