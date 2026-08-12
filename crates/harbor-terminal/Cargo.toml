@@ -23,3 +23,6 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

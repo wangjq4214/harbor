@@ -117,6 +117,19 @@ pub(crate) struct CsiAccumulator {
 }
 
 impl CsiAccumulator {
+    #[cfg(test)]
+    pub(crate) fn retained_state_within_limits(&self) -> bool {
+        self.len <= MAX_PARAMS
+            && self
+                .values
+                .iter()
+                .take(self.len.min(MAX_PARAMS))
+                .all(|param| param.len <= MAX_SUBPARAMS)
+            && self.current_param.len <= MAX_SUBPARAMS
+            && self.current.unwrap_or(0) <= MAX_CSI_PARAM
+            && self.intermediate_len <= MAX_INTERMEDIATES
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -195,7 +208,7 @@ impl CsiAccumulator {
         if value > MAX_CSI_PARAM {
             self.malformed = true;
         }
-        self.current = Some(value);
+        self.current = Some(value.min(MAX_CSI_PARAM));
         self.separator_pending = false;
     }
 

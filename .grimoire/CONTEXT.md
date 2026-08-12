@@ -461,3 +461,31 @@ Project domain concepts and terminology.
 - **Relationships:**
   - references DECRQM
   - implements TerminalReply
+
+### Streaming Parser Safety
+- **Definition:** Roadmap P1 proof that the incremental parser stays bounded, cancellable, and recoverable for arbitrary byte input.
+- **Synonyms:** Bounded parser contract, P1 parser safety
+- **Relationships:**
+  - belongs to harbor-parser
+  - depends on Parser Retention Limits
+  - depends on Arbitrary-Input Safety Evidence
+
+### Parser Retention Limits
+- **Definition:** Fixed caps in harbor-parser (`MAX_PARAMS` 16, `MAX_SUBPARAMS` 8, `MAX_INTERMEDIATES` 2, `MAX_CSI_PARAM` 65535, `MAX_OSC_BYTES` 4096, `MAX_STRING_BYTES` 4096) that bound retained CSI and string-family state.
+- **Synonyms:** Fixed parameter/string limits
+- **Relationships:**
+  - belongs to harbor-parser
+  - referenced by Streaming Parser Safety
+
+### Arbitrary-Input Safety Evidence
+- **Definition:** Fuzz or property-test proof that arbitrary bytes do not panic, infinite-loop, or grow retained parser memory beyond Parser Retention Limits.
+- **Synonyms:** Fuzz/property evidence
+- **Relationships:**
+  - implements Streaming Parser Safety
+  - references Parser Retention Limits
+
+### String Overflow Discard
+- **Definition:** After a string-family payload hits its byte cap, the parser stops retaining or delivering bytes and keeps scanning for ST or CAN/SUB cancellation.
+- **Relationships:**
+  - belongs to harbor-parser
+  - depends on Parser Retention Limits

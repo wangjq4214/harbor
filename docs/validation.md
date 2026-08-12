@@ -16,6 +16,47 @@ python scripts/checklist_summary.py
 
 A temporary environment limitation must be recorded in the change description; it is not evidence that a gate passed.
 
+## Parser Safety Evidence
+
+The parser safety boundary is `harbor_parser::Parser` plus its `VtHandler` sink. The
+contract covers arbitrary bytes, progress, and parser-owned logical retention: CSI
+storage, pending UTF-8 bytes, OSC bytes, and DCS/APC/PM/SOS bytes delivered through
+the handler. Handler-owned allocation is not part of this bound; fuzzing uses a
+non-retaining sink. The byte-at-a-time `Parser::advance` API does not expose chunk
+boundaries, so one-shot/chunked equivalence is tested at
+`harbor_terminal::parser::TerminalParser::put_bytes`, where the slice-ingestion call
+and `PutResult` consumed-prefix/alternate-screen behavior are exercised separately.
+
+Run stable property evidence on Windows or any stable Rust host:
+
+```bash
+cargo test -p harbor-parser
+cargo test -p harbor-terminal
+```
+
+The standalone cargo-fuzz package, harness, and checked-in corpus are configured. The
+fuzz decoder treats inputs of 32 bytes or fewer as all payload; longer inputs use the
+first 32 bytes as schedule and the remainder as payload. Runtime replay/campaign
+evidence is pending Linux CI. Windows setup alone is not a fuzz runtime result. With
+nightly Rust and `cargo-fuzz` installed, run the replay and bounded campaign from
+`fuzz/` in Linux CI (or another supported libFuzzer host):
+
+```bash
+cargo +nightly fuzz run parser -- -runs=0 -max_len=16384
+cargo +nightly fuzz run parser -- -max_total_time=600 -timeout=5 -max_len=16384
+```
+
+A single seed can be reproduced with
+`cargo +nightly fuzz run parser corpus/parser/utf8-fragmentation -- -runs=1` when run
+from `fuzz/`; from the repository root, use
+`cargo +nightly fuzz run parser fuzz/corpus/parser/utf8-fragmentation -- -runs=1`.
+Minimize a discovered corpus with `cargo +nightly fuzz cmin parser`, or minimize one
+crash with `cargo +nightly fuzz tmin parser <artifact>`, then keep the minimized input
+in `fuzz/corpus/parser/`. Every panic, stall, callback divergence, or retention-bound
+violation must also become a named deterministic Rust regression before the
+corresponding checklist claim is marked complete. Until Linux CI records runtime
+replay/campaign evidence, arbitrary-input checklist claims remain unchecked.
+
 ## Evidence by Change Type
 
 | Change                          | Required evidence                                                                          |
