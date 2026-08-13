@@ -4,7 +4,7 @@
 //! process-private `HARBOR_FONT`). Missing glyphs resolve through DirectWrite
 //! system fallback. Non-Windows builds are rejected by the backend gate.
 
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, rc::Rc};
 #[cfg(test)]
 use std::{ffi::OsString, sync::Mutex};
 
@@ -13,11 +13,12 @@ use anyhow::{Context as _, Result, bail};
 use crate::atlas::GlyphBitmapBounds;
 use crate::backend::dwrite::DwriteState;
 use crate::contracts::{FontStyle, GlyphKey, GlyphResolution};
+use crate::lifecycle::{
+    FontLifecycleEvent, FontLifecycleSink, FontSource, TracingFontLifecycleSink,
+};
 use crate::metrics::FontMetrics;
 
 const FONT_ENV: &str = "HARBOR_FONT";
-/// Keep in sync with `dwrite.rs` and `src/app.rs` (`FONT_LIFECYCLE_TARGET`).
-const LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
 
 #[cfg(test)]
 static FONT_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -97,31 +98,36 @@ impl FontBook {
 /// - `HARBOR_FONT` selects a DirectWrite process-private primary face.
 /// - Otherwise selects a DirectWrite system monospace primary face.
 pub fn load_system_fonts() -> Result<FontBook> {
+    load_system_fonts_with_sink(Rc::new(TracingFontLifecycleSink))
+}
+
+fn load_system_fonts_with_sink(lifecycle: Rc<dyn FontLifecycleSink>) -> Result<FontBook> {
     let started = std::time::Instant::now();
-    if let Some(fonts) = load_configured_fonts()? {
-        emit_font_init("configured", started);
+    if let Some(fonts) = load_configured_fonts(Rc::clone(&lifecycle))? {
+        emit_font_init(lifecycle.as_ref(), FontSource::Configured, started);
         return Ok(fonts);
     }
 
-    let state =
-        DwriteState::open_system_primary().context("load DirectWrite system primary face")?;
+    let state = DwriteState::open_system_primary_with_sink(Rc::clone(&lifecycle))
+        .context("load DirectWrite system primary face")?;
     tracing::info!("loaded terminal font from DirectWrite system primary");
     let fonts = FontBook::from_native(state);
-    emit_font_init("system", started);
+    emit_font_init(lifecycle.as_ref(), FontSource::System, started);
     Ok(fonts)
 }
 
-fn emit_font_init(source: &str, started: std::time::Instant) {
-    tracing::info!(
-        target: LIFECYCLE_TARGET,
-        phase = "font_init",
+fn emit_font_init(
+    lifecycle: &dyn FontLifecycleSink,
+    source: FontSource,
+    started: std::time::Instant,
+) {
+    lifecycle.emit(FontLifecycleEvent::FontInit {
         source,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "font lifecycle"
-    );
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    });
 }
 
-fn load_configured_fonts() -> Result<Option<FontBook>> {
+fn load_configured_fonts(lifecycle: Rc<dyn FontLifecycleSink>) -> Result<Option<FontBook>> {
     let Some(path) = env::var_os(FONT_ENV) else {
         return Ok(None);
     };
@@ -130,7 +136,7 @@ fn load_configured_fonts() -> Result<Option<FontBook>> {
         bail!("HARBOR_FONT is set but empty");
     }
 
-    let state = DwriteState::open_configured_primary(&path)?;
+    let state = DwriteState::open_configured_primary_with_sink(&path, lifecycle)?;
     tracing::info!(path = %path.display(), "loaded terminal font from HARBOR_FONT");
     Ok(Some(FontBook::from_native(state)))
 }
@@ -159,11 +165,11 @@ fn test_configured_font_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::fs;
-    use std::sync::{Arc, Mutex};
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    use crate::lifecycle::{
+        FontLifecycleEvent, FontLifecycleSink, FontSource, RecordingFontLifecycleSink,
+    };
 
     fn expect_key(resolution: GlyphResolution) -> GlyphKey {
         match resolution {
@@ -172,106 +178,34 @@ mod tests {
         }
     }
 
+    fn load_test_fonts() -> Result<FontBook> {
+        let sink: Rc<dyn FontLifecycleSink> = Rc::new(RecordingFontLifecycleSink::default());
+        load_system_fonts_with_sink(sink)
+    }
+
     fn test_font_book() -> FontBook {
-        with_font_env(None, || load_system_fonts().expect("load test font"))
-    }
-
-    /// Captures `harbor.font.lifecycle` field maps for behavior assertions.
-    #[derive(Clone, Default)]
-    struct LifecycleCapture {
-        events: Arc<Mutex<Vec<HashMap<String, String>>>>,
-    }
-
-    impl LifecycleCapture {
-        fn new() -> Self {
-            Self {
-                events: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn events_with_phase(&self, phase: &str) -> Vec<HashMap<String, String>> {
-            self.events
-                .lock()
-                .expect("lifecycle capture lock")
-                .iter()
-                .filter(|fields| fields.get("phase").map(|p| p == phase).unwrap_or(false))
-                .cloned()
-                .collect()
-        }
-    }
-
-    struct FieldRecorder<'a> {
-        fields: &'a mut HashMap<String, String>,
-    }
-
-    impl Visit for FieldRecorder<'_> {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            self.fields
-                .insert(field.name().to_string(), format!("{value:?}"));
-        }
-
-        fn record_str(&mut self, field: &Field, value: &str) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_u64(&mut self, field: &Field, value: u64) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_i64(&mut self, field: &Field, value: i64) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_bool(&mut self, field: &Field, value: bool) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-    }
-
-    impl<S> Layer<S> for LifecycleCapture
-    where
-        S: tracing::Subscriber,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            if event.metadata().target() != LIFECYCLE_TARGET {
-                return;
-            }
-            let mut fields = HashMap::new();
-            event.record(&mut FieldRecorder {
-                fields: &mut fields,
-            });
-            self.events
-                .lock()
-                .expect("lifecycle capture lock")
-                .push(fields);
-        }
-    }
-
-    fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
-        let _guard = crate::TRACING_CAPTURE_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let capture = LifecycleCapture::new();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
-        let result = tracing::subscriber::with_default(subscriber, f);
-        (result, capture)
+        with_font_env(None, || load_test_fonts().expect("load test font"))
     }
 
     #[test]
     fn should_emit_font_init_system_when_harbor_font_unset() {
-        // Arrange / Act
-        let (fonts, capture) = with_lifecycle_capture(|| {
-            with_font_env(None, || load_system_fonts().expect("default load path"))
+        // Arrange
+        let sink = Rc::new(RecordingFontLifecycleSink::default());
+        let lifecycle: Rc<dyn FontLifecycleSink> = sink.clone();
+
+        // Act
+        let fonts = with_font_env(None, || {
+            load_system_fonts_with_sink(lifecycle).expect("default load path")
         });
 
         // Assert
-        let events = capture.events_with_phase("font_init");
-        assert_eq!(events.len(), 1, "expected one font_init marker");
-        assert_eq!(events[0].get("source").map(String::as_str), Some("system"));
-        assert!(events[0].contains_key("elapsed_ms"));
+        assert!(matches!(
+            sink.events().as_slice(),
+            [FontLifecycleEvent::FontInit {
+                source: FontSource::System,
+                elapsed_ms: _
+            }]
+        ));
         let metrics = fonts.font_metrics();
         assert!(metrics.cell_width > 0.0);
     }
@@ -282,22 +216,22 @@ mod tests {
         let Some(path) = test_configured_font_path() else {
             return;
         };
+        let sink = Rc::new(RecordingFontLifecycleSink::default());
+        let lifecycle: Rc<dyn FontLifecycleSink> = sink.clone();
 
         // Act
-        let (fonts, capture) = with_lifecycle_capture(|| {
-            with_font_env(Some(path.into_os_string()), || {
-                load_system_fonts().expect("configured font path")
-            })
+        let fonts = with_font_env(Some(path.into_os_string()), || {
+            load_system_fonts_with_sink(lifecycle).expect("configured font path")
         });
 
         // Assert
-        let events = capture.events_with_phase("font_init");
-        assert_eq!(events.len(), 1, "expected one font_init marker");
-        assert_eq!(
-            events[0].get("source").map(String::as_str),
-            Some("configured")
-        );
-        assert!(events[0].contains_key("elapsed_ms"));
+        assert!(matches!(
+            sink.events().as_slice(),
+            [FontLifecycleEvent::FontInit {
+                source: FontSource::Configured,
+                elapsed_ms: _
+            }]
+        ));
         let metrics = fonts.font_metrics();
         assert!(metrics.cell_width > 0.0);
     }
@@ -306,16 +240,18 @@ mod tests {
     fn should_not_emit_font_init_when_configured_font_missing() {
         // Arrange
         let path = env::temp_dir().join(format!("harbor-missing-font-{}.ttf", std::process::id()));
+        let sink = Rc::new(RecordingFontLifecycleSink::default());
+        let lifecycle: Rc<dyn FontLifecycleSink> = sink.clone();
 
         // Act
-        let (result, capture) = with_lifecycle_capture(|| {
-            with_font_env(Some(path.clone().into_os_string()), load_system_fonts)
+        let result = with_font_env(Some(path.clone().into_os_string()), || {
+            load_system_fonts_with_sink(lifecycle)
         });
 
         // Assert
         assert!(result.is_err());
         assert!(
-            capture.events_with_phase("font_init").is_empty(),
+            sink.events().is_empty(),
             "failed load must not emit font_init"
         );
     }
@@ -323,7 +259,7 @@ mod tests {
     #[test]
     fn should_load_native_primary_when_harbor_font_unset() {
         // Arrange and act
-        let fonts = with_font_env(None, || load_system_fonts().expect("default load path"));
+        let fonts = with_font_env(None, || load_test_fonts().expect("default load path"));
 
         // Assert — default path yields a usable primary face for terminal metrics/glyphs.
         let metrics = fonts.font_metrics();
@@ -352,7 +288,7 @@ mod tests {
         };
 
         let (metrics, bounds, bitmap) = with_font_env(Some(path.into_os_string()), || {
-            let fonts = load_system_fonts().expect("configured font path");
+            let fonts = load_test_fonts().expect("configured font path");
             let metrics = fonts.font_metrics();
             let (bounds, bitmap) = fonts.rasterize('A', harbor_config::FONT_SIZE);
             (metrics, bounds, bitmap)
@@ -372,7 +308,7 @@ mod tests {
         };
         // Act
         let (key, direct, by_key) = with_font_env(Some(path.into_os_string()), || {
-            let fonts = load_system_fonts().expect("configured font path");
+            let fonts = load_test_fonts().expect("configured font path");
             let key = expect_key(fonts.resolve('A', harbor_config::FONT_SIZE, 0));
             let direct = fonts.rasterize('A', harbor_config::FONT_SIZE);
             let by_key = fonts.rasterize_from_key(key);
@@ -401,20 +337,20 @@ mod tests {
         let path = env::temp_dir().join(format!("harbor-missing-font-{}.ttf", std::process::id()));
         let message = with_font_env(
             Some(path.clone().into_os_string()),
-            || match load_system_fonts() {
+            || match load_test_fonts() {
                 Ok(_) => panic!("missing configured font unexpectedly succeeded"),
                 Err(error) => format!("{error:#}"),
             },
         );
         assert!(message.contains(&path.display().to_string()), "{message}");
         with_font_env(None, || {
-            load_system_fonts().expect("system fallback after failed load")
+            load_test_fonts().expect("system fallback after failed load")
         });
     }
 
     #[test]
     fn should_reject_empty_configured_font_value() {
-        let message = with_font_env(Some(OsString::new()), || match load_system_fonts() {
+        let message = with_font_env(Some(OsString::new()), || match load_test_fonts() {
             Ok(_) => panic!("empty configured font unexpectedly succeeded"),
             Err(error) => format!("{error:#}"),
         });
@@ -430,7 +366,7 @@ mod tests {
         fs::write(&path, b"not a font").expect("write invalid font fixture");
         let message = with_font_env(
             Some(path.clone().into_os_string()),
-            || match load_system_fonts() {
+            || match load_test_fonts() {
                 Ok(_) => panic!("invalid configured font unexpectedly succeeded"),
                 Err(error) => format!("{error:#}"),
             },

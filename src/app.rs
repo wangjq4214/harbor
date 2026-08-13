@@ -313,20 +313,77 @@ struct AppRuntime {
     dialog: DialogOverlay,
 }
 
+/// Documented 5s dwell after first present for the `steady_state` lifecycle marker.
+const FONT_STEADY_STATE_DWELL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameLifecycleEvent {
+    FirstPresent,
+    SteadyState { dwell_ms: u64 },
+}
+
+trait FrameLifecycleSink {
+    fn emit(&self, event: FrameLifecycleEvent);
+}
+
+struct TracingFrameLifecycleSink;
+
+impl FrameLifecycleSink for TracingFrameLifecycleSink {
+    fn emit(&self, event: FrameLifecycleEvent) {
+        match event {
+            FrameLifecycleEvent::FirstPresent => tracing::info!(
+                target: "harbor.font.lifecycle",
+                phase = "first_present",
+                "font lifecycle"
+            ),
+            FrameLifecycleEvent::SteadyState { dwell_ms } => tracing::info!(
+                target: "harbor.font.lifecycle",
+                phase = "steady_state",
+                dwell_ms,
+                "font lifecycle"
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct RecordingFrameLifecycleSink {
+    events: std::cell::RefCell<Vec<FrameLifecycleEvent>>,
+}
+
+#[cfg(test)]
+impl RecordingFrameLifecycleSink {
+    fn events(&self) -> Vec<FrameLifecycleEvent> {
+        self.events.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+impl FrameLifecycleSink for RecordingFrameLifecycleSink {
+    fn emit(&self, event: FrameLifecycleEvent) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
 /// Host frame lifecycle telemetry.
 struct FrameState {
     /// Set after the first successful surface present.
     first_present_at: Option<Instant>,
     /// Once-only gate for the steady-state dwell marker.
     steady_state_emitted: bool,
+    lifecycle: std::rc::Rc<dyn FrameLifecycleSink>,
 }
 
-/// Documented 5s dwell after first present for the `steady_state` lifecycle marker.
-const FONT_STEADY_STATE_DWELL: Duration = Duration::from_secs(5);
-/// Keep in sync with `harbor-text` `LIFECYCLE_TARGET` (`font.rs` / `dwrite.rs`).
-const FONT_LIFECYCLE_TARGET: &str = "harbor.font.lifecycle";
-
 impl FrameState {
+    fn new(lifecycle: std::rc::Rc<dyn FrameLifecycleSink>) -> Self {
+        Self {
+            first_present_at: None,
+            steady_state_emitted: false,
+            lifecycle,
+        }
+    }
+
     /// Records the first successful present and emits `first_present` once.
     fn mark_first_present(&mut self) {
         self.mark_first_present_at(Instant::now());
@@ -337,11 +394,7 @@ impl FrameState {
             return;
         }
         self.first_present_at = Some(at);
-        tracing::info!(
-            target: FONT_LIFECYCLE_TARGET,
-            phase = "first_present",
-            "font lifecycle"
-        );
+        self.lifecycle.emit(FrameLifecycleEvent::FirstPresent);
     }
 
     /// Emits `steady_state` once after the documented dwell past first present.
@@ -357,12 +410,9 @@ impl FrameState {
             return;
         }
         self.steady_state_emitted = true;
-        tracing::info!(
-            target: FONT_LIFECYCLE_TARGET,
-            phase = "steady_state",
-            dwell_ms = dwell.as_millis() as u64,
-            "font lifecycle"
-        );
+        self.lifecycle.emit(FrameLifecycleEvent::SteadyState {
+            dwell_ms: dwell.as_millis() as u64,
+        });
     }
 
     /// Returns the future font-lifecycle telemetry deadline, or emits the
@@ -624,10 +674,7 @@ impl App {
                 winit_adapter: None,
                 dialog: DialogOverlay { window: None },
             },
-            frame: FrameState {
-                first_present_at: None,
-                steady_state_emitted: false,
-            },
+            frame: FrameState::new(std::rc::Rc::new(TracingFrameLifecycleSink)),
             event_proxy,
         }
     }
@@ -1009,33 +1056,22 @@ mod tests {
     }
 
     fn empty_frame() -> FrameState {
-        FrameState {
-            first_present_at: None,
-            steady_state_emitted: false,
+        FrameState::new(std::rc::Rc::new(TracingFrameLifecycleSink))
+    }
+
+    #[derive(Clone)]
+    struct RecordingFrameLifecycleSinkHandle(std::rc::Rc<RecordingFrameLifecycleSink>);
+
+    impl FrameLifecycleSink for RecordingFrameLifecycleSinkHandle {
+        fn emit(&self, event: FrameLifecycleEvent) {
+            self.0.emit(event);
         }
     }
 
-    /// Captures `harbor.font.lifecycle` field maps for behavior assertions.
-    #[derive(Clone, Default)]
-    struct LifecycleCapture {
-        events: Arc<Mutex<Vec<std::collections::HashMap<String, String>>>>,
-    }
-
-    impl LifecycleCapture {
-        fn new() -> Self {
-            Self {
-                events: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn phases(&self) -> Vec<String> {
-            self.events
-                .lock()
-                .expect("lifecycle capture lock")
-                .iter()
-                .filter_map(|fields| fields.get("phase").cloned())
-                .collect()
-        }
+    fn recording_frame() -> (FrameState, std::rc::Rc<RecordingFrameLifecycleSink>) {
+        let sink = std::rc::Rc::new(RecordingFrameLifecycleSink::default());
+        let handle = std::rc::Rc::new(RecordingFrameLifecycleSinkHandle(sink.clone()));
+        (FrameState::new(handle), sink)
     }
 
     struct FieldRecorder<'a> {
@@ -1067,37 +1103,6 @@ mod tests {
             self.fields
                 .insert(field.name().to_string(), value.to_string());
         }
-    }
-
-    impl<S> tracing_subscriber::layer::Layer<S> for LifecycleCapture
-    where
-        S: tracing::Subscriber,
-    {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if event.metadata().target() != FONT_LIFECYCLE_TARGET {
-                return;
-            }
-            let mut fields = std::collections::HashMap::new();
-            event.record(&mut FieldRecorder {
-                fields: &mut fields,
-            });
-            self.events
-                .lock()
-                .expect("lifecycle capture lock")
-                .push(fields);
-        }
-    }
-
-    fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
-        use tracing_subscriber::layer::SubscriberExt;
-        let capture = LifecycleCapture::new();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
-        let result = tracing::subscriber::with_default(subscriber, f);
-        (result, capture)
     }
 
     #[derive(Clone, Default)]
@@ -1138,116 +1143,91 @@ mod tests {
 
     #[test]
     fn should_emit_first_present_once_when_marked() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, sink) = recording_frame();
         let at = Instant::now();
 
-        // Act
-        let (_, capture) = with_lifecycle_capture(|| {
-            frame.mark_first_present_at(at);
-            frame.mark_first_present_at(at + Duration::from_millis(1));
-        });
+        frame.mark_first_present_at(at);
+        frame.mark_first_present_at(at + Duration::from_millis(1));
 
-        // Assert
-        assert_eq!(capture.phases(), vec!["first_present".to_string()]);
+        assert_eq!(sink.events(), vec![FrameLifecycleEvent::FirstPresent]);
     }
 
     #[test]
     fn should_not_emit_steady_state_when_first_present_missing() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, sink) = recording_frame();
 
-        // Act
-        let (_, capture) = with_lifecycle_capture(|| {
-            frame.maybe_emit_steady_state_at(Instant::now());
-        });
+        frame.maybe_emit_steady_state_at(Instant::now());
 
-        // Assert
-        assert!(capture.phases().is_empty());
+        assert!(sink.events().is_empty());
     }
 
     #[test]
     fn should_not_emit_steady_state_when_dwell_incomplete() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, sink) = recording_frame();
         let presented_at = Instant::now();
         let before_dwell = presented_at + FONT_STEADY_STATE_DWELL - Duration::from_millis(1);
 
-        // Act
-        let (_, capture) = with_lifecycle_capture(|| {
-            frame.mark_first_present_at(presented_at);
-            frame.maybe_emit_steady_state_at(before_dwell);
-        });
+        frame.mark_first_present_at(presented_at);
+        frame.maybe_emit_steady_state_at(before_dwell);
 
-        // Assert
-        assert_eq!(capture.phases(), vec!["first_present".to_string()]);
+        assert_eq!(sink.events(), vec![FrameLifecycleEvent::FirstPresent]);
     }
 
     #[test]
     fn should_emit_steady_state_once_when_dwell_elapsed() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, sink) = recording_frame();
         let presented_at = Instant::now();
         let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
 
-        // Act
-        let (_, capture) = with_lifecycle_capture(|| {
-            frame.mark_first_present_at(presented_at);
-            frame.maybe_emit_steady_state_at(after_dwell);
-            frame.maybe_emit_steady_state_at(after_dwell + Duration::from_secs(1));
-        });
+        frame.mark_first_present_at(presented_at);
+        frame.maybe_emit_steady_state_at(after_dwell);
+        frame.maybe_emit_steady_state_at(after_dwell + Duration::from_secs(1));
 
-        // Assert
         assert_eq!(
-            capture.phases(),
-            vec!["first_present".to_string(), "steady_state".to_string()]
+            sink.events(),
+            vec![
+                FrameLifecycleEvent::FirstPresent,
+                FrameLifecycleEvent::SteadyState { dwell_ms: 5050 },
+            ]
         );
     }
 
     #[test]
     fn should_return_future_deadline_when_first_present_marked() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, _) = recording_frame();
         let presented_at = Instant::now();
         let expected_deadline = presented_at + FONT_STEADY_STATE_DWELL;
 
-        // Act
         frame.mark_first_present_at(presented_at);
         let deadline = frame.next_steady_state_deadline_at(presented_at);
 
-        // Assert
         assert_eq!(deadline, Some(expected_deadline));
     }
 
     #[test]
     fn should_return_no_deadline_when_first_present_missing() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, _) = recording_frame();
 
-        // Act
         let deadline = frame.next_steady_state_deadline_at(Instant::now());
 
-        // Assert
         assert_eq!(deadline, None);
     }
 
     #[test]
     fn should_emit_steady_state_without_deadline_when_dwell_already_elapsed() {
-        // Arrange
-        let mut frame = empty_frame();
+        let (mut frame, sink) = recording_frame();
         let presented_at = Instant::now();
         let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
 
-        // Act
-        let (deadline, capture) = with_lifecycle_capture(|| {
-            frame.mark_first_present_at(presented_at);
-            frame.next_steady_state_deadline_at(after_dwell)
-        });
+        frame.mark_first_present_at(presented_at);
+        let deadline = frame.next_steady_state_deadline_at(after_dwell);
 
-        // Assert
         assert_eq!(
-            capture.phases(),
-            vec!["first_present".to_string(), "steady_state".to_string()]
+            sink.events(),
+            vec![
+                FrameLifecycleEvent::FirstPresent,
+                FrameLifecycleEvent::SteadyState { dwell_ms: 5050 },
+            ]
         );
         assert_eq!(deadline, None);
     }
