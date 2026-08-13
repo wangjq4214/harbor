@@ -1315,6 +1315,153 @@ fn test_autowrap_and_pending_wrap() {
     assert!(!screen.cursor.modes.pending_wrap);
 }
 
+fn screen_with_pending_wrap() -> Screen {
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.cursor.modes.pending_wrap);
+    screen
+}
+
+fn assert_pending_wrap_cleared(operation: impl FnOnce(&mut Screen)) {
+    let mut screen = screen_with_pending_wrap();
+    operation(&mut screen);
+    assert!(
+        !screen.cursor.modes.pending_wrap,
+        "operation must clear pending wrap"
+    );
+}
+
+#[test]
+fn should_clear_pending_wrap_for_line_controls_resize_and_edits() {
+    assert_pending_wrap_cleared(Screen::line_feed);
+    assert_pending_wrap_cleared(Screen::index);
+    assert_pending_wrap_cleared(Screen::reverse_index);
+    assert_pending_wrap_cleared(|screen| screen.resize(4, 6));
+    assert_pending_wrap_cleared(|screen| screen.erase_display(2));
+    assert_pending_wrap_cleared(|screen| screen.erase_line(2));
+    assert_pending_wrap_cleared(|screen| screen.erase_chars(1));
+    assert_pending_wrap_cleared(|screen| screen.selective_erase_display(2));
+    assert_pending_wrap_cleared(|screen| screen.selective_erase_line(2));
+    assert_pending_wrap_cleared(|screen| screen.insert_chars(1));
+    assert_pending_wrap_cleared(|screen| screen.delete_chars(1));
+    assert_pending_wrap_cleared(|screen| screen.insert_lines(1));
+    assert_pending_wrap_cleared(|screen| screen.delete_lines(1));
+    assert_pending_wrap_cleared(|screen| screen.scroll_up_region(1));
+    assert_pending_wrap_cleared(|screen| screen.scroll_down_region(1));
+}
+
+fn assert_next_print_stays_on_current_row(operation: impl FnOnce(&mut Screen)) {
+    let mut screen = screen_with_pending_wrap();
+    operation(&mut screen);
+    let target_row = screen.cursor.cursor.y;
+
+    screen.write_char('Z');
+
+    assert_eq!(
+        screen.cursor.cursor.y, target_row,
+        "cleared pending wrap must not move the sentinel to another row"
+    );
+    assert!(screen.row_text(target_row).contains('Z'));
+}
+
+#[test]
+fn should_clear_pending_wrap_before_next_print() {
+    assert_next_print_stays_on_current_row(Screen::line_feed);
+    assert_next_print_stays_on_current_row(Screen::index);
+    assert_next_print_stays_on_current_row(Screen::reverse_index);
+    assert_next_print_stays_on_current_row(|screen| screen.resize(4, 6));
+    assert_next_print_stays_on_current_row(|screen| screen.erase_display(2));
+    assert_next_print_stays_on_current_row(|screen| screen.erase_line(2));
+    assert_next_print_stays_on_current_row(|screen| screen.erase_chars(1));
+    assert_next_print_stays_on_current_row(|screen| screen.selective_erase_display(2));
+    assert_next_print_stays_on_current_row(|screen| screen.selective_erase_line(2));
+    assert_next_print_stays_on_current_row(|screen| screen.insert_chars(1));
+    assert_next_print_stays_on_current_row(|screen| screen.delete_chars(1));
+    assert_next_print_stays_on_current_row(|screen| screen.insert_lines(1));
+    assert_next_print_stays_on_current_row(|screen| screen.delete_lines(1));
+    assert_next_print_stays_on_current_row(|screen| screen.scroll_up_region(1));
+    assert_next_print_stays_on_current_row(|screen| screen.scroll_down_region(1));
+    assert_next_print_stays_on_current_row(Screen::horizontal_tab);
+    assert_next_print_stays_on_current_row(Screen::reset_display);
+    assert_next_print_stays_on_current_row(Screen::soft_reset);
+}
+
+#[test]
+fn should_clear_pending_wrap_before_accepted_edit_noop_returns() {
+    let mut screen = screen_with_pending_wrap();
+    screen.cursor.margins.enabled = true;
+    screen.cursor.margins.left = 1;
+    screen.cursor.margins.right = 3;
+    screen.cursor.cursor.x = 0;
+    screen.erase_line(0);
+    assert!(!screen.cursor.modes.pending_wrap);
+
+    screen.cursor.modes.pending_wrap = true;
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.cursor.y = 0;
+    screen.insert_lines(1);
+    assert!(!screen.cursor.modes.pending_wrap);
+}
+
+#[test]
+fn should_preserve_pending_wrap_for_non_moving_c0_controls() {
+    let mut screen = Screen::new(3, 5);
+    let mut parser = TerminalParser::default();
+    parser.put_bytes(&mut screen, b"abcde");
+    assert!(screen.cursor.modes.pending_wrap);
+
+    for control in [b'\x05', b'\x07', b'\x0e', b'\x0f'] {
+        parser.put_bytes(&mut screen, &[control]);
+        assert!(
+            screen.cursor.modes.pending_wrap,
+            "control {control:#04x} must not clear pending wrap"
+        );
+    }
+}
+
+#[test]
+fn should_clear_pending_wrap_on_both_reset_paths() {
+    let mut screen = screen_with_pending_wrap();
+    screen.reset_display();
+    assert!(!screen.cursor.modes.pending_wrap);
+
+    let mut screen = screen_with_pending_wrap();
+    screen.soft_reset();
+    assert!(!screen.cursor.modes.pending_wrap);
+}
+
+#[test]
+fn should_clear_markers_when_full_height_edits_blank_rows() {
+    fn assert_blank_rows(operation: impl FnOnce(&mut Screen)) {
+        let mut screen = Screen::new(3, 4);
+        for row in 0..screen.rows() {
+            screen.normal.set_wrapped(row, true);
+        }
+        operation(&mut screen);
+        for row in 0..screen.rows() {
+            assert!(!screen.is_wrapped(row), "row {row} must be unwrapped");
+        }
+    }
+
+    assert_blank_rows(|screen| screen.insert_lines(99));
+    assert_blank_rows(|screen| screen.delete_lines(99));
+    assert_blank_rows(|screen| screen.scroll_up_region(99));
+    assert_blank_rows(|screen| screen.scroll_down_region(99));
+}
+
+#[test]
+fn should_clear_pending_wrap_on_resize_and_preserve_surviving_marker() {
+    let mut screen = screen_with_pending_wrap();
+    screen.normal.set_wrapped(1, true);
+
+    screen.resize(2, 6);
+
+    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(screen.is_wrapped(1));
+}
+
 #[test]
 fn test_cursor_visibility() {
     let mut screen = Screen::new(5, 5);
@@ -1521,6 +1668,26 @@ fn test_tab_stops_hts_tbc() {
     assert_eq!(
         screen.cursor.cursor.x, 19,
         "should jump to the right margin limit"
+    );
+}
+
+#[test]
+fn should_clear_pending_wrap_when_tab_reaches_right_margin() {
+    let mut screen = Screen::new(1, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.cursor.modes.pending_wrap);
+
+    screen.horizontal_tab();
+    screen.write_char('Z');
+
+    assert_eq!(screen.cursor.cursor.x, 4);
+    assert_eq!(screen.cursor.cursor.y, 0);
+    assert_eq!(screen.row_text(0), "abcdZ");
+    assert!(
+        screen.cursor.modes.pending_wrap,
+        "the sentinel itself reaches the right margin and starts the next pending wrap"
     );
 }
 
@@ -3379,4 +3546,28 @@ fn should_keep_wrapped_flag_when_erase_line_partial() {
     screen.erase_line(0);
     // Assert
     assert!(screen.is_wrapped(1), "partial erase must keep the flag");
+}
+
+#[test]
+fn should_preserve_wrapped_flag_when_margin_erase_covers_active_region() {
+    let mut screen = Screen::new(3, 5);
+    screen.cursor.cursor.y = 1;
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.normal.set_wrapped(1, true);
+    screen.cursor.margins.enabled = true;
+    screen.cursor.margins.left = 1;
+    screen.cursor.margins.right = 3;
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.pending_wrap = true;
+
+    screen.erase_line(2);
+
+    assert_eq!(screen.row_text(1), "a   e");
+    assert!(
+        screen.is_wrapped(1),
+        "a complete margin region is still a partial-row erase"
+    );
+    assert!(!screen.cursor.modes.pending_wrap);
 }

@@ -469,6 +469,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] NEL performs vertical movement and returns to the valid left margin
 * [x] IND does not unconditionally perform CR
 * [x] RI does not exceed the scrolling region
+* [x] IND, NEL and RI clear pending wrap without losing valid moved-row soft-wrap metadata
 
 * [x] Main-screen scrollback viewport and generation coordinates survive terminal resize
 ---
@@ -546,6 +547,10 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] The last column is overwritten when autowrap is off
 * [x] Wide characters that cannot fully fit in the last column behave correctly
 * [x] Scrolling is correct when autowrap triggers at the bottom of the scrolling region
+* [x] LF, IND, NEL and RI clear pending wrap on movement, scroll and boundary no-op paths
+* [x] Accepted erase and line-edit commands clear pending wrap before early returns
+* [x] Resize clears pending wrap without reflowing rows
+* [x] DECSTR clears pending wrap while preserving screen content and soft-wrap markers
 
 ---
 

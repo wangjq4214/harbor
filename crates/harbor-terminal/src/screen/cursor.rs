@@ -164,9 +164,15 @@ impl CursorEngine {
 
     // ── resize / clamp ────────────────────────────────────────────
 
+    /// Clears the deferred autowrap transition without changing cursor position.
+    pub(crate) fn clear_pending_wrap(&mut self) {
+        self.modes.pending_wrap = false;
+    }
+
     /// Clamps cursor position, margins, and scroll region into the new grid
     /// dimensions. Also clamps any saved cursor snapshot (DECSC).
     pub(crate) fn clamp_to_grid(&mut self, rows: usize, cols: usize) {
+        self.clear_pending_wrap();
         self.cursor.y = self.cursor.y.min(rows.saturating_sub(1));
         self.cursor.x = self.cursor.x.min(cols.saturating_sub(1));
         self.margins.clamp(cols);
@@ -231,7 +237,7 @@ impl CursorEngine {
     // ── cursor movement ───────────────────────────────────────────
 
     pub(crate) fn cursor_up(&mut self, n: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         let limit = if self.modes.origin
             || (self.cursor.y >= self.scroll_region.top
                 && self.cursor.y <= self.scroll_region.bottom)
@@ -244,7 +250,7 @@ impl CursorEngine {
     }
 
     pub(crate) fn cursor_down(&mut self, normal: &NormalBuf, n: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         let limit = if self.modes.origin
             || (self.cursor.y >= self.scroll_region.top
                 && self.cursor.y <= self.scroll_region.bottom)
@@ -257,7 +263,7 @@ impl CursorEngine {
     }
 
     pub(crate) fn cursor_left(&mut self, n: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         let limit = if self.margins.enabled
             && self.cursor.x >= self.margins.left
             && self.cursor.x <= self.margins.right
@@ -270,7 +276,7 @@ impl CursorEngine {
     }
 
     pub(crate) fn cursor_right(&mut self, normal: &NormalBuf, n: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         let limit = if self.margins.enabled
             && self.cursor.x >= self.margins.left
             && self.cursor.x <= self.margins.right
@@ -289,7 +295,7 @@ impl CursorEngine {
         row_1_based: usize,
         col_1_based: usize,
     ) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         if self.modes.origin {
             let relative_row = row_1_based.saturating_sub(1);
             let absolute_row = self.scroll_region.top.saturating_add(relative_row);
@@ -311,7 +317,7 @@ impl CursorEngine {
     }
 
     pub(crate) fn set_cursor_col(&mut self, normal: &NormalBuf, col_1_based: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         if self.modes.origin {
             let relative_col = col_1_based.saturating_sub(1);
             if self.margins.enabled {
@@ -326,7 +332,7 @@ impl CursorEngine {
     }
 
     pub(crate) fn set_cursor_row(&mut self, normal: &NormalBuf, row_1_based: usize) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         if self.modes.origin {
             let relative_row = row_1_based.saturating_sub(1);
             let absolute_row = self.scroll_region.top.saturating_add(relative_row);
@@ -357,12 +363,12 @@ impl CursorEngine {
             self.cursor.y = 0;
             self.cursor.x = 0;
         }
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
     }
 
     /// Resets `cursor_x`, implementing the carriage-return (`\r`) semantics.
     pub(crate) fn carriage_return(&mut self) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         self.cursor.x = if self.margins.enabled {
             self.margins.left
         } else {
@@ -372,7 +378,7 @@ impl CursorEngine {
 
     /// VT non-destructive backspace: move cursor left, skipping wide-continuation cells.
     pub(crate) fn backspace(&mut self, normal: &NormalBuf) {
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
         if self.cursor.x == 0 {
             return;
         }
@@ -533,7 +539,7 @@ impl CursorEngine {
         } else if self.cursor.y + 1 < normal.rows() {
             self.cursor.y += 1;
         }
-        self.modes.pending_wrap = false;
+        self.clear_pending_wrap();
     }
 
     /// Resolves a DEC rectangle (DECERA, DECSERA, DECFRA, DECCRA, DECCARA, DECRARA).
