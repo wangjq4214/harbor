@@ -952,6 +952,265 @@ fn decrqss_parser_string_cap_overflow_still_fails() {
     assert!(screen.row_text(0).contains("OK"));
 }
 
+// ── XTGETTCAP (DCS + q Pt ST) ──────────────────────────────────────────
+
+fn hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn xtgettcap(names: &[&str]) -> Vec<u8> {
+    let mut request = b"\x1bP+q".to_vec();
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            request.push(b';');
+        }
+        request.extend_from_slice(hex_upper(name.as_bytes()).as_bytes());
+    }
+    request.extend_from_slice(b"\x1b\\");
+    request
+}
+
+const XTGETTCAP_FAILURE_REPLY: &[u8] = b"\x1bP0+r\x1b\\";
+
+fn assert_xtgettcap_round_trip(reply: &[u8], expected_ps: usize, expected_payload: &[u8]) {
+    let mut parser = harbor_parser::Parser::default();
+    let mut recorder = DcsRecorder::default();
+    for &byte in reply {
+        parser.advance(&mut recorder, byte);
+    }
+    assert_eq!(recorder.hook_count, 1);
+    assert_eq!(recorder.unhook_count, 1);
+    assert_eq!(recorder.terminated, Some(true));
+    assert_eq!(recorder.action, Some(b'r'));
+    assert_eq!(recorder.intermediates, b"+");
+    let params = recorder.params.expect("DCS hook params");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params.get(0), Some(expected_ps));
+    assert_eq!(recorder.payload, expected_payload);
+}
+
+#[test]
+fn xtgettcap_reports_supported_string_capabilities() {
+    let reply = replies_for(&xtgettcap(&["TN"]));
+    assert_eq!(reply, b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\");
+    assert_xtgettcap_round_trip(&reply, 1, b"544E=787465726D2D323536636F6C6F72");
+
+    let reply = replies_for(&xtgettcap(&["RGB"]));
+    assert_eq!(reply, b"\x1bP1+r524742=382F382F38\x1b\\");
+    assert_xtgettcap_round_trip(&reply, 1, b"524742=382F382F38");
+}
+
+#[test]
+fn xtgettcap_reports_boolean_capability_by_name_only() {
+    let reply = replies_for(&xtgettcap(&["u8"]));
+    assert_eq!(reply, b"\x1bP1+r7538\x1b\\");
+    assert_xtgettcap_round_trip(&reply, 1, b"7538");
+}
+
+#[test]
+fn xtgettcap_answers_multi_capability_queries_in_order() {
+    let reply = replies_for(&xtgettcap(&["TN", "RGB", "u8"]));
+    assert_eq!(
+        reply,
+        b"\x1bP1+r544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538\x1b\\"
+    );
+    assert_xtgettcap_round_trip(
+        &reply,
+        1,
+        b"544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538",
+    );
+}
+
+#[test]
+fn xtgettcap_empty_or_unknown_query_returns_failure() {
+    for names in [&[][..], &["xx"][..], &["colours"][..]] {
+        let reply = replies_for(&xtgettcap(names));
+        assert_eq!(reply, XTGETTCAP_FAILURE_REPLY);
+        assert_xtgettcap_round_trip(&reply, 0, b"");
+    }
+}
+
+#[test]
+fn xtgettcap_mixed_query_skips_unknown_names() {
+    let reply = replies_for(&xtgettcap(&["xx", "RGB", "yy"]));
+    assert_eq!(reply, b"\x1bP1+r524742=382F382F38\x1b\\");
+    assert_xtgettcap_round_trip(&reply, 1, b"524742=382F382F38");
+}
+
+#[test]
+fn xtgettcap_malformed_hex_is_skipped_without_panic() {
+    // Odd-length segment, non-hex digit, and empty segment from a trailing ';'.
+    let mut request = b"\x1bP+q".to_vec();
+    request.extend_from_slice(b"524;Z4;544E;");
+    request.extend_from_slice(b"\x1b\\");
+    let reply = replies_for(&request);
+    assert_eq!(reply, b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\");
+}
+
+#[test]
+fn xtgettcap_cancellation_produces_no_reply() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1bP+q544E\x18OK");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+    assert!(screen.row_text(0).contains("OK"));
+
+    feed(&mut parser, &mut screen, b"\x1bP+q544E\x1aOK");
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+}
+
+#[test]
+fn xtgettcap_pt_overflow_returns_failure() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let mut oversized = b"\x1bP+q".to_vec();
+    oversized.extend(std::iter::repeat_n(b'5', 257));
+    oversized.extend_from_slice(b"\x1b\\");
+    feed(&mut parser, &mut screen, &oversized);
+    assert_eq!(screen.drain_replies(), XTGETTCAP_FAILURE_REPLY);
+}
+
+#[test]
+fn xtgettcap_chunking_matches_bulk_including_split_st() {
+    let request = xtgettcap(&["TN", "RGB", "u8"]);
+    let expected = b"\x1bP1+r544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538\x1b\\";
+
+    for chunk in [1usize, 2, 3, 7] {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        for part in request.chunks(chunk) {
+            feed(&mut parser, &mut screen, part);
+        }
+        assert_eq!(screen.drain_replies(), expected);
+    }
+
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let split_at = request.len() - 1; // before final '\\'
+    feed(&mut parser, &mut screen, &request[..split_at]);
+    feed(&mut parser, &mut screen, &request[split_at..]);
+    assert_eq!(screen.drain_replies(), expected);
+}
+
+#[test]
+fn xtgettcap_apc_isolation_and_reply_capacity() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    // Cancel an in-flight XTGETTCAP, then run APC — no delayed reply may appear.
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1bP+q544E\x18\x1b_payload\x1b\\",
+    );
+    assert_eq!(screen.drain_replies(), Vec::<u8>::new());
+
+    let reply = b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\";
+    let prefix = vec![b'x'; 1024 - reply.len()];
+    screen.push_reply(&prefix);
+    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+    let replies = screen.drain_replies();
+    assert_eq!(&replies[prefix.len()..], reply.as_slice());
+
+    let prefix = vec![b'x'; 1024 - reply.len() + 1];
+    screen.push_reply(&prefix);
+    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+    assert_eq!(screen.drain_replies(), prefix);
+}
+
+#[test]
+fn xtgettcap_accepts_lowercase_hex_query_names() {
+    // Arrange — TN and RGB requested with lowercase hex digits.
+    let request = b"\x1bP+q544e;524742\x1b\\";
+
+    // Act
+    let reply = replies_for(request);
+
+    // Assert — decoding is case-insensitive; the reply is always uppercase hex.
+    assert_eq!(
+        reply,
+        b"\x1bP1+r544E=787465726D2D323536636F6C6F72;524742=382F382F38\x1b\\"
+    );
+}
+
+#[test]
+fn xtgettcap_sequential_queries_are_independent() {
+    // Arrange — two complete requests back to back in a single stream.
+    let mut stream = xtgettcap(&["TN"]);
+    stream.extend_from_slice(&xtgettcap(&["RGB"]));
+
+    // Act
+    let reply = replies_for(&stream);
+
+    // Assert — two exact frames; the first request's payload must not leak.
+    let tn = b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\";
+    let rgb = b"\x1bP1+r524742=382F382F38\x1b\\";
+    let mut expected = tn.to_vec();
+    expected.extend_from_slice(rgb);
+    assert_eq!(reply, expected);
+}
+
+#[test]
+fn xtgettcap_overflow_failure_does_not_poison_next_request() {
+    // Arrange — a parser that just answered an overflowing request.
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let mut oversized = b"\x1bP+q".to_vec();
+    oversized.extend(std::iter::repeat_n(b'5', 257));
+    oversized.extend_from_slice(b"\x1b\\");
+    feed(&mut parser, &mut screen, &oversized);
+    assert_eq!(screen.drain_replies(), XTGETTCAP_FAILURE_REPLY);
+
+    // Act — a follow-up request on the same parser.
+    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+
+    // Assert — the overflow flag was reset; the reply is a clean success frame.
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\"
+    );
+}
+
+#[test]
+fn xtgettcap_reply_cap_falls_back_when_many_names_are_found() {
+    // Arrange — 7 × TN frames to 244 bytes (under MAX_REPLY), 8 × TN to 278 (over).
+    let fits = xtgettcap(&["TN"; 7]);
+    let exceeds = xtgettcap(&["TN"; 8]);
+
+    // Act
+    let reply = replies_for(&fits);
+    let rejected = replies_for(&exceeds);
+
+    // Assert — the success frame is kept up to the cap; past it, failure.
+    let entry = b"544E=787465726D2D323536636F6C6F72";
+    let mut expected = entry.to_vec();
+    for _ in 1..7 {
+        expected.push(b';');
+        expected.extend_from_slice(entry);
+    }
+    assert_xtgettcap_round_trip(&reply, 1, &expected);
+    assert_eq!(rejected, XTGETTCAP_FAILURE_REPLY);
+    assert_xtgettcap_round_trip(&rejected, 0, b"");
+}
+
+#[test]
+fn xtgettcap_embedded_escape_does_not_start_a_new_dcs() {
+    // Arrange — ESC P appears inside the DCS payload (not a valid ST terminator).
+    let stream = b"\x1bP+q544E\x1bP$qm\x1b\\";
+
+    // Act
+    let reply = replies_for(stream);
+
+    // Assert — the embedded escape bytes become payload; garbled hex yields one
+    // failure frame and no DECRQSS reply.
+    assert_eq!(reply, XTGETTCAP_FAILURE_REPLY);
+}
+
 // ── DECRQM / DECRPM (CSI Ps $ p / CSI Ps ; Ps $ y) ─────────────────────
 
 #[test]

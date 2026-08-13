@@ -4,6 +4,7 @@ mod device_attributes;
 mod handlers;
 mod mode_query;
 mod status_strings;
+mod xtgettcap;
 
 #[cfg(test)]
 mod incremental_tests;
@@ -15,6 +16,7 @@ use handlers::ScreenHandler;
 use harbor_parser::Parser;
 use harbor_types::AltScreenAction;
 use status_strings::DecrqssRequest;
+use xtgettcap::XtgettcapRequest;
 
 /// Streaming terminal parser.
 ///
@@ -24,6 +26,7 @@ use status_strings::DecrqssRequest;
 pub struct TerminalParser {
     inner: Parser,
     decrqss: DecrqssRequest,
+    xtgettcap: XtgettcapRequest,
 }
 
 /// Result of feeding bytes through the parser.
@@ -46,6 +49,7 @@ impl TerminalParser {
                 let mut handler = ScreenHandler {
                     screen,
                     decrqss: &mut self.decrqss,
+                    xtgettcap: &mut self.xtgettcap,
                 };
                 self.inner.advance(&mut handler, byte);
             }
