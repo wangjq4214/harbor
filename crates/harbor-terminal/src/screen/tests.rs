@@ -2118,6 +2118,188 @@ fn insert_mode_write_on_continuation_preserves_shifted_glyph() {
 }
 
 #[test]
+fn irm_no_margins_insert_shifts_cells_right() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 2;
+    screen.cursor.modes.pending_wrap = false;
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abXcde");
+    assert_eq!(screen.cursor.cursor.x, 3);
+}
+
+#[test]
+fn irm_off_overwrites_without_shift() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 2;
+    screen.cursor.modes.pending_wrap = false;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abXdef");
+    assert_eq!(screen.cursor.cursor.x, 3);
+}
+
+#[test]
+fn irm_insert_within_margins_preserves_exteriors() {
+    let mut screen = Screen::new(1, 8);
+    for ch in "abcdefgh".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.margins.enabled = true;
+    screen.cursor.margins.left = 2;
+    screen.cursor.margins.right = 5;
+    screen.cursor.cursor.x = 2;
+    screen.cursor.modes.pending_wrap = false;
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abXcdegh");
+    assert_eq!(screen.cursor.cursor.x, 3);
+}
+
+#[test]
+fn irm_insert_at_right_margin_discards_trailing_cell() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.margins.enabled = true;
+    screen.cursor.margins.left = 1;
+    screen.cursor.margins.right = 4;
+    screen.cursor.cursor.x = 4;
+    screen.cursor.modes.pending_wrap = false;
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abcdXf");
+    assert_eq!(screen.cursor.cursor.x, 4);
+    assert!(screen.cursor.modes.pending_wrap);
+}
+
+#[test]
+fn irm_wide_insert_shifts_and_preserves_pairing() {
+    let mut screen = Screen::new(1, 8);
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 2;
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('中');
+
+    assert_eq!(screen.cell(0, 2).ch, '中');
+    assert!(screen.cell(0, 3).wide_continuation);
+    assert_eq!(screen.cell(0, 4).ch, 'c');
+    assert_eq!(screen.cell(0, 5).ch, 'd');
+    assert_eq!(screen.cursor.cursor.x, 4);
+    assert_wide_cell_invariant(&screen);
+}
+
+#[test]
+fn irm_insert_at_wide_base_shifts_whole_glyph() {
+    let mut screen = Screen::new(1, 8);
+    screen.write_char('a');
+    screen.write_char('b');
+    screen.write_char('中');
+    screen.write_char('c');
+    screen.cursor.modes.insert = true;
+    screen.cursor.cursor.x = 2;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.cell(0, 2).ch, 'X');
+    assert_eq!(screen.cell(0, 3).ch, '中');
+    assert!(screen.cell(0, 4).wide_continuation);
+    assert_eq!(screen.cell(0, 5).ch, 'c');
+    assert_eq!(screen.cursor.cursor.x, 3);
+    assert_wide_cell_invariant(&screen);
+}
+
+#[test]
+fn irm_with_pending_wrap_wraps_before_inserting() {
+    let mut screen = Screen::new(2, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.cursor.modes.pending_wrap);
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abcdef");
+    assert_eq!(screen.cell(1, 0).ch, 'X');
+    assert_eq!(screen.cursor.cursor.y, 1);
+    assert_eq!(screen.cursor.cursor.x, 1);
+}
+
+#[test]
+fn irm_with_autowrap_off_at_right_margin_overwrites() {
+    let mut screen = Screen::new(1, 6);
+    screen.cursor.modes.autowrap = false;
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 5;
+    screen.cursor.modes.insert = true;
+
+    screen.write_char('X');
+
+    assert_eq!(screen.row_text(0), "abcdeX");
+    assert_eq!(screen.cursor.cursor.x, 5);
+    assert!(!screen.cursor.modes.pending_wrap);
+}
+
+#[test]
+fn irm_wide_char_at_right_margin_wraps_to_next_line() {
+    let mut screen = Screen::new(2, 6);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.modes.insert = true;
+    assert_eq!(screen.cursor.cursor.x, 5);
+    assert!(!screen.cursor.modes.pending_wrap);
+
+    screen.write_char('中');
+
+    assert_eq!(screen.row_text(0), "abcde ");
+    assert_eq!(screen.cell(1, 0).ch, '中');
+    assert!(screen.cell(1, 1).wide_continuation);
+    assert_eq!(screen.cursor.cursor.y, 1);
+    assert_eq!(screen.cursor.cursor.x, 2);
+    assert!(screen.is_wrapped(1));
+    assert_wide_cell_invariant(&screen);
+}
+
+#[test]
+fn irm_wide_char_at_right_margin_discarded_with_autowrap_off() {
+    let mut screen = Screen::new(1, 6);
+    screen.cursor.modes.autowrap = false;
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.modes.insert = true;
+    let before = screen_cells(&screen);
+
+    screen.write_char('中');
+
+    assert_eq!(screen_cells(&screen), before);
+    assert_eq!(screen.cursor.cursor.x, 5);
+    assert!(!screen.cursor.modes.pending_wrap);
+    assert_wide_cell_invariant(&screen);
+}
+
+#[test]
 fn write_outside_horizontal_margins_does_not_mutate_cells() {
     let mut screen = Screen::new(1, 6);
     screen.cursor.margins.enabled = true;

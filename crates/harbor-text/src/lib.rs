@@ -7,6 +7,7 @@ pub mod atlas;
 pub mod backend;
 pub mod contracts;
 pub mod font;
+mod lifecycle;
 pub mod metrics;
 
 pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, RasterizeResult};
