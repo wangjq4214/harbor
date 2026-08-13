@@ -319,6 +319,7 @@ Project domain concepts and terminology.
 - **Relationships:**
   - uses Wide Cell Normalization
   - produces Damage Tracking updates
+  - references Pending-Wrap
 
 ### Wide Cell Invariant
 - **Definition:** A screen-row consistency rule requiring every continuation cell to have its corresponding wide-glyph base and every wide-glyph base to have an adjacent continuation cell within the row boundary.
@@ -362,6 +363,9 @@ Project domain concepts and terminology.
   - controlled by Autowrap (DECAWM)
   - stored in Cursor
   - set by Print Path
+  - references Soft-Wrap Marker
+  - references Screen Resize
+  - references Screen Editing Operation
 
 ### IRM (Insert Mode)
 - **Definition:** The ANSI standard mode 4 (`CSI 4 h/l`) that makes a printable character insert a cell at the cursor and shift the remaining cells of the active horizontal area right before writing, instead of overwriting the cell under the cursor.
@@ -388,12 +392,21 @@ Project domain concepts and terminology.
   - set by Print Path
   - consumed by Reflow
   - distinguishes a wrapped row from an explicit newline
+  - references Pending-Wrap
 
 ### Logical Line
 - **Definition:** The sequence of one or more physical rows forming a single application-written line, joined by soft-wrap markers and ended by an explicit newline.
 - **Synonyms:** wrapped line
 - **Relationships:**
   - contains Soft-Wrap Marker
+
+### Screen Resize
+- **Definition:** A change to the terminal grid size that copies existing rows in place without reflow.
+- **Synonyms:** resize
+- **Relationships:**
+  - references Soft-Wrap Marker
+  - references Pending-Wrap
+  - references Reflow
 
 ### Reflow
 - **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions instead of leaving rows at their pre-resize layout.

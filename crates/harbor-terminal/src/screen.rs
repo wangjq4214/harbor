@@ -142,6 +142,11 @@ impl Screen {
         self.cursor.cursor_y(&self.normal)
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_wrap(&self) -> bool {
+        self.cursor.modes.pending_wrap
+    }
+
     pub fn cursor_shape(&self) -> CursorShape {
         self.cursor.cursor_shape()
     }
@@ -715,7 +720,7 @@ impl Screen {
     // ── horizontal_tab (coordinator) ───────────────────────────────────
 
     pub fn horizontal_tab(&mut self) {
-        self.cursor.modes.pending_wrap = false;
+        self.cursor.clear_pending_wrap();
         let right_limit = if self.cursor.margins.enabled {
             self.cursor.margins.right
         } else {
@@ -740,6 +745,7 @@ impl Screen {
                 CellWriter::write_char(pen_state, normal, cursor, ' ');
             }
         }
+        self.cursor.clear_pending_wrap();
     }
 
     // ── repeat_char (coordinator) ──────────────────────────────────────
@@ -775,6 +781,7 @@ impl Screen {
     }
 
     pub fn index(&mut self) {
+        self.cursor.clear_pending_wrap();
         let before = self.cursor.cursor.y;
         let scrolled = self.cursor.index_needs_scroll();
         if scrolled {
@@ -793,6 +800,7 @@ impl Screen {
     // ── reverse_index (coordinator) ────────────────────────────────────
 
     pub fn reverse_index(&mut self) {
+        self.cursor.clear_pending_wrap();
         tracing::debug!(
             cursor_y = self.cursor.cursor.y,
             scroll_top = self.cursor.scroll_region.top,

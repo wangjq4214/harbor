@@ -110,7 +110,7 @@ No arbitrary-byte input panics, stalls indefinitely, or grows parser memory beyo
 ### Remaining work
 
 - Wide cells are normalized across erase, insert, delete, line, scroll, and rectangle operations; retain regression coverage for margins, protection, overlap, and damage tracking.
-- Complete pending-wrap tests across cursor movement, controls, erase, resize, and reset.
+- Delivered issue #88 pending-wrap coverage across cursor movement, controls, erase, resize, reset, soft-wrap metadata, and parser chunk equivalence; verified with `cargo test --workspace`.
 - Verify insert mode, horizontal margins, tabs, protection, alternate-screen isolation, RIS, and DECSTR as complete state transitions.
 
 ### Exit gate
