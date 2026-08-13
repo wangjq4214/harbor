@@ -348,6 +348,58 @@ Project domain concepts and terminology.
   - stored in CustomPaint
   - key in Runtime handler map
 
+### Autowrap (DECAWM)
+- **Definition:** The terminal mode (DEC private mode ?7) that, when enabled, causes a printable character written at the right margin to wrap the cursor to the first column of the next line.
+- **Synonyms:** DECAWM, auto-wrap, autowrap mode
+- **Relationships:**
+  - belongs to Terminal Modes
+  - controls Pending-Wrap
+
+### Pending-Wrap
+- **Definition:** A cursor-state flag set when the cursor reaches the right margin with autowrap enabled, so that the next printable character first moves to the next line before printing.
+- **Synonyms:** pending-wrap state, wrap pending
+- **Relationships:**
+  - controlled by Autowrap (DECAWM)
+  - stored in Cursor
+  - set by Print Path
+
+### Soft-Wrap Marker
+- **Definition:** Per-row metadata on a screen or scrollback row marking it as the continuation of a logical line that wrapped at the right margin rather than ending with an explicit newline.
+- **Synonyms:** soft-wrap metadata, wrapped flag, continuation row
+- **Relationships:**
+  - belongs to Screen state
+  - set by Print Path
+  - consumed by Reflow
+  - distinguishes a wrapped row from an explicit newline
+
+### Logical Line
+- **Definition:** The sequence of one or more physical rows forming a single application-written line, joined by soft-wrap markers and ended by an explicit newline.
+- **Synonyms:** wrapped line
+- **Relationships:**
+  - contains Soft-Wrap Marker
+
+### Reflow
+- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions instead of leaving rows at their pre-resize layout.
+- **Synonyms:** reflow on resize, resize reflow
+- **Relationships:**
+  - consumes Soft-Wrap Marker
+  - belongs to Screen Resize
+
+### RIS
+- **Definition:** The "Reset to Initial State" control sequence (`ESC c`) that performs a hard reset, clearing the screen and resetting cursor, modes, margins, scroll region, pen state, and tab stops.
+- **Synonyms:** hard reset, full reset
+- **Relationships:**
+  - belongs to Reset Paths
+  - resets Pending-Wrap
+  - clears Soft-Wrap Marker
+
+### DECSTR
+- **Definition:** The "Soft Terminal Reset" control sequence (`CSI ! p`) that resets terminal modes and pen state while leaving screen content intact.
+- **Synonyms:** soft reset
+- **Relationships:**
+  - belongs to Reset Paths
+  - resets Pending-Wrap
+
 ## Parser Domain
 
 ### harbor-parser

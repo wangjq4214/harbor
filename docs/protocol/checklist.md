@@ -537,7 +537,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Writing to the last column enters pending wrap
 * [x] Does not unconditionally wrap immediately when writing to the last column
 * [x] The next printable character triggers the actual line wrap
-* [ ] Soft-wrapped lines are correctly marked
+* [x] Soft-wrapped lines are correctly marked
 * [x] CR clears pending wrap
 * [x] BS clears or correctly handles pending wrap
 * [x] CUP/HVP clears pending wrap
@@ -1403,7 +1403,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] SGR
 * [x] CR/LF/BS/HT
 * [x] DECSTBM
-* [ ] DECAWM
+* [x] DECAWM
 * [x] DECSC/DECRC
 * [ ] DSR
 * [ ] DA1

@@ -32,6 +32,29 @@ pub struct NormalBuf {
     /// Monotonically increasing scrollback generation base.
     /// Incremented when ring-buffer wraparound evicts old rows.
     history_start: u64,
+    /// Per-ring-row soft-wrap flags, parallel to `cells`. `true` means this row
+    /// is a continuation of the logical line from the row above.
+    wrapped: Vec<bool>,
+}
+
+/// Copies a linear slice range with ring-buffer wraparound handling.
+///
+/// When `src_start <= src_end` the range is contiguous; otherwise it is split
+/// into two parts `[src_start, ring_end)` and `[0, src_end)`, copied in order.
+fn copy_ring_slice<T: Copy>(
+    slice: &mut [T],
+    src_start: usize,
+    src_end: usize,
+    dst: usize,
+    ring_end: usize,
+) {
+    if src_start <= src_end {
+        slice.copy_within(src_start..src_end, dst);
+    } else {
+        let first_len = ring_end - src_start;
+        slice.copy_within(src_start..ring_end, dst);
+        slice.copy_within(0..src_end, dst + first_len);
+    }
 }
 
 impl NormalBuf {
@@ -50,6 +73,7 @@ impl NormalBuf {
         Self {
             total_rows,
             cells: vec![Cell::default(); cell_count],
+            wrapped: vec![false; total_rows],
             visible_rows: rows,
             cols,
             visible_start: max_scrollback,
@@ -176,13 +200,7 @@ impl NormalBuf {
     /// `[0, src_end)`, and both are copied in order.
     pub(crate) fn copy_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
         let ring_end = self.total_rows * self.cols;
-        if src_start <= src_end {
-            self.cells.copy_within(src_start..src_end, dst);
-        } else {
-            let first_len = ring_end - src_start;
-            self.cells.copy_within(src_start..ring_end, dst);
-            self.cells.copy_within(0..src_end, dst + first_len);
-        }
+        copy_ring_slice(&mut self.cells[..], src_start, src_end, dst, ring_end);
     }
 
     /// Returns the text content of a display row as a string.
@@ -301,6 +319,28 @@ impl NormalBuf {
         Some(&self.cells[ring_row * self.cols + col])
     }
 
+    /// Returns whether the given display row is a soft-wrapped continuation
+    /// of the logical line from the row above.
+    pub fn is_wrapped(&self, display_row: usize) -> bool {
+        debug_assert!(display_row < self.visible_rows);
+        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
+        self.wrapped[(top + display_row) % self.total_rows]
+    }
+
+    /// Sets the soft-wrap flag for a live display row.
+    pub(crate) fn set_wrapped(&mut self, display_row: usize, wrapped: bool) {
+        debug_assert!(display_row < self.visible_rows);
+        let ring_row = self.display_to_ring(display_row);
+        self.wrapped[ring_row] = wrapped;
+    }
+
+    /// Copies soft-wrap flags for a row range, mirroring `copy_ring_range`
+    /// but operating on ring-row indices and handling ring-buffer wraparound.
+    pub(crate) fn copy_wrapped_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
+        let ring_end = self.total_rows;
+        copy_ring_slice(&mut self.wrapped[..], src_start, src_end, dst, ring_end);
+    }
+
     // ── viewport scroll (user scrolling through history) ────────────
 
     /// Scroll the viewport up by `n` rows (toward older history).
@@ -345,6 +385,7 @@ impl NormalBuf {
         for i in 0..n {
             let row = (self.visible_start + self.visible_rows - 1 - i) % self.total_rows;
             self.cells[row * self.cols..(row + 1) * self.cols].fill(cell);
+            self.wrapped[row] = false;
         }
         if self.view_offset > 0 {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
@@ -401,7 +442,9 @@ impl NormalBuf {
             .checked_mul(cols)
             .expect("terminal cell count overflow");
         let old_cells = std::mem::take(&mut self.cells);
+        let old_wrapped = std::mem::take(&mut self.wrapped);
         let mut new_cells = vec![Cell::default(); new_cell_count];
+        let mut new_wrapped = vec![false; new_total];
 
         // Copy the retained history in generation order immediately before the live viewport.
         for history_index in 0..keep_history {
@@ -413,6 +456,7 @@ impl NormalBuf {
             let new_start = new_ring_row * cols;
             new_cells[new_start..new_start + copied_cols]
                 .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
+            new_wrapped[new_ring_row] = old_wrapped[old_ring_row];
         }
 
         // Preserve the top-left rectangle of the live viewport; newly exposed rows are blank.
@@ -425,10 +469,12 @@ impl NormalBuf {
             let new_start = new_ring_row * cols;
             new_cells[new_start..new_start + copied_cols]
                 .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
+            new_wrapped[new_ring_row] = old_wrapped[old_ring_row];
         }
 
         self.total_rows = new_total;
         self.cells = new_cells;
+        self.wrapped = new_wrapped;
         self.visible_rows = rows;
         self.cols = cols;
         self.visible_start = self.max_scrollback;
@@ -469,6 +515,7 @@ impl NormalBuf {
 
         let start = ring_row * self.cols;
         self.cells[start..start + self.cols].fill(cell);
+        self.wrapped[ring_row] = false;
     }
 
     /// Fill every visible row with default cells.
@@ -734,5 +781,82 @@ mod tests {
             buf.cell_at_generation(max_gen as u64, 0).is_none(),
             "gen past end should be None"
         );
+    }
+
+    // ── per-row soft-wrap flags ───────────────────────────────────
+
+    #[test]
+    fn should_roundtrip_wrapped_flag_through_set_and_get() {
+        // Arrange
+        let mut buf = NormalBuf::new(3, 4);
+        // Act
+        buf.set_wrapped(1, true);
+        // Assert
+        assert!(!buf.is_wrapped(0), "unset rows default to unwrapped");
+        assert!(buf.is_wrapped(1), "set_wrapped must persist the flag");
+        assert!(!buf.is_wrapped(2), "unset rows default to unwrapped");
+        buf.set_wrapped(1, false);
+        assert!(!buf.is_wrapped(1), "set_wrapped(false) must clear the flag");
+    }
+
+    #[test]
+    fn should_clear_wrapped_flag_when_fill_row_with() {
+        // Arrange
+        let mut buf = NormalBuf::new(2, 3);
+        buf.set_wrapped(0, true);
+        buf.set_wrapped(1, true);
+        // Act
+        buf.fill_row_with(0, Cell::default());
+        // Assert
+        assert!(!buf.is_wrapped(0), "filled row must clear its wrap flag");
+        assert!(buf.is_wrapped(1), "untouched row must keep its wrap flag");
+    }
+
+    #[test]
+    fn should_preserve_wrapped_flags_on_surviving_rows_and_blank_new_rows_when_resize() {
+        // Arrange
+        let mut buf = NormalBuf::new(2, 3);
+        buf.set_wrapped(0, true);
+        buf.set_wrapped(1, true);
+        // Act
+        buf.resize(4, 5);
+        // Assert
+        assert!(buf.is_wrapped(0), "surviving row 0 keeps its flag");
+        assert!(buf.is_wrapped(1), "surviving row 1 keeps its flag");
+        assert!(!buf.is_wrapped(2), "newly exposed row 2 is unwrapped");
+        assert!(!buf.is_wrapped(3), "newly exposed row 3 is unwrapped");
+    }
+
+    #[test]
+    fn should_clear_wrapped_flags_on_blanked_rows_when_scroll_up_full_screen() {
+        // Arrange
+        let mut buf = NormalBuf::new(2, 3);
+        buf.set_wrapped(0, true);
+        buf.set_wrapped(1, true);
+        // Act
+        buf.scroll_up_full_screen(1, Cell::default());
+        // Assert: ring advanced — old row 1 is now display row 0 (flag kept),
+        // the newly blanked bottom row is unwrapped.
+        assert!(buf.is_wrapped(0), "scrolled-up row keeps its flag");
+        assert!(!buf.is_wrapped(1), "blanked bottom row is unwrapped");
+    }
+
+    #[test]
+    fn should_handle_ring_wraparound_when_copy_wrapped_ring_range() {
+        // Arrange — mark ring rows on both sides of the wraparound boundary.
+        let mut buf = NormalBuf::new(2, 3);
+        let total = buf.total_rows();
+        buf.wrapped[total - 2] = true;
+        buf.wrapped[total - 1] = true;
+        buf.wrapped[0] = true;
+        buf.wrapped[1] = true;
+        // Act — copy [total-2, total) then [0, 2) into dst = 2.
+        buf.copy_wrapped_ring_range(total - 2, 2, 2);
+        // Assert — the two segments land contiguously at dst.
+        assert!(buf.wrapped[2]);
+        assert!(buf.wrapped[3]);
+        assert!(buf.wrapped[4]);
+        assert!(buf.wrapped[5]);
+        assert!(!buf.wrapped[6], "no write beyond the destination range");
     }
 }

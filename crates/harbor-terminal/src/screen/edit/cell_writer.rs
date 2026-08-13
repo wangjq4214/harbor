@@ -101,6 +101,7 @@ impl CellWriter {
             cursor.carriage_return();
             Self::newline_inner(pen_state, normal, cursor);
             cursor.modes.pending_wrap = false;
+            normal.set_wrapped(cursor.cursor.y, true);
         }
 
         // Ignore writes outside active horizontal bounds.
@@ -119,6 +120,7 @@ impl CellWriter {
             cursor.carriage_return();
             Self::newline_inner(pen_state, normal, cursor);
             cursor.modes.pending_wrap = false;
+            normal.set_wrapped(cursor.cursor.y, true);
         }
 
         let start_x = cursor.cursor.x;

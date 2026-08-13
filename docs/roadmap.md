@@ -103,10 +103,13 @@ No arbitrary-byte input panics, stalls indefinitely, or grows parser memory beyo
 
 **Goal:** make state mutations correct before adding more dispatch cases.
 
+### Delivered foundation
+
+- Soft-wrap metadata is stored per row and carried through print, newline, scroll, resize, and reset; resize is documented non-reflow (ADR-0018), RIS clears markers while DECSTR preserves them.
+
 ### Remaining work
 
 - Wide cells are normalized across erase, insert, delete, line, scroll, and rectangle operations; retain regression coverage for margins, protection, overlap, and damage tracking.
-- Add soft-wrap metadata and define reset/resize behavior.
 - Complete pending-wrap tests across cursor movement, controls, erase, resize, and reset.
 - Verify insert mode, horizontal margins, tabs, protection, alternate-screen isolation, RIS, and DECSTR as complete state transitions.
 
