@@ -385,6 +385,7 @@ Project domain concepts and terminology.
   - communicates with DSR
   - communicates with CPR
   - communicates with DECRQSS
+  - communicates with XTGETTCAP
 
 ### DECRQSS
 - **Definition:** A VT status-query protocol that Harbor accepts as 7-bit `DCS $ q Pt ST` and answers through TerminalReply for SGR, DECSTBM, DECSLRM, DECSCUSR, and DECSCA state.
@@ -392,6 +393,18 @@ Project domain concepts and terminology.
 - **Relationships:**
   - depends on TerminalReply
   - references Screen state
+
+### XTGETTCAP
+- **Definition:** A VT terminfo-capability query where an application sends `DCS + q Pt ST` with `Pt` as semicolon-separated hex-encoded capability names, and Harbor replies `DCS 1 + r Pt ST` listing `name=value` pairs for its registry-backed capabilities (`TN` = `xterm-256color`, `RGB` = `8/8/8`, `u8` = UTF-8 boolean) or `DCS 0 + r ST` when none match.
+- **Synonyms:** Terminal Capability Query, tcap query
+- **Relationships:**
+  - depends on TerminalReply
+  - references Terminfo Capability Declaration
+
+### Terminfo Capability Declaration
+- **Definition:** The private compile-time list in `harbor-terminal::parser::xtgettcap` mapping supported terminfo capability names (`TN`, `RGB`, `u8`) to their XTGETTCAP reply values.
+- **Relationships:**
+  - referenced by XTGETTCAP
 
 ### CPR
 - **Definition:** A VT control sequence reply containing the current line and column coordinates of the terminal cursor.

@@ -1049,14 +1049,14 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 25.3 XTGETTCAP
 
-* [ ] `DCS + q ... ST`
-* [ ] Can parse hex-encoded capability names
-* [ ] Can query multiple capabilities
-* [ ] Success response `DCS 1 + r ... ST`
-* [ ] Failure response `DCS 0 + r ... ST`
-* [ ] Return values use correct hex encoding
-* [ ] Does not declare actually unsupported capabilities
-* [ ] Request length is limited
+* [x] `DCS + q ... ST`
+* [x] Can parse hex-encoded capability names
+* [x] Can query multiple capabilities
+* [x] Success response `DCS 1 + r ... ST`
+* [x] Failure response `DCS 0 + r ... ST`
+* [x] Return values use correct hex encoding
+* [x] Does not declare actually unsupported capabilities
+* [x] Request length is limited
 
 ### 25.4 Sixel
 
@@ -1437,7 +1437,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 37.3 tmux Compatibility
 
-* [ ] XTGETTCAP
+* [x] XTGETTCAP (evidence: Harbor answers `DCS + q` per §25.3; tmux itself does not emit XTGETTCAP, and the tmux passthrough wrapper is not implemented)
 * [ ] DECRQSS
 * [ ] DECRQM
 * [ ] DA1
