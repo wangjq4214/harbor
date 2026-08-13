@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "harbor-parser-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.9"
+harbor-parser = { path = "../crates/harbor-parser" }
+
+[[bin]]
+name = "parser"
+path = "fuzz_targets/parser.rs"
+test = false
+doc = false
+bench = false

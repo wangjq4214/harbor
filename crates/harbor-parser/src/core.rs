@@ -3,6 +3,9 @@
 use crate::params::{CsiAccumulator, MAX_OSC_BYTES, MAX_STRING_BYTES, Utf8State};
 use crate::perform::VtHandler;
 
+#[cfg(test)]
+mod property_tests;
+
 /// High-level ANSI/VT parser states for incremental parsing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum State {
@@ -84,6 +87,14 @@ impl Parser {
             State::SosPmApcString => self.sos_pm_apc_string(handler, byte),
             State::SosPmApcEscape => self.sos_pm_apc_escape(handler, byte),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_state_within_limits(&self) -> bool {
+        self.osc.len() <= MAX_OSC_BYTES
+            && self.string_len <= MAX_STRING_BYTES
+            && self.utf8.len <= self.utf8.bytes.len()
+            && self.csi.retained_state_within_limits()
     }
 
     /// Configure whether 8-bit C1 sequences are recognized.

@@ -81,10 +81,18 @@ Windows CI enforces the standard gates in [`validation.md`](validation.md), pars
 - Fixed parameter, intermediate, and string limits.
 - Discard states that continue scanning for cancellation or termination.
 
+### Configured arbitrary-input evidence (runtime pending)
+
+- Stable property tests cover panic freedom, progress, and parser-retained bounds for arbitrary bytes under both C1 modes.
+- `harbor-terminal` property tests compare one-shot and independently chunked `TerminalParser::put_bytes` ingestion, including `PutResult` consumed-prefix and alternate-screen behavior.
+- The standalone cargo-fuzz harness and representative CSI, UTF-8, cancellation, nested-escape, and over-limit string-family corpus are checked in and configured.
+- Linux CI runtime replay and bounded campaign evidence are pending; Windows configuration is not represented as a fuzz pass.
+- The parser-only memory contract is explicit: fixed CSI/UTF-8/OSC/string retention is bounded, while the fuzz sink retains no callbacks.
+
 ### Remaining work
 
-- Add fuzz/property tests for panic, progress, and allocation bounds.
-- Complete over-limit, cancellation, nested-escape, and recovery evidence for every string family.
+- Record Linux CI cargo-fuzz runtime replay/campaign evidence before marking arbitrary-input checklist claims complete.
+- Issue #96: complete the full string-family by terminator/canceller matrix and its focused deterministic regressions.
 - Keep unsupported but syntactically valid sequences consume-only and non-visible.
 
 ### Exit gate

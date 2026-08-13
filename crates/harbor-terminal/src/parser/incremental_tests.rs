@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::Terminal;
-use crate::screen::Screen;
+use crate::screen::{AltScreenAction, Screen};
 use harbor_parser::{Params, Parser, VtHandler};
+use proptest::prelude::*;
+use proptest::test_runner::{Config, RngSeed};
 
 #[derive(Default)]
 struct CsiRecorder {
@@ -56,6 +58,8 @@ struct ScreenSnap {
     cursor_y: usize,
     rows: Vec<String>,
     replies: Vec<u8>,
+    is_alt: bool,
+    scroll_count: usize,
 }
 
 fn snap(screen: &mut Screen) -> ScreenSnap {
@@ -66,6 +70,8 @@ fn snap(screen: &mut Screen) -> ScreenSnap {
         cursor_y: screen.cursor_y(),
         rows,
         replies,
+        is_alt: screen.is_alt(),
+        scroll_count: screen.scroll_count(),
     }
 }
 
@@ -76,9 +82,15 @@ fn feed_all(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8]) {
     while !remaining.is_empty() {
         let result = parser.put_bytes(screen, remaining);
         remaining = &remaining[result.consumed..];
-        if result.alt_request.is_some() {
-            // Tests that don't switch screens just drop the request after take.
+        if let Some(action) = result.alt_request {
+            // Mirror TerminalIo: consume the pending request, then apply the action before
+            // feeding the unconsumed suffix. This makes alternate-screen behavior part of the
+            // one-shot/chunked comparison rather than dropping the boundary event.
             let _ = screen.take_alt_request();
+            match action {
+                AltScreenAction::Enter => screen.enter_alt(),
+                AltScreenAction::Exit => screen.exit_alt(),
+            }
         }
     }
 }
@@ -91,6 +103,25 @@ fn feed_chunks(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8], ch
         let end = (i + chunk).min(data.len());
         feed_all(parser, screen, &data[i..end]);
         i = end;
+    }
+}
+
+/// Feed bytes through independently-sized `put_bytes` calls. Unlike the parser-core tests, this
+/// exercises the actual slice-ingestion boundary and its consumed-prefix contract.
+fn feed_scheduled(
+    parser: &mut TerminalParser,
+    screen: &mut Screen,
+    data: &[u8],
+    schedule: &[usize],
+) {
+    let mut offset = 0;
+    let mut schedule_index = 0;
+    while offset < data.len() {
+        let requested = schedule.get(schedule_index).copied().unwrap_or(1).max(1);
+        let end = (offset + requested).min(data.len());
+        feed_all(parser, screen, &data[offset..end]);
+        offset = end;
+        schedule_index += 1;
     }
 }
 
@@ -108,6 +139,13 @@ fn run_chunked(rows: usize, cols: usize, data: &[u8], chunk: usize) -> ScreenSna
     snap(&mut screen)
 }
 
+fn run_scheduled(rows: usize, cols: usize, data: &[u8], schedule: &[usize]) -> ScreenSnap {
+    let mut screen = Screen::new(rows, cols);
+    let mut parser = TerminalParser::default();
+    feed_scheduled(&mut parser, &mut screen, data, schedule);
+    snap(&mut screen)
+}
+
 fn assert_chunk_equiv(rows: usize, cols: usize, data: &[u8]) {
     let bulk = run_bulk(rows, cols, data);
     for chunk in [1usize, 2, 3, 7] {
@@ -116,6 +154,26 @@ fn assert_chunk_equiv(rows: usize, cols: usize, data: &[u8]) {
             bulk, chunked,
             "chunk size {chunk} diverged from bulk for {data:?}"
         );
+    }
+}
+
+proptest! {
+    #![proptest_config(Config {
+        cases: 128,
+        rng_seed: RngSeed::Fixed(0x0072_0220_0000_0072),
+        ..Config::default()
+    })]
+
+    #[test]
+    fn arbitrary_put_bytes_chunking_matches_one_shot(
+        data in prop::collection::vec(any::<u8>(), 0..=2048),
+        schedule in prop::collection::vec(1usize..=16, 0..=256),
+    ) {
+        // The one-shot path invokes put_bytes once; the scheduled path invokes it through
+        // independently-sized slices and handles PutResult::consumed/alt_request at each call.
+        let one_shot = run_bulk(8, 40, &data);
+        let chunked = run_scheduled(8, 40, &data, &schedule);
+        prop_assert_eq!(one_shot, chunked);
     }
 }
 
@@ -171,6 +229,41 @@ fn chunk_equiv_utf8_multibyte() {
 fn chunk_equiv_mixed_stream() {
     let data = b"ab\x1b[2;2Hcd\x1b]0;t\x07ef\x1b[1Axy";
     assert_chunk_equiv(10, 40, data);
+}
+
+#[test]
+fn chunk_equiv_alt_screen_switch_consumes_and_replays_suffix() {
+    let data = b"before\x1b[?1049hafter\x1b[?1049lrest";
+    assert_chunk_equiv(5, 40, data);
+}
+
+#[test]
+fn put_result_reports_alt_boundary_before_suffix_and_consumes_request() {
+    // Arrange
+    let mut screen = Screen::new(3, 20);
+    let mut parser = TerminalParser::default();
+    let data = b"before\x1b[?1049hafter";
+    let switch_len = b"before\x1b[?1049h".len();
+
+    // Act
+    let result = parser.put_bytes(&mut screen, data);
+
+    // Assert
+    assert_eq!(result.consumed, switch_len);
+    assert_eq!(result.alt_request, Some(AltScreenAction::Enter));
+    assert_eq!(screen.row_text(0).trim(), "before");
+    assert_eq!(screen.alt_request(), None);
+
+    // Arrange — apply the request before replaying the unconsumed suffix.
+    screen.enter_alt();
+
+    // Act
+    let suffix_result = parser.put_bytes(&mut screen, &data[result.consumed..]);
+
+    // Assert
+    assert_eq!(suffix_result.consumed, data.len() - switch_len);
+    assert_eq!(suffix_result.alt_request, None);
+    assert_eq!(screen.row_text(0).trim(), "after");
 }
 
 #[test]

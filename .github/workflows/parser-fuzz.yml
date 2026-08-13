@@ -1,0 +1,87 @@
+name: Parser fuzz evidence
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/harbor-parser/**"
+      - "crates/harbor-terminal/**"
+      - "fuzz/**"
+      - ".github/workflows/parser-fuzz.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/harbor-parser/**"
+      - "crates/harbor-terminal/**"
+      - "fuzz/**"
+      - ".github/workflows/parser-fuzz.yml"
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus-replay:
+    name: Replay parser corpus
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned nightly Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2025-02-01
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.12.0 --locked
+
+      - name: Replay checked-in corpus
+        working-directory: fuzz
+        run: cargo +nightly fuzz run parser -- -runs=0 -max_len=16384
+
+      - name: Upload parser fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-fuzz-artifacts
+          path: fuzz/artifacts/parser/
+          if-no-files-found: ignore
+
+  scheduled-campaign:
+    name: Scheduled parser fuzz campaign
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned nightly Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2025-02-01
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.12.0 --locked
+
+      - name: Run bounded parser fuzz campaign
+        working-directory: fuzz
+        run: cargo +nightly fuzz run parser -- -max_total_time=600 -timeout=5 -max_len=16384
+
+      - name: Upload parser fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-fuzz-artifacts
+          path: fuzz/artifacts/parser/
+          if-no-files-found: ignore
