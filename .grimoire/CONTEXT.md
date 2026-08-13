@@ -363,6 +363,23 @@ Project domain concepts and terminology.
   - stored in Cursor
   - set by Print Path
 
+### IRM (Insert Mode)
+- **Definition:** The ANSI standard mode 4 (`CSI 4 h/l`) that makes a printable character insert a cell at the cursor and shift the remaining cells of the active horizontal area right before writing, instead of overwriting the cell under the cursor.
+- **Synonyms:** Insert-Replace Mode, insert mode, IRM
+- **Relationships:**
+  - belongs to Terminal Modes
+  - uses Wide Cell Normalization
+  - constrains Screen Editing Operation
+  - bounded by Horizontal Margins (DECLRMM)
+
+### Horizontal Margins (DECLRMM)
+- **Definition:** The inclusive left/right column boundaries set by DECSLRM (`CSI Pl;Pr s`) and enabled by DEC private mode 69, which bound editing, insertion, deletion, scrolling, and cursor positioning to that column range.
+- **Synonyms:** Left/Right Margins, DECLRMM, DECSLRM
+- **Relationships:**
+  - belongs to Terminal Modes
+  - bounds IRM (Insert Mode)
+  - bounds Screen Editing Operation
+
 ### Soft-Wrap Marker
 - **Definition:** Per-row metadata on a screen or scrollback row marking it as the continuation of a logical line that wrapped at the right margin rather than ending with an explicit newline.
 - **Synonyms:** soft-wrap metadata, wrapped flag, continuation row

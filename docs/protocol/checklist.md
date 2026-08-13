@@ -555,8 +555,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 * [x] `CSI 4 h` — Enable Insert Mode
 * [x] `CSI 4 l` — Disable Insert Mode
-* [ ] Printing characters in Insert Mode performs insertion first
-* [ ] Insertion is limited to the current valid horizontal area
+* [x] Printing characters in Insert Mode performs insertion first
+* [x] Insertion is limited to the current valid horizontal area
 * [x] Wide character insertion does not break cell consistency
 
 ### 15.2 LNM
