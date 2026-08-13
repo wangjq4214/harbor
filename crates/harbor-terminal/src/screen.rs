@@ -775,10 +775,18 @@ impl Screen {
     }
 
     pub fn index(&mut self) {
-        if self.cursor.index_needs_scroll() {
+        let before = self.cursor.cursor.y;
+        let scrolled = self.cursor.index_needs_scroll();
+        if scrolled {
             self.scroll_region_up_one();
         } else {
             self.cursor.index_advance(&self.normal);
+        }
+        // Only mark the destination row as a new logical line when the cursor
+        // actually moved or a scroll occurred; a no-op index (cursor pinned at
+        // the bottom below the scroll region) must not clear an existing flag.
+        if scrolled || self.cursor.cursor.y != before {
+            self.normal.set_wrapped(self.cursor.cursor.y, false);
         }
     }
 
@@ -824,6 +832,8 @@ impl Screen {
                 let src_end = ((vis + self.cursor.scroll_region.bottom) % tr) * c;
                 let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
                 self.normal.copy_ring_range(src_start, src_end, dst);
+                self.normal
+                    .copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
                 self.normal
                     .fill_row_with(self.cursor.scroll_region.top, self.pen_state.erase_cell());
             }
@@ -876,6 +886,8 @@ impl Screen {
             let src_end = ((vis + self.cursor.scroll_region.bottom + 1) % tr) * c;
             let dst = ((vis + self.cursor.scroll_region.top) % tr) * c;
             self.normal.copy_ring_range(src_start, src_end, dst);
+            self.normal
+                .copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
             self.normal.fill_row_with(
                 self.cursor.scroll_region.bottom,
                 self.pen_state.erase_cell(),
@@ -909,5 +921,14 @@ impl Screen {
 
     pub fn row_text(&self, row: usize) -> String {
         self.normal.row_text(row)
+    }
+
+    /// Returns whether the given display row is a soft-wrapped continuation of
+    /// the logical line above. `row` is viewport-relative (0..`rows`) and
+    /// view-offset aware — it reports the row currently displayed at that
+    /// position, consistent with `cell`/`cells`. Consumers working in
+    /// scrollback generation coordinates must map to display rows first.
+    pub fn is_wrapped(&self, row: usize) -> bool {
+        self.normal.is_wrapped(row)
     }
 }

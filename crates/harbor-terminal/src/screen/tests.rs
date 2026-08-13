@@ -2892,3 +2892,309 @@ fn alt_screen_transitions_preserve_pending_replies() {
 
     assert_eq!(screen.drain_replies(), b"beforeduring");
 }
+
+// ── per-row soft-wrap flags (issue #86) ─────────────────────────
+
+#[test]
+fn should_mark_entered_row_when_autowrap_from_last_column() {
+    // Arrange
+    let mut screen = Screen::new(3, 5);
+    // Act — fill the last column, then one more char wraps.
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    assert!(!screen.is_wrapped(0));
+    screen.write_char('f');
+    // Assert
+    assert_eq!(screen.row_text(1), "f    ");
+    assert!(screen.is_wrapped(1), "entered row must be marked wrapped");
+    assert!(!screen.is_wrapped(0), "source row must not be marked");
+}
+
+#[test]
+fn should_mark_entered_row_when_wide_char_cannot_fit() {
+    // Arrange — cursor parked at the last column, no pending wrap.
+    let mut screen = Screen::new(2, 4);
+    screen.set_cursor(1, 4); // row 0, col 3
+    // Act
+    screen.write_char('中');
+    // Assert
+    assert!(
+        screen.is_wrapped(1),
+        "wide char that cannot fit wraps and marks the entered row"
+    );
+    assert!(!screen.is_wrapped(0));
+    assert!(screen.row_text(1).starts_with('中'));
+}
+
+#[test]
+fn should_not_mark_when_autowrap_off() {
+    // Arrange
+    let mut screen = Screen::new(3, 5);
+    screen.cursor.modes.autowrap = false;
+    // Act — fill the last column, then one more char overwrites it.
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('x');
+    // Assert
+    assert_eq!(screen.row_text(0), "abcdx");
+    assert!(!screen.is_wrapped(0));
+    assert!(!screen.is_wrapped(1));
+}
+
+#[test]
+fn should_clear_wrapped_marker_when_index_moves_onto_row() {
+    // Arrange — wrap to row 1 so it is marked.
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f');
+    assert!(screen.is_wrapped(1));
+    // Move back to row 0, then IND into the marked row.
+    screen.set_cursor(1, 1);
+    // Act
+    screen.index();
+    // Assert
+    assert!(!screen.is_wrapped(1), "IND must clear the wrap marker");
+}
+
+#[test]
+fn should_preserve_wrapped_marker_when_index_is_noop_below_scroll_region() {
+    // Arrange — cursor pinned at the last row, below the scroll region, with
+    // that row already marked as a wrapped continuation.
+    let mut screen = Screen::new(3, 5);
+    screen.cursor.scroll_region.top = 0;
+    screen.cursor.scroll_region.bottom = 1;
+    screen.cursor.cursor.y = 2;
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f'); // wraps in place: row 2 is marked wrapped
+    assert!(screen.is_wrapped(2));
+    let y_before = screen.cursor.cursor.y;
+    // Act — IND below the region at the last row does not move or scroll.
+    screen.index();
+    // Assert — a no-op index must not clear an existing wrap flag.
+    assert_eq!(
+        screen.cursor.cursor.y, y_before,
+        "no-op index must not move"
+    );
+    assert!(
+        screen.is_wrapped(2),
+        "no-op index must preserve the wrap flag"
+    );
+}
+
+#[test]
+fn should_clear_wrapped_marker_when_line_feed_moves_onto_row() {
+    // Arrange
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f');
+    assert!(screen.is_wrapped(1));
+    screen.set_cursor(1, 1);
+    // Act
+    screen.line_feed();
+    // Assert
+    assert!(!screen.is_wrapped(1), "LF must clear the wrap marker");
+}
+
+#[test]
+fn should_keep_prior_markers_and_mark_new_row_when_wrap_scrolls_at_bottom() {
+    // Arrange
+    let mut screen = Screen::new(2, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f'); // wraps onto row 1 (bottom), marks it
+    assert!(screen.is_wrapped(1));
+    for ch in "ghij".chars() {
+        screen.write_char(ch);
+    }
+    // Act — one more char wraps at the bottom, scrolling the screen.
+    screen.write_char('k');
+    // Assert — scrolled-up line keeps its marker, new bottom row is marked.
+    assert_eq!(screen.row_text(0), "fghij");
+    assert_eq!(screen.row_text(1), "k    ");
+    assert!(screen.is_wrapped(0), "prior marker preserved across scroll");
+    assert!(screen.is_wrapped(1), "newly entered row is marked");
+}
+
+#[test]
+fn should_clear_all_wrapped_markers_when_reset_display() {
+    // Arrange — mark two rows via wrapping.
+    let mut screen = Screen::new(3, 4);
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('x'); // wrap -> row 1 marked
+    for ch in "yzw".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('q'); // wrap -> row 2 marked
+    assert!(screen.is_wrapped(1));
+    assert!(screen.is_wrapped(2));
+    // Act
+    screen.reset_display();
+    // Assert
+    assert!(!screen.is_wrapped(0));
+    assert!(!screen.is_wrapped(1));
+    assert!(!screen.is_wrapped(2));
+}
+
+#[test]
+fn should_preserve_wrapped_markers_when_soft_reset() {
+    // Arrange
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f');
+    assert!(screen.is_wrapped(1));
+    // Act
+    screen.soft_reset();
+    // Assert — DECSTR resets modes but leaves screen content and markers.
+    assert!(screen.is_wrapped(1), "DECSTR must preserve wrap markers");
+    assert!(!screen.is_wrapped(0));
+    assert_eq!(screen.row_text(1), "f    ");
+}
+
+// ── soft-wrap flag propagation through row-moving ops ───────────
+
+#[test]
+fn should_carry_wrapped_flag_when_insert_lines() {
+    let mut screen = Screen::new(4, 4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.normal.set_wrapped(1, true);
+    screen.cursor.cursor.y = 1;
+    // Act
+    screen.insert_lines(1);
+    // Assert
+    assert!(!screen.is_wrapped(1), "blanked row must be unwrapped");
+    assert!(
+        screen.is_wrapped(2),
+        "flag travels down with the shifted row"
+    );
+}
+
+#[test]
+fn should_carry_wrapped_flag_when_delete_lines() {
+    let mut screen = Screen::new(4, 4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.normal.set_wrapped(2, true);
+    screen.cursor.cursor.y = 1;
+    // Act
+    screen.delete_lines(1);
+    // Assert
+    assert!(screen.is_wrapped(1), "flag travels up with the shifted row");
+    assert!(!screen.is_wrapped(2), "blanked row must be unwrapped");
+}
+
+#[test]
+fn should_carry_wrapped_flag_when_scroll_up_region() {
+    let mut screen = Screen::new(4, 4);
+    screen.cursor.scroll_region.top = 0;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.normal.set_wrapped(2, true);
+    // Act
+    screen.scroll_up_region(1);
+    // Assert
+    assert!(
+        screen.is_wrapped(1),
+        "flag travels up with the scrolled row"
+    );
+    assert!(
+        !screen.is_wrapped(2),
+        "blanked bottom row must be unwrapped"
+    );
+}
+
+#[test]
+fn should_carry_wrapped_flag_when_scroll_down_region() {
+    let mut screen = Screen::new(4, 4);
+    screen.cursor.scroll_region.top = 0;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.normal.set_wrapped(0, true);
+    // Act
+    screen.scroll_down_region(1);
+    // Assert
+    assert!(
+        screen.is_wrapped(1),
+        "flag travels down with the scrolled row"
+    );
+    assert!(!screen.is_wrapped(0), "blanked top row must be unwrapped");
+}
+
+#[test]
+fn should_carry_wrapped_flag_on_margin_rect_scroll_up() {
+    let mut screen = Screen::new(4, 5);
+    screen.set_private_mode(69, true); // DECSLRM
+    screen.set_left_right_margins(2, 4); // 0-based left=1, right=3
+    screen.cursor.scroll_region.top = 0;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.normal.set_wrapped(2, true);
+    // Act
+    screen.scroll_up_region(1);
+    // Assert
+    assert!(
+        screen.is_wrapped(1),
+        "flag carried row-wise within margin rect"
+    );
+    assert!(
+        !screen.is_wrapped(2),
+        "blanked bottom row must be unwrapped"
+    );
+}
+
+#[test]
+fn should_preserve_wrapped_flags_when_resize_shrinks_rows() {
+    let mut screen = Screen::new(4, 6);
+    screen.normal.set_wrapped(1, true);
+    screen.normal.set_wrapped(3, true);
+    // Act — shrink to 2 rows: rows 0..1 survive, rows 2..3 are clipped.
+    screen.resize(2, 6);
+    // Assert
+    assert!(
+        !screen.is_wrapped(0),
+        "unmarked surviving row stays unwrapped"
+    );
+    assert!(screen.is_wrapped(1), "surviving row keeps its flag");
+}
+
+// ── erase interactions with the wrap flag (issue #86 follow-up) ──
+
+#[test]
+fn should_clear_wrapped_flag_when_erase_line_full() {
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f'); // row 1 marked wrapped
+    assert!(screen.is_wrapped(1));
+    screen.set_cursor(2, 1); // row 1, col 0
+    // Act — EL mode 2 erases the entire line.
+    screen.erase_line(2);
+    // Assert
+    assert!(!screen.is_wrapped(1), "full-line erase must clear the flag");
+}
+
+#[test]
+fn should_keep_wrapped_flag_when_erase_line_partial() {
+    let mut screen = Screen::new(3, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.write_char('f'); // row 1 marked wrapped
+    assert!(screen.is_wrapped(1));
+    screen.set_cursor(2, 2); // row 1, col 1
+    // Act — EL mode 0 erases from cursor to end (partial row).
+    screen.erase_line(0);
+    // Assert
+    assert!(screen.is_wrapped(1), "partial erase must keep the flag");
+}
