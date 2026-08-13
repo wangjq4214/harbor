@@ -561,8 +561,8 @@ fn horizontal_tab_at_line_end_does_not_loop_forever() {
 
     terminal.put_str("abc\tz");
 
-    assert_eq!(terminal.row_text(0), "abc ");
-    assert_eq!(terminal.row_text(1), "z   ");
+    assert_eq!(terminal.row_text(0), "abcz");
+    assert_eq!(terminal.row_text(1), "    ");
 }
 
 #[test]

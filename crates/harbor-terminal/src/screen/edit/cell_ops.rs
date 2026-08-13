@@ -117,10 +117,14 @@ impl CellOps {
         (left, right): (usize, usize),
         selective: bool,
     ) {
-        // A full-row erase blanks the entire active horizontal extent, so the
-        // row is no longer a wrapped continuation. Selective erase may leave
-        // protected cells, so it conservatively keeps the flag.
-        let full_row = !selective && start == left && end == right + 1;
+        // Only an erase spanning the physical row can sever its logical-line
+        // continuation. Erasing a complete horizontal-margin region is still
+        // a partial-row edit, so it preserves the row's wrapped flag.
+        let full_row = !selective
+            && left == 0
+            && right + 1 == normal.cols()
+            && start == left
+            && end == right + 1;
         let (start, end) = Self::normalize_touched_range(normal, row, start, end, left, right);
         let erase = pen_state.erase_cell();
         let mut col = start;
@@ -242,12 +246,12 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
+        cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
             return;
         }
-        cursor.modes.pending_wrap = false;
         let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
@@ -317,12 +321,12 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
+        cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
             return;
         }
-        cursor.modes.pending_wrap = false;
         let (left, right) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
@@ -368,12 +372,12 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
+        cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
             return;
         }
-        cursor.modes.pending_wrap = false;
         let right = if cursor.margins.enabled {
             cursor.margins.right
         } else {
@@ -408,6 +412,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
+        cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -481,6 +486,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
+        cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
         {
@@ -528,7 +534,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) -> bool {
-        cursor.modes.pending_wrap = false;
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let requested_col = cursor.cursor.x;
         let (left, right) = if cursor.margins.enabled {
@@ -570,7 +576,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
-        cursor.modes.pending_wrap = false;
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
         let (left, right) = if cursor.margins.enabled {
@@ -617,6 +623,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         if cursor.cursor.y < cursor.scroll_region.top
             || cursor.cursor.y > cursor.scroll_region.bottom
@@ -671,6 +678,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         if cursor.cursor.y < cursor.scroll_region.top
             || cursor.cursor.y > cursor.scroll_region.bottom
@@ -727,6 +735,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
         let n = n.min(region_height);
@@ -772,6 +781,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         n: usize,
     ) {
+        cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
         let n = n.min(region_height);

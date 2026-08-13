@@ -57,6 +57,8 @@ struct ScreenSnap {
     cursor_x: usize,
     cursor_y: usize,
     rows: Vec<String>,
+    wrapped: Vec<bool>,
+    pending_wrap: bool,
     replies: Vec<u8>,
     is_alt: bool,
     scroll_count: usize,
@@ -64,11 +66,15 @@ struct ScreenSnap {
 
 fn snap(screen: &mut Screen) -> ScreenSnap {
     let rows = (0..screen.rows()).map(|r| screen.row_text(r)).collect();
+    let wrapped = (0..screen.rows()).map(|r| screen.is_wrapped(r)).collect();
+    let pending_wrap = screen.pending_wrap();
     let replies = screen.drain_replies();
     ScreenSnap {
         cursor_x: screen.cursor_x(),
         cursor_y: screen.cursor_y(),
         rows,
+        wrapped,
+        pending_wrap,
         replies,
         is_alt: screen.is_alt(),
         scroll_count: screen.scroll_count(),
@@ -191,6 +197,39 @@ fn chunk_equiv_csi_split_mid_params() {
 #[test]
 fn chunk_equiv_esc_save_cursor() {
     assert_chunk_equiv(10, 10, b"\x1b7");
+}
+
+#[test]
+fn chunk_equiv_pending_wrap_controls_and_edits() {
+    for data in [
+        b"abcde\x08Z".as_slice(),
+        b"abcde\rZ".as_slice(),
+        b"abcde\nZ".as_slice(),
+        b"abcde\tZ".as_slice(),
+        b"abcde\x05\x07\x0e\x0fZ".as_slice(),
+        b"abcde\x1bDZ".as_slice(),
+        b"abcde\x1bEZ".as_slice(),
+        b"abcde\x1bMZ".as_slice(),
+        b"abcde\x1b[1AZ".as_slice(),
+        b"abcde\x1b[1BZ".as_slice(),
+        b"abcde\x1b[1CZ".as_slice(),
+        b"abcde\x1b[1DZ".as_slice(),
+        b"abcde\x1b[1GZ".as_slice(),
+        b"abcde\x1b[1dZ".as_slice(),
+        b"abcde\x1b[1;1HZ".as_slice(),
+        b"abcde\x1b[1;1fZ".as_slice(),
+        b"abcde\x1b[2KZ".as_slice(),
+        b"abcde\x1b[2JZ".as_slice(),
+        b"abcde\x1b[1XZ".as_slice(),
+        b"abcde\x1b[1LZ".as_slice(),
+        b"abcde\x1b[1MZ".as_slice(),
+        b"abcde\x1b[1SZ".as_slice(),
+        b"abcde\x1b[1TZ".as_slice(),
+        b"abcde\x1bcZ".as_slice(),
+        b"abcde\x1b[!pZ".as_slice(),
+    ] {
+        assert_chunk_equiv(4, 5, data);
+    }
 }
 
 #[test]
