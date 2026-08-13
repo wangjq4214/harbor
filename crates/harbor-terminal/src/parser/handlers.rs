@@ -140,7 +140,15 @@ impl VtHandler for ScreenHandler<'_> {
             }
             b'A' => self.screen.cursor_up(params.get_or(0, 1)),
             b'B' => self.screen.cursor_down(params.get_or(0, 1)),
+            b'e' => {
+                // VPR — Vertical Position Relative (alias of CUD)
+                self.screen.cursor_down(params.get_or(0, 1));
+            }
             b'C' => self.screen.cursor_right(params.get_or(0, 1)),
+            b'a' => {
+                // HPR — Horizontal Position Relative (alias of CUF)
+                self.screen.cursor_right(params.get_or(0, 1));
+            }
             b'D' => self.screen.cursor_left(params.get_or(0, 1)),
             b'E' => {
                 let n = params.get_or(0, 1);
@@ -153,6 +161,10 @@ impl VtHandler for ScreenHandler<'_> {
                 self.screen.carriage_return();
             }
             b'G' => {
+                self.screen.set_cursor_col(params.get_or(0, 1));
+            }
+            b'`' => {
+                // HPA — Horizontal Position Absolute (alias of CHA)
                 self.screen.set_cursor_col(params.get_or(0, 1));
             }
             b'H' | b'f' => {

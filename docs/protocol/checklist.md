@@ -316,10 +316,10 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `CSI Ps E` — CNL
 * [x] `CSI Ps F` — CPL
 * [x] `CSI Ps G` — CHA
-* [ ] `CSI Ps `` — HPA
-* [ ] `CSI Ps a` — HPR
+* [x] `CSI Ps `` — HPA
+* [x] `CSI Ps a` — HPR
 * [x] `CSI Ps d` — VPA
-* [ ] `CSI Ps e` — VPR
+* [x] `CSI Ps e` — VPR
 * [x] `CSI row;col H` — CUP
 * [x] `CSI row;col f` — HVP
 
