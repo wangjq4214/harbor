@@ -9,6 +9,9 @@ pub mod contracts;
 pub mod font;
 pub mod metrics;
 
+#[cfg(test)]
+pub(crate) static TRACING_CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, RasterizeResult};
 pub use contracts::{
     FaceId, FontSize, FontStyle, GlyphId, GlyphKey, GlyphResolution, ResolutionKey,

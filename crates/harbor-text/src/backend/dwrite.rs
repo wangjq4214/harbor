@@ -946,10 +946,13 @@ mod tests {
     }
 
     fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
+        // Scoped subscribers update tracing's global callsite interest cache, so
+        // overlapping captures can temporarily disable one another's callsites.
+        let _guard = crate::TRACING_CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let capture = LifecycleCapture::new();
-        let subscriber = tracing_subscriber::registry()
-            .with(capture.clone())
-            .with(tracing_subscriber::filter::LevelFilter::INFO);
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
         let result = tracing::subscriber::with_default(subscriber, f);
         (result, capture)
     }

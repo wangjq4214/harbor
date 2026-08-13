@@ -251,6 +251,9 @@ mod tests {
     }
 
     fn with_lifecycle_capture<R>(f: impl FnOnce() -> R) -> (R, LifecycleCapture) {
+        let _guard = crate::TRACING_CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let capture = LifecycleCapture::new();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let result = tracing::subscriber::with_default(subscriber, f);
