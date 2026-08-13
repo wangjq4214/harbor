@@ -265,6 +265,201 @@ fn vpa_clamps_to_rows() {
     assert_eq!(screen.cursor_y(), 4, "VPA clamps to rows-1");
 }
 
+// ── HPA (CSI n `) ────────────────────────────────────────────
+
+#[test]
+fn hpa_sets_column_keeps_row() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 3, 5);
+    feed(&mut parser, &mut screen, b"\x1b[12`");
+    assert_eq!(screen.cursor_y(), 2, "HPA should keep row unchanged");
+    assert_eq!(screen.cursor_x(), 11, "HPA should set column (0-based)");
+}
+
+#[test]
+fn hpa_default_param_is_one() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 2, 8);
+    feed(&mut parser, &mut screen, b"\x1b[`");
+    assert_eq!(screen.cursor_x(), 0, "default HPA param = 1 → col 0");
+}
+
+#[test]
+fn hpa_clamps_to_cols() {
+    let mut screen = Screen::new(5, 10);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[999`");
+    assert_eq!(screen.cursor_x(), 9, "HPA clamps to cols-1");
+}
+
+// ── HPR (CSI n a) ────────────────────────────────────────────
+
+#[test]
+fn hpr_moves_right() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 3, 5);
+    feed(&mut parser, &mut screen, b"\x1b[4a");
+    assert_eq!(screen.cursor_y(), 2, "HPR should keep row unchanged");
+    assert_eq!(screen.cursor_x(), 8, "HPR 4 from col 5 → col 9 (0-based 8)");
+}
+
+#[test]
+fn hpr_default_param_is_one() {
+    let mut screen = Screen::new(5, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 2, 8);
+    feed(&mut parser, &mut screen, b"\x1b[a");
+    assert_eq!(
+        screen.cursor_x(),
+        8,
+        "default HPR param = 1 → col 9 (0-based 8)"
+    );
+}
+
+#[test]
+fn hpr_clamps_to_cols() {
+    let mut screen = Screen::new(5, 10);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 2, 3);
+    feed(&mut parser, &mut screen, b"\x1b[999a");
+    assert_eq!(screen.cursor_x(), 9, "HPR clamps to cols-1");
+}
+
+// ── VPR (CSI n e) ────────────────────────────────────────────
+
+#[test]
+fn vpr_moves_down() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 3, 5);
+    feed(&mut parser, &mut screen, b"\x1b[3e");
+    assert_eq!(screen.cursor_y(), 5, "VPR 3 from row 3 → row 6 (0-based 5)");
+    assert_eq!(screen.cursor_x(), 4, "VPR should keep col unchanged");
+}
+
+#[test]
+fn vpr_default_param_is_one() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 5, 5);
+    feed(&mut parser, &mut screen, b"\x1b[e");
+    assert_eq!(
+        screen.cursor_y(),
+        5,
+        "default VPR param = 1 → row 6 (0-based 5)"
+    );
+}
+
+#[test]
+fn vpr_clamps_to_rows() {
+    let mut screen = Screen::new(5, 10);
+    let mut parser = TerminalParser::default();
+    move_to(&mut parser, &mut screen, 2, 3);
+    feed(&mut parser, &mut screen, b"\x1b[999e");
+    assert_eq!(screen.cursor_y(), 4, "VPR clamps to rows-1");
+}
+
+// ── HPA / HPR / VPR: origin mode, margins, regions, pending wrap ──
+
+#[test]
+fn hpa_relative_to_margins_in_origin_mode() {
+    let mut screen = Screen::new(5, 10);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?69h"); // DECLRMM
+    feed(&mut parser, &mut screen, b"\x1b[3;7s"); // margins cols 3..7 (1-based)
+    feed(&mut parser, &mut screen, b"\x1b[?6h"); // DECOM
+    feed(&mut parser, &mut screen, b"\x1b[3`");
+    assert_eq!(
+        screen.cursor_x(),
+        4,
+        "HPA col is relative to margin left (0-based 2 + 2)"
+    );
+    feed(&mut parser, &mut screen, b"\x1b[999`");
+    assert_eq!(screen.cursor_x(), 6, "HPA clamps to margin right");
+}
+
+#[test]
+fn hpr_clamps_to_right_margin() {
+    let mut screen = Screen::new(5, 10);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?69h");
+    feed(&mut parser, &mut screen, b"\x1b[3;7s");
+    move_to(&mut parser, &mut screen, 1, 4); // x = 3, inside margins
+    feed(&mut parser, &mut screen, b"\x1b[999a");
+    assert_eq!(
+        screen.cursor_x(),
+        6,
+        "HPR clamps to right margin (0-based 6)"
+    );
+}
+
+#[test]
+fn vpr_clamps_to_scroll_region_bottom() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[2;6r"); // scroll region rows 2..6
+    move_to(&mut parser, &mut screen, 2, 1); // y = 1, inside region
+    feed(&mut parser, &mut screen, b"\x1b[999e");
+    assert_eq!(
+        screen.cursor_y(),
+        5,
+        "VPR clamps to scroll region bottom (0-based 5)"
+    );
+}
+
+#[test]
+fn hpa_clears_pending_wrap() {
+    let mut screen = Screen::new(3, 5);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abcde"); // pending wrap at last col
+    feed(&mut parser, &mut screen, b"\x1b[2`");
+    feed(&mut parser, &mut screen, b"Z");
+    assert_eq!(
+        screen.cursor_y(),
+        0,
+        "HPA must clear pending wrap so Z stays on row 0"
+    );
+    assert_eq!(screen.row_text(0), "aZcde");
+}
+
+#[test]
+fn hpr_clears_pending_wrap() {
+    let mut screen = Screen::new(3, 5);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abcde");
+    feed(&mut parser, &mut screen, b"\x1b[1a");
+    feed(&mut parser, &mut screen, b"Z");
+    assert_eq!(
+        screen.cursor_y(),
+        0,
+        "HPR must clear pending wrap so Z stays on row 0"
+    );
+    assert_eq!(screen.row_text(0), "abcdZ");
+}
+
+#[test]
+fn vpr_clears_pending_wrap() {
+    let mut screen = Screen::new(3, 5);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abcde");
+    feed(&mut parser, &mut screen, b"\x1b[1e");
+    feed(&mut parser, &mut screen, b"Z");
+    assert_eq!(
+        screen.cursor_y(),
+        1,
+        "VPR moves down and clears pending wrap"
+    );
+    assert_eq!(
+        screen.cursor_x(),
+        4,
+        "Z prints at col 4, not wrapped to col 0"
+    );
+    assert_eq!(screen.row_text(1), "    Z");
+}
+
 // ── CNL (CSI n E) / CPL (CSI n F) ────────────────────────────
 
 #[test]
