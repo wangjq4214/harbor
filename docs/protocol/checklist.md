@@ -711,12 +711,12 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 17.4 Alternate Screen
 
-* [ ] `?47 h/l`
-* [ ] `?1047 h/l`
-* [ ] `?1048 h/l`
+* [x] `?47 h/l`
+* [x] `?1047 h/l`
+* [x] `?1048 h/l`
 * [x] `?1049 h/l`
-* [ ] `?1048 h` saves cursor
-* [ ] `?1048 l` restores cursor
+* [x] `?1048 h` saves cursor
+* [x] `?1048 l` restores cursor
 * [x] `?1049 h` saves cursor and enters alternate screen
 * [x] `?1049 l` returns to main screen and restores cursor
 * [x] Alternate screen does not pollute main screen content

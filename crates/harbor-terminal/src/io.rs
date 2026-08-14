@@ -159,7 +159,7 @@ impl TerminalIo {
                 screen.take_alt_request();
                 self.suppress_scroll_snap = false;
                 match action {
-                    AltScreenAction::Enter => screen.enter_alt(),
+                    AltScreenAction::Enter { clear } => screen.enter_alt(clear),
                     AltScreenAction::Exit => screen.exit_alt(),
                 }
             }

@@ -378,7 +378,7 @@ impl PasteDisposition {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AltScreenAction {
-    Enter,
+    Enter { clear: bool },
     Exit,
 }
 

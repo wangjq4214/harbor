@@ -94,7 +94,7 @@ fn feed_all(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8]) {
             // one-shot/chunked comparison rather than dropping the boundary event.
             let _ = screen.take_alt_request();
             match action {
-                AltScreenAction::Enter => screen.enter_alt(),
+                AltScreenAction::Enter { clear } => screen.enter_alt(clear),
                 AltScreenAction::Exit => screen.exit_alt(),
             }
         }
@@ -277,6 +277,19 @@ fn chunk_equiv_alt_screen_switch_consumes_and_replays_suffix() {
 }
 
 #[test]
+fn chunk_equiv_alt_screen_family_modes() {
+    // ?47 switches without clearing: the parked buffer survives both exits.
+    assert_chunk_equiv(5, 40, b"before\x1b[?47halt\x1b[?47lrest");
+    assert_chunk_equiv(5, 40, b"x\x1b[?47h\x1b[?47l\x1b[?47h\x1b[?47l");
+    // ?1047 clears on entry.
+    assert_chunk_equiv(5, 40, b"before\x1b[?1047halt\x1b[?1047lrest");
+    // ?1048 saves/restores the cursor without switching buffers.
+    assert_chunk_equiv(5, 40, b"abc\x1b[?1048h\x1b[3;3Hdef\x1b[?1048lrest");
+    // Mixed family within one stream.
+    assert_chunk_equiv(5, 40, b"a\x1b[?1048h\x1b[?47hb\x1b[?1048l\x1b[?47l");
+}
+
+#[test]
 fn put_result_reports_alt_boundary_before_suffix_and_consumes_request() {
     // Arrange
     let mut screen = Screen::new(3, 20);
@@ -289,12 +302,15 @@ fn put_result_reports_alt_boundary_before_suffix_and_consumes_request() {
 
     // Assert
     assert_eq!(result.consumed, switch_len);
-    assert_eq!(result.alt_request, Some(AltScreenAction::Enter));
+    assert_eq!(
+        result.alt_request,
+        Some(AltScreenAction::Enter { clear: true })
+    );
     assert_eq!(screen.row_text(0).trim(), "before");
     assert_eq!(screen.alt_request(), None);
 
     // Arrange — apply the request before replaying the unconsumed suffix.
-    screen.enter_alt();
+    screen.enter_alt(true);
 
     // Act
     let suffix_result = parser.put_bytes(&mut screen, &data[result.consumed..]);
