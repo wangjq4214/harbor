@@ -748,6 +748,58 @@ impl Screen {
         self.cursor.clear_pending_wrap();
     }
 
+    /// Moves forward over `steps` tab stops without changing any cells.
+    pub fn forward_tab(&mut self, steps: usize) {
+        self.cursor.clear_pending_wrap();
+        let steps = steps.max(1);
+        let (left_limit, right_limit) = if self.cursor.margins.enabled {
+            (self.cursor.margins.left, self.cursor.margins.right)
+        } else {
+            (0, self.normal.cols().saturating_sub(1))
+        };
+        let start = self.cursor.cursor.x.saturating_add(1).max(left_limit);
+
+        if start <= right_limit {
+            let mut remaining = steps;
+            for col in start..=right_limit {
+                if self.pen_state.tab_stops.0[col] {
+                    remaining -= 1;
+                    if remaining == 0 {
+                        self.cursor.cursor.x = col;
+                        return;
+                    }
+                }
+            }
+        }
+        self.cursor.cursor.x = right_limit;
+    }
+
+    /// Moves backward over `steps` tab stops without changing any cells.
+    pub fn backward_tab(&mut self, steps: usize) {
+        self.cursor.clear_pending_wrap();
+        let steps = steps.max(1);
+        let (left_limit, right_limit) = if self.cursor.margins.enabled {
+            (self.cursor.margins.left, self.cursor.margins.right)
+        } else {
+            (0, self.normal.cols().saturating_sub(1))
+        };
+        let end = self.cursor.cursor.x.saturating_sub(1).min(right_limit);
+
+        if end >= left_limit {
+            let mut remaining = steps;
+            for col in (left_limit..=end).rev() {
+                if self.pen_state.tab_stops.0[col] {
+                    remaining -= 1;
+                    if remaining == 0 {
+                        self.cursor.cursor.x = col;
+                        return;
+                    }
+                }
+            }
+        }
+        self.cursor.cursor.x = left_limit;
+    }
+
     // ── repeat_char (coordinator) ──────────────────────────────────────
 
     pub fn repeat_char(&mut self, n: usize) {

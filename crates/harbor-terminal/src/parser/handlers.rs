@@ -179,6 +179,8 @@ impl VtHandler for ScreenHandler<'_> {
             b'g' => {
                 self.screen.clear_tab_stops(params.get_or(0, 0));
             }
+            b'I' => self.screen.forward_tab(params.get_or(0, 1).max(1)),
+            b'Z' => self.screen.backward_tab(params.get_or(0, 1).max(1)),
             b'b' => {
                 self.screen.repeat_char(params.get_or(0, 1));
             }
