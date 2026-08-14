@@ -904,7 +904,18 @@ impl Screen {
         self.cursor.cursor.y = self.cursor.scroll_region.bottom;
     }
 
-    // ── reset ──────────────────────────────────────────────────────────
+    // ── screen alignment / reset ───────────────────────────────────────
+
+    /// Performs DECALN (`ESC # 8`) on the active visible buffer.
+    pub fn decaln(&mut self) {
+        let cell = Cell {
+            ch: 'E',
+            ..Cell::default()
+        };
+        self.normal.fill_all_with(cell);
+        self.cursor.alignment_home();
+        self.mark_all_dirty();
+    }
 
     pub fn reset_display(&mut self) {
         self.alt.mark_inactive();

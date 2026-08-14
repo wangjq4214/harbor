@@ -236,14 +236,11 @@ impl VtHandler for ScreenHandler<'_> {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8) {
         if !intermediates.is_empty() {
-            if intermediates == *b"(" {
-                self.screen.designate_g0(byte);
-            } else if intermediates == *b")" {
-                self.screen.designate_g1(byte);
-            } else {
-                tracing::warn!(
-                    "unsupported escape sequence: ESC intermediates={intermediates:?} 0x{byte:02x}"
-                );
+            match (intermediates, byte) {
+                (b"(", charset) => self.screen.designate_g0(charset),
+                (b")", charset) => self.screen.designate_g1(charset),
+                (b"#", b'8') => self.screen.decaln(),
+                _ => {}
             }
             return;
         }

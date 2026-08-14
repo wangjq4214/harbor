@@ -584,3 +584,16 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to harbor-parser
   - depends on Parser Retention Limits
+
+### DECALN
+- **Definition:** The terminal alignment escape sequence `ESC # 8` fills every visible cell of the active buffer with default-styled `E`, clears wrap state, and homes the cursor without resetting modes, pen attributes, or character-set state.
+- **Synonyms:** DEC screen alignment test
+- **Relationships:**
+  - belongs to Terminal
+  - depends on ESC Intermediate+Final Dispatch
+
+### ESC Intermediate+Final Dispatch
+- **Definition:** The parser route for ESC sequences containing intermediate bytes, which consumes unrecognized combinations without visible side effects and returns to Ground state.
+- **Relationships:**
+  - belongs to harbor-parser
+  - communicates with VtHandler

@@ -261,6 +261,49 @@ fn should_preserve_escape_intermediate_bytes() {
 }
 
 #[test]
+fn should_dispatch_one_and_multiple_escape_intermediates() {
+    let cases = [
+        (b"\x1b#8".as_slice(), vec![b'#']),
+        (b"\x1b##8".as_slice(), vec![b'#', b'#']),
+    ];
+
+    for (sequence, intermediates) in cases {
+        let mut parser = Parser::default();
+        let mut handler = RecordingHandler::default();
+
+        feed(&mut parser, &mut handler, sequence);
+
+        assert_eq!(
+            handler.callbacks,
+            vec![Callback::Esc {
+                intermediates,
+                byte: b'8',
+            }]
+        );
+    }
+}
+
+#[test]
+fn should_consume_cancelled_or_overflowed_escape_intermediates_and_resume_text() {
+    for cancel in [0x18u8, 0x1au8] {
+        let mut parser = Parser::default();
+        let mut handler = RecordingHandler::default();
+        let mut sequence = b"\x1b#".to_vec();
+        sequence.push(cancel);
+        sequence.extend_from_slice(b"Z");
+
+        feed(&mut parser, &mut handler, &sequence);
+
+        assert_eq!(handler.callbacks, vec![Callback::Print('Z')]);
+    }
+
+    let mut parser = Parser::default();
+    let mut handler = RecordingHandler::default();
+    feed(&mut parser, &mut handler, b"\x1b###8Z");
+    assert_eq!(handler.callbacks, vec![Callback::Print('Z')]);
+}
+
+#[test]
 fn should_emit_dcs_lifecycle_callbacks_when_payload_is_st_terminated() {
     // Arrange — create an isolated parser and recording handler.
     let mut parser = Parser::default();

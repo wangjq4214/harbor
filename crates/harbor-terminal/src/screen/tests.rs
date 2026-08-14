@@ -107,6 +107,83 @@ fn reset_display_marks_all_rows() {
 }
 
 #[test]
+fn decaln_fills_visible_cells_homes_cursor_and_preserves_terminal_state() {
+    let mut screen = Screen::new(3, 4);
+    for row in 0..screen.rows() {
+        for col in 0..screen.cols() {
+            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+        }
+        screen.normal.set_wrapped(row, true);
+    }
+    screen.cursor.cursor.x = 3;
+    screen.cursor.cursor.y = 2;
+    screen.cursor.modes.pending_wrap = true;
+    screen.cursor.modes.origin = true;
+    screen.cursor.modes.autowrap = false;
+    screen.cursor.modes.insert = true;
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 2;
+    screen.cursor.margins.enabled = true;
+    screen.cursor.margins.left = 1;
+    screen.cursor.margins.right = 2;
+    screen.cursor.cursor.visible = false;
+    screen.designate_g1(b'0');
+    screen.set_active_charset(1);
+    screen.pen_state.pen.fg = Color::Named(1);
+    screen.pen_state.pen.bg = Color::Named(4);
+    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
+    screen.save_cursor();
+    let saved_cursor = screen.cursor.cursor.saved.as_ref().map(|saved| {
+        (
+            saved.cursor_x,
+            saved.cursor_y,
+            saved.origin_mode,
+            saved.autowrap,
+            saved.pending_wrap,
+        )
+    });
+    let scroll_count = screen.scroll_count();
+    let input_modes = screen.input_modes();
+    let current_sgr = screen.current_sgr();
+    screen.clear_dirty();
+
+    screen.decaln();
+
+    let expected = Cell {
+        ch: 'E',
+        ..Cell::default()
+    };
+    for row in 0..screen.rows() {
+        for col in 0..screen.cols() {
+            assert_eq!(screen.cell(row, col), &expected);
+        }
+        assert!(!screen.is_wrapped(row));
+    }
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (0, 0));
+    assert!(!screen.pending_wrap());
+    assert_eq!(screen.scroll_count(), scroll_count);
+    assert_eq!(screen.input_modes(), input_modes);
+    assert_eq!(screen.current_sgr(), current_sgr);
+    let actual_saved_cursor = screen.cursor.cursor.saved.as_ref().map(|saved| {
+        (
+            saved.cursor_x,
+            saved.cursor_y,
+            saved.origin_mode,
+            saved.autowrap,
+            saved.pending_wrap,
+        )
+    });
+    assert_eq!(actual_saved_cursor, saved_cursor);
+    assert!(!screen.cursor_visible());
+    assert_eq!(screen.dirty_rows().len(), screen.rows());
+
+    // The character-set designation is unrelated state and remains active after DECALN.
+    screen.set_cursor(1, 1);
+    screen.write_char('q');
+    assert_eq!(screen.cell(1, 1).ch, '─');
+}
+
+#[test]
 fn reverse_index_scroll_marks_all_rows() {
     let mut screen = Screen::new(3, 4);
     screen.clear_dirty();
