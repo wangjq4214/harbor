@@ -12,7 +12,7 @@ fn feed_with_alt_transitions(parser: &mut TerminalParser, screen: &mut Screen, s
         let result = parser.put_bytes(screen, remaining);
         remaining = &remaining[result.consumed..];
         match result.alt_request {
-            Some(AltScreenAction::Enter) => screen.enter_alt(),
+            Some(AltScreenAction::Enter { clear }) => screen.enter_alt(clear),
             Some(AltScreenAction::Exit) => screen.exit_alt(),
             None => {}
         }
@@ -1526,6 +1526,127 @@ fn should_report_private_mode_states_with_private_marker() {
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
     feed(&mut parser, &mut screen, b"\x1b[?1049$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1049;2$y");
+}
+
+#[test]
+fn should_report_alt_screen_family_mode_states() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    for param in [47usize, 1047, 1049] {
+        feed_with_alt_transitions(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}h").as_bytes(),
+        );
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[?{param};1$y").into_bytes(),
+            "{param} should report Set while the alternate screen is active"
+        );
+        feed_with_alt_transitions(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}l").as_bytes(),
+        );
+        feed(
+            &mut parser,
+            &mut screen,
+            format!("\x1b[?{param}$p").as_bytes(),
+        );
+        assert_eq!(
+            screen.drain_replies(),
+            format!("\x1b[?{param};2$y").into_bytes(),
+            "{param} should report Reset after exit"
+        );
+    }
+}
+
+#[test]
+fn should_report_1048_cursor_save_state() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1048;2$y");
+
+    feed(&mut parser, &mut screen, b"\x1b[?1048h");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1048;1$y");
+
+    // DECRC keeps the snapshot slot (matching DECSC/DECRC semantics).
+    feed(&mut parser, &mut screen, b"\x1b[?1048l");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1048;1$y");
+
+    // RIS clears the snapshot slot.
+    feed(&mut parser, &mut screen, b"\x1bc");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1048;2$y");
+}
+
+#[test]
+fn should_persist_47_contents_across_exit_and_reentry() {
+    let mut screen = Screen::new(3, 20);
+    let mut parser = TerminalParser::default();
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?47halt1\x1b[?47l");
+    assert_eq!(screen.row_text(0).trim(), "", "primary screen is untouched");
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?47h");
+    assert_eq!(
+        screen.row_text(0).trim(),
+        "alt1",
+        "?47 re-entry restores the parked alternate contents"
+    );
+}
+
+#[test]
+fn should_clear_1047_contents_on_every_entry() {
+    let mut screen = Screen::new(3, 20);
+    let mut parser = TerminalParser::default();
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1047halt1\x1b[?1047l");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1047h");
+    assert!(
+        screen.row_text(0).trim().is_empty(),
+        "?1047 clears the alternate buffer on each entry"
+    );
+}
+
+#[test]
+fn should_report_1048_save_slot_per_buffer() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1048h");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1048;1$y",
+        "primary has a saved slot"
+    );
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1048;2$y",
+        "the fresh alternate cursor has no saved slot"
+    );
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1048;1$y",
+        "the primary save slot survives an alt round-trip"
+    );
 }
 
 #[test]

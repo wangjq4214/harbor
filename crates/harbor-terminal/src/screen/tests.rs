@@ -3236,7 +3236,7 @@ fn alt_screen_restores_all_state_groups() {
     screen.designate_g1(b'A');
     screen.set_active_charset(1);
     // Enter alt — all groups should be saved.
-    screen.enter_alt();
+    screen.enter_alt(true);
 
     // Mutate every group in alt.
     screen.cursor.cursor.x = 0;
@@ -3450,7 +3450,7 @@ fn alt_screen_exit_marks_all_dirty() {
     screen.clear_dirty();
     assert!(screen.dirty_ranges().is_empty());
 
-    screen.enter_alt();
+    screen.enter_alt(true);
     screen.exit_alt();
 
     let ranges = screen.dirty_ranges();
@@ -3490,12 +3490,301 @@ fn alt_screen_transitions_preserve_pending_replies() {
     let mut screen = Screen::new(5, 10);
     screen.push_reply(b"before");
 
-    screen.enter_alt();
+    screen.enter_alt(true);
     screen.push_reply(b"during");
 
     screen.exit_alt();
 
     assert_eq!(screen.drain_replies(), b"beforeduring");
+}
+
+#[test]
+fn alt_screen_enter_without_clear_preserves_contents() {
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    screen.enter_alt(false);
+    assert_eq!(
+        screen.row_text(0).trim(),
+        "A",
+        "?47-style re-entry keeps alternate contents"
+    );
+}
+
+#[test]
+fn alt_screen_reentry_exit_restores_primary() {
+    let mut screen = Screen::new(3, 10);
+    screen.cell_mut(0, 0).ch = 'P';
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    screen.enter_alt(false);
+    screen.exit_alt();
+    // Regression: the parked-buffer restore must not clobber the saved primary.
+    assert_eq!(screen.row_text(0).trim(), "P");
+    assert!(!screen.is_alt());
+}
+
+#[test]
+fn alt_screen_enter_clear_drops_persisted_buffer() {
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    screen.enter_alt(true);
+    assert!(
+        screen.row_text(0).trim().is_empty(),
+        "?1047/?1049-style entry clears the alternate buffer"
+    );
+}
+
+#[test]
+fn alt_screen_exit_when_not_in_alt_keeps_primary() {
+    let mut screen = Screen::new(3, 10);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    assert_eq!(screen.row_text(0).trim(), "A");
+}
+
+#[test]
+fn private_mode_1048_saves_and_restores_cursor() {
+    let mut screen = Screen::new(5, 20);
+    screen.set_cursor_position(2, 3); // 1-based → 0-based (y=1, x=2)
+    screen.set_private_mode(1048, true); // save cursor (DECSC)
+    screen.set_cursor_position(5, 10); // 0-based (y=4, x=9)
+    screen.set_private_mode(1048, false); // restore cursor (DECRC)
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 1));
+}
+
+#[test]
+fn alt_screen_resize_while_parked_resizes_persisted_buffer() {
+    // Arrange — park an alternate buffer with content (?47-style cycle).
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+
+    // Act — grow the primary; the parked alternate buffer must follow.
+    screen.resize(5, 20);
+
+    // Assert — re-entry installs the resized buffer with contents intact.
+    screen.enter_alt(false);
+    assert_eq!((screen.rows(), screen.cols()), (5, 20));
+    assert_eq!(screen.row_text(0).trim(), "A");
+}
+
+#[test]
+fn alt_screen_resize_while_parked_clamps_shrunk_buffer() {
+    // Arrange — park an alternate buffer with a cell that will survive the
+    // shrink and one that will be cut off.
+    let mut screen = Screen::new(5, 20);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.cell_mut(4, 19).ch = 'C';
+    screen.exit_alt();
+
+    // Act — shrink the primary; the parked buffer must shrink too.
+    screen.resize(2, 5);
+
+    // Assert — re-entry installs the clamped buffer; out-of-bounds cells dropped.
+    screen.enter_alt(false);
+    assert_eq!((screen.rows(), screen.cols()), (2, 5));
+    assert_eq!(screen.row_text(0).trim(), "A");
+    assert!(screen.row_text(1).trim().is_empty());
+}
+
+#[test]
+fn reset_display_drops_parked_alt_buffer() {
+    // Arrange — park an alternate buffer with content.
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    assert!(!screen.is_alt());
+
+    // Act — RIS-equivalent full display reset.
+    screen.reset_display();
+
+    // Assert — the parked buffer is gone, so a later ?47-style entry is blank.
+    assert!(!screen.is_alt());
+    screen.enter_alt(false);
+    assert!(screen.row_text(0).trim().is_empty());
+}
+
+#[test]
+fn alt_screen_repeated_cycles_keep_parking_alt_contents() {
+    // Regression for the exit-side ordering: `exit_alt` parks the alternate
+    // buffer only after the saved primary is restored (`*self = *primary`),
+    // because the saved primary carries an empty `parked_alt` slot and would
+    // clobber an earlier assignment. Two full cycles then a third re-entry
+    // must still see the parked contents.
+    let mut screen = Screen::new(3, 10);
+    screen.cell_mut(0, 0).ch = 'P';
+
+    // Arrange — two complete ?47-style cycles (enter → exit → enter → exit).
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    screen.enter_alt(false);
+    screen.exit_alt();
+
+    // Act — third re-entry, which needs the buffer parked by the second exit.
+    screen.enter_alt(false);
+
+    // Assert — the re-parked alternate contents survive the second exit.
+    assert_eq!(
+        screen.row_text(0).trim(),
+        "A",
+        "each exit must re-park the alternate buffer"
+    );
+    screen.exit_alt();
+    assert_eq!(screen.row_text(0).trim(), "P");
+    assert!(!screen.is_alt());
+}
+
+#[test]
+fn alt_screen_reentry_marks_all_dirty() {
+    // The parked-restore install path (`*self = *alt`) must mark the whole
+    // screen dirty, mirroring `alt_screen_exit_marks_all_dirty` for the exit.
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(false);
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    screen.clear_dirty();
+    assert!(screen.dirty_ranges().is_empty());
+
+    // Act — re-enter ?47-style, restoring the parked buffer.
+    screen.enter_alt(false);
+
+    // Assert — every row of the reinstalled buffer is dirty, full width.
+    let ranges = screen.dirty_ranges();
+    assert_eq!(ranges.len(), 3);
+    for (i, range) in ranges.into_iter().enumerate() {
+        assert_eq!(range.row, i);
+        assert_eq!(range.start_col, 0);
+        assert_eq!(range.end_col, 10);
+    }
+}
+
+#[test]
+fn alt_screen_reentry_cycle_preserves_pending_replies() {
+    // Replies must survive the full park → restore cycle: `enter_alt` and
+    // `exit_alt` both carry the pending reply buffer across the whole-screen
+    // swap, including when a parked buffer is installed on re-entry.
+    let mut screen = Screen::new(3, 10);
+    screen.push_reply(b"a");
+
+    screen.enter_alt(false);
+    screen.push_reply(b"b");
+    screen.exit_alt(); // parks the alternate buffer
+    screen.push_reply(b"c");
+    screen.enter_alt(false); // restores the parked buffer
+    screen.push_reply(b"d");
+    screen.exit_alt();
+
+    assert_eq!(screen.drain_replies(), b"abcd");
+}
+
+#[test]
+fn alt_screen_enter_while_in_alt_never_clears() {
+    // The in-alt guard must win over the `clear` flag: a ?1047/?1049-style
+    // entry while already in the alternate screen is a no-op and must not
+    // wipe the active buffer.
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(true);
+    screen.cell_mut(0, 0).ch = 'A';
+
+    // Act — repeated clear-entry while already in alt.
+    screen.enter_alt(true);
+
+    // Assert — buffer intact and still in alt; exit restores the primary.
+    assert!(screen.is_alt());
+    assert_eq!(screen.row_text(0).trim(), "A");
+    screen.exit_alt();
+    assert!(!screen.is_alt());
+    assert!(screen.row_text(0).trim().is_empty());
+}
+
+#[test]
+fn alt_screen_reentry_restores_alt_cursor_position() {
+    // The parked buffer carries its own cursor: ?47 re-entry must restore
+    // the alternate cursor, never the primary's.
+    let mut screen = Screen::new(5, 20);
+    screen.set_cursor_position(1, 4); // 1-based → 0-based (y=0, x=3)
+    screen.enter_alt(false);
+    screen.set_cursor_position(3, 3); // 0-based (y=2, x=2)
+    screen.exit_alt();
+    assert_eq!(
+        (screen.cursor_x(), screen.cursor_y()),
+        (3, 0),
+        "primary cursor restored on exit"
+    );
+
+    // Act — ?47-style re-entry.
+    screen.enter_alt(false);
+
+    // Assert — the alternate cursor was parked and restored with the buffer.
+    assert_eq!(
+        (screen.cursor_x(), screen.cursor_y()),
+        (2, 2),
+        "re-entry restores the alternate buffer's own cursor"
+    );
+    screen.exit_alt();
+    assert_eq!(
+        (screen.cursor_x(), screen.cursor_y()),
+        (3, 0),
+        "primary cursor survives the cycle"
+    );
+}
+
+#[test]
+fn reset_display_while_in_alt_drops_saved_and_parked_state() {
+    // RIS while in alt must drop both the saved primary (`saved_primary`) and any
+    // parked buffer (`parked_alt`): after the reset there is nothing to
+    // restore on exit and nothing to resurrect on a later ?47 entry.
+    let mut screen = Screen::new(3, 10);
+    screen.enter_alt(true);
+    screen.cell_mut(0, 0).ch = 'A';
+
+    // Act — full display reset while in the alternate screen.
+    screen.reset_display();
+
+    // Assert — out of alt, blank; exit is a no-op and re-entry is blank.
+    assert!(!screen.is_alt());
+    assert!(screen.row_text(0).trim().is_empty());
+    screen.exit_alt();
+    assert!(!screen.is_alt());
+    assert!(screen.row_text(0).trim().is_empty());
+    screen.enter_alt(false);
+    assert!(
+        screen.row_text(0).trim().is_empty(),
+        "no parked buffer may survive the reset"
+    );
+}
+
+#[test]
+fn alt_screen_1047_exit_then_47_reentry_restores_shared_buffer() {
+    // ?47 and ?1047 share one alternate buffer: a clear-entry (?1047) parks
+    // its contents on exit, and a later non-clear entry (?47) restores them.
+    let mut screen = Screen::new(3, 10);
+    screen.cell_mut(0, 0).ch = 'P';
+    screen.enter_alt(true); // ?1047-style clear entry
+    screen.cell_mut(0, 0).ch = 'A';
+    screen.exit_alt();
+    assert_eq!(screen.row_text(0).trim(), "P");
+
+    // Act — ?47-style re-entry after a clear-mode exit.
+    screen.enter_alt(false);
+
+    // Assert — the buffer parked by the ?1047 exit is restored.
+    assert_eq!(
+        screen.row_text(0).trim(),
+        "A",
+        "?47 re-entry restores the buffer parked by the ?1047 exit"
+    );
+    screen.exit_alt();
+    assert_eq!(screen.row_text(0).trim(), "P");
 }
 
 // ── per-row soft-wrap flags (issue #86) ─────────────────────────

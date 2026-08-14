@@ -30,8 +30,11 @@ impl AltScreenStack {
     }
 
     /// Requests entry into the alternate screen.
-    pub(crate) fn request_enter(&mut self) {
-        self.alt_request = Some(AltScreenAction::Enter);
+    ///
+    /// `clear` requests that the alternate buffer be cleared on entry
+    /// (`?1047`/`?1049`); `?47` passes `false` to preserve buffer contents.
+    pub(crate) fn request_enter(&mut self, clear: bool) {
+        self.alt_request = Some(AltScreenAction::Enter { clear });
     }
 
     /// Requests exit from the alternate screen.

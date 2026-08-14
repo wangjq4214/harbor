@@ -86,8 +86,12 @@ pub struct Screen {
     pen_state: PenState,
     /// Alt-screen flag and pending request.
     alt: AltScreenStack,
-    /// Saved normal-screen state while the alternate screen is active.
-    alt_saved: Option<Box<Screen>>,
+    /// Primary screen saved while the alternate screen is active.
+    /// Invariant: `Some` iff in alt screen (`is_alt()` is true).
+    saved_primary: Option<Box<Screen>>,
+    /// Alternate screen parked across `?47` exit/re-enter.
+    /// Invariant: `Some` iff not in alt screen (parked).
+    parked_alt: Option<Box<Screen>>,
     /// Outgoing VT replies buffer.
     pub(crate) replies: Vec<u8>,
 }
@@ -101,7 +105,8 @@ impl Screen {
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
             alt: AltScreenStack::new(),
-            alt_saved: None,
+            saved_primary: None,
+            parked_alt: None,
             replies: Vec::new(),
         }
     }
@@ -336,8 +341,8 @@ impl Screen {
         self.alt.is_alt()
     }
 
-    pub fn request_alt_enter(&mut self) {
-        self.alt.request_enter();
+    pub fn request_alt_enter(&mut self, clear: bool) {
+        self.alt.request_enter(clear);
     }
 
     pub fn request_alt_exit(&mut self) {
@@ -352,27 +357,52 @@ impl Screen {
         self.alt.take_alt_request()
     }
 
-    pub fn enter_alt(&mut self) {
+    pub fn enter_alt(&mut self, clear: bool) {
         if self.alt.is_alt() {
             return;
         }
         let rows = self.rows();
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
-        let saved = std::mem::replace(self, Self::new(rows, cols));
+        // Save the primary screen (cells + scrollback + cursor + pen + modes),
+        // carrying its parked alternate buffer along to the fresh screen.
+        let mut primary = std::mem::replace(self, Self::new(rows, cols));
+        let parked = primary.parked_alt.take();
+        // Install the alternate screen: clear it, or restore the persistent one.
+        if clear {
+            // Parked contents (if any) are dropped — `?1047`/`?1049` clear on entry.
+        } else if let Some(alt) = parked {
+            *self = *alt;
+            self.mark_all_dirty();
+        }
+        // Save the primary after the install block: a restored parked buffer
+        // carries `saved_primary = None`, so assigning first would be clobbered.
+        self.saved_primary = Some(Box::new(primary));
+        debug_assert!(self.saved_primary.is_some(), "in alt => primary saved");
         self.replies = replies;
-        self.alt_saved = Some(Box::new(saved));
         self.alt.mark_active();
     }
 
     pub fn exit_alt(&mut self) {
         let replies = std::mem::take(&mut self.replies);
-        if let Some(saved) = self.alt_saved.take() {
-            *self = *saved;
+        if let Some(primary) = self.saved_primary.take() {
+            // Preserve the alternate-screen contents for a later `?47` re-entry.
+            let rows = self.rows();
+            let cols = self.cols();
+            let alt = std::mem::replace(self, Self::new(rows, cols));
+
+            *self = *primary;
+            // Park the alternate buffer after the primary is back, since the
+            // saved primary carries an empty `parked_alt` slot.
+            self.parked_alt = Some(Box::new(alt));
             self.mark_all_dirty();
         }
         self.replies = replies;
         self.alt.mark_inactive();
+        debug_assert!(
+            self.saved_primary.is_none(),
+            "not in alt => no primary saved"
+        );
     }
 
     // ── resize ─────────────────────────────────────────────────────────
@@ -383,8 +413,11 @@ impl Screen {
         self.normal.resize(rows, cols);
         self.cursor.clamp_to_grid(rows, cols);
         self.pen_state.tab_stops.resize(cols);
-        if let Some(saved) = &mut self.alt_saved {
+        if let Some(saved) = &mut self.saved_primary {
             saved.resize(rows, cols);
+        }
+        if let Some(alt) = &mut self.parked_alt {
+            alt.resize(rows, cols);
         }
     }
 
@@ -451,9 +484,30 @@ impl Screen {
 
     pub fn set_private_mode(&mut self, param: usize, enabled: bool) {
         match param {
+            47 => {
+                if enabled {
+                    self.request_alt_enter(false);
+                } else {
+                    self.request_alt_exit();
+                }
+            }
+            1047 => {
+                if enabled {
+                    self.request_alt_enter(true);
+                } else {
+                    self.request_alt_exit();
+                }
+            }
+            1048 => {
+                if enabled {
+                    self.save_cursor();
+                } else {
+                    self.restore_cursor();
+                }
+            }
             1049 => {
                 if enabled {
-                    self.request_alt_enter();
+                    self.request_alt_enter(true);
                 } else {
                     self.request_alt_exit();
                 }
@@ -474,10 +528,10 @@ impl Screen {
 
     pub(crate) fn mode_status(&self, private: bool, param: usize) -> ModeStatus {
         let enabled = if private {
-            if param == 1049 {
-                Some(self.is_alt())
-            } else {
-                self.cursor.private_mode_enabled(param)
+            match param {
+                47 | 1047 | 1049 => Some(self.is_alt()),
+                1048 => Some(self.cursor.cursor.saved.is_some()),
+                _ => self.cursor.private_mode_enabled(param),
             }
         } else {
             self.cursor.standard_mode_enabled(param)
@@ -971,7 +1025,8 @@ impl Screen {
 
     pub fn reset_display(&mut self) {
         self.alt.mark_inactive();
-        self.alt_saved = None;
+        self.saved_primary = None;
+        self.parked_alt = None;
 
         let rows = self.normal.rows();
         let cols = self.normal.cols();

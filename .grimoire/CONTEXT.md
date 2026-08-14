@@ -613,3 +613,24 @@ Project domain concepts and terminology.
   - belongs to Terminal
   - uses Horizontal Margins (DECLRMM)
   - references Pending-Wrap
+
+### Alternate-Screen Mode Family
+- **Definition:** The DEC private modes `?47`, `?1047`, `?1048`, and `?1049` that together provide an isolated alternate screen buffer and cursor save/restore: `?47` switches buffers without clearing, `?1047` switches and clears the alternate buffer on entry, `?1048` saves or restores the cursor only, and `?1049` combines cursor save with a clearing buffer switch.
+- **Synonyms:** Alt-screen modes, DECSET/DECRST alternate screen
+- **Relationships:**
+  - belongs to Terminal
+  - contains Alternate-Screen Buffer Isolation
+  - references Cursor Save/Restore (DECSC/DECRC)
+
+### Alternate-Screen Buffer Isolation
+- **Definition:** Harbor's whole-screen swap technique that saves the entire primary `Screen` (cells, cursor, pen, modes, scrollback) and installs a fresh or persistent alternate `Screen`, so alternate-screen edits cannot corrupt primary scrollback and cursor save/restore is a superset of DECSC.
+- **Relationships:**
+  - belongs to Screen state
+  - depends on Alternate-Screen Mode Family
+
+### Cursor Save/Restore (DECSC/DECRC)
+- **Definition:** The terminal state snapshot mechanism that records cursor position and mode flags on DECSC/`CSI s`/`?1048 h` and restores them on DECRC/`CSI u`/`?1048 l`, with pen attributes saved separately by the pen state.
+- **Synonyms:** Cursor save, SCP/RCP
+- **Relationships:**
+  - belongs to Terminal
+  - referenced by Alternate-Screen Mode Family

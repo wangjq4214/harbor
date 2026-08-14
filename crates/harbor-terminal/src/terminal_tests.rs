@@ -777,6 +777,169 @@ fn alt_screen_exit_restores_scrollback_viewport() {
     assert!(!terminal.is_alt_screen());
 }
 
+// ── ?47 / ?1047 / ?1048 alternate-screen family (issue #92) ────────
+
+#[test]
+fn alt_screen_47_preserves_contents_across_reentry() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("normal");
+    terminal.put_str("\x1b[?47h");
+    terminal.put_str("alt1");
+    terminal.put_str("\x1b[?47l");
+    assert_eq!(terminal.row_text(0).trim(), "normal");
+    assert!(!terminal.is_alt_screen());
+
+    // Re-enter without clear: the alternate buffer must keep its contents.
+    terminal.put_str("\x1b[?47h");
+    assert_eq!(
+        terminal.row_text(0).trim(),
+        "alt1",
+        "?47 must preserve alternate-buffer contents across re-entry"
+    );
+
+    // Exit after re-entry: the primary screen must be restored (regression:
+    // a parked-buffer restore must not clobber the saved primary screen).
+    terminal.put_str("\x1b[?47l");
+    assert_eq!(terminal.row_text(0).trim(), "normal");
+    assert!(!terminal.is_alt_screen());
+}
+
+#[test]
+fn alt_screen_47_cursor_is_per_buffer() {
+    let mut terminal = Terminal::new_headless(5, 20);
+    terminal.put_str("abc"); // cursor at 0-based (3, 0)
+    terminal.put_str("\x1b[?47h");
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (0, 0),
+        "alternate buffer has its own cursor"
+    );
+    terminal.put_str("\x1b[?47l");
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (3, 0),
+        "primary cursor restored on exit"
+    );
+}
+
+#[test]
+fn alt_screen_1047_clears_on_entry() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("normal");
+    terminal.put_str("\x1b[?1047h");
+    assert!(terminal.row_text(0).trim().is_empty());
+    terminal.put_str("alt1");
+    terminal.put_str("\x1b[?1047l");
+    assert_eq!(terminal.row_text(0).trim(), "normal");
+
+    // Re-enter clears the alternate buffer.
+    terminal.put_str("\x1b[?1047h");
+    assert!(
+        terminal.row_text(0).trim().is_empty(),
+        "?1047 must clear on entry"
+    );
+}
+
+#[test]
+fn alt_screen_1048_saves_and_restores_cursor() {
+    let mut terminal = Terminal::new_headless(5, 20);
+    terminal.put_str("abc"); // cursor at 0-based (3, 0)
+    terminal.put_str("\x1b[?1048h"); // save cursor (DECSC)
+    terminal.put_bytes(b"\x1b[5;10H"); // 0-based (9, 4)
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (9, 4)
+    );
+    terminal.put_str("\x1b[?1048l"); // restore cursor (DECRC)
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (3, 0),
+        "?1048 l restores the saved cursor position"
+    );
+    assert!(!terminal.is_alt_screen(), "?1048 must not switch buffers");
+    assert_eq!(terminal.row_text(0).trim(), "abc");
+}
+
+#[test]
+fn alt_screen_1048_restore_without_save_is_noop() {
+    let mut terminal = Terminal::new_headless(5, 20);
+    terminal.put_bytes(b"\x1b[5;5H");
+    terminal.put_str("\x1b[?1048l"); // no prior save
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (4, 4),
+        "?1048 l without a prior save is a no-op"
+    );
+}
+
+#[test]
+fn ris_while_in_alt_exits_and_drops_alt_buffer() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("normal");
+    terminal.put_str("\x1b[?1049h");
+    terminal.put_str("alt");
+    terminal.put_str("\x1b[?47l"); // persist alternate contents
+    terminal.put_str("\x1b[?47h");
+    assert_eq!(terminal.row_text(0).trim(), "alt");
+
+    terminal.process_output(b"\x1bc"); // RIS
+    assert!(!terminal.is_alt_screen());
+    assert!(terminal.row_text(0).trim().is_empty());
+
+    // A later ?47 entry must not resurrect the pre-RIS alternate buffer.
+    terminal.put_str("\x1b[?47h");
+    assert!(
+        terminal.row_text(0).trim().is_empty(),
+        "RIS must drop the alt buffer"
+    );
+}
+
+#[test]
+fn decstr_while_in_alt_stays_in_alt() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("normal");
+    terminal.put_str("\x1b[?1049h");
+    terminal.put_str("alt");
+    terminal.put_bytes(b"\x1b[!p"); // DECSTR soft reset
+    assert!(terminal.is_alt_screen(), "DECSTR must not switch screens");
+    assert_eq!(
+        terminal.row_text(0).trim(),
+        "alt",
+        "DECSTR must not clear cells"
+    );
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (0, 0),
+        "DECSTR homes and resets the cursor"
+    );
+    terminal.put_str("\x1b[?1049l");
+    assert_eq!(terminal.row_text(0).trim(), "normal");
+}
+
+#[test]
+fn alt_screen_47_inside_1049_is_noop() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("\x1b[?1049h");
+    terminal.put_str("first");
+    terminal.put_str("\x1b[?47h"); // already in alt: no-op, must not clear
+    assert_eq!(terminal.row_text(0).trim(), "first");
+}
+
+#[test]
+fn alt_screen_1047_exit_then_47_reentry_shares_buffer() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.put_str("normal");
+    terminal.put_str("\x1b[?1047h");
+    terminal.put_str("alt1");
+    terminal.put_str("\x1b[?1047l");
+    assert_eq!(terminal.row_text(0).trim(), "normal");
+
+    // ?47 re-entry must restore the buffer parked by the ?1047 exit — the two
+    // modes share one alternate buffer.
+    terminal.put_str("\x1b[?47h");
+    assert_eq!(terminal.row_text(0).trim(), "alt1");
+}
+
 // ── ICH / DCH integration ───────────────────────────────────
 
 #[test]
