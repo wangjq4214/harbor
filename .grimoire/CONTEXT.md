@@ -597,3 +597,19 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to harbor-parser
   - communicates with VtHandler
+
+### CHT (Cursor Forward Tabulation)
+- **Definition:** The `CSI Ps I` terminal command that clears pending-wrap and moves the cursor forward by `Ps` tab stops, treating an omitted or zero parameter as one and clamping to the active right boundary when no further stop exists.
+- **Synonyms:** Forward Tab
+- **Relationships:**
+  - belongs to Terminal
+  - uses Horizontal Margins (DECLRMM)
+  - references Pending-Wrap
+
+### CBT (Cursor Backward Tabulation)
+- **Definition:** The `CSI Ps Z` terminal command that clears pending-wrap and moves the cursor backward by `Ps` tab stops, treating an omitted or zero parameter as one and clamping to the active left boundary when no further stop exists.
+- **Synonyms:** Back Tab
+- **Relationships:**
+  - belongs to Terminal
+  - uses Horizontal Margins (DECLRMM)
+  - references Pending-Wrap

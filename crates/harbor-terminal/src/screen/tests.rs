@@ -1769,6 +1769,185 @@ fn should_clear_pending_wrap_when_tab_reaches_right_margin() {
 }
 
 #[test]
+fn test_forward_and_backward_tabulation_dispatch() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 20);
+
+    parser.put_bytes(&mut screen, b"\x1b[I");
+    assert_eq!(screen.cursor_x(), 8, "omitted Ps defaults to one stop");
+
+    parser.put_bytes(&mut screen, b"\x1b[2Z");
+    assert_eq!(screen.cursor_x(), 0, "CBT traverses two stops backward");
+
+    parser.put_bytes(&mut screen, b"\x1b[0I");
+    assert_eq!(screen.cursor_x(), 8, "zero Ps is normalized to one stop");
+
+    parser.put_bytes(&mut screen, b"\x1b[2I");
+    assert_eq!(
+        screen.cursor_x(),
+        19,
+        "CHT clamps at the physical right boundary"
+    );
+
+    parser.put_bytes(&mut screen, b"\x1b[Z");
+    assert_eq!(screen.cursor_x(), 16, "CBT defaults to one stop");
+}
+
+#[test]
+fn test_tabulation_uses_custom_stops_and_active_margins() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 14);
+    screen.set_private_mode(69, true);
+    screen.set_left_right_margins(3, 12); // active columns 2..11
+    screen.clear_tab_stops(3);
+
+    // Stops outside the active margins must not be reachable.
+    screen.cursor.cursor.x = 1;
+    screen.set_tab_stop();
+    screen.cursor.cursor.x = 4;
+    screen.set_tab_stop();
+    screen.cursor.cursor.x = 10;
+    screen.set_tab_stop();
+    screen.cursor.cursor.x = 12;
+    screen.set_tab_stop();
+
+    screen.cursor.cursor.x = 2;
+    parser.put_bytes(&mut screen, b"\x1b[I");
+    assert_eq!(screen.cursor_x(), 4);
+
+    parser.put_bytes(&mut screen, b"\x1b[2I");
+    assert_eq!(
+        screen.cursor_x(),
+        11,
+        "CHT clamps at the active right margin"
+    );
+
+    parser.put_bytes(&mut screen, b"\x1b[Z");
+    assert_eq!(screen.cursor_x(), 10);
+
+    parser.put_bytes(&mut screen, b"\x1b[2Z");
+    assert_eq!(screen.cursor_x(), 2, "CBT clamps at the active left margin");
+}
+
+#[test]
+fn test_tabulation_is_non_destructive_and_clears_pending_wrap() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 5);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+    let before = screen.row_text(0);
+
+    parser.put_bytes(&mut screen, b"\x1b[I");
+
+    assert_eq!(screen.row_text(0), before);
+    assert!(!screen.pending_wrap());
+    screen.write_char('Z');
+    assert_eq!(screen.row_text(0), "abcdZ");
+}
+
+#[test]
+fn should_move_back_one_tab_stop_when_cbt_parameter_is_zero() {
+    // Arrange
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 20);
+    screen.cursor.cursor.x = 16;
+
+    // Act
+    parser.put_bytes(&mut screen, b"\x1b[0Z");
+
+    // Assert
+    assert_eq!(screen.cursor_x(), 8, "zero Ps must move back one tab stop");
+}
+
+#[test]
+fn should_move_forward_one_tab_stop_when_direct_step_count_is_zero() {
+    // Arrange
+    let mut screen = Screen::new(1, 20);
+
+    // Act
+    screen.forward_tab(0);
+
+    // Assert
+    assert_eq!(screen.cursor_x(), 8);
+}
+
+#[test]
+fn should_move_backward_one_tab_stop_when_direct_step_count_is_zero() {
+    // Arrange
+    let mut screen = Screen::new(1, 20);
+    screen.cursor.cursor.x = 16;
+
+    // Act
+    screen.backward_tab(0);
+
+    // Assert
+    assert_eq!(screen.cursor_x(), 8);
+}
+
+#[test]
+fn should_clear_pending_wrap_when_backward_tabulation_is_dispatched() {
+    // Arrange
+    let mut parser = TerminalParser::default();
+    let mut screen = screen_with_pending_wrap();
+
+    // Act
+    parser.put_bytes(&mut screen, b"\x1b[Z");
+
+    // Assert
+    assert!(!screen.pending_wrap());
+    assert_eq!(screen.cursor_x(), 0);
+    screen.write_char('Z');
+    assert_eq!(screen.row_text(0), "Zbcde");
+}
+
+#[test]
+fn should_preserve_cell_state_when_forward_tabulation_moves_cursor() {
+    // Arrange
+    let mut screen = Screen::new(1, 20);
+    screen.write_char('A');
+    screen.cell_mut(0, 0).fg = Color::Named(1);
+    screen.cell_mut(0, 0).bg = Color::Named(4);
+    screen.cell_mut(0, 0).attrs.set(CellAttrs::BOLD);
+    screen.cell_mut(0, 0).protected = true;
+    screen.clear_dirty();
+    let before: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+
+    // Act
+    screen.forward_tab(1);
+
+    // Assert
+    let after: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    assert_eq!(screen.cursor_x(), 8);
+    assert_eq!(after, before);
+    assert!(screen.dirty_rows().is_empty());
+}
+
+#[test]
+fn should_preserve_cell_state_when_backward_tabulation_moves_cursor() {
+    // Arrange
+    let mut screen = Screen::new(1, 20);
+    screen.cell_mut(0, 16).ch = 'A';
+    screen.cursor.cursor.x = 16;
+    screen.cell_mut(0, 16).fg = Color::Named(1);
+    screen.cell_mut(0, 16).bg = Color::Named(4);
+    screen.cell_mut(0, 16).attrs.set(CellAttrs::BOLD);
+    screen.cell_mut(0, 16).protected = true;
+    screen.clear_dirty();
+    let before: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+
+    // Act
+    screen.backward_tab(1);
+
+    // Assert
+    let after: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    assert_eq!(screen.cursor_x(), 8);
+    assert_eq!(after, before);
+    assert!(screen.dirty_rows().is_empty());
+}
+
+#[test]
 fn test_erase_background_filling() {
     let mut screen = Screen::new(3, 5);
     screen.pen_state.pen.bg = Color::Named(4); // Blue

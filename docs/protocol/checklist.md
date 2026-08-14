@@ -509,8 +509,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] HT — Move to next tab stop
 * [x] `ESC H` — HTS, set tab stop at current column
 * [x] `CSI Ps g` — TBC
-* [ ] `CSI Ps I` — CHT
-* [ ] `CSI Ps Z` — CBT
+* [x] `CSI Ps I` — CHT
+* [x] `CSI Ps Z` — CBT
 
 ### 13.1 TBC
 
@@ -523,8 +523,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 * [x] Default tab stops are set every 8 columns
 * [x] HT moves to the valid right margin when no further tab stop exists
-* [ ] CHT defaults to moving 1 tab stop
-* [ ] CBT defaults to moving back 1 tab stop
+* [x] CHT defaults to moving 1 tab stop
+* [x] CBT defaults to moving back 1 tab stop
 * [x] Tab movement does not cross the valid left/right margins
 * [x] Tab movement clears pending wrap
 * [x] Default tab stops are restored after RIS
