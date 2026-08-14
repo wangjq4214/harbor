@@ -518,16 +518,21 @@ impl NormalBuf {
         self.wrapped[ring_row] = false;
     }
 
-    /// Fill every visible row with default cells.
-    pub fn fill_all(&mut self) {
+    /// Fill every visible row with the supplied cell value.
+    pub fn fill_all_with(&mut self, cell: Cell) {
         tracing::debug!(
             visible_rows = self.visible_rows,
-            "fill_all: clearing all visible rows"
+            "fill_all_with: replacing all visible rows"
         );
 
         for d in 0..self.visible_rows {
-            self.fill_row(d);
+            self.fill_row_with(d, cell);
         }
+    }
+
+    /// Fill every visible row with default cells.
+    pub fn fill_all(&mut self) {
+        self.fill_all_with(Cell::default());
     }
 }
 
@@ -810,6 +815,43 @@ mod tests {
         // Assert
         assert!(!buf.is_wrapped(0), "filled row must clear its wrap flag");
         assert!(buf.is_wrapped(1), "untouched row must keep its wrap flag");
+    }
+
+    #[test]
+    fn should_fill_every_visible_row_with_supplied_cell_and_clear_wrap_flags() {
+        // Arrange
+        let mut buf = NormalBuf::new(3, 2);
+        for row in 0..buf.rows() {
+            buf.set_wrapped(row, true);
+        }
+        let cell = Cell {
+            ch: 'E',
+            ..Cell::default()
+        };
+
+        // Act
+        buf.fill_all_with(cell);
+
+        // Assert
+        for row in 0..buf.rows() {
+            for col in 0..buf.cols() {
+                assert_eq!(buf.cell(row, col), &cell);
+            }
+            assert!(!buf.is_wrapped(row));
+        }
+    }
+
+    #[test]
+    fn should_keep_default_blank_behavior_for_fill_all() {
+        // Arrange
+        let mut buf = NormalBuf::new(1, 2);
+        buf.cell_mut(0, 0).ch = 'X';
+
+        // Act
+        buf.fill_all();
+
+        // Assert
+        assert_eq!(buf.row_text(0), "  ");
     }
 
     #[test]

@@ -32,6 +32,38 @@ fn move_to(parser: &mut TerminalParser, screen: &mut Screen, row: usize, col: us
 }
 
 #[test]
+fn decaln_fills_active_screen_and_preserves_saved_primary_screen() {
+    let mut screen = Screen::new(2, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"primary");
+    let primary = screen.row_text(0);
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h\x1b#8");
+    assert_eq!(screen.row_text(0), "EEEE");
+    assert_eq!(screen.row_text(1), "EEEE");
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (0, 0));
+
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+    assert_eq!(screen.row_text(0), primary);
+}
+
+#[test]
+fn unknown_escape_intermediate_pair_is_consumed_without_visible_effect() {
+    for sequence in [b"\x1b#9Z".as_slice(), b"\x1b##9Z".as_slice()] {
+        let mut screen = Screen::new(2, 4);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"A");
+        let before_cursor = (screen.cursor_x(), screen.cursor_y());
+
+        feed(&mut parser, &mut screen, sequence);
+
+        assert_eq!(screen.row_text(0), "AZ  ");
+        assert_eq!(screen.cursor_y(), before_cursor.1);
+        assert_eq!(screen.scroll_count(), 0);
+    }
+}
+
+#[test]
 fn oversized_param_skips_dispatch() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();

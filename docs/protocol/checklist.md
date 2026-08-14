@@ -174,17 +174,17 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 4.2 ESC Intermediate
 
-* [ ] Supports saving a single Intermediate byte
-* [ ] Supports saving multiple Intermediate bytes
-* [ ] Dispatches commands based on the combination of Intermediate and Final
-* [ ] Unknown combinations are fully consumed then ignored
+* [x] Supports saving a single Intermediate byte
+* [x] Supports saving multiple Intermediate bytes
+* [x] Dispatches commands based on the combination of Intermediate and Final
+* [x] Unknown combinations are fully consumed then ignored
 
 ### 4.3 Screen Alignment Test
 
-* [ ] `ESC # 8` — DECALN
-* [ ] DECALN fills all visible cells with `E`
-* [ ] DECALN does not produce additional scrolling
-* [ ] Cursor state after DECALN matches expected behavior
+* [x] `ESC # 8` — DECALN
+* [x] DECALN fills all visible cells with `E`
+* [x] DECALN does not produce additional scrolling
+* [x] Cursor state after DECALN matches expected behavior
 
 ### 4.4 Character Encoding Modes
 

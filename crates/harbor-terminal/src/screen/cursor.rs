@@ -366,6 +366,13 @@ impl CursorEngine {
         self.clear_pending_wrap();
     }
 
+    /// Homes the cursor to the physical top-left for DECALN.
+    pub(crate) fn alignment_home(&mut self) {
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+        self.clear_pending_wrap();
+    }
+
     /// Resets `cursor_x`, implementing the carriage-return (`\r`) semantics.
     pub(crate) fn carriage_return(&mut self) {
         self.clear_pending_wrap();
