@@ -4,6 +4,7 @@ use crate::render::{
 };
 use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
 use harbor_types::{TerminalSnapshot, UpdateDamage};
+use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
@@ -72,6 +73,7 @@ impl TerminalRenderPipeline {
         gpu: &GpuContext,
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
+        now: Instant,
     ) {
         let viewport = self.viewport;
         if let Some(damage) = damage {
@@ -101,7 +103,7 @@ impl TerminalRenderPipeline {
             self.decoration.prepare(gpu, Some(snap), &viewport);
         }
         self.selection.prepare(gpu, Some(snap), &viewport);
-        self.cursor.prepare(gpu, Some(snap), &viewport);
+        self.cursor.prepare(gpu, Some(snap), &viewport, now);
         self.scrollbar.prepare(gpu, Some(snap), &viewport);
     }
 

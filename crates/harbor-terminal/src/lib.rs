@@ -33,9 +33,11 @@ pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
 };
 use std::io::{Read, Write};
+use std::time::Instant;
 pub use types::{
-    RenderTarget, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    FrameDemand, RenderTarget, TerminalEvent, TerminalFocusEvent, TerminalKey,
+    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase,
 };
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
@@ -122,9 +124,10 @@ impl Terminal {
 
     /// Prepares GPU resources for all render components.
     pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {
+        let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
-            renderer.prepare(gpu, &snap, damage);
+            renderer.prepare(gpu, &snap, damage, now);
         }
     }
 
@@ -136,12 +139,39 @@ impl Terminal {
         let viewport = RenderViewport::from_target(target, &metrics);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
+        let before = self.cursor_pos();
         self.io.drain(&mut self.screen);
+        self.maybe_reset_blink(before, false);
+        let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
-            renderer.prepare(gpu, &snap, None);
+            renderer.prepare(gpu, &snap, None, now);
             renderer.draw(pass);
+        }
+    }
+
+    /// Host-neutral frame demand from the Cursor blink state and screen cursor flags.
+    ///
+    /// Without a renderer/Cursor, returns an empty demand.
+    pub fn frame_demand(&self, now: Instant) -> FrameDemand {
+        let snap = self.snapshot();
+        match &self.renderer {
+            Some(renderer) => renderer.cursor.frame_demand(&snap, now),
+            None => FrameDemand::empty(),
+        }
+    }
+
+    fn cursor_pos(&self) -> (usize, usize) {
+        (self.screen.cursor_x(), self.screen.cursor_y())
+    }
+
+    fn maybe_reset_blink(&mut self, before: (usize, usize), input_wrote: bool) {
+        if !(input_wrote || before != self.cursor_pos()) {
+            return;
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.cursor.reset_blink(Instant::now());
         }
     }
 
@@ -184,17 +214,24 @@ impl Terminal {
 
     /// Feeds raw PTY bytes through the streaming parser.
     pub fn put_bytes(&mut self, bytes: &[u8]) {
+        let before = self.cursor_pos();
         self.io.feed_pty_output(&mut self.screen, bytes);
+        self.maybe_reset_blink(before, false);
     }
 
     /// Feeds raw PTY bytes into the terminal parser, snapping to bottom first.
     pub fn process_output(&mut self, output: &[u8]) {
+        let before = self.cursor_pos();
         self.io.feed_pty_output_snapped(&mut self.screen, output);
+        self.maybe_reset_blink(before, false);
     }
 
     /// Drains all reader-thread output in FIFO order into the terminal parser.
     pub fn drain_pty(&mut self) -> bool {
-        self.io.drain(&mut self.screen)
+        let before = self.cursor_pos();
+        let drained = self.io.drain(&mut self.screen);
+        self.maybe_reset_blink(before, false);
+        drained
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.
@@ -204,7 +241,10 @@ impl Terminal {
 
     /// Drains new output, encodes a terminal event using current modes, and writes it to the PTY.
     pub fn handle_event(&mut self, event: TerminalEvent) -> anyhow::Result<()> {
-        self.io.handle_event(&mut self.screen, event)
+        let before = self.cursor_pos();
+        let wrote_input = self.io.handle_event(&mut self.screen, event)?;
+        self.maybe_reset_blink(before, wrote_input);
+        Ok(())
     }
 
     /// When true, `process_output` skips the scroll-to-bottom snap.
@@ -226,7 +266,9 @@ impl Terminal {
 
     /// Drains pending PTY output before returning the current terminal snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
+        let before = self.cursor_pos();
         self.io.drain(&mut self.screen);
+        self.maybe_reset_blink(before, false);
         self.snapshot()
     }
 

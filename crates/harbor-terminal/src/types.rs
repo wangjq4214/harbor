@@ -3,6 +3,27 @@
 //! These types intentionally mirror current `UiEvent` semantics without depending
 //! on widget types. Conversions from widget events live outside this crate.
 
+use std::time::Instant;
+
+/// Host-neutral scheduling snapshot: immediate redraw need plus optional blink deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameDemand {
+    /// True when the host should request a frame before waiting on `deadline`.
+    pub redraw_now: bool,
+    /// Earliest next cursor-blink phase boundary, when blinking is active.
+    pub deadline: Option<Instant>,
+}
+
+impl FrameDemand {
+    /// Empty demand used when no Cursor/renderer is available.
+    pub const fn empty() -> Self {
+        Self {
+            redraw_now: false,
+            deadline: None,
+        }
+    }
+}
+
 /// A terminal render allocation expressed entirely in physical surface coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderTarget {

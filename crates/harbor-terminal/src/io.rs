@@ -241,27 +241,30 @@ impl TerminalIo {
 
     /// Drains new output, interprets scrollback navigation / wheel, then encodes
     /// remaining events for the PTY.
+    ///
+    /// Returns `true` when bytes were written to the PTY input endpoint.
     pub(crate) fn handle_event(
         &mut self,
         screen: &mut Screen,
         event: TerminalEvent,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         self.drain(screen);
 
         if Self::try_scrollback_key(screen, &event) {
-            return Ok(());
+            return Ok(false);
         }
         if Self::try_scrollback_wheel(screen, &event) {
-            return Ok(());
+            return Ok(false);
         }
 
         let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) else {
-            return Ok(());
+            return Ok(false);
         };
         // Terminal-bound input resumes the live viewport so typed text and the
         // shell response are visible immediately after browsing scrollback.
         screen.scroll_to_bottom();
-        self.write_pty(&bytes)
+        self.write_pty(&bytes)?;
+        Ok(true)
     }
 
     /// Bare PageUp/PageDown/Home/End navigate scrollback on the primary screen.

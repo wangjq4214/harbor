@@ -1,6 +1,6 @@
 # Host-Neutral Terminal Frame Scheduling
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-11
 
 ## Context

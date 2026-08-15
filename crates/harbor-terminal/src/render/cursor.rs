@@ -2,10 +2,11 @@ use harbor_text::TextMetrics;
 use harbor_types::TerminalSnapshot;
 use std::time::Instant;
 
+use super::cursor_blink::CursorBlinkState;
 use super::gpu::{self, GpuContext, TexturedVertex};
 use crate::CursorShape;
+use crate::FrameDemand;
 use crate::render::RenderViewport;
-use harbor_config::BLINK_INTERVAL_MS;
 
 const CURSOR_SHADER: &str = r#"
 struct VertexInput {
@@ -57,8 +58,8 @@ pub struct Cursor {
     visible: bool,
     /// Cursor shape (Block, Underline, Bar).
     shape: CursorShape,
-    /// Start time of the current blink cycle (reset on keypress / position change).
-    blink_start: Instant,
+    /// Idle blink phase and pending immediate-redraw flag.
+    blink: CursorBlinkState,
     /// Last rendered blink visibility state (used to trigger redraws on toggle).
     last_rendered_visible: bool,
     /// Cell dimensions in logical pixels.
@@ -85,7 +86,7 @@ impl Cursor {
             vertex_count: 0,
             visible: true,
             shape: CursorShape::Block,
-            blink_start: Instant::now(),
+            blink: CursorBlinkState::new(Instant::now()),
             last_rendered_visible: true,
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
@@ -95,20 +96,28 @@ impl Cursor {
     }
 
     /// Resets the blink timer (makes cursor solid-on immediately).
-    pub fn reset_blink(&mut self) {
-        self.blink_start = Instant::now();
+    pub fn reset_blink(&mut self, now: Instant) {
+        self.blink.reset(now);
         self.dirty = true;
     }
 
-    /// Calculates whether cursor is in the visible phase of the blink cycle.
-    pub fn blink_visible(&self) -> bool {
-        let elapsed_ms = self.blink_start.elapsed().as_millis() as u64;
-        (elapsed_ms / BLINK_INTERVAL_MS).is_multiple_of(2)
+    /// Host-neutral frame demand derived from blink state and screen cursor flags.
+    pub fn frame_demand(&self, snap: &TerminalSnapshot, now: Instant) -> FrameDemand {
+        let deadline = if snap.cursor_visible && snap.cursor_blink {
+            Some(self.blink.next_deadline(now))
+        } else {
+            None
+        };
+        FrameDemand {
+            redraw_now: self.blink.pending_redraw(),
+            deadline,
+        }
     }
 
     pub fn commit_frame(&mut self) {
         self.last_rendered_visible = self.visible;
         self.dirty = false;
+        self.blink.take_pending_redraw();
     }
 
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -155,6 +164,7 @@ impl Cursor {
         gpu: &GpuContext,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
+        now: Instant,
     ) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
@@ -162,7 +172,7 @@ impl Cursor {
             return;
         };
 
-        self.visible = should_render_cursor(snap, self.blink_visible());
+        self.visible = should_render_cursor(snap, self.blink.phase_visible(now));
         self.shape = snap.cursor_shape;
 
         let state_changed = self.last_cursor.is_none_or(|last| {
@@ -246,7 +256,27 @@ impl Cursor {
 #[cfg(test)]
 mod tests {
     use super::should_render_cursor;
-    use crate::Terminal;
+    use crate::render::CursorBlinkState;
+    use crate::{FrameDemand, Terminal};
+    use harbor_config::BLINK_INTERVAL_MS;
+    use harbor_types::TerminalSnapshot;
+    use std::time::{Duration, Instant};
+
+    fn demand_from_blink(
+        snap: &TerminalSnapshot,
+        blink: &CursorBlinkState,
+        now: Instant,
+    ) -> FrameDemand {
+        let deadline = if snap.cursor_visible && snap.cursor_blink {
+            Some(blink.next_deadline(now))
+        } else {
+            None
+        };
+        FrameDemand {
+            redraw_now: blink.pending_redraw(),
+            deadline,
+        }
+    }
 
     #[test]
     fn dectcem_controls_rendered_cursor_visibility() {
@@ -262,5 +292,99 @@ mod tests {
 
         terminal.put_bytes(b"\x1b[?25h");
         assert!(should_render_cursor(&terminal.snapshot(), true));
+    }
+
+    #[test]
+    fn should_include_deadline_when_cursor_visible_and_blinking() {
+        // Arrange
+        let terminal = Terminal::new_headless(3, 3);
+        let t0 = Instant::now();
+        let blink = CursorBlinkState::new(t0);
+
+        // Act
+        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+
+        // Assert
+        assert!(!demand.redraw_now);
+        assert_eq!(
+            demand.deadline,
+            Some(t0 + Duration::from_millis(BLINK_INTERVAL_MS))
+        );
+    }
+
+    #[test]
+    fn should_omit_deadline_when_cursor_style_is_steady() {
+        // Arrange
+        let mut terminal = Terminal::new_headless(3, 3);
+        let t0 = Instant::now();
+        let blink = CursorBlinkState::new(t0);
+        terminal.put_bytes(b"\x1b[2 q"); // steady block
+
+        // Act
+        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+
+        // Assert
+        assert!(demand.deadline.is_none());
+        assert!(!demand.redraw_now);
+    }
+
+    #[test]
+    fn should_omit_deadline_when_dectcem_hides_cursor() {
+        // Arrange
+        let mut terminal = Terminal::new_headless(3, 3);
+        let t0 = Instant::now();
+        let blink = CursorBlinkState::new(t0);
+        terminal.put_bytes(b"\x1b[0 q"); // blinking block
+        terminal.put_bytes(b"\x1b[?25l");
+
+        // Act
+        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+
+        // Assert
+        assert!(demand.deadline.is_none());
+        assert!(!demand.redraw_now);
+    }
+
+    #[test]
+    fn should_mark_redraw_and_restart_deadline_when_reset_from_hidden_phase() {
+        // Arrange
+        let t0 = Instant::now();
+        let mut blink = CursorBlinkState::new(t0);
+        let hidden_at = t0 + Duration::from_millis(BLINK_INTERVAL_MS);
+        blink.reset(hidden_at);
+        let snap = Terminal::new_headless(3, 3).snapshot();
+
+        // Act
+        let demand = demand_from_blink(&snap, &blink, hidden_at);
+
+        // Assert
+        assert!(demand.redraw_now);
+        assert_eq!(
+            demand.deadline,
+            Some(hidden_at + Duration::from_millis(BLINK_INTERVAL_MS))
+        );
+        assert!(blink.phase_visible(hidden_at));
+    }
+
+    #[test]
+    fn should_gate_draw_visibility_with_same_phase_as_frame_demand() {
+        // Arrange — prepare uses should_render_cursor(snap, blink.phase_visible(now))
+        let mut terminal = Terminal::new_headless(3, 3);
+        let t0 = Instant::now();
+        let blink = CursorBlinkState::new(t0);
+        let hidden_at = t0 + Duration::from_millis(BLINK_INTERVAL_MS);
+        let snap = terminal.snapshot();
+
+        // Act + Assert — blinking visible phase
+        assert!(should_render_cursor(&snap, blink.phase_visible(t0)));
+        // blinking hidden phase
+        assert!(!should_render_cursor(&snap, blink.phase_visible(hidden_at)));
+
+        terminal.put_bytes(b"\x1b[2 q"); // steady: draw even when phase would be hidden
+        let steady = terminal.snapshot();
+        assert!(should_render_cursor(
+            &steady,
+            blink.phase_visible(hidden_at)
+        ));
     }
 }

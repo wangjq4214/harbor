@@ -4,11 +4,13 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey,
-    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
-    TerminalPointerPhase, TerminalSize, safe_preview_line, should_confirm_multiline,
+    FrameDemand, InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent,
+    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
+    TerminalPointerEvent, TerminalPointerPhase, TerminalSize, safe_preview_line,
+    should_confirm_multiline,
 };
 use std::borrow::Cow;
+use std::time::Instant;
 
 #[test]
 fn writes_plain_characters_and_tracks_cursor() {
@@ -2501,4 +2503,75 @@ fn drain_and_snapshot_observes_queued_bracketed_paste_mode() {
         .expect("mode update should finish reading");
 
     assert!(terminal.drain_and_snapshot().input_modes.bracketed_paste);
+}
+
+#[test]
+fn should_return_empty_frame_demand_when_headless() {
+    // Arrange
+    let terminal = Terminal::new_headless(3, 3);
+    let now = Instant::now();
+
+    // Act
+    let demand = terminal.frame_demand(now);
+
+    // Assert
+    assert_eq!(demand, FrameDemand::empty());
+    assert!(!demand.redraw_now);
+    assert!(demand.deadline.is_none());
+}
+
+#[test]
+fn should_keep_empty_demand_after_cursor_move_when_headless() {
+    // Arrange — CUP moves the cursor; without a renderer reset is a no-op
+    let mut terminal = Terminal::new_headless(5, 10);
+    let before = (terminal.screen().cursor_x(), terminal.screen().cursor_y());
+    assert_eq!(before, (0, 0));
+
+    // Act
+    terminal.put_bytes(b"\x1b[3;4H");
+    let after = (terminal.screen().cursor_x(), terminal.screen().cursor_y());
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert_eq!(after, (3, 2));
+    assert_ne!(before, after);
+    assert_eq!(demand, FrameDemand::empty());
+}
+
+#[test]
+fn should_keep_empty_demand_after_non_moving_print_when_headless() {
+    // Arrange — SGR alone does not move the cursor (would not reset blink)
+    let mut terminal = Terminal::new_headless(3, 8);
+    let before = (terminal.screen().cursor_x(), terminal.screen().cursor_y());
+
+    // Act
+    terminal.put_bytes(b"\x1b[31m");
+    let after = (terminal.screen().cursor_x(), terminal.screen().cursor_y());
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert_eq!(before, after);
+    assert_eq!(demand, FrameDemand::empty());
+}
+
+#[test]
+fn should_keep_empty_demand_after_input_write_when_headless() {
+    // Arrange — KeyDown writes PTY input (would reset blink when a Cursor exists)
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+
+    // Act
+    terminal
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('a'),
+            modifiers: TerminalModifiers::default(),
+        }))
+        .unwrap();
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert_eq!(written.lock().unwrap().as_slice(), b"a");
+    assert_eq!(demand, FrameDemand::empty());
 }
