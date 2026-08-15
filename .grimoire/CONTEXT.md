@@ -642,3 +642,30 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Alternate-Screen Mode Family
+
+### Terminal Frame Demand
+- **Definition:** A host-neutral terminal scheduling output that reports an immediate redraw requirement and the next cursor-blink deadline to its rendering host.
+- **Relationships:**
+  - belongs to Terminal
+  - consumed by Runtime Frame Scheduler
+  - communicates with Runtime Host
+
+### Cursor Blink Scheduling
+- **Definition:** The timer-driven cursor policy that alternates visibility while idle and resets to visible when terminal input or cursor movement occurs.
+- **Relationships:**
+  - belongs to Terminal Frame Demand
+  - depends on Runtime Frame Scheduler
+
+### External Draw Scheduling Callback
+- **Definition:** A widget Runtime callback registered by an external draw provider to contribute an immediate redraw request or animation deadline before the scheduler chooses its idle wait policy.
+- **Relationships:**
+  - extends ExternalDrawFn
+  - consumed by Runtime Frame Scheduler
+  - implemented by Terminal Widget Bridge
+
+### Standalone Terminal Winit/WGPU Adapter
+- **Definition:** A feature-gated public host adapter that renders Terminal directly through winit and wgpu without creating a Harbor Widget Runtime.
+- **Relationships:**
+  - wraps Terminal
+  - consumes Terminal Frame Demand
+  - communicates with Runtime Host
