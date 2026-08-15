@@ -17,13 +17,6 @@ pub(crate) struct AltScreenStack {
 }
 
 impl AltScreenStack {
-    pub(crate) fn new() -> Self {
-        Self {
-            in_alt: false,
-            alt_request: None,
-        }
-    }
-
     /// Returns `true` when the alternate screen is active.
     pub(crate) fn is_alt(&self) -> bool {
         self.in_alt

@@ -104,7 +104,7 @@ impl Screen {
             normal: NormalBuf::new(rows, cols),
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
-            alt: AltScreenStack::new(),
+            alt: AltScreenStack::default(),
             saved_primary: None,
             parked_alt: None,
             replies: Vec::new(),

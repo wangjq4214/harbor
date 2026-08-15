@@ -89,10 +89,9 @@ fn feed_all(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8]) {
         let result = parser.put_bytes(screen, remaining);
         remaining = &remaining[result.consumed..];
         if let Some(action) = result.alt_request {
-            // Mirror TerminalIo: consume the pending request, then apply the action before
-            // feeding the unconsumed suffix. This makes alternate-screen behavior part of the
-            // one-shot/chunked comparison rather than dropping the boundary event.
-            let _ = screen.take_alt_request();
+            // Mirror TerminalIo: apply the action before feeding the unconsumed suffix.
+            // This makes alternate-screen behavior part of the one-shot/chunked comparison
+            // rather than dropping the boundary event.
             match action {
                 AltScreenAction::Enter { clear } => screen.enter_alt(clear),
                 AltScreenAction::Exit => screen.exit_alt(),
