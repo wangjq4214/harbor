@@ -42,6 +42,7 @@ impl<'a> ScreenReader<'a> {
             scroll_count: self.screen.scroll_count(),
             view_offset: self.screen.view_offset(),
             history_start: self.screen.history_start(),
+            wrapped: (0..rows).map(|row| self.screen.is_wrapped(row)).collect(),
             is_alt: self.screen.is_alt(),
             input_modes: self.screen.input_modes(),
             dirty_ranges: self.screen.dirty_ranges(),
@@ -99,7 +100,7 @@ impl<'a> ScreenReader<'a> {
             let row_text = &buf[row_len_before..];
             let trim_len = row_text.trim_end().len();
             buf.truncate(row_len_before + trim_len);
-            if generation < end_row {
+            if generation < end_row && !self.screen.is_wrapped_at_generation(generation + 1) {
                 buf.push('\n');
             }
         }

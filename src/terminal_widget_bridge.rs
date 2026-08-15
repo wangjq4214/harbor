@@ -25,10 +25,11 @@ const DEFAULT_DRAW_ID: ExternalDrawId = 1;
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
 pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> RenderTarget {
     let (origin_x, origin_y, alloc_w, alloc_h) = context.physical_allocation();
-    RenderTarget::new(
+    RenderTarget::new_with_scale(
         (origin_x, origin_y),
         (alloc_w, alloc_h),
         context.surface_size(),
+        context.scale_factor(),
     )
 }
 
@@ -63,12 +64,15 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> TerminalEvent {
         UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
             TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text))
         }
-        UiEvent::Pointer(pointer) => TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (pointer.position.x, pointer.position.y),
-            map_pointer_phase(pointer.phase),
-            map_pointer_button(pointer.button),
-            pointer.pointer_id,
-        )),
+        UiEvent::Pointer(pointer) => TerminalEvent::Pointer(
+            TerminalPointerEvent::new(
+                (pointer.position.x, pointer.position.y),
+                map_pointer_phase(pointer.phase),
+                map_pointer_button(pointer.button),
+                pointer.pointer_id,
+            )
+            .with_modifiers(map_modifiers(pointer.modifiers)),
+        ),
         UiEvent::Focus(FocusEvent::Gained) => TerminalEvent::Focus(TerminalFocusEvent::Gained),
         UiEvent::Focus(FocusEvent::Lost) => TerminalEvent::Focus(TerminalFocusEvent::Lost),
     }
@@ -205,16 +209,29 @@ impl TerminalWidgetBridge {
                 if wheel {
                     offset_before = Some(term.screen().view_offset());
                 }
-                if let Err(error) = term.handle_event(mapped) {
-                    tracing::warn!(
-                        error = %format_args!("{error:#}"),
-                        "failed to write terminal input"
-                    );
-                }
-                let offset_moved =
-                    offset_before.is_some_and(|before| before != term.screen().view_offset());
-                if key_wakes || offset_moved {
-                    ctx.invalidate_paint();
+                match term.handle_event_with_outcome(mapped) {
+                    Ok(outcome) => {
+                        if let Some(pointer_id) = outcome.capture_pointer {
+                            ctx.capture_pointer(pointer_id);
+                        }
+                        if let Some(pointer_id) = outcome.release_pointer {
+                            ctx.release_pointer(pointer_id);
+                        }
+                        if let Some(text) = outcome.clipboard_text {
+                            ctx.write_clipboard(text);
+                        }
+                        let offset_moved = offset_before
+                            .is_some_and(|before| before != term.screen().view_offset());
+                        if key_wakes || offset_moved || outcome.redraw {
+                            ctx.invalidate_paint();
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %format_args!("{error:#}"),
+                            "failed to write terminal input"
+                        );
+                    }
                 }
             }
             EventHandled::Handled

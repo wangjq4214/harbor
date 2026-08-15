@@ -16,6 +16,6 @@ pub use decoration::Decoration;
 pub use gpu::{GpuContext, UploadMode, UploadPlan, UploadPolicy};
 pub use layout::RenderViewport;
 pub use pipeline::TerminalRenderPipeline;
-pub use scrollbar::Scrollbar;
+pub use scrollbar::{Scrollbar, ScrollbarHit, hit_test, offset_for_thumb};
 pub use selection::Selection;
 pub use text::Text;

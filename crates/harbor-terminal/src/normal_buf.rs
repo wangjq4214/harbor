@@ -319,6 +319,19 @@ impl NormalBuf {
         Some(&self.cells[ring_row * self.cols + col])
     }
 
+    pub fn is_wrapped_at_generation(&self, generation: u64) -> Option<bool> {
+        if generation < self.history_start {
+            return None;
+        }
+        let offset = (generation - self.history_start) as usize;
+        if offset >= self.scroll_count + self.visible_rows {
+            return None;
+        }
+        let ring_row =
+            (self.visible_start + self.total_rows - self.scroll_count + offset) % self.total_rows;
+        Some(self.wrapped[ring_row])
+    }
+
     /// Returns whether the given display row is a soft-wrapped continuation
     /// of the logical line from the row above.
     pub fn is_wrapped(&self, display_row: usize) -> bool {

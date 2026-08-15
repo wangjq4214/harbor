@@ -1,7 +1,7 @@
 mod event_router;
 mod frame_encoder;
 
-use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
     reconcile_children_with_external_draws, unmount_fiber,
@@ -400,7 +400,11 @@ impl Runtime {
         if needs_redraw && let Some(root_id) = self.root_id {
             mark_dirty_for(self.runtime_id, root_id);
         }
-        RuntimeEffects::from_redraw(needs_redraw)
+        let mut effects = RuntimeEffects::from_redraw(needs_redraw);
+        if let Some(text) = self.events.take_clipboard() {
+            effects.clipboard = Some(ClipboardEffect::write(text));
+        }
+        effects
     }
 
     /// Cancels every pointer currently captured by a widget.

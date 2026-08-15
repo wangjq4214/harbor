@@ -55,9 +55,6 @@ impl TerminalRenderPipeline {
             return;
         }
         self.viewport = viewport;
-        if grid_changed {
-            self.selection.resize_grid();
-        }
         if viewport_changed || grid_changed {
             self.background.invalidate_projection();
             self.text.invalidate_projection();
@@ -74,6 +71,7 @@ impl TerminalRenderPipeline {
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
         now: Instant,
+        selection_bounds: Option<harbor_types::SelectionBounds>,
     ) {
         let viewport = self.viewport;
         if let Some(damage) = damage {
@@ -102,6 +100,7 @@ impl TerminalRenderPipeline {
             self.text.prepare(gpu, Some(snap), &viewport);
             self.decoration.prepare(gpu, Some(snap), &viewport);
         }
+        self.selection.set_bounds(selection_bounds);
         self.selection.prepare(gpu, Some(snap), &viewport);
         self.cursor.prepare(gpu, Some(snap), &viewport, now);
         self.scrollbar.prepare(gpu, Some(snap), &viewport);

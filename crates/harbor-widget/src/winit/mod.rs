@@ -17,8 +17,8 @@ use crate::renderer::Viewport;
 use crate::runtime::Runtime;
 use crate::scheduler::FrameScheduler;
 use crate::winit::event::{
-    ime_suppresses_keyboard, keyboard_to_uievent, mouse_button, mouse_button_index,
-    physical_size_for_scale_change,
+    ime_suppresses_keyboard, keyboard_to_uievent, modifiers_to_widget, mouse_button,
+    mouse_button_index, physical_size_for_scale_change,
 };
 use crate::winit::surface::SurfaceState;
 use std::time::Instant;
@@ -450,12 +450,15 @@ impl WinitAdapter {
             WindowEvent::KeyboardInput { event, .. } => self.convert_keyboard(event),
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = Point::new(position.x as f32, position.y as f32);
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    PointerPhase::Move,
-                    PointerButton::Left,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(
+                        self.logical_pointer_position(),
+                        PointerPhase::Move,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = mouse_button(*button)?;
@@ -463,12 +466,10 @@ impl WinitAdapter {
                     ElementState::Pressed => PointerPhase::Down,
                     ElementState::Released => PointerPhase::Up,
                 };
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    phase,
-                    button,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(self.logical_pointer_position(), phase, button, 0)
+                        .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let phase = match delta {
@@ -478,12 +479,15 @@ impl WinitAdapter {
                         dy: position.y as f32,
                     },
                 };
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    phase,
-                    PointerButton::Left,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(
+                        self.logical_pointer_position(),
+                        phase,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::Touch(touch) => {
                 let phase = match touch.phase {
@@ -503,12 +507,10 @@ impl WinitAdapter {
                         !(contact.device_id == touch.device_id && contact.source_id == touch.id)
                     });
                 }
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    position,
-                    phase,
-                    PointerButton::Left,
-                    pointer_id,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(position, phase, PointerButton::Left, pointer_id)
+                        .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::Focused(focused) => Some(UiEvent::Focus(if *focused {
                 FocusEvent::Gained

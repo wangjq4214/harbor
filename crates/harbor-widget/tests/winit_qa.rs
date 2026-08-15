@@ -236,12 +236,18 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
         vec![
             (
                 101,
-                UiEvent::Pointer(PointerEvent::new(
-                    Point::new(10.0, 5.0),
-                    PointerPhase::Move,
-                    PointerButton::Left,
-                    0,
-                )),
+                UiEvent::Pointer(
+                    PointerEvent::new(
+                        Point::new(10.0, 5.0),
+                        PointerPhase::Move,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    }),
+                ),
             ),
             (
                 101,

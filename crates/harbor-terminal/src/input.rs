@@ -1,7 +1,11 @@
 //! Terminal keyboard event encoding for the direct PTY input path.
 
 use crate::InputModes;
-use crate::types::{TerminalEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers};
+use crate::types::{
+    TerminalEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
+    TerminalPointerEvent, TerminalPointerPhase,
+};
+use harbor_types::MouseTrackingMode;
 
 /// Encodes supported terminal keyboard events against the terminal's current modes.
 pub(super) struct TerminalInputEncoder;
@@ -15,8 +19,54 @@ impl TerminalInputEncoder {
             TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)) if !text.is_empty() => {
                 Some(text.as_bytes().to_vec())
             }
+            TerminalEvent::Pointer(pointer) => Self::encode_pointer(pointer, modes),
             _ => None,
         }
+    }
+
+    fn encode_pointer(pointer: &TerminalPointerEvent, modes: InputModes) -> Option<Vec<u8>> {
+        if matches!(pointer.phase, TerminalPointerPhase::Cancel) {
+            return None;
+        }
+        let tracking = modes.mouse_tracking;
+        let is_motion = matches!(pointer.phase, TerminalPointerPhase::Move);
+        let should_report = match tracking {
+            MouseTrackingMode::Disabled => false,
+            MouseTrackingMode::Button => !is_motion,
+            MouseTrackingMode::ButtonMotion => {
+                !is_motion || pointer.button != TerminalPointerButton::None
+            }
+            MouseTrackingMode::AnyMotion => true,
+        };
+        if !should_report {
+            return None;
+        }
+
+        let mut button = match pointer.button {
+            TerminalPointerButton::None => 3u8,
+            TerminalPointerButton::Left => 0,
+            TerminalPointerButton::Middle => 1,
+            TerminalPointerButton::Right => 2,
+        };
+        let wheel_delta = match pointer.phase {
+            TerminalPointerPhase::WheelLine { dy, .. }
+            | TerminalPointerPhase::WheelPixel { dy, .. } => Some(dy),
+            _ => None,
+        };
+        if let Some(dy) = wheel_delta.filter(|dy| *dy != 0.0) {
+            button = if dy > 0.0 { 64 } else { 65 };
+        }
+        button |= mouse_modifier_code(pointer.modifiers);
+        if is_motion {
+            button = button.saturating_add(32);
+        }
+        let release = matches!(pointer.phase, TerminalPointerPhase::Up);
+        let suffix = if release { 'm' } else { 'M' };
+        let col = pointer.position.0.max(0.0) as u32 + 1;
+        let row = pointer.position.1.max(0.0) as u32 + 1;
+        modes
+            .mouse_sgr
+            .then(|| format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes())
     }
 
     fn encode_key(
@@ -134,6 +184,16 @@ impl TerminalInputEncoder {
             }
         }
     }
+}
+
+fn mouse_modifier_code(modifiers: TerminalModifiers) -> u8 {
+    (if modifiers.shift { 4 } else { 0 })
+        | (if modifiers.alt || modifiers.meta {
+            8
+        } else {
+            0
+        })
+        | (if modifiers.ctrl { 16 } else { 0 })
 }
 
 fn modifier_code(modifiers: TerminalModifiers) -> u8 {
@@ -280,5 +340,99 @@ mod tests {
                 "unexpected modified sequence for {key:?}",
             );
         }
+    }
+
+    #[test]
+    fn should_encode_sgr_button_press_and_release_but_not_motion_in_button_mode() {
+        // Arrange
+        let modes = InputModes {
+            mouse_tracking: harbor_types::MouseTrackingMode::Button,
+            mouse_sgr: true,
+            ..InputModes::default()
+        };
+        let press = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 3.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            4,
+        ));
+        let move_event = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 3.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Left,
+            4,
+        ));
+        let release = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 3.0),
+            TerminalPointerPhase::Up,
+            TerminalPointerButton::Left,
+            4,
+        ));
+
+        // Act
+        let encoded_press = TerminalInputEncoder::encode(&press, modes);
+        let encoded_move = TerminalInputEncoder::encode(&move_event, modes);
+        let encoded_release = TerminalInputEncoder::encode(&release, modes);
+
+        // Assert
+        assert_eq!(encoded_press, Some(b"\x1b[<0;3;4M".to_vec()));
+        assert_eq!(encoded_move, None);
+        assert_eq!(encoded_release, Some(b"\x1b[<0;3;4m".to_vec()));
+    }
+
+    #[test]
+    fn should_encode_wheel_modifiers_after_wheel_button_selection() {
+        let modes = InputModes {
+            mouse_tracking: harbor_types::MouseTrackingMode::AnyMotion,
+            mouse_sgr: true,
+            ..InputModes::default()
+        };
+        let wheel = TerminalEvent::Pointer(
+            TerminalPointerEvent::new(
+                (0.0, 0.0),
+                TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+                TerminalPointerButton::Left,
+                1,
+            )
+            .with_modifiers(TerminalModifiers {
+                shift: true,
+                ..TerminalModifiers::default()
+            }),
+        );
+
+        assert_eq!(
+            TerminalInputEncoder::encode(&wheel, modes),
+            Some(b"\x1b[<68;1;1M".to_vec())
+        );
+    }
+
+    #[test]
+    fn should_encode_sgr_motion_and_wheel_buttons_with_valid_coordinates() {
+        // Arrange
+        let modes = InputModes {
+            mouse_tracking: harbor_types::MouseTrackingMode::AnyMotion,
+            mouse_sgr: true,
+            ..InputModes::default()
+        };
+        let motion = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (500.0, -2.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Right,
+            9,
+        ));
+        let wheel = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            TerminalPointerButton::Left,
+            9,
+        ));
+
+        // Act
+        let encoded_motion = TerminalInputEncoder::encode(&motion, modes);
+        let encoded_wheel = TerminalInputEncoder::encode(&wheel, modes);
+
+        // Assert
+        assert_eq!(encoded_motion, Some(b"\x1b[<34;501;1M".to_vec()));
+        assert_eq!(encoded_wheel, Some(b"\x1b[<64;1;1M".to_vec()));
     }
 }

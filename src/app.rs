@@ -673,7 +673,18 @@ impl App {
             }
         }
         if let Some(clipboard) = effects.clipboard.clone() {
-            let _ = apply_clipboard_effect(clipboard);
+            match clipboard {
+                ClipboardEffect::Write(contents) => {
+                    if let Err(error) = arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(contents))
+                    {
+                        tracing::warn!(error = %error, "failed to write clipboard effect");
+                    }
+                }
+                ClipboardEffect::Read => {
+                    let _ = apply_clipboard_effect(ClipboardEffect::Read);
+                }
+            }
         }
         if effects.request_redraw {
             tracing::trace!("requesting redraw");

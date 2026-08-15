@@ -126,6 +126,10 @@ pub(crate) struct TerminalModes {
     pub(crate) application_keypad: bool,
     /// Bracketed paste mode (DECSET ?2004).
     pub(crate) bracketed_paste: bool,
+    /// DEC mouse event reporting mode.
+    pub(crate) mouse_tracking: harbor_types::MouseTrackingMode,
+    /// SGR extended mouse coordinate encoding (DECSET ?1006).
+    pub(crate) mouse_sgr: bool,
 }
 
 impl TerminalModes {
@@ -139,6 +143,8 @@ impl TerminalModes {
             application_cursor: false,
             application_keypad: false,
             bracketed_paste: false,
+            mouse_tracking: harbor_types::MouseTrackingMode::Disabled,
+            mouse_sgr: false,
         }
     }
 }
@@ -227,6 +233,8 @@ impl CursorEngine {
             application_cursor: self.modes.application_cursor,
             application_keypad: self.modes.application_keypad,
             bracketed_paste: self.modes.bracketed_paste,
+            mouse_tracking: self.modes.mouse_tracking,
+            mouse_sgr: self.modes.mouse_sgr,
         }
     }
 
@@ -436,6 +444,28 @@ impl CursorEngine {
         match param {
             1 => self.modes.application_cursor = enabled,
             66 => self.modes.application_keypad = enabled,
+            1000 => {
+                self.modes.mouse_tracking = if enabled {
+                    harbor_types::MouseTrackingMode::Button
+                } else {
+                    harbor_types::MouseTrackingMode::Disabled
+                }
+            }
+            1002 => {
+                self.modes.mouse_tracking = if enabled {
+                    harbor_types::MouseTrackingMode::ButtonMotion
+                } else {
+                    harbor_types::MouseTrackingMode::Disabled
+                }
+            }
+            1003 => {
+                self.modes.mouse_tracking = if enabled {
+                    harbor_types::MouseTrackingMode::AnyMotion
+                } else {
+                    harbor_types::MouseTrackingMode::Disabled
+                }
+            }
+            1006 => self.modes.mouse_sgr = enabled,
             2004 => self.modes.bracketed_paste = enabled,
             6 => {
                 self.modes.origin = enabled;
@@ -469,6 +499,19 @@ impl CursorEngine {
             25 => Some(self.cursor.visible),
             66 => Some(self.modes.application_keypad),
             69 => Some(self.margins.enabled),
+            1000 => Some(matches!(
+                self.modes.mouse_tracking,
+                harbor_types::MouseTrackingMode::Button
+            )),
+            1002 => Some(matches!(
+                self.modes.mouse_tracking,
+                harbor_types::MouseTrackingMode::ButtonMotion
+            )),
+            1003 => Some(matches!(
+                self.modes.mouse_tracking,
+                harbor_types::MouseTrackingMode::AnyMotion
+            )),
+            1006 => Some(self.modes.mouse_sgr),
             2004 => Some(self.modes.bracketed_paste),
             _ => None,
         }

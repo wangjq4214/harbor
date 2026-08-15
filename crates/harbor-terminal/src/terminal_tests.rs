@@ -2146,6 +2146,24 @@ fn terminal_input_returns_scrollback_to_live_viewport() {
 }
 
 #[test]
+fn ctrl_shift_uppercase_c_copies_even_without_a_selection() {
+    let mut terminal = Terminal::new_headless(2, 4);
+
+    let outcome = terminal
+        .handle_event_with_outcome(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('C'),
+            modifiers: TerminalModifiers {
+                ctrl: true,
+                shift: true,
+                ..TerminalModifiers::default()
+            },
+        }))
+        .expect("copy shortcut should be handled");
+
+    assert_eq!(outcome.clipboard_text, Some(String::new()));
+}
+
+#[test]
 fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),

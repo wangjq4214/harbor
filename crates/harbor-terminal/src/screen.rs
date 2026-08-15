@@ -270,6 +270,12 @@ impl Screen {
         self.normal.cell_at_generation(generation, col)
     }
 
+    pub fn is_wrapped_at_generation(&self, generation: u64) -> bool {
+        self.normal
+            .is_wrapped_at_generation(generation)
+            .unwrap_or(false)
+    }
+
     /// Direct cell mutation for test setup.
     #[cfg(test)]
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {

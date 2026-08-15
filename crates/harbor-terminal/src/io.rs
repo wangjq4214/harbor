@@ -250,6 +250,18 @@ impl TerminalIo {
     ) -> anyhow::Result<bool> {
         self.drain(screen);
 
+        if matches!(&event, TerminalEvent::Pointer(_))
+            && screen.input_modes().mouse_tracking != harbor_types::MouseTrackingMode::Disabled
+        {
+            if let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) {
+                self.write_pty(&bytes)?;
+                return Ok(true);
+            }
+            // A supported tracking mode without SGR encoding is intentionally
+            // consumed rather than falling back to local selection/scrollback.
+            return Ok(false);
+        }
+
         if Self::try_scrollback_key(screen, &event) {
             return Ok(false);
         }
@@ -263,6 +275,7 @@ impl TerminalIo {
         // Terminal-bound input resumes the live viewport so typed text and the
         // shell response are visible immediately after browsing scrollback.
         screen.scroll_to_bottom();
+        self.suppress_scroll_snap = false;
         self.write_pty(&bytes)?;
         Ok(true)
     }

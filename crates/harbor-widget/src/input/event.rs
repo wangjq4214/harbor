@@ -18,6 +18,7 @@ pub struct PointerEvent {
     pub phase: PointerPhase,
     pub button: PointerButton,
     pub pointer_id: u64,
+    pub modifiers: Modifiers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,7 +128,13 @@ impl PointerEvent {
             phase,
             button,
             pointer_id,
+            modifiers: Modifiers::default(),
         }
+    }
+
+    pub fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
+        self.modifiers = modifiers;
+        self
     }
 }
 

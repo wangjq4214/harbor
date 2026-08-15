@@ -3,6 +3,7 @@ mod input;
 mod io;
 mod normal_buf;
 mod parser;
+mod pointer;
 pub mod render;
 mod screen;
 pub mod selection_model;
@@ -16,11 +17,13 @@ use harbor_pty::PtyControl;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 pub use harbor_types::should_confirm_multiline;
 pub use harbor_types::{
-    InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
+    InputModes, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage,
+    safe_preview_line,
 };
 use io::TerminalIo;
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
+pub use pointer::PointerInteraction;
 pub use render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
     TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
@@ -35,9 +38,9 @@ pub use selection_model::{
 use std::io::{Read, Write};
 use std::time::Instant;
 pub use types::{
-    FrameDemand, RenderTarget, TerminalEvent, TerminalFocusEvent, TerminalKey,
-    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
-    TerminalPointerPhase,
+    FrameDemand, RenderTarget, TerminalEvent, TerminalEventOutcome, TerminalFocusEvent,
+    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
+    TerminalPointerEvent, TerminalPointerPhase,
 };
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
@@ -48,6 +51,8 @@ pub struct Terminal {
     io: TerminalIo,
     /// Encapsulated GPU render pipeline.
     renderer: Option<TerminalRenderPipeline>,
+    /// Terminal-owned pointer and selection state.
+    pointer: PointerInteraction,
 }
 
 impl Terminal {
@@ -100,6 +105,7 @@ impl Terminal {
             screen: Screen::new(rows, cols),
             io: TerminalIo::new_headless(),
             renderer: None,
+            pointer: PointerInteraction::new(),
         }
     }
 
@@ -127,7 +133,7 @@ impl Terminal {
         let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
-            renderer.prepare(gpu, &snap, damage, now);
+            renderer.prepare(gpu, &snap, damage, now, self.pointer.bounds());
         }
     }
 
@@ -137,16 +143,22 @@ impl Terminal {
             return;
         };
         let viewport = RenderViewport::from_target(target, &metrics);
+        self.pointer.set_viewport(viewport);
+        self.pointer.set_input_scale(target.scale_factor);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
+        if grid_changed {
+            self.pointer.clear();
+        }
         let before = self.cursor_pos();
         self.io.drain(&mut self.screen);
         self.maybe_reset_blink(before, false);
         let now = Instant::now();
+        let _ = self.pointer.tick(&mut self.screen, now);
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
-            renderer.prepare(gpu, &snap, None, now);
+            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds());
             renderer.draw(pass);
         }
     }
@@ -156,10 +168,19 @@ impl Terminal {
     /// Without a renderer/Cursor, returns an empty demand.
     pub fn frame_demand(&self, now: Instant) -> FrameDemand {
         let snap = self.snapshot();
-        match &self.renderer {
+        let mut demand = match &self.renderer {
             Some(renderer) => renderer.cursor.frame_demand(&snap, now),
             None => FrameDemand::empty(),
+        };
+        if let Some(deadline) = self.pointer.auto_scroll_deadline() {
+            demand.redraw_now |= deadline <= now;
+            demand.deadline = Some(
+                demand
+                    .deadline
+                    .map_or(deadline, |current| current.min(deadline)),
+            );
         }
+        demand
     }
 
     fn cursor_pos(&self) -> (usize, usize) {
@@ -241,10 +262,114 @@ impl Terminal {
 
     /// Drains new output, encodes a terminal event using current modes, and writes it to the PTY.
     pub fn handle_event(&mut self, event: TerminalEvent) -> anyhow::Result<()> {
-        let before = self.cursor_pos();
-        let wrote_input = self.io.handle_event(&mut self.screen, event)?;
-        self.maybe_reset_blink(before, wrote_input);
+        let _ = self.handle_event_with_outcome(event)?;
         Ok(())
+    }
+
+    /// Handles an event and returns host-facing interaction effects.
+    pub fn handle_event_with_outcome(
+        &mut self,
+        event: TerminalEvent,
+    ) -> anyhow::Result<TerminalEventOutcome> {
+        let before = self.cursor_pos();
+        let mut outcome = TerminalEventOutcome::default();
+
+        match &event {
+            TerminalEvent::Pointer(pointer) => {
+                if !self.pointer.has_viewport()
+                    || self.screen.input_modes().mouse_tracking
+                        != harbor_types::MouseTrackingMode::Disabled
+                {
+                    let event = if let TerminalEvent::Pointer(reported) = event.clone() {
+                        let mut reported = self.pointer.prepare_mouse_event(reported);
+                        if let Some(position) = self
+                            .pointer
+                            .report_position(reported.position, &self.screen.terminal_snapshot())
+                        {
+                            reported.position = position;
+                        }
+                        TerminalEvent::Pointer(reported)
+                    } else {
+                        event.clone()
+                    };
+                    let wrote = self.io.handle_event(&mut self.screen, event)?;
+                    outcome.capture_pointer = match pointer.phase {
+                        TerminalPointerPhase::Down => {
+                            self.pointer.begin_vt_capture(pointer.pointer_id);
+                            Some(pointer.pointer_id)
+                        }
+                        _ => None,
+                    };
+                    outcome.release_pointer = match pointer.phase {
+                        TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
+                            if self.pointer.end_vt_capture(pointer.pointer_id) =>
+                        {
+                            Some(pointer.pointer_id)
+                        }
+                        _ => None,
+                    };
+                    self.maybe_reset_blink(before, wrote);
+                    return Ok(outcome);
+                }
+                // Preserve the review position while applying local pointer
+                // intent; queued output must not snap it before hit testing.
+                self.io.set_suppress_scroll_snap(true);
+                self.io.drain(&mut self.screen);
+                outcome = self
+                    .pointer
+                    .handle_pointer(&mut self.screen, *pointer, Instant::now());
+                if outcome.capture_pointer.is_some() || outcome.redraw {
+                    self.io.set_suppress_scroll_snap(true);
+                }
+                if !self.pointer.has_active_pointer() && self.screen.view_offset() == 0 {
+                    self.io.set_suppress_scroll_snap(false);
+                }
+            }
+            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
+                if *key == TerminalKey::Escape {
+                    outcome = self.pointer.clear_selection_outcome();
+                    if outcome.release_pointer.is_some() {
+                        self.io.set_suppress_scroll_snap(false);
+                    }
+                } else if matches!(*key, TerminalKey::Character('c' | 'C')) && modifiers.ctrl {
+                    if self.pointer.has_non_empty_selection() {
+                        outcome.clipboard_text = self
+                            .pointer
+                            .bounds()
+                            .map(|bounds| self.screen.selected_text(bounds));
+                        outcome.redraw = true;
+                    } else if modifiers.shift {
+                        // Copying with no selection still clears the host
+                        // clipboard, matching the always-copy shortcut.
+                        outcome.clipboard_text = Some(String::new());
+                    } else {
+                        let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                        self.maybe_reset_blink(before, wrote);
+                        return Ok(outcome);
+                    }
+                } else {
+                    outcome = self.pointer.on_key_press_outcome();
+                    if outcome.release_pointer.is_some() {
+                        self.io.set_suppress_scroll_snap(false);
+                    }
+                    let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                    self.maybe_reset_blink(before, wrote);
+                    return Ok(outcome);
+                }
+            }
+            TerminalEvent::Focus(TerminalFocusEvent::Lost) => {
+                outcome = self.pointer.cancel();
+                self.io.set_suppress_scroll_snap(false);
+            }
+            _ => {
+                let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                self.maybe_reset_blink(before, wrote);
+                return Ok(outcome);
+            }
+        }
+
+        self.maybe_reset_blink(before, false);
+        Ok(outcome)
     }
 
     /// When true, `process_output` skips the scroll-to-bottom snap.
@@ -303,6 +428,7 @@ impl Terminal {
         }
 
         self.screen.resize(new_size.rows, new_size.cols);
+        self.pointer.clear();
         self.io.reset_scroll_snap();
         self.io.resize_pty(new_size);
         true

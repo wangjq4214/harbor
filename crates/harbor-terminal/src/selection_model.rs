@@ -7,14 +7,12 @@
 use harbor_types::{SelectionBounds, TerminalSnapshot};
 use std::time::{Duration, Instant};
 
-/// Characters that delimit words for double-click word selection.
-/// Based on Alacritty's default separator set, extended for CJK punctuation.
-const WORD_SEPARATORS: &[char] = &[
-    ' ', '\t', '\n', '(', ')', '[', ']', '{', '}', '\'', '"', '`',
-    // CJK brackets and punctuation
-    '（', '）', '【', '】', '「', '」', '『', '』', '《', '》', '；', '：', '，', '。', '、', '？',
-    '！', '‘', '’', '＂',
-];
+/// Returns whether a character belongs to a double-click word.
+/// Unicode letters/numbers and underscore are word characters; all other
+/// punctuation and whitespace are boundaries.
+fn is_word_char(ch: char) -> bool {
+    ch == '_' || ch.is_alphanumeric()
+}
 
 /// Maximum time between consecutive clicks (in ms) for them to count as a
 /// multi-click chain (double-click → word, triple-click+ → line).
@@ -218,12 +216,24 @@ impl SelectionModel {
                 });
             }
             _ => {
-                // Triple click and beyond → line selection.
+                // Triple click and beyond → logical-line selection. The
+                // snapshot contains visible soft-wrap markers, so this stays
+                // bounded to retained rows available to the UI.
                 self.granularity = SelectionGranularity::Line;
-                let last = cols.saturating_sub(1);
+                let view_start = screen.history_start
+                    + screen.scroll_count.saturating_sub(screen.view_offset) as u64;
+                let view_end = view_start + screen.rows.saturating_sub(1) as u64;
+                let mut start = cell.generation.clamp(view_start, view_end);
+                while start > view_start && screen.is_wrapped_at_generation(start) {
+                    start -= 1;
+                }
+                let mut end = start;
+                while end < view_end && screen.is_wrapped_at_generation(end + 1) {
+                    end += 1;
+                }
                 self.range = Some(SelectionRange {
-                    anchor: GenPos::new(cell.generation, 0),
-                    cursor: GenPos::new(cell.generation, last),
+                    anchor: GenPos::new(start, 0),
+                    cursor: GenPos::new(end, cols.saturating_sub(1)),
                 });
             }
         }
@@ -239,9 +249,6 @@ impl SelectionModel {
         let Some(ref mut sel) = self.range else {
             return false;
         };
-        if sel.cursor == cell {
-            return false;
-        }
 
         let anchor = sel.anchor;
         let new_cursor = match self.granularity {
@@ -253,15 +260,17 @@ impl SelectionModel {
             }
             SelectionGranularity::Character => cell,
         };
+        let changed = sel.cursor != new_cursor;
         sel.cursor = new_cursor;
 
         // ── Auto-scroll direction detection ────────────────
         let rows = screen.rows;
         let view_offset = screen.view_offset;
         let scroll_count = screen.scroll_count;
-        let display_row = ((cell.generation - screen.history_start) as usize + view_offset)
+        let display_row = (cell.generation.saturating_sub(screen.history_start) as usize
+            + view_offset)
             .saturating_sub(scroll_count)
-            .min(rows - 1);
+            .min(rows.saturating_sub(1));
         let new_auto_scroll = if display_row < AUTO_SCROLL_MARGIN && view_offset < scroll_count {
             Some(AutoScroll::Up)
         } else if display_row >= rows.saturating_sub(AUTO_SCROLL_MARGIN) && view_offset > 0 {
@@ -274,7 +283,7 @@ impl SelectionModel {
             self.next_auto_scroll_at = None;
         }
 
-        true
+        changed
     }
 
     /// Left-mouse-button release.
@@ -417,7 +426,7 @@ impl SelectionModel {
             SelectionGranularity::Character => (new_gen, cur_col),
         };
 
-        let deadline = Instant::now() + Duration::from_millis(AUTO_SCROLL_INTERVAL_MS);
+        let deadline = now + Duration::from_millis(AUTO_SCROLL_INTERVAL_MS);
         self.next_auto_scroll_at = Some(deadline);
 
         Some((direction, snapped))
@@ -449,8 +458,8 @@ impl SelectionModel {
             return ((generation, effective_col), (generation, effective_col));
         };
 
-        // Separator → zero-width.
-        if WORD_SEPARATORS.contains(&clicked_ch) {
+        // Punctuation and whitespace are boundaries → zero-width.
+        if !is_word_char(clicked_ch) {
             return ((generation, effective_col), (generation, effective_col));
         }
 
@@ -465,7 +474,7 @@ impl SelectionModel {
             if cell.wide_continuation {
                 return clicked_is_cjk;
             }
-            if WORD_SEPARATORS.contains(&cell.ch) {
+            if !is_word_char(cell.ch) {
                 return false;
             }
             if clicked_is_cjk {
@@ -497,10 +506,9 @@ impl SelectionModel {
         anchor: (u64, usize),
     ) -> (u64, usize) {
         let cell_at = |c: usize| screen.cell_at_generation(generation, c);
-        // True separator: in WORD_SEPARATORS AND not a wide_continuation cell.
+        // True separator: a non-word cell that is not a wide continuation.
         let is_sep = |c: usize| {
-            cell_at(c)
-                .is_none_or(|cell| !cell.wide_continuation && WORD_SEPARATORS.contains(&cell.ch))
+            cell_at(c).is_none_or(|cell| !cell.wide_continuation && !is_word_char(cell.ch))
         };
         // True CJK char cell (not wide_continuation).
         let is_cjk_cell =
@@ -509,7 +517,7 @@ impl SelectionModel {
         // True word boundary: separator, CJK char, or wide_continuation cell.
         let is_boundary = |c: usize| {
             cell_at(c).is_none_or(|cell| {
-                cell.wide_continuation || WORD_SEPARATORS.contains(&cell.ch) || is_cjk(cell.ch)
+                cell.wide_continuation || !is_word_char(cell.ch) || is_cjk(cell.ch)
             })
         };
 
