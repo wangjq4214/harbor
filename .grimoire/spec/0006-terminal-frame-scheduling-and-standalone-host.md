@@ -1,7 +1,7 @@
 # Terminal Frame Scheduling and Standalone Host
 
 **Spec ID:** 0006
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-09-11
 
 ## Requirement

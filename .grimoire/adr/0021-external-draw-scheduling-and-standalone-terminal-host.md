@@ -1,6 +1,6 @@
 # External Draw Scheduling and Standalone Terminal Host
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-11
 
 ## Context

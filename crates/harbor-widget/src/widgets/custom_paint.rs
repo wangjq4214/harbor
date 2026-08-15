@@ -1,7 +1,7 @@
 use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 use std::sync::Arc;
@@ -22,6 +22,7 @@ pub type ExternalInputFn = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
 pub struct CustomPaint {
     pub draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
+    schedule: Option<Arc<ExternalScheduleFn>>,
     on_input: Option<Arc<ExternalInputFn>>,
     children: Vec<View>,
 }
@@ -31,6 +32,7 @@ impl CustomPaint {
         CustomPaint {
             draw_id,
             handler: None,
+            schedule: None,
             on_input: None,
             children: vec![],
         }
@@ -39,6 +41,12 @@ impl CustomPaint {
     /// Sets the renderer invoked for this widget's external primitive.
     pub fn handler(mut self, handler: Arc<ExternalDrawFn<'static>>) -> Self {
         self.handler = Some(handler);
+        self
+    }
+
+    /// Sets the schedule provider consulted before idle wait selection.
+    pub fn schedule(mut self, schedule: Arc<ExternalScheduleFn>) -> Self {
+        self.schedule = Some(schedule);
         self
     }
 
@@ -59,6 +67,9 @@ impl Component for CustomPaint {
     fn build(&self, cx: &mut BuildCx) -> View {
         if let Some(handler) = &self.handler {
             cx.register_external_draw(self.draw_id, Arc::clone(handler));
+        }
+        if let Some(schedule) = &self.schedule {
+            cx.register_external_schedule(self.draw_id, Arc::clone(schedule));
         }
         View::new(self.clone(), self.children.clone(), None)
     }
@@ -188,6 +199,7 @@ mod tests {
         assert_eq!(cx.external_draws.len(), 1);
         assert_eq!(cx.external_draws[0].0, 42);
         assert!(Arc::ptr_eq(&cx.external_draws[0].1, &handler));
+        assert!(cx.external_schedules.is_empty());
     }
 
     #[test]
@@ -201,6 +213,50 @@ mod tests {
 
         // Assert: no external draw registration is produced.
         assert!(cx.external_draws.is_empty());
+        assert!(cx.external_schedules.is_empty());
+    }
+
+    #[test]
+    fn should_register_schedule_when_custom_paint_is_built_with_one() {
+        use crate::scene::primitive::ExternalScheduleDemand;
+
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let custom_paint = CustomPaint::new(7).schedule(Arc::clone(&schedule));
+        let mut cx = BuildCx::stub();
+
+        // Act
+        custom_paint.build(&mut cx);
+
+        // Assert
+        assert!(cx.external_draws.is_empty());
+        assert_eq!(cx.external_schedules.len(), 1);
+        assert_eq!(cx.external_schedules[0].0, 7);
+        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
+    }
+
+    #[test]
+    fn should_register_handler_and_schedule_when_both_are_configured() {
+        use crate::scene::primitive::ExternalScheduleDemand;
+
+        // Arrange
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _| {});
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let custom_paint = CustomPaint::new(11)
+            .handler(Arc::clone(&handler))
+            .schedule(Arc::clone(&schedule));
+        let mut cx = BuildCx::stub();
+
+        // Act
+        custom_paint.build(&mut cx);
+
+        // Assert
+        assert_eq!(cx.external_draws.len(), 1);
+        assert_eq!(cx.external_draws[0].0, 11);
+        assert!(Arc::ptr_eq(&cx.external_draws[0].1, &handler));
+        assert_eq!(cx.external_schedules.len(), 1);
+        assert_eq!(cx.external_schedules[0].0, 11);
+        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
     }
 
     #[test]

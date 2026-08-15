@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec: 0006-terminal-frame-scheduling-and-standalone-host](../../spec/0006-terminal-frame-scheduling-and-standalone-host.md)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 

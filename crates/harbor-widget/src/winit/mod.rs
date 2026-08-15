@@ -190,7 +190,14 @@ impl WinitAdapter {
         now: Instant,
         host_deadline: Option<Instant>,
     ) -> RuntimeEffects {
-        let dirty_effects = runtime.update(now);
+        // Consume a due deadline before update replaces it with the next phase
+        // boundary reported by external schedule providers (cursor blink).
+        let due_redraw = self.scheduler.consume_due_deadline(now);
+
+        let mut dirty_effects = runtime.update(now);
+        if due_redraw {
+            dirty_effects.request_redraw = true;
+        }
         let mut scheduled = self
             .scheduler
             .schedule(dirty_effects, FrameScheduler::RUNTIME_WAKE);

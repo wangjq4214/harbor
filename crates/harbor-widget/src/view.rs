@@ -2,7 +2,7 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, Primitive};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
 use std::any::TypeId;
@@ -28,6 +28,7 @@ pub struct BuildCx {
     pub(crate) hooks: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
     pub(crate) external_draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+    pub(crate) external_schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
 }
 
 impl BuildCx {
@@ -40,6 +41,7 @@ impl BuildCx {
             hooks: Vec::new(),
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         }
     }
 
@@ -50,6 +52,15 @@ impl BuildCx {
         handler: Arc<ExternalDrawFn<'static>>,
     ) {
         self.external_draws.push((id, handler));
+    }
+
+    /// Registers an external schedule provider for the current build.
+    pub fn register_external_schedule(
+        &mut self,
+        id: ExternalDrawId,
+        schedule: Arc<ExternalScheduleFn>,
+    ) {
+        self.external_schedules.push((id, schedule));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -351,6 +362,7 @@ mod tests {
             hooks,
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
 
         // First build: creates a new signal
@@ -364,6 +376,7 @@ mod tests {
             hooks: cx.hooks,
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -377,6 +390,7 @@ mod tests {
             hooks: vec![],
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -394,6 +408,7 @@ mod tests {
             hooks: vec![],
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
 
         // First build with u32
@@ -405,8 +420,27 @@ mod tests {
             hooks: cx.hooks,
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
+    }
+
+    #[test]
+    fn should_register_external_schedule_when_build_cx_receives_one() {
+        use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+        use std::sync::Arc;
+
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let mut cx = BuildCx::stub();
+
+        // Act
+        cx.register_external_schedule(3, Arc::clone(&schedule));
+
+        // Assert
+        assert_eq!(cx.external_schedules.len(), 1);
+        assert_eq!(cx.external_schedules[0].0, 3);
+        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
     }
 
     #[test]

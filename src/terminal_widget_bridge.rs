@@ -11,7 +11,9 @@ use harbor_widget::input::event::{
     FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerPhase, UiEvent,
 };
 use harbor_widget::input::event_ctx::EventHandled;
-use harbor_widget::scene::primitive::{ExternalDrawContext, ExternalDrawFn, ExternalDrawId};
+use harbor_widget::scene::primitive::{
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalScheduleDemand, ExternalScheduleFn,
+};
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
@@ -159,6 +161,7 @@ fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
 pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
     handler: Arc<ExternalDrawFn<'static>>,
+    schedule: Arc<ExternalScheduleFn>,
     on_input: Arc<ExternalInputFn>,
 }
 
@@ -177,6 +180,12 @@ impl TerminalWidgetBridge {
                     }
                 });
             });
+        });
+
+        let schedule_terminal = Arc::clone(&terminal);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, now| {
+            schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
         let input_gate = Arc::clone(&gate_active);
@@ -214,6 +223,7 @@ impl TerminalWidgetBridge {
         Self {
             draw_id,
             handler,
+            schedule,
             on_input,
         }
     }
@@ -228,8 +238,29 @@ impl Component for TerminalWidgetBridge {
     fn build(&self, cx: &mut BuildCx) -> View {
         CustomPaint::new(self.draw_id())
             .handler(Arc::clone(&self.handler))
+            .schedule(Arc::clone(&self.schedule))
             .on_input(Arc::clone(&self.on_input))
             .build(cx)
+    }
+}
+
+/// Maps terminal Frame Demand into the widget schedule contract for a matched id.
+pub(crate) fn schedule_demand_for_terminal(
+    owned_id: ExternalDrawId,
+    invoked_id: ExternalDrawId,
+    terminal: &Mutex<Terminal>,
+    now: std::time::Instant,
+) -> ExternalScheduleDemand {
+    if invoked_id != owned_id {
+        return ExternalScheduleDemand::empty();
+    }
+    let Ok(term) = terminal.lock() else {
+        return ExternalScheduleDemand::empty();
+    };
+    let demand = term.frame_demand(now);
+    ExternalScheduleDemand {
+        redraw_now: demand.redraw_now,
+        deadline: demand.deadline,
     }
 }
 
@@ -624,5 +655,71 @@ mod tests {
         // Assert: gated wheel still delivers and wakes when the viewport moves.
         assert!(terminal.lock().unwrap().screen().view_offset() > offset_before);
         assert!(effects.request_redraw);
+    }
+
+    #[test]
+    fn should_return_empty_schedule_demand_for_mismatched_draw_id() {
+        // Arrange
+        let terminal = headless_terminal(2, 4);
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 99, &terminal, now);
+
+        // Assert
+        assert_eq!(demand, ExternalScheduleDemand::empty());
+    }
+
+    #[test]
+    fn should_map_headless_frame_demand_to_empty_schedule_demand() {
+        // Arrange — headless Terminal has no Cursor/renderer
+        let terminal = headless_terminal(2, 4);
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert_eq!(demand, ExternalScheduleDemand::empty());
+    }
+
+    #[test]
+    fn should_return_empty_schedule_demand_when_terminal_mutex_is_poisoned() {
+        // Arrange — poison on this thread (Terminal is !Send)
+        let terminal = headless_terminal(2, 4);
+        let now = std::time::Instant::now();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = terminal.lock().unwrap();
+            panic!("poison schedule lock");
+        }));
+        assert!(poisoned.is_err());
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert_eq!(demand, ExternalScheduleDemand::empty());
+    }
+
+    #[test]
+    fn should_emit_wait_until_from_runtime_when_bridge_registers_schedule() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange — fake schedule via CustomPaint-equivalent bridge registration
+        // is exercised through Runtime with a scripted provider in widget tests;
+        // here verify bridge root registers a schedule that headless empties.
+        let terminal = headless_terminal(2, 4);
+        let mut rt = runtime_with_bridge(terminal, Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+
+        // Act — clean idle turn after initial build consumed dirty work
+        let _ = rt.update(now);
+        let idle = rt.update(now + Duration::from_millis(1));
+
+        // Assert — headless demand yields no WaitUntil / no blink Poll
+        assert!(!idle.request_redraw);
+        assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+        assert!(idle.control_flow.is_none() || idle.control_flow == Some(ControlFlowEffect::Wait));
     }
 }

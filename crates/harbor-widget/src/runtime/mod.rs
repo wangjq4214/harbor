@@ -1,7 +1,7 @@
 mod event_router;
 mod frame_encoder;
 
-use crate::effects::{ExternalInvalidation, RuntimeEffects};
+use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
     reconcile_children_with_external_draws, unmount_fiber,
@@ -14,7 +14,7 @@ use crate::layout::{BoxConstraints, Point, Size};
 use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
@@ -98,6 +98,7 @@ pub struct Runtime {
     pending_delta: Option<SceneDelta>,
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
+    external_schedules: HashMap<ExternalDrawId, Arc<ExternalScheduleFn>>,
     events: EventRouter,
     encoder: FrameEncoder,
     pending_effects: RuntimeEffects,
@@ -128,6 +129,7 @@ impl Runtime {
             pending_delta: None,
             current_viewport: None,
             external_draws: HashMap::new(),
+            external_schedules: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
             pending_effects: RuntimeEffects::default(),
@@ -189,27 +191,51 @@ impl Runtime {
     /// Processes dirty fibers and runs layout.
     ///
     /// Returns the platform-neutral effects produced by this update.
-    pub fn update(&mut self, _now: Instant) -> RuntimeEffects {
+    /// Always folds registered external schedule demands, including clean idle
+    /// turns, so hosts can wait until the next deadline without polling.
+    pub fn update(&mut self, now: Instant) -> RuntimeEffects {
         let mut effects = std::mem::take(&mut self.pending_effects);
         let dirty = take_dirty(self.runtime_id);
 
-        if dirty.is_empty() {
-            return effects;
+        if !dirty.is_empty() {
+            if let Some(root_id) = self.root_id {
+                let old_children = self
+                    .arena
+                    .get(root_id)
+                    .map(|f| f.children.clone())
+                    .unwrap_or_default();
+
+                self.rebuild_root(root_id, &old_children);
+                effects.merge(RuntimeEffects::request_redraw());
+            }
         }
 
-        let Some(root_id) = self.root_id else {
-            return effects;
-        };
+        effects.merge(self.collect_external_schedule(now));
+        effects
+    }
 
-        let old_children = self
-            .arena
-            .get(root_id)
-            .map(|f| f.children.clone())
-            .unwrap_or_default();
+    /// Queries registered external schedule providers and folds their demands.
+    fn collect_external_schedule(&self, now: Instant) -> RuntimeEffects {
+        let mut redraw_now = false;
+        let mut earliest: Option<Instant> = None;
 
-        self.rebuild_root(root_id, &old_children);
+        for (id, schedule) in &self.external_schedules {
+            let demand = schedule(*id, now);
+            redraw_now |= demand.redraw_now;
+            earliest = match (earliest, demand.deadline) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (None, Some(right)) => Some(right),
+                (left, None) => left,
+            };
+        }
 
-        effects.merge(RuntimeEffects::request_redraw());
+        let mut effects = RuntimeEffects::default();
+        if redraw_now {
+            effects.request_redraw = true;
+        }
+        if let Some(deadline) = earliest {
+            effects.control_flow = Some(ControlFlowEffect::WaitUntil(deadline));
+        }
         effects
     }
 
@@ -236,6 +262,7 @@ impl Runtime {
             hooks,
             hook_index: 0,
             external_draws: Vec::new(),
+            external_schedules: Vec::new(),
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
@@ -259,12 +286,16 @@ impl Runtime {
             old_children,
             children,
             &mut cx.external_draws,
+            &mut cx.external_schedules,
         );
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.children = new_children;
         }
         self.external_draws.clear();
         self.external_draws.extend(cx.external_draws.drain(..));
+        self.external_schedules.clear();
+        self.external_schedules
+            .extend(cx.external_schedules.drain(..));
 
         // Layout
         let viewport_size = self
@@ -577,14 +608,16 @@ mod tests {
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
     };
     use crate::input::event_ctx::EventCtx;
+    use crate::scene::primitive::ExternalScheduleDemand;
     use crate::widgets::button::Button;
+    use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
     use crate::widgets::focus_scope::FocusScope;
     use crate::widgets::sized_box::SizedBox;
     use crate::widgets::text_label::TextLabel;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Instant;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     fn now() -> Instant {
         Instant::now()
@@ -1283,5 +1316,164 @@ mod tests {
         rt.register_pending_text_runs(&|_ch| None);
 
         assert_eq!(rt.text_run_cache().len(), 1);
+    }
+
+    // ── external schedule merge ─────────────────────────────────────────
+
+    #[test]
+    fn should_emit_wait_until_on_idle_when_schedule_reports_deadline() {
+        // Arrange
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: false,
+            deadline: Some(deadline),
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(!idle.request_redraw);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+    }
+
+    #[test]
+    fn should_select_earliest_deadline_when_multiple_schedules_report() {
+        // Arrange
+        let early = Instant::now() + Duration::from_millis(100);
+        let late = Instant::now() + Duration::from_secs(2);
+        let late_schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: false,
+            deadline: Some(late),
+        });
+        let early_schedule: Arc<ExternalScheduleFn> =
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                redraw_now: false,
+                deadline: Some(early),
+            });
+        let mut rt = Runtime::new();
+        rt.set_root(
+            Column::new()
+                .child(CustomPaint::new(1).schedule(late_schedule))
+                .child(CustomPaint::new(2).schedule(early_schedule)),
+        );
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::WaitUntil(early)));
+    }
+
+    #[test]
+    fn should_request_redraw_when_schedule_reports_redraw_now() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            deadline: None,
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(4).schedule(schedule));
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(idle.request_redraw);
+        assert!(idle.control_flow.is_none());
+    }
+
+    #[test]
+    fn should_merge_redraw_and_wait_until_when_schedule_reports_both() {
+        // Arrange
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            deadline: Some(deadline),
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(5).schedule(schedule));
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(idle.request_redraw);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+    }
+
+    #[test]
+    fn should_not_emit_poll_when_external_schedule_is_empty() {
+        // Arrange — empty demand must not invent blink-only Poll
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(6).schedule(schedule));
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(!idle.request_redraw);
+        assert!(idle.control_flow.is_none());
+        assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+    }
+
+    #[test]
+    fn should_pass_registered_draw_id_when_collecting_external_schedule() {
+        // Arrange
+        let seen = Arc::new(AtomicU64::new(0));
+        let seen_id = Arc::clone(&seen);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, _| {
+            seen_id.store(id, Ordering::SeqCst);
+            ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(42).schedule(schedule));
+        let _ = rt.update(now());
+
+        // Act
+        let _ = rt.update(now());
+
+        // Assert
+        assert_eq!(seen.load(Ordering::SeqCst), 42);
+    }
+
+    #[test]
+    fn should_clear_external_schedules_when_root_no_longer_registers_them() {
+        // Arrange — provider reports a deadline, then root is replaced without one.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: false,
+            deadline: Some(deadline),
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        let _ = rt.update(now());
+        assert_eq!(
+            rt.update(now()).control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+
+        // Act — rebuild without a schedule provider
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        let _ = rt.update(now());
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(idle.control_flow.is_none());
+        assert!(!idle.request_redraw);
     }
 }
