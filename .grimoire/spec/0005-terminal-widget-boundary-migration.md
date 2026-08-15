@@ -1,7 +1,7 @@
 # Terminal/Widget Boundary Migration
 
 **Spec ID:** 0005
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-08-15
 
 ## Requirement

@@ -8,6 +8,7 @@ mod screen;
 pub mod selection_model;
 #[cfg(test)]
 mod terminal_tests;
+mod types;
 
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
@@ -33,6 +34,10 @@ pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
 };
 use std::io::{Read, Write};
+pub use types::{
+    RenderTarget, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
+    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+};
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
 pub struct Terminal {
