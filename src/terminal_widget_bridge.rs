@@ -226,7 +226,7 @@ impl TerminalWidgetBridge {
 
 impl Component for TerminalWidgetBridge {
     fn build(&self, cx: &mut BuildCx) -> View {
-        CustomPaint::new(self.draw_id)
+        CustomPaint::new(self.draw_id())
             .handler(Arc::clone(&self.handler))
             .on_input(Arc::clone(&self.on_input))
             .build(cx)
@@ -248,6 +248,11 @@ mod tests {
 
     fn context(logical: Rect, physical: (u32, u32), scale: f32) -> ExternalDrawContext {
         ExternalDrawContext::new(logical, Viewport::new(physical.0, physical.1, scale))
+    }
+
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn headless_terminal(rows: usize, cols: usize) -> Arc<Mutex<Terminal>> {
+        Arc::new(Mutex::new(Terminal::new_headless(rows, cols)))
     }
 
     #[test]
@@ -343,7 +348,7 @@ mod tests {
     #[test]
     fn should_expose_default_draw_id() {
         // Arrange
-        let terminal = Arc::new(Mutex::new(Terminal::new_headless(24, 80)));
+        let terminal = headless_terminal(24, 80);
         let gate = Arc::new(AtomicBool::new(false));
 
         // Act
@@ -356,7 +361,7 @@ mod tests {
     #[test]
     fn should_reuse_cached_handler_arc_when_built_multiple_times() {
         // Arrange: handler is created once in `new` and cloned into each build.
-        let terminal = Arc::new(Mutex::new(Terminal::new_headless(24, 80)));
+        let terminal = headless_terminal(24, 80);
         let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
         let cached = Arc::clone(&bridge.handler);
         assert_eq!(Arc::strong_count(&cached), 2);
@@ -549,7 +554,7 @@ mod tests {
     #[test]
     fn should_scroll_viewport_when_gate_open_and_page_up_delivered() {
         // Arrange
-        let terminal = Arc::new(Mutex::new(Terminal::new_headless(8, 40)));
+        let terminal = headless_terminal(8, 40);
         seed_scrollback(&mut terminal.lock().unwrap());
         let gate = Arc::new(AtomicBool::new(false));
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::clone(&gate));
@@ -573,7 +578,7 @@ mod tests {
     #[test]
     fn should_not_scroll_when_gate_suppresses_keydown() {
         // Arrange
-        let terminal = Arc::new(Mutex::new(Terminal::new_headless(8, 40)));
+        let terminal = headless_terminal(8, 40);
         seed_scrollback(&mut terminal.lock().unwrap());
         let gate = Arc::new(AtomicBool::new(true));
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::clone(&gate));
@@ -599,7 +604,7 @@ mod tests {
     #[test]
     fn should_scroll_when_gate_allows_wheel() {
         // Arrange
-        let terminal = Arc::new(Mutex::new(Terminal::new_headless(8, 40)));
+        let terminal = headless_terminal(8, 40);
         seed_scrollback(&mut terminal.lock().unwrap());
         let gate = Arc::new(AtomicBool::new(true));
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::clone(&gate));
