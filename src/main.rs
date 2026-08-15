@@ -5,6 +5,7 @@
 
 mod app;
 mod event;
+mod terminal_widget_bridge;
 
 use anyhow::{Context as _, Result};
 use app::App;

@@ -4,8 +4,9 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    InputModes, PasteDisposition, Terminal, TerminalSize, safe_preview_line,
-    should_confirm_multiline,
+    InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey,
+    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, TerminalSize, safe_preview_line, should_confirm_multiline,
 };
 use std::borrow::Cow;
 
@@ -1503,18 +1504,6 @@ fn preview_printable_ascii_range_is_unchanged() {
 // ── Terminal API & lifecycle tests ─────────────────────────────────────
 
 #[test]
-fn should_return_fixed_draw_id_when_queried() {
-    // Arrange
-    let terminal = Terminal::new_headless(24, 80);
-
-    // Act
-    let draw_id = terminal.draw_id();
-
-    // Assert
-    assert_eq!(draw_id, 1);
-}
-
-#[test]
 fn should_initialize_headless_terminal_with_given_dimensions() {
     // Arrange & Act
     let terminal = Terminal::new_headless(30, 100);
@@ -1570,12 +1559,9 @@ fn should_return_false_and_preserve_size_when_resize_if_changed_has_same_dimensi
 }
 
 #[test]
-fn should_derive_grid_size_from_external_draw_allocation() {
-    // Arrange: CustomPaint allocation is smaller than the full surface.
-    use crate::{RenderViewport, TextMetrics};
-    use harbor_widget::layout::{Point, Rect, Size};
-    use harbor_widget::renderer::Viewport;
-    use harbor_widget::scene::primitive::ExternalDrawContext;
+fn should_derive_grid_size_from_render_target_allocation() {
+    // Arrange: allocation is smaller than the full surface.
+    use crate::{RenderTarget, RenderViewport, TextMetrics};
 
     let metrics = TextMetrics {
         cell_width: 10.0,
@@ -1586,11 +1572,8 @@ fn should_derive_grid_size_from_external_draw_allocation() {
         strikethrough_position: 10.0,
         strikethrough_thickness: 2.0,
     };
-    let context = ExternalDrawContext::new(
-        Rect::from_min_size(Point::new(20.0, 10.0), Size::new(400.0, 240.0)),
-        Viewport::new(800, 600, 1.0),
-    );
-    let viewport = RenderViewport::from_external(&context, &metrics);
+    let target = RenderTarget::new((20.0, 10.0), (400, 240), (800, 600));
+    let viewport = RenderViewport::from_target(target, &metrics);
     let grid = viewport.compute_grid_size();
     let mut terminal = Terminal::new_headless(24, 80);
 
@@ -1605,12 +1588,9 @@ fn should_derive_grid_size_from_external_draw_allocation() {
 }
 
 #[test]
-fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
-    // Arrange: scale-only / geometry change that preserves qualitative grid size.
-    use crate::{RenderViewport, TextMetrics};
-    use harbor_widget::layout::{Point, Rect, Size};
-    use harbor_widget::renderer::Viewport;
-    use harbor_widget::scene::primitive::ExternalDrawContext;
+fn should_not_resize_grid_when_render_target_keeps_same_rows_and_cols() {
+    // Arrange: geometry change that preserves qualitative grid size.
+    use crate::{RenderTarget, RenderViewport, TextMetrics};
 
     let metrics = TextMetrics {
         cell_width: 10.0,
@@ -1621,16 +1601,10 @@ fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
         strikethrough_position: 10.0,
         strikethrough_thickness: 2.0,
     };
-    let first = ExternalDrawContext::new(
-        Rect::from_min_size(Point::ZERO, Size::new(800.0, 480.0)),
-        Viewport::new(800, 600, 1.0),
-    );
-    let second = ExternalDrawContext::new(
-        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(800.0, 480.0)),
-        Viewport::new(820, 620, 1.0),
-    );
-    let first_grid = RenderViewport::from_external(&first, &metrics).compute_grid_size();
-    let second_grid = RenderViewport::from_external(&second, &metrics).compute_grid_size();
+    let first = RenderTarget::new((0.0, 0.0), (800, 480), (800, 600));
+    let second = RenderTarget::new((10.0, 10.0), (800, 480), (820, 620));
+    let first_grid = RenderViewport::from_target(first, &metrics).compute_grid_size();
+    let second_grid = RenderViewport::from_target(second, &metrics).compute_grid_size();
     assert_eq!(first_grid, second_grid);
 
     let mut terminal = Terminal::new_headless(first_grid.rows, first_grid.cols);
@@ -1794,42 +1768,42 @@ fn pty_reader_output_is_drained_fifo_coalesces_wakes_and_refreshes_snapshot() {
 
 #[test]
 fn direct_widget_input_writes_all_encoded_bytes() {
-    use harbor_widget::input::event::{FocusEvent, Key, KeyboardEvent, Modifiers, UiEvent};
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
     let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Character('c'),
-            modifiers: Modifiers {
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('c'),
+            modifiers: TerminalModifiers {
                 ctrl: true,
-                ..Modifiers::default()
+                ..TerminalModifiers::default()
             },
         }))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::Ime("語".into())))
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(
+            "語".into(),
+        )))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Character('x'),
-            modifiers: Modifiers {
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('x'),
+            modifiers: TerminalModifiers {
                 alt: true,
-                ..Modifiers::default()
+                ..TerminalModifiers::default()
             },
         }))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyUp {
-            key: Key::Enter,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            key: TerminalKey::Enter,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Focus(FocusEvent::Lost))
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
         .unwrap();
 
     assert_eq!(
@@ -1840,8 +1814,6 @@ fn direct_widget_input_writes_all_encoded_bytes() {
 
 #[test]
 fn direct_widget_input_observes_current_application_modes() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -1849,15 +1821,15 @@ fn direct_widget_input_observes_current_application_modes() {
     terminal.process_output(b"\x1b[?1h\x1b=");
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::ArrowUp,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::ArrowUp,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::NumpadCharacter('1'),
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::NumpadCharacter('1'),
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
 
@@ -1866,18 +1838,16 @@ fn direct_widget_input_observes_current_application_modes() {
 
 #[test]
 fn should_write_modified_cursor_sequence_when_widget_event_has_shift() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     // Arrange
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
     let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
-    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key: Key::ArrowUp,
-        modifiers: Modifiers {
+    let event = TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+        key: TerminalKey::ArrowUp,
+        modifiers: TerminalModifiers {
             shift: true,
-            ..Modifiers::default()
+            ..TerminalModifiers::default()
         },
     });
 
@@ -1988,17 +1958,15 @@ fn should_stop_reader_when_terminal_receiver_is_disconnected() {
 
 #[test]
 fn should_write_application_keypad_enter_from_widget_event() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     // Arrange
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
     let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
     terminal.process_output(b"\x1b=");
-    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key: Key::NumpadEnter,
-        modifiers: Modifiers::default(),
+    let event = TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+        key: TerminalKey::NumpadEnter,
+        modifiers: TerminalModifiers::default(),
     });
 
     // Act
@@ -2010,30 +1978,22 @@ fn should_write_application_keypad_enter_from_widget_event() {
 
 #[test]
 fn should_ignore_unsuitable_widget_events() {
-    use harbor_widget::{
-        input::event::{
-            FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
-            UiEvent,
-        },
-        layout::Point,
-    };
-
     // Arrange
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
     let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
     let events = [
-        UiEvent::Keyboard(KeyboardEvent::KeyUp {
-            key: Key::Character('x'),
-            modifiers: Modifiers::default(),
+        TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            key: TerminalKey::Character('x'),
+            modifiers: TerminalModifiers::default(),
         }),
-        UiEvent::Keyboard(KeyboardEvent::Ime(String::new())),
-        UiEvent::Focus(FocusEvent::Lost),
-        UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::Down,
-            PointerButton::Left,
+        TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(String::new())),
+        TerminalEvent::Focus(TerminalFocusEvent::Lost),
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
             1,
         )),
     ];
@@ -2049,8 +2009,6 @@ fn should_ignore_unsuitable_widget_events() {
 
 #[test]
 fn should_propagate_writer_errors_for_encodable_widget_events() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     // Arrange
     let mut terminal = Terminal::new_headless_with_io(
         2,
@@ -2061,9 +2019,9 @@ fn should_propagate_writer_errors_for_encodable_widget_events() {
         FailingWriter,
         || true,
     );
-    let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key: Key::Character('x'),
-        modifiers: Modifiers::default(),
+    let event = TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+        key: TerminalKey::Character('x'),
+        modifiers: TerminalModifiers::default(),
     });
 
     // Act
@@ -2164,8 +2122,6 @@ fn reader_error_stops_without_enqueuing_or_waking() {
 
 #[test]
 fn terminal_input_returns_scrollback_to_live_viewport() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -2177,9 +2133,9 @@ fn terminal_input_returns_scrollback_to_live_viewport() {
     assert!(terminal.screen().view_offset() > 0);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Character('x'),
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('x'),
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
 
@@ -2189,8 +2145,6 @@ fn terminal_input_returns_scrollback_to_live_viewport() {
 
 #[test]
 fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -2203,33 +2157,33 @@ fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
     assert!(scroll_count > rows);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::PageUp,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::PageUp,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), rows);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::PageDown,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::PageDown,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 0);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Home,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Home,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), scroll_count);
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::End,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::End,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 0);
@@ -2238,8 +2192,6 @@ fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
 
 #[test]
 fn modified_or_alt_screen_navigation_encodes_to_pty() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -2249,11 +2201,11 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
     }
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::PageUp,
-            modifiers: Modifiers {
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::PageUp,
+            modifiers: TerminalModifiers {
                 shift: true,
-                ..Modifiers::default()
+                ..TerminalModifiers::default()
             },
         }))
         .unwrap();
@@ -2264,9 +2216,9 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
     terminal.process_output(b"\x1b[?1049h");
     assert!(terminal.is_alt_screen());
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Home,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Home,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     assert!(!written.lock().unwrap().is_empty());
@@ -2274,9 +2226,6 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
 
 #[test]
 fn wheel_line_and_pixel_convert_to_viewport_lines() {
-    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-    use harbor_widget::layout::Point;
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -2286,20 +2235,20 @@ fn wheel_line_and_pixel_convert_to_viewport_lines() {
     }
 
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 3);
 
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2309,9 +2258,6 @@ fn wheel_line_and_pixel_convert_to_viewport_lines() {
 
 #[test]
 fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
-    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-    use harbor_widget::layout::Point;
-
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -2321,10 +2267,10 @@ fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
     }
 
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelPixel { dx: 0.0, dy: 10.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelPixel { dx: 0.0, dy: 10.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2334,10 +2280,10 @@ fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
     terminal.process_output(b"\x1b[?1049h");
     let offset_before = terminal.screen().view_offset();
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2347,9 +2293,6 @@ fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
 
 #[test]
 fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
-    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-    use harbor_widget::layout::Point;
-
     // Arrange — live bottom (offset 0); further scroll-down must not move
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
@@ -2362,10 +2305,10 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
 
     // Act
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2377,10 +2320,10 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
     // Arrange — scroll to top, then wheel further up
     let scroll_count = terminal.screen().scroll_count();
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 40.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 40.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2389,10 +2332,10 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
 
     // Act
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2404,9 +2347,6 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
 
 #[test]
 fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
-    use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-    use harbor_widget::layout::Point;
-
     // Arrange
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
@@ -2416,10 +2356,10 @@ fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
         terminal.process_output(b"line\r\n");
     }
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2427,20 +2367,20 @@ fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
 
     // Act — line delta -1 → 3 rows down; pixel -20 → 1 row down
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 3);
 
     terminal
-        .handle_event(UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelPixel { dx: 0.0, dy: -20.0 },
-            PointerButton::Left,
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::WheelPixel { dx: 0.0, dy: -20.0 },
+            TerminalPointerButton::Left,
             0,
         )))
         .unwrap();
@@ -2452,8 +2392,6 @@ fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
 
 #[test]
 fn should_encode_navigation_to_pty_when_ctrl_or_alt_modifier_set() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     // Arrange
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
@@ -2465,11 +2403,11 @@ fn should_encode_navigation_to_pty_when_ctrl_or_alt_modifier_set() {
 
     // Act / Assert — ctrl PageUp encodes, does not scroll
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::PageUp,
-            modifiers: Modifiers {
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::PageUp,
+            modifiers: TerminalModifiers {
                 ctrl: true,
-                ..Modifiers::default()
+                ..TerminalModifiers::default()
             },
         }))
         .unwrap();
@@ -2479,11 +2417,11 @@ fn should_encode_navigation_to_pty_when_ctrl_or_alt_modifier_set() {
 
     // Act / Assert — alt PageDown encodes, does not scroll
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::PageDown,
-            modifiers: Modifiers {
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::PageDown,
+            modifiers: TerminalModifiers {
                 alt: true,
-                ..Modifiers::default()
+                ..TerminalModifiers::default()
             },
         }))
         .unwrap();
@@ -2493,8 +2431,6 @@ fn should_encode_navigation_to_pty_when_ctrl_or_alt_modifier_set() {
 
 #[test]
 fn queued_output_updates_modes_before_input_encoding() {
-    use harbor_widget::input::event::{Key, KeyboardEvent, Modifiers, UiEvent};
-
     let (completed_tx, completed_rx) = std::sync::mpsc::channel();
     let reader = CompletedScriptedReader {
         chunks: std::collections::VecDeque::from([b"\x1b[?1h\x1b=".to_vec()]),
@@ -2509,15 +2445,15 @@ fn queued_output_updates_modes_before_input_encoding() {
         .expect("mode update should finish reading");
 
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::ArrowUp,
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::ArrowUp,
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
     terminal
-        .handle_event(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::NumpadCharacter('1'),
-            modifiers: Modifiers::default(),
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::NumpadCharacter('1'),
+            modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
 

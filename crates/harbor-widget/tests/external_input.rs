@@ -4,9 +4,12 @@
 use harbor_widget::input::event::{
     Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
+use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::custom_paint::CustomPaint;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -443,4 +446,56 @@ fn should_only_queue_for_focused_custom_paint() {
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].0, 11);
+}
+
+#[test]
+fn should_leave_external_queue_empty_when_on_input_is_set() {
+    // Arrange: adapter consumes the event in-tree; nothing should be deferred.
+    let called = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&called);
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(55).on_input(Arc::new(move |_event, _ctx| {
+        flag.store(true, Ordering::Relaxed);
+        EventHandled::Handled
+    })));
+    rt.update(now());
+    assert!(rt.focus_first_focusable());
+    rt.drain_external_input();
+
+    // Act
+    rt.dispatch(key_down(Key::Enter), now());
+    let drained = rt.drain_external_input();
+
+    // Assert
+    assert!(called.load(Ordering::Relaxed));
+    assert!(
+        drained.is_empty(),
+        "on_input must bypass queue_external_input"
+    );
+}
+
+#[test]
+fn should_request_focus_on_pointer_down_when_on_input_is_set() {
+    // Arrange
+    let mut rt = Runtime::new();
+    rt.set_root(CustomPaint::new(12).on_input(Arc::new(|_event, _ctx| EventHandled::Handled)));
+    rt.update(now());
+    let root_id = rt.root_id().unwrap();
+    rt.clear_focus();
+    assert_eq!(rt.input().focused(), None);
+
+    // Act
+    rt.dispatch(
+        pointer_event(
+            Point::new(400.0, 300.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            0,
+        ),
+        now(),
+    );
+
+    // Assert: focus request still happens before the adapter runs.
+    assert_eq!(rt.input().focused(), Some(root_id));
+    assert!(rt.drain_external_input().is_empty());
 }

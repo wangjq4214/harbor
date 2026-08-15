@@ -289,13 +289,13 @@ Project domain concepts and terminology.
 ## Terminal Domain
 
 ### Terminal
-- **Definition:** A self-contained engine owning terminal screen state, VT parsing, wgpu-based rendering (text, cursor, background, scrollbar, selection), and PTY I/O. It does NOT own GpuContext, a window, or a wgpu Device — those are injected by CustomPaint at render time.
+- **Definition:** A self-contained engine owning terminal screen state, VT parsing, wgpu-based rendering (text, cursor, background, scrollbar, selection), and PTY I/O. It does NOT own GpuContext, a window, or a wgpu Device — those are injected by Terminal Widget Bridge at render time.
 - **Synonyms:** Terminal Engine
 - **Relationships:**
   - contains Screen state
   - contains Wide Cell invariant
   - contains Parser (from harbor-parser)
-  - wrapped by CustomPaint
+  - wrapped by Terminal Widget Bridge
   - depends on wgpu, harbor-parser, harbor-text
 
 ### Wide Cell
@@ -333,8 +333,16 @@ Project domain concepts and terminology.
 - **Relationships:**
   - produces Primitive::External
   - registers ExternalDrawFn into Runtime via BuildCx
-  - wraps Terminal
+  - contained by Terminal Widget Bridge
   - receives GpuContext externally for injection
+
+### Terminal Widget Bridge
+- **Definition:** A Component that adapts harbor-widget rendering and input types to terminal-owned boundary types while embedding a Terminal through CustomPaint.
+- **Relationships:**
+  - wraps Terminal
+  - contains CustomPaint
+  - references ExternalDrawId
+  - communicates with UiEvent
 
 ### ExternalDrawFn
 - **Definition:** A callback type `dyn Fn(ExternalDrawId, Rect, &mut RenderPass)` registered per `ExternalDrawId`, invoked by Runtime during encode for each `Primitive::External` encountered.

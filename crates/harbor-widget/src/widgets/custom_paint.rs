@@ -6,16 +6,23 @@ use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 use std::sync::Arc;
 
+/// Optional in-tree input adapter for a focusable external-paint leaf.
+///
+/// When set on [`CustomPaint`], routed events are delivered here instead of
+/// being queued for [`crate::runtime::Runtime::drain_external_input`].
+pub type ExternalInputFn = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
+
 /// A focusable widget that delegates painting to an externally-owned
 /// renderer identified by [`ExternalDrawId`].
 ///
 /// During the paint pass, produces a single [`Primitive::External`].
-/// During event handling, queues input events for deferred delivery to
-/// the external provider after the event walk completes.
+/// During event handling, either invokes an optional [`ExternalInputFn`] or
+/// queues input for deferred delivery after the event walk completes.
 #[derive(Clone)]
 pub struct CustomPaint {
     pub draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
+    on_input: Option<Arc<ExternalInputFn>>,
     children: Vec<View>,
 }
 
@@ -24,6 +31,7 @@ impl CustomPaint {
         CustomPaint {
             draw_id,
             handler: None,
+            on_input: None,
             children: vec![],
         }
     }
@@ -31,6 +39,13 @@ impl CustomPaint {
     /// Sets the renderer invoked for this widget's external primitive.
     pub fn handler(mut self, handler: Arc<ExternalDrawFn<'static>>) -> Self {
         self.handler = Some(handler);
+        self
+    }
+
+    /// Sets an in-tree input adapter. When present, events are not queued for
+    /// deferred external drain.
+    pub fn on_input(mut self, on_input: Arc<ExternalInputFn>) -> Self {
+        self.on_input = Some(on_input);
         self
     }
 
@@ -90,6 +105,10 @@ impl AnyView for CustomPaint {
             && let Some(fiber) = ctx.current_fiber()
         {
             ctx.request_focus(fiber);
+        }
+
+        if let Some(on_input) = &self.on_input {
+            return on_input(event, ctx);
         }
 
         // Queue for deferred delivery to the App via Runtime.
@@ -182,5 +201,55 @@ mod tests {
 
         // Assert: no external draw registration is produced.
         assert!(cx.external_draws.is_empty());
+    }
+
+    #[test]
+    fn should_invoke_on_input_adapter_instead_of_queueing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Arrange
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&called);
+        let cp = CustomPaint::new(1).on_input(Arc::new(move |_event, _ctx| {
+            flag.store(true, Ordering::Relaxed);
+            EventHandled::Handled
+        }));
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        });
+        let mut ctx = EventCtx::new();
+
+        // Act
+        let result = cp.handle_event(
+            &event,
+            &mut ctx,
+            Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0)),
+        );
+
+        // Assert
+        assert_eq!(result, EventHandled::Handled);
+        assert!(called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn should_return_adapter_result_when_on_input_returns_ignored() {
+        // Arrange
+        let cp = CustomPaint::new(1).on_input(Arc::new(|_event, _ctx| EventHandled::Ignored));
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        });
+        let mut ctx = EventCtx::new();
+
+        // Act
+        let result = cp.handle_event(
+            &event,
+            &mut ctx,
+            Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0)),
+        );
+
+        // Assert
+        assert_eq!(result, EventHandled::Ignored);
     }
 }
