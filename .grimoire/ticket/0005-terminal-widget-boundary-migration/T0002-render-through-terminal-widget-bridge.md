@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec: 0005-terminal-widget-boundary-migration](../../spec/0005-terminal-widget-boundary-migration.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

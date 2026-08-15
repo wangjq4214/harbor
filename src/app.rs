@@ -28,6 +28,7 @@ use harbor_widget::effects::{
 };
 use harbor_widget::input::event::{KeyboardEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::Point;
+use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::text::GlyphFn;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 
@@ -62,8 +63,8 @@ pub(crate) fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
 
 fn routes_terminal_input(
     gate_active: bool,
-    event_draw_id: harbor_terminal::ExternalDrawId,
-    terminal_draw_id: harbor_terminal::ExternalDrawId,
+    event_draw_id: ExternalDrawId,
+    terminal_draw_id: ExternalDrawId,
     event: &UiEvent,
 ) -> bool {
     if event_draw_id != terminal_draw_id {
@@ -77,8 +78,8 @@ fn routes_terminal_input(
 
 fn route_terminal_inputs(
     gate_active: bool,
-    terminal_draw_id: harbor_terminal::ExternalDrawId,
-    events: impl IntoIterator<Item = (harbor_terminal::ExternalDrawId, UiEvent)>,
+    terminal_draw_id: ExternalDrawId,
+    events: impl IntoIterator<Item = (ExternalDrawId, UiEvent)>,
     mut handle: impl FnMut(UiEvent),
 ) -> bool {
     let mut routed = false;
@@ -306,6 +307,8 @@ struct AppRuntime {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     terminal: Option<Arc<Mutex<Terminal>>>,
+    /// Bridge-owned external draw id used for deferred terminal input matching.
+    terminal_draw_id: Option<ExternalDrawId>,
     /// Widget framework runtime.
     widget_runtime: Option<harbor_widget::runtime::Runtime>,
     /// Main-window input adapter, sharing the runtime's window lifecycle.
@@ -614,7 +617,10 @@ impl ApplicationHandler<AppEvent> for App {
                 Self::apply_control_flow(event_loop, control_flow);
             }
             if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
-                let draw_id = terminal.lock().unwrap().draw_id();
+                let draw_id = self
+                    .runtime
+                    .terminal_draw_id
+                    .expect("terminal draw id set when widget runtime exists");
                 let needs_redraw_wake = std::cell::Cell::new(false);
                 let routed = route_terminal_inputs(
                     gate_active,
@@ -670,6 +676,7 @@ impl App {
                 window: None,
                 gpu: None,
                 terminal: None,
+                terminal_draw_id: None,
                 widget_runtime: None,
                 winit_adapter: None,
                 dialog: DialogOverlay { window: None },
@@ -904,28 +911,17 @@ impl App {
         }
     }
 
-    /// Initializes the widget runtime with a terminal CustomPaint root.
+    /// Initializes the widget runtime with a terminal bridge root.
     ///
     /// The returned effects are produced during the bootstrap focus transition
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
-        use harbor_widget::widgets::custom_paint::CustomPaint;
+        use crate::terminal_widget_bridge::TerminalWidgetBridge;
 
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
-        let draw_id = terminal_arc.lock().unwrap().draw_id();
+        let bridge = TerminalWidgetBridge::new(terminal_arc);
+        self.runtime.terminal_draw_id = Some(bridge.draw_id());
 
-        // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let handler: Arc<harbor_widget::scene::primitive::ExternalDrawFn<'static>> =
-            Arc::new(move |id, context, pass| {
-                current_gpu(|gpu| {
-                    if let Ok(mut term) = terminal_arc.lock() {
-                        term.render(id, context, pass, gpu);
-                    }
-                });
-            });
-
-        let custom_paint = CustomPaint::new(draw_id).handler(handler);
         let gpu = self.runtime.gpu.as_ref().unwrap();
         let window = self.runtime.window.as_ref().unwrap();
         let initial_size = window.inner_size();
@@ -935,7 +931,7 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(custom_paint);
+        runtime.set_root(bridge);
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());

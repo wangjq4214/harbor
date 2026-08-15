@@ -1,7 +1,7 @@
 use harbor_types::TerminalSize;
 
+use crate::types::RenderTarget;
 use harbor_text::TextMetrics;
-use harbor_widget::scene::primitive::ExternalDrawContext;
 
 /// Centralizes grid geometry, layout margins, and cell-to-pixel coordinate projection.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,15 +49,15 @@ impl RenderViewport {
         }
     }
 
-    pub fn from_external(context: &ExternalDrawContext, metrics: &TextMetrics) -> Self {
-        let (origin_x, origin_y, alloc_w, alloc_h) = context.physical_allocation();
+    /// Builds a viewport from a terminal-owned render target and text metrics.
+    pub fn from_target(target: RenderTarget, metrics: &TextMetrics) -> Self {
         Self {
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             padding: harbor_config::TEXT_PADDING,
-            allocation_origin: (origin_x, origin_y),
-            allocation_size: (alloc_w, alloc_h),
-            surface_size: context.surface_size(),
+            allocation_origin: target.allocation_origin,
+            allocation_size: target.allocation_size,
+            surface_size: target.surface_size,
         }
     }
 
@@ -94,16 +94,10 @@ impl RenderViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harbor_widget::layout::{Point, Rect};
-    use harbor_widget::renderer::Viewport;
+    use crate::types::RenderTarget;
 
-    fn external_context(logical: Rect, physical: (u32, u32), scale: f32) -> ExternalDrawContext {
-        ExternalDrawContext::new(logical, Viewport::new(physical.0, physical.1, scale))
-    }
-
-    #[test]
-    fn compute_grid_size_from_allocation_not_full_surface() {
-        let metrics = TextMetrics {
+    fn sample_metrics() -> TextMetrics {
+        TextMetrics {
             cell_width: 10.0,
             line_height: 20.0,
             ascent: 16.0,
@@ -111,16 +105,14 @@ mod tests {
             underline_thickness: 2.0,
             strikethrough_position: 10.0,
             strikethrough_thickness: 2.0,
-        };
-        let context = external_context(
-            Rect::from_min_size(
-                Point::new(10.0, 5.0),
-                harbor_widget::layout::Size::new(200.0, 100.0),
-            ),
-            (800, 600),
-            1.0,
-        );
-        let viewport = RenderViewport::from_external(&context, &metrics);
+        }
+    }
+
+    #[test]
+    fn compute_grid_size_from_allocation_not_full_surface() {
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((10.0, 5.0), (200, 100), (800, 600));
+        let viewport = RenderViewport::from_target(target, &metrics);
         let grid = viewport.compute_grid_size();
         // Allocation is 200×100; TEXT_PADDING is applied on each edge.
         let pad = harbor_config::TEXT_PADDING;
@@ -188,31 +180,16 @@ mod tests {
     }
 
     #[test]
-    fn should_derive_physical_allocation_from_external_context_at_2x_scale() {
-        // Arrange
-        let metrics = TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 16.0,
-            underline_thickness: 2.0,
-            strikethrough_position: 10.0,
-            strikethrough_thickness: 2.0,
-        };
-        let context = external_context(
-            Rect::from_min_size(
-                Point::new(10.0, 5.0),
-                harbor_widget::layout::Size::new(200.0, 100.0),
-            ),
-            (1600, 1200),
-            2.0,
-        );
+    fn should_derive_grid_from_physical_target_at_2x_scale_allocation() {
+        // Arrange: already-physical values as produced by a 2× scale adaptation.
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((20.0, 10.0), (400, 200), (1600, 1200));
 
         // Act
-        let viewport = RenderViewport::from_external(&context, &metrics);
+        let viewport = RenderViewport::from_target(target, &metrics);
         let grid = viewport.compute_grid_size();
 
-        // Assert: logical 200×100 at 2× → physical 400×200 allocation.
+        // Assert
         assert_eq!(viewport.allocation_origin, (20.0, 10.0));
         assert_eq!(viewport.allocation_size, (400, 200));
         assert_eq!(viewport.surface_size, (1600, 1200));
@@ -228,31 +205,49 @@ mod tests {
     }
 
     #[test]
-    fn should_round_fractional_external_allocation_before_grid_sizing() {
-        // Arrange
-        let metrics = TextMetrics {
-            cell_width: 10.0,
-            line_height: 20.0,
-            ascent: 16.0,
-            underline_position: 16.0,
-            underline_thickness: 2.0,
-            strikethrough_position: 10.0,
-            strikethrough_thickness: 2.0,
-        };
-        let context = external_context(
-            Rect::from_min_size(
-                Point::new(0.4, 0.6),
-                harbor_widget::layout::Size::new(100.2, 50.4),
-            ),
-            (800, 600),
-            1.0,
-        );
+    fn should_preserve_supplied_physical_allocation_exactly() {
+        // Arrange: physical values already rounded by the bridge adaptation.
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((0.0, 0.0), (101, 51), (800, 600));
 
         // Act
-        let viewport = RenderViewport::from_external(&context, &metrics);
+        let viewport = RenderViewport::from_target(target, &metrics);
 
-        // Assert: floor(0.4)=0, ceil(100.6)=101; floor(0.6)=0, ceil(51.0)=51
+        // Assert
         assert_eq!(viewport.allocation_origin, (0.0, 0.0));
         assert_eq!(viewport.allocation_size, (101, 51));
+    }
+
+    #[test]
+    fn should_copy_metrics_and_surface_when_building_from_target() {
+        // Arrange
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((12.0, 8.0), (320, 160), (1280, 720));
+
+        // Act
+        let viewport = RenderViewport::from_target(target, &metrics);
+
+        // Assert
+        assert_eq!(viewport.cell_width, metrics.cell_width);
+        assert_eq!(viewport.line_height, metrics.line_height);
+        assert_eq!(viewport.padding, harbor_config::TEXT_PADDING);
+        assert_eq!(viewport.allocation_origin, (12.0, 8.0));
+        assert_eq!(viewport.allocation_size, (320, 160));
+        assert_eq!(viewport.surface_size, (1280, 720));
+    }
+
+    #[test]
+    fn should_return_minimum_grid_when_from_target_has_zero_allocation() {
+        // Arrange
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((0.0, 0.0), (0, 0), (800, 600));
+
+        // Act
+        let viewport = RenderViewport::from_target(target, &metrics);
+        let grid = viewport.compute_grid_size();
+
+        // Assert
+        assert_eq!(grid.rows, 1);
+        assert_eq!(grid.cols, 1);
     }
 }

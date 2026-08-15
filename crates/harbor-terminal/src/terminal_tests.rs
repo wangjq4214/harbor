@@ -1503,18 +1503,6 @@ fn preview_printable_ascii_range_is_unchanged() {
 // ── Terminal API & lifecycle tests ─────────────────────────────────────
 
 #[test]
-fn should_return_fixed_draw_id_when_queried() {
-    // Arrange
-    let terminal = Terminal::new_headless(24, 80);
-
-    // Act
-    let draw_id = terminal.draw_id();
-
-    // Assert
-    assert_eq!(draw_id, 1);
-}
-
-#[test]
 fn should_initialize_headless_terminal_with_given_dimensions() {
     // Arrange & Act
     let terminal = Terminal::new_headless(30, 100);
@@ -1570,12 +1558,9 @@ fn should_return_false_and_preserve_size_when_resize_if_changed_has_same_dimensi
 }
 
 #[test]
-fn should_derive_grid_size_from_external_draw_allocation() {
-    // Arrange: CustomPaint allocation is smaller than the full surface.
-    use crate::{RenderViewport, TextMetrics};
-    use harbor_widget::layout::{Point, Rect, Size};
-    use harbor_widget::renderer::Viewport;
-    use harbor_widget::scene::primitive::ExternalDrawContext;
+fn should_derive_grid_size_from_render_target_allocation() {
+    // Arrange: allocation is smaller than the full surface.
+    use crate::{RenderTarget, RenderViewport, TextMetrics};
 
     let metrics = TextMetrics {
         cell_width: 10.0,
@@ -1586,11 +1571,8 @@ fn should_derive_grid_size_from_external_draw_allocation() {
         strikethrough_position: 10.0,
         strikethrough_thickness: 2.0,
     };
-    let context = ExternalDrawContext::new(
-        Rect::from_min_size(Point::new(20.0, 10.0), Size::new(400.0, 240.0)),
-        Viewport::new(800, 600, 1.0),
-    );
-    let viewport = RenderViewport::from_external(&context, &metrics);
+    let target = RenderTarget::new((20.0, 10.0), (400, 240), (800, 600));
+    let viewport = RenderViewport::from_target(target, &metrics);
     let grid = viewport.compute_grid_size();
     let mut terminal = Terminal::new_headless(24, 80);
 
@@ -1605,12 +1587,9 @@ fn should_derive_grid_size_from_external_draw_allocation() {
 }
 
 #[test]
-fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
-    // Arrange: scale-only / geometry change that preserves qualitative grid size.
-    use crate::{RenderViewport, TextMetrics};
-    use harbor_widget::layout::{Point, Rect, Size};
-    use harbor_widget::renderer::Viewport;
-    use harbor_widget::scene::primitive::ExternalDrawContext;
+fn should_not_resize_grid_when_render_target_keeps_same_rows_and_cols() {
+    // Arrange: geometry change that preserves qualitative grid size.
+    use crate::{RenderTarget, RenderViewport, TextMetrics};
 
     let metrics = TextMetrics {
         cell_width: 10.0,
@@ -1621,16 +1600,10 @@ fn should_not_resize_grid_when_external_context_keeps_same_rows_and_cols() {
         strikethrough_position: 10.0,
         strikethrough_thickness: 2.0,
     };
-    let first = ExternalDrawContext::new(
-        Rect::from_min_size(Point::ZERO, Size::new(800.0, 480.0)),
-        Viewport::new(800, 600, 1.0),
-    );
-    let second = ExternalDrawContext::new(
-        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(800.0, 480.0)),
-        Viewport::new(820, 620, 1.0),
-    );
-    let first_grid = RenderViewport::from_external(&first, &metrics).compute_grid_size();
-    let second_grid = RenderViewport::from_external(&second, &metrics).compute_grid_size();
+    let first = RenderTarget::new((0.0, 0.0), (800, 480), (800, 600));
+    let second = RenderTarget::new((10.0, 10.0), (800, 480), (820, 620));
+    let first_grid = RenderViewport::from_target(first, &metrics).compute_grid_size();
+    let second_grid = RenderViewport::from_target(second, &metrics).compute_grid_size();
     assert_eq!(first_grid, second_grid);
 
     let mut terminal = Terminal::new_headless(first_grid.rows, first_grid.cols);

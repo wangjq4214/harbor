@@ -18,7 +18,6 @@ pub use harbor_types::should_confirm_multiline;
 pub use harbor_types::{
     InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
 };
-pub use harbor_widget::scene::primitive::ExternalDrawId;
 use io::TerminalIo;
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
@@ -43,8 +42,6 @@ pub use types::{
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled internally via in_alt).
     screen: Screen,
-    /// Identifier for CustomPaint widget delegate drawing.
-    draw_id: ExternalDrawId,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
     /// Encapsulated GPU render pipeline.
@@ -99,7 +96,6 @@ impl Terminal {
     pub fn new_headless(rows: usize, cols: usize) -> Self {
         Self {
             screen: Screen::new(rows, cols),
-            draw_id: 1,
             io: TerminalIo::new_headless(),
             renderer: None,
         }
@@ -122,13 +118,6 @@ impl Terminal {
         terminal
     }
 
-    // ── identity ──────────────────────────────────────────────────────
-
-    /// Fixed identifier linking this Terminal to its CustomPaint widget.
-    pub fn draw_id(&self) -> ExternalDrawId {
-        self.draw_id
-    }
-
     // ── render orchestration ──────────────────────────────────────────
 
     /// Prepares GPU resources for all render components.
@@ -139,21 +128,12 @@ impl Terminal {
         }
     }
 
-    /// Coordinates prepare + draw for all components during widget external draw pass.
-    pub fn render(
-        &mut self,
-        draw_id: ExternalDrawId,
-        context: &harbor_widget::scene::primitive::ExternalDrawContext,
-        pass: &mut wgpu::RenderPass,
-        gpu: &GpuContext,
-    ) {
-        if draw_id != self.draw_id {
-            return;
-        }
+    /// Coordinates prepare + draw for all components from a terminal-owned render target.
+    pub fn render(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
         let Some(metrics) = self.text_metrics().copied() else {
             return;
         };
-        let viewport = RenderViewport::from_external(context, &metrics);
+        let viewport = RenderViewport::from_target(target, &metrics);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
         self.io.drain(&mut self.screen);
