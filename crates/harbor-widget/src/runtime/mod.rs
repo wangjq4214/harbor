@@ -197,17 +197,17 @@ impl Runtime {
         let mut effects = std::mem::take(&mut self.pending_effects);
         let dirty = take_dirty(self.runtime_id);
 
-        if !dirty.is_empty() {
-            if let Some(root_id) = self.root_id {
-                let old_children = self
-                    .arena
-                    .get(root_id)
-                    .map(|f| f.children.clone())
-                    .unwrap_or_default();
+        if !dirty.is_empty()
+            && let Some(root_id) = self.root_id
+        {
+            let old_children = self
+                .arena
+                .get(root_id)
+                .map(|f| f.children.clone())
+                .unwrap_or_default();
 
-                self.rebuild_root(root_id, &old_children);
-                effects.merge(RuntimeEffects::request_redraw());
-            }
+            self.rebuild_root(root_id, &old_children);
+            effects.merge(RuntimeEffects::request_redraw());
         }
 
         effects.merge(self.collect_external_schedule(now));
