@@ -237,10 +237,10 @@ impl PointerInteraction {
                 } else if lines < 0 {
                     screen.scroll_down(lines.unsigned_abs());
                 }
-                return TerminalEventOutcome {
+                TerminalEventOutcome {
                     redraw: lines != 0,
                     ..TerminalEventOutcome::default()
-                };
+                }
             }
             TerminalPointerPhase::Down if event.button == TerminalPointerButton::Left => {
                 match hit_test(&snapshot, &viewport, physical_position) {
