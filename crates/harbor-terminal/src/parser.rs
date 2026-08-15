@@ -45,18 +45,18 @@ impl TerminalParser {
     /// alternate-screen switch was triggered.
     pub fn put_bytes(&mut self, screen: &mut Screen, bytes: &[u8]) -> PutResult {
         for (i, &byte) in bytes.iter().enumerate() {
-            {
-                let mut handler = ScreenHandler {
+            self.inner.advance(
+                &mut ScreenHandler {
                     screen,
                     decrqss: &mut self.decrqss,
                     xtgettcap: &mut self.xtgettcap,
-                };
-                self.inner.advance(&mut handler, byte);
-            }
-            if screen.alt_request().is_some() {
+                },
+                byte,
+            );
+            if let Some(alt_request) = screen.take_alt_request() {
                 return PutResult {
                     consumed: i + 1,
-                    alt_request: screen.take_alt_request(),
+                    alt_request: Some(alt_request),
                 };
             }
         }

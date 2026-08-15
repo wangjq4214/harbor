@@ -150,13 +150,9 @@ impl TerminalIo {
     pub(crate) fn feed_pty_output(&mut self, screen: &mut Screen, bytes: &[u8]) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
-            let result = {
-                let parser = &mut self.parser;
-                parser.put_bytes(screen, remaining)
-            };
+            let result = self.parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
             if let Some(action) = result.alt_request {
-                screen.take_alt_request();
                 self.suppress_scroll_snap = false;
                 match action {
                     AltScreenAction::Enter { clear } => screen.enter_alt(clear),
