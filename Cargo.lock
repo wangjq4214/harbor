@@ -833,7 +833,6 @@ dependencies = [
  "harbor-pty",
  "harbor-text",
  "harbor-types",
- "harbor-widget",
  "proptest",
  "tracing",
  "unicode-width",

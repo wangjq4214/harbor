@@ -202,11 +202,8 @@ impl Terminal {
         self.io.write_pty(bytes)
     }
 
-    /// Drains new output, encodes a widget event using current modes, and writes it to the PTY.
-    pub fn handle_event(
-        &mut self,
-        event: harbor_widget::input::event::UiEvent,
-    ) -> anyhow::Result<()> {
+    /// Drains new output, encodes a terminal event using current modes, and writes it to the PTY.
+    pub fn handle_event(&mut self, event: TerminalEvent) -> anyhow::Result<()> {
         self.io.handle_event(&mut self.screen, event)
     }
 

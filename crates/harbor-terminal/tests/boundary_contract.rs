@@ -7,6 +7,18 @@ use harbor_terminal::{
     TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
 };
 
+#[test]
+fn harbor_terminal_manifest_does_not_depend_on_harbor_widget() {
+    let manifest = include_str!("../Cargo.toml");
+    assert!(
+        !manifest.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("harbor-widget") || trimmed.contains("harbor-widget =")
+        }),
+        "harbor-terminal must not declare a harbor-widget dependency"
+    );
+}
+
 // ── RenderTarget ────────────────────────────────────────────────────────────
 
 #[test]
