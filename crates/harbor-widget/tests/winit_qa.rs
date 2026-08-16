@@ -236,12 +236,18 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
         vec![
             (
                 101,
-                UiEvent::Pointer(PointerEvent::new(
-                    Point::new(10.0, 5.0),
-                    PointerPhase::Move,
-                    PointerButton::Left,
-                    0,
-                )),
+                UiEvent::Pointer(
+                    PointerEvent::new(
+                        Point::new(10.0, 5.0),
+                        PointerPhase::Move,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    }),
+                ),
             ),
             (
                 101,
@@ -843,14 +849,14 @@ fn should_coalesce_host_retry_until_frame_starts_on_adapter() {
 }
 
 #[test]
-fn should_not_request_stale_deadline_frame_after_drawable_window_is_restored() {
+fn should_request_recovery_frame_after_drawable_window_is_restored() {
     // Arrange — the runtime is clean while a minimized adapter receives a due deadline.
     let now = Instant::now();
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = runtime.update(now);
     let mut adapter = WinitAdapter::new();
-    adapter.set_drawable(false);
+    let _ = adapter.set_drawable(false);
     let _ = adapter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
         ..RuntimeEffects::default()
@@ -858,12 +864,14 @@ fn should_not_request_stale_deadline_frame_after_drawable_window_is_restored() {
 
     // Act — the non-drawable idle turn consumes the deadline before restoration.
     let suspended = adapter.about_to_wait(&mut runtime, now, None);
-    adapter.set_drawable(true);
+    let recovery = adapter.set_drawable(true);
     let restored = adapter.about_to_wait(&mut runtime, now, None);
 
-    // Assert — restoration is idle; it must not schedule a stale deadline frame.
+    // Assert — restoration emits exactly one recovery edge; the following idle
+    // turn does not duplicate the outstanding redraw request.
     assert!(!suspended.request_redraw);
     assert_eq!(suspended.control_flow, Some(ControlFlowEffect::Wait));
+    assert!(recovery.request_redraw);
     assert!(!restored.request_redraw);
     assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
 }
@@ -896,5 +904,66 @@ fn should_not_request_another_frame_when_due_deadline_is_covered_by_redraw_edge(
     assert_eq!(
         following_idle_turn.control_flow,
         Some(ControlFlowEffect::Wait)
+    );
+}
+
+#[test]
+fn should_wait_until_schedule_deadline_when_runtime_registers_external_schedule() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    // Arrange — schedule-sourced CF must survive adapter fold + about_to_wait
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+        redraw_now: false,
+        deadline: Some(deadline),
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(CustomPaint::new(9).schedule(schedule));
+    let _ = runtime.update(Instant::now());
+    let mut adapter = WinitAdapter::new();
+    let now = Instant::now();
+
+    // Act
+    let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+    // Assert
+    assert!(!idle.request_redraw);
+    assert_eq!(
+        idle.control_flow,
+        Some(ControlFlowEffect::WaitUntil(deadline))
+    );
+    assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+}
+
+#[test]
+fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    // Arrange — stored blink deadline is due; update reports the *next* phase
+    // boundary. Without consuming the due edge first, about_to_wait would wait
+    // on the future deadline and never redraw (cursor stuck solid).
+    let now = Instant::now();
+    let next_phase = now + Duration::from_millis(530);
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+        redraw_now: false,
+        deadline: Some(next_phase),
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(CustomPaint::new(3).schedule(schedule));
+    let _ = runtime.update(now);
+    let mut adapter = WinitAdapter::new();
+    let _ = adapter.fold_effects(RuntimeEffects {
+        control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
+        ..RuntimeEffects::default()
+    });
+
+    // Act
+    let due = adapter.about_to_wait(&mut runtime, now, None);
+
+    // Assert
+    assert!(due.request_redraw);
+    assert_eq!(
+        due.control_flow,
+        Some(ControlFlowEffect::WaitUntil(next_phase))
     );
 }

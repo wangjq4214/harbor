@@ -1094,7 +1094,7 @@ fn decrqss_pt_overflow_and_followup_query_do_not_succeed_from_prefix() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     let mut oversized = b"\x1bP$q".to_vec();
-    oversized.extend(std::iter::repeat(b'm').take(17));
+    oversized.extend(std::iter::repeat_n(b'm', 17));
     oversized.extend_from_slice(b"\x1b\\");
     feed(&mut parser, &mut screen, &oversized);
     assert_eq!(screen.drain_replies(), FAILURE_REPLY);
@@ -1172,7 +1172,7 @@ fn decrqss_parser_string_cap_overflow_still_fails() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     let mut oversized = b"\x1bP$q".to_vec();
-    oversized.extend(std::iter::repeat(b'a').take(5000));
+    oversized.extend(std::iter::repeat_n(b'a', 5000));
     oversized.extend_from_slice(b"\x1b\\OK");
     feed(&mut parser, &mut screen, &oversized);
     assert_eq!(screen.drain_replies(), FAILURE_REPLY);

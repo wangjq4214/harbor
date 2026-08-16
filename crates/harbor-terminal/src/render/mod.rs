@@ -1,5 +1,6 @@
 pub mod background;
 pub mod cursor;
+pub mod cursor_blink;
 pub mod decoration;
 pub mod gpu;
 pub mod layout;
@@ -10,10 +11,11 @@ pub mod text;
 
 pub use background::Background;
 pub use cursor::Cursor;
+pub use cursor_blink::CursorBlinkState;
 pub use decoration::Decoration;
 pub use gpu::{GpuContext, UploadMode, UploadPlan, UploadPolicy};
 pub use layout::RenderViewport;
 pub use pipeline::TerminalRenderPipeline;
-pub use scrollbar::Scrollbar;
+pub use scrollbar::{Scrollbar, ScrollbarHit, hit_test, offset_for_thumb};
 pub use selection::Selection;
 pub use text::Text;

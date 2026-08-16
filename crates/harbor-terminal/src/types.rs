@@ -3,6 +3,27 @@
 //! These types intentionally mirror current `UiEvent` semantics without depending
 //! on widget types. Conversions from widget events live outside this crate.
 
+use std::time::Instant;
+
+/// Host-neutral scheduling snapshot: immediate redraw need plus optional blink deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameDemand {
+    /// True when the host should request a frame before waiting on `deadline`.
+    pub redraw_now: bool,
+    /// Earliest next cursor-blink phase boundary, when blinking is active.
+    pub deadline: Option<Instant>,
+}
+
+impl FrameDemand {
+    /// Empty demand used when no Cursor/renderer is available.
+    pub const fn empty() -> Self {
+        Self {
+            redraw_now: false,
+            deadline: None,
+        }
+    }
+}
+
 /// A terminal render allocation expressed entirely in physical surface coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderTarget {
@@ -12,6 +33,8 @@ pub struct RenderTarget {
     pub allocation_size: (u32, u32),
     /// Full surface dimensions used for NDC normalization.
     pub surface_size: (u32, u32),
+    /// Scale used to convert widget logical pointer coordinates to pixels.
+    pub scale_factor: f32,
 }
 
 impl RenderTarget {
@@ -21,10 +44,20 @@ impl RenderTarget {
         allocation_size: (u32, u32),
         surface_size: (u32, u32),
     ) -> Self {
+        Self::new_with_scale(allocation_origin, allocation_size, surface_size, 1.0)
+    }
+
+    pub fn new_with_scale(
+        allocation_origin: (f32, f32),
+        allocation_size: (u32, u32),
+        surface_size: (u32, u32),
+        scale_factor: f32,
+    ) -> Self {
         Self {
             allocation_origin,
             allocation_size,
             surface_size,
+            scale_factor: scale_factor.max(0.001),
         }
     }
 }
@@ -35,6 +68,15 @@ pub enum TerminalEvent {
     Keyboard(TerminalKeyboardEvent),
     Pointer(TerminalPointerEvent),
     Focus(TerminalFocusEvent),
+}
+
+/// Host-neutral effects produced while handling one terminal event.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalEventOutcome {
+    pub redraw: bool,
+    pub capture_pointer: Option<u64>,
+    pub release_pointer: Option<u64>,
+    pub clipboard_text: Option<String>,
 }
 
 /// A terminal-relevant keyboard or IME state transition.
@@ -104,6 +146,7 @@ pub struct TerminalPointerEvent {
     pub phase: TerminalPointerPhase,
     pub button: TerminalPointerButton,
     pub pointer_id: u64,
+    pub modifiers: TerminalModifiers,
 }
 
 impl TerminalPointerEvent {
@@ -118,7 +161,13 @@ impl TerminalPointerEvent {
             phase,
             button,
             pointer_id,
+            modifiers: TerminalModifiers::default(),
         }
+    }
+
+    pub fn with_modifiers(mut self, modifiers: TerminalModifiers) -> Self {
+        self.modifiers = modifiers;
+        self
     }
 }
 
@@ -136,6 +185,7 @@ pub enum TerminalPointerPhase {
 /// The pointer button identity preserved at the terminal boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalPointerButton {
+    None,
     Left,
     Right,
     Middle,

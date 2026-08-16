@@ -129,6 +129,33 @@ impl ExternalDrawContext {
 pub type ExternalDrawFn<'a> =
     dyn Fn(ExternalDrawId, &ExternalDrawContext, &mut wgpu::RenderPass<'_>) + 'a;
 
+/// Widget-neutral scheduling snapshot from one external schedule provider.
+///
+/// Mirrors terminal Frame Demand shape without depending on harbor-terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExternalScheduleDemand {
+    /// True when the host should request a frame before waiting on `deadline`.
+    pub redraw_now: bool,
+    /// Earliest next animation/deadline boundary, when one is active.
+    pub deadline: Option<std::time::Instant>,
+}
+
+impl ExternalScheduleDemand {
+    /// Empty demand used when a provider has nothing to schedule.
+    pub const fn empty() -> Self {
+        Self {
+            redraw_now: false,
+            deadline: None,
+        }
+    }
+}
+
+/// Signature for an external schedule callback.
+///
+/// Invoked by [`crate::runtime::Runtime::update`] before idle wait selection.
+/// Providers may only report demand — they must not acquire, submit, or present.
+pub type ExternalScheduleFn = dyn Fn(ExternalDrawId, std::time::Instant) -> ExternalScheduleDemand;
+
 /// Standardized draw input produced by widgets during the paint pass.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Primitive {
@@ -285,5 +312,33 @@ mod tests {
         // Assert
         assert_eq!(scissor, (200, 100, 400, 200));
         assert!(!context.is_empty());
+    }
+
+    #[test]
+    fn should_report_no_redraw_and_no_deadline_when_schedule_demand_is_empty() {
+        // Arrange / Act
+        let empty = ExternalScheduleDemand::empty();
+
+        // Assert
+        assert_eq!(empty, ExternalScheduleDemand::default());
+        assert!(!empty.redraw_now);
+        assert!(empty.deadline.is_none());
+    }
+
+    #[test]
+    fn should_preserve_redraw_and_deadline_fields_when_schedule_demand_is_constructed() {
+        // Arrange
+        let deadline = std::time::Instant::now();
+
+        // Act
+        let demand = ExternalScheduleDemand {
+            redraw_now: true,
+            deadline: Some(deadline),
+        };
+
+        // Assert
+        assert!(demand.redraw_now);
+        assert_eq!(demand.deadline, Some(deadline));
+        assert_ne!(demand, ExternalScheduleDemand::empty());
     }
 }

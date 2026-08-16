@@ -1489,7 +1489,7 @@ fn should_preserve_pending_wrap_for_non_moving_c0_controls() {
     parser.put_bytes(&mut screen, b"abcde");
     assert!(screen.cursor.modes.pending_wrap);
 
-    for control in [b'\x05', b'\x07', b'\x0e', b'\x0f'] {
+    for control in *b"\x05\x07\x0e\x0f" {
         parser.put_bytes(&mut screen, &[control]);
         assert!(
             screen.cursor.modes.pending_wrap,

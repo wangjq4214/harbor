@@ -447,6 +447,9 @@ mod tests {
         assert_eq!(rect.size(), Size::new(100.0, 50.0));
     }
 
+    // The production Fiber stores type-erased views in an Arc even though
+    // widgets are UI-thread-owned; this test replaces that view directly.
+    #[allow(clippy::arc_with_non_send_sync)]
     #[test]
     fn paint_fiber_collects_primitives() {
         let mut arena = FiberArena::new();

@@ -324,12 +324,24 @@ pub struct TerminalSize {
 
 // ── InputModes ────────────────────────────────────────────────────────────────
 
+/// VT mouse-reporting mode selected by DEC private modes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MouseTrackingMode {
+    #[default]
+    Disabled,
+    Button,
+    ButtonMotion,
+    AnyMotion,
+}
+
 /// Lightweight snapshot of terminal modes that affect input encoding.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InputModes {
     pub application_cursor: bool,
     pub application_keypad: bool,
     pub bracketed_paste: bool,
+    pub mouse_tracking: MouseTrackingMode,
+    pub mouse_sgr: bool,
 }
 
 impl InputModes {
@@ -458,6 +470,8 @@ pub struct TerminalSnapshot {
     pub scroll_count: usize,
     pub view_offset: usize,
     pub history_start: u64,
+    /// Soft-wrap marker for each currently displayed row.
+    pub wrapped: Vec<bool>,
     pub is_alt: bool,
     pub input_modes: InputModes,
     pub dirty_ranges: Vec<DirtyRange>,
@@ -486,6 +500,18 @@ impl TerminalSnapshot {
             return None;
         }
         self.cells.get(row * self.cols + col)
+    }
+
+    /// Returns whether a visible generation continues the logical line above.
+    pub fn is_wrapped_at_generation(&self, generation: u64) -> bool {
+        let visible_start =
+            self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64;
+        let row = generation
+            .checked_sub(visible_start)
+            .map(|row| row as usize);
+        row.and_then(|row| self.wrapped.get(row))
+            .copied()
+            .unwrap_or(false)
     }
 }
 

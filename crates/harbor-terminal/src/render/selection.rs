@@ -1,31 +1,25 @@
-use harbor_types::TerminalSnapshot;
+use harbor_types::{SelectionBounds, TerminalSnapshot};
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext};
-use crate::SelectionModel;
 use crate::render::RenderViewport;
-use arboard::Clipboard;
-use harbor_config::{SELECTION_COLOR, TEXT_PADDING};
+use harbor_config::SELECTION_COLOR;
 
 // ── Selection (outer — GPU) ──────────────────────────────────────
 
 pub struct Selection {
-    model: SelectionModel,
     pipeline: Arc<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     /// Number of vertices to draw (0 when no selection).
     vertex_count: u32,
     /// Current vertex buffer capacity (rows * cols * 6).
     vertex_cap: usize,
-    /// Cached from the most recent CursorMoved event (physical pixels).
-    #[allow(dead_code)]
-    last_cursor_pos: Option<(f64, f64)>,
-    cell_width: f32,
-    line_height: f32,
+    /// Current terminal-owned selection bounds.
+    bounds: Option<SelectionBounds>,
+    /// Last projection inputs used for the vertex upload.
+    last_projection: Option<(u64, usize, usize, usize, usize, RenderViewport)>,
     /// Whether vertex buffer needs re-upload.
     dirty: bool,
-    /// System clipboard handle (None when clipboard is unavailable, e.g. headless).
-    _clipboard: Option<Clipboard>,
 }
 
 impl Selection {
@@ -33,55 +27,18 @@ impl Selection {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, cell_width: f32, line_height: f32) -> Self {
+    pub fn new(gpu: &GpuContext, _cell_width: f32, _line_height: f32) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {
-            model: SelectionModel::new(),
             pipeline,
             vertex_buffer,
             vertex_count: 0,
             vertex_cap: 0,
-            last_cursor_pos: None,
-            cell_width,
-            line_height,
-            dirty: false,
-            _clipboard: {
-                let cb = Clipboard::new();
-                if cb.is_err() {
-                    tracing::warn!("clipboard unavailable; copy/paste will be disabled");
-                }
-                cb.ok()
-            },
+            bounds: None,
+            last_projection: None,
+            dirty: true,
         }
-    }
-
-    /// Converts physical pixel coordinates `(x, y)` to grid `(row, col)`
-    /// relative to global line space.
-    #[allow(dead_code, clippy::too_many_arguments)]
-    fn pixel_to_cell(
-        &self,
-        px: f64,
-        py: f64,
-        history_start: usize,
-        scroll_count: usize,
-        view_offset: usize,
-        rows: usize,
-        cols: usize,
-    ) -> (isize, usize) {
-        let content_x = (px as f32 - TEXT_PADDING).max(0.0);
-        let content_y = (py as f32 - TEXT_PADDING).max(0.0);
-
-        let display_row = (content_y / self.line_height).floor() as usize;
-        let display_row = display_row.min(rows.saturating_sub(1));
-
-        let col = (content_x / self.cell_width).floor() as usize;
-        let col = col.min(cols.saturating_sub(1));
-
-        let view_start_g = history_start + scroll_count - view_offset;
-        let global_line = (view_start_g + display_row) as isize;
-
-        (global_line, col)
     }
 
     /// Ensures the vertex buffer capacity can hold `rows * cols * 6` vertices.
@@ -102,12 +59,9 @@ impl Selection {
         &self,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
+        bounds: SelectionBounds,
     ) -> Vec<ColoredVertex> {
         let (surf_w, surf_h) = viewport.surface_dimensions();
-        let Some(bounds) = self.model.bounds() else {
-            return Vec::new();
-        };
-
         let sg = bounds.start_row;
         let sc = bounds.start_col;
         let eg = bounds.end_row;
@@ -158,9 +112,11 @@ impl Selection {
         self.dirty = true;
     }
 
-    pub fn resize_grid(&mut self) {
-        self.model.clear();
-        self.dirty = true;
+    pub fn set_bounds(&mut self, bounds: Option<SelectionBounds>) {
+        if self.bounds != bounds {
+            self.bounds = bounds;
+            self.dirty = true;
+        }
     }
 
     pub fn prepare(
@@ -169,22 +125,35 @@ impl Selection {
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
     ) {
+        let Some(snap) = snap else {
+            self.vertex_count = 0;
+            self.last_projection = None;
+            self.dirty = false;
+            return;
+        };
+        let projection = (
+            snap.history_start,
+            snap.scroll_count,
+            snap.view_offset,
+            snap.rows,
+            snap.cols,
+            *viewport,
+        );
+        if self.last_projection != Some(projection) {
+            self.last_projection = Some(projection);
+            self.dirty = true;
+        }
         if !self.dirty {
             return;
         }
         self.dirty = false;
 
-        let Some(snap) = snap else {
-            self.vertex_count = 0;
-            return;
-        };
-
-        if self.model.has_selection() {
+        if let Some(bounds) = self.bounds {
             let rows = snap.rows;
             let cols = snap.cols;
             self.ensure_capacity(gpu, rows, cols);
 
-            let verts = self.build_vertices(snap, viewport);
+            let verts = self.build_vertices(snap, viewport, bounds);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.vertex_count = verts.len() as u32;
         } else {

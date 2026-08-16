@@ -17,8 +17,8 @@ use crate::renderer::Viewport;
 use crate::runtime::Runtime;
 use crate::scheduler::FrameScheduler;
 use crate::winit::event::{
-    ime_suppresses_keyboard, keyboard_to_uievent, mouse_button, mouse_button_index,
-    physical_size_for_scale_change,
+    ime_suppresses_keyboard, keyboard_to_uievent, modifiers_to_widget, mouse_button,
+    mouse_button_index, physical_size_for_scale_change,
 };
 use crate::winit::surface::SurfaceState;
 use std::time::Instant;
@@ -148,8 +148,9 @@ impl WinitAdapter {
     }
 
     /// Updates whether this window can acquire a drawable surface.
-    pub fn set_drawable(&mut self, drawable: bool) {
-        self.scheduler.set_drawable(drawable);
+    /// Restoring drawability returns one recovery-frame edge.
+    pub fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
+        self.scheduler.set_drawable(drawable)
     }
 
     /// Folds a raw runtime effect batch through the per-window scheduler.
@@ -190,7 +191,14 @@ impl WinitAdapter {
         now: Instant,
         host_deadline: Option<Instant>,
     ) -> RuntimeEffects {
-        let dirty_effects = runtime.update(now);
+        // Consume a due deadline before update replaces it with the next phase
+        // boundary reported by external schedule providers (cursor blink).
+        let due_redraw = self.scheduler.consume_due_deadline(now);
+
+        let mut dirty_effects = runtime.update(now);
+        if due_redraw {
+            dirty_effects.request_redraw = true;
+        }
         let mut scheduled = self
             .scheduler
             .schedule(dirty_effects, FrameScheduler::RUNTIME_WAKE);
@@ -313,10 +321,9 @@ impl WinitAdapter {
     ) -> WinitEventOutcome {
         let changed = self.surface_state.update(width, height, scale);
         runtime.set_viewport(self.surface_state.viewport().clone());
-        self.set_drawable(self.surface_state.can_acquire());
+        let mut effects = self.set_drawable(self.surface_state.can_acquire());
         self.surface_state.reset_recovery_budget();
 
-        let mut effects = RuntimeEffects::default();
         if changed && self.surface_state.can_acquire() {
             effects.merge(self.fold_effects(runtime.update(Instant::now())));
             effects.merge(self.request_frame());
@@ -443,12 +450,15 @@ impl WinitAdapter {
             WindowEvent::KeyboardInput { event, .. } => self.convert_keyboard(event),
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = Point::new(position.x as f32, position.y as f32);
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    PointerPhase::Move,
-                    PointerButton::Left,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(
+                        self.logical_pointer_position(),
+                        PointerPhase::Move,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = mouse_button(*button)?;
@@ -456,12 +466,10 @@ impl WinitAdapter {
                     ElementState::Pressed => PointerPhase::Down,
                     ElementState::Released => PointerPhase::Up,
                 };
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    phase,
-                    button,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(self.logical_pointer_position(), phase, button, 0)
+                        .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let phase = match delta {
@@ -471,12 +479,15 @@ impl WinitAdapter {
                         dy: position.y as f32,
                     },
                 };
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    self.logical_pointer_position(),
-                    phase,
-                    PointerButton::Left,
-                    0,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(
+                        self.logical_pointer_position(),
+                        phase,
+                        PointerButton::Left,
+                        0,
+                    )
+                    .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::Touch(touch) => {
                 let phase = match touch.phase {
@@ -496,12 +507,10 @@ impl WinitAdapter {
                         !(contact.device_id == touch.device_id && contact.source_id == touch.id)
                     });
                 }
-                Some(UiEvent::Pointer(PointerEvent::new(
-                    position,
-                    phase,
-                    PointerButton::Left,
-                    pointer_id,
-                )))
+                Some(UiEvent::Pointer(
+                    PointerEvent::new(position, phase, PointerButton::Left, pointer_id)
+                        .with_modifiers(modifiers_to_widget(self.modifiers)),
+                ))
             }
             WindowEvent::Focused(focused) => Some(UiEvent::Focus(if *focused {
                 FocusEvent::Gained

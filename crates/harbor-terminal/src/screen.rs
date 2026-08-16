@@ -40,10 +40,8 @@ pub use harbor_types::SelectionBounds;
 
 /// State reported by DECRPM for a queried terminal mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    dead_code,
-    reason = "DECRPM reserves statuses 3 and 4, but no modeled mode is permanently fixed yet."
-)]
+// The permanent DECRPM statuses are reserved for future fixed-mode support.
+#[allow(dead_code)]
 pub(crate) enum ModeStatus {
     Unknown,
     Set,
@@ -268,6 +266,12 @@ impl Screen {
 
     pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
         self.normal.cell_at_generation(generation, col)
+    }
+
+    pub fn is_wrapped_at_generation(&self, generation: u64) -> bool {
+        self.normal
+            .is_wrapped_at_generation(generation)
+            .unwrap_or(false)
     }
 
     /// Direct cell mutation for test setup.

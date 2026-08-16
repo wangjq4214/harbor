@@ -30,6 +30,7 @@ pub struct EventCtx {
     commands: Vec<EventCommand>,
     propagation_stopped: bool,
     needs_paint: bool,
+    clipboard_write: Option<String>,
     current_fiber: Option<FiberId>,
 }
 
@@ -39,6 +40,7 @@ impl EventCtx {
             commands: Vec::new(),
             propagation_stopped: false,
             needs_paint: false,
+            clipboard_write: None,
             current_fiber: None,
         }
     }
@@ -73,6 +75,15 @@ impl EventCtx {
     /// Release a previously captured pointer.
     pub fn release_pointer(&mut self, pointer_id: u64) {
         self.commands.push(EventCommand::ReleasePointer(pointer_id));
+    }
+
+    /// Request that the host write text to the system clipboard after routing.
+    pub fn write_clipboard(&mut self, text: impl Into<String>) {
+        self.clipboard_write = Some(text.into());
+    }
+
+    pub(crate) fn take_clipboard_write(&mut self) -> Option<String> {
+        self.clipboard_write.take()
     }
 
     /// Mark the current widget as needing a repaint.

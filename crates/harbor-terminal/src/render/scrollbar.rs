@@ -74,6 +74,66 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 ///
 /// Track geometry is relative to the render allocation, not the full surface, so
 /// inset CustomPaint regions keep the scrollbar on the allocation's right edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScrollbarHit {
+    None,
+    Thumb { grab_offset: f32 },
+    TrackBefore,
+    TrackAfter,
+}
+
+/// Classifies a physical point against the scrollbar track and thumb.
+pub fn hit_test(
+    snap: &TerminalSnapshot,
+    viewport: &RenderViewport,
+    point: (f32, f32),
+) -> ScrollbarHit {
+    let Some([_left, top, right, bottom]) = compute_thumb_rect(snap, viewport) else {
+        return ScrollbarHit::None;
+    };
+    let track_left = right - SCROLLBAR_WIDTH;
+    let track_top = viewport.allocation_origin.1 + viewport.padding;
+    let track_bottom =
+        viewport.allocation_origin.1 + viewport.allocation_size.1 as f32 - viewport.padding;
+    if point.0 < track_left || point.0 > right || point.1 < track_top || point.1 > track_bottom {
+        return ScrollbarHit::None;
+    }
+    if point.1 < top {
+        ScrollbarHit::TrackBefore
+    } else if point.1 > bottom {
+        ScrollbarHit::TrackAfter
+    } else {
+        ScrollbarHit::Thumb {
+            grab_offset: (point.1 - top).clamp(0.0, bottom - top),
+        }
+    }
+}
+
+/// Maps a thumb drag position back to a clamped scrollback offset.
+pub fn offset_for_thumb(
+    snap: &TerminalSnapshot,
+    viewport: &RenderViewport,
+    pointer_y: f32,
+    grab_offset: f32,
+) -> Option<usize> {
+    compute_thumb_rect(snap, viewport)?;
+    let track_top = viewport.allocation_origin.1 + viewport.padding;
+    let track_bottom =
+        viewport.allocation_origin.1 + viewport.allocation_size.1 as f32 - viewport.padding;
+    let track_height = track_bottom - track_top;
+    let total_rows = snap.rows + snap.scroll_count;
+    let actual_thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
+        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
+        .min(track_height);
+    let movable = (track_height - actual_thumb_height).max(0.0);
+    if movable == 0.0 {
+        return Some(0);
+    }
+    let thumb_top = (pointer_y - grab_offset).clamp(track_top, track_top + movable);
+    let fraction_from_bottom = 1.0 - ((thumb_top - track_top) / movable);
+    Some((fraction_from_bottom * snap.scroll_count as f32).round() as usize)
+}
+
 pub fn compute_thumb_rect(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Option<[f32; 4]> {
     if snap.is_alt || snap.scroll_count == 0 {
         return None;
@@ -316,8 +376,10 @@ impl Scrollbar {
         viewport: &RenderViewport,
     ) {
         let Some(snap) = snap else {
+            self.visible = false;
             return;
         };
+        self.visible = snap.scroll_count > 0 && !snap.is_alt;
         let key = ScrollbarUploadKey::from_snapshot(snap, viewport);
         if self.last_upload_key == Some(key) {
             return;
@@ -449,5 +511,53 @@ mod tests {
         assert!((inset_left - inset_right + SCROLLBAR_WIDTH).abs() < 0.01);
         assert!((full_left - full_right + SCROLLBAR_WIDTH).abs() < 0.01);
         assert!((inset_right - full_right).abs() > 1.0);
+    }
+
+    #[test]
+    fn should_classify_scrollbar_thumb_and_track_points_in_all_regions() {
+        // Arrange
+        let mut terminal = Terminal::new_headless(2, 5);
+        terminal.put_str("1\n2\n3\n4\n5\n");
+        terminal.scroll_viewport_up(1);
+        let snap = terminal.snapshot();
+        let viewport = full_surface_viewport(800, 600);
+        let [left, top, right, bottom] = compute_thumb_rect(&snap, &viewport).unwrap();
+        let track_top = viewport.padding;
+        let x = (left + right) / 2.0;
+
+        // Act
+        let thumb = hit_test(&snap, &viewport, (x, (top + bottom) / 2.0));
+        let before = hit_test(&snap, &viewport, (x, track_top + 1.0));
+        let after = hit_test(&snap, &viewport, (x, bottom + 1.0));
+        let outside = hit_test(&snap, &viewport, (left - 1.0, (top + bottom) / 2.0));
+
+        // Assert
+        assert!(matches!(thumb, ScrollbarHit::Thumb { .. }));
+        assert_eq!(before, ScrollbarHit::TrackBefore);
+        assert_eq!(after, ScrollbarHit::TrackAfter);
+        assert_eq!(outside, ScrollbarHit::None);
+    }
+
+    #[test]
+    fn should_map_thumb_positions_back_to_clamped_scrollback_offsets() {
+        // Arrange
+        let mut terminal = Terminal::new_headless(2, 5);
+        terminal.put_str("1\n2\n3\n4\n5\n");
+        terminal.scroll_viewport_up(1);
+        let snap = terminal.snapshot();
+        let viewport = full_surface_viewport(800, 600);
+        let [_left, top, _right, _bottom] = compute_thumb_rect(&snap, &viewport).unwrap();
+        let track_top = viewport.padding;
+        let track_bottom = viewport.allocation_size.1 as f32 - viewport.padding;
+
+        // Act
+        let round_trip = offset_for_thumb(&snap, &viewport, top, 0.0).unwrap();
+        let oldest = offset_for_thumb(&snap, &viewport, track_top, 0.0).unwrap();
+        let newest = offset_for_thumb(&snap, &viewport, track_bottom + 100.0, 0.0).unwrap();
+
+        // Assert
+        assert_eq!(round_trip, snap.view_offset);
+        assert_eq!(oldest, snap.scroll_count);
+        assert_eq!(newest, 0);
     }
 }

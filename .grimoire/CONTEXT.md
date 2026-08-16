@@ -206,10 +206,54 @@ Project domain concepts and terminology.
   - produces RuntimeEffects
 
 ### Terminal Input Semantics
-- **Definition:** The harbor-terminal responsibility for interpreting routed platform-independent keyboard and pointer events as terminal actions such as scrollback navigation.
+- **Definition:** The harbor-terminal responsibility for interpreting routed platform-independent keyboard and pointer events as terminal actions such as scrollback navigation, scrollbar control, and text selection.
 - **Relationships:**
   - belongs to Terminal
   - consumes UiEvent
+  - implements Terminal Pointer Interaction Policy
+
+### Terminal Pointer Interaction Policy
+- **Definition:** Harbor routes pointer input to terminal selection and scrollback controls unless an application has enabled VT mouse reporting, which takes precedence and receives the input through the PTY.
+- **Relationships:**
+  - belongs to Terminal Input Semantics
+  - references Terminal Text Selection
+  - references Terminal Scrollbar
+
+### Terminal Text Selection
+- **Definition:** A left-button drag selects terminal cells across lines and auto-scrolls at the viewport edge while preserving the resulting highlight after release.
+- **Synonyms:** text selection, selection
+- **Relationships:**
+  - belongs to Terminal
+  - depends on Terminal Pointer Interaction Policy
+  - references Terminal Selection Copy Policy
+  - implements Terminal Selection Lifecycle
+  - implements Terminal Selection Granularity
+
+### Terminal Selection Copy Policy
+- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY.
+- **Relationships:**
+  - belongs to Terminal Text Selection
+  - communicates with Terminal
+
+### Terminal Selection Lifecycle
+- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows, and an existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
+- **Relationships:**
+  - belongs to Terminal Text Selection
+  - references Logical Line
+  - references Soft-Wrap Marker
+
+### Terminal Selection Granularity
+- **Definition:** Terminal text selection supports drag selection, double-click Unicode word selection using alphanumeric and underscore boundaries, and triple-click logical-line selection without crossing explicit newlines.
+- **Relationships:**
+  - belongs to Terminal Text Selection
+  - references Logical Line
+
+### Terminal Scrollbar
+- **Definition:** The terminal scrollback control supports wheel scrolling, draggable-thumb positioning, and track-click page movement while preserving a user's review position as new output arrives.
+- **Synonyms:** scrollbar
+- **Relationships:**
+  - belongs to Terminal
+  - depends on Terminal Pointer Interaction Policy
 
 ### RuntimeEffects
 - **Definition:** A platform-independent command batch returned by Runtime for its Host to apply, including redraw, cursor, IME, and clipboard requests.
@@ -642,3 +686,30 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Alternate-Screen Mode Family
+
+### Terminal Frame Demand
+- **Definition:** A host-neutral terminal scheduling output that reports an immediate redraw requirement and the next cursor-blink deadline to its rendering host.
+- **Relationships:**
+  - belongs to Terminal
+  - consumed by Runtime Frame Scheduler
+  - communicates with Runtime Host
+
+### Cursor Blink Scheduling
+- **Definition:** The timer-driven cursor policy that alternates visibility while idle and resets to visible when terminal input or cursor movement occurs.
+- **Relationships:**
+  - belongs to Terminal Frame Demand
+  - depends on Runtime Frame Scheduler
+
+### External Draw Scheduling Callback
+- **Definition:** A widget Runtime callback registered by an external draw provider to contribute an immediate redraw request or animation deadline before the scheduler chooses its idle wait policy.
+- **Relationships:**
+  - extends ExternalDrawFn
+  - consumed by Runtime Frame Scheduler
+  - implemented by Terminal Widget Bridge
+
+### Standalone Terminal Winit/WGPU Adapter
+- **Definition:** A feature-gated public host adapter that renders Terminal directly through winit and wgpu without creating a Harbor Widget Runtime.
+- **Relationships:**
+  - wraps Terminal
+  - consumes Terminal Frame Demand
+  - communicates with Runtime Host

@@ -148,17 +148,47 @@ impl FrameScheduler {
     }
 
     /// Updates whether the native window can acquire a drawable surface.
-    /// Non-drawable windows drop any outstanding redraw edge.
-    pub(crate) fn set_drawable(&mut self, drawable: bool) {
+    /// Non-drawable windows drop any outstanding redraw edge; restoring a
+    /// drawable surface emits one recovery edge.
+    pub(crate) fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
+        let restored = drawable && !self.drawable;
         self.drawable = drawable;
         if !drawable {
             self.redraw_pending = false;
+        }
+        if restored {
+            self.request_frame()
+        } else {
+            RuntimeEffects::default()
         }
     }
 
     /// Requests a generic host retry frame (surface recovery / suboptimal).
     pub(crate) fn request_frame(&mut self) -> RuntimeEffects {
         self.schedule(RuntimeEffects::request_redraw(), Self::HOST_RETRY_WAKE)
+    }
+
+    /// Consumes a due `runtime_deadline` before a newer `WaitUntil` is folded.
+    ///
+    /// External schedule providers report the *next* phase boundary at `now`.
+    /// If the adapter folds that future deadline before evaluating the prior
+    /// due edge, blink wakes never request a redraw. Call this at the start of
+    /// an idle turn, before `Runtime::update` replaces the stored deadline.
+    ///
+    /// Returns `true` when the host should arm a redraw edge (drawable). Does
+    /// not set `redraw_pending` itself — callers fold a `request_redraw` through
+    /// [`Self::schedule`] so the host still receives the outstanding edge.
+    pub(crate) fn consume_due_deadline(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.runtime_deadline else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+
+        self.runtime_deadline = None;
+        self.wake_bits |= Self::DEADLINE_WAKE;
+        self.drawable
     }
 
     #[cfg(test)]
@@ -183,7 +213,9 @@ impl FrameScheduler {
                 self.runtime_deadline = None;
             }
             Some(ControlFlowEffect::WaitUntil(deadline)) => {
-                self.active = false;
+                // Record the deadline without clearing `active`. Poll dominates
+                // WaitUntil (same preference as ControlFlowEffect::arbitrate), so
+                // an idle external blink deadline cannot demote an active animation.
                 self.runtime_deadline = Some(deadline);
             }
             Some(ControlFlowEffect::Wait) => {
@@ -383,6 +415,69 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_poll_active_when_wait_until_arrives_during_animation() {
+        // Arrange — animation Poll is active, then an external blink deadline arrives.
+        let mut scheduler = FrameScheduler::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::Poll),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        assert!(scheduler.active());
+
+        // Act — fold a WaitUntil from external schedule (as Runtime idle turns do).
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::WaitUntil(deadline)),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Assert — Poll remains dominant; idle turns stay on Poll rather than demoting.
+        assert!(scheduler.active());
+        let idle = scheduler.about_to_wait(Instant::now(), None);
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
+    }
+
+    #[test]
+    fn should_consume_due_deadline_before_next_phase_replaces_it() {
+        // Arrange
+        let now = Instant::now();
+        let mut scheduler = FrameScheduler::default();
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Act — consume due edge, then fold the next blink phase through schedule
+        // so the host still receives the redraw edge.
+        assert!(scheduler.consume_due_deadline(now));
+        let next = now + Duration::from_millis(530);
+        let armed = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                control_flow: Some(ControlFlowEffect::WaitUntil(next)),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(now, None);
+
+        // Assert
+        assert!(armed.request_redraw);
+        assert!(scheduler.redraw_pending());
+        assert!(!idle.request_redraw); // outstanding edge already armed
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::WaitUntil(next)));
+    }
+
+    #[test]
     fn suspended_scheduler_drops_pending_redraw_and_rewakes_on_restore() {
         let mut scheduler = FrameScheduler::default();
         assert!(
@@ -391,7 +486,7 @@ mod tests {
                 .request_redraw
         );
 
-        scheduler.set_drawable(false);
+        let _ = scheduler.set_drawable(false);
         assert!(!scheduler.redraw_pending());
         assert!(
             !scheduler
@@ -403,12 +498,8 @@ mod tests {
             Some(ControlFlowEffect::Wait)
         );
 
-        scheduler.set_drawable(true);
-        assert!(
-            scheduler
-                .schedule(redraw_effects(), FrameScheduler::HOST_RETRY_WAKE)
-                .request_redraw
-        );
+        let recovery = scheduler.set_drawable(true);
+        assert!(recovery.request_redraw);
         assert!(scheduler.redraw_pending());
     }
 
@@ -619,11 +710,11 @@ mod tests {
     }
 
     #[test]
-    fn should_consume_due_deadline_while_window_is_not_drawable() {
+    fn should_request_recovery_frame_after_due_deadline_passes_while_not_drawable() {
         // Arrange
         let mut scheduler = FrameScheduler::default();
         let past = Instant::now() - Duration::from_millis(1);
-        scheduler.set_drawable(false);
+        let _ = scheduler.set_drawable(false);
         let _ = scheduler.schedule(
             RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::WaitUntil(past)),
@@ -632,14 +723,16 @@ mod tests {
             FrameScheduler::RUNTIME_WAKE,
         );
 
-        // Act — no redraw may be requested while minimized.
+        // Act — no redraw may be requested while minimized, but restoration
+        // emits one recovery edge even though the expired deadline was consumed.
         let suspended = scheduler.about_to_wait(Instant::now(), None);
-        scheduler.set_drawable(true);
+        let recovery = scheduler.set_drawable(true);
         let restored = scheduler.about_to_wait(Instant::now(), None);
 
-        // Assert — the expired deadline was discarded, so restoration is idle.
+        // Assert
         assert!(!suspended.request_redraw);
         assert_eq!(suspended.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(recovery.request_redraw);
         assert!(!restored.request_redraw);
         assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
     }

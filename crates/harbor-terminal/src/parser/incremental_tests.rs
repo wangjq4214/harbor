@@ -7,9 +7,11 @@ use harbor_parser::{Params, Parser, VtHandler};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 
+type CsiDispatch = (Option<u8>, Vec<Option<usize>>, Vec<u8>, u8);
+
 #[derive(Default)]
 struct CsiRecorder {
-    dispatches: Vec<(Option<u8>, Vec<Option<usize>>, Vec<u8>, u8)>,
+    dispatches: Vec<CsiDispatch>,
 }
 
 impl VtHandler for CsiRecorder {
