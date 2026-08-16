@@ -148,11 +148,18 @@ impl FrameScheduler {
     }
 
     /// Updates whether the native window can acquire a drawable surface.
-    /// Non-drawable windows drop any outstanding redraw edge.
-    pub(crate) fn set_drawable(&mut self, drawable: bool) {
+    /// Non-drawable windows drop any outstanding redraw edge; restoring a
+    /// drawable surface emits one recovery edge.
+    pub(crate) fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
+        let restored = drawable && !self.drawable;
         self.drawable = drawable;
         if !drawable {
             self.redraw_pending = false;
+        }
+        if restored {
+            self.request_frame()
+        } else {
+            RuntimeEffects::default()
         }
     }
 
@@ -479,7 +486,7 @@ mod tests {
                 .request_redraw
         );
 
-        scheduler.set_drawable(false);
+        let _ = scheduler.set_drawable(false);
         assert!(!scheduler.redraw_pending());
         assert!(
             !scheduler
@@ -491,12 +498,8 @@ mod tests {
             Some(ControlFlowEffect::Wait)
         );
 
-        scheduler.set_drawable(true);
-        assert!(
-            scheduler
-                .schedule(redraw_effects(), FrameScheduler::HOST_RETRY_WAKE)
-                .request_redraw
-        );
+        let recovery = scheduler.set_drawable(true);
+        assert!(recovery.request_redraw);
         assert!(scheduler.redraw_pending());
     }
 
@@ -707,11 +710,11 @@ mod tests {
     }
 
     #[test]
-    fn should_consume_due_deadline_while_window_is_not_drawable() {
+    fn should_request_recovery_frame_after_due_deadline_passes_while_not_drawable() {
         // Arrange
         let mut scheduler = FrameScheduler::default();
         let past = Instant::now() - Duration::from_millis(1);
-        scheduler.set_drawable(false);
+        let _ = scheduler.set_drawable(false);
         let _ = scheduler.schedule(
             RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::WaitUntil(past)),
@@ -720,14 +723,16 @@ mod tests {
             FrameScheduler::RUNTIME_WAKE,
         );
 
-        // Act — no redraw may be requested while minimized.
+        // Act — no redraw may be requested while minimized, but restoration
+        // emits one recovery edge even though the expired deadline was consumed.
         let suspended = scheduler.about_to_wait(Instant::now(), None);
-        scheduler.set_drawable(true);
+        let recovery = scheduler.set_drawable(true);
         let restored = scheduler.about_to_wait(Instant::now(), None);
 
-        // Assert — the expired deadline was discarded, so restoration is idle.
+        // Assert
         assert!(!suspended.request_redraw);
         assert_eq!(suspended.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(recovery.request_redraw);
         assert!(!restored.request_redraw);
         assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
     }

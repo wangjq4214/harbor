@@ -849,14 +849,14 @@ fn should_coalesce_host_retry_until_frame_starts_on_adapter() {
 }
 
 #[test]
-fn should_not_request_stale_deadline_frame_after_drawable_window_is_restored() {
+fn should_request_recovery_frame_after_drawable_window_is_restored() {
     // Arrange — the runtime is clean while a minimized adapter receives a due deadline.
     let now = Instant::now();
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = runtime.update(now);
     let mut adapter = WinitAdapter::new();
-    adapter.set_drawable(false);
+    let _ = adapter.set_drawable(false);
     let _ = adapter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
         ..RuntimeEffects::default()
@@ -864,12 +864,14 @@ fn should_not_request_stale_deadline_frame_after_drawable_window_is_restored() {
 
     // Act — the non-drawable idle turn consumes the deadline before restoration.
     let suspended = adapter.about_to_wait(&mut runtime, now, None);
-    adapter.set_drawable(true);
+    let recovery = adapter.set_drawable(true);
     let restored = adapter.about_to_wait(&mut runtime, now, None);
 
-    // Assert — restoration is idle; it must not schedule a stale deadline frame.
+    // Assert — restoration emits exactly one recovery edge; the following idle
+    // turn does not duplicate the outstanding redraw request.
     assert!(!suspended.request_redraw);
     assert_eq!(suspended.control_flow, Some(ControlFlowEffect::Wait));
+    assert!(recovery.request_redraw);
     assert!(!restored.request_redraw);
     assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
 }

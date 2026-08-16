@@ -148,8 +148,9 @@ impl WinitAdapter {
     }
 
     /// Updates whether this window can acquire a drawable surface.
-    pub fn set_drawable(&mut self, drawable: bool) {
-        self.scheduler.set_drawable(drawable);
+    /// Restoring drawability returns one recovery-frame edge.
+    pub fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
+        self.scheduler.set_drawable(drawable)
     }
 
     /// Folds a raw runtime effect batch through the per-window scheduler.
@@ -320,10 +321,9 @@ impl WinitAdapter {
     ) -> WinitEventOutcome {
         let changed = self.surface_state.update(width, height, scale);
         runtime.set_viewport(self.surface_state.viewport().clone());
-        self.set_drawable(self.surface_state.can_acquire());
+        let mut effects = self.set_drawable(self.surface_state.can_acquire());
         self.surface_state.reset_recovery_budget();
 
-        let mut effects = RuntimeEffects::default();
         if changed && self.surface_state.can_acquire() {
             effects.merge(self.fold_effects(runtime.update(Instant::now())));
             effects.merge(self.request_frame());
