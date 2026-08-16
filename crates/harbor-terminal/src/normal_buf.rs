@@ -179,18 +179,6 @@ impl NormalBuf {
         self.cells.copy_within(src_start..src_end, dst);
     }
 
-    /// Copies cells within the ring buffer — delegates to `Vec::copy_within`.
-    ///
-    /// Accepts any `RangeBounds<usize>` so both inline ranges and Range variables work.
-    #[allow(dead_code)]
-    pub(crate) fn copy_cells_within<R: std::ops::RangeBounds<usize>>(
-        &mut self,
-        src: R,
-        dst: usize,
-    ) {
-        self.cells.copy_within(src, dst);
-    }
-
     /// Copies a linear range `[src_start, src_end)` to `dst`, correctly
     /// handling the case where the source range wraps around the end of
     /// the ring buffer. All three arguments are linear cell indices.

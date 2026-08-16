@@ -251,13 +251,8 @@ pub struct Scrollbar {
     bind_group: wgpu::BindGroup,
     /// Cached upload key including scroll state and viewport geometry.
     last_upload_key: Option<ScrollbarUploadKey>,
-    /// Whether the thumb is currently visible (fades out after inactivity).
+    /// Whether the thumb is currently visible.
     visible: bool,
-    /// Last user activity timestamp (cursor move, scroll event).
-    last_activity: std::time::Instant,
-    /// Tracks whether the mouse cursor is currently inside the window surface.
-    #[allow(dead_code)]
-    cursor_inside: bool,
 }
 
 impl Scrollbar {
@@ -285,8 +280,6 @@ impl Scrollbar {
             bind_group,
             last_upload_key: Some(ScrollbarUploadKey::from_snapshot(snap, viewport)),
             visible: false,
-            last_activity: std::time::Instant::now(),
-            cursor_inside: false,
         }
     }
 
@@ -359,10 +352,9 @@ impl Scrollbar {
         })
     }
 
-    /// Show the scrollbar and reset the activity timer.
+    /// Shows the scrollbar.
     pub fn show(&mut self) {
         self.visible = true;
-        self.last_activity = std::time::Instant::now();
     }
 
     pub fn invalidate_projection(&mut self) {
