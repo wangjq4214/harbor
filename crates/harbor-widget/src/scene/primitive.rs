@@ -132,12 +132,14 @@ pub type ExternalDrawFn<'a> =
 /// Widget-neutral scheduling snapshot from one external schedule provider.
 ///
 /// Mirrors terminal Frame Demand shape without depending on harbor-terminal.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExternalScheduleDemand {
     /// True when the host should request a frame before waiting on `deadline`.
     pub redraw_now: bool,
     /// Earliest next animation/deadline boundary, when one is active.
     pub deadline: Option<std::time::Instant>,
+    /// False when an ordinary present should be deferred. Default empty demand is eligible.
+    pub ordinary_present_eligible: bool,
 }
 
 impl ExternalScheduleDemand {
@@ -146,7 +148,14 @@ impl ExternalScheduleDemand {
         Self {
             redraw_now: false,
             deadline: None,
+            ordinary_present_eligible: true,
         }
+    }
+}
+
+impl Default for ExternalScheduleDemand {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -323,6 +332,7 @@ mod tests {
         assert_eq!(empty, ExternalScheduleDemand::default());
         assert!(!empty.redraw_now);
         assert!(empty.deadline.is_none());
+        assert!(empty.ordinary_present_eligible);
     }
 
     #[test]
@@ -334,11 +344,32 @@ mod tests {
         let demand = ExternalScheduleDemand {
             redraw_now: true,
             deadline: Some(deadline),
+            ..ExternalScheduleDemand::empty()
         };
 
         // Assert
         assert!(demand.redraw_now);
         assert_eq!(demand.deadline, Some(deadline));
+        assert!(demand.ordinary_present_eligible);
+        assert_ne!(demand, ExternalScheduleDemand::empty());
+    }
+
+    #[test]
+    fn should_preserve_deferred_eligibility_when_schedule_demand_is_constructed() {
+        // Arrange
+        let deadline = std::time::Instant::now();
+
+        // Act
+        let demand = ExternalScheduleDemand {
+            redraw_now: true,
+            deadline: Some(deadline),
+            ordinary_present_eligible: false,
+        };
+
+        // Assert
+        assert!(demand.redraw_now);
+        assert_eq!(demand.deadline, Some(deadline));
+        assert!(!demand.ordinary_present_eligible);
         assert_ne!(demand, ExternalScheduleDemand::empty());
     }
 }

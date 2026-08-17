@@ -218,10 +218,14 @@ impl Runtime {
     fn collect_external_schedule(&self, now: Instant) -> RuntimeEffects {
         let mut redraw_now = false;
         let mut earliest: Option<Instant> = None;
+        let mut eligible = true;
 
         for (id, schedule) in &self.external_schedules {
             let demand = schedule(*id, now);
-            redraw_now |= demand.redraw_now;
+            eligible &= demand.ordinary_present_eligible;
+            if demand.ordinary_present_eligible {
+                redraw_now |= demand.redraw_now;
+            }
             earliest = match (earliest, demand.deadline) {
                 (Some(left), Some(right)) => Some(left.min(right)),
                 (None, Some(right)) => Some(right),
@@ -230,6 +234,7 @@ impl Runtime {
         }
 
         let mut effects = RuntimeEffects::default();
+        effects.ordinary_present_eligible = eligible;
         if redraw_now {
             effects.request_redraw = true;
         }
@@ -1331,6 +1336,7 @@ mod tests {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
             redraw_now: false,
             deadline: Some(deadline),
+            ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(1).schedule(schedule));
@@ -1355,11 +1361,13 @@ mod tests {
         let late_schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
             redraw_now: false,
             deadline: Some(late),
+            ..ExternalScheduleDemand::empty()
         });
         let early_schedule: Arc<ExternalScheduleFn> =
             Arc::new(move |_, _| ExternalScheduleDemand {
                 redraw_now: false,
                 deadline: Some(early),
+                ..ExternalScheduleDemand::empty()
             });
         let mut rt = Runtime::new();
         rt.set_root(
@@ -1382,6 +1390,7 @@ mod tests {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
             redraw_now: true,
             deadline: None,
+            ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(4).schedule(schedule));
@@ -1392,6 +1401,8 @@ mod tests {
 
         // Assert
         assert!(idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
         assert!(idle.control_flow.is_none());
     }
 
@@ -1402,6 +1413,7 @@ mod tests {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
             redraw_now: true,
             deadline: Some(deadline),
+            ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(5).schedule(schedule));
@@ -1431,6 +1443,8 @@ mod tests {
 
         // Assert
         assert!(!idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
         assert!(idle.control_flow.is_none());
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
     }
@@ -1462,6 +1476,7 @@ mod tests {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
             redraw_now: false,
             deadline: Some(deadline),
+            ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(1).schedule(schedule));
@@ -1479,5 +1494,134 @@ mod tests {
         // Assert
         assert!(idle.control_flow.is_none());
         assert!(!idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_schedule_defers_ordinary_present() {
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(7).schedule(schedule));
+        let _ = rt.update(now());
+
+        let idle = rt.update(now());
+
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_keep_wait_until_when_schedule_defers_ordinary_present() {
+        let deadline = Instant::now() + Duration::from_millis(400);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            deadline: Some(deadline),
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(8).schedule(schedule));
+        let _ = rt.update(now());
+
+        let idle = rt.update(now());
+
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+        assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+    }
+
+    #[test]
+    fn should_defer_window_when_any_schedule_reports_ineligible() {
+        let eligible: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ..ExternalScheduleDemand::empty()
+        });
+        let deferred: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(
+            Column::new()
+                .child(CustomPaint::new(1).schedule(eligible))
+                .child(CustomPaint::new(2).schedule(deferred)),
+        );
+        let _ = rt.update(now());
+
+        let idle = rt.update(now());
+
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_remain_eligible_when_no_external_schedule_is_registered() {
+        // Arrange
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+        assert!(!idle.request_redraw);
+    }
+
+    #[test]
+    fn should_keep_dirty_redraw_deferred_when_schedule_is_ineligible() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(9).schedule(schedule));
+
+        // Act — first update rebuilds dirty Fibers and then folds schedule demand
+        let first = rt.update(now());
+
+        // Assert
+        assert!(first.request_redraw);
+        assert!(!first.ordinary_present_eligible);
+        assert!(!first.force_present);
+    }
+
+    #[test]
+    fn should_ignore_deferred_redraw_when_eligible_sibling_reports_none() {
+        // Arrange
+        let eligible: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let deferred: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(
+            Column::new()
+                .child(CustomPaint::new(10).schedule(eligible))
+                .child(CustomPaint::new(11).schedule(deferred)),
+        );
+        let _ = rt.update(now());
+
+        // Act
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
     }
 }

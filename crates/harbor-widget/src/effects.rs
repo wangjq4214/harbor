@@ -137,7 +137,7 @@ impl ExternalInvalidation {
 }
 
 /// The mergeable batch of requests produced by one runtime turn.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeEffects {
     /// Whether the host should schedule a redraw.
     pub request_redraw: bool,
@@ -149,6 +149,24 @@ pub struct RuntimeEffects {
     pub ime: Option<ImeEffect>,
     /// The latest clipboard operation, if any.
     pub clipboard: Option<ClipboardEffect>,
+    /// False when an ordinary present should be deferred. Default batches stay eligible.
+    pub ordinary_present_eligible: bool,
+    /// True when this turn must present even if ordinary presentation is deferred.
+    pub force_present: bool,
+}
+
+impl Default for RuntimeEffects {
+    fn default() -> Self {
+        Self {
+            request_redraw: false,
+            control_flow: None,
+            cursor: None,
+            ime: None,
+            clipboard: None,
+            ordinary_present_eligible: true,
+            force_present: false,
+        }
+    }
 }
 
 impl RuntimeEffects {
@@ -160,6 +178,8 @@ impl RuntimeEffects {
             cursor: None,
             ime: None,
             clipboard: None,
+            ordinary_present_eligible: true,
+            force_present: false,
         }
     }
 
@@ -171,16 +191,35 @@ impl RuntimeEffects {
             cursor: None,
             ime: None,
             clipboard: None,
+            ordinary_present_eligible: true,
+            force_present: false,
+        }
+    }
+
+    /// Creates an effect batch that forces a present through the normal path.
+    pub const fn force_present() -> Self {
+        Self {
+            request_redraw: true,
+            control_flow: None,
+            cursor: None,
+            ime: None,
+            clipboard: None,
+            ordinary_present_eligible: true,
+            force_present: true,
         }
     }
 
     /// Merges another batch into this one.
     ///
-    /// Redraw requests are coalesced. For each optional operation, the later
-    /// request wins while an earlier request is retained when the later batch
-    /// has no request of that kind.
+    /// Redraw requests are coalesced. Ordinary-present eligibility is AND-ed so a
+    /// deferred provider cannot be cleared by a later default batch. Force is
+    /// OR-ed. For each optional operation, the later request wins while an
+    /// earlier request is retained when the later batch has no request of that
+    /// kind.
     pub fn merge(&mut self, other: Self) {
         self.request_redraw |= other.request_redraw;
+        self.ordinary_present_eligible &= other.ordinary_present_eligible;
+        self.force_present |= other.force_present;
         self.control_flow = other.control_flow.or(self.control_flow);
         self.cursor = other.cursor.or(self.cursor);
         if let Some(other_ime) = other.ime {
@@ -205,5 +244,7 @@ impl RuntimeEffects {
             && self.cursor.is_none()
             && self.ime.is_none()
             && self.clipboard.is_none()
+            && self.ordinary_present_eligible
+            && !self.force_present
     }
 }

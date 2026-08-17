@@ -1381,6 +1381,7 @@ mod tests {
             cursor: Some(CursorEffect::Set(CursorShape::Text)),
             ime: Some(ImeEffect::set_allowed(true)),
             clipboard: Some(ClipboardEffect::write("copied")),
+            ..RuntimeEffects::default()
         };
         assert!(effects.request_redraw);
         assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));

@@ -278,6 +278,7 @@ pub(crate) fn schedule_demand_for_terminal(
     ExternalScheduleDemand {
         redraw_now: demand.redraw_now,
         deadline: demand.deadline,
+        ordinary_present_eligible: demand.ordinary_present_eligible,
     }
 }
 
@@ -685,6 +686,7 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
@@ -698,6 +700,27 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_copy_frame_demand_fields_when_draw_id_matches() {
+        // Arrange
+        let terminal = headless_terminal(2, 4);
+        let now = std::time::Instant::now();
+        let expected = terminal.lock().unwrap().frame_demand(now);
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert_eq!(demand.redraw_now, expected.redraw_now);
+        assert_eq!(demand.deadline, expected.deadline);
+        assert_eq!(
+            demand.ordinary_present_eligible,
+            expected.ordinary_present_eligible
+        );
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
@@ -716,6 +739,7 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
