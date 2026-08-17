@@ -423,7 +423,7 @@ fn adapter_dispatch_reaches_runtime_custom_paint_with_public_event_outcome() {
 }
 
 #[test]
-fn ime_suppressed_character_is_handled_without_a_keydown() {
+fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
     let mut runtime = custom_paint_runtime(19);
     let mut adapter = WinitAdapter::new();
     assert!(
@@ -432,6 +432,7 @@ fn ime_suppressed_character_is_handled_without_a_keydown() {
             .is_handled()
     );
 
+    // When IME is enabled but not composing (no preedit), normal character KeyDown is dispatched.
     let outcome = adapter.handle_keyboard_input(
         &mut runtime,
         &Key::Character("a".into()),
@@ -440,7 +441,73 @@ fn ime_suppressed_character_is_handled_without_a_keydown() {
     );
 
     assert!(outcome.is_handled());
-    assert!(outcome.effects.is_noop());
+    assert_eq!(
+        runtime.drain_external_input(),
+        vec![(
+            19,
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: harbor_widget::input::event::Key::Character('a'),
+                modifiers: Default::default(),
+            }),
+        )]
+    );
+
+    // When Preedit is active, KeyDown IS suppressed.
+    assert!(
+        adapter
+            .handle_event(
+                &mut runtime,
+                &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+            )
+            .is_handled()
+    );
+    let outcome_composing = adapter.handle_keyboard_input(
+        &mut runtime,
+        &Key::Character("a".into()),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+    );
+    assert!(outcome_composing.is_handled());
+    assert!(outcome_composing.effects.is_noop());
+    assert!(runtime.drain_external_input().is_empty());
+}
+
+#[test]
+fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
+    let mut runtime = custom_paint_runtime(20);
+    let mut adapter = WinitAdapter::new();
+    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+    );
+    // Transitioning to Disabled from active preedit restores direct typing
+    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Disabled));
+
+    assert!(
+        adapter
+            .handle_keyboard_input(
+                &mut runtime,
+                &Key::Character("a".into()),
+                ElementState::Pressed,
+                KeyLocation::Standard,
+            )
+            .is_handled()
+    );
+    assert_eq!(
+        runtime.drain_external_input(),
+        vec![(
+            20,
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: harbor_widget::input::event::Key::Character('a'),
+                modifiers: Default::default(),
+            }),
+        )]
+    );
+
+    let empty = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
+    assert!(empty.is_handled());
+    assert!(empty.effects.is_noop());
     assert!(runtime.drain_external_input().is_empty());
 }
 
@@ -602,13 +669,17 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
 }
 
 #[test]
-fn ime_suppresses_only_character_keydown_and_keeps_keyup_handled() {
-    // Arrange: composition is enabled for this window.
+fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled() {
+    // Arrange: composition (preedit) is active for this window.
     let mut runtime = custom_paint_runtime(22);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+    );
 
-    // Act: a character press is suppressed, while its release remains a key event.
+    // Act: a character press during preedit is suppressed, while its release remains a key event.
     let press = adapter.handle_keyboard_input(
         &mut runtime,
         &Key::Character("a".into()),

@@ -417,20 +417,12 @@ impl WinitAdapter {
         state: ElementState,
         location: KeyLocation,
     ) -> WinitEventOutcome {
-        let suppressed = ime_suppresses_keyboard(
-            logical_key,
-            state,
-            location,
-            self.modifiers,
-            self.ime_enabled,
-        );
-        let Some(ui_event) = keyboard_to_uievent(
-            logical_key,
-            state,
-            location,
-            self.modifiers,
-            self.ime_enabled,
-        ) else {
+        let is_composing = self.ime_preedit.is_some();
+        let suppressed =
+            ime_suppresses_keyboard(logical_key, state, location, self.modifiers, is_composing);
+        let Some(ui_event) =
+            keyboard_to_uievent(logical_key, state, location, self.modifiers, is_composing)
+        else {
             return if suppressed {
                 WinitEventOutcome::handled(RuntimeEffects::default())
             } else {
@@ -534,7 +526,7 @@ impl WinitAdapter {
                 None
             }
             Ime::Preedit(text, _) => {
-                self.ime_preedit = Some(text.clone());
+                self.ime_preedit = (!text.is_empty()).then(|| text.clone());
                 None
             }
             Ime::Commit(text) => {
@@ -550,7 +542,7 @@ impl WinitAdapter {
             event.state,
             event.location,
             self.modifiers,
-            self.ime_enabled,
+            self.ime_preedit.is_some(),
         )
     }
 
@@ -1240,19 +1232,36 @@ mod tests {
         let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
         adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+        // When IME is enabled but not composing (no preedit), normal characters are forwarded.
         assert!(
             keyboard_to_uievent(
                 &Key::Character("a".into()),
                 ElementState::Pressed,
                 KeyLocation::Standard,
                 ModifiersState::empty(),
-                true,
+                false,
+            )
+            .is_some()
+        );
+
+        // When preedit is active (composing), direct character KeyDown is suppressed.
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Ime(Ime::Preedit("ni".into(), Some((0, 2)))),
+        );
+        assert!(
+            keyboard_to_uievent(
+                &Key::Character("a".into()),
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                ModifiersState::empty(),
+                adapter.ime_preedit.is_some(),
             )
             .is_none()
         );
 
         let outcome =
-            adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit("語".into())));
+            adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit("你".into())));
         assert!(outcome.handled);
         assert!(adapter.ime_preedit.is_none());
     }
@@ -1289,6 +1298,80 @@ mod tests {
                 true,
             )
             .is_some()
+        );
+    }
+
+    #[test]
+    fn ime_enabled_does_not_suppress_direct_character_or_control_keys_without_preedit() {
+        let mut adapter = WinitAdapter::new();
+        let mut runtime = Runtime::new();
+        adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+
+        // Direct ASCII character press (e.g. typing in cmd.exe) without preedit
+        let key_a = keyboard_to_uievent(
+            &Key::Character("a".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::empty(),
+            adapter.ime_preedit.is_some(),
+        );
+        assert!(
+            key_a.is_some(),
+            "Character 'a' should not be suppressed when not composing"
+        );
+
+        // Enter key press without preedit
+        let key_enter = keyboard_to_uievent(
+            &Key::Named(NamedKey::Enter),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::empty(),
+            adapter.ime_preedit.is_some(),
+        );
+        assert!(key_enter.is_some(), "Enter should never be suppressed");
+
+        // Ctrl+C press
+        let key_ctrl_c = keyboard_to_uievent(
+            &Key::Character("c".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::CONTROL,
+            adapter.ime_preedit.is_some(),
+        );
+        assert!(key_ctrl_c.is_some(), "Ctrl+C should never be suppressed");
+    }
+
+    #[test]
+    fn empty_preedit_clears_composing_state_and_restores_character_keydown() {
+        let mut adapter = WinitAdapter::new();
+        let mut runtime = Runtime::new();
+        adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+
+        // Preedit with text sets composing state
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+        );
+        assert!(adapter.ime_preedit.is_some());
+
+        // Winit clearing marked text with empty preedit clears composing state
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+        );
+        assert!(adapter.ime_preedit.is_none());
+
+        // Direct character KeyDown is restored
+        let key_a = keyboard_to_uievent(
+            &Key::Character("a".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::empty(),
+            adapter.ime_preedit.is_some(),
+        );
+        assert!(
+            key_a.is_some(),
+            "Character should not be suppressed after empty preedit clears composition"
         );
     }
 
@@ -1731,7 +1814,7 @@ mod tests {
                 ElementState::Pressed,
                 KeyLocation::Standard,
                 adapter.modifiers,
-                adapter.ime_enabled,
+                adapter.ime_preedit.is_some(),
             )
             .is_some()
         );

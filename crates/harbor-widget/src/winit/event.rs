@@ -9,10 +9,10 @@ pub(super) fn ime_suppresses_keyboard(
     state: ElementState,
     location: KeyLocation,
     modifiers: ModifiersState,
-    ime_enabled: bool,
+    ime_composing: bool,
 ) -> bool {
     state == ElementState::Pressed
-        && ime_enabled
+        && ime_composing
         && location != KeyLocation::Numpad
         && !modifiers.control_key()
         && !modifiers.alt_key()
@@ -95,11 +95,11 @@ pub(super) fn keyboard_to_uievent(
     state: ElementState,
     location: KeyLocation,
     modifiers: ModifiersState,
-    ime_enabled: bool,
+    ime_composing: bool,
 ) -> Option<UiEvent> {
     let is_numpad = location == KeyLocation::Numpad;
     if state == ElementState::Pressed
-        && ime_enabled
+        && ime_composing
         && !is_numpad
         && !modifiers.control_key()
         && !modifiers.alt_key()
