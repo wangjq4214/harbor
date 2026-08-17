@@ -156,7 +156,7 @@ impl WinitAdapter {
     /// Folds a raw runtime effect batch through the per-window scheduler.
     pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
         self.scheduler
-            .schedule(effects, FrameScheduler::RUNTIME_WAKE)
+            .schedule_retaining_ineligibility(effects, FrameScheduler::RUNTIME_WAKE)
     }
 
     /// Forwards source-agnostic host work through runtime external invalidation
@@ -169,7 +169,7 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
         let core_effects = runtime.invalidate_external(work);
         self.scheduler
-            .schedule(core_effects, FrameScheduler::EXTERNAL_WAKE)
+            .schedule_retaining_ineligibility(core_effects, FrameScheduler::EXTERNAL_WAKE)
     }
 
     /// Observes `RedrawRequested`: runs a runtime update and consumes the
@@ -325,7 +325,10 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
 
         if changed && self.surface_state.can_acquire() {
-            effects.merge(self.fold_effects(runtime.update(Instant::now())));
+            effects.merge(
+                self.scheduler
+                    .schedule(runtime.update(Instant::now()), FrameScheduler::RUNTIME_WAKE),
+            );
             effects.merge(self.request_frame());
         }
         WinitEventOutcome::handled(effects)
@@ -608,11 +611,15 @@ mod tests {
     use super::event::modifiers_to_widget;
     use super::presenter::{
         FrameAcquisition, FrameAcquisitionKind, PresentableKind, classify_presentable,
-        classify_surface_texture, execute_presented_frame,
+        classify_surface_texture, execute_presented_frame, should_execute_present,
     };
     use super::*;
+    use crate::effects::ControlFlowEffect;
     use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
+    use crate::runtime::Runtime;
+    use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
     use crate::widgets::button::Button;
+    use crate::widgets::custom_paint::CustomPaint;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use winit::dpi::PhysicalPosition;
@@ -1835,5 +1842,145 @@ mod tests {
             },
         );
         assert!(!clicked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn should_execute_present_when_effects_are_eligible() {
+        assert!(should_execute_present(&RuntimeEffects::default()));
+        assert!(should_execute_present(&RuntimeEffects::request_redraw()));
+    }
+
+    #[test]
+    fn should_skip_ordinary_present_when_effects_are_deferred() {
+        let deferred = RuntimeEffects {
+            request_redraw: true,
+            ordinary_present_eligible: false,
+            ..RuntimeEffects::default()
+        };
+
+        assert!(!should_execute_present(&deferred));
+    }
+
+    #[test]
+    fn should_normalize_deferred_poll_before_host_consumes_effects() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let effects = adapter.fold_effects(RuntimeEffects {
+            ordinary_present_eligible: false,
+            control_flow: Some(ControlFlowEffect::Poll),
+            ..RuntimeEffects::default()
+        });
+
+        // Assert
+        assert_eq!(effects.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!effects.request_redraw);
+    }
+
+    #[test]
+    fn should_execute_present_when_deferred_effects_are_forced() {
+        let forced = RuntimeEffects {
+            ordinary_present_eligible: false,
+            force_present: true,
+            request_redraw: true,
+            ..RuntimeEffects::default()
+        };
+
+        assert!(should_execute_present(&forced));
+        assert!(should_execute_present(&RuntimeEffects::force_present()));
+    }
+
+    #[test]
+    fn should_execute_present_when_force_present_has_no_redraw() {
+        // Arrange
+        let forced = RuntimeEffects {
+            ordinary_present_eligible: false,
+            force_present: true,
+            request_redraw: false,
+            ..RuntimeEffects::default()
+        };
+
+        // Act
+        let execute = should_execute_present(&forced);
+
+        // Assert
+        assert!(execute);
+    }
+
+    #[test]
+    fn should_retain_forced_present_through_deferred_redraw_lifecycle() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(91).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.fold_effects(RuntimeEffects {
+            request_redraw: true,
+            ordinary_present_eligible: false,
+            force_present: true,
+            ..RuntimeEffects::default()
+        });
+
+        // Act
+        let started = adapter.redraw_requested(&mut runtime, Instant::now());
+        let after_consumption = adapter.redraw_requested(&mut runtime, Instant::now());
+
+        // Assert
+        assert!(armed.request_redraw);
+        assert!(!started.ordinary_present_eligible);
+        assert!(started.force_present);
+        assert!(should_execute_present(&started));
+        assert!(!after_consumption.force_present);
+    }
+
+    #[test]
+    fn should_not_invoke_present_when_eligible_acquisition_is_skipped() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let called = AtomicBool::new(false);
+
+        // Act
+        let outcome = adapter.finish_acquisition(
+            RuntimeEffects::request_redraw(),
+            FrameAcquisition::<&str>::Skipped,
+            |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+
+        // Assert — timeout/occlusion skip still wins when present is allowed.
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(!outcome.is_presented());
+        assert!(!outcome.is_recovery_required());
+        assert!(!outcome.is_fatal());
+    }
+
+    #[test]
+    fn should_invoke_present_when_deferred_effects_are_forced() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let called = AtomicBool::new(false);
+        let effects = RuntimeEffects {
+            ordinary_present_eligible: false,
+            force_present: true,
+            request_redraw: true,
+            ..RuntimeEffects::default()
+        };
+
+        // Act
+        let outcome =
+            adapter.finish_acquisition(effects, FrameAcquisition::Presented("ok"), |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+
+        // Assert
+        assert!(called.load(Ordering::SeqCst));
+        assert!(outcome.is_presented());
     }
 }

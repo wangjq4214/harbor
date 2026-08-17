@@ -111,6 +111,7 @@ impl Cursor {
         FrameDemand {
             redraw_now: self.blink.pending_redraw(),
             deadline,
+            ordinary_present_eligible: true,
         }
     }
 
@@ -275,6 +276,7 @@ mod tests {
         FrameDemand {
             redraw_now: blink.pending_redraw(),
             deadline,
+            ordinary_present_eligible: true,
         }
     }
 
@@ -310,6 +312,7 @@ mod tests {
             demand.deadline,
             Some(t0 + Duration::from_millis(BLINK_INTERVAL_MS))
         );
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]

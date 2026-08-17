@@ -1,7 +1,7 @@
 # Synchronized Output Mode
 
 **Spec ID:** 0007
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-08-17
 
 ## Requirement

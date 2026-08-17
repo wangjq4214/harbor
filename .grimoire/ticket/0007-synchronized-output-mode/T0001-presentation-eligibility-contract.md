@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec: 0007-synchronized-output-mode](../../spec/0007-synchronized-output-mode.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

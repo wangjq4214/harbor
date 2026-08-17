@@ -29,6 +29,10 @@ impl WinitAdapter {
         let effects = self.redraw_requested(runtime, Instant::now());
         prepare(runtime);
 
+        if !should_execute_present(&effects) {
+            return FrameOutcome::skipped(effects);
+        }
+
         if !self.surface_state.can_acquire() {
             return FrameOutcome::skipped(effects);
         }
@@ -274,6 +278,10 @@ pub(super) fn execute_wgpu_frame(
         || target.window().pre_present_notify(),
         |output| target.queue().present(output),
     )
+}
+
+pub(super) fn should_execute_present(effects: &RuntimeEffects) -> bool {
+    effects.force_present || effects.ordinary_present_eligible
 }
 
 /// Borrowed host resources valid for one frame.

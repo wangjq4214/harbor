@@ -14,6 +14,8 @@ pub(crate) struct FrameScheduler {
     runtime_deadline: Option<Instant>,
     active: bool,
     wake_bits: u32,
+    ordinary_present_eligible: bool,
+    force_present_pending: bool,
 }
 
 impl Default for FrameScheduler {
@@ -24,6 +26,8 @@ impl Default for FrameScheduler {
             runtime_deadline: None,
             active: false,
             wake_bits: 0,
+            ordinary_present_eligible: true,
+            force_present_pending: false,
         }
     }
 }
@@ -47,9 +51,17 @@ impl FrameScheduler {
         mut effects: RuntimeEffects,
         wake_bit: u32,
     ) -> RuntimeEffects {
+        self.ordinary_present_eligible = effects.ordinary_present_eligible;
         self.fold_control_flow(effects.control_flow);
+        self.normalize_deferred_control_flow(&mut effects);
 
-        if effects.request_redraw {
+        let ordinary = effects.request_redraw;
+        if ordinary && !effects.ordinary_present_eligible && !effects.force_present {
+            effects.request_redraw = false;
+            return effects;
+        }
+        if ordinary || effects.force_present {
+            self.force_present_pending |= effects.force_present;
             self.wake_bits |= wake_bit;
             let edge = self.drawable && !self.redraw_pending;
             effects.request_redraw = edge;
@@ -60,13 +72,34 @@ impl FrameScheduler {
         effects
     }
 
+    /// Folds a batch that did not collect external schedule demand.
+    ///
+    /// Default-eligible constructors (`request_redraw()`, `Default`) must not
+    /// clear stored ineligibility. `schedule` still replaces eligibility so a
+    /// later `Runtime::update` collect can restore it.
+    pub(crate) fn schedule_retaining_ineligibility(
+        &mut self,
+        mut effects: RuntimeEffects,
+        wake_bit: u32,
+    ) -> RuntimeEffects {
+        effects.ordinary_present_eligible &= self.ordinary_present_eligible;
+        self.schedule(effects, wake_bit)
+    }
+
     /// Observes frame start: clears the outstanding redraw edge, folds the
     /// runtime update's control-flow state, and suppresses a redundant redraw
     /// because the current frame consumes that work.
     pub(crate) fn frame_started(&mut self, mut effects: RuntimeEffects) -> RuntimeEffects {
+        let consumed_redraw = self.redraw_pending;
         self.redraw_pending = false;
         self.wake_bits = 0;
+        self.ordinary_present_eligible = effects.ordinary_present_eligible;
+        if consumed_redraw {
+            effects.force_present |= self.force_present_pending;
+            self.force_present_pending = false;
+        }
         self.fold_control_flow(effects.control_flow);
+        self.normalize_deferred_control_flow(&mut effects);
         effects.request_redraw = false;
         effects
     }
@@ -75,20 +108,31 @@ impl FrameScheduler {
     /// continuation frame and keep `Poll`; idle completion returns `Wait`.
     pub(crate) fn frame_completed(&mut self, _now: Instant) -> RuntimeEffects {
         if self.active {
-            let request_redraw = self.drawable && !self.redraw_pending;
+            let request_redraw =
+                self.drawable && !self.redraw_pending && self.ordinary_present_eligible;
             if request_redraw {
                 self.wake_bits |= Self::CONTINUATION_WAKE;
                 self.redraw_pending = true;
             }
+            let control_flow = if self.ordinary_present_eligible {
+                ControlFlowEffect::Poll
+            } else {
+                match self.runtime_deadline {
+                    Some(deadline) if deadline > _now => ControlFlowEffect::WaitUntil(deadline),
+                    _ => ControlFlowEffect::Wait,
+                }
+            };
             return RuntimeEffects {
                 request_redraw,
-                control_flow: Some(ControlFlowEffect::Poll),
+                control_flow: Some(control_flow),
+                ordinary_present_eligible: self.ordinary_present_eligible,
                 ..RuntimeEffects::default()
             };
         }
 
         RuntimeEffects {
             control_flow: Some(ControlFlowEffect::Wait),
+            ordinary_present_eligible: self.ordinary_present_eligible,
             ..RuntimeEffects::default()
         }
     }
@@ -109,12 +153,13 @@ impl FrameScheduler {
             }
             return RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::Wait),
+                ordinary_present_eligible: self.ordinary_present_eligible,
                 ..RuntimeEffects::default()
             };
         }
 
         let mut request_redraw = false;
-        if self.active && !self.redraw_pending {
+        if self.active && !self.redraw_pending && self.ordinary_present_eligible {
             self.wake_bits |= Self::CONTINUATION_WAKE;
             self.redraw_pending = true;
             request_redraw = true;
@@ -124,14 +169,14 @@ impl FrameScheduler {
             && now >= deadline
         {
             self.runtime_deadline = None;
-            if !self.redraw_pending {
+            if self.ordinary_present_eligible && !self.redraw_pending {
                 self.wake_bits |= Self::DEADLINE_WAKE;
                 self.redraw_pending = true;
                 request_redraw = true;
             }
         }
 
-        let control_flow = if self.active {
+        let control_flow = if self.active && self.ordinary_present_eligible {
             ControlFlowEffect::Poll
         } else {
             match effective_deadline(self.runtime_deadline, host_deadline) {
@@ -143,6 +188,7 @@ impl FrameScheduler {
         RuntimeEffects {
             request_redraw,
             control_flow: Some(control_flow),
+            ordinary_present_eligible: self.ordinary_present_eligible,
             ..RuntimeEffects::default()
         }
     }
@@ -165,7 +211,10 @@ impl FrameScheduler {
 
     /// Requests a generic host retry frame (surface recovery / suboptimal).
     pub(crate) fn request_frame(&mut self) -> RuntimeEffects {
-        self.schedule(RuntimeEffects::request_redraw(), Self::HOST_RETRY_WAKE)
+        let mut effects = RuntimeEffects::request_redraw();
+        effects.ordinary_present_eligible = self.ordinary_present_eligible;
+        effects.force_present = self.force_present_pending;
+        self.schedule(effects, Self::HOST_RETRY_WAKE)
     }
 
     /// Consumes a due `runtime_deadline` before a newer `WaitUntil` is folded.
@@ -204,6 +253,17 @@ impl FrameScheduler {
     #[cfg(test)]
     fn active(&self) -> bool {
         self.active
+    }
+
+    fn normalize_deferred_control_flow(&self, effects: &mut RuntimeEffects) {
+        if !effects.ordinary_present_eligible
+            && matches!(effects.control_flow, Some(ControlFlowEffect::Poll))
+        {
+            effects.control_flow = match self.runtime_deadline {
+                Some(deadline) => Some(ControlFlowEffect::WaitUntil(deadline)),
+                None => Some(ControlFlowEffect::Wait),
+            };
+        }
     }
 
     fn fold_control_flow(&mut self, control_flow: Option<ControlFlowEffect>) {
@@ -595,6 +655,7 @@ mod tests {
             cursor: None,
             ime: None,
             clipboard: None,
+            ..RuntimeEffects::default()
         });
         assert!(!started.request_redraw);
         assert_eq!(started.control_flow, Some(ControlFlowEffect::Wait));
@@ -735,5 +796,224 @@ mod tests {
         assert!(recovery.request_redraw);
         assert!(!restored.request_redraw);
         assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
+    }
+
+    #[test]
+    fn should_not_expose_poll_when_present_is_deferred() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+
+        // Act
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                ordinary_present_eligible: false,
+                control_flow: Some(ControlFlowEffect::Poll),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Assert
+        assert_eq!(effects.control_flow, Some(ControlFlowEffect::Wait));
+    }
+
+    #[test]
+    fn should_drop_ordinary_redraw_when_present_is_deferred() {
+        let mut scheduler = FrameScheduler::default();
+
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(!effects.request_redraw);
+        assert!(!scheduler.redraw_pending());
+        assert_eq!(scheduler.wake_bits(), 0);
+    }
+
+    #[test]
+    fn should_arm_redraw_when_deferred_present_is_forced() {
+        let mut scheduler = FrameScheduler::default();
+
+        let first = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let second = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(first.request_redraw);
+        assert!(!second.request_redraw);
+        assert!(scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_keep_wait_until_when_ordinary_redraw_is_deferred() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(400);
+
+        // Act
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                control_flow: Some(ControlFlowEffect::WaitUntil(deadline)),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(now, None);
+
+        // Assert
+        assert!(!effects.request_redraw);
+        assert_eq!(
+            effects.control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+        assert!(!effects.ordinary_present_eligible);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(deadline))
+        );
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_due_deadline_is_deferred() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let past = now - Duration::from_millis(1);
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                control_flow: Some(ControlFlowEffect::WaitUntil(past)),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        let idle = scheduler.about_to_wait(now, None);
+
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!scheduler.redraw_pending());
+        assert_eq!(scheduler.wake_bits() & FrameScheduler::DEADLINE_WAKE, 0);
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_active_continuation_is_deferred() {
+        let mut scheduler = FrameScheduler::default();
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                ordinary_present_eligible: false,
+                control_flow: Some(ControlFlowEffect::Poll),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        let idle = scheduler.about_to_wait(Instant::now(), None);
+
+        assert!(!idle.request_redraw);
+        assert!(!idle.ordinary_present_eligible);
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_retain_force_present_until_redraw_is_consumed() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let _ = scheduler.set_drawable(false);
+        let deferred_force = RuntimeEffects {
+            ordinary_present_eligible: false,
+            force_present: true,
+            request_redraw: true,
+            ..RuntimeEffects::default()
+        };
+
+        // Act
+        let suspended = scheduler.schedule(deferred_force, FrameScheduler::RUNTIME_WAKE);
+        let restored = scheduler.set_drawable(true);
+        let started = scheduler.frame_started(RuntimeEffects {
+            ordinary_present_eligible: false,
+            ..RuntimeEffects::default()
+        });
+        let after_consumption = scheduler.frame_started(RuntimeEffects::default());
+
+        // Assert
+        assert!(!suspended.request_redraw);
+        assert!(restored.request_redraw);
+        assert!(restored.force_present);
+        assert!(started.force_present);
+        assert!(!after_consumption.force_present);
+    }
+
+    #[test]
+    fn should_not_arm_redraw_when_forced_present_is_not_drawable() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let _ = scheduler.set_drawable(false);
+
+        // Act
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                ordinary_present_eligible: false,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Assert
+        assert!(!effects.request_redraw);
+        assert!(!scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_arm_redraw_when_force_present_has_no_ordinary_request() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+
+        // Act
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                ordinary_present_eligible: false,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Assert
+        assert!(effects.request_redraw);
+        assert!(effects.force_present);
+        assert!(!effects.ordinary_present_eligible);
+        assert!(scheduler.redraw_pending());
     }
 }
