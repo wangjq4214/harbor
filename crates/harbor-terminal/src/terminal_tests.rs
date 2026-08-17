@@ -2536,6 +2536,7 @@ fn should_return_empty_frame_demand_when_headless() {
     assert_eq!(demand, FrameDemand::empty());
     assert!(!demand.redraw_now);
     assert!(demand.deadline.is_none());
+    assert!(demand.ordinary_present_eligible);
 }
 
 #[test]

@@ -15,6 +15,8 @@ fn effects_default_is_inert() {
     assert!(effects.cursor.is_none());
     assert!(effects.ime.is_none());
     assert!(effects.clipboard.is_none());
+    assert!(effects.ordinary_present_eligible);
+    assert!(!effects.force_present);
     assert!(effects.is_noop());
 }
 
@@ -27,6 +29,7 @@ fn effects_merge_coalesces_redraw_and_keeps_latest_commands() {
         cursor: Some(CursorEffect::set_cursor(CursorShape::Default)),
         ime: Some(ImeEffect::set_allowed(false)),
         clipboard: Some(ClipboardEffect::read()),
+        ..RuntimeEffects::default()
     };
     let later = RuntimeEffects {
         request_redraw: true,
@@ -34,6 +37,7 @@ fn effects_merge_coalesces_redraw_and_keeps_latest_commands() {
         cursor: Some(CursorEffect::set_cursor(CursorShape::Pointer)),
         ime: Some(ImeEffect::set_position(Point::new(4.0, 8.0))),
         clipboard: Some(ClipboardEffect::write("copied")),
+        ..RuntimeEffects::default()
     };
 
     earlier.merge(later);
@@ -231,4 +235,85 @@ fn control_flow_arbitrate_is_commutative_and_prefers_poll_then_earliest_deadline
         ..RuntimeEffects::default()
     });
     assert_eq!(earlier.control_flow, Some(ControlFlowEffect::Wait));
+}
+
+#[test]
+fn should_and_eligibility_and_or_force_when_effects_merge() {
+    let mut deferred = RuntimeEffects {
+        ordinary_present_eligible: false,
+        ..RuntimeEffects::default()
+    };
+    deferred.merge(RuntimeEffects::request_redraw());
+
+    assert!(deferred.request_redraw);
+    assert!(!deferred.ordinary_present_eligible);
+    assert!(!deferred.force_present);
+    assert!(!deferred.is_noop());
+
+    deferred.merge(RuntimeEffects::force_present());
+
+    assert!(deferred.request_redraw);
+    assert!(!deferred.ordinary_present_eligible);
+    assert!(deferred.force_present);
+}
+
+#[test]
+fn should_not_treat_deferred_only_effects_as_noop() {
+    let deferred = RuntimeEffects {
+        ordinary_present_eligible: false,
+        ..RuntimeEffects::default()
+    };
+
+    assert!(!deferred.is_noop());
+    assert!(!deferred.request_redraw);
+}
+
+#[test]
+fn should_request_redraw_when_force_present_is_constructed() {
+    let effects = RuntimeEffects::force_present();
+
+    assert!(effects.request_redraw);
+    assert!(effects.force_present);
+    assert!(effects.ordinary_present_eligible);
+}
+
+#[test]
+fn should_keep_eligible_present_when_request_redraw_is_constructed() {
+    // Arrange / Act
+    let effects = RuntimeEffects::request_redraw();
+
+    // Assert
+    assert!(effects.request_redraw);
+    assert!(effects.ordinary_present_eligible);
+    assert!(!effects.force_present);
+}
+
+#[test]
+fn should_clear_eligibility_when_later_batch_is_deferred() {
+    // Arrange
+    let mut eligible = RuntimeEffects::request_redraw();
+
+    // Act
+    eligible.merge(RuntimeEffects {
+        ordinary_present_eligible: false,
+        ..RuntimeEffects::default()
+    });
+
+    // Assert
+    assert!(eligible.request_redraw);
+    assert!(!eligible.ordinary_present_eligible);
+    assert!(!eligible.force_present);
+}
+
+#[test]
+fn should_not_treat_force_present_as_noop() {
+    // Arrange
+    let effects = RuntimeEffects {
+        force_present: true,
+        ..RuntimeEffects::default()
+    };
+
+    // Act / Assert
+    assert!(!effects.is_noop());
+    assert!(!effects.request_redraw);
 }
