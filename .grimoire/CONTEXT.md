@@ -694,6 +694,16 @@ Project domain concepts and terminology.
   - consumed by Runtime Frame Scheduler
   - communicates with Runtime Host
 
+### Synchronized Output Mode
+- **Definition:** The DEC private mode `?2026` that batches terminal output by suppressing ordinary presentation while a saturated session-owned nesting counter is nonzero.
+- **Synonyms:** synchronized output, sync mode
+- **Relationships:**
+- belongs to Terminal
+- communicates with Runtime Frame Scheduler
+- references DECRQM
+- references RIS
+- references DECSTR
+
 ### Cursor Blink Scheduling
 - **Definition:** The timer-driven cursor policy that alternates visibility while idle and resets to visible when terminal input or cursor movement occurs.
 - **Relationships:**

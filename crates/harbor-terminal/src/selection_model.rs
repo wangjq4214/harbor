@@ -172,6 +172,11 @@ impl SelectionModel {
         }
     }
 
+    fn stop_auto_scroll(&mut self) {
+        self.auto_scroll = None;
+        self.next_auto_scroll_at = None;
+    }
+
     /// Left-mouse-button press at `cell`.
     ///
     /// Detects click chains (double/triple-click) and sets the selection range
@@ -292,8 +297,7 @@ impl SelectionModel {
             return SelectionOutcome::None;
         }
         self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
+        self.stop_auto_scroll();
 
         // Click without drag → clear selection.
         let is_zero_width = self.range.is_some_and(|sel| sel.anchor == sel.cursor);
@@ -309,8 +313,7 @@ impl SelectionModel {
             return SelectionOutcome::None;
         }
         self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
+        self.stop_auto_scroll();
         SelectionOutcome::DragEnded
     }
 
@@ -318,8 +321,7 @@ impl SelectionModel {
     pub fn clear(&mut self) {
         self.range = None;
         self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
+        self.stop_auto_scroll();
         self.click_count = 0;
         self.last_click_at = None;
         self.last_click_cell = None;
@@ -331,8 +333,7 @@ impl SelectionModel {
         let had_selection = self.range.is_some() || self.dragging;
         self.range = None;
         self.dragging = false;
-        self.auto_scroll = None;
-        self.next_auto_scroll_at = None;
+        self.stop_auto_scroll();
         had_selection
     }
 
@@ -407,8 +408,7 @@ impl SelectionModel {
             ),
             _ => {
                 // Can't scroll in this direction — stop.
-                self.auto_scroll = None;
-                self.next_auto_scroll_at = None;
+                self.stop_auto_scroll();
                 return None;
             }
         };

@@ -916,6 +916,7 @@ fn should_wait_until_schedule_deadline_when_runtime_registers_external_schedule(
     let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
         redraw_now: false,
         deadline: Some(deadline),
+        ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
     runtime.set_root(CustomPaint::new(9).schedule(schedule));
@@ -947,6 +948,7 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
     let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
         redraw_now: false,
         deadline: Some(next_phase),
+        ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
     runtime.set_root(CustomPaint::new(3).schedule(schedule));
@@ -966,4 +968,27 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
         due.control_flow,
         Some(ControlFlowEffect::WaitUntil(next_phase))
     );
+}
+
+#[test]
+fn should_not_request_redraw_from_ineligible_schedule_redraw_now() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    let now = Instant::now();
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+        redraw_now: true,
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(CustomPaint::new(4).schedule(schedule));
+    let _ = runtime.update(now);
+    let mut adapter = WinitAdapter::new();
+
+    let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+    assert!(!idle.request_redraw);
+    assert!(idle.ordinary_present_eligible);
+    assert!(idle.has_deferred_externals);
+    assert!(!idle.force_present);
 }

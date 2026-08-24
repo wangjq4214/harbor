@@ -4,7 +4,7 @@
 //! deadlines into redraw and control-flow effects without winit or App types.
 
 use crate::effects::{ControlFlowEffect, RuntimeEffects};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Per-window redraw coalescing and idle wait-policy state.
 #[derive(Debug)]
@@ -12,8 +12,12 @@ pub(crate) struct FrameScheduler {
     redraw_pending: bool,
     drawable: bool,
     runtime_deadline: Option<Instant>,
+    recovery_deadline: Option<Instant>,
     active: bool,
     wake_bits: u32,
+    has_deferred_externals: bool,
+    force_present_pending: bool,
+    last_frame_was_commit: bool,
 }
 
 impl Default for FrameScheduler {
@@ -22,8 +26,12 @@ impl Default for FrameScheduler {
             redraw_pending: false,
             drawable: true,
             runtime_deadline: None,
+            recovery_deadline: None,
             active: false,
             wake_bits: 0,
+            has_deferred_externals: false,
+            force_present_pending: false,
+            last_frame_was_commit: false,
         }
     }
 }
@@ -39,6 +47,10 @@ impl FrameScheduler {
     pub(crate) const CONTINUATION_WAKE: u32 = 1 << 3;
     /// Diagnostic bit for host presentation/surface retry frames.
     pub(crate) const HOST_RETRY_WAKE: u32 = 1 << 4;
+    /// Diagnostic bit for a due 100 ms deferred-external recovery commit.
+    pub(crate) const RECOVERY_WAKE: u32 = 1 << 5;
+
+    pub(crate) const RECOVERY_INTERVAL: Duration = Duration::from_millis(100);
 
     /// Folds one runtime effect batch into scheduler state and returns the
     /// host-facing edge (at most one outstanding redraw request).
@@ -47,9 +59,16 @@ impl FrameScheduler {
         mut effects: RuntimeEffects,
         wake_bit: u32,
     ) -> RuntimeEffects {
+        self.has_deferred_externals = effects.has_deferred_externals;
+        if !self.has_deferred_externals {
+            self.recovery_deadline = None;
+        }
+        effects.ordinary_present_eligible = true;
         self.fold_control_flow(effects.control_flow);
 
-        if effects.request_redraw {
+        let ordinary = effects.request_redraw;
+        if ordinary || effects.force_present {
+            self.force_present_pending |= effects.force_present;
             self.wake_bits |= wake_bit;
             let edge = self.drawable && !self.redraw_pending;
             effects.request_redraw = edge;
@@ -57,23 +76,61 @@ impl FrameScheduler {
                 self.redraw_pending = true;
             }
         }
+        effects.has_deferred_externals = self.has_deferred_externals;
         effects
+    }
+
+    /// Folds a batch that did not collect external schedule demand.
+    ///
+    /// Default constructors must not clear stored deferred-external presence.
+    /// `schedule` still replaces that flag so a later `Runtime::update` collect
+    /// can restore or cancel it.
+    pub(crate) fn schedule_retaining_ineligibility(
+        &mut self,
+        mut effects: RuntimeEffects,
+        wake_bit: u32,
+    ) -> RuntimeEffects {
+        effects.has_deferred_externals |= self.has_deferred_externals;
+        effects.ordinary_present_eligible = true;
+        self.schedule(effects, wake_bit)
     }
 
     /// Observes frame start: clears the outstanding redraw edge, folds the
     /// runtime update's control-flow state, and suppresses a redundant redraw
     /// because the current frame consumes that work.
     pub(crate) fn frame_started(&mut self, mut effects: RuntimeEffects) -> RuntimeEffects {
+        let consumed_redraw = self.redraw_pending;
         self.redraw_pending = false;
         self.wake_bits = 0;
+        self.has_deferred_externals = effects.has_deferred_externals;
+        if !self.has_deferred_externals {
+            self.recovery_deadline = None;
+        }
+        effects.ordinary_present_eligible = true;
+        if consumed_redraw {
+            effects.force_present |= self.force_present_pending;
+            self.force_present_pending = false;
+            self.last_frame_was_commit = effects.force_present;
+        } else {
+            self.last_frame_was_commit = false;
+        }
         self.fold_control_flow(effects.control_flow);
         effects.request_redraw = false;
+        effects.has_deferred_externals = self.has_deferred_externals;
         effects
     }
 
     /// Observes successful presentation. Active animation may request one
     /// continuation frame and keep `Poll`; idle completion returns `Wait`.
-    pub(crate) fn frame_completed(&mut self, _now: Instant) -> RuntimeEffects {
+    pub(crate) fn frame_completed(&mut self, now: Instant) -> RuntimeEffects {
+        let committed = self.last_frame_was_commit;
+        self.last_frame_was_commit = false;
+        if !self.has_deferred_externals {
+            self.recovery_deadline = None;
+        } else if committed {
+            self.recovery_deadline = Some(now + Self::RECOVERY_INTERVAL);
+        }
+
         if self.active {
             let request_redraw = self.drawable && !self.redraw_pending;
             if request_redraw {
@@ -83,12 +140,16 @@ impl FrameScheduler {
             return RuntimeEffects {
                 request_redraw,
                 control_flow: Some(ControlFlowEffect::Poll),
+                ordinary_present_eligible: true,
+                has_deferred_externals: self.has_deferred_externals,
                 ..RuntimeEffects::default()
             };
         }
 
         RuntimeEffects {
             control_flow: Some(ControlFlowEffect::Wait),
+            ordinary_present_eligible: true,
+            has_deferred_externals: self.has_deferred_externals,
             ..RuntimeEffects::default()
         }
     }
@@ -107,8 +168,15 @@ impl FrameScheduler {
                 self.runtime_deadline = None;
                 self.wake_bits |= Self::DEADLINE_WAKE;
             }
+            if let Some(deadline) = self.recovery_deadline
+                && now >= deadline
+            {
+                self.recovery_deadline = None;
+            }
             return RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::Wait),
+                ordinary_present_eligible: true,
+                has_deferred_externals: self.has_deferred_externals,
                 ..RuntimeEffects::default()
             };
         }
@@ -131,10 +199,15 @@ impl FrameScheduler {
             }
         }
 
+        self.apply_recovery(now, &mut request_redraw);
+
         let control_flow = if self.active {
             ControlFlowEffect::Poll
         } else {
-            match effective_deadline(self.runtime_deadline, host_deadline) {
+            match effective_deadline(
+                effective_deadline(self.runtime_deadline, self.recovery_deadline),
+                host_deadline,
+            ) {
                 Some(deadline) if deadline > now => ControlFlowEffect::WaitUntil(deadline),
                 _ => ControlFlowEffect::Wait,
             }
@@ -143,6 +216,9 @@ impl FrameScheduler {
         RuntimeEffects {
             request_redraw,
             control_flow: Some(control_flow),
+            ordinary_present_eligible: true,
+            force_present: self.force_present_pending,
+            has_deferred_externals: self.has_deferred_externals,
             ..RuntimeEffects::default()
         }
     }
@@ -157,6 +233,9 @@ impl FrameScheduler {
             self.redraw_pending = false;
         }
         if restored {
+            if self.has_deferred_externals {
+                self.force_present_pending = true;
+            }
             self.request_frame()
         } else {
             RuntimeEffects::default()
@@ -165,7 +244,11 @@ impl FrameScheduler {
 
     /// Requests a generic host retry frame (surface recovery / suboptimal).
     pub(crate) fn request_frame(&mut self) -> RuntimeEffects {
-        self.schedule(RuntimeEffects::request_redraw(), Self::HOST_RETRY_WAKE)
+        let mut effects = RuntimeEffects::request_redraw();
+        effects.ordinary_present_eligible = true;
+        effects.force_present = self.force_present_pending;
+        effects.has_deferred_externals = self.has_deferred_externals;
+        self.schedule(effects, Self::HOST_RETRY_WAKE)
     }
 
     /// Consumes a due `runtime_deadline` before a newer `WaitUntil` is folded.
@@ -191,6 +274,30 @@ impl FrameScheduler {
         self.drawable
     }
 
+    fn apply_recovery(&mut self, now: Instant, request_redraw: &mut bool) {
+        if !self.has_deferred_externals {
+            self.recovery_deadline = None;
+            return;
+        }
+
+        if let Some(deadline) = self.recovery_deadline
+            && now >= deadline
+        {
+            self.recovery_deadline = None;
+            self.force_present_pending = true;
+            if !self.redraw_pending {
+                self.wake_bits |= Self::RECOVERY_WAKE;
+                self.redraw_pending = true;
+                *request_redraw = true;
+            }
+            return;
+        }
+
+        if self.recovery_deadline.is_none() {
+            self.recovery_deadline = Some(now + Self::RECOVERY_INTERVAL);
+        }
+    }
+
     #[cfg(test)]
     fn wake_bits(&self) -> u32 {
         self.wake_bits
@@ -204,6 +311,11 @@ impl FrameScheduler {
     #[cfg(test)]
     fn active(&self) -> bool {
         self.active
+    }
+
+    #[cfg(test)]
+    fn recovery_deadline(&self) -> Option<Instant> {
+        self.recovery_deadline
     }
 
     fn fold_control_flow(&mut self, control_flow: Option<ControlFlowEffect>) {
@@ -595,6 +707,7 @@ mod tests {
             cursor: None,
             ime: None,
             clipboard: None,
+            ..RuntimeEffects::default()
         });
         assert!(!started.request_redraw);
         assert_eq!(started.control_flow, Some(ControlFlowEffect::Wait));
@@ -735,5 +848,374 @@ mod tests {
         assert!(recovery.request_redraw);
         assert!(!restored.request_redraw);
         assert_eq!(restored.control_flow, Some(ControlFlowEffect::Wait));
+    }
+
+    #[test]
+    fn should_keep_poll_when_externals_are_deferred() {
+        let mut scheduler = FrameScheduler::default();
+
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                control_flow: Some(ControlFlowEffect::Poll),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(Instant::now(), None);
+
+        assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
+        assert!(idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
+    }
+
+    #[test]
+    fn should_arm_widget_redraw_when_externals_are_deferred() {
+        let mut scheduler = FrameScheduler::default();
+
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(effects.request_redraw);
+        assert!(effects.ordinary_present_eligible);
+        assert!(scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_arm_redraw_when_deferred_present_is_forced() {
+        let mut scheduler = FrameScheduler::default();
+
+        let first = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                has_deferred_externals: true,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let second = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                has_deferred_externals: true,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(first.request_redraw);
+        assert!(!second.request_redraw);
+        assert!(scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_arm_recovery_wait_until_when_externals_are_deferred() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let recovery = now + FrameScheduler::RECOVERY_INTERVAL;
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(now, None);
+
+        assert!(!idle.request_redraw);
+        assert!(!idle.force_present);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(recovery))
+        );
+        assert_eq!(scheduler.recovery_deadline(), Some(recovery));
+    }
+
+    #[test]
+    fn should_force_commit_when_recovery_is_due() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let due = now + FrameScheduler::RECOVERY_INTERVAL;
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let fired = scheduler.about_to_wait(due, None);
+        let started = scheduler.frame_started(RuntimeEffects {
+            has_deferred_externals: true,
+            ..RuntimeEffects::default()
+        });
+        let completed = scheduler.frame_completed(due);
+
+        assert!(fired.request_redraw);
+        assert!(fired.force_present);
+        assert!(started.force_present);
+        assert!(!completed.request_redraw);
+        assert_eq!(
+            scheduler.recovery_deadline(),
+            Some(due + FrameScheduler::RECOVERY_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn should_clear_recovery_when_externals_are_no_longer_deferred() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let cancelled = scheduler.schedule(RuntimeEffects::default(), FrameScheduler::RUNTIME_WAKE);
+        let idle = scheduler.about_to_wait(now, None);
+
+        assert!(!cancelled.has_deferred_externals);
+        assert!(scheduler.recovery_deadline().is_none());
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_coalesce_due_recovery_onto_pending_widget_redraw() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let due = now + FrameScheduler::RECOVERY_INTERVAL;
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let widget = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(due, None);
+
+        assert!(widget.request_redraw);
+        assert!(!idle.request_redraw);
+        assert!(idle.force_present);
+        assert!(scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_keep_recovery_instant_across_idle_repeats() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let first = scheduler.about_to_wait(now, None);
+        let second = scheduler.about_to_wait(now + Duration::from_millis(10), None);
+
+        assert_eq!(first.control_flow, second.control_flow);
+        assert_eq!(
+            scheduler.recovery_deadline(),
+            Some(now + FrameScheduler::RECOVERY_INTERVAL)
+        );
+        assert!(!second.force_present);
+    }
+
+    #[test]
+    fn should_not_spin_when_recovery_is_due_while_not_drawable() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let due = now + FrameScheduler::RECOVERY_INTERVAL;
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let _ = scheduler.set_drawable(false);
+        let hidden = scheduler.about_to_wait(due, None);
+        let restored = scheduler.set_drawable(true);
+
+        assert!(!hidden.request_redraw);
+        assert_eq!(hidden.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(scheduler.recovery_deadline().is_none());
+        assert!(restored.request_redraw);
+        assert!(restored.force_present);
+    }
+
+    #[test]
+    fn should_retain_force_present_until_redraw_is_consumed() {
+        let mut scheduler = FrameScheduler::default();
+        let _ = scheduler.set_drawable(false);
+        let deferred_force = RuntimeEffects {
+            has_deferred_externals: true,
+            force_present: true,
+            request_redraw: true,
+            ..RuntimeEffects::default()
+        };
+
+        let suspended = scheduler.schedule(deferred_force, FrameScheduler::RUNTIME_WAKE);
+        let restored = scheduler.set_drawable(true);
+        let started = scheduler.frame_started(RuntimeEffects {
+            has_deferred_externals: true,
+            ..RuntimeEffects::default()
+        });
+        let after_consumption = scheduler.frame_started(RuntimeEffects::default());
+
+        assert!(!suspended.request_redraw);
+        assert!(restored.request_redraw);
+        assert!(restored.force_present);
+        assert!(started.force_present);
+        assert!(!after_consumption.force_present);
+    }
+
+    #[test]
+    fn should_not_arm_redraw_when_forced_present_is_not_drawable() {
+        let mut scheduler = FrameScheduler::default();
+        let _ = scheduler.set_drawable(false);
+
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                request_redraw: true,
+                has_deferred_externals: true,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(!effects.request_redraw);
+        assert!(!scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_arm_redraw_when_force_present_has_no_ordinary_request() {
+        let mut scheduler = FrameScheduler::default();
+
+        let effects = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                force_present: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        assert!(effects.request_redraw);
+        assert!(effects.force_present);
+        assert!(effects.ordinary_present_eligible);
+        assert!(scheduler.redraw_pending());
+    }
+
+    #[test]
+    fn should_keep_deferred_externals_when_retaining_ineligibility_without_collect() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+
+        // Act — a widget-only batch must not clear stored deferred presence
+        let retained = scheduler.schedule_retaining_ineligibility(
+            RuntimeEffects::request_redraw(),
+            FrameScheduler::RUNTIME_WAKE,
+        );
+
+        // Assert
+        assert!(retained.request_redraw);
+        assert!(retained.has_deferred_externals);
+        assert!(retained.ordinary_present_eligible);
+        assert_eq!(
+            scheduler.recovery_deadline(),
+            Some(now + FrameScheduler::RECOVERY_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn should_wait_until_recovery_when_runtime_deadline_is_later() {
+        // Arrange
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+        let blink = now + Duration::from_millis(400);
+        let recovery = now + FrameScheduler::RECOVERY_INTERVAL;
+
+        // Act
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                control_flow: Some(ControlFlowEffect::WaitUntil(blink)),
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let idle = scheduler.about_to_wait(now, None);
+
+        // Assert
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(recovery))
+        );
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_not_keep_force_present_when_deferred_externals_clear_while_not_drawable() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let _ = scheduler.set_drawable(false);
+
+        let cancelled = scheduler.schedule(RuntimeEffects::default(), FrameScheduler::RUNTIME_WAKE);
+        let idle = scheduler.about_to_wait(now, None);
+        let restored = scheduler.set_drawable(true);
+
+        assert!(!cancelled.has_deferred_externals);
+        assert!(scheduler.recovery_deadline().is_none());
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!idle.force_present);
+        assert!(!restored.force_present);
     }
 }

@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn should_register_handler_when_custom_paint_is_built_with_one() {
         // Arrange: a CustomPaint with a stable handler and real build context.
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
         let custom_paint = CustomPaint::new(42).handler(Arc::clone(&handler));
         let mut cx = BuildCx::stub();
 
@@ -240,7 +240,7 @@ mod tests {
         use crate::scene::primitive::ExternalScheduleDemand;
 
         // Arrange
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let custom_paint = CustomPaint::new(11)
             .handler(Arc::clone(&handler))
