@@ -780,12 +780,6 @@ impl App {
             return;
         };
 
-        if let Some(terminal) = self.runtime.terminal.as_ref()
-            && let Ok(mut terminal) = terminal.lock()
-        {
-            terminal.drain_pty();
-        }
-
         let Some(outcome) = (|| {
             let gpu = self.runtime.gpu.as_ref()?;
             let adapter = self.runtime.winit_adapter.as_mut()?;
@@ -1381,6 +1375,7 @@ mod tests {
             cursor: Some(CursorEffect::Set(CursorShape::Text)),
             ime: Some(ImeEffect::set_allowed(true)),
             clipboard: Some(ClipboardEffect::write("copied")),
+            ..RuntimeEffects::default()
         };
         assert!(effects.request_redraw);
         assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));

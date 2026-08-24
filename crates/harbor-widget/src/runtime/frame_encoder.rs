@@ -3,7 +3,9 @@
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
-use crate::scene::primitive::{ExternalDrawContext, ExternalDrawFn, ExternalDrawId};
+use crate::scene::primitive::{
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode,
+};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
 use hashbrown::HashMap;
@@ -15,6 +17,8 @@ pub(crate) struct EncodeScene<'a> {
     pub(crate) pending_delta: &'a mut Option<SceneDelta>,
     pub(crate) current_viewport: &'a mut Option<Viewport>,
     pub(crate) external_draws: &'a HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
+    pub(crate) external_eligible: &'a HashMap<ExternalDrawId, bool>,
+    pub(crate) commit: bool,
 }
 
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.
@@ -142,7 +146,9 @@ impl FrameEncoder {
                         }
                         let (phys_x, phys_y, phys_w, phys_h) = context.scissor_rect();
                         pass.set_scissor_rect(phys_x, phys_y, phys_w, phys_h);
-                        cb(*draw, &context, pass);
+                        let eligible = scene.external_eligible.get(draw).copied().unwrap_or(true);
+                        let mode = ExternalDrawMode::from_eligibility(eligible, scene.commit);
+                        cb(*draw, &context, pass, mode);
                         pass.set_scissor_rect(
                             0,
                             0,

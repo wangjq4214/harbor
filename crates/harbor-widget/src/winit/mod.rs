@@ -156,7 +156,7 @@ impl WinitAdapter {
     /// Folds a raw runtime effect batch through the per-window scheduler.
     pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
         self.scheduler
-            .schedule(effects, FrameScheduler::RUNTIME_WAKE)
+            .schedule_retaining_ineligibility(effects, FrameScheduler::RUNTIME_WAKE)
     }
 
     /// Forwards source-agnostic host work through runtime external invalidation
@@ -169,7 +169,7 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
         let core_effects = runtime.invalidate_external(work);
         self.scheduler
-            .schedule(core_effects, FrameScheduler::EXTERNAL_WAKE)
+            .schedule_retaining_ineligibility(core_effects, FrameScheduler::EXTERNAL_WAKE)
     }
 
     /// Observes `RedrawRequested`: runs a runtime update and consumes the
@@ -325,7 +325,10 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
 
         if changed && self.surface_state.can_acquire() {
-            effects.merge(self.fold_effects(runtime.update(Instant::now())));
+            effects.merge(
+                self.scheduler
+                    .schedule(runtime.update(Instant::now()), FrameScheduler::RUNTIME_WAKE),
+            );
             effects.merge(self.request_frame());
         }
         WinitEventOutcome::handled(effects)
@@ -603,8 +606,12 @@ mod tests {
         classify_surface_texture, execute_presented_frame,
     };
     use super::*;
+    use crate::effects::ControlFlowEffect;
     use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
+    use crate::runtime::Runtime;
+    use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
     use crate::widgets::button::Button;
+    use crate::widgets::custom_paint::CustomPaint;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use winit::dpi::PhysicalPosition;
@@ -1918,5 +1925,334 @@ mod tests {
             },
         );
         assert!(!clicked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn should_keep_poll_when_deferred_effects_are_folded() {
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        let effects = adapter.fold_effects(RuntimeEffects {
+            has_deferred_externals: true,
+            control_flow: Some(ControlFlowEffect::Poll),
+            ..RuntimeEffects::default()
+        });
+
+        assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));
+        assert!(effects.ordinary_present_eligible);
+        assert!(!effects.request_redraw);
+    }
+
+    #[test]
+    fn should_retain_forced_present_through_deferred_redraw_lifecycle() {
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(91).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.fold_effects(RuntimeEffects {
+            request_redraw: true,
+            has_deferred_externals: true,
+            force_present: true,
+            ..RuntimeEffects::default()
+        });
+
+        let started = adapter.redraw_requested(&mut runtime, Instant::now());
+        let after_consumption = adapter.redraw_requested(&mut runtime, Instant::now());
+
+        assert!(armed.request_redraw);
+        assert!(started.ordinary_present_eligible);
+        assert!(started.has_deferred_externals);
+        assert!(started.force_present);
+        assert!(!after_consumption.force_present);
+    }
+
+    #[test]
+    fn should_not_invoke_present_when_eligible_acquisition_is_skipped() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let called = AtomicBool::new(false);
+
+        // Act
+        let outcome = adapter.finish_acquisition(
+            RuntimeEffects::request_redraw(),
+            FrameAcquisition::<&str>::Skipped,
+            |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+
+        // Assert — timeout/occlusion skip still wins when present is allowed.
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(!outcome.is_presented());
+        assert!(!outcome.is_recovery_required());
+        assert!(!outcome.is_fatal());
+    }
+
+    #[test]
+    fn should_invoke_present_when_deferred_effects_are_forced() {
+        // Arrange
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let called = AtomicBool::new(false);
+        let effects = RuntimeEffects {
+            has_deferred_externals: true,
+            force_present: true,
+            request_redraw: true,
+            ..RuntimeEffects::default()
+        };
+
+        // Act
+        let outcome =
+            adapter.finish_acquisition(effects, FrameAcquisition::Presented("ok"), |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+
+        // Assert
+        assert!(called.load(Ordering::SeqCst));
+        assert!(outcome.is_presented());
+    }
+
+    #[test]
+    fn should_not_request_redraw_when_about_to_wait_while_ineligible() {
+        use std::time::Duration;
+
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
+        assert!(!idle.request_redraw);
+        assert!(!idle.force_present);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+    }
+
+    #[test]
+    fn should_force_commit_when_about_to_wait_after_recovery_interval() {
+        use std::time::Duration;
+
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut runtime, now, None);
+
+        let due = adapter.about_to_wait(&mut runtime, now + Duration::from_millis(100), None);
+
+        assert!(due.request_redraw);
+        assert!(due.force_present);
+        assert!(due.has_deferred_externals);
+    }
+
+    #[test]
+    fn should_request_redraw_and_present_when_about_to_wait_after_matching_disable() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: true,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.request_redraw);
+    }
+
+    #[test]
+    fn should_keep_present_eligible_when_later_turn_follows_trailing_disables() {
+        // Arrange
+        let eligible = Arc::new(AtomicBool::new(false));
+        let redraw = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            let redraw = Arc::clone(&redraw);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                redraw_now: redraw.load(Ordering::SeqCst),
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                deadline: None,
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let deferred = adapter.about_to_wait(&mut runtime, now, None);
+        assert!(deferred.ordinary_present_eligible);
+        assert!(deferred.has_deferred_externals);
+        assert!(!deferred.request_redraw);
+
+        // Act
+        eligible.store(true, Ordering::SeqCst);
+        redraw.store(true, Ordering::SeqCst);
+        let later = adapter.about_to_wait(&mut runtime, now, None);
+
+        // Assert
+        assert!(later.ordinary_present_eligible);
+        assert!(!later.has_deferred_externals);
+        assert!(later.request_redraw);
+    }
+
+    #[test]
+    fn should_keep_poll_when_about_to_wait_while_externals_are_deferred() {
+        use std::time::Duration;
+
+        // Arrange — animation Poll is already folded; the terminal stays ineligible
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.fold_effects(RuntimeEffects {
+            has_deferred_externals: true,
+            control_flow: Some(ControlFlowEffect::Poll),
+            ..RuntimeEffects::default()
+        });
+
+        // Act
+        let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+        // Assert — recovery WaitUntil must not demote widget Poll
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
+        assert_ne!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_arm_widget_redraw_when_folding_redraw_while_externals_are_deferred() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut runtime, now, None);
+
+        // Act — widget dirtiness arrives without a fresh schedule collect
+        let widget = adapter.fold_effects(RuntimeEffects::request_redraw());
+
+        // Assert
+        assert!(widget.request_redraw);
+        assert!(widget.ordinary_present_eligible);
+        assert!(widget.has_deferred_externals);
+    }
+
+    #[test]
+    fn should_cancel_recovery_and_present_when_schedule_becomes_eligible() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let eligible = Arc::new(AtomicBool::new(false));
+        let redraw = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            let redraw = Arc::clone(&redraw);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                redraw_now: redraw.load(Ordering::SeqCst),
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                deadline: None,
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut runtime, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        eligible.store(true, Ordering::SeqCst);
+        redraw.store(true, Ordering::SeqCst);
+        let released = adapter.about_to_wait(&mut runtime, now, None);
+
+        assert!(released.ordinary_present_eligible);
+        assert!(!released.has_deferred_externals);
+        assert!(!released.force_present);
+        assert!(released.request_redraw);
+        assert_ne!(
+            released.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+    }
+
+    #[test]
+    fn should_not_busy_wait_when_schedule_becomes_eligible_while_not_drawable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let eligible = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                ..ExternalScheduleDemand::empty()
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut runtime, now, None);
+        let _ = adapter.set_drawable(false);
+
+        eligible.store(true, Ordering::SeqCst);
+        let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+        let restored = adapter.set_drawable(true);
+        assert!(!restored.force_present);
     }
 }

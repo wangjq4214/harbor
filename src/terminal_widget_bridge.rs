@@ -12,7 +12,8 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalScheduleDemand, ExternalScheduleFn,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalScheduleDemand,
+    ExternalScheduleFn,
 };
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
@@ -176,11 +177,14 @@ impl TerminalWidgetBridge {
         let draw_terminal = Arc::clone(&terminal);
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass| {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
             dispatch_matched_draw(draw_id, id, context, |target| {
                 current_gpu(|gpu| {
                     if let Ok(mut term) = draw_terminal.lock() {
-                        term.render(target, pass, gpu);
+                        match mode {
+                            ExternalDrawMode::Live => term.render(target, pass, gpu),
+                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+                        }
                     }
                 });
             });
@@ -271,13 +275,14 @@ pub(crate) fn schedule_demand_for_terminal(
     if invoked_id != owned_id {
         return ExternalScheduleDemand::empty();
     }
-    let Ok(term) = terminal.lock() else {
+    let Ok(mut term) = terminal.lock() else {
         return ExternalScheduleDemand::empty();
     };
     let demand = term.frame_demand(now);
     ExternalScheduleDemand {
         redraw_now: demand.redraw_now,
         deadline: demand.deadline,
+        ordinary_present_eligible: demand.ordinary_present_eligible,
     }
 }
 
@@ -291,6 +296,7 @@ mod tests {
     use harbor_widget::layout::{Point, Rect, Size};
     use harbor_widget::renderer::Viewport;
     use harbor_widget::scene::primitive::ExternalDrawContext;
+    use harbor_widget::winit::WinitAdapter;
     use std::cell::Cell;
     use std::sync::atomic::AtomicBool;
 
@@ -685,6 +691,7 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
@@ -698,6 +705,27 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_copy_frame_demand_fields_when_draw_id_matches() {
+        // Arrange
+        let terminal = headless_terminal(2, 4);
+        let now = std::time::Instant::now();
+        let expected = terminal.lock().unwrap().frame_demand(now);
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert_eq!(demand.redraw_now, expected.redraw_now);
+        assert_eq!(demand.deadline, expected.deadline);
+        assert_eq!(
+            demand.ordinary_present_eligible,
+            expected.ordinary_present_eligible
+        );
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
@@ -716,6 +744,7 @@ mod tests {
 
         // Assert
         assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]
@@ -738,5 +767,309 @@ mod tests {
         assert!(!idle.request_redraw);
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
         assert!(idle.control_flow.is_none() || idle.control_flow == Some(ControlFlowEffect::Wait));
+    }
+
+    #[test]
+    fn should_copy_ineligible_demand_when_synchronized_output_is_enabled() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(!demand.ordinary_present_eligible);
+        assert!(!demand.redraw_now);
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_copy_eligible_demand_when_matching_2026_disable_has_been_applied() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026hhello\x1b[?2026l");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(demand.ordinary_present_eligible);
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_return_empty_eligible_demand_when_draw_id_mismatches_ineligible_terminal() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 99, &terminal, now);
+
+        // Assert — mismatch ignores the ineligible terminal snapshot
+        assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_skip_ordinary_redraw_when_about_to_wait_while_2026_is_enabled() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        // Assert
+        assert!(!idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_force_commit_when_about_to_wait_after_recovery_while_2026_is_nested() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut rt, now, None);
+
+        // Act
+        let due = adapter.about_to_wait(&mut rt, now + Duration::from_millis(100), None);
+
+        // Assert — recovery live-commits without resetting nested DECRQM Set
+        assert!(due.request_redraw);
+        assert!(due.force_present);
+        assert!(due.has_deferred_externals);
+        assert_eq!(due.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(
+            !terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_report_eligible_effects_when_about_to_wait_after_matching_disable() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026hhello\x1b[?2026l");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut rt, std::time::Instant::now(), None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_stay_eligible_when_trailing_disables_precede_later_output() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026l\x1b[?2026llater");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(demand.ordinary_present_eligible);
+        assert!(terminal.lock().unwrap().row_text(0).contains("later"));
+    }
+
+    #[test]
+    fn should_cancel_deferred_externals_when_ris_clears_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut rt, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        // Act
+        terminal.lock().unwrap().process_output(b"\x1bc");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert!(idle.request_redraw);
+        assert_ne!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+    }
+
+    #[test]
+    fn should_keep_deferred_externals_when_decstr_leaves_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut rt, now, None);
+
+        // Act
+        terminal.lock().unwrap().process_output(b"\x1b[!p");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        // Assert
+        assert!(idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            !terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_cancel_deferred_externals_when_pty_eof_clears_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::io::Read;
+        use std::time::Duration;
+
+        struct PermitEofReader {
+            permit: std::sync::mpsc::Receiver<()>,
+            exited: std::sync::mpsc::Sender<()>,
+        }
+        impl Read for PermitEofReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.permit.recv();
+                Ok(0)
+            }
+        }
+        impl Drop for PermitEofReader {
+            fn drop(&mut self) {
+                let _ = self.exited.send(());
+            }
+        }
+
+        let (permit_tx, permit_rx) = std::sync::mpsc::channel();
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            2,
+            20,
+            PermitEofReader {
+                permit: permit_rx,
+                exited: exited_tx,
+            },
+            std::io::sink(),
+            || true,
+        )));
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut rt, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        permit_tx.send(()).expect("reader should still be waiting");
+        exited_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader must drop before drain can observe disconnect");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert!(idle.request_redraw);
+        assert_ne!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
     }
 }

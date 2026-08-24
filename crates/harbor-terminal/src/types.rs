@@ -12,6 +12,8 @@ pub struct FrameDemand {
     pub redraw_now: bool,
     /// Earliest next cursor-blink phase boundary, when blinking is active.
     pub deadline: Option<Instant>,
+    /// False when an ordinary present should be deferred. Default empty demand is eligible.
+    pub ordinary_present_eligible: bool,
 }
 
 impl FrameDemand {
@@ -20,7 +22,14 @@ impl FrameDemand {
         Self {
             redraw_now: false,
             deadline: None,
+            ordinary_present_eligible: true,
         }
+    }
+}
+
+impl Default for FrameDemand {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -196,4 +205,41 @@ pub enum TerminalPointerButton {
 pub enum TerminalFocusEvent {
     Gained,
     Lost,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameDemand;
+    use std::time::Instant;
+
+    #[test]
+    fn should_report_eligible_present_when_frame_demand_is_empty() {
+        // Arrange / Act
+        let empty = FrameDemand::empty();
+
+        // Assert
+        assert_eq!(empty, FrameDemand::default());
+        assert!(!empty.redraw_now);
+        assert!(empty.deadline.is_none());
+        assert!(empty.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_preserve_deferred_eligibility_when_frame_demand_is_constructed() {
+        // Arrange
+        let deadline = Instant::now();
+
+        // Act
+        let demand = FrameDemand {
+            redraw_now: true,
+            deadline: Some(deadline),
+            ordinary_present_eligible: false,
+        };
+
+        // Assert
+        assert!(demand.redraw_now);
+        assert_eq!(demand.deadline, Some(deadline));
+        assert!(!demand.ordinary_present_eligible);
+        assert_ne!(demand, FrameDemand::empty());
+    }
 }

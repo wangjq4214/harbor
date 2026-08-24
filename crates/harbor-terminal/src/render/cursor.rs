@@ -60,8 +60,6 @@ pub struct Cursor {
     shape: CursorShape,
     /// Idle blink phase and pending immediate-redraw flag.
     blink: CursorBlinkState,
-    /// Last rendered blink visibility state (used to trigger redraws on toggle).
-    last_rendered_visible: bool,
     /// Cell dimensions in logical pixels.
     cell_width: f32,
     line_height: f32,
@@ -87,7 +85,6 @@ impl Cursor {
             visible: true,
             shape: CursorShape::Block,
             blink: CursorBlinkState::new(Instant::now()),
-            last_rendered_visible: true,
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             last_cursor: None,
@@ -111,11 +108,11 @@ impl Cursor {
         FrameDemand {
             redraw_now: self.blink.pending_redraw(),
             deadline,
+            ordinary_present_eligible: true,
         }
     }
 
     pub fn commit_frame(&mut self) {
-        self.last_rendered_visible = self.visible;
         self.dirty = false;
         self.blink.take_pending_redraw();
     }
@@ -275,6 +272,7 @@ mod tests {
         FrameDemand {
             redraw_now: blink.pending_redraw(),
             deadline,
+            ordinary_present_eligible: true,
         }
     }
 
@@ -310,6 +308,7 @@ mod tests {
             demand.deadline,
             Some(t0 + Duration::from_millis(BLINK_INTERVAL_MS))
         );
+        assert!(demand.ordinary_present_eligible);
     }
 
     #[test]

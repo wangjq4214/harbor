@@ -17,6 +17,14 @@ enum ActivePointer {
     Scrollbar { pointer_id: u64, grab_offset: f32 },
 }
 
+impl ActivePointer {
+    fn pointer_id(self) -> u64 {
+        match self {
+            Self::Selection { pointer_id } | Self::Scrollbar { pointer_id, .. } => pointer_id,
+        }
+    }
+}
+
 pub struct PointerInteraction {
     selection: SelectionModel,
     active: Option<ActivePointer>,
@@ -129,10 +137,7 @@ impl PointerInteraction {
         let release_pointer = self
             .active
             .take()
-            .map(|active| match active {
-                ActivePointer::Selection { pointer_id }
-                | ActivePointer::Scrollbar { pointer_id, .. } => pointer_id,
-            })
+            .map(ActivePointer::pointer_id)
             .or_else(|| self.vt_capture.take());
         self.mouse_buttons = 0;
         let redraw = self.selection.cancel() != SelectionOutcome::None;
@@ -163,10 +168,7 @@ impl PointerInteraction {
     }
 
     pub fn clear_selection_outcome(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(|active| match active {
-            ActivePointer::Selection { pointer_id }
-            | ActivePointer::Scrollbar { pointer_id, .. } => pointer_id,
-        });
+        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
         self.mouse_buttons = 0;
         let redraw = self.clear_selection();
         TerminalEventOutcome {
@@ -177,10 +179,7 @@ impl PointerInteraction {
     }
 
     pub fn on_key_press_outcome(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(|active| match active {
-            ActivePointer::Selection { pointer_id }
-            | ActivePointer::Scrollbar { pointer_id, .. } => pointer_id,
-        });
+        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
         self.mouse_buttons = 0;
         let redraw = self.selection.on_key_press();
         TerminalEventOutcome {
@@ -336,11 +335,7 @@ impl PointerInteraction {
                 let Some(active) = self.active.take() else {
                     return TerminalEventOutcome::default();
                 };
-                let matches = match active {
-                    ActivePointer::Selection { pointer_id }
-                    | ActivePointer::Scrollbar { pointer_id, .. } => pointer_id == event.pointer_id,
-                };
-                if !matches {
+                if active.pointer_id() != event.pointer_id {
                     self.active = Some(active);
                     return TerminalEventOutcome::default();
                 }
