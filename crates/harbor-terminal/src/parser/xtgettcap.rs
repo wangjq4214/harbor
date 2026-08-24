@@ -171,7 +171,7 @@ fn hex_decode(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for pair in input.chunks_exact(2) {
+    for pair in input.as_chunks::<2>().0 {
         let hi = hex_value(pair[0])?;
         let lo = hex_value(pair[1])?;
         out.push(hi << 4 | lo);

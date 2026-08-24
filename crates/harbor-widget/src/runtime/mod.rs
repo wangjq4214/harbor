@@ -243,16 +243,13 @@ impl Runtime {
             };
         }
 
-        let mut effects = RuntimeEffects::default();
-        effects.ordinary_present_eligible = true;
-        effects.has_deferred_externals = has_deferred_externals;
-        if redraw_now {
-            effects.request_redraw = true;
+        RuntimeEffects {
+            ordinary_present_eligible: true,
+            has_deferred_externals,
+            request_redraw: redraw_now,
+            control_flow: earliest.map(ControlFlowEffect::WaitUntil),
+            ..RuntimeEffects::default()
         }
-        if let Some(deadline) = earliest {
-            effects.control_flow = Some(ControlFlowEffect::WaitUntil(deadline));
-        }
-        effects
     }
 
     /// Marks work originating outside the runtime as pending.
@@ -1541,7 +1538,6 @@ mod tests {
             redraw_now: true,
             deadline: Some(deadline),
             ordinary_present_eligible: false,
-            ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(8).schedule(schedule));
