@@ -603,7 +603,7 @@ mod tests {
     use super::event::modifiers_to_widget;
     use super::presenter::{
         FrameAcquisition, FrameAcquisitionKind, PresentableKind, classify_presentable,
-        classify_surface_texture, execute_presented_frame, should_execute_present,
+        classify_surface_texture, execute_presented_frame,
     };
     use super::*;
     use crate::effects::ControlFlowEffect;
@@ -1928,24 +1928,6 @@ mod tests {
     }
 
     #[test]
-    fn should_execute_present_when_effects_are_eligible() {
-        assert!(should_execute_present(&RuntimeEffects::default()));
-        assert!(should_execute_present(&RuntimeEffects::request_redraw()));
-    }
-
-    #[test]
-    fn should_execute_present_when_effects_are_deferred() {
-        let deferred = RuntimeEffects {
-            request_redraw: true,
-            ordinary_present_eligible: false,
-            has_deferred_externals: true,
-            ..RuntimeEffects::default()
-        };
-
-        assert!(should_execute_present(&deferred));
-    }
-
-    #[test]
     fn should_keep_poll_when_deferred_effects_are_folded() {
         let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
 
@@ -1958,33 +1940,6 @@ mod tests {
         assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));
         assert!(effects.ordinary_present_eligible);
         assert!(!effects.request_redraw);
-    }
-
-    #[test]
-    fn should_execute_present_when_deferred_effects_are_forced() {
-        let forced = RuntimeEffects {
-            has_deferred_externals: true,
-            force_present: true,
-            request_redraw: true,
-            ..RuntimeEffects::default()
-        };
-
-        assert!(should_execute_present(&forced));
-        assert!(should_execute_present(&RuntimeEffects::force_present()));
-    }
-
-    #[test]
-    fn should_execute_present_when_force_present_has_no_redraw() {
-        let forced = RuntimeEffects {
-            has_deferred_externals: true,
-            force_present: true,
-            request_redraw: false,
-            ..RuntimeEffects::default()
-        };
-
-        let execute = should_execute_present(&forced);
-
-        assert!(execute);
     }
 
     #[test]
@@ -2010,7 +1965,6 @@ mod tests {
         assert!(started.ordinary_present_eligible);
         assert!(started.has_deferred_externals);
         assert!(started.force_present);
-        assert!(should_execute_present(&started));
         assert!(!after_consumption.force_present);
     }
 
@@ -2082,7 +2036,6 @@ mod tests {
         assert!(idle.has_deferred_externals);
         assert!(!idle.request_redraw);
         assert!(!idle.force_present);
-        assert!(should_execute_present(&idle));
         assert_eq!(
             idle.control_flow,
             Some(ControlFlowEffect::WaitUntil(
@@ -2111,7 +2064,6 @@ mod tests {
         assert!(due.request_redraw);
         assert!(due.force_present);
         assert!(due.has_deferred_externals);
-        assert!(should_execute_present(&due));
     }
 
     #[test]
@@ -2132,7 +2084,6 @@ mod tests {
         // Assert
         assert!(idle.ordinary_present_eligible);
         assert!(idle.request_redraw);
-        assert!(should_execute_present(&idle));
     }
 
     #[test]
@@ -2158,7 +2109,6 @@ mod tests {
         assert!(deferred.ordinary_present_eligible);
         assert!(deferred.has_deferred_externals);
         assert!(!deferred.request_redraw);
-        assert!(should_execute_present(&deferred));
 
         // Act
         eligible.store(true, Ordering::SeqCst);
@@ -2169,7 +2119,6 @@ mod tests {
         assert!(later.ordinary_present_eligible);
         assert!(!later.has_deferred_externals);
         assert!(later.request_redraw);
-        assert!(should_execute_present(&later));
     }
 
     #[test]
@@ -2229,7 +2178,6 @@ mod tests {
         assert!(widget.request_redraw);
         assert!(widget.ordinary_present_eligible);
         assert!(widget.has_deferred_externals);
-        assert!(should_execute_present(&widget));
     }
 
     #[test]
@@ -2270,7 +2218,6 @@ mod tests {
         assert!(!released.has_deferred_externals);
         assert!(!released.force_present);
         assert!(released.request_redraw);
-        assert!(should_execute_present(&released));
         assert_ne!(
             released.control_flow,
             Some(ControlFlowEffect::WaitUntil(
@@ -2307,6 +2254,5 @@ mod tests {
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
         let restored = adapter.set_drawable(true);
         assert!(!restored.force_present);
-        assert!(should_execute_present(&restored) || restored.request_redraw);
     }
 }

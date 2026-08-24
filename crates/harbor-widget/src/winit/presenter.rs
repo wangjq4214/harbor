@@ -29,10 +29,6 @@ impl WinitAdapter {
         let effects = self.redraw_requested(runtime, Instant::now());
         prepare(runtime);
 
-        if !should_execute_present(&effects) {
-            return FrameOutcome::skipped(effects);
-        }
-
         if !self.surface_state.can_acquire() {
             return FrameOutcome::skipped(effects);
         }
@@ -281,12 +277,6 @@ pub(super) fn execute_wgpu_frame(
         || target.window().pre_present_notify(),
         |output| target.queue().present(output),
     )
-}
-
-/// Widget frames present whenever the host requested a redraw and the surface
-/// is drawable. Ineligible externals are a per-draw encode choice, not a skip.
-pub(super) fn should_execute_present(_effects: &RuntimeEffects) -> bool {
-    true
 }
 
 /// Borrowed host resources valid for one frame.
