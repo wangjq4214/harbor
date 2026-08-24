@@ -350,15 +350,6 @@ impl CursorEngine {
         }
     }
 
-    pub(crate) fn set_cursor(
-        &mut self,
-        normal: &NormalBuf,
-        row_1_based: usize,
-        col_1_based: usize,
-    ) {
-        self.set_cursor_position(normal, row_1_based, col_1_based);
-    }
-
     pub(crate) fn home_cursor(&mut self) {
         if self.modes.origin {
             self.cursor.y = self.scroll_region.top;

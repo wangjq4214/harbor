@@ -291,32 +291,28 @@ impl NormalBuf {
         self.damage_tracker.mark_all_dirty();
     }
 
+    /// Maps a retained generation to its ring row.
+    fn ring_row_at_generation(&self, generation: u64) -> Option<usize> {
+        if generation < self.history_start {
+            return None;
+        }
+        let offset = (generation - self.history_start) as usize;
+        if offset >= self.scroll_count + self.visible_rows {
+            return None;
+        }
+        Some((self.visible_start + self.total_rows - self.scroll_count + offset) % self.total_rows)
+    }
+
     /// Read a cell by stable generation coordinate.
     /// Returns `None` when the generation has been evicted from the ring buffer.
     pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
         debug_assert!(col < self.cols);
-        if generation < self.history_start {
-            return None;
-        }
-        let offset = (generation - self.history_start) as usize;
-        if offset >= self.scroll_count + self.visible_rows {
-            return None;
-        }
-        let ring_row =
-            (self.visible_start + self.total_rows - self.scroll_count + offset) % self.total_rows;
+        let ring_row = self.ring_row_at_generation(generation)?;
         Some(&self.cells[ring_row * self.cols + col])
     }
 
     pub fn is_wrapped_at_generation(&self, generation: u64) -> Option<bool> {
-        if generation < self.history_start {
-            return None;
-        }
-        let offset = (generation - self.history_start) as usize;
-        if offset >= self.scroll_count + self.visible_rows {
-            return None;
-        }
-        let ring_row =
-            (self.visible_start + self.total_rows - self.scroll_count + offset) % self.total_rows;
+        let ring_row = self.ring_row_at_generation(generation)?;
         Some(self.wrapped[ring_row])
     }
 
@@ -462,9 +458,7 @@ impl NormalBuf {
 
         // Preserve the top-left rectangle of the live viewport; newly exposed rows are blank.
         for live_row in 0..copied_live_rows {
-            let old_ring_row =
-                (old_visible_start + old_total - old_scroll_count + old_scroll_count + live_row)
-                    % old_total;
+            let old_ring_row = (old_visible_start + live_row) % old_total;
             let new_ring_row = (self.max_scrollback + live_row) % new_total;
             let old_start = old_ring_row * old_cols;
             let new_start = new_ring_row * cols;

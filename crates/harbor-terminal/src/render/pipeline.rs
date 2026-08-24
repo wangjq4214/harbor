@@ -51,11 +51,8 @@ impl TerminalRenderPipeline {
 
     pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) {
         let viewport_changed = self.viewport != viewport;
-        if !viewport_changed && !grid_changed {
-            return;
-        }
-        self.viewport = viewport;
         if viewport_changed || grid_changed {
+            self.viewport = viewport;
             self.background.invalidate_projection();
             self.text.invalidate_projection();
             self.decoration.invalidate_projection();

@@ -60,8 +60,6 @@ pub struct Cursor {
     shape: CursorShape,
     /// Idle blink phase and pending immediate-redraw flag.
     blink: CursorBlinkState,
-    /// Last rendered blink visibility state (used to trigger redraws on toggle).
-    last_rendered_visible: bool,
     /// Cell dimensions in logical pixels.
     cell_width: f32,
     line_height: f32,
@@ -87,7 +85,6 @@ impl Cursor {
             visible: true,
             shape: CursorShape::Block,
             blink: CursorBlinkState::new(Instant::now()),
-            last_rendered_visible: true,
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             last_cursor: None,
@@ -116,7 +113,6 @@ impl Cursor {
     }
 
     pub fn commit_frame(&mut self) {
-        self.last_rendered_visible = self.visible;
         self.dirty = false;
         self.blink.take_pending_redraw();
     }

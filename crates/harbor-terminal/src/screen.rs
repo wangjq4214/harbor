@@ -476,7 +476,7 @@ impl Screen {
 
     pub fn set_cursor(&mut self, row_1_based: usize, col_1_based: usize) {
         self.cursor
-            .set_cursor(&self.normal, row_1_based, col_1_based);
+            .set_cursor_position(&self.normal, row_1_based, col_1_based);
     }
 
     pub fn home_cursor(&mut self) {
