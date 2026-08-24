@@ -2787,3 +2787,24 @@ fn should_not_set_redraw_now_when_demand_is_repolled_after_release_notify() {
     assert!(idle.ordinary_present_eligible);
     assert!(!idle.redraw_now);
 }
+
+#[test]
+fn should_keep_decrqm_set_when_nested_batch_would_live_commit() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.process_output(b"\x1b[?2026h\x1b[?2026hhello");
+
+    assert!(!terminal.screen().ordinary_present_eligible());
+    assert_eq!(
+        terminal.screen().mode_status(true, 2026),
+        crate::screen::ModeStatus::Set
+    );
+
+    terminal.process_output(b"more");
+
+    assert!(!terminal.screen().ordinary_present_eligible());
+    assert_eq!(
+        terminal.screen().mode_status(true, 2026),
+        crate::screen::ModeStatus::Set
+    );
+    assert!(terminal.row_text(0).contains("hellomore"));
+}

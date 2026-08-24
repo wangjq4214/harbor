@@ -142,6 +142,41 @@ impl Terminal {
 
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
     pub fn render(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
+        self.render_live(target, pass, gpu);
+    }
+
+    /// Replays last committed GPU buffers without preparing the live Screen.
+    ///
+    /// Falls back to a live encode when viewport or grid geometry changed so
+    /// the terminal rect matches the new allocation.
+    pub fn draw_retained(
+        &mut self,
+        target: RenderTarget,
+        pass: &mut wgpu::RenderPass,
+        gpu: &GpuContext,
+    ) {
+        if self.retain_geometry_changed(target) {
+            self.render_live(target, pass, gpu);
+            return;
+        }
+        if let Some(renderer) = &self.renderer {
+            renderer.draw(pass);
+        }
+    }
+
+    fn retain_geometry_changed(&self, target: RenderTarget) -> bool {
+        retain_geometry_changed(
+            self.renderer.as_ref().map(|renderer| renderer.viewport()),
+            TerminalSize {
+                rows: self.screen.rows(),
+                cols: self.screen.cols(),
+            },
+            target,
+            self.text_metrics(),
+        )
+    }
+
+    fn render_live(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
         let Some(metrics) = self.text_metrics().copied() else {
             return;
         };
@@ -477,5 +512,99 @@ impl Terminal {
 
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt()
+    }
+}
+
+fn retain_geometry_changed(
+    current_viewport: Option<RenderViewport>,
+    current_grid: TerminalSize,
+    target: RenderTarget,
+    metrics: Option<&TextMetrics>,
+) -> bool {
+    let (Some(current_viewport), Some(metrics)) = (current_viewport, metrics) else {
+        return false;
+    };
+    let viewport = RenderViewport::from_target(target, metrics);
+    let grid = viewport.compute_grid_size();
+    viewport != current_viewport || grid != current_grid
+}
+
+#[cfg(test)]
+mod retain_geometry_tests {
+    use super::*;
+    use harbor_text::TextMetrics;
+
+    fn sample_metrics() -> TextMetrics {
+        TextMetrics {
+            cell_width: 10.0,
+            line_height: 20.0,
+            ascent: 16.0,
+            underline_position: 16.0,
+            underline_thickness: 2.0,
+            strikethrough_position: 10.0,
+            strikethrough_thickness: 2.0,
+        }
+    }
+
+    #[test]
+    fn should_keep_retain_valid_when_viewport_and_grid_match() {
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((0.0, 0.0), (800, 600), (800, 600));
+        let viewport = RenderViewport::from_target(target, &metrics);
+        let grid = viewport.compute_grid_size();
+
+        assert!(!retain_geometry_changed(
+            Some(viewport),
+            grid,
+            target,
+            Some(&metrics)
+        ));
+    }
+
+    #[test]
+    fn should_invalidate_retain_when_allocation_changes() {
+        let metrics = sample_metrics();
+        let committed = RenderTarget::new((0.0, 0.0), (800, 600), (800, 600));
+        let resized = RenderTarget::new((0.0, 0.0), (400, 300), (400, 300));
+        let viewport = RenderViewport::from_target(committed, &metrics);
+        let grid = viewport.compute_grid_size();
+
+        assert!(retain_geometry_changed(
+            Some(viewport),
+            grid,
+            resized,
+            Some(&metrics)
+        ));
+    }
+
+    #[test]
+    fn should_keep_retain_when_renderer_or_metrics_are_absent() {
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((0.0, 0.0), (800, 600), (800, 600));
+        let viewport = RenderViewport::from_target(target, &metrics);
+        let grid = viewport.compute_grid_size();
+
+        assert!(!retain_geometry_changed(None, grid, target, None));
+        assert!(!retain_geometry_changed(Some(viewport), grid, target, None));
+        assert!(!retain_geometry_changed(None, grid, target, Some(&metrics)));
+    }
+
+    #[test]
+    fn should_invalidate_retain_when_grid_mismatches_viewport() {
+        let metrics = sample_metrics();
+        let target = RenderTarget::new((0.0, 0.0), (800, 600), (800, 600));
+        let viewport = RenderViewport::from_target(target, &metrics);
+        let grid = viewport.compute_grid_size();
+        let stale_grid = TerminalSize {
+            rows: grid.rows + 1,
+            cols: grid.cols,
+        };
+
+        assert!(retain_geometry_changed(
+            Some(viewport),
+            stale_grid,
+            target,
+            Some(&metrics)
+        ));
     }
 }

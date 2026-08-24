@@ -12,7 +12,8 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalScheduleDemand, ExternalScheduleFn,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalScheduleDemand,
+    ExternalScheduleFn,
 };
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
@@ -176,11 +177,14 @@ impl TerminalWidgetBridge {
         let draw_terminal = Arc::clone(&terminal);
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass| {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
             dispatch_matched_draw(draw_id, id, context, |target| {
                 current_gpu(|gpu| {
                     if let Ok(mut term) = draw_terminal.lock() {
-                        term.render(target, pass, gpu);
+                        match mode {
+                            ExternalDrawMode::Live => term.render(target, pass, gpu),
+                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+                        }
                     }
                 });
             });
@@ -820,15 +824,53 @@ mod tests {
         let terminal = headless_terminal(2, 20);
         terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
         let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
 
         // Act
-        let idle = adapter.about_to_wait(&mut rt, std::time::Instant::now(), None);
+        let idle = adapter.about_to_wait(&mut rt, now, None);
 
         // Assert
-        assert!(!idle.ordinary_present_eligible);
         assert!(!idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
         assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_force_commit_when_about_to_wait_after_recovery_while_2026_is_nested() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut rt, now, None);
+
+        // Act
+        let due = adapter.about_to_wait(&mut rt, now + Duration::from_millis(100), None);
+
+        // Assert — recovery live-commits without resetting nested DECRQM Set
+        assert!(due.request_redraw);
+        assert!(due.force_present);
+        assert!(due.has_deferred_externals);
+        assert_eq!(due.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(
+            !terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
     }
 
     #[test]

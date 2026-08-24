@@ -149,10 +149,12 @@ pub struct RuntimeEffects {
     pub ime: Option<ImeEffect>,
     /// The latest clipboard operation, if any.
     pub clipboard: Option<ClipboardEffect>,
-    /// False when an ordinary present should be deferred. Default batches stay eligible.
+    /// Window turns stay eligible. Per-draw deferral is an encode-mode choice.
     pub ordinary_present_eligible: bool,
-    /// True when this turn must present even if ordinary presentation is deferred.
+    /// True when this encode may live-commit ineligible externals.
     pub force_present: bool,
+    /// True when at least one external schedule provider is ineligible this turn.
+    pub has_deferred_externals: bool,
 }
 
 impl Default for RuntimeEffects {
@@ -165,6 +167,7 @@ impl Default for RuntimeEffects {
             clipboard: None,
             ordinary_present_eligible: true,
             force_present: false,
+            has_deferred_externals: false,
         }
     }
 }
@@ -180,6 +183,7 @@ impl RuntimeEffects {
             clipboard: None,
             ordinary_present_eligible: true,
             force_present: false,
+            has_deferred_externals: false,
         }
     }
 
@@ -193,10 +197,11 @@ impl RuntimeEffects {
             clipboard: None,
             ordinary_present_eligible: true,
             force_present: false,
+            has_deferred_externals: false,
         }
     }
 
-    /// Creates an effect batch that forces a present through the normal path.
+    /// Creates an effect batch that live-commits deferred externals this pass.
     pub const fn force_present() -> Self {
         Self {
             request_redraw: true,
@@ -206,20 +211,22 @@ impl RuntimeEffects {
             clipboard: None,
             ordinary_present_eligible: true,
             force_present: true,
+            has_deferred_externals: false,
         }
     }
 
     /// Merges another batch into this one.
     ///
     /// Redraw requests are coalesced. Ordinary-present eligibility is AND-ed so a
-    /// deferred provider cannot be cleared by a later default batch. Force is
-    /// OR-ed. For each optional operation, the later request wins while an
-    /// earlier request is retained when the later batch has no request of that
-    /// kind.
+    /// deferred provider cannot be cleared by a later default batch. Force and
+    /// deferred-external presence are OR-ed. For each optional operation, the
+    /// later request wins while an earlier request is retained when the later
+    /// batch has no request of that kind.
     pub fn merge(&mut self, other: Self) {
         self.request_redraw |= other.request_redraw;
         self.ordinary_present_eligible &= other.ordinary_present_eligible;
         self.force_present |= other.force_present;
+        self.has_deferred_externals |= other.has_deferred_externals;
         self.control_flow = other.control_flow.or(self.control_flow);
         self.cursor = other.cursor.or(self.cursor);
         if let Some(other_ime) = other.ime {
@@ -246,5 +253,6 @@ impl RuntimeEffects {
             && self.clipboard.is_none()
             && self.ordinary_present_eligible
             && !self.force_present
+            && !self.has_deferred_externals
     }
 }

@@ -121,13 +121,34 @@ impl ExternalDrawContext {
     }
 }
 
+/// Whether this external paint may upload live content or must replay last GPU state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalDrawMode {
+    /// Provider prepares current content, then draws.
+    Live,
+    /// Provider draws last committed buffers only.
+    Retain,
+}
+
+impl ExternalDrawMode {
+    /// Live when this id is eligible or the pass is a deferred-external commit.
+    pub const fn from_eligibility(eligible: bool, commit: bool) -> Self {
+        if eligible || commit {
+            Self::Live
+        } else {
+            Self::Retain
+        }
+    }
+}
+
 /// Signature for an external draw callback.
 ///
-/// Called by [`Runtime::encode`] when a [`Primitive::External`] is encountered.
-/// The callback receives the draw ID, the geometry context, and the active
-/// RenderPass (with scissor already set).
+/// Called by [`crate::runtime::Runtime::encode`] when a [`Primitive::External`] is
+/// encountered. The callback receives the draw ID, the geometry context, the
+/// active RenderPass (with scissor already set), and whether this pass may
+/// upload live content.
 pub type ExternalDrawFn<'a> =
-    dyn Fn(ExternalDrawId, &ExternalDrawContext, &mut wgpu::RenderPass<'_>) + 'a;
+    dyn Fn(ExternalDrawId, &ExternalDrawContext, &mut wgpu::RenderPass<'_>, ExternalDrawMode) + 'a;
 
 /// Widget-neutral scheduling snapshot from one external schedule provider.
 ///
@@ -371,5 +392,30 @@ mod tests {
         assert_eq!(demand.deadline, Some(deadline));
         assert!(!demand.ordinary_present_eligible);
         assert_ne!(demand, ExternalScheduleDemand::empty());
+    }
+
+    #[test]
+    fn should_select_live_when_eligible_or_commit() {
+        assert_eq!(
+            ExternalDrawMode::from_eligibility(true, false),
+            ExternalDrawMode::Live
+        );
+        assert_eq!(
+            ExternalDrawMode::from_eligibility(false, true),
+            ExternalDrawMode::Live
+        );
+        assert_eq!(
+            ExternalDrawMode::from_eligibility(true, true),
+            ExternalDrawMode::Live
+        );
+    }
+
+    #[test]
+    fn should_select_retain_when_ineligible_without_commit() {
+        assert_eq!(
+            ExternalDrawMode::from_eligibility(false, false),
+            ExternalDrawMode::Retain
+        );
+        assert_ne!(ExternalDrawMode::Live, ExternalDrawMode::Retain);
     }
 }

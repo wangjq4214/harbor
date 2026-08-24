@@ -971,14 +971,12 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
 }
 
 #[test]
-fn should_not_request_redraw_when_due_schedule_deadline_is_deferred() {
+fn should_not_request_redraw_from_ineligible_schedule_redraw_now() {
     use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
 
     let now = Instant::now();
-    let due = now - Duration::from_millis(1);
     let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
         redraw_now: true,
-        deadline: Some(due),
         ordinary_present_eligible: false,
         ..ExternalScheduleDemand::empty()
     });
@@ -990,6 +988,7 @@ fn should_not_request_redraw_when_due_schedule_deadline_is_deferred() {
     let idle = adapter.about_to_wait(&mut runtime, now, None);
 
     assert!(!idle.request_redraw);
-    assert!(!idle.ordinary_present_eligible);
-    assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+    assert!(idle.ordinary_present_eligible);
+    assert!(idle.has_deferred_externals);
+    assert!(!idle.force_present);
 }

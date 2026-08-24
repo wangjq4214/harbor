@@ -99,6 +99,7 @@ pub struct Runtime {
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     external_schedules: HashMap<ExternalDrawId, Arc<ExternalScheduleFn>>,
+    external_eligible: HashMap<ExternalDrawId, bool>,
     events: EventRouter,
     encoder: FrameEncoder,
     pending_effects: RuntimeEffects,
@@ -130,6 +131,7 @@ impl Runtime {
             current_viewport: None,
             external_draws: HashMap::new(),
             external_schedules: HashMap::new(),
+            external_eligible: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
             pending_effects: RuntimeEffects::default(),
@@ -215,14 +217,22 @@ impl Runtime {
     }
 
     /// Queries registered external schedule providers and folds their demands.
-    fn collect_external_schedule(&self, now: Instant) -> RuntimeEffects {
+    ///
+    /// Per-id eligibility is stored for encode. Window effects stay eligible so
+    /// a deferred external cannot freeze every widget that shares this Runtime.
+    fn collect_external_schedule(&mut self, now: Instant) -> RuntimeEffects {
         let mut redraw_now = false;
         let mut earliest: Option<Instant> = None;
-        let mut eligible = true;
+        let mut has_deferred_externals = false;
+        self.external_eligible.clear();
 
         for (id, schedule) in &self.external_schedules {
             let demand = schedule(*id, now);
-            eligible &= demand.ordinary_present_eligible;
+            self.external_eligible
+                .insert(*id, demand.ordinary_present_eligible);
+            if !demand.ordinary_present_eligible {
+                has_deferred_externals = true;
+            }
             if demand.ordinary_present_eligible {
                 redraw_now |= demand.redraw_now;
             }
@@ -234,7 +244,8 @@ impl Runtime {
         }
 
         let mut effects = RuntimeEffects::default();
-        effects.ordinary_present_eligible = eligible;
+        effects.ordinary_present_eligible = true;
+        effects.has_deferred_externals = has_deferred_externals;
         if redraw_now {
             effects.request_redraw = true;
         }
@@ -355,11 +366,14 @@ impl Runtime {
     /// Applies the pending SceneDelta to the GPU renderers and encodes draw
     /// calls into the RenderPass. No-op if the quad renderer hasn't been
     /// initialized or there is no pending delta.
+    ///
+    /// `commit` live-encodes ineligible externals this pass (recovery / force).
     pub fn encode<'a>(
         &'a mut self,
         queue: &wgpu::Queue,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
+        commit: bool,
     ) {
         self.encoder.encode(
             queue,
@@ -370,6 +384,8 @@ impl Runtime {
                 pending_delta: &mut self.pending_delta,
                 current_viewport: &mut self.current_viewport,
                 external_draws: &self.external_draws,
+                external_eligible: &self.external_eligible,
+                commit,
             },
         );
     }
@@ -1495,6 +1511,7 @@ mod tests {
         assert!(idle.control_flow.is_none());
         assert!(!idle.request_redraw);
         assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
         assert!(!idle.force_present);
     }
 
@@ -1512,7 +1529,8 @@ mod tests {
         let idle = rt.update(now());
 
         assert!(!idle.request_redraw);
-        assert!(!idle.ordinary_present_eligible);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
         assert!(!idle.force_present);
     }
 
@@ -1532,7 +1550,8 @@ mod tests {
         let idle = rt.update(now());
 
         assert!(!idle.request_redraw);
-        assert!(!idle.ordinary_present_eligible);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
         assert_eq!(
             idle.control_flow,
             Some(ControlFlowEffect::WaitUntil(deadline))
@@ -1541,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn should_defer_window_when_any_schedule_reports_ineligible() {
+    fn should_keep_window_eligible_when_any_schedule_reports_ineligible() {
         let eligible: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
             redraw_now: true,
             ..ExternalScheduleDemand::empty()
@@ -1560,7 +1579,9 @@ mod tests {
 
         let idle = rt.update(now());
 
-        assert!(!idle.ordinary_present_eligible);
+        assert!(idle.request_redraw);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
         assert!(!idle.force_present);
     }
 
@@ -1576,6 +1597,7 @@ mod tests {
 
         // Assert
         assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
         assert!(!idle.force_present);
         assert!(!idle.request_redraw);
     }
@@ -1595,7 +1617,8 @@ mod tests {
 
         // Assert
         assert!(first.request_redraw);
-        assert!(!first.ordinary_present_eligible);
+        assert!(first.ordinary_present_eligible);
+        assert!(first.has_deferred_externals);
         assert!(!first.force_present);
     }
 
@@ -1621,7 +1644,31 @@ mod tests {
 
         // Assert
         assert!(!idle.request_redraw);
-        assert!(!idle.ordinary_present_eligible);
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.has_deferred_externals);
         assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_clear_deferred_externals_when_ineligible_schedule_is_removed() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(12).schedule(schedule));
+        let _ = rt.update(now());
+        assert!(rt.update(now()).has_deferred_externals);
+
+        // Act
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        let _ = rt.update(now());
+        let idle = rt.update(now());
+
+        // Assert
+        assert!(!idle.has_deferred_externals);
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.request_redraw);
     }
 }

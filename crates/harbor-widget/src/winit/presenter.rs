@@ -46,8 +46,9 @@ impl WinitAdapter {
 
         match acquisition {
             FrameAcquisition::Presented(output) => {
+                let commit = effects.force_present;
                 let outcome = self.finish_presentable(effects, output, false, |output| {
-                    execute_wgpu_frame(runtime, &target, output)
+                    execute_wgpu_frame(runtime, &target, output, commit)
                 });
                 if outcome.is_presented() {
                     self.surface_state.reset_after_success();
@@ -55,8 +56,9 @@ impl WinitAdapter {
                 outcome
             }
             FrameAcquisition::Suboptimal(output) => {
+                let commit = effects.force_present;
                 let outcome = self.finish_presentable(effects, output, true, |output| {
-                    execute_wgpu_frame(runtime, &target, output)
+                    execute_wgpu_frame(runtime, &target, output, commit)
                 });
                 target.reconfigure(self.surface_state.viewport());
                 if outcome.is_fatal() || !outcome.is_presented() {
@@ -232,6 +234,7 @@ pub(super) fn execute_wgpu_frame(
     runtime: &mut Runtime,
     target: &WinitFrameTarget<'_, '_>,
     output: wgpu::SurfaceTexture,
+    commit: bool,
 ) -> Result<(), FrameError> {
     let viewport = runtime
         .current_viewport()
@@ -268,7 +271,7 @@ pub(super) fn execute_wgpu_frame(
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                runtime.encode(target.queue(), &mut pass, viewport);
+                runtime.encode(target.queue(), &mut pass, viewport, commit);
             }
             Ok(encoder.finish())
         },
@@ -280,8 +283,10 @@ pub(super) fn execute_wgpu_frame(
     )
 }
 
-pub(super) fn should_execute_present(effects: &RuntimeEffects) -> bool {
-    effects.force_present || effects.ordinary_present_eligible
+/// Widget frames present whenever the host requested a redraw and the surface
+/// is drawable. Ineligible externals are a per-draw encode choice, not a skip.
+pub(super) fn should_execute_present(_effects: &RuntimeEffects) -> bool {
+    true
 }
 
 /// Borrowed host resources valid for one frame.

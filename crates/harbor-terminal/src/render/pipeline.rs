@@ -65,6 +65,10 @@ impl TerminalRenderPipeline {
         }
     }
 
+    pub fn viewport(&self) -> RenderViewport {
+        self.viewport
+    }
+
     pub fn prepare(
         &mut self,
         gpu: &GpuContext,

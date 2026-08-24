@@ -17,6 +17,7 @@ fn effects_default_is_inert() {
     assert!(effects.clipboard.is_none());
     assert!(effects.ordinary_present_eligible);
     assert!(!effects.force_present);
+    assert!(!effects.has_deferred_externals);
     assert!(effects.is_noop());
 }
 
@@ -258,6 +259,20 @@ fn should_and_eligibility_and_or_force_when_effects_merge() {
 }
 
 #[test]
+fn should_or_deferred_externals_when_effects_merge() {
+    let mut effects = RuntimeEffects::default();
+    effects.merge(RuntimeEffects {
+        has_deferred_externals: true,
+        ..RuntimeEffects::default()
+    });
+    effects.merge(RuntimeEffects::request_redraw());
+
+    assert!(effects.has_deferred_externals);
+    assert!(effects.request_redraw);
+    assert!(!effects.is_noop());
+}
+
+#[test]
 fn should_not_treat_deferred_only_effects_as_noop() {
     let deferred = RuntimeEffects {
         ordinary_present_eligible: false,
@@ -265,6 +280,20 @@ fn should_not_treat_deferred_only_effects_as_noop() {
     };
 
     assert!(!deferred.is_noop());
+    assert!(!deferred.request_redraw);
+}
+
+#[test]
+fn should_not_treat_has_deferred_externals_only_as_noop() {
+    // Arrange
+    let deferred = RuntimeEffects {
+        has_deferred_externals: true,
+        ..RuntimeEffects::default()
+    };
+
+    // Act / Assert
+    assert!(!deferred.is_noop());
+    assert!(deferred.ordinary_present_eligible);
     assert!(!deferred.request_redraw);
 }
 
