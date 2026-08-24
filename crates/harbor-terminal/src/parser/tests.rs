@@ -1825,3 +1825,34 @@ fn should_keep_2026_set_when_alt_screen_toggles_while_nested() {
         crate::screen::ModeStatus::Unknown
     );
 }
+
+#[test]
+fn should_report_decrqm_reset_when_ris_clears_nested_2026() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026hhello");
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1bc\x1b[?2026$p");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
+    assert!(screen.ordinary_present_eligible());
+}
+
+#[test]
+fn should_keep_decrqm_set_when_decstr_leaves_nested_2026() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?2026hhello");
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[!p\x1b[?2026$p");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
+    assert!(!screen.ordinary_present_eligible());
+    assert!(screen.row_text(0).contains("hello"));
+}

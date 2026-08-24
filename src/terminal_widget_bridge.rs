@@ -909,4 +909,167 @@ mod tests {
         assert!(demand.ordinary_present_eligible);
         assert!(terminal.lock().unwrap().row_text(0).contains("later"));
     }
+
+    #[test]
+    fn should_cancel_deferred_externals_when_ris_clears_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut rt, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        // Act
+        terminal.lock().unwrap().process_output(b"\x1bc");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert!(idle.request_redraw);
+        assert_ne!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+    }
+
+    #[test]
+    fn should_keep_deferred_externals_when_decstr_leaves_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::time::Duration;
+
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut rt, now, None);
+
+        // Act
+        terminal.lock().unwrap().process_output(b"\x1b[!p");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        // Assert
+        assert!(idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert_eq!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            !terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_cancel_deferred_externals_when_pty_eof_clears_nested_2026() {
+        use harbor_widget::effects::ControlFlowEffect;
+        use std::io::Read;
+        use std::time::Duration;
+
+        struct PermitEofReader {
+            permit: std::sync::mpsc::Receiver<()>,
+            exited: std::sync::mpsc::Sender<()>,
+        }
+        impl Read for PermitEofReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.permit.recv();
+                Ok(0)
+            }
+        }
+        impl Drop for PermitEofReader {
+            fn drop(&mut self) {
+                let _ = self.exited.send(());
+            }
+        }
+
+        let (permit_tx, permit_rx) = std::sync::mpsc::channel();
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            2,
+            20,
+            PermitEofReader {
+                permit: permit_rx,
+                exited: exited_tx,
+            },
+            std::io::sink(),
+            || true,
+        )));
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026h\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let now = std::time::Instant::now();
+        let _ = rt.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut rt, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        permit_tx.send(()).expect("reader should still be waiting");
+        exited_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader must drop before drain can observe disconnect");
+        let idle = adapter.about_to_wait(&mut rt, now, None);
+
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert!(idle.request_redraw);
+        assert_ne!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+        assert!(
+            terminal
+                .lock()
+                .unwrap()
+                .frame_demand(now)
+                .ordinary_present_eligible
+        );
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
 }

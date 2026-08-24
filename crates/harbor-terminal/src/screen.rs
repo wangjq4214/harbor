@@ -569,6 +569,10 @@ impl Screen {
         self.synchronized_output.ordinary_present_eligible()
     }
 
+    pub(crate) fn clear_synchronized_output(&mut self) {
+        self.synchronized_output.clear();
+    }
+
     // ── SGR / charsets / protection ────────────────────────────────────
 
     pub fn set_sgr(&mut self, params: &Params) {
@@ -1050,6 +1054,7 @@ impl Screen {
     }
 
     pub fn reset_display(&mut self) {
+        self.synchronized_output.clear();
         self.alt.mark_inactive();
         self.saved_primary = None;
         self.parked_alt = None;

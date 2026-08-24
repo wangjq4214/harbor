@@ -742,7 +742,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 * [ ] `?1004` — Focus Reporting
 * [x] `?2004` — Bracketed Paste
-* [ ] `?2026` — Synchronized Output
+* [x] `?2026` — Synchronized Output
 
 ### 17.8 Multi-Mode Parameters
 
@@ -1201,15 +1201,15 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ## 30. Synchronized Output
 
-* [ ] `CSI ? 2026 h`
-* [ ] `CSI ? 2026 l`
-* [ ] Supports nested enabling or explicitly forbids nesting
-* [ ] Multiple enables do not prematurely end the synchronized state
-* [ ] Synchronized state ends after corresponding number of disables
-* [ ] RIS clears the synchronized state
-* [ ] PTY close clears the synchronized state
-* [ ] Safe recovery mechanism exists when the application does not close the mode
-* [ ] Querying `?2026` returns the correct state
+* [x] `CSI ? 2026 h`
+* [x] `CSI ? 2026 l`
+* [x] Supports nested enabling or explicitly forbids nesting
+* [x] Multiple enables do not prematurely end the synchronized state
+* [x] Synchronized state ends after corresponding number of disables
+* [x] RIS clears the synchronized state
+* [x] PTY close clears the synchronized state
+* [x] Safe recovery mechanism exists when the application does not close the mode
+* [x] Querying `?2026` returns the correct state
 
 ---
 
@@ -1423,7 +1423,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `?2004`
 * [ ] `?1004`
 * [ ] `?1006`
-* [ ] `?2026`
+* [x] `?2026`
 * [x] ICH
 * [x] DCH
 * [x] IL
@@ -1537,8 +1537,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `\x1b[?1049l`
 * [x] `\x1b[?2004h`
 * [x] `\x1b[?2004l`
-* [ ] `\x1b[?2026h`
-* [ ] `\x1b[?2026l`
+* [x] `\x1b[?2026h`
+* [x] `\x1b[?2026l`
 
 ### 38.7 Queries
 

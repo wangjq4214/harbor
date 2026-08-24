@@ -1192,4 +1192,30 @@ mod tests {
         );
         assert!(!idle.force_present);
     }
+
+    #[test]
+    fn should_not_keep_force_present_when_deferred_externals_clear_while_not_drawable() {
+        let mut scheduler = FrameScheduler::default();
+        let now = Instant::now();
+
+        let _ = scheduler.schedule(
+            RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            },
+            FrameScheduler::RUNTIME_WAKE,
+        );
+        let _ = scheduler.about_to_wait(now, None);
+        let _ = scheduler.set_drawable(false);
+
+        let cancelled = scheduler.schedule(RuntimeEffects::default(), FrameScheduler::RUNTIME_WAKE);
+        let idle = scheduler.about_to_wait(now, None);
+        let restored = scheduler.set_drawable(true);
+
+        assert!(!cancelled.has_deferred_externals);
+        assert!(scheduler.recovery_deadline().is_none());
+        assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(!idle.force_present);
+        assert!(!restored.force_present);
+    }
 }

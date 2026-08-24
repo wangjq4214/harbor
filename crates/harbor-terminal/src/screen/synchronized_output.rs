@@ -21,6 +21,10 @@ impl SynchronizedOutput {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.depth = 0;
+    }
+
     pub(crate) fn ordinary_present_eligible(self) -> bool {
         self.depth == 0
     }
@@ -144,5 +148,77 @@ mod tests {
         // Assert
         assert!(!sync.ordinary_present_eligible());
         assert_eq!(sync.mode_status(), ModeStatus::Set);
+    }
+
+    #[test]
+    fn should_restore_eligible_and_reset_when_cleared_from_depth_one() {
+        // Arrange
+        let mut sync = SynchronizedOutput::default();
+        sync.enable();
+
+        // Act
+        sync.clear();
+
+        // Assert
+        assert!(sync.ordinary_present_eligible());
+        assert_eq!(sync.mode_status(), ModeStatus::Reset);
+    }
+
+    #[test]
+    fn should_restore_eligible_when_cleared_from_nested_depth() {
+        // Arrange
+        let mut sync = SynchronizedOutput::default();
+        sync.enable();
+        sync.enable();
+
+        // Act
+        sync.clear();
+
+        // Assert
+        assert!(sync.ordinary_present_eligible());
+        assert_eq!(sync.mode_status(), ModeStatus::Reset);
+    }
+
+    #[test]
+    fn should_restore_eligible_when_cleared_from_saturation() {
+        // Arrange
+        let mut sync = SynchronizedOutput { depth: u32::MAX };
+
+        // Act
+        sync.clear();
+
+        // Assert
+        assert!(sync.ordinary_present_eligible());
+        assert_eq!(sync.mode_status(), ModeStatus::Reset);
+    }
+
+    #[test]
+    fn should_keep_eligible_when_cleared_at_zero() {
+        // Arrange
+        let mut sync = SynchronizedOutput::default();
+
+        // Act
+        sync.clear();
+
+        // Assert
+        assert!(sync.ordinary_present_eligible());
+        assert_eq!(sync.mode_status(), ModeStatus::Reset);
+    }
+
+    #[test]
+    fn should_restore_eligible_when_matching_disable_follows_enable_after_nested_clear() {
+        // Arrange — clear must zero nesting so one later enable is not leftover depth
+        let mut sync = SynchronizedOutput::default();
+        sync.enable();
+        sync.enable();
+        sync.clear();
+        sync.enable();
+
+        // Act
+        sync.disable();
+
+        // Assert
+        assert!(sync.ordinary_present_eligible());
+        assert_eq!(sync.mode_status(), ModeStatus::Reset);
     }
 }

@@ -66,12 +66,17 @@ impl Drop for TerminalPty {
     fn drop(&mut self) {
         // Disconnect the receiver so the reader thread exits its send loop.
         // The writer is dropped automatically.
-        // Transfer the reader thread to the PTY shutdown reaper.
-        if let (Some(control), Some(reader)) = (self.control.take(), self.reader.take()) {
-            control.shutdown(reader);
+        let control = self.control.take();
+        let reader = self.reader.take();
+        match (control, reader) {
+            (Some(control), Some(reader)) => control.shutdown(reader),
+            (None, Some(reader)) => {
+                // Keep-alive test readers park after their last chunk; unpark so
+                // they observe EOF and exit instead of leaking the thread.
+                reader.thread().unpark();
+            }
+            _ => {}
         }
-        // Generic test readers have no platform cancellation capability; their
-        // JoinHandle is deliberately detached after the output receiver closes.
     }
 }
 
@@ -100,6 +105,11 @@ fn pump_reader<R>(
             break;
         }
     }
+    // One close-observation wake so a surviving view can drain disconnect
+    // and release synchronized-output suppression without waiting for recovery.
+    if !wake_pending.swap(true, Ordering::AcqRel) {
+        let _ = wake();
+    }
 }
 
 // ── TerminalIo ────────────────────────────────────────────────────────
@@ -114,6 +124,8 @@ pub(crate) struct TerminalIo {
     pty: Option<TerminalPty>,
     /// When true, `process_output` skips the scroll-to-bottom snap.
     suppress_scroll_snap: bool,
+    /// Set on the first observed reader/session disconnect so close clears once.
+    session_closed: bool,
 }
 
 impl TerminalIo {
@@ -132,6 +144,7 @@ impl TerminalIo {
             parser: TerminalParser::default(),
             pty: Some(TerminalPty::new(pty_read, pty_write, pty_control, wake)),
             suppress_scroll_snap: false,
+            session_closed: false,
         }
     }
 
@@ -141,6 +154,7 @@ impl TerminalIo {
             parser: TerminalParser::default(),
             pty: None,
             suppress_scroll_snap: false,
+            session_closed: false,
         }
     }
 
@@ -187,6 +201,7 @@ impl TerminalIo {
         // overlapping borrows between self.pty (for reading) and the parser
         // (for feeding).
         let mut chunks: Vec<Vec<u8>> = Vec::new();
+        let mut disconnected = false;
         {
             let Some(pty) = self.pty.as_ref() else {
                 return false;
@@ -194,18 +209,27 @@ impl TerminalIo {
             loop {
                 match pty.output.try_recv() {
                     Ok(bytes) => chunks.push(bytes),
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                    Err(TryRecvError::Empty) => {
                         pty.wake_pending.store(false, Ordering::Release);
                         match pty.output.try_recv() {
                             Ok(bytes) => chunks.push(bytes),
-                            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => {
+                                disconnected = true;
+                                break;
+                            }
                         }
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        pty.wake_pending.store(false, Ordering::Release);
+                        while let Ok(bytes) = pty.output.try_recv() {
+                            chunks.push(bytes);
+                        }
+                        disconnected = true;
+                        break;
                     }
                 }
             }
-        }
-        if chunks.is_empty() {
-            return false;
         }
         for chunk in &chunks {
             self.feed_pty_output_snapped(screen, chunk);
@@ -216,7 +240,11 @@ impl TerminalIo {
                 tracing::warn!(error = %error, "failed to write terminal replies to pty");
             }
         }
-        true
+        if disconnected && !self.session_closed {
+            self.session_closed = true;
+            screen.clear_synchronized_output();
+        }
+        !chunks.is_empty()
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.

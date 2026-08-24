@@ -4209,3 +4209,98 @@ fn should_preserve_ineligibility_when_alt_screen_swaps_at_nonzero_depth() {
     assert_eq!(primary_status, ModeStatus::Set);
     assert!(!primary_eligible);
 }
+
+#[test]
+fn should_restore_eligibility_when_reset_display_clears_nested_2026() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.set_private_mode(2026, true);
+    screen.write_char('x');
+
+    // Act
+    screen.reset_display();
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+}
+
+#[test]
+fn should_keep_set_when_soft_reset_leaves_nested_2026() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.write_char('x');
+
+    // Act
+    screen.soft_reset();
+
+    // Assert
+    assert!(!screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Set);
+    assert!(screen.row_text(0).contains('x'));
+}
+
+#[test]
+fn should_keep_cells_when_clear_synchronized_output_releases_suppression() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.write_char('x');
+
+    // Act
+    screen.clear_synchronized_output();
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+    assert!(screen.row_text(0).contains('x'));
+}
+
+#[test]
+fn should_keep_eligible_when_reset_display_while_already_reset() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+
+    // Act
+    screen.reset_display();
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+}
+
+#[test]
+fn should_keep_set_when_soft_reset_leaves_depth_two_2026() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.set_private_mode(2026, true);
+    screen.write_char('x');
+
+    // Act
+    screen.soft_reset();
+
+    // Assert
+    assert!(!screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Set);
+    assert!(screen.row_text(0).contains('x'));
+}
+
+#[test]
+fn should_keep_cells_when_clear_synchronized_output_releases_nested_suppression() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.set_private_mode(2026, true);
+    screen.write_char('x');
+
+    // Act
+    screen.clear_synchronized_output();
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+    assert!(screen.row_text(0).contains('x'));
+}

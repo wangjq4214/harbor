@@ -112,8 +112,8 @@ impl Terminal {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_headless_with_io<R, W>(
+    /// Creates a headless Terminal with test PTY endpoints (no GPU).
+    pub fn new_headless_with_io<R, W>(
         rows: usize,
         cols: usize,
         reader: R,

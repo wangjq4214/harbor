@@ -2231,4 +2231,82 @@ mod tests {
         assert!(widget.has_deferred_externals);
         assert!(should_execute_present(&widget));
     }
+
+    #[test]
+    fn should_cancel_recovery_and_present_when_schedule_becomes_eligible() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let eligible = Arc::new(AtomicBool::new(false));
+        let redraw = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            let redraw = Arc::clone(&redraw);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                redraw_now: redraw.load(Ordering::SeqCst),
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                deadline: None,
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let armed = adapter.about_to_wait(&mut runtime, now, None);
+        assert!(armed.has_deferred_externals);
+        assert_eq!(
+            armed.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+
+        eligible.store(true, Ordering::SeqCst);
+        redraw.store(true, Ordering::SeqCst);
+        let released = adapter.about_to_wait(&mut runtime, now, None);
+
+        assert!(released.ordinary_present_eligible);
+        assert!(!released.has_deferred_externals);
+        assert!(!released.force_present);
+        assert!(released.request_redraw);
+        assert!(should_execute_present(&released));
+        assert_ne!(
+            released.control_flow,
+            Some(ControlFlowEffect::WaitUntil(
+                now + Duration::from_millis(100)
+            ))
+        );
+    }
+
+    #[test]
+    fn should_not_busy_wait_when_schedule_becomes_eligible_while_not_drawable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let eligible = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                ..ExternalScheduleDemand::empty()
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let now = Instant::now();
+        let _ = runtime.update(now);
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let _ = adapter.about_to_wait(&mut runtime, now, None);
+        let _ = adapter.set_drawable(false);
+
+        eligible.store(true, Ordering::SeqCst);
+        let idle = adapter.about_to_wait(&mut runtime, now, None);
+
+        assert!(!idle.has_deferred_externals);
+        assert!(!idle.force_present);
+        assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+        let restored = adapter.set_drawable(true);
+        assert!(!restored.force_present);
+        assert!(should_execute_present(&restored) || restored.request_redraw);
+    }
 }
