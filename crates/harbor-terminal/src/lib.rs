@@ -53,6 +53,8 @@ pub struct Terminal {
     renderer: Option<TerminalRenderPipeline>,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
+    /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
+    pending_ordinary_present: bool,
 }
 
 impl Terminal {
@@ -106,6 +108,7 @@ impl Terminal {
             io: TerminalIo::new_headless(),
             renderer: None,
             pointer: PointerInteraction::new(),
+            pending_ordinary_present: false,
         }
     }
 
@@ -151,7 +154,7 @@ impl Terminal {
             self.pointer.clear();
         }
         let before = self.cursor_pos();
-        self.io.drain(&mut self.screen);
+        self.ingest_screen(|io, screen| io.drain(screen));
         self.maybe_reset_blink(before, false);
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);
@@ -163,10 +166,12 @@ impl Terminal {
         }
     }
 
-    /// Host-neutral frame demand from the Cursor blink state and screen cursor flags.
+    /// Host-neutral frame demand from ingested PTY, Cursor blink, and screen cursor flags.
     ///
-    /// Without a renderer/Cursor, returns an empty demand.
-    pub fn frame_demand(&self, now: Instant) -> FrameDemand {
+    /// Without a renderer/Cursor, returns an empty demand aside from synchronized-output
+    /// eligibility and a redraw notify when this ingest released ordinary presentation.
+    pub fn frame_demand(&mut self, now: Instant) -> FrameDemand {
+        let drained = self.drain_pty();
         let snap = self.snapshot();
         let mut demand = match &self.renderer {
             Some(renderer) => renderer.cursor.frame_demand(&snap, now),
@@ -180,7 +185,21 @@ impl Terminal {
                     .map_or(deadline, |current| current.min(deadline)),
             );
         }
+        demand.ordinary_present_eligible = self.screen.ordinary_present_eligible();
+        let released = std::mem::take(&mut self.pending_ordinary_present);
+        if demand.ordinary_present_eligible && (drained || released) {
+            demand.redraw_now = true;
+        }
         demand
+    }
+
+    fn ingest_screen<R>(&mut self, ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R) -> R {
+        let was_eligible = self.screen.ordinary_present_eligible();
+        let result = ingest(&mut self.io, &mut self.screen);
+        if !was_eligible && self.screen.ordinary_present_eligible() {
+            self.pending_ordinary_present = true;
+        }
+        result
     }
 
     fn cursor_pos(&self) -> (usize, usize) {
@@ -236,21 +255,21 @@ impl Terminal {
     /// Feeds raw PTY bytes through the streaming parser.
     pub fn put_bytes(&mut self, bytes: &[u8]) {
         let before = self.cursor_pos();
-        self.io.feed_pty_output(&mut self.screen, bytes);
+        self.ingest_screen(|io, screen| io.feed_pty_output(screen, bytes));
         self.maybe_reset_blink(before, false);
     }
 
     /// Feeds raw PTY bytes into the terminal parser, snapping to bottom first.
     pub fn process_output(&mut self, output: &[u8]) {
         let before = self.cursor_pos();
-        self.io.feed_pty_output_snapped(&mut self.screen, output);
+        self.ingest_screen(|io, screen| io.feed_pty_output_snapped(screen, output));
         self.maybe_reset_blink(before, false);
     }
 
     /// Drains all reader-thread output in FIFO order into the terminal parser.
     pub fn drain_pty(&mut self) -> bool {
         let before = self.cursor_pos();
-        let drained = self.io.drain(&mut self.screen);
+        let drained = self.ingest_screen(|io, screen| io.drain(screen));
         self.maybe_reset_blink(before, false);
         drained
     }
@@ -292,7 +311,7 @@ impl Terminal {
                     } else {
                         event.clone()
                     };
-                    let wrote = self.io.handle_event(&mut self.screen, event)?;
+                    let wrote = self.ingest_screen(|io, screen| io.handle_event(screen, event))?;
                     outcome.capture_pointer = match pointer.phase {
                         TerminalPointerPhase::Down => {
                             self.pointer.begin_vt_capture(pointer.pointer_id);
@@ -314,7 +333,7 @@ impl Terminal {
                 // Preserve the review position while applying local pointer
                 // intent; queued output must not snap it before hit testing.
                 self.io.set_suppress_scroll_snap(true);
-                self.io.drain(&mut self.screen);
+                self.ingest_screen(|io, screen| io.drain(screen));
                 outcome = self
                     .pointer
                     .handle_pointer(&mut self.screen, *pointer, Instant::now());
@@ -343,7 +362,8 @@ impl Terminal {
                         // clipboard, matching the always-copy shortcut.
                         outcome.clipboard_text = Some(String::new());
                     } else {
-                        let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                        let wrote = self
+                            .ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
                         self.maybe_reset_blink(before, wrote);
                         return Ok(outcome);
                     }
@@ -352,7 +372,8 @@ impl Terminal {
                     if outcome.release_pointer.is_some() {
                         self.io.set_suppress_scroll_snap(false);
                     }
-                    let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                    let wrote =
+                        self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
                     self.maybe_reset_blink(before, wrote);
                     return Ok(outcome);
                 }
@@ -362,7 +383,8 @@ impl Terminal {
                 self.io.set_suppress_scroll_snap(false);
             }
             _ => {
-                let wrote = self.io.handle_event(&mut self.screen, event.clone())?;
+                let wrote =
+                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
                 self.maybe_reset_blink(before, wrote);
                 return Ok(outcome);
             }
@@ -392,7 +414,7 @@ impl Terminal {
     /// Drains pending PTY output before returning the current terminal snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
         let before = self.cursor_pos();
-        self.io.drain(&mut self.screen);
+        self.ingest_screen(|io, screen| io.drain(screen));
         self.maybe_reset_blink(before, false);
         self.snapshot()
     }

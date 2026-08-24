@@ -2066,4 +2066,78 @@ mod tests {
         assert!(called.load(Ordering::SeqCst));
         assert!(outcome.is_presented());
     }
+
+    #[test]
+    fn should_skip_ordinary_present_when_about_to_wait_while_ineligible() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: false,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+
+        // Assert
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!idle.request_redraw);
+        assert!(!should_execute_present(&idle));
+    }
+
+    #[test]
+    fn should_request_redraw_and_present_when_about_to_wait_after_matching_disable() {
+        // Arrange
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+            redraw_now: true,
+            ordinary_present_eligible: true,
+            ..ExternalScheduleDemand::empty()
+        });
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(idle.request_redraw);
+        assert!(should_execute_present(&idle));
+    }
+
+    #[test]
+    fn should_keep_present_eligible_when_later_turn_follows_trailing_disables() {
+        // Arrange
+        let eligible = Arc::new(AtomicBool::new(false));
+        let redraw = Arc::new(AtomicBool::new(false));
+        let schedule = {
+            let eligible = Arc::clone(&eligible);
+            let redraw = Arc::clone(&redraw);
+            Arc::new(move |_, _| ExternalScheduleDemand {
+                redraw_now: redraw.load(Ordering::SeqCst),
+                ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+                deadline: None,
+            })
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let deferred = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+        assert!(!deferred.ordinary_present_eligible);
+        assert!(!should_execute_present(&deferred));
+
+        // Act
+        eligible.store(true, Ordering::SeqCst);
+        redraw.store(true, Ordering::SeqCst);
+        let later = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+
+        // Assert
+        assert!(later.ordinary_present_eligible);
+        assert!(later.request_redraw);
+        assert!(should_execute_present(&later));
+    }
 }

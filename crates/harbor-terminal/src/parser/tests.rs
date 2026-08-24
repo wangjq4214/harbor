@@ -1683,3 +1683,145 @@ fn should_bound_and_preserve_mode_reports_across_alt_transitions() {
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?2004$p\x1b[?1049l");
     assert_eq!(screen.drain_replies(), b"\x1b[?2004;2$y");
 }
+
+#[test]
+fn should_write_cells_when_printable_arrives_between_2026_enable_and_disable() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[?2026hbatch\x1b[?2026l");
+
+    // Assert
+    assert!(
+        screen.row_text(0).contains("batch"),
+        "printable output during a synchronized batch still mutates cells"
+    );
+    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
+}
+
+#[test]
+fn should_report_reset_set_set_when_decrqm_queries_2026_at_depths_0_1_2() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act / Assert — depth 0 is Reset, never Unknown
+    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
+    assert_ne!(
+        screen.mode_status(true, 2026),
+        crate::screen::ModeStatus::Unknown
+    );
+
+    // Act / Assert — depth 1 is Set
+    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
+    assert_ne!(
+        screen.mode_status(true, 2026),
+        crate::screen::ModeStatus::Unknown
+    );
+
+    // Act / Assert — depth 2 is Set, never Unknown
+    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
+    assert_ne!(
+        screen.mode_status(true, 2026),
+        crate::screen::ModeStatus::Unknown
+    );
+}
+
+#[test]
+fn should_keep_decrqm_set_when_one_disable_leaves_2026_nested() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026h");
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[?2026l\x1b[?2026$p");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
+    assert!(!screen.ordinary_present_eligible());
+}
+
+#[test]
+fn should_report_decrqm_reset_when_nested_2026_enables_are_fully_unwound() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[?2026h\x1b[?2026hinner\x1b[?2026l\x1b[?2026l",
+    );
+
+    // Act
+    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
+    assert!(screen.row_text(0).contains("inner"));
+    assert!(screen.ordinary_present_eligible());
+}
+
+#[test]
+fn should_keep_decrqm_reset_when_extra_2026_disable_arrives_at_zero() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+
+    // Act
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[?2026l\x1b[?2026l\x1b[?2026$p",
+    );
+
+    // Assert
+    assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
+    assert!(screen.ordinary_present_eligible());
+}
+
+#[test]
+fn should_write_printable_output_when_it_follows_extra_2026_disables() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?2026l\x1b[?2026l");
+
+    // Act
+    feed(&mut parser, &mut screen, b"later");
+
+    // Assert
+    assert!(screen.row_text(0).contains("later"));
+    assert!(screen.ordinary_present_eligible());
+}
+
+#[test]
+fn should_keep_2026_set_when_alt_screen_toggles_while_nested() {
+    // Arrange
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?2026h");
+
+    // Act
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    let alt_reply = screen.drain_replies();
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    let primary_reply = screen.drain_replies();
+
+    // Assert
+    assert_eq!(alt_reply, b"\x1b[?2026;1$y");
+    assert_eq!(primary_reply, b"\x1b[?2026;1$y");
+    assert!(!screen.ordinary_present_eligible());
+    assert_ne!(
+        screen.mode_status(true, 2026),
+        crate::screen::ModeStatus::Unknown
+    );
+}

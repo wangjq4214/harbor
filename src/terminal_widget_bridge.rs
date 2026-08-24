@@ -271,7 +271,7 @@ pub(crate) fn schedule_demand_for_terminal(
     if invoked_id != owned_id {
         return ExternalScheduleDemand::empty();
     }
-    let Ok(term) = terminal.lock() else {
+    let Ok(mut term) = terminal.lock() else {
         return ExternalScheduleDemand::empty();
     };
     let demand = term.frame_demand(now);
@@ -292,6 +292,7 @@ mod tests {
     use harbor_widget::layout::{Point, Rect, Size};
     use harbor_widget::renderer::Viewport;
     use harbor_widget::scene::primitive::ExternalDrawContext;
+    use harbor_widget::winit::WinitAdapter;
     use std::cell::Cell;
     use std::sync::atomic::AtomicBool;
 
@@ -762,5 +763,108 @@ mod tests {
         assert!(!idle.request_redraw);
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
         assert!(idle.control_flow.is_none() || idle.control_flow == Some(ControlFlowEffect::Wait));
+    }
+
+    #[test]
+    fn should_copy_ineligible_demand_when_synchronized_output_is_enabled() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(!demand.ordinary_present_eligible);
+        assert!(!demand.redraw_now);
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_copy_eligible_demand_when_matching_2026_disable_has_been_applied() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026hhello\x1b[?2026l");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(demand.ordinary_present_eligible);
+        assert!(terminal.lock().unwrap().row_text(0).contains("hello"));
+    }
+
+    #[test]
+    fn should_return_empty_eligible_demand_when_draw_id_mismatches_ineligible_terminal() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 99, &terminal, now);
+
+        // Assert — mismatch ignores the ineligible terminal snapshot
+        assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(demand.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_skip_ordinary_redraw_when_about_to_wait_while_2026_is_enabled() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal.lock().unwrap().process_output(b"\x1b[?2026hhello");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut rt, std::time::Instant::now(), None);
+
+        // Assert
+        assert!(!idle.ordinary_present_eligible);
+        assert!(!idle.request_redraw);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_report_eligible_effects_when_about_to_wait_after_matching_disable() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026hhello\x1b[?2026l");
+        let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        // Act
+        let idle = adapter.about_to_wait(&mut rt, std::time::Instant::now(), None);
+
+        // Assert
+        assert!(idle.ordinary_present_eligible);
+        assert!(!idle.force_present);
+    }
+
+    #[test]
+    fn should_stay_eligible_when_trailing_disables_precede_later_output() {
+        // Arrange
+        let terminal = headless_terminal(2, 20);
+        terminal
+            .lock()
+            .unwrap()
+            .process_output(b"\x1b[?2026l\x1b[?2026llater");
+        let now = std::time::Instant::now();
+
+        // Act
+        let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
+
+        // Assert
+        assert!(demand.ordinary_present_eligible);
+        assert!(terminal.lock().unwrap().row_text(0).contains("later"));
     }
 }

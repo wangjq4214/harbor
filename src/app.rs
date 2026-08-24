@@ -780,12 +780,6 @@ impl App {
             return;
         };
 
-        if let Some(terminal) = self.runtime.terminal.as_ref()
-            && let Ok(mut terminal) = terminal.lock()
-        {
-            terminal.drain_pty();
-        }
-
         let Some(outcome) = (|| {
             let gpu = self.runtime.gpu.as_ref()?;
             let adapter = self.runtime.winit_adapter.as_mut()?;

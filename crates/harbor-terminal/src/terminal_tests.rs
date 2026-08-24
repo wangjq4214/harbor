@@ -1666,6 +1666,12 @@ fn should_reset_scroll_snap_suppression_when_resize_if_changed_modifies_dimensio
     assert_eq!(terminal.screen().view_offset(), 0);
 }
 
+fn wait_for_pty_wake(wake_rx: &std::sync::mpsc::Receiver<()>) {
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should wake for queued output");
+}
+
 struct ScriptedReader {
     chunks: std::collections::VecDeque<Vec<u8>>,
 }
@@ -2526,7 +2532,7 @@ fn drain_and_snapshot_observes_queued_bracketed_paste_mode() {
 #[test]
 fn should_return_empty_frame_demand_when_headless() {
     // Arrange
-    let terminal = Terminal::new_headless(3, 3);
+    let mut terminal = Terminal::new_headless(3, 3);
     let now = Instant::now();
 
     // Act
@@ -2593,4 +2599,191 @@ fn should_keep_empty_demand_after_input_write_when_headless() {
     // Assert
     assert_eq!(written.lock().unwrap().as_slice(), b"a");
     assert_eq!(demand, FrameDemand::empty());
+}
+
+#[test]
+fn should_ingest_queued_output_and_defer_present_when_2026_is_enabled() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2026hhello".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("hello"));
+    assert!(!demand.ordinary_present_eligible);
+    assert!(!demand.redraw_now);
+}
+
+#[test]
+fn should_set_redraw_now_when_matching_2026_disable_is_ingested() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2026l".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?2026hhello");
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("hello"));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_complete_batch_in_one_ingest_when_enable_and_disable_share_a_chunk() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2026hhello\x1b[?2026l".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("hello"));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_not_set_spurious_redraw_now_when_demand_is_polled_with_empty_queue() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"hello".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+    let _ = terminal.frame_demand(Instant::now());
+
+    // Act
+    let idle = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(!idle.redraw_now);
+    assert!(idle.ordinary_present_eligible);
+}
+
+#[test]
+fn should_set_redraw_now_when_printable_follows_extra_disables() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"x".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?2026l\x1b[?2026l");
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains('x'));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_stay_ineligible_when_nested_disable_is_ingested() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"cd\x1b[?2026l".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?2026h\x1b[?2026hab");
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("abcd"));
+    assert!(!demand.ordinary_present_eligible);
+    assert!(!demand.redraw_now);
+}
+
+#[test]
+fn should_set_redraw_now_when_final_nested_disable_is_ingested() {
+    // Arrange
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2026l".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?2026h\x1b[?2026hab\x1b[?2026lcd");
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("abcd"));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_set_redraw_now_when_input_drain_consumes_matching_2026_disable() {
+    // Arrange — input handling drains queued output before the next demand poll
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?2026l".to_vec()]),
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?2026hhello");
+    wait_for_pty_wake(&wake_rx);
+
+    // Act
+    terminal
+        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            key: TerminalKey::Character('a'),
+            modifiers: TerminalModifiers::default(),
+        }))
+        .unwrap();
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("hello"));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_set_redraw_now_when_prior_ingest_released_eligibility_and_this_drain_is_empty() {
+    // Arrange — matching disable is applied before demand is polled; this drain has nothing queued
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.process_output(b"\x1b[?2026hhello");
+    terminal.process_output(b"\x1b[?2026l");
+
+    // Act
+    let demand = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(terminal.row_text(0).contains("hello"));
+    assert!(demand.ordinary_present_eligible);
+    assert!(demand.redraw_now);
+}
+
+#[test]
+fn should_not_set_redraw_now_when_demand_is_repolled_after_release_notify() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.process_output(b"\x1b[?2026hhello");
+    terminal.process_output(b"\x1b[?2026l");
+    let _ = terminal.frame_demand(Instant::now());
+
+    // Act
+    let idle = terminal.frame_demand(Instant::now());
+
+    // Assert
+    assert!(idle.ordinary_present_eligible);
+    assert!(!idle.redraw_now);
 }

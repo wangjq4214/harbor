@@ -5,6 +5,7 @@
 //! - [`edit::CellOps`]        — cell-level mutations (erase, insert, delete, scroll, DEC rects)
 //! - [`edit::CellWriter`]     — character writing (write_char and helpers)
 //! - [`alt::AltScreenStack`]  — alt-screen flag and pending request
+//! - [`synchronized_output::SynchronizedOutput`] — saturating `?2026` nesting
 //!
 //! `Screen` keeps the public API stable; most methods are one-line
 //! delegations.  Cross-engine operations (e.g. `reverse_index`,
@@ -14,6 +15,7 @@ mod alt;
 mod cursor;
 mod edit;
 mod reader;
+mod synchronized_output;
 #[cfg(test)]
 mod tests;
 
@@ -24,6 +26,7 @@ use harbor_parser::Params;
 use self::alt::AltScreenStack;
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
+use self::synchronized_output::SynchronizedOutput;
 
 pub use self::reader::ScreenReader;
 
@@ -92,6 +95,8 @@ pub struct Screen {
     parked_alt: Option<Box<Screen>>,
     /// Outgoing VT replies buffer.
     pub(crate) replies: Vec<u8>,
+    /// Session-owned `?2026` nesting; preserved across alt-screen swap.
+    synchronized_output: SynchronizedOutput,
 }
 
 impl Screen {
@@ -106,6 +111,7 @@ impl Screen {
             saved_primary: None,
             parked_alt: None,
             replies: Vec::new(),
+            synchronized_output: SynchronizedOutput::default(),
         }
     }
 
@@ -368,6 +374,7 @@ impl Screen {
         let rows = self.rows();
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
+        let sync = self.synchronized_output;
         // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
         let mut primary = std::mem::replace(self, Self::new(rows, cols));
@@ -384,11 +391,13 @@ impl Screen {
         self.saved_primary = Some(Box::new(primary));
         debug_assert!(self.saved_primary.is_some(), "in alt => primary saved");
         self.replies = replies;
+        self.synchronized_output = sync;
         self.alt.mark_active();
     }
 
     pub fn exit_alt(&mut self) {
         let replies = std::mem::take(&mut self.replies);
+        let sync = self.synchronized_output;
         if let Some(primary) = self.saved_primary.take() {
             // Preserve the alternate-screen contents for a later `?47` re-entry.
             let rows = self.rows();
@@ -402,6 +411,7 @@ impl Screen {
             self.mark_all_dirty();
         }
         self.replies = replies;
+        self.synchronized_output = sync;
         self.alt.mark_inactive();
         debug_assert!(
             self.saved_primary.is_none(),
@@ -516,6 +526,13 @@ impl Screen {
                     self.request_alt_exit();
                 }
             }
+            SynchronizedOutput::MODE => {
+                if enabled {
+                    self.synchronized_output.enable();
+                } else {
+                    self.synchronized_output.disable();
+                }
+            }
             other => {
                 if !self.cursor.set_private_mode(&self.normal, other, enabled) {
                     tracing::warn!("unsupported private mode: ?{}", other);
@@ -535,6 +552,7 @@ impl Screen {
             match param {
                 47 | 1047 | 1049 => Some(self.is_alt()),
                 1048 => Some(self.cursor.cursor.saved.is_some()),
+                SynchronizedOutput::MODE => return self.synchronized_output.mode_status(),
                 _ => self.cursor.private_mode_enabled(param),
             }
         } else {
@@ -545,6 +563,10 @@ impl Screen {
 
     pub fn set_application_keypad(&mut self, enabled: bool) {
         self.cursor.set_application_keypad(enabled);
+    }
+
+    pub(crate) fn ordinary_present_eligible(&self) -> bool {
+        self.synchronized_output.ordinary_present_eligible()
     }
 
     // ── SGR / charsets / protection ────────────────────────────────────

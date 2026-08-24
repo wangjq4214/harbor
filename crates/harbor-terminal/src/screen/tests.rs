@@ -4116,3 +4116,96 @@ fn should_preserve_wrapped_flag_when_margin_erase_covers_active_region() {
     );
     assert!(!screen.cursor.modes.pending_wrap);
 }
+
+#[test]
+fn should_be_eligible_when_synchronized_output_is_default() {
+    // Arrange
+    let screen = Screen::new(2, 8);
+
+    // Act
+    let eligible = screen.ordinary_present_eligible();
+    let status = screen.mode_status(true, 2026);
+
+    // Assert
+    assert!(eligible);
+    assert_eq!(status, ModeStatus::Reset);
+    assert_ne!(status, ModeStatus::Unknown);
+}
+
+#[test]
+fn should_be_ineligible_when_private_mode_2026_is_enabled() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+
+    // Act
+    screen.set_private_mode(2026, true);
+
+    // Assert
+    assert!(!screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Set);
+    assert_ne!(screen.mode_status(true, 2026), ModeStatus::Unknown);
+}
+
+#[test]
+fn should_restore_eligibility_when_private_mode_2026_is_disabled() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+
+    // Act
+    screen.set_private_mode(2026, false);
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+}
+
+#[test]
+fn should_keep_set_when_one_disable_leaves_2026_nested() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+    screen.set_private_mode(2026, true);
+
+    // Act
+    screen.set_private_mode(2026, false);
+
+    // Assert
+    assert!(!screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Set);
+}
+
+#[test]
+fn should_keep_eligible_when_2026_is_disabled_at_zero() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+
+    // Act
+    screen.set_private_mode(2026, false);
+    screen.set_private_mode(2026, false);
+
+    // Assert
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
+}
+
+#[test]
+fn should_preserve_ineligibility_when_alt_screen_swaps_at_nonzero_depth() {
+    // Arrange
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(2026, true);
+
+    // Act
+    screen.enter_alt(true);
+    let alt_status = screen.mode_status(true, 2026);
+    let alt_eligible = screen.ordinary_present_eligible();
+    screen.exit_alt();
+    let primary_status = screen.mode_status(true, 2026);
+    let primary_eligible = screen.ordinary_present_eligible();
+
+    // Assert
+    assert_eq!(alt_status, ModeStatus::Set);
+    assert!(!alt_eligible);
+    assert_eq!(primary_status, ModeStatus::Set);
+    assert!(!primary_eligible);
+}
