@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec: 0008-windows-acrylic-backdrop](../../spec/0008-windows-acrylic-backdrop.md)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 

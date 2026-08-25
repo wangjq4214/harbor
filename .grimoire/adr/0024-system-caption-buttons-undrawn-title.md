@@ -1,6 +1,6 @@
 # System Caption Buttons With Undrawn Title
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-08-25
 
 ## Context
