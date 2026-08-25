@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 use super::gpu::{self, GpuContext, TexturedVertex, UploadMode};
 use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange};
+use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
 use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, TextMetrics};
 
@@ -43,7 +44,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 pub fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
     if attrs.contains(CellAttrs::INVERSE) {
         if bg == Color::Default {
-            [1.0, 1.0, 1.0, 1.0]
+            [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0]
         } else {
             bg.to_rgba()
         }
@@ -592,12 +593,36 @@ mod tests {
     use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
 
     #[test]
-    fn default_colors_preserve_attributes() {
+    fn inverse_default_glyph_uses_background_rgb() {
+        let mut attrs = CellAttrs::default();
+        attrs.set(CellAttrs::INVERSE);
+        let color = glyph_color(Color::Default, Color::Default, attrs);
+        assert_eq!(color, [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0]);
+    }
+
+    #[test]
+    fn inverse_default_glyph_ignores_bold_for_color() {
         let mut attrs = CellAttrs::default();
         attrs.set(CellAttrs::BOLD);
         attrs.set(CellAttrs::INVERSE);
         let color = glyph_color(Color::Default, Color::Default, attrs);
-        assert_eq!(color, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(color, [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0]);
+    }
+
+    #[test]
+    fn inverse_named_fg_default_bg_glyph_uses_background_rgb() {
+        let mut attrs = CellAttrs::default();
+        attrs.set(CellAttrs::INVERSE);
+        let color = glyph_color(Color::Named(1), Color::Default, attrs);
+        assert_eq!(color, [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0]);
+    }
+
+    #[test]
+    fn inverse_named_bg_default_fg_glyph_uses_bg_color() {
+        let mut attrs = CellAttrs::default();
+        attrs.set(CellAttrs::INVERSE);
+        let color = glyph_color(Color::Default, Color::Named(1), attrs);
+        assert_eq!(color, Color::Named(1).to_rgba());
     }
 
     #[test]
