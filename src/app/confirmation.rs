@@ -271,13 +271,7 @@ impl ConfirmationWindow {
         effects.merge(adapter.request_frame());
         super::App::apply_window_effects(&window, &effects);
         if let Some(control_flow) = effects.control_flow {
-            event_loop.set_control_flow(match control_flow {
-                ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
-                ControlFlowEffect::WaitUntil(deadline) => {
-                    winit::event_loop::ControlFlow::WaitUntil(deadline)
-                }
-                ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
-            });
+            super::App::apply_control_flow(event_loop, control_flow);
         }
 
         ConfirmationWindow {
@@ -366,7 +360,7 @@ impl ConfirmationWindow {
         );
         super::App::apply_window_effects(&self.window, &outcome.effects);
         if let Some(control_flow) = outcome.effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
+            super::App::apply_control_flow(event_loop, control_flow);
         }
 
         confirmation_result(&self.confirmed, &self.cancelled)
@@ -411,7 +405,7 @@ impl ConfirmationWindow {
         let effects = frame.effects();
         super::App::apply_window_effects(&self.window, effects);
         if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
+            super::App::apply_control_flow(event_loop, control_flow);
         }
     }
 
@@ -420,18 +414,8 @@ impl ConfirmationWindow {
         let effects = self.adapter.request_frame();
         super::App::apply_window_effects(&self.window, &effects);
         if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
+            super::App::apply_control_flow(event_loop, control_flow);
         }
-    }
-
-    fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFlowEffect) {
-        event_loop.set_control_flow(match effect {
-            ControlFlowEffect::Wait => winit::event_loop::ControlFlow::Wait,
-            ControlFlowEffect::WaitUntil(deadline) => {
-                winit::event_loop::ControlFlow::WaitUntil(deadline)
-            }
-            ControlFlowEffect::Poll => winit::event_loop::ControlFlow::Poll,
-        });
     }
 }
 

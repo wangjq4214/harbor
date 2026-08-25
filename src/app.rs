@@ -69,7 +69,7 @@ fn write_confirmation_outcome<E>(
     input_modes: InputModes,
     write: impl FnOnce(&[u8]) -> Result<(), E>,
 ) -> Result<bool, E> {
-    let Some(raw_text) = outcome.confirmed_text() else {
+    let DialogOutcome::Confirmed(raw_text) = outcome else {
         return Ok(false);
     };
     let bytes = input_modes.paste(raw_text.as_bytes());
@@ -157,25 +157,11 @@ fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
     ClipboardHostAction::Deferred(effect)
 }
 
-/// Outcome of a dialog-overlay event dispatch.
-struct DialogResult {
-    outcome: DialogOutcome,
-}
-
 enum DialogOutcome {
     None,
     Cancelled,
     Confirmed(String),
     Fatal(FrameError),
-}
-
-impl DialogOutcome {
-    fn confirmed_text(&self) -> Option<&str> {
-        match self {
-            Self::Confirmed(raw_text) => Some(raw_text),
-            Self::None | Self::Cancelled | Self::Fatal(_) => None,
-        }
-    }
 }
 
 /// Owns the optional paste-confirmation dialog and mediates its lifecycle.
@@ -203,13 +189,11 @@ impl DialogOverlay {
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
         glyph_fn: Option<&GlyphFn>,
-    ) -> DialogResult {
+    ) -> DialogOutcome {
         let Some(mut confirmation) = self.window.take() else {
-            return DialogResult {
-                outcome: DialogOutcome::None,
-            };
+            return DialogOutcome::None;
         };
-        let outcome = match confirmation.handle_event(event, event_loop) {
+        match confirmation.handle_event(event, event_loop) {
             confirmation::ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
             confirmation::ConfirmationResult::Confirmed => {
                 let raw_text = confirmation.raw_text().to_owned();
@@ -232,8 +216,7 @@ impl DialogOverlay {
                     DialogOutcome::None
                 }
             }
-        };
-        DialogResult { outcome }
+        }
     }
 
     /// Installs a new confirmation dialog, replacing any existing one.
@@ -472,7 +455,7 @@ impl ApplicationHandler<AppEvent> for App {
                     None => dialog.handle_event(&event, event_loop, gpu, None),
                 }
             };
-            match &result.outcome {
+            match &result {
                 DialogOutcome::Cancelled => {
                     self.runtime.input_gate.store(false, Ordering::Release);
                     self.request_main_frame(event_loop);
@@ -484,7 +467,7 @@ impl ApplicationHandler<AppEvent> for App {
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
                         if let Err(error) =
-                            write_confirmation_outcome(&result.outcome, input_modes, |bytes| {
+                            write_confirmation_outcome(&result, input_modes, |bytes| {
                                 terminal.write_pty(bytes)
                             })
                         {
