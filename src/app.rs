@@ -604,7 +604,8 @@ impl App {
             if translucent {
                 window_attrs = window_attrs
                     .with_transparent(true)
-                    .with_system_backdrop(BackdropType::TransientWindow);
+                    .with_system_backdrop(BackdropType::TransientWindow)
+                    .with_title_background_color(None);
             }
             translucent
         };
@@ -614,8 +615,11 @@ impl App {
         window.set_ime_allowed(true);
 
         #[cfg(target_os = "windows")]
-        if !main_window_translucent {
-            paint_gdi_background(&window);
+        {
+            suppress_caption_title_and_icon(&window);
+            if !main_window_translucent {
+                paint_gdi_background(&window);
+            }
         }
 
         let gpu =
@@ -896,6 +900,128 @@ fn supports_transient_window_acrylic(build: u32) -> bool {
     build >= 22621
 }
 
+/// uxtheme `WTA_NONCLIENT` attribute type for non-client theme options.
+#[cfg(target_os = "windows")]
+const WTA_NONCLIENT: u32 = 1;
+/// Do not draw caption text in the title bar.
+#[cfg(target_os = "windows")]
+const WTNCA_NODRAWCAPTION: u32 = 0x1;
+/// Do not draw the window icon in the title bar.
+#[cfg(target_os = "windows")]
+const WTNCA_NODRAWICON: u32 = 0x2;
+/// Replaces the small title-bar icon for an HWND.
+#[cfg(target_os = "windows")]
+const WM_SETICON: u32 = 0x0080;
+/// The small icon, which Windows uses in the title bar.
+#[cfg(target_os = "windows")]
+const ICON_SMALL: usize = 0;
+
+/// Returns a process-lifetime transparent icon for the native caption.
+///
+/// Passing a null icon to `WM_SETICON` is insufficient because Windows can
+/// fall back to the window-class icon. A transparent window-level icon blocks
+/// that fallback without changing the big icon used by Alt-Tab and the taskbar.
+#[cfg(target_os = "windows")]
+fn transparent_caption_icon() -> Option<isize> {
+    use std::sync::OnceLock;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CreateIcon(
+            instance: isize,
+            width: i32,
+            height: i32,
+            planes: u8,
+            bits_per_pixel: u8,
+            and_bits: *const u8,
+            xor_bits: *const u8,
+        ) -> isize;
+    }
+
+    static ICON: OnceLock<Option<isize>> = OnceLock::new();
+    *ICON.get_or_init(|| {
+        // Monochrome icon scanlines are WORD-aligned. An all-one AND mask and
+        // all-zero XOR mask leave the destination pixel fully unchanged.
+        let and_bits = [0xff_u8; 2];
+        let xor_bits = [0_u8; 2];
+        let icon = unsafe { CreateIcon(0, 1, 1, 1, 1, and_bits.as_ptr(), xor_bits.as_ptr()) };
+        (icon != 0).then_some(icon)
+    })
+}
+
+/// Pure packing of undrawn-caption theme flags for `WTA_OPTIONS`.
+///
+/// Returns `(dwFlags, dwMask)` both set to `NODRAWCAPTION | NODRAWICON`.
+#[cfg(target_os = "windows")]
+fn caption_nodraw_flags() -> (u32, u32) {
+    let flags = WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON;
+    (flags, flags)
+}
+
+/// Suppresses caption text and the visible caption icon on `window`.
+///
+/// System min/max/close buttons stay DWM-drawn. Missing HWND or a uxtheme API
+/// failure is logged and ignored so startup still proceeds.
+#[cfg(target_os = "windows")]
+fn suppress_caption_title_and_icon(window: &Window) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct WtaOptions {
+        dw_flags: u32,
+        dw_mask: u32,
+    }
+
+    #[link(name = "uxtheme")]
+    unsafe extern "system" {
+        fn SetWindowThemeAttribute(
+            hwnd: isize,
+            e_attribute: u32,
+            pv_attribute: *const WtaOptions,
+            cb_attribute: u32,
+        ) -> i32;
+        fn SendMessageW(hwnd: isize, message: u32, w_param: usize, l_param: isize) -> isize;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("caption theme skipped: window handle unavailable");
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        tracing::warn!("caption theme skipped: non-Win32 window handle");
+        return;
+    };
+
+    let (flags, mask) = caption_nodraw_flags();
+    let options = WtaOptions {
+        dw_flags: flags,
+        dw_mask: mask,
+    };
+    let hwnd = h.hwnd.get();
+    let hr = unsafe {
+        SetWindowThemeAttribute(
+            hwnd,
+            WTA_NONCLIENT,
+            &options,
+            std::mem::size_of::<WtaOptions>() as u32,
+        )
+    };
+    if hr < 0 {
+        tracing::warn!(hr, "SetWindowThemeAttribute failed for caption nodraw");
+    }
+
+    // WTA_NONCLIENT is advisory under DWM. Use a transparent per-window small
+    // icon rather than null: null permits fallback to the window-class icon.
+    // Leave the big icon alone so Alt-Tab and taskbar identity are unchanged.
+    if let Some(icon) = transparent_caption_icon() {
+        unsafe {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon);
+        }
+    } else {
+        tracing::warn!("failed to create transparent caption icon");
+    }
+}
+
 /// Reads the Windows OS build number; returns `0` when the probe fails.
 #[cfg(target_os = "windows")]
 fn windows_os_build() -> u32 {
@@ -1055,6 +1181,43 @@ mod tests {
         // Arrange / Act / Assert
         assert!(supports_transient_window_acrylic(22621));
         assert!(supports_transient_window_acrylic(26100));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_pack_nodraw_caption_and_icon_flags() {
+        // Arrange / Act
+        let (flags, mask) = caption_nodraw_flags();
+
+        // Assert — both caption and icon nodraw bits are set for WTA_OPTIONS
+        assert_eq!(flags, WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON);
+        assert_eq!(flags & WTNCA_NODRAWCAPTION, WTNCA_NODRAWCAPTION);
+        assert_eq!(flags & WTNCA_NODRAWICON, WTNCA_NODRAWICON);
+        assert_eq!(mask, flags);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_exact_win32_nodraw_bitmask() {
+        // Arrange — documented WTNCA values: NODRAWCAPTION=0x1, NODRAWICON=0x2
+        // Act
+        let (flags, mask) = caption_nodraw_flags();
+
+        // Assert — ABI-stable packing with no extra bits
+        assert_eq!(flags, 0x3);
+        assert_eq!(mask, 0x3);
+        assert_eq!(flags & !0x3, 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_identical_packing_on_repeated_calls() {
+        // Arrange / Act
+        let first = caption_nodraw_flags();
+        let second = caption_nodraw_flags();
+
+        // Assert
+        assert_eq!(first, second);
     }
 
     #[cfg(target_os = "windows")]
