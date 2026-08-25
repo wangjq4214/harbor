@@ -158,6 +158,7 @@ Project domain concepts and terminology.
   - communicates with Harbor Widget Runtime
   - contains Winit Event Adapter
   - provides WinitFrameTarget
+  - implements Windows Acrylic Backdrop
 
 ### Winit Event Adapter
 - **Definition:** A feature-gated harbor-widget adapter that converts winit input and lifecycle events into platform-independent runtime input without exposing winit types to the core Runtime.
@@ -723,3 +724,38 @@ Project domain concepts and terminology.
   - wraps Terminal
   - consumes Terminal Frame Demand
   - communicates with Runtime Host
+
+### Windows Acrylic Backdrop
+- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, that blurs content behind the window the way Windows Terminal does; it is not Mica and not a VT protocol feature.
+- **Synonyms:** system acrylic, DWM system backdrop, TransientWindow backdrop, Windows Terminal-style acrylic
+- **Relationships:**
+  - belongs to Runtime Host
+  - depends on Default Background Cell
+  - references Inverse Default Cell
+  - contains System Caption Chrome
+
+### System Caption Chrome
+- **Definition:** The DWM-drawn minimize, maximize, and close buttons on the Harbor main window, with caption text and icon left undrawn so acrylic fills the title strip.
+- **Synonyms:** system caption buttons, non-client buttons
+- **Relationships:**
+  - belongs to Windows Acrylic Backdrop
+  - belongs to Runtime Host
+  - references Windows 10 Caption Degradation
+
+### Windows 10 Caption Degradation
+- **Definition:** An accepted Windows 10 limitation where the system caption strip may remain opaque on some themes while the client area is still acrylic.
+- **Relationships:**
+  - belongs to Windows Acrylic Backdrop
+  - referenced by System Caption Chrome
+
+### Inverse Default Cell
+- **Definition:** An inverse cell whose foreground and background are both `Color::Default`, filled with opaque default foreground and glyph-painted with the configured `BACKGROUND` RGB.
+- **Relationships:**
+  - belongs to Terminal
+  - referenced by Windows Acrylic Backdrop
+
+### Default Background Cell
+- **Definition:** A terminal cell whose background is `Color::Default`, which the background layer does not fill so the surface clear color and compositor backdrop remain visible.
+- **Relationships:**
+  - belongs to Terminal
+  - referenced by Windows Acrylic Backdrop
