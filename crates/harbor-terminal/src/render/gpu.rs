@@ -126,15 +126,116 @@ fn selected_backends() -> wgpu::Backends {
     }
 }
 
+/// Picks a compositing-capable alpha mode for the main window surface.
+///
+/// Preference: `PreMultiplied`, then `PostMultiplied`, then `Auto`.
+/// `Opaque` is chosen only when no compositing mode is advertised.
+pub fn select_compositing_alpha_mode(
+    modes: &[wgpu::CompositeAlphaMode],
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode::{Auto, PostMultiplied, PreMultiplied};
+
+    if modes.contains(&PreMultiplied) {
+        return PreMultiplied;
+    }
+    if modes.contains(&PostMultiplied) {
+        return PostMultiplied;
+    }
+    if modes.contains(&Auto) {
+        return Auto;
+    }
+    modes.first().copied().unwrap_or(Auto)
+}
+
 #[cfg(test)]
 mod surface_tests {
     use super::*;
+    use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
 
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
             row,
             start_col,
             end_col,
+        }
+    }
+
+    #[test]
+    fn should_select_premultiplied_when_all_compositing_modes_present() {
+        // Arrange
+        let modes = [Opaque, Auto, PostMultiplied, PreMultiplied];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, PreMultiplied);
+    }
+
+    #[test]
+    fn should_select_postmultiplied_when_premultiplied_absent() {
+        // Arrange
+        let modes = [Opaque, Auto, PostMultiplied];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, PostMultiplied);
+    }
+
+    #[test]
+    fn should_select_auto_when_only_auto_and_opaque() {
+        // Arrange
+        let modes = [Opaque, Auto];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Auto);
+    }
+
+    #[test]
+    fn should_select_opaque_when_only_opaque_advertised() {
+        // Arrange
+        let modes = [Opaque];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Opaque);
+    }
+
+    #[test]
+    fn should_select_auto_when_modes_empty() {
+        // Arrange
+        let modes: [wgpu::CompositeAlphaMode; 0] = [];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Auto);
+    }
+
+    #[test]
+    fn should_never_select_opaque_when_compositing_mode_exists() {
+        // Arrange
+        let cases = [
+            &[PreMultiplied, Opaque][..],
+            &[Opaque, PostMultiplied][..],
+            &[Auto, Opaque][..],
+            &[Opaque, Auto, PostMultiplied, PreMultiplied][..],
+        ];
+
+        for modes in cases {
+            // Act
+            let selected = select_compositing_alpha_mode(modes);
+
+            // Assert
+            assert_ne!(selected, Opaque, "modes={modes:?}");
         }
     }
 
@@ -273,7 +374,7 @@ impl GpuContext {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities.alpha_modes[0],
+            alpha_mode: select_compositing_alpha_mode(&capabilities.alpha_modes),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -332,6 +433,11 @@ impl GpuContext {
     /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.borrow().format
+    }
+
+    /// Configured surface composite alpha mode.
+    pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.config.borrow().alpha_mode
     }
 
     /// Current surface dimensions `(width, height)`.

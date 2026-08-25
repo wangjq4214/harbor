@@ -1,6 +1,6 @@
 # Windows Acrylic Backdrop, Not Mica
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-08-25
 
 ## Context

@@ -24,7 +24,7 @@ pub const TEXT_PADDING: f32 = 16.0;
 ///
 /// A warm brown tone chosen to reduce eye strain during development.
 /// Linear-light values; convert to sRGB or `wgpu::Color` at the rendering boundary.
-pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 1.0];
+pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 0.72];
 
 /// Selection highlight color (semi-transparent blue).
 pub const SELECTION_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.4];
@@ -48,3 +48,16 @@ pub const SCROLLBAR_HIDE_DELAY_MS: u64 = 1500;
 pub const SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 20.0;
 /// Thumb border radius in pixels. Capsule shape when equal to SCROLLBAR_WIDTH/2.
 pub const SCROLLBAR_BORDER_RADIUS: f32 = 3.0;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn should_expose_translucent_warm_brown_when_background_is_read() {
+        // Arrange / Act
+        let background = super::BACKGROUND;
+
+        // Assert — RGB unchanged from prior warm brown; alpha is translucent (not 1.0)
+        assert_eq!(background, [0.36, 0.20, 0.08, 0.72]);
+        assert_ne!(background[3], 1.0);
+    }
+}

@@ -596,19 +596,36 @@ impl App {
         }
 
         tracing::info!("creating window");
-        let window =
-            Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
+        let mut window_attrs = Window::default_attributes().with_title("Harbor");
+        #[cfg(target_os = "windows")]
+        let main_window_translucent = {
+            use winit::platform::windows::{BackdropType, WindowAttributesExtWindows};
+            let translucent = supports_transient_window_acrylic(windows_os_build());
+            if translucent {
+                window_attrs = window_attrs
+                    .with_transparent(true)
+                    .with_system_backdrop(BackdropType::TransientWindow);
+            }
+            translucent
+        };
+
+        let window = Arc::new(event_loop.create_window(window_attrs)?);
         // Winit 0.30 emits composition commits only after IME is explicitly enabled.
         window.set_ime_allowed(true);
 
         #[cfg(target_os = "windows")]
-        paint_gdi_background(&window);
+        if !main_window_translucent {
+            paint_gdi_background(&window);
+        }
 
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
         let initial_size = window.inner_size();
         if initial_size.width != 0 && initial_size.height != 0 {
-            gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
+            gpu.clear_surface(frame_clear_color(
+                harbor_config::BACKGROUND,
+                gpu.alpha_mode(),
+            ));
         }
 
         // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
@@ -797,7 +814,7 @@ impl App {
                     device,
                     queue,
                     &mut configure,
-                    bg_wgpu(harbor_config::BACKGROUND),
+                    frame_clear_color(harbor_config::BACKGROUND, gpu.alpha_mode()),
                 );
                 adapter.render(widget_runtime, target)
             }))
@@ -856,14 +873,58 @@ impl App {
     }
 }
 
-/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`.
-fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
-    wgpu::Color {
-        r: c[0] as f64,
-        g: c[1] as f64,
-        b: c[2] as f64,
-        a: c[3] as f64,
+/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`, premultiplying RGB
+/// when the main surface composite mode is `PreMultiplied`.
+fn frame_clear_color(c: [f32; 4], alpha_mode: wgpu::CompositeAlphaMode) -> wgpu::Color {
+    let a = c[3] as f64;
+    let (r, g, b) = (c[0] as f64, c[1] as f64, c[2] as f64);
+    if alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied {
+        wgpu::Color {
+            r: r * a,
+            g: g * a,
+            b: b * a,
+            a,
+        }
+    } else {
+        wgpu::Color { r, g, b, a }
     }
+}
+
+/// True when Desktop Acrylic via `DWMSBT_TRANSIENTWINDOW` is available.
+#[cfg(target_os = "windows")]
+fn supports_transient_window_acrylic(build: u32) -> bool {
+    build >= 22621
+}
+
+/// Reads the Windows OS build number; returns `0` when the probe fails.
+#[cfg(target_os = "windows")]
+fn windows_os_build() -> u32 {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+
+    let mut info = OsVersionInfoW {
+        dw_os_version_info_size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        dw_major_version: 0,
+        dw_minor_version: 0,
+        dw_build_number: 0,
+        dw_platform_id: 0,
+        sz_csd_version: [0; 128],
+    };
+    // STATUS_SUCCESS == 0
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status == 0 { info.dw_build_number } else { 0 }
 }
 
 /// Paints the terminal background color into the window using GDI, before the
@@ -919,6 +980,90 @@ fn paint_gdi_background(window: &Window) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_premultiply_rgb_when_alpha_mode_is_premultiplied() {
+        // Arrange
+        let rgba = [0.36_f32, 0.20, 0.08, 0.72];
+        let a = rgba[3] as f64;
+
+        // Act
+        let color = frame_clear_color(rgba, wgpu::CompositeAlphaMode::PreMultiplied);
+
+        // Assert
+        assert_eq!(color.r, (rgba[0] as f64) * a);
+        assert_eq!(color.g, (rgba[1] as f64) * a);
+        assert_eq!(color.b, (rgba[2] as f64) * a);
+        assert_eq!(color.a, a);
+    }
+
+    #[test]
+    fn should_leave_rgb_unscaled_when_alpha_mode_is_postmultiplied() {
+        // Arrange
+        let rgba = [0.36_f32, 0.20, 0.08, 0.72];
+
+        // Act
+        let color = frame_clear_color(rgba, wgpu::CompositeAlphaMode::PostMultiplied);
+
+        // Assert
+        assert_eq!(color.r, rgba[0] as f64);
+        assert_eq!(color.g, rgba[1] as f64);
+        assert_eq!(color.b, rgba[2] as f64);
+        assert_eq!(color.a, rgba[3] as f64);
+    }
+
+    #[test]
+    fn should_leave_rgb_unscaled_when_alpha_mode_is_auto() {
+        // Arrange
+        let rgba = [0.36_f32, 0.20, 0.08, 0.72];
+
+        // Act
+        let color = frame_clear_color(rgba, wgpu::CompositeAlphaMode::Auto);
+
+        // Assert
+        assert_eq!(color.r, rgba[0] as f64);
+        assert_eq!(color.g, rgba[1] as f64);
+        assert_eq!(color.b, rgba[2] as f64);
+        assert_eq!(color.a, rgba[3] as f64);
+    }
+
+    #[test]
+    fn should_leave_rgb_unscaled_when_alpha_mode_is_opaque() {
+        // Arrange
+        let rgba = [0.36_f32, 0.20, 0.08, 0.72];
+
+        // Act
+        let color = frame_clear_color(rgba, wgpu::CompositeAlphaMode::Opaque);
+
+        // Assert
+        assert_eq!(color.r, rgba[0] as f64);
+        assert_eq!(color.g, rgba[1] as f64);
+        assert_eq!(color.b, rgba[2] as f64);
+        assert_eq!(color.a, rgba[3] as f64);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_false_when_build_below_22621() {
+        // Arrange / Act / Assert
+        assert!(!supports_transient_window_acrylic(22620));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_true_when_build_at_least_22621() {
+        // Arrange / Act / Assert
+        assert!(supports_transient_window_acrylic(22621));
+        assert!(supports_transient_window_acrylic(26100));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_false_when_build_is_zero() {
+        // Arrange — probe failure path returns build 0
+        // Act / Assert
+        assert!(!supports_transient_window_acrylic(0));
+    }
 
     // Compile-only coverage for the feature-gated Host contract. The fixture is
     // intentionally never called: its parameters are borrowed by the caller,

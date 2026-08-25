@@ -1,7 +1,7 @@
 # Windows Acrylic Backdrop
 
 **Spec ID:** 0008
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-08-25
 
 ## Requirement
