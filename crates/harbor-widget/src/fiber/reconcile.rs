@@ -1,5 +1,7 @@
 use super::{DirtyFlags, Fiber, FiberArena, FiberId};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn,
+};
 use crate::view::{BuildCx, View, ViewContents};
 use std::sync::Arc;
 
@@ -38,6 +40,7 @@ pub(crate) fn create_fiber_from_view(
         view,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
     )
 }
 
@@ -47,6 +50,7 @@ fn create_fiber_from_view_with_external_draws(
     view: View,
     external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 ) -> FiberId {
     let key = view.key().cloned();
     let widget_type = view.widget_type();
@@ -57,7 +61,14 @@ fn create_fiber_from_view_with_external_draws(
     fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
     let id = arena.insert(fiber);
 
-    reconcile_fiber(arena, id, view, external_draws, external_schedules);
+    reconcile_fiber(
+        arena,
+        id,
+        view,
+        external_draws,
+        external_schedules,
+        external_frame_appearances,
+    );
     id
 }
 
@@ -70,6 +81,7 @@ fn reconcile_fiber(
     view: View,
     external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 ) {
     let (contents, children, _key) = view.into_parts();
     match contents {
@@ -82,6 +94,7 @@ fn reconcile_fiber(
                 None,
                 external_draws,
                 external_schedules,
+                external_frame_appearances,
             );
         }
         ViewContents::Deferred { component, .. } => {
@@ -92,10 +105,12 @@ fn reconcile_fiber(
                 hook_index: 0,
                 external_draws: Vec::new(),
                 external_schedules: Vec::new(),
+                external_frame_appearances: Vec::new(),
             };
             let materialized = component.build(&mut cx);
             external_draws.append(&mut cx.external_draws);
             external_schedules.append(&mut cx.external_schedules);
+            external_frame_appearances.append(&mut cx.external_frame_appearances);
             let hooks = cx.hooks;
             let (inner, materialized_children, _key) = materialized.decompose();
             reconcile_concrete_fiber(
@@ -106,11 +121,13 @@ fn reconcile_fiber(
                 Some(hooks),
                 external_draws,
                 external_schedules,
+                external_frame_appearances,
             );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_concrete_fiber(
     arena: &mut FiberArena,
     id: FiberId,
@@ -119,6 +136,7 @@ fn reconcile_concrete_fiber(
     hooks: Option<Vec<Box<dyn crate::signal::Hook>>>,
     external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 ) {
     let old_children = arena
         .get(id)
@@ -139,6 +157,7 @@ fn reconcile_concrete_fiber(
         children,
         external_draws,
         external_schedules,
+        external_frame_appearances,
     );
     if let Some(fiber) = arena.get_mut(id) {
         fiber.children = new_children;
@@ -163,6 +182,7 @@ pub(crate) fn reconcile_children(
         new_views,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
     )
 }
 
@@ -173,6 +193,7 @@ pub(crate) fn reconcile_children_with_external_draws(
     new_views: Vec<View>,
     external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 ) -> Vec<FiberId> {
     let max_len = old_children.len().max(new_views.len());
     let mut new_child_ids = Vec::with_capacity(max_len);
@@ -193,7 +214,14 @@ pub(crate) fn reconcile_children_with_external_draws(
                 };
 
                 if can_reuse {
-                    reconcile_fiber(arena, old_id, view, external_draws, external_schedules);
+                    reconcile_fiber(
+                        arena,
+                        old_id,
+                        view,
+                        external_draws,
+                        external_schedules,
+                        external_frame_appearances,
+                    );
                     new_child_ids.push(old_id);
                 } else {
                     // Type or key mismatch -- unmount old, create new
@@ -204,6 +232,7 @@ pub(crate) fn reconcile_children_with_external_draws(
                         view,
                         external_draws,
                         external_schedules,
+                        external_frame_appearances,
                     );
                     new_child_ids.push(new_id);
                 }
@@ -213,13 +242,13 @@ pub(crate) fn reconcile_children_with_external_draws(
                 unmount_fiber(arena, old_id);
             }
             (None, Some(view)) => {
-                // New child with no matching old fiber
                 let new_id = create_fiber_from_view_with_external_draws(
                     arena,
                     Some(parent_id),
                     view,
                     external_draws,
                     external_schedules,
+                    external_frame_appearances,
                 );
                 new_child_ids.push(new_id);
             }

@@ -2,7 +2,9 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn, Primitive,
+};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
 use std::any::TypeId;
@@ -29,6 +31,7 @@ pub struct BuildCx {
     pub(crate) hook_index: usize,
     pub(crate) external_draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     pub(crate) external_schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    pub(crate) external_frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 }
 
 impl BuildCx {
@@ -42,7 +45,17 @@ impl BuildCx {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         }
+    }
+
+    /// Registers a provider for the current frame's default clear appearance.
+    pub fn register_external_frame_appearance(
+        &mut self,
+        id: ExternalDrawId,
+        provider: Arc<ExternalFrameAppearanceFn>,
+    ) {
+        self.external_frame_appearances.push((id, provider));
     }
 
     /// Registers an external draw handler for the current build.
@@ -363,6 +376,7 @@ mod tests {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         };
 
         // First build: creates a new signal
@@ -377,6 +391,7 @@ mod tests {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -391,6 +406,7 @@ mod tests {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -409,6 +425,7 @@ mod tests {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         };
 
         // First build with u32
@@ -421,6 +438,7 @@ mod tests {
             hook_index: 0,
             external_draws: Vec::new(),
             external_schedules: Vec::new(),
+            external_frame_appearances: Vec::new(),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }

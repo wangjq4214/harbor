@@ -1,4 +1,4 @@
-﻿//! Frame presentation: acquisition policy, wgpu encode sequence, and frame outcomes.
+//! Frame presentation: acquisition policy, wgpu encode sequence, and frame outcomes.
 
 use super::WinitAdapter;
 use crate::effects::RuntimeEffects;
@@ -71,10 +71,21 @@ impl WinitAdapter {
                 let mut recovery_effects = effects;
                 if self.surface_state.allow_recovery_retry() {
                     recovery_effects.merge(self.request_frame());
+                    FrameOutcome::recovery_required(recovery_effects)
+                } else {
+                    FrameOutcome::fatal(
+                        FrameError::presentation(
+                            "surface remained lost or outdated after reconfiguration",
+                        ),
+                        recovery_effects,
+                    )
                 }
-                FrameOutcome::recovery_required(recovery_effects)
             }
             FrameAcquisition::Skipped => FrameOutcome::skipped(effects),
+            FrameAcquisition::Validation => FrameOutcome::fatal(
+                FrameError::validation("surface returned a validation error"),
+                effects,
+            ),
         }
     }
 
@@ -112,11 +123,24 @@ impl WinitAdapter {
                 let mut recovery_effects = effects;
                 if self.surface_state.allow_recovery_retry() {
                     recovery_effects.merge(self.request_frame());
+                    FrameOutcome::recovery_required(recovery_effects)
+                } else {
+                    FrameOutcome::fatal(
+                        FrameError::presentation(
+                            "surface remained lost or outdated after reconfiguration",
+                        ),
+                        recovery_effects,
+                    )
                 }
-                FrameOutcome::recovery_required(recovery_effects)
             }
             (FrameAcquisitionKind::Skipped, FrameAcquisition::Skipped) => {
                 FrameOutcome::skipped(effects)
+            }
+            (FrameAcquisitionKind::Validation, FrameAcquisition::Validation) => {
+                FrameOutcome::fatal(
+                    FrameError::validation("surface returned a validation error"),
+                    effects,
+                )
             }
             _ => unreachable!("acquisition kind must match its classification"),
         }
@@ -150,6 +174,7 @@ pub(super) enum FrameAcquisition<T> {
     Suboptimal(T),
     RecoveryRequired,
     Skipped,
+    Validation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +184,7 @@ pub(super) enum FrameAcquisitionKind {
     Suboptimal,
     RecoveryRequired,
     Skipped,
+    Validation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +201,7 @@ impl<T> FrameAcquisition<T> {
             Self::Suboptimal(_) => FrameAcquisitionKind::Suboptimal,
             Self::RecoveryRequired => FrameAcquisitionKind::RecoveryRequired,
             Self::Skipped => FrameAcquisitionKind::Skipped,
+            Self::Validation => FrameAcquisitionKind::Validation,
         }
     }
 }
@@ -199,9 +226,10 @@ pub(super) fn classify_surface_texture(
         wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
             FrameAcquisition::RecoveryRequired
         }
-        wgpu::CurrentSurfaceTexture::Timeout
-        | wgpu::CurrentSurfaceTexture::Occluded
-        | wgpu::CurrentSurfaceTexture::Validation => FrameAcquisition::Skipped,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            FrameAcquisition::Skipped
+        }
+        wgpu::CurrentSurfaceTexture::Validation => FrameAcquisition::Validation,
     }
 }
 
@@ -232,6 +260,10 @@ pub(super) fn execute_wgpu_frame(
     output: wgpu::SurfaceTexture,
     commit: bool,
 ) -> Result<(), FrameError> {
+    let clear_color = frame_clear_color(
+        resolve_frame_appearance(runtime, target.backdrop_available()),
+        target.alpha_mode(),
+    );
     let viewport = runtime
         .current_viewport()
         .cloned()
@@ -258,7 +290,7 @@ pub(super) fn execute_wgpu_frame(
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(target.clear_color()),
+                            load: wgpu::LoadOp::Clear(clear_color),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -279,6 +311,35 @@ pub(super) fn execute_wgpu_frame(
     )
 }
 
+/// Resolves the external frame appearance, using opaque black for runtimes
+/// without an external provider (such as the confirmation dialog).
+pub(super) fn resolve_frame_appearance(runtime: &Runtime, backdrop_available: bool) -> [f32; 4] {
+    runtime
+        .frame_appearance(backdrop_available)
+        .map(|appearance| appearance.rgba)
+        .unwrap_or([0.0, 0.0, 0.0, 1.0])
+}
+
+/// Converts a straight-alpha RGBA clear value into the representation
+/// required by the configured surface compositing mode.
+pub(super) fn frame_clear_color(
+    rgba: [f32; 4],
+    alpha_mode: wgpu::CompositeAlphaMode,
+) -> wgpu::Color {
+    let a = rgba[3] as f64;
+    let (r, g, b) = (rgba[0] as f64, rgba[1] as f64, rgba[2] as f64);
+    if alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied {
+        wgpu::Color {
+            r: r * a,
+            g: g * a,
+            b: b * a,
+            a,
+        }
+    } else {
+        wgpu::Color { r, g, b, a }
+    }
+}
+
 /// Borrowed host resources valid for one frame.
 ///
 /// The separate `surface` lifetime describes the lifetime carried by the wgpu
@@ -294,7 +355,8 @@ pub struct WinitFrameTarget<'frame, 'surface> {
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
     configure: &'frame mut dyn FnMut(u32, u32),
-    clear_color: wgpu::Color,
+    backdrop_available: bool,
+    alpha_mode: wgpu::CompositeAlphaMode,
 }
 
 impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
@@ -304,7 +366,8 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
         device: &'frame wgpu::Device,
         queue: &'frame wgpu::Queue,
         configure: &'frame mut dyn FnMut(u32, u32),
-        clear_color: wgpu::Color,
+        backdrop_available: bool,
+        alpha_mode: wgpu::CompositeAlphaMode,
     ) -> Self {
         Self {
             window,
@@ -312,7 +375,8 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
             device,
             queue,
             configure,
-            clear_color,
+            backdrop_available,
+            alpha_mode,
         }
     }
 
@@ -340,8 +404,12 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
         self.queue
     }
 
-    pub fn clear_color(&self) -> wgpu::Color {
-        self.clear_color
+    pub const fn backdrop_available(&self) -> bool {
+        self.backdrop_available
+    }
+
+    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.alpha_mode
     }
 }
 
@@ -449,5 +517,52 @@ impl FrameError {
 
     pub fn other(message: impl Into<String>) -> Self {
         Self::Other(message.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frame_clear_color, resolve_frame_appearance};
+    use crate::runtime::Runtime;
+    use wgpu::CompositeAlphaMode;
+
+    #[test]
+    fn should_use_opaque_black_when_runtime_has_no_appearance_provider() {
+        let runtime = Runtime::new();
+
+        assert_eq!(
+            resolve_frame_appearance(&runtime, true),
+            [0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn should_premultiply_external_appearance_for_premultiplied_surface() {
+        let color = frame_clear_color([0.36, 0.20, 0.08, 0.25], CompositeAlphaMode::PreMultiplied);
+
+        assert_eq!(color.r, 0.36_f32 as f64 * 0.25_f32 as f64);
+        assert_eq!(color.g, 0.20_f32 as f64 * 0.25_f32 as f64);
+        assert_eq!(color.b, 0.08_f32 as f64 * 0.25_f32 as f64);
+        assert_eq!(color.a, 0.25);
+    }
+
+    #[test]
+    fn should_preserve_external_appearance_for_postmultiplied_surface() {
+        let color = frame_clear_color([0.36, 0.20, 0.08, 0.25], CompositeAlphaMode::PostMultiplied);
+
+        assert_eq!(color.r, 0.36_f32 as f64);
+        assert_eq!(color.g, 0.20_f32 as f64);
+        assert_eq!(color.b, 0.08_f32 as f64);
+        assert_eq!(color.a, 0.25_f32 as f64);
+    }
+
+    #[test]
+    fn opaque_fallback_is_not_darkened_by_premultiplication() {
+        let color = frame_clear_color([0.36, 0.20, 0.08, 1.0], CompositeAlphaMode::PreMultiplied);
+
+        assert_eq!(color.r, 0.36_f32 as f64);
+        assert_eq!(color.g, 0.20_f32 as f64);
+        assert_eq!(color.b, 0.08_f32 as f64);
+        assert_eq!(color.a, 1.0_f32 as f64);
     }
 }

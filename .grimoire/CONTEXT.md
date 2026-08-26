@@ -726,7 +726,7 @@ Project domain concepts and terminology.
   - communicates with Runtime Host
 
 ### Windows Acrylic Backdrop
-- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, that blurs content behind the window the way Windows Terminal does; it is not Mica and not a VT protocol feature.
+- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, with a 20–30% warm-brown tint while the terminal's default background remains unfilled, explicit cell colors render normally, and unavailable acrylic falls back to opaque warm brown.
 - **Synonyms:** system acrylic, DWM system backdrop, TransientWindow backdrop, Windows Terminal-style acrylic
 - **Relationships:**
   - belongs to Runtime Host

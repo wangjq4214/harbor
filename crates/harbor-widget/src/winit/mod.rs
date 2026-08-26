@@ -726,7 +726,7 @@ mod tests {
         );
         assert_eq!(
             classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation).kind(),
-            FrameAcquisitionKind::Skipped
+            FrameAcquisitionKind::Validation
         );
     }
 
@@ -948,6 +948,24 @@ mod tests {
     }
 
     #[test]
+    fn should_turn_validation_acquisition_into_fatal_outcome() {
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        let outcome = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::Validation,
+            |_| Ok(()),
+        );
+
+        assert!(outcome.is_fatal());
+        assert!(matches!(
+            outcome.fatal_error(),
+            Some(FrameError::Validation(message)) if message.contains("validation")
+        ));
+        assert!(!outcome.effects().request_redraw);
+    }
+
+    #[test]
     fn should_request_one_recovery_frame_when_acquisition_is_lost() {
         // Arrange
         use crate::runtime::Runtime;
@@ -970,10 +988,11 @@ mod tests {
             |_| Ok(()),
         );
 
-        // Assert: one internal retry, then wait for an external wake.
+        // Assert: one internal retry, then surface recovery becomes fatal
+        // instead of silently stalling the window.
         assert!(first.is_recovery_required());
         assert!(first.effects().request_redraw);
-        assert!(second.is_recovery_required());
+        assert!(second.is_fatal());
         assert!(!second.effects().request_redraw);
     }
 
@@ -997,6 +1016,7 @@ mod tests {
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
         );
+        assert!(blocked.is_fatal());
         assert!(!blocked.effects().request_redraw);
 
         // Act: a fresh external wake restores the one-retry budget.

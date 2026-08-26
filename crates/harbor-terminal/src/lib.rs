@@ -27,6 +27,7 @@ pub use pointer::PointerInteraction;
 pub use render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
     TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
+    alpha_mode_supports_transparency,
 };
 pub use screen::{
     AltScreenAction, Cell, CellAttrs, CharacterProtection, Color, CursorShape, CursorStyleArg,
@@ -38,9 +39,9 @@ pub use selection_model::{
 use std::io::{Read, Write};
 use std::time::Instant;
 pub use types::{
-    FrameDemand, RenderTarget, TerminalEvent, TerminalEventOutcome, TerminalFocusEvent,
-    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
-    TerminalPointerEvent, TerminalPointerPhase,
+    FrameDemand, RenderTarget, TerminalAppearance, TerminalEvent, TerminalEventOutcome,
+    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
 };
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
@@ -53,6 +54,8 @@ pub struct Terminal {
     renderer: Option<TerminalRenderPipeline>,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
+    /// Terminal-owned default-background tint and fallback policy.
+    appearance: TerminalAppearance,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
     pending_ordinary_present: bool,
 }
@@ -78,7 +81,38 @@ impl Terminal {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
+        Self::new_with_appearance(
+            size,
+            pty_read,
+            pty_write,
+            pty_control,
+            gpu,
+            font_book,
+            metrics,
+            TerminalAppearance::default(),
+            wake,
+        )
+    }
+
+    /// Creates a rendered terminal with an explicitly owned appearance policy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_appearance<R, W>(
+        size: TerminalSize,
+        pty_read: R,
+        pty_write: W,
+        pty_control: PtyControl,
+        gpu: &GpuContext,
+        font_book: FontBook,
+        metrics: TextMetrics,
+        appearance: TerminalAppearance,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> Self
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
         let mut terminal = Self::new_headless(size.rows, size.cols);
+        terminal.appearance = appearance;
         let snap = terminal.screen.terminal_snapshot();
 
         let renderer = TerminalRenderPipeline::new(gpu, font_book, metrics, &snap)
@@ -108,6 +142,7 @@ impl Terminal {
             io: TerminalIo::new_headless(),
             renderer: None,
             pointer: PointerInteraction::new(),
+            appearance: TerminalAppearance::default(),
             pending_ordinary_present: false,
         }
     }
@@ -130,6 +165,16 @@ impl Terminal {
     }
 
     // ── render orchestration ──────────────────────────────────────────
+
+    /// Returns the terminal-owned default clear color for the host environment.
+    pub fn clear_rgba(&self, backdrop_available: bool) -> [f32; 4] {
+        self.appearance.clear_rgba(backdrop_available)
+    }
+
+    /// Returns the configured tint used by a host compositor backdrop.
+    pub fn appearance_rgba(&self) -> [f32; 4] {
+        self.appearance.rgba()
+    }
 
     /// Prepares GPU resources for all render components.
     pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {

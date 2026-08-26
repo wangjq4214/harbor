@@ -382,6 +382,7 @@ impl ConfirmationWindow {
             adapter,
             ..
         } = self;
+        let alpha_mode = surface_config.alpha_mode;
         let mut configure = |width, height| {
             surface_config.width = width;
             surface_config.height = height;
@@ -393,7 +394,8 @@ impl ConfirmationWindow {
             device,
             queue,
             &mut configure,
-            wgpu::Color::BLACK,
+            false,
+            alpha_mode,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
             runtime.prepare_text_runs(glyph_fn);

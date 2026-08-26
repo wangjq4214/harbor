@@ -24,7 +24,7 @@ pub const TEXT_PADDING: f32 = 16.0;
 ///
 /// A warm brown tone chosen to reduce eye strain during development.
 /// Linear-light values; convert to sRGB or `wgpu::Color` at the rendering boundary.
-pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 0.72];
+pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 0.25];
 
 /// Selection highlight color (semi-transparent blue).
 pub const SELECTION_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.4];
@@ -56,8 +56,8 @@ mod tests {
         // Arrange / Act
         let background = super::BACKGROUND;
 
-        // Assert — RGB unchanged from prior warm brown; alpha is translucent (not 1.0)
-        assert_eq!(background, [0.36, 0.20, 0.08, 0.72]);
+        // Assert — RGB unchanged from prior warm brown; alpha is the agreed 25% tint.
+        assert_eq!(background, [0.36, 0.20, 0.08, 0.25]);
         assert_ne!(background[3], 1.0);
     }
 }
