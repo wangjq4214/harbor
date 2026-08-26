@@ -4,7 +4,7 @@ mod frame_encoder;
 use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
-    reconcile_children_with_external_draws, unmount_fiber,
+    reconcile_children_with_externals, unmount_fiber,
 };
 use crate::input::event::{PointerPhase, UiEvent};
 #[cfg(test)]
@@ -14,13 +14,16 @@ use crate::layout::{BoxConstraints, Point, Size};
 use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearance, ExternalFrameAppearanceFn,
+    ExternalScheduleFn,
+};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
 };
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
-use crate::view::{BuildCx, Component};
+use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -99,6 +102,8 @@ pub struct Runtime {
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     external_schedules: HashMap<ExternalDrawId, Arc<ExternalScheduleFn>>,
+    /// At most one frame-appearance provider is expected for a Runtime.
+    external_frame_appearance: Option<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
     external_eligible: HashMap<ExternalDrawId, bool>,
     events: EventRouter,
     encoder: FrameEncoder,
@@ -131,6 +136,7 @@ impl Runtime {
             current_viewport: None,
             external_draws: HashMap::new(),
             external_schedules: HashMap::new(),
+            external_frame_appearance: None,
             external_eligible: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
@@ -274,8 +280,7 @@ impl Runtime {
             current_fiber: Some(root_id),
             hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
@@ -293,22 +298,17 @@ impl Runtime {
         }
 
         // Reconcile children
-        let new_children = reconcile_children_with_external_draws(
+        let new_children = reconcile_children_with_externals(
             &mut self.arena,
             root_id,
             old_children,
             children,
-            &mut cx.external_draws,
-            &mut cx.external_schedules,
+            &mut cx.externals,
         );
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.children = new_children;
         }
-        self.external_draws.clear();
-        self.external_draws.extend(cx.external_draws.drain(..));
-        self.external_schedules.clear();
-        self.external_schedules
-            .extend(cx.external_schedules.drain(..));
+        self.install_externals(&mut cx.externals);
 
         // Layout
         let viewport_size = self
@@ -333,6 +333,26 @@ impl Runtime {
 
         // Clean input state
         self.events.clear_dead_targets(&self.arena);
+    }
+
+    /// Replaces Runtime-owned external registrations from one rebuild bag.
+    fn install_externals(&mut self, externals: &mut ExternalRegistrations) {
+        self.external_draws.clear();
+        self.external_draws.extend(externals.draws.drain(..));
+        self.external_schedules.clear();
+        self.external_schedules
+            .extend(externals.schedules.drain(..));
+        self.external_frame_appearance = None;
+        for (id, provider) in externals.frame_appearances.drain(..) {
+            if self.external_frame_appearance.is_some() {
+                tracing::warn!(
+                    id,
+                    "multiple external frame-appearance providers; retaining the first"
+                );
+            } else {
+                self.external_frame_appearance = Some((id, provider));
+            }
+        }
     }
 
     /// Returns the viewport installed for the current frame, if any.
@@ -385,6 +405,16 @@ impl Runtime {
                 commit,
             },
         );
+    }
+
+    /// Resolves the terminal-owned default clear appearance for a frame.
+    ///
+    /// Returns `None` when the Runtime has no external appearance provider;
+    /// presenters then use their own opaque fallback (for example, dialogs).
+    pub fn frame_appearance(&self, backdrop_available: bool) -> Option<ExternalFrameAppearance> {
+        self.external_frame_appearance
+            .as_ref()
+            .and_then(|(id, provider)| provider(*id, backdrop_available))
     }
 
     /// Signals that the viewport has changed (e.g., due to window resize).
@@ -630,7 +660,9 @@ mod tests {
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
     };
     use crate::input::event_ctx::EventCtx;
-    use crate::scene::primitive::ExternalScheduleDemand;
+    use crate::scene::primitive::{
+        ExternalFrameAppearance, ExternalFrameAppearanceFn, ExternalScheduleDemand,
+    };
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
@@ -937,6 +969,47 @@ mod tests {
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
+
+    #[test]
+    fn should_resolve_external_frame_appearance_with_host_backdrop_fact() {
+        let provider: Arc<ExternalFrameAppearanceFn> = Arc::new(|_, backdrop| {
+            if backdrop {
+                Some(ExternalFrameAppearance::new([0.1, 0.2, 0.3, 0.25]))
+            } else {
+                Some(ExternalFrameAppearance::new([0.1, 0.2, 0.3, 1.0]))
+            }
+        });
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(77).frame_appearance(provider));
+
+        assert_eq!(
+            rt.frame_appearance(true).map(|appearance| appearance.rgba),
+            Some([0.1, 0.2, 0.3, 0.25])
+        );
+        assert_eq!(
+            rt.frame_appearance(false).map(|appearance| appearance.rgba),
+            Some([0.1, 0.2, 0.3, 1.0])
+        );
+    }
+
+    #[test]
+    fn should_retain_first_external_frame_appearance_provider_deterministically() {
+        let first: Arc<ExternalFrameAppearanceFn> =
+            Arc::new(|_, _| Some(ExternalFrameAppearance::new([1.0, 0.0, 0.0, 1.0])));
+        let second: Arc<ExternalFrameAppearanceFn> =
+            Arc::new(|_, _| Some(ExternalFrameAppearance::new([0.0, 1.0, 0.0, 1.0])));
+        let mut rt = Runtime::new();
+        rt.set_root(
+            Column::new()
+                .child(CustomPaint::new(1).frame_appearance(first))
+                .child(CustomPaint::new(2).frame_appearance(second)),
+        );
+
+        assert_eq!(
+            rt.frame_appearance(true).map(|appearance| appearance.rgba),
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+    }
 
     #[test]
     fn new_runtime_has_no_root() {

@@ -4,14 +4,12 @@
 //! - [`edit::PenState`]       — pen (SGR), tab stops, charsets, erase-cell helper
 //! - [`edit::CellOps`]        — cell-level mutations (erase, insert, delete, scroll, DEC rects)
 //! - [`edit::CellWriter`]     — character writing (write_char and helpers)
-//! - [`alt::AltScreenStack`]  — alt-screen flag and pending request
 //! - [`synchronized_output::SynchronizedOutput`] — saturating `?2026` nesting
 //!
 //! `Screen` keeps the public API stable; most methods are one-line
 //! delegations.  Cross-engine operations (e.g. `reverse_index`,
 //! `scroll_region_up_one`) stay here.
 
-mod alt;
 mod cursor;
 mod edit;
 mod reader;
@@ -23,7 +21,6 @@ use crate::normal_buf::CellsIter;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
 
-use self::alt::AltScreenStack;
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
 use self::synchronized_output::SynchronizedOutput;
@@ -85,13 +82,13 @@ pub struct Screen {
     cursor: CursorEngine,
     /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
     pen_state: PenState,
-    /// Alt-screen flag and pending request.
-    alt: AltScreenStack,
+    /// Pending alt-screen request set by the parser, consumed by I/O.
+    alt_request: Option<AltScreenAction>,
     /// Primary screen saved while the alternate screen is active.
     /// Invariant: `Some` iff in alt screen (`is_alt()` is true).
     saved_primary: Option<Box<Screen>>,
     /// Alternate screen parked across `?47` exit/re-enter.
-    /// Invariant: `Some` iff not in alt screen (parked).
+    /// Invariant: parked buffers keep `saved_primary = None`.
     parked_alt: Option<Box<Screen>>,
     /// Outgoing VT replies buffer.
     pub(crate) replies: Vec<u8>,
@@ -107,7 +104,7 @@ impl Screen {
             normal: NormalBuf::new(rows, cols),
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
-            alt: AltScreenStack::default(),
+            alt_request: None,
             saved_primary: None,
             parked_alt: None,
             replies: Vec::new(),
@@ -348,27 +345,27 @@ impl Screen {
     // ── alt screen ─────────────────────────────────────────────────────
 
     pub fn is_alt(&self) -> bool {
-        self.alt.is_alt()
+        self.saved_primary.is_some()
     }
 
     pub fn request_alt_enter(&mut self, clear: bool) {
-        self.alt.request_enter(clear);
+        self.alt_request = Some(AltScreenAction::Enter { clear });
     }
 
     pub fn request_alt_exit(&mut self) {
-        self.alt.request_exit();
+        self.alt_request = Some(AltScreenAction::Exit);
     }
 
     pub fn alt_request(&self) -> Option<AltScreenAction> {
-        self.alt.alt_request()
+        self.alt_request
     }
 
     pub fn take_alt_request(&mut self) -> Option<AltScreenAction> {
-        self.alt.take_alt_request()
+        self.alt_request.take()
     }
 
     pub fn enter_alt(&mut self, clear: bool) {
-        if self.alt.is_alt() {
+        if self.is_alt() {
             return;
         }
         let rows = self.rows();
@@ -389,10 +386,8 @@ impl Screen {
         // Save the primary after the install block: a restored parked buffer
         // carries `saved_primary = None`, so assigning first would be clobbered.
         self.saved_primary = Some(Box::new(primary));
-        debug_assert!(self.saved_primary.is_some(), "in alt => primary saved");
         self.replies = replies;
         self.synchronized_output = sync;
-        self.alt.mark_active();
     }
 
     pub fn exit_alt(&mut self) {
@@ -402,7 +397,9 @@ impl Screen {
             // Preserve the alternate-screen contents for a later `?47` re-entry.
             let rows = self.rows();
             let cols = self.cols();
-            let alt = std::mem::replace(self, Self::new(rows, cols));
+            let mut alt = std::mem::replace(self, Self::new(rows, cols));
+            // Drop the nested primary copy so parked alt stays a leaf buffer.
+            alt.saved_primary = None;
 
             *self = *primary;
             // Park the alternate buffer after the primary is back, since the
@@ -412,11 +409,7 @@ impl Screen {
         }
         self.replies = replies;
         self.synchronized_output = sync;
-        self.alt.mark_inactive();
-        debug_assert!(
-            self.saved_primary.is_none(),
-            "not in alt => no primary saved"
-        );
+        debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
 
     // ── resize ─────────────────────────────────────────────────────────
@@ -1055,7 +1048,7 @@ impl Screen {
 
     pub fn reset_display(&mut self) {
         self.synchronized_output.clear();
-        self.alt.mark_inactive();
+        self.alt_request = None;
         self.saved_primary = None;
         self.parked_alt = None;
 

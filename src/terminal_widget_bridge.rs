@@ -12,8 +12,8 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalScheduleDemand,
-    ExternalScheduleFn,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalFrameAppearance,
+    ExternalFrameAppearanceFn, ExternalScheduleDemand, ExternalScheduleFn,
 };
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
@@ -167,6 +167,7 @@ pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
     handler: Arc<ExternalDrawFn<'static>>,
     schedule: Arc<ExternalScheduleFn>,
+    frame_appearance: Arc<ExternalFrameAppearanceFn>,
     on_input: Arc<ExternalInputFn>,
 }
 
@@ -194,6 +195,18 @@ impl TerminalWidgetBridge {
         #[allow(clippy::arc_with_non_send_sync)]
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, now| {
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
+        });
+
+        let appearance_terminal = Arc::clone(&terminal);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let frame_appearance: Arc<ExternalFrameAppearanceFn> = Arc::new(move |id, backdrop| {
+            if id != draw_id {
+                return None;
+            }
+            appearance_terminal
+                .try_lock()
+                .ok()
+                .map(|term| ExternalFrameAppearance::new(term.clear_rgba(backdrop)))
         });
 
         let input_gate = Arc::clone(&gate_active);
@@ -245,6 +258,7 @@ impl TerminalWidgetBridge {
             draw_id,
             handler,
             schedule,
+            frame_appearance,
             on_input,
         }
     }
@@ -260,6 +274,7 @@ impl Component for TerminalWidgetBridge {
         CustomPaint::new(self.draw_id())
             .handler(Arc::clone(&self.handler))
             .schedule(Arc::clone(&self.schedule))
+            .frame_appearance(Arc::clone(&self.frame_appearance))
             .on_input(Arc::clone(&self.on_input))
             .build(cx)
     }
@@ -307,6 +322,54 @@ mod tests {
     #[allow(clippy::arc_with_non_send_sync)]
     fn headless_terminal(rows: usize, cols: usize) -> Arc<Mutex<Terminal>> {
         Arc::new(Mutex::new(Terminal::new_headless(rows, cols)))
+    }
+
+    #[test]
+    fn should_return_none_for_mismatched_frame_appearance_id() {
+        let terminal = headless_terminal(2, 2);
+        let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
+
+        let appearance = (bridge.frame_appearance)(DEFAULT_DRAW_ID + 1, true);
+
+        assert!(appearance.is_none());
+    }
+
+    #[test]
+    fn should_return_none_when_frame_appearance_terminal_mutex_is_held() {
+        let terminal = headless_terminal(2, 2);
+        let bridge =
+            TerminalWidgetBridge::new(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+        let _guard = terminal.lock().unwrap();
+
+        let appearance = (bridge.frame_appearance)(DEFAULT_DRAW_ID, true);
+
+        assert!(appearance.is_none());
+    }
+
+    #[test]
+    fn should_return_none_when_frame_appearance_terminal_mutex_is_poisoned() {
+        let terminal = headless_terminal(2, 2);
+        let poisoned = Arc::clone(&terminal);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison appearance mutex for test");
+        }));
+        let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
+
+        let appearance = (bridge.frame_appearance)(DEFAULT_DRAW_ID, true);
+
+        assert!(appearance.is_none());
+    }
+
+    #[test]
+    fn should_forward_terminal_clear_appearance_for_matching_id() {
+        let terminal = headless_terminal(2, 2);
+        let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
+
+        let appearance = (bridge.frame_appearance)(DEFAULT_DRAW_ID, false)
+            .expect("healthy terminal should provide an appearance");
+
+        assert_eq!(appearance.rgba, [0.36, 0.20, 0.08, 1.0]);
     }
 
     #[test]

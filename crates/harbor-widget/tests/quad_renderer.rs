@@ -648,7 +648,8 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     };
 
     // Arrange: retained CustomPaint handlers are interleaved with real Widget
-    // quad primitives. Padding gives each callback a distinct exact rectangle.
+    // quad primitives. Asymmetric padding gives each callback a distinct exact
+    // rectangle inside the viewport-filling Stack.
     let order = Arc::new(Mutex::new(Vec::new()));
     let rects = Arc::new(Mutex::new(Vec::new()));
     let make_handler = |order: Arc<Mutex<Vec<u64>>>, rects: Arc<Mutex<Vec<Rect>>>| {
@@ -669,17 +670,17 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
         Stack::new()
             .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::RED))
             .child(
-                Padding::new(4.0, 4.0, 4.0, 4.0)
+                Padding::new(4.0, 8.0, 8.0, 4.0)
                     .child(CustomPaint::new(1).handler(make_handler(order.clone(), rects.clone()))),
             )
             .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::GREEN))
             .child(
-                Padding::new(8.0, 8.0, 8.0, 8.0)
+                Padding::new(8.0, 4.0, 4.0, 8.0)
                     .child(CustomPaint::new(2).handler(make_handler(order.clone(), rects.clone()))),
             )
             .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::BLUE))
             .child(
-                Padding::new(12.0, 12.0, 12.0, 12.0)
+                Padding::new(12.0, 0.0, 0.0, 12.0)
                     .child(CustomPaint::new(3).handler(make_handler(order.clone(), rects.clone()))),
             ),
     );
@@ -699,9 +700,9 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     assert_eq!(
         *rects.lock().unwrap(),
         vec![
-            Rect::from_min_size(Point::new(4.0, 4.0), Size::new(24.0, 24.0)),
-            Rect::from_min_size(Point::new(8.0, 8.0), Size::new(24.0, 24.0)),
-            Rect::from_min_size(Point::new(12.0, 12.0), Size::new(24.0, 24.0)),
+            Rect::from_min_size(Point::new(4.0, 4.0), Size::new(244.0, 244.0)),
+            Rect::from_min_size(Point::new(8.0, 8.0), Size::new(244.0, 244.0)),
+            Rect::from_min_size(Point::new(12.0, 12.0), Size::new(244.0, 244.0)),
         ]
     );
 }
@@ -738,6 +739,7 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)))
             .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(CustomPaint::new(1).handler(handler)))
             .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED)),
     );

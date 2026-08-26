@@ -87,12 +87,7 @@ impl PointerInteraction {
         snapshot: &harbor_types::TerminalSnapshot,
     ) -> Option<(f32, f32)> {
         let viewport = self.viewport?;
-        let position = self.physical_position(position);
-        let x = (position.0 - viewport.allocation_origin.0 - viewport.padding).max(0.0);
-        let y = (position.1 - viewport.allocation_origin.1 - viewport.padding).max(0.0);
-        let col = ((x / viewport.cell_width).floor() as usize).min(snapshot.cols.saturating_sub(1));
-        let row =
-            ((y / viewport.line_height).floor() as usize).min(snapshot.rows.saturating_sub(1));
+        let (row, col) = self.grid_cell(position, snapshot, &viewport);
         Some((col as f32, row as f32))
     }
 
@@ -168,25 +163,14 @@ impl PointerInteraction {
     }
 
     pub fn clear_selection_outcome(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
-        self.mouse_buttons = 0;
-        let redraw = self.clear_selection();
-        TerminalEventOutcome {
-            redraw,
-            release_pointer,
-            ..TerminalEventOutcome::default()
-        }
+        let redraw = self.selection.has_selection() || self.selection.is_dragging();
+        self.selection.clear();
+        self.interrupt_outcome(redraw)
     }
 
     pub fn on_key_press_outcome(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
-        self.mouse_buttons = 0;
         let redraw = self.selection.on_key_press();
-        TerminalEventOutcome {
-            redraw,
-            release_pointer,
-            ..TerminalEventOutcome::default()
-        }
+        self.interrupt_outcome(redraw)
     }
 
     pub fn on_key_press(&mut self) -> bool {
@@ -195,6 +179,17 @@ impl PointerInteraction {
             self.active = None;
         }
         changed
+    }
+
+    /// Releases the active pointer and clears button state after a selection interrupt.
+    fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
+        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
+        self.mouse_buttons = 0;
+        TerminalEventOutcome {
+            redraw,
+            release_pointer,
+            ..TerminalEventOutcome::default()
+        }
     }
 
     pub fn handle_pointer(
@@ -378,19 +373,29 @@ impl PointerInteraction {
         (position.0 * self.input_scale, position.1 * self.input_scale)
     }
 
+    /// Maps a logical pointer position to a clamped grid cell `(row, col)`.
+    fn grid_cell(
+        &self,
+        position: (f32, f32),
+        snapshot: &harbor_types::TerminalSnapshot,
+        viewport: &RenderViewport,
+    ) -> (usize, usize) {
+        let position = self.physical_position(position);
+        let x = (position.0 - viewport.allocation_origin.0 - viewport.padding).max(0.0);
+        let y = (position.1 - viewport.allocation_origin.1 - viewport.padding).max(0.0);
+        let row =
+            ((y / viewport.line_height).floor() as usize).min(snapshot.rows.saturating_sub(1));
+        let col = ((x / viewport.cell_width).floor() as usize).min(snapshot.cols.saturating_sub(1));
+        (row, col)
+    }
+
     fn pixel_to_cell(
         &self,
         position: (f32, f32),
         snapshot: &harbor_types::TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> GenPos {
-        let position = self.physical_position(position);
-        let x = (position.0 - viewport.allocation_origin.0 - viewport.padding).max(0.0);
-        let y = (position.1 - viewport.allocation_origin.1 - viewport.padding).max(0.0);
-        let row = (y / viewport.line_height).floor() as usize;
-        let col = (x / viewport.cell_width).floor() as usize;
-        let row = row.min(snapshot.rows.saturating_sub(1));
-        let col = col.min(snapshot.cols.saturating_sub(1));
+        let (row, col) = self.grid_cell(position, snapshot, viewport);
         let view_start = snapshot.history_start
             + snapshot.scroll_count.saturating_sub(snapshot.view_offset) as u64;
         GenPos::new(view_start + row as u64, col)

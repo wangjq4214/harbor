@@ -11,7 +11,7 @@ pub struct Padding {
     pub bottom: f32,
     pub left: f32,
     pub background: Option<Color>,
-    children: Vec<View>,
+    child: Option<View>,
 }
 
 impl Padding {
@@ -22,8 +22,12 @@ impl Padding {
             bottom,
             left,
             background: None,
-            children: vec![],
+            child: None,
         }
+    }
+
+    pub fn all(value: f32) -> Self {
+        Self::new(value, value, value, value)
     }
 
     pub fn background(mut self, color: Color) -> Self {
@@ -31,15 +35,16 @@ impl Padding {
         self
     }
 
+    /// Sets this padding's only child, replacing any previously staged child.
     pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+        self.child = Some(View::deferred(child));
         self
     }
 }
 
 impl Component for Padding {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
@@ -53,14 +58,9 @@ impl AnyView for Padding {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // Child intrinsic sizes are computed bottom-up by layout_fiber;
-        // we report a best-effort estimate here. When no children exist,
-        // the padding insets themselves define the minimum size.
-        let child_size = self
-            .children
-            .first()
-            .map(|_v| Size::ZERO)
-            .unwrap_or(Size::ZERO);
+        // layout_fiber measures descendants before calling layout_children.
+        // This intrinsic fallback therefore represents the child-free case.
+        let child_size = Size::ZERO;
         let own = Size::new(
             (child_size.width + self.left + self.right)
                 .clamp(constraints.min.width, constraints.max.width),
@@ -68,6 +68,10 @@ impl AnyView for Padding {
                 .clamp(constraints.min.height, constraints.max.height),
         );
         constraints.constrain(own)
+    }
+
+    fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        constraints.deflate(Size::new(self.left + self.right, self.top + self.bottom))
     }
 
     fn layout_children(
@@ -121,6 +125,97 @@ mod tests {
         assert_eq!(own, Size::new(120.0, 70.0));
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0], Point::new(10.0, 10.0));
+    }
+
+    #[test]
+    fn should_set_uniform_insets_when_constructed_with_all() {
+        // Arrange
+        let inset = 12.0;
+
+        // Act
+        let padding = Padding::all(inset);
+
+        // Assert
+        assert_eq!(padding.top, inset);
+        assert_eq!(padding.right, inset);
+        assert_eq!(padding.bottom, inset);
+        assert_eq!(padding.left, inset);
+    }
+
+    #[test]
+    fn should_emit_only_one_child_when_child_is_staged_multiple_times() {
+        // Arrange
+        let padding = Padding::all(4.0)
+            .child(SizedBox::new(Size::new(10.0, 10.0)))
+            .child(SizedBox::new(Size::new(20.0, 20.0)));
+        let mut cx = BuildCx::stub();
+
+        // Act
+        let view = padding.build(&mut cx);
+
+        // Assert
+        assert_eq!(view.children.len(), 1);
+    }
+
+    #[test]
+    fn should_emit_no_children_when_child_is_not_staged() {
+        // Arrange
+        let padding = Padding::all(4.0);
+        let mut cx = BuildCx::stub();
+
+        // Act
+        let view = padding.build(&mut cx);
+
+        // Assert
+        assert!(view.children.is_empty());
+    }
+
+    #[test]
+    fn should_deflate_child_constraints_when_padding_is_uniform() {
+        // Arrange
+        let padding = Padding::all(16.0);
+        let constraints = BoxConstraints::tight(Size::new(100.0, 80.0));
+
+        // Act
+        let child_constraints = padding.child_constraints(constraints);
+
+        // Assert
+        assert_eq!(
+            child_constraints,
+            BoxConstraints::tight(Size::new(68.0, 48.0))
+        );
+    }
+
+    #[test]
+    fn should_deflate_child_constraints_when_padding_is_asymmetric() {
+        // Arrange
+        let padding = Padding::new(5.0, 10.0, 15.0, 20.0);
+        let constraints = BoxConstraints::loose(Size::new(100.0, 80.0));
+
+        // Act
+        let child_constraints = padding.child_constraints(constraints);
+
+        // Assert
+        assert_eq!(
+            child_constraints,
+            BoxConstraints::loose(Size::new(70.0, 60.0))
+        );
+    }
+
+    #[test]
+    fn should_saturate_child_constraints_when_padding_exceeds_parent_bounds() {
+        // Arrange
+        let padding = Padding::new(8.0, 40.0, 8.0, 40.0);
+        let constraints = BoxConstraints::loose(Size::new(60.0, 30.0));
+
+        // Act
+        let child_constraints = padding.child_constraints(constraints);
+
+        // Assert
+        assert_eq!(
+            child_constraints,
+            BoxConstraints::loose(Size::new(0.0, 14.0))
+        );
     }
 
     #[test]

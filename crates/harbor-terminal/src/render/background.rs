@@ -84,7 +84,7 @@ impl Background {
         for col in start_col..end_col {
             let cell = snap.cell(row, col);
             let inverse = cell.attrs.contains(CellAttrs::INVERSE);
-            if cell.bg != Color::Default || (inverse && cell.fg != Color::Default) {
+            if cell.bg != Color::Default || inverse {
                 let (left, top, right, bottom) = viewport.cell_bounds(row, col);
 
                 let color = if inverse {
@@ -215,6 +215,52 @@ mod tests {
     use crate::Terminal;
 
     #[test]
+    fn inverse_default_background_fills_with_default_foreground() {
+        let mut terminal = Terminal::new_headless(2, 3);
+        terminal.put_str("\x1b[7mX\x1b[0m  ");
+        let screen = terminal.screen();
+        let cell = screen.cell(0, 0);
+        assert!(
+            cell.attrs.contains(CellAttrs::INVERSE),
+            "cell should have INVERSE attr"
+        );
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+
+        let snap = screen.terminal_snapshot();
+        let viewport = RenderViewport::new(10.0, 20.0);
+        let verts = Background::build_background_row_vertices(0, &snap, &viewport);
+
+        let expected = Color::Default.to_rgba();
+        assert_eq!(
+            verts[0].color, expected,
+            "inverse default-default bg rect uses default foreground"
+        );
+    }
+
+    #[test]
+    fn default_background_cell_skips_fill() {
+        let mut terminal = Terminal::new_headless(2, 3);
+        terminal.put_str("X  ");
+        let snap = terminal.screen().terminal_snapshot();
+        let viewport = RenderViewport::new(10.0, 20.0);
+        let verts = Background::build_background_row_vertices(0, &snap, &viewport);
+
+        for vert in &verts[..6] {
+            assert_eq!(
+                vert.position,
+                [0.0, 0.0],
+                "default bg cell should skip fill"
+            );
+            assert_eq!(
+                vert.color,
+                [0.0, 0.0, 0.0, 0.0],
+                "default bg cell should skip fill"
+            );
+        }
+    }
+
+    #[test]
     fn inverse_background_rect_uses_fg_color() {
         let mut terminal = Terminal::new_headless(2, 3);
         terminal.put_str("\x1b[7;31mX\x1b[0m  ");
@@ -232,6 +278,30 @@ mod tests {
 
         let expected = Color::Named(1).to_rgba();
         assert_eq!(verts[0].color, expected, "inverse bg rect uses fg color");
+    }
+
+    #[test]
+    fn inverse_named_bg_default_fg_rect_uses_default_foreground() {
+        let mut terminal = Terminal::new_headless(2, 3);
+        terminal.put_str("\x1b[41;7mX\x1b[0m  ");
+        let screen = terminal.screen();
+        let cell = screen.cell(0, 0);
+        assert!(
+            cell.attrs.contains(CellAttrs::INVERSE),
+            "cell should have INVERSE attr"
+        );
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Named(1), "bg should be red (ANSI 41)");
+
+        let snap = screen.terminal_snapshot();
+        let viewport = RenderViewport::new(10.0, 20.0);
+        let verts = Background::build_background_row_vertices(0, &snap, &viewport);
+
+        let expected = Color::Default.to_rgba();
+        assert_eq!(
+            verts[0].color, expected,
+            "inverse named-default bg rect uses default foreground"
+        );
     }
 
     #[test]

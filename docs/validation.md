@@ -89,7 +89,7 @@ python scripts/checklist_summary.py
 
 ## Runtime Acceptance
 
-Windows is the active product target. Any change affecting PTY behavior, replies, rendering, input, window lifecycle, or clipboard policy requires a Windows smoke test.
+Windows is the active product target. Any change affecting PTY behavior, replies, rendering, input, window lifecycle, or clipboard policy requires a Windows smoke test. Window-lifecycle smoke for Acrylic includes Windows 10 client acrylic and documents caption degradation per [spec 0008](../.grimoire/spec/0008-windows-acrylic-backdrop.md) E2E; paste confirmation opacity is unchanged.
 
 The Windows daily-use gate requires recorded sessions with representative workloads such as:
 

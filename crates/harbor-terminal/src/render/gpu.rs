@@ -5,6 +5,19 @@ use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::DirectComposition::{
+    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+#[cfg(target_os = "windows")]
+use windows::core::Interface;
+#[cfg(target_os = "windows")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
 use harbor_types::DirtyRange;
 
 /// Upload operation selected for a dirty grid.
@@ -114,7 +127,10 @@ fn selected_backends() -> wgpu::Backends {
         target_os = "windows"
     ))]
     {
-        wgpu::Backends::GL
+        // Desktop Acrylic requires a DirectComposition-capable swap chain.
+        // wgpu's GL backend exposes only an opaque Win32 surface, so make
+        // DX12 the Windows default even when no backend override is enabled.
+        wgpu::Backends::DX12
     }
     #[cfg(all(
         not(feature = "backend-dx12"),
@@ -126,15 +142,144 @@ fn selected_backends() -> wgpu::Backends {
     }
 }
 
+/// Picks a compositing-capable alpha mode for the main window surface.
+///
+/// Preference: `PreMultiplied`, then `PostMultiplied`, then `Auto`.
+/// `Opaque` is chosen only when no compositing mode is advertised.
+pub fn select_compositing_alpha_mode(
+    modes: &[wgpu::CompositeAlphaMode],
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode::{Auto, PostMultiplied, PreMultiplied};
+
+    if modes.contains(&PreMultiplied) {
+        return PreMultiplied;
+    }
+    if modes.contains(&PostMultiplied) {
+        return PostMultiplied;
+    }
+    if modes.contains(&Auto) {
+        return Auto;
+    }
+    modes.first().copied().unwrap_or(Auto)
+}
+
+/// Returns true only for the alpha mode supported by the terminal's current
+/// straight-source blend pipelines. `PostMultiplied`, `Auto`, and `Inherit`
+/// are intentionally excluded until a matching pipeline path is implemented.
+pub const fn alpha_mode_supports_transparency(mode: wgpu::CompositeAlphaMode) -> bool {
+    matches!(mode, wgpu::CompositeAlphaMode::PreMultiplied)
+}
+
 #[cfg(test)]
 mod surface_tests {
     use super::*;
+    use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
+
+    #[cfg(all(
+        target_os = "windows",
+        not(feature = "backend-dx12"),
+        not(feature = "backend-vulkan")
+    ))]
+    #[test]
+    fn should_default_to_dx12_on_windows_for_compositor_transparency() {
+        assert_eq!(selected_backends(), wgpu::Backends::DX12);
+    }
 
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
             row,
             start_col,
             end_col,
+        }
+    }
+
+    #[test]
+    fn should_select_premultiplied_when_all_compositing_modes_present() {
+        // Arrange
+        let modes = [Opaque, Auto, PostMultiplied, PreMultiplied];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, PreMultiplied);
+    }
+
+    #[test]
+    fn should_select_postmultiplied_when_premultiplied_absent() {
+        // Arrange
+        let modes = [Opaque, Auto, PostMultiplied];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, PostMultiplied);
+    }
+
+    #[test]
+    fn should_select_auto_when_only_auto_and_opaque() {
+        // Arrange
+        let modes = [Opaque, Auto];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Auto);
+    }
+
+    #[test]
+    fn should_select_opaque_when_only_opaque_advertised() {
+        // Arrange
+        let modes = [Opaque];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Opaque);
+    }
+
+    #[test]
+    fn should_select_auto_when_modes_empty() {
+        // Arrange
+        let modes: [wgpu::CompositeAlphaMode; 0] = [];
+
+        // Act
+        let selected = select_compositing_alpha_mode(&modes);
+
+        // Assert
+        assert_eq!(selected, Auto);
+    }
+
+    #[test]
+    fn should_only_allow_supported_compositing_mode_for_transparency() {
+        assert!(alpha_mode_supports_transparency(PreMultiplied));
+        assert!(!alpha_mode_supports_transparency(PostMultiplied));
+        assert!(!alpha_mode_supports_transparency(Auto));
+        assert!(!alpha_mode_supports_transparency(Opaque));
+        assert!(!alpha_mode_supports_transparency(
+            wgpu::CompositeAlphaMode::Inherit
+        ));
+    }
+
+    #[test]
+    fn should_never_select_opaque_when_compositing_mode_exists() {
+        // Arrange
+        let cases = [
+            &[PreMultiplied, Opaque][..],
+            &[Opaque, PostMultiplied][..],
+            &[Auto, Opaque][..],
+            &[Opaque, Auto, PostMultiplied, PreMultiplied][..],
+        ];
+
+        for modes in cases {
+            // Act
+            let selected = select_compositing_alpha_mode(modes);
+
+            // Assert
+            assert_ne!(selected, Opaque, "modes={modes:?}");
         }
     }
 
@@ -183,6 +328,82 @@ mod surface_tests {
 
 // ── GpuContext ────────────────────────────────────────────────────────────
 
+#[cfg(target_os = "windows")]
+struct CompositionHost {
+    device: IDCompositionDevice,
+    _target: IDCompositionTarget,
+    _visual: IDCompositionVisual,
+}
+
+#[cfg(target_os = "windows")]
+impl CompositionHost {
+    fn commit(&self) {
+        if let Err(error) = unsafe { self.device.Commit() } {
+            tracing::warn!(?error, "failed to commit DirectComposition surface");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn create_main_surface(
+    instance: &wgpu::Instance,
+    window: &Arc<Window>,
+    backends: wgpu::Backends,
+) -> Result<(wgpu::Surface<'static>, Option<CompositionHost>)> {
+    if !backends.contains(wgpu::Backends::DX12) {
+        return Ok((
+            instance
+                .create_surface(Arc::clone(window))
+                .context("create surface")?,
+            None,
+        ));
+    }
+
+    let handle = window.window_handle().context("get Win32 window handle")?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        anyhow::bail!("main window is not a Win32 window");
+    };
+
+    // A regular HWND swap chain is always reported as opaque by DXGI. Hosting
+    // wgpu's swap chain on a DirectComposition visual exposes premultiplied
+    // alpha, which lets DWM's Acrylic backdrop remain visible in the client area.
+    let device: IDCompositionDevice = unsafe {
+        DCompositionCreateDevice(None::<&IDXGIDevice>).context("create DirectComposition device")?
+    };
+    let target = unsafe {
+        device
+            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), true)
+            .context("create DirectComposition window target")?
+    };
+    let visual = unsafe {
+        device
+            .CreateVisual()
+            .context("create DirectComposition visual")?
+    };
+    unsafe {
+        target
+            .SetRoot(&visual)
+            .context("set DirectComposition root visual")?;
+        device.Commit().context("commit DirectComposition tree")?;
+    }
+    let surface = unsafe {
+        instance
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(
+                visual.as_raw(),
+            ))
+            .context("create DirectComposition surface")?
+    };
+
+    Ok((
+        surface,
+        Some(CompositionHost {
+            device,
+            _target: target,
+            _visual: visual,
+        }),
+    ))
+}
+
 /// Shared GPU handles for layers to create and upload resources.
 ///
 /// Fields are private — layers access device/queue/surface through methods only.
@@ -191,6 +412,9 @@ pub struct GpuContext {
     instance: Arc<wgpu::Instance>,
     /// Adapter, kept alive for secondary surface capability queries.
     adapter: wgpu::Adapter,
+    /// Keeps the DirectComposition visual tree alive for the main surface.
+    #[cfg(target_os = "windows")]
+    _composition_host: Option<CompositionHost>,
     /// wgpu surface bound to the main window, provides frame buffers.
     surface: wgpu::Surface<'static>,
     /// Logical GPU device for creating pipelines / textures / buffers.
@@ -224,6 +448,9 @@ impl GpuContext {
             backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         }));
+        #[cfg(target_os = "windows")]
+        let (surface, composition_host) = create_main_surface(&instance, &window, backends)?;
+        #[cfg(not(target_os = "windows"))]
         let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -273,11 +500,15 @@ impl GpuContext {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities.alpha_modes[0],
+            alpha_mode: select_compositing_alpha_mode(&capabilities.alpha_modes),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        #[cfg(target_os = "windows")]
+        if let Some(host) = composition_host.as_ref() {
+            host.commit();
+        }
 
         tracing::info!(
             width = config.width,
@@ -295,6 +526,8 @@ impl GpuContext {
         Ok(Self {
             instance,
             adapter,
+            #[cfg(target_os = "windows")]
+            _composition_host: composition_host,
             surface,
             device,
             queue,
@@ -322,6 +555,10 @@ impl GpuContext {
         config.height = height;
         tracing::debug!(width, height, "configuring surface");
         self.surface.configure(&self.device, &config);
+        #[cfg(target_os = "windows")]
+        if let Some(host) = self._composition_host.as_ref() {
+            host.commit();
+        }
     }
 
     /// Main window surface borrowed by the frame integration.
@@ -332,6 +569,11 @@ impl GpuContext {
     /// Surface pixel format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.borrow().format
+    }
+
+    /// Configured surface composite alpha mode.
+    pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.config.borrow().alpha_mode
     }
 
     /// Current surface dimensions `(width, height)`.

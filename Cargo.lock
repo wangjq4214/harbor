@@ -837,6 +837,7 @@ dependencies = [
  "tracing",
  "unicode-width",
  "wgpu",
+ "windows",
  "winit",
 ]
 
@@ -868,6 +869,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "pollster",
  "slotmap",
+ "tracing",
  "wgpu",
  "winit",
 ]

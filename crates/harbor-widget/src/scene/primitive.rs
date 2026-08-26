@@ -55,6 +55,29 @@ impl Color {
 pub type TextRunId = u64;
 pub type ExternalDrawId = u64;
 
+/// A plain clear-color value supplied by an external paint provider.
+///
+/// The widget runtime carries this value without knowing which terminal or
+/// compositor produced it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExternalFrameAppearance {
+    pub rgba: [f32; 4],
+}
+
+impl ExternalFrameAppearance {
+    pub const fn new(rgba: [f32; 4]) -> Self {
+        Self { rgba }
+    }
+}
+
+/// Signature for a provider of the current frame's default clear appearance.
+///
+/// `backdrop_available` is a host fact; the provider owns the resulting color
+/// policy. `None` means the provider cannot supply a color for this invocation.
+/// Providers must not acquire, submit, or present GPU work.
+pub type ExternalFrameAppearanceFn =
+    dyn Fn(ExternalDrawId, bool) -> Option<ExternalFrameAppearance> + 'static;
+
 /// Immutable geometry context for one retained external draw invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExternalDrawContext {
@@ -216,6 +239,13 @@ mod tests {
     use super::*;
     use crate::layout::{Point, Rect};
     use crate::renderer::Viewport;
+
+    #[test]
+    fn external_frame_appearance_preserves_plain_rgba() {
+        let appearance = ExternalFrameAppearance::new([0.36, 0.20, 0.08, 0.25]);
+
+        assert_eq!(appearance.rgba, [0.36, 0.20, 0.08, 0.25]);
+    }
 
     #[test]
     fn color_constants() {
