@@ -158,6 +158,13 @@ pub(crate) trait AnyView: 'static {
     /// text metrics.
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
 
+    /// Returns the constraints this view imposes on each child. Containers may
+    /// override this to reserve space for their own layout; the default preserves
+    /// the parent constraints unchanged.
+    fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        constraints
+    }
+
     /// Computes the layout of this widget given child intrinsic sizes and
     /// Runtime-owned text metrics. Returns own size and child origins (relative
     /// to self). Default: positions all children at origin with own size from
@@ -474,6 +481,24 @@ mod tests {
         let mut cx = BuildCx::stub();
         let view = sized_box.build(&mut cx);
         assert_eq!(view.children.len(), 0);
+    }
+
+    #[test]
+    fn should_preserve_parent_constraints_when_view_uses_default_child_constraints() {
+        use crate::widgets::sized_box::SizedBox;
+
+        // Arrange
+        let view = SizedBox::new(Size::new(100.0, 50.0));
+        let constraints = BoxConstraints {
+            min: Size::new(20.0, 10.0),
+            max: Size::new(800.0, 600.0),
+        };
+
+        // Act
+        let child_constraints = view.child_constraints(constraints);
+
+        // Assert
+        assert_eq!(child_constraints, constraints);
     }
 
     #[test]

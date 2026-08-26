@@ -902,6 +902,7 @@ impl App {
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
         use crate::terminal_widget_bridge::TerminalWidgetBridge;
+        use harbor_widget::widgets::padding::Padding;
 
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
         let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
@@ -915,7 +916,7 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(bridge);
+        runtime.set_root(Padding::all(2.0).child(bridge));
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());

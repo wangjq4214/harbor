@@ -40,6 +40,21 @@ impl BoxConstraints {
         )
     }
 
+    /// Returns constraints with `insets` removed from each axis, saturating at zero.
+    pub fn deflate(&self, insets: Size) -> Self {
+        let deflate_axis = |value: f32, inset: f32| (value - inset).max(0.0);
+        BoxConstraints {
+            min: Size::new(
+                deflate_axis(self.min.width, insets.width),
+                deflate_axis(self.min.height, insets.height),
+            ),
+            max: Size::new(
+                deflate_axis(self.max.width, insets.width),
+                deflate_axis(self.max.height, insets.height),
+            ),
+        }
+    }
+
     /// Returns true if min == max (a single valid size).
     pub fn is_tight(&self) -> bool {
         self.min == self.max
@@ -106,6 +121,59 @@ mod tests {
         let constrained = c.constrain(Size::new(50.0, 50.0));
         assert_eq!(constrained.width, 200.0); // clamped to min
         assert_eq!(constrained.height, 50.0); // within [25, 100]
+    }
+
+    #[test]
+    fn deflate_reduces_each_bound() {
+        let constraints = BoxConstraints {
+            min: Size::new(50.0, 25.0),
+            max: Size::new(100.0, 80.0),
+        };
+
+        assert_eq!(
+            constraints.deflate(Size::new(32.0, 32.0)),
+            BoxConstraints {
+                min: Size::new(18.0, 0.0),
+                max: Size::new(68.0, 48.0),
+            }
+        );
+    }
+
+    #[test]
+    fn should_deflate_loose_constraints_when_insets_are_asymmetric() {
+        // Arrange
+        let constraints = BoxConstraints::loose(Size::new(100.0, 80.0));
+
+        // Act
+        let deflated = constraints.deflate(Size::new(32.0, 12.0));
+
+        // Assert
+        assert_eq!(deflated, BoxConstraints::loose(Size::new(68.0, 68.0)));
+    }
+
+    #[test]
+    fn should_preserve_tight_constraints_when_insets_fit() {
+        // Arrange
+        let constraints = BoxConstraints::tight(Size::new(100.0, 80.0));
+
+        // Act
+        let deflated = constraints.deflate(Size::new(32.0, 32.0));
+
+        // Assert
+        assert_eq!(deflated, BoxConstraints::tight(Size::new(68.0, 48.0)));
+        assert!(deflated.is_tight());
+    }
+
+    #[test]
+    fn should_saturate_exhausted_bounds_when_insets_exceed_tight_constraints() {
+        // Arrange
+        let constraints = BoxConstraints::tight(Size::new(30.0, 20.0));
+
+        // Act
+        let deflated = constraints.deflate(Size::new(32.0, 32.0));
+
+        // Assert
+        assert_eq!(deflated, BoxConstraints::tight(Size::ZERO));
     }
 
     #[test]

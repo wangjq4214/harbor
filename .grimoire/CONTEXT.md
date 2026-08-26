@@ -139,11 +139,19 @@ Project domain concepts and terminology.
   - belongs to Harbor Widget Runtime
 
 ### Layout Container
-- **Definition:** A widget that positions child widgets according to a layout algorithm: Padding (inset), Row (horizontal flex), Column (vertical flex), Stack (overlay), Align (position within parent).
+- **Definition:** A widget that positions child widgets according to a layout algorithm: Padding Widget (inset), Row (horizontal flex), Column (vertical flex), Stack (overlay), Align (position within parent).
 - **Synonyms:** Container Widget
 - **Relationships:**
+  - contains Padding Widget
   - produces View
   - implemented by AnyView
+
+### Padding Widget
+- **Definition:** A Flutter-style layout container with zero or one child that deducts its four insets from parent constraints before laying out the child and adds them back to its own size.
+- **Synonyms:** Padding
+- **Relationships:**
+  - belongs to Layout Container
+  - wraps View
 
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
@@ -759,3 +767,10 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Windows Acrylic Backdrop
+
+### Terminal Window Inset
+- **Definition:** An application-level layout rule that wraps the terminal root view in uniform 16 logical-pixel padding between the terminal viewport and its window edges.
+- **Relationships:**
+  - depends on Padding Widget
+  - wraps Terminal Widget Bridge
+  - belongs to Runtime Host
