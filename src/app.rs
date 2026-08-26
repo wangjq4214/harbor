@@ -16,14 +16,15 @@ use winit::{
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, ModifiersState},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, Theme, Window, WindowId},
 };
 
 use crate::event::AppEvent;
 use confirmation::ConfirmationWindow;
 use harbor_pty::PtyEndpoints;
 use harbor_terminal::{
-    GpuContext, InputModes, PasteDisposition, Terminal, TextMetrics, load_system_fonts,
+    GpuContext, InputModes, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,
+    alpha_mode_supports_transparency, load_system_fonts,
 };
 use harbor_widget::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ExternalInvalidation, ImeEffect,
@@ -69,7 +70,7 @@ fn write_confirmation_outcome<E>(
     input_modes: InputModes,
     write: impl FnOnce(&[u8]) -> Result<(), E>,
 ) -> Result<bool, E> {
-    let Some(raw_text) = outcome.confirmed_text() else {
+    let DialogOutcome::Confirmed(raw_text) = outcome else {
         return Ok(false);
     };
     let bytes = input_modes.paste(raw_text.as_bytes());
@@ -157,25 +158,11 @@ fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
     ClipboardHostAction::Deferred(effect)
 }
 
-/// Outcome of a dialog-overlay event dispatch.
-struct DialogResult {
-    outcome: DialogOutcome,
-}
-
 enum DialogOutcome {
     None,
     Cancelled,
     Confirmed(String),
     Fatal(FrameError),
-}
-
-impl DialogOutcome {
-    fn confirmed_text(&self) -> Option<&str> {
-        match self {
-            Self::Confirmed(raw_text) => Some(raw_text),
-            Self::None | Self::Cancelled | Self::Fatal(_) => None,
-        }
-    }
 }
 
 /// Owns the optional paste-confirmation dialog and mediates its lifecycle.
@@ -203,13 +190,11 @@ impl DialogOverlay {
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
         glyph_fn: Option<&GlyphFn>,
-    ) -> DialogResult {
+    ) -> DialogOutcome {
         let Some(mut confirmation) = self.window.take() else {
-            return DialogResult {
-                outcome: DialogOutcome::None,
-            };
+            return DialogOutcome::None;
         };
-        let outcome = match confirmation.handle_event(event, event_loop) {
+        match confirmation.handle_event(event, event_loop) {
             confirmation::ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
             confirmation::ConfirmationResult::Confirmed => {
                 let raw_text = confirmation.raw_text().to_owned();
@@ -232,8 +217,7 @@ impl DialogOverlay {
                     DialogOutcome::None
                 }
             }
-        };
-        DialogResult { outcome }
+        }
     }
 
     /// Installs a new confirmation dialog, replacing any existing one.
@@ -253,11 +237,19 @@ struct AppRuntime {
     widget_runtime: Option<harbor_widget::runtime::Runtime>,
     /// Main-window input adapter, sharing the runtime's window lifecycle.
     winit_adapter: Option<WinitAdapter>,
+    /// Host fact injected into the Widget presenter for terminal clear policy.
+    backdrop_available: bool,
+    /// Keeps a newly-created window hidden until its first frame is presented.
+    show_pending: bool,
+    /// Delays retries after a skipped hidden-startup acquisition.
+    startup_retry_deadline: Option<Instant>,
     dialog: DialogOverlay,
 }
 
 /// Documented 5s dwell after first present for the `steady_state` lifecycle marker.
 const FONT_STEADY_STATE_DWELL: Duration = Duration::from_secs(5);
+/// Avoids an immediate redraw loop while a hidden startup surface is skipped.
+const HIDDEN_STARTUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FrameLifecycleEvent {
@@ -448,6 +440,15 @@ impl ApplicationHandler<AppEvent> for App {
             combined_flow = combined_flow.arbitrate(confirmation_flow);
         }
 
+        if let Some(deadline) = self.runtime.startup_retry_deadline {
+            if now >= deadline {
+                self.runtime.startup_retry_deadline = None;
+                self.request_main_frame(event_loop);
+            } else {
+                combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
+            }
+        }
+
         Self::apply_control_flow(event_loop, combined_flow);
     }
 
@@ -472,7 +473,7 @@ impl ApplicationHandler<AppEvent> for App {
                     None => dialog.handle_event(&event, event_loop, gpu, None),
                 }
             };
-            match &result.outcome {
+            match &result {
                 DialogOutcome::Cancelled => {
                     self.runtime.input_gate.store(false, Ordering::Release);
                     self.request_main_frame(event_loop);
@@ -484,7 +485,7 @@ impl ApplicationHandler<AppEvent> for App {
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
                         if let Err(error) =
-                            write_confirmation_outcome(&result.outcome, input_modes, |bytes| {
+                            write_confirmation_outcome(&result, input_modes, |bytes| {
                                 terminal.write_pty(bytes)
                             })
                         {
@@ -582,6 +583,9 @@ impl App {
                 input_gate: Arc::new(AtomicBool::new(false)),
                 widget_runtime: None,
                 winit_adapter: None,
+                backdrop_available: false,
+                show_pending: false,
+                startup_retry_deadline: None,
                 dialog: DialogOverlay { window: None },
             },
             frame: FrameState::new(std::rc::Rc::new(TracingFrameLifecycleSink)),
@@ -596,20 +600,72 @@ impl App {
         }
 
         tracing::info!("creating window");
-        let window =
-            Arc::new(event_loop.create_window(Window::default_attributes().with_title("Harbor"))?);
+        let appearance = TerminalAppearance::default();
+        let mut window_attrs = Window::default_attributes()
+            .with_title("Harbor")
+            .with_theme(Some(Theme::Dark))
+            .with_visible(false);
+        #[cfg(target_os = "windows")]
+        let (use_accent_acrylic, main_window_acrylic) = {
+            use winit::platform::windows::{BackdropType, WindowAttributesExtWindows};
+            let build = windows_os_build();
+            let use_transient_acrylic = supports_transient_window_acrylic(build);
+            let use_accent_acrylic = supports_acrylic_accent_policy(build);
+            let main_window_acrylic = use_transient_acrylic || use_accent_acrylic;
+            if use_transient_acrylic {
+                window_attrs = window_attrs
+                    .with_transparent(true)
+                    .with_no_redirection_bitmap(true)
+                    .with_system_backdrop(BackdropType::TransientWindow)
+                    .with_title_background_color(None);
+            } else if use_accent_acrylic {
+                window_attrs = window_attrs
+                    .with_transparent(true)
+                    .with_no_redirection_bitmap(true);
+            }
+            (use_accent_acrylic, main_window_acrylic)
+        };
+
+        let window = Arc::new(event_loop.create_window(window_attrs)?);
         // Winit 0.30 emits composition commits only after IME is explicitly enabled.
         window.set_ime_allowed(true);
 
         #[cfg(target_os = "windows")]
-        paint_gdi_background(&window);
+        let main_window_backdrop_available = {
+            suppress_caption_title_and_icon(&window);
+            let frame_extended = extend_dwm_frame_into_client_area(&window);
+            let accent_applied = if use_accent_acrylic {
+                apply_acrylic_accent_backdrop(&window, background_acrylic_abgr(appearance.rgba()))
+                    && dwm_composition_enabled()
+            } else {
+                false
+            };
+            if use_accent_acrylic {
+                frame_extended && accent_applied
+            } else if main_window_acrylic {
+                frame_extended && transient_window_backdrop_applied(&window)
+            } else {
+                false
+            }
+        };
+        #[cfg(not(target_os = "windows"))]
+        let main_window_backdrop_available = false;
 
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
-        let initial_size = window.inner_size();
-        if initial_size.width != 0 && initial_size.height != 0 {
-            gpu.clear_surface(bg_wgpu(harbor_config::BACKGROUND));
+        let main_window_backdrop_available =
+            main_window_backdrop_available && alpha_mode_supports_transparency(gpu.alpha_mode());
+        #[cfg(target_os = "windows")]
+        if !main_window_backdrop_available {
+            paint_gdi_background(&window);
         }
+        let initial_size = window.inner_size();
+
+        tracing::info!(
+            backdrop_available = main_window_backdrop_available,
+            alpha_mode = ?gpu.alpha_mode(),
+            "main window backdrop selected"
+        );
 
         // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
         let fonts = load_system_fonts().map_err(AppError::Renderer)?;
@@ -620,7 +676,7 @@ impl App {
             .map_err(AppError::Pty)?
             .into_parts();
         let event_proxy = self.event_proxy.clone();
-        let terminal = Terminal::new(
+        let terminal = Terminal::new_with_appearance(
             size,
             pty_read,
             pty_write,
@@ -628,6 +684,7 @@ impl App {
             &gpu,
             fonts,
             metrics,
+            appearance,
             move || {
                 event_proxy
                     .send_event(AppEvent::TerminalOutputReady)
@@ -642,10 +699,12 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.terminal = Some(terminal);
+        self.runtime.backdrop_available = main_window_backdrop_available;
         let mut winit_adapter = WinitAdapter::from_window(&window);
         winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
         self.runtime.winit_adapter = Some(winit_adapter);
         self.runtime.window = Some(window.clone());
+        self.runtime.show_pending = true;
         let initial_effects = self.init_widget_runtime();
         if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
             let mut effects = adapter.fold_effects(initial_effects);
@@ -655,6 +714,7 @@ impl App {
                 Self::apply_control_flow(event_loop, control_flow);
             }
         }
+        let _ = self.render_frame(event_loop);
         Ok(())
     }
 
@@ -775,13 +835,14 @@ impl App {
     }
 
     /// Runs one borrowed main-window frame through the winit integration.
-    fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(window) = self.runtime.window.as_ref() else {
-            return;
+            return false;
         };
 
         let Some(outcome) = (|| {
             let gpu = self.runtime.gpu.as_ref()?;
+            let backdrop_available = self.runtime.backdrop_available;
             let adapter = self.runtime.winit_adapter.as_mut()?;
             let widget_runtime = self.runtime.widget_runtime.as_mut()?;
             // Install the thread-local GPU pointer before borrowing frame
@@ -797,12 +858,13 @@ impl App {
                     device,
                     queue,
                     &mut configure,
-                    bg_wgpu(harbor_config::BACKGROUND),
+                    backdrop_available,
+                    gpu.alpha_mode(),
                 );
                 adapter.render(widget_runtime, target)
             }))
         })() else {
-            return;
+            return false;
         };
 
         let effects = outcome.effects().clone();
@@ -811,13 +873,27 @@ impl App {
             Self::apply_control_flow(event_loop, control_flow);
         }
 
-        if outcome.is_presented() {
+        let presented = outcome.is_presented();
+        if presented {
             self.frame.mark_first_present();
             let _ = self.frame.next_steady_state_deadline();
-        } else if let FrameOutcome::Fatal(error, _) = outcome {
+            if self.runtime.show_pending {
+                window.set_visible(true);
+                self.runtime.show_pending = false;
+                self.runtime.startup_retry_deadline = None;
+            }
+        } else if let FrameOutcome::Fatal(error, _) = &outcome {
             tracing::error!(?error, "fatal main-window frame error");
             event_loop.exit();
         }
+
+        // A hidden startup window must keep requesting a frame after a
+        // transient timeout/occlusion; otherwise it can never reach the first
+        // successful presentation that makes it visible.
+        if matches!(&outcome, FrameOutcome::Skipped(_)) && self.runtime.show_pending {
+            self.runtime.startup_retry_deadline = Some(Instant::now() + HIDDEN_STARTUP_RETRY_DELAY);
+        }
+        presented
     }
 
     /// Initializes the widget runtime with a terminal bridge root.
@@ -826,6 +902,7 @@ impl App {
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
         use crate::terminal_widget_bridge::TerminalWidgetBridge;
+        use harbor_widget::widgets::padding::Padding;
 
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
         let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
@@ -839,7 +916,7 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(bridge);
+        runtime.set_root(Padding::all(2.0).child(bridge));
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
@@ -856,14 +933,381 @@ impl App {
     }
 }
 
-/// Converts `[f32;4]` from `harbor_config` to `wgpu::Color`.
-fn bg_wgpu(c: [f32; 4]) -> wgpu::Color {
-    wgpu::Color {
-        r: c[0] as f64,
-        g: c[1] as f64,
-        b: c[2] as f64,
-        a: c[3] as f64,
+/// True when Desktop Acrylic via `DWMSBT_TRANSIENTWINDOW` is available.
+#[cfg(target_os = "windows")]
+fn supports_transient_window_acrylic(build: u32) -> bool {
+    build >= 22621
+}
+
+/// Extends the DWM frame through the client area so transparent
+/// DirectComposition pixels reveal the configured system backdrop.
+#[cfg(target_os = "windows")]
+fn extend_dwm_frame_into_client_area(window: &Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct Margins {
+        left: i32,
+        right: i32,
+        top: i32,
+        bottom: i32,
     }
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmExtendFrameIntoClientArea(hwnd: isize, margins: *const Margins) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("DWM frame extension skipped: window handle unavailable");
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        tracing::warn!("DWM frame extension skipped: non-Win32 window handle");
+        return false;
+    };
+    let margins = Margins {
+        left: -1,
+        right: -1,
+        top: -1,
+        bottom: -1,
+    };
+    let result = unsafe { DwmExtendFrameIntoClientArea(handle.hwnd.get(), &margins) };
+    if result != 0 {
+        tracing::warn!(result, "DwmExtendFrameIntoClientArea failed");
+        false
+    } else {
+        true
+    }
+}
+
+/// Reports whether the Desktop Window Manager composition service is active.
+#[cfg(target_os = "windows")]
+fn dwm_composition_enabled() -> bool {
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmIsCompositionEnabled(enabled: *mut i32) -> i32;
+    }
+
+    let mut enabled = 0_i32;
+    let result = unsafe { DwmIsCompositionEnabled(&mut enabled) };
+    result == 0 && enabled != 0
+}
+
+/// Verifies that DWM accepted the requested TransientWindow system backdrop.
+#[cfg(target_os = "windows")]
+fn transient_window_backdrop_applied(window: &Window) -> bool {
+    if !dwm_composition_enabled() {
+        tracing::warn!("transient acrylic skipped: DWM composition is disabled");
+        return false;
+    }
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+    const DWMSBT_TRANSIENTWINDOW: u32 = 3;
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmGetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("transient acrylic verification skipped: window handle unavailable");
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        tracing::warn!("transient acrylic verification skipped: non-Win32 window handle");
+        return false;
+    };
+
+    let mut backdrop_type = 0_u32;
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            handle.hwnd.get(),
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&mut backdrop_type as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    if result != 0 {
+        tracing::warn!(result, "DwmGetWindowAttribute failed for transient acrylic");
+        return false;
+    }
+    backdrop_type == DWMSBT_TRANSIENTWINDOW
+}
+
+/// True when accent-policy Acrylic via `SetWindowCompositionAttribute` applies.
+#[cfg(target_os = "windows")]
+fn supports_acrylic_accent_policy(build: u32) -> bool {
+    build != 0 && build < 22621
+}
+
+/// Packs an RGBA color into the ABGR `GradientColor` dword for accent policy.
+#[cfg(target_os = "windows")]
+fn background_acrylic_abgr(rgba: [f32; 4]) -> u32 {
+    let to_byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let r = to_byte(rgba[0]);
+    let g = to_byte(rgba[1]);
+    let b = to_byte(rgba[2]);
+    let a = to_byte(rgba[3]);
+    (a << 24) | (b << 16) | (g << 8) | r
+}
+
+/// `WCA_ACCENT_POLICY` attribute for `SetWindowCompositionAttribute`.
+#[cfg(target_os = "windows")]
+const WCA_ACCENT_POLICY: u32 = 19;
+/// Enables acrylic blur behind the window via accent policy.
+#[cfg(target_os = "windows")]
+const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+
+/// Applies accent-policy Acrylic on `window` using a tint aligned to `BACKGROUND`.
+///
+/// Missing HWND, an absent export, or API failure is logged and ignored.
+#[cfg(target_os = "windows")]
+fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct AccentPolicy {
+        accent_state: u32,
+        accent_flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+
+    #[repr(C)]
+    struct WindowCompositionAttribData {
+        attrib: u32,
+        pv_data: *mut AccentPolicy,
+        cb_data: usize,
+    }
+
+    type SetWindowCompositionAttributeFn =
+        unsafe extern "system" fn(isize, *mut WindowCompositionAttribData) -> i32;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(module_name: *const u16) -> isize;
+        fn GetProcAddress(module: isize, proc_name: *const std::ffi::c_char) -> *const ();
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("accent acrylic skipped: window handle unavailable");
+        return false;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        tracing::warn!("accent acrylic skipped: non-Win32 window handle");
+        return false;
+    };
+
+    let hwnd = h.hwnd.get();
+    let user32 = unsafe {
+        GetModuleHandleW(
+            [
+                b'u' as u16,
+                b's' as u16,
+                b'e' as u16,
+                b'r' as u16,
+                b'3' as u16,
+                b'2' as u16,
+                b'.' as u16,
+                b'd' as u16,
+                b'l' as u16,
+                b'l' as u16,
+                0,
+            ]
+            .as_ptr(),
+        )
+    };
+    if user32 == 0 {
+        tracing::warn!("accent acrylic skipped: user32.dll unavailable");
+        return false;
+    }
+
+    let proc = unsafe { GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr()) };
+    if proc.is_null() {
+        tracing::warn!("accent acrylic skipped: SetWindowCompositionAttribute unavailable");
+        return false;
+    }
+    let set_window_composition_attribute: SetWindowCompositionAttributeFn =
+        unsafe { std::mem::transmute(proc) };
+
+    let mut policy = AccentPolicy {
+        accent_state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
+        accent_flags: 0,
+        gradient_color: gradient_abgr,
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttribData {
+        attrib: WCA_ACCENT_POLICY,
+        pv_data: &mut policy,
+        cb_data: std::mem::size_of::<AccentPolicy>(),
+    };
+    let ok = unsafe { set_window_composition_attribute(hwnd, &mut data) };
+    if ok == 0 {
+        tracing::warn!("SetWindowCompositionAttribute failed for accent acrylic");
+        false
+    } else {
+        true
+    }
+}
+
+/// uxtheme `WTA_NONCLIENT` attribute type for non-client theme options.
+#[cfg(target_os = "windows")]
+const WTA_NONCLIENT: u32 = 1;
+/// Do not draw caption text in the title bar.
+#[cfg(target_os = "windows")]
+const WTNCA_NODRAWCAPTION: u32 = 0x1;
+/// Do not draw the window icon in the title bar.
+#[cfg(target_os = "windows")]
+const WTNCA_NODRAWICON: u32 = 0x2;
+/// Replaces the small title-bar icon for an HWND.
+#[cfg(target_os = "windows")]
+const WM_SETICON: u32 = 0x0080;
+/// The small icon, which Windows uses in the title bar.
+#[cfg(target_os = "windows")]
+const ICON_SMALL: usize = 0;
+
+/// Returns a process-lifetime transparent icon for the native caption.
+///
+/// Passing a null icon to `WM_SETICON` is insufficient because Windows can
+/// fall back to the window-class icon. A transparent window-level icon blocks
+/// that fallback without changing the big icon used by Alt-Tab and the taskbar.
+#[cfg(target_os = "windows")]
+fn transparent_caption_icon() -> Option<isize> {
+    use std::sync::OnceLock;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CreateIcon(
+            instance: isize,
+            width: i32,
+            height: i32,
+            planes: u8,
+            bits_per_pixel: u8,
+            and_bits: *const u8,
+            xor_bits: *const u8,
+        ) -> isize;
+    }
+
+    static ICON: OnceLock<Option<isize>> = OnceLock::new();
+    *ICON.get_or_init(|| {
+        // Monochrome icon scanlines are WORD-aligned. An all-one AND mask and
+        // all-zero XOR mask leave the destination pixel fully unchanged.
+        let and_bits = [0xff_u8; 2];
+        let xor_bits = [0_u8; 2];
+        let icon = unsafe { CreateIcon(0, 1, 1, 1, 1, and_bits.as_ptr(), xor_bits.as_ptr()) };
+        (icon != 0).then_some(icon)
+    })
+}
+
+/// Pure packing of undrawn-caption theme flags for `WTA_OPTIONS`.
+///
+/// Returns `(dwFlags, dwMask)` both set to `NODRAWCAPTION | NODRAWICON`.
+#[cfg(target_os = "windows")]
+fn caption_nodraw_flags() -> (u32, u32) {
+    let flags = WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON;
+    (flags, flags)
+}
+
+/// Suppresses caption text and the visible caption icon on `window`.
+///
+/// System min/max/close buttons stay DWM-drawn. Missing HWND or a uxtheme API
+/// failure is logged and ignored so startup still proceeds.
+#[cfg(target_os = "windows")]
+fn suppress_caption_title_and_icon(window: &Window) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct WtaOptions {
+        dw_flags: u32,
+        dw_mask: u32,
+    }
+
+    #[link(name = "uxtheme")]
+    unsafe extern "system" {
+        fn SetWindowThemeAttribute(
+            hwnd: isize,
+            e_attribute: u32,
+            pv_attribute: *const WtaOptions,
+            cb_attribute: u32,
+        ) -> i32;
+        fn SendMessageW(hwnd: isize, message: u32, w_param: usize, l_param: isize) -> isize;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("caption theme skipped: window handle unavailable");
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        tracing::warn!("caption theme skipped: non-Win32 window handle");
+        return;
+    };
+
+    let (flags, mask) = caption_nodraw_flags();
+    let options = WtaOptions {
+        dw_flags: flags,
+        dw_mask: mask,
+    };
+    let hwnd = h.hwnd.get();
+    let hr = unsafe {
+        SetWindowThemeAttribute(
+            hwnd,
+            WTA_NONCLIENT,
+            &options,
+            std::mem::size_of::<WtaOptions>() as u32,
+        )
+    };
+    if hr < 0 {
+        tracing::warn!(hr, "SetWindowThemeAttribute failed for caption nodraw");
+    }
+
+    // WTA_NONCLIENT is advisory under DWM. Use a transparent per-window small
+    // icon rather than null: null permits fallback to the window-class icon.
+    // Leave the big icon alone so Alt-Tab and taskbar identity are unchanged.
+    if let Some(icon) = transparent_caption_icon() {
+        unsafe {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon);
+        }
+    } else {
+        tracing::warn!("failed to create transparent caption icon");
+    }
+}
+
+/// Reads the Windows OS build number; returns `0` when the probe fails.
+#[cfg(target_os = "windows")]
+fn windows_os_build() -> u32 {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+
+    let mut info = OsVersionInfoW {
+        dw_os_version_info_size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        dw_major_version: 0,
+        dw_minor_version: 0,
+        dw_build_number: 0,
+        dw_platform_id: 0,
+        sz_csd_version: [0; 128],
+    };
+    // STATUS_SUCCESS == 0
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status == 0 { info.dw_build_number } else { 0 }
 }
 
 /// Paints the terminal background color into the window using GDI, before the
@@ -920,6 +1364,197 @@ fn paint_gdi_background(window: &Window) {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_false_when_build_below_22621() {
+        // Arrange / Act / Assert
+        assert!(!supports_transient_window_acrylic(22620));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_enable_acrylic_accent_policy_when_build_below_22621() {
+        // Arrange / Act / Assert
+        assert!(supports_acrylic_accent_policy(22620));
+        assert!(supports_acrylic_accent_policy(19_045));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_disable_acrylic_accent_policy_when_build_at_least_22621() {
+        // Arrange / Act / Assert
+        assert!(!supports_acrylic_accent_policy(22621));
+        assert!(!supports_acrylic_accent_policy(26_100));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_disable_acrylic_accent_policy_when_build_is_zero() {
+        // Arrange / Act / Assert
+        assert!(!supports_acrylic_accent_policy(0));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_pack_background_into_abgr_for_acrylic_accent() {
+        // Arrange — BACKGROUND [0.36, 0.20, 0.08, 0.25] → R=92 G=51 B=20 A=64
+        let rgba = harbor_config::BACKGROUND;
+
+        // Act
+        let abgr = background_acrylic_abgr(rgba);
+
+        // Assert
+        assert_eq!(abgr, 0x40_14_33_5C);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_clamp_channels_when_packing_abgr() {
+        // Arrange
+        let rgba = [1.5_f32, -0.1, 0.5, 2.0];
+
+        // Act
+        let abgr = background_acrylic_abgr(rgba);
+
+        // Assert — clamped to 255, 0, 128, 255
+        assert_eq!(abgr, 0xFF_80_00_FF);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_pack_opaque_white_into_abgr() {
+        // Arrange
+        let rgba = [1.0_f32, 1.0, 1.0, 1.0];
+
+        // Act
+        let abgr = background_acrylic_abgr(rgba);
+
+        // Assert
+        assert_eq!(abgr, 0xFF_FF_FF_FF);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_pack_transparent_black_into_abgr() {
+        // Arrange
+        let rgba = [0.0_f32, 0.0, 0.0, 0.0];
+
+        // Act
+        let abgr = background_acrylic_abgr(rgba);
+
+        // Assert
+        assert_eq!(abgr, 0x00_00_00_00);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_round_channel_values_to_nearest_byte_when_packing_abgr() {
+        // Arrange — 0.5 * 255 = 127.5 rounds to 128
+        let rgba = [0.5_f32, 0.5, 0.5, 0.5];
+
+        // Act
+        let abgr = background_acrylic_abgr(rgba);
+
+        // Assert
+        assert_eq!(abgr, 0x80_80_80_80);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_select_exactly_one_acrylic_path_for_known_builds() {
+        // Arrange — representative builds across the 22621 threshold
+        let cases = [
+            (19_045, false, true),
+            (22_620, false, true),
+            (22_621, true, false),
+            (26_100, true, false),
+        ];
+
+        for (build, expect_transient, expect_accent) in cases {
+            // Act
+            let transient = supports_transient_window_acrylic(build);
+            let accent = supports_acrylic_accent_policy(build);
+            let main_window_acrylic = transient || accent;
+
+            // Assert — bootstrap picks one path; main window is acrylic when either applies
+            assert_eq!(transient, expect_transient, "build {build}");
+            assert_eq!(accent, expect_accent, "build {build}");
+            assert_ne!(transient, accent, "build {build}: paths must not overlap");
+            assert_eq!(
+                main_window_acrylic,
+                expect_transient || expect_accent,
+                "build {build}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_fall_back_to_opaque_when_build_is_unknown() {
+        // Arrange / Act
+        let transient = supports_transient_window_acrylic(0);
+        let accent = supports_acrylic_accent_policy(0);
+        let main_window_acrylic = transient || accent;
+
+        // Assert — unknown build skips acrylic; try_resume paints GDI background
+        assert!(!transient);
+        assert!(!accent);
+        assert!(!main_window_acrylic);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_true_when_build_at_least_22621() {
+        // Arrange / Act / Assert
+        assert!(supports_transient_window_acrylic(22621));
+        assert!(supports_transient_window_acrylic(26100));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_pack_nodraw_caption_and_icon_flags() {
+        // Arrange / Act
+        let (flags, mask) = caption_nodraw_flags();
+
+        // Assert — both caption and icon nodraw bits are set for WTA_OPTIONS
+        assert_eq!(flags, WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON);
+        assert_eq!(flags & WTNCA_NODRAWCAPTION, WTNCA_NODRAWCAPTION);
+        assert_eq!(flags & WTNCA_NODRAWICON, WTNCA_NODRAWICON);
+        assert_eq!(mask, flags);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_exact_win32_nodraw_bitmask() {
+        // Arrange — documented WTNCA values: NODRAWCAPTION=0x1, NODRAWICON=0x2
+        // Act
+        let (flags, mask) = caption_nodraw_flags();
+
+        // Assert — ABI-stable packing with no extra bits
+        assert_eq!(flags, 0x3);
+        assert_eq!(mask, 0x3);
+        assert_eq!(flags & !0x3, 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_identical_packing_on_repeated_calls() {
+        // Arrange / Act
+        let first = caption_nodraw_flags();
+        let second = caption_nodraw_flags();
+
+        // Assert
+        assert_eq!(first, second);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_return_false_when_build_is_zero() {
+        // Arrange — probe failure path returns build 0
+        // Act / Assert
+        assert!(!supports_transient_window_acrylic(0));
+    }
+
     // Compile-only coverage for the feature-gated Host contract. The fixture is
     // intentionally never called: its parameters are borrowed by the caller,
     // so no Window, Surface, Device, or Queue is created by the test suite.
@@ -953,7 +1588,8 @@ mod tests {
             device,
             queue,
             configure,
-            wgpu::Color::BLACK,
+            false,
+            wgpu::CompositeAlphaMode::Opaque,
         );
         let outcome: FrameOutcome = adapter.render(&mut runtime, target);
         let _ = outcome;

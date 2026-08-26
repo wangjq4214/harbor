@@ -3,8 +3,10 @@
 //! Imports only public `harbor_terminal` types — no `harbor_widget` dependency.
 
 use harbor_terminal::{
-    RenderTarget, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    Background, CellAttrs, Color, RenderTarget, RenderViewport, Terminal, TerminalAppearance,
+    TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    alpha_mode_supports_transparency,
 };
 
 #[test]
@@ -71,6 +73,89 @@ fn should_preserve_zero_sizes_and_negative_fractional_origin_when_constructed() 
     assert_eq!(target.allocation_origin, origin);
     assert_eq!(target.allocation_size, allocation);
     assert_eq!(target.surface_size, surface);
+}
+
+// ── TerminalAppearance / background rendering ──────────────────────────────
+
+#[test]
+fn should_render_explicit_ansi_background_as_an_opaque_fill() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(1, 1);
+    terminal.put_str("\x1b[41mX\x1b[0m");
+    let cell = terminal.screen().cell(0, 0);
+    let snapshot = terminal.screen().terminal_snapshot();
+    let viewport = RenderViewport::new(10.0, 20.0);
+
+    // Act
+    let vertices = Background::build_background_row_vertices(0, &snapshot, &viewport);
+
+    // Assert
+    assert!(!cell.attrs.contains(CellAttrs::INVERSE));
+    assert_eq!(cell.bg, Color::Named(1));
+    assert_eq!(vertices[0].color, Color::Named(1).to_rgba());
+    assert_eq!(vertices[0].color[3], 1.0);
+}
+
+#[test]
+fn should_keep_default_color_fully_opaque() {
+    assert_eq!(Color::Default.to_rgba(), [1.0, 1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn should_keep_ansi_color_fully_opaque() {
+    assert_eq!(Color::Named(1).to_rgba()[3], 1.0);
+}
+
+#[test]
+fn should_render_inverse_default_background_as_an_opaque_foreground_fill() {
+    // Arrange
+    let mut terminal = Terminal::new_headless(1, 1);
+    terminal.put_str("\x1b[7mX\x1b[0m");
+    let cell = terminal.screen().cell(0, 0);
+    let snapshot = terminal.screen().terminal_snapshot();
+    let viewport = RenderViewport::new(10.0, 20.0);
+
+    // Act
+    let vertices = Background::build_background_row_vertices(0, &snapshot, &viewport);
+
+    // Assert
+    assert!(cell.attrs.contains(CellAttrs::INVERSE));
+    assert_eq!(vertices[0].color, Color::Default.to_rgba());
+    assert_eq!(vertices[0].color[3], 1.0);
+}
+
+#[test]
+fn should_use_terminal_tint_with_backdrop_and_opaque_rgb_without_it() {
+    // Arrange
+    let appearance = TerminalAppearance::new([0.36, 0.20, 0.08, 0.25]);
+
+    // Act / Assert
+    assert_eq!(appearance.rgba(), [0.36, 0.20, 0.08, 0.25]);
+    assert_eq!(appearance.clear_rgba(true), [0.36, 0.20, 0.08, 0.25]);
+    assert_eq!(appearance.clear_rgba(false), [0.36, 0.20, 0.08, 1.0]);
+}
+
+#[test]
+fn should_use_configured_background_for_default_terminal_appearance() {
+    assert_eq!(
+        TerminalAppearance::default().rgba(),
+        harbor_config::BACKGROUND
+    );
+}
+
+#[test]
+fn should_only_support_premultiplied_alpha_for_transparent_terminal_frames() {
+    assert!(alpha_mode_supports_transparency(
+        wgpu::CompositeAlphaMode::PreMultiplied
+    ));
+    for mode in [
+        wgpu::CompositeAlphaMode::PostMultiplied,
+        wgpu::CompositeAlphaMode::Auto,
+        wgpu::CompositeAlphaMode::Inherit,
+        wgpu::CompositeAlphaMode::Opaque,
+    ] {
+        assert!(!alpha_mode_supports_transparency(mode), "mode={mode:?}");
+    }
 }
 
 // ── TerminalEvent ───────────────────────────────────────────────────────────

@@ -2,7 +2,9 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn, Primitive,
+};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
 use std::any::TypeId;
@@ -20,6 +22,27 @@ impl Key {
     }
 }
 
+// ── ExternalRegistrations ───────────────────────────────────────────────────
+
+/// Side-channel registrations collected while building a View subtree.
+///
+/// Draw handlers, schedule providers, and frame-appearance providers travel as
+/// one bag from `BuildCx` through reconciliation into `Runtime`.
+#[derive(Default)]
+pub(crate) struct ExternalRegistrations {
+    pub(crate) draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+    pub(crate) schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    pub(crate) frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+}
+
+impl ExternalRegistrations {
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.draws.append(&mut other.draws);
+        self.schedules.append(&mut other.schedules);
+        self.frame_appearances.append(&mut other.frame_appearances);
+    }
+}
+
 // ── BuildCx ─────────────────────────────────────────────────────────────────
 
 /// Per-build context for hook creation and Signal tracking.
@@ -27,8 +50,7 @@ pub struct BuildCx {
     pub(crate) current_fiber: Option<FiberId>,
     pub(crate) hooks: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
-    pub(crate) external_draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    pub(crate) external_schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    pub(crate) externals: ExternalRegistrations,
 }
 
 impl BuildCx {
@@ -40,9 +62,17 @@ impl BuildCx {
             current_fiber: None,
             hooks: Vec::new(),
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         }
+    }
+
+    /// Registers a provider for the current frame's default clear appearance.
+    pub fn register_external_frame_appearance(
+        &mut self,
+        id: ExternalDrawId,
+        provider: Arc<ExternalFrameAppearanceFn>,
+    ) {
+        self.externals.frame_appearances.push((id, provider));
     }
 
     /// Registers an external draw handler for the current build.
@@ -51,7 +81,7 @@ impl BuildCx {
         id: ExternalDrawId,
         handler: Arc<ExternalDrawFn<'static>>,
     ) {
-        self.external_draws.push((id, handler));
+        self.externals.draws.push((id, handler));
     }
 
     /// Registers an external schedule provider for the current build.
@@ -60,7 +90,7 @@ impl BuildCx {
         id: ExternalDrawId,
         schedule: Arc<ExternalScheduleFn>,
     ) {
-        self.external_schedules.push((id, schedule));
+        self.externals.schedules.push((id, schedule));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -127,6 +157,13 @@ pub(crate) trait AnyView: 'static {
     /// Computes the intrinsic size given layout constraints and Runtime-owned
     /// text metrics.
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+
+    /// Returns the constraints this view imposes on each child. Containers may
+    /// override this to reserve space for their own layout; the default preserves
+    /// the parent constraints unchanged.
+    fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        constraints
+    }
 
     /// Computes the layout of this widget given child intrinsic sizes and
     /// Runtime-owned text metrics. Returns own size and child origins (relative
@@ -361,8 +398,7 @@ mod tests {
             current_fiber: None,
             hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         // First build: creates a new signal
@@ -375,8 +411,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -389,8 +424,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -407,8 +441,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         // First build with u32
@@ -419,8 +452,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }
@@ -438,9 +470,9 @@ mod tests {
         cx.register_external_schedule(3, Arc::clone(&schedule));
 
         // Assert
-        assert_eq!(cx.external_schedules.len(), 1);
-        assert_eq!(cx.external_schedules[0].0, 3);
-        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
+        assert_eq!(cx.externals.schedules.len(), 1);
+        assert_eq!(cx.externals.schedules[0].0, 3);
+        assert!(Arc::ptr_eq(&cx.externals.schedules[0].1, &schedule));
     }
 
     #[test]
@@ -449,6 +481,24 @@ mod tests {
         let mut cx = BuildCx::stub();
         let view = sized_box.build(&mut cx);
         assert_eq!(view.children.len(), 0);
+    }
+
+    #[test]
+    fn should_preserve_parent_constraints_when_view_uses_default_child_constraints() {
+        use crate::widgets::sized_box::SizedBox;
+
+        // Arrange
+        let view = SizedBox::new(Size::new(100.0, 50.0));
+        let constraints = BoxConstraints {
+            min: Size::new(20.0, 10.0),
+            max: Size::new(800.0, 600.0),
+        };
+
+        // Act
+        let child_constraints = view.child_constraints(constraints);
+
+        // Assert
+        assert_eq!(child_constraints, constraints);
     }
 
     #[test]

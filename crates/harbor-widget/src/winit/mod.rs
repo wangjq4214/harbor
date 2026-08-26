@@ -601,10 +601,7 @@ impl WinitAdapter {
 #[cfg(test)]
 mod tests {
     use super::event::modifiers_to_widget;
-    use super::presenter::{
-        FrameAcquisition, FrameAcquisitionKind, PresentableKind, classify_presentable,
-        classify_surface_texture, execute_presented_frame,
-    };
+    use super::presenter::{FrameAcquisition, classify_surface_texture, execute_presented_frame};
     use super::*;
     use crate::effects::ControlFlowEffect;
     use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
@@ -699,35 +696,28 @@ mod tests {
     #[test]
     fn surface_texture_statuses_share_production_classification() {
         // wgpu keeps SurfaceTexture construction private, so Success and
-        // Suboptimal exercise the shared payload classification seam directly.
-        assert_eq!(
-            classify_presentable("success", PresentableKind::Presented).kind(),
-            FrameAcquisitionKind::Presented
-        );
-        assert_eq!(
-            classify_presentable("suboptimal", PresentableKind::Suboptimal).kind(),
-            FrameAcquisitionKind::Suboptimal
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost).kind(),
-            FrameAcquisitionKind::RecoveryRequired
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated).kind(),
-            FrameAcquisitionKind::RecoveryRequired
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout).kind(),
-            FrameAcquisitionKind::Skipped
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded).kind(),
-            FrameAcquisitionKind::Skipped
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation).kind(),
-            FrameAcquisitionKind::Skipped
-        );
+        // Suboptimal cannot be exercised here; the remaining statuses map
+        // through the same classify_surface_texture seam as production.
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost),
+            FrameAcquisition::RecoveryRequired
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated),
+            FrameAcquisition::RecoveryRequired
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout),
+            FrameAcquisition::Skipped
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded),
+            FrameAcquisition::Skipped
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation),
+            FrameAcquisition::Validation
+        ));
     }
 
     #[test]
@@ -948,6 +938,24 @@ mod tests {
     }
 
     #[test]
+    fn should_turn_validation_acquisition_into_fatal_outcome() {
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+
+        let outcome = adapter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::Validation,
+            |_| Ok(()),
+        );
+
+        assert!(outcome.is_fatal());
+        assert!(matches!(
+            outcome.fatal_error(),
+            Some(FrameError::Validation(message)) if message.contains("validation")
+        ));
+        assert!(!outcome.effects().request_redraw);
+    }
+
+    #[test]
     fn should_request_one_recovery_frame_when_acquisition_is_lost() {
         // Arrange
         use crate::runtime::Runtime;
@@ -970,10 +978,11 @@ mod tests {
             |_| Ok(()),
         );
 
-        // Assert: one internal retry, then wait for an external wake.
+        // Assert: one internal retry, then surface recovery becomes fatal
+        // instead of silently stalling the window.
         assert!(first.is_recovery_required());
         assert!(first.effects().request_redraw);
-        assert!(second.is_recovery_required());
+        assert!(second.is_fatal());
         assert!(!second.effects().request_redraw);
     }
 
@@ -997,6 +1006,7 @@ mod tests {
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
         );
+        assert!(blocked.is_fatal());
         assert!(!blocked.effects().request_redraw);
 
         // Act: a fresh external wake restores the one-retry budget.

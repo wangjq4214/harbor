@@ -9,16 +9,20 @@ pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
 
 pub(crate) use layout::layout_fiber;
 pub(crate) use paint::paint_fiber;
-pub(crate) use reconcile::{reconcile_children_with_external_draws, unmount_fiber};
+pub(crate) use reconcile::{reconcile_children_with_externals, unmount_fiber};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::{BoxConstraints, Point, Size};
     use crate::signal::{PENDING_DIRTY, Signal};
-    use crate::view::{AnyView, Key, View};
+    use crate::view::{AnyView, Component, Key, View};
     pub(crate) use reconcile::{create_fiber_from_view, reconcile_children, unmount_fiber};
-    use std::any::TypeId;
+    use std::{
+        any::TypeId,
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     /// Helper: returns None for root fibers that have no parent.
     fn no_parent() -> Option<FiberId> {
@@ -184,6 +188,102 @@ mod tests {
         }
         fn intrinsic_size(&self, c: BoxConstraints, _metrics: &crate::text::TextMetrics) -> Size {
             c.constrain(Size::new(10.0, 10.0))
+        }
+    }
+
+    #[derive(Clone)]
+    struct ConstraintRecordingView {
+        layout_constraints: Rc<RefCell<Vec<BoxConstraints>>>,
+    }
+
+    impl Component for ConstraintRecordingView {
+        fn build(&self, _cx: &mut crate::view::BuildCx) -> View {
+            View::new(self.clone(), vec![], None)
+        }
+    }
+
+    impl AnyView for ConstraintRecordingView {
+        fn key(&self) -> Option<&Key> {
+            None
+        }
+
+        fn widget_type(&self) -> TypeId {
+            TypeId::of::<Self>()
+        }
+
+        fn intrinsic_size(
+            &self,
+            constraints: BoxConstraints,
+            _metrics: &crate::text::TextMetrics,
+        ) -> Size {
+            constraints.max
+        }
+
+        fn layout_children(
+            &self,
+            constraints: BoxConstraints,
+            _child_sizes: &[Size],
+            _metrics: &crate::text::TextMetrics,
+        ) -> (Size, Vec<Point>) {
+            self.layout_constraints.borrow_mut().push(constraints);
+            (constraints.max, vec![])
+        }
+    }
+
+    #[derive(Clone)]
+    struct LayoutPassCountingView {
+        layout_calls: Rc<Cell<usize>>,
+        intrinsic_calls: Rc<Cell<usize>>,
+        child: Option<View>,
+    }
+
+    impl LayoutPassCountingView {
+        fn new(layout_calls: Rc<Cell<usize>>, intrinsic_calls: Rc<Cell<usize>>) -> Self {
+            Self {
+                layout_calls,
+                intrinsic_calls,
+                child: None,
+            }
+        }
+
+        fn child(mut self, child: impl Component + 'static) -> Self {
+            self.child = Some(View::deferred(child));
+            self
+        }
+    }
+
+    impl Component for LayoutPassCountingView {
+        fn build(&self, _cx: &mut crate::view::BuildCx) -> View {
+            View::new(self.clone(), self.child.iter().cloned().collect(), None)
+        }
+    }
+
+    impl AnyView for LayoutPassCountingView {
+        fn key(&self) -> Option<&Key> {
+            None
+        }
+
+        fn widget_type(&self) -> TypeId {
+            TypeId::of::<Self>()
+        }
+
+        fn intrinsic_size(
+            &self,
+            constraints: BoxConstraints,
+            _metrics: &crate::text::TextMetrics,
+        ) -> Size {
+            self.intrinsic_calls.set(self.intrinsic_calls.get() + 1);
+            constraints.max
+        }
+
+        fn layout_children(
+            &self,
+            constraints: BoxConstraints,
+            child_sizes: &[Size],
+            _metrics: &crate::text::TextMetrics,
+        ) -> (Size, Vec<Point>) {
+            self.layout_calls.set(self.layout_calls.get() + 1);
+            (constraints.max, vec![Point::ZERO; child_sizes.len()])
         }
     }
 
@@ -632,6 +732,223 @@ mod tests {
         assert_eq!(items[0].paint_order, 0);
         assert_eq!(items[1].paint_order, 1);
         assert_eq!(items[2].paint_order, 2);
+    }
+
+    #[test]
+    fn should_measure_nested_padding_from_its_child() {
+        use crate::widgets::padding::Padding;
+        use crate::widgets::sized_box::SizedBox;
+
+        // Arrange
+        let mut arena = FiberArena::new();
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            Padding::all(4.0)
+                .child(Padding::all(3.0).child(SizedBox::new(Size::new(20.0, 10.0))))
+                .build(&mut cx),
+        );
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::loose(Size::new(100.0, 100.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        let inner_padding_id = arena.get(root_id).unwrap().children[0];
+        let child_id = arena.get(inner_padding_id).unwrap().children[0];
+        assert_eq!(
+            arena.get(root_id).unwrap().layout_rect.unwrap().size(),
+            Size::new(34.0, 24.0)
+        );
+        assert_eq!(
+            arena
+                .get(inner_padding_id)
+                .unwrap()
+                .layout_rect
+                .unwrap()
+                .min,
+            Point::new(4.0, 4.0)
+        );
+        assert_eq!(
+            arena
+                .get(inner_padding_id)
+                .unwrap()
+                .layout_rect
+                .unwrap()
+                .size(),
+            Size::new(26.0, 16.0)
+        );
+        assert_eq!(
+            arena.get(child_id).unwrap().layout_rect.unwrap().min,
+            Point::new(7.0, 7.0)
+        );
+        assert_eq!(
+            arena.get(child_id).unwrap().layout_rect.unwrap().size(),
+            Size::new(20.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn should_allocate_terminal_content_inside_uniform_root_padding() {
+        use crate::widgets::custom_paint::CustomPaint;
+        use crate::widgets::padding::Padding;
+
+        // Arrange
+        let mut arena = FiberArena::new();
+        let padding = Padding::all(16.0).child(CustomPaint::new(1));
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(&mut arena, no_parent(), padding.build(&mut cx));
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::tight(Size::new(100.0, 80.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        let child_id = arena.get(root_id).unwrap().children[0];
+        let root_rect = arena.get(root_id).unwrap().layout_rect.unwrap();
+        let child_rect = arena.get(child_id).unwrap().layout_rect.unwrap();
+        assert_eq!(root_rect.size(), Size::new(100.0, 80.0));
+        assert_eq!(child_rect.min, Point::new(16.0, 16.0));
+        assert_eq!(child_rect.size(), Size::new(68.0, 48.0));
+    }
+
+    #[test]
+    fn should_propagate_deflated_constraints_when_padding_wraps_child() {
+        use crate::widgets::padding::Padding;
+
+        // Arrange
+        let layout_constraints = Rc::new(RefCell::new(vec![]));
+        let child = ConstraintRecordingView {
+            layout_constraints: Rc::clone(&layout_constraints),
+        };
+        let mut arena = FiberArena::new();
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            Padding::all(16.0).child(child).build(&mut cx),
+        );
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::tight(Size::new(100.0, 80.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        assert_eq!(
+            layout_constraints.borrow().as_slice(),
+            &[BoxConstraints::tight(Size::new(68.0, 48.0))]
+        );
+    }
+
+    #[test]
+    fn should_measure_each_subtree_once_without_intrinsic_probes() {
+        // Arrange
+        let root_layout_calls = Rc::new(Cell::new(0));
+        let root_intrinsic_calls = Rc::new(Cell::new(0));
+        let child_layout_calls = Rc::new(Cell::new(0));
+        let child_intrinsic_calls = Rc::new(Cell::new(0));
+        let root = LayoutPassCountingView::new(
+            Rc::clone(&root_layout_calls),
+            Rc::clone(&root_intrinsic_calls),
+        )
+        .child(LayoutPassCountingView::new(
+            Rc::clone(&child_layout_calls),
+            Rc::clone(&child_intrinsic_calls),
+        ));
+        let mut arena = FiberArena::new();
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(&mut arena, no_parent(), root.build(&mut cx));
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::tight(Size::new(100.0, 80.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        assert_eq!(root_layout_calls.get(), 1);
+        assert_eq!(child_layout_calls.get(), 1);
+        assert_eq!(root_intrinsic_calls.get(), 0);
+        assert_eq!(child_intrinsic_calls.get(), 0);
+    }
+
+    #[test]
+    fn should_allocate_zero_sized_child_when_root_is_smaller_than_padding_insets() {
+        use crate::widgets::custom_paint::CustomPaint;
+        use crate::widgets::padding::Padding;
+
+        // Arrange
+        let mut arena = FiberArena::new();
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            Padding::all(16.0).child(CustomPaint::new(1)).build(&mut cx),
+        );
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::tight(Size::new(30.0, 20.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        let child_id = arena.get(root_id).unwrap().children[0];
+        assert_eq!(
+            arena.get(child_id).unwrap().layout_rect.unwrap().size(),
+            Size::ZERO
+        );
+    }
+
+    #[test]
+    fn should_retain_last_staged_child_when_padding_child_is_chained() {
+        use crate::widgets::padding::Padding;
+        use crate::widgets::sized_box::SizedBox;
+
+        // Arrange
+        let mut arena = FiberArena::new();
+        let mut cx = crate::view::BuildCx::stub();
+        let root_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            Padding::all(4.0)
+                .child(SizedBox::new(Size::new(10.0, 10.0)))
+                .child(SizedBox::new(Size::new(20.0, 20.0)))
+                .build(&mut cx),
+        );
+
+        // Act
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::loose(Size::new(100.0, 100.0)),
+            Point::ZERO,
+        );
+
+        // Assert
+        let child_ids = arena.get(root_id).unwrap().children.clone();
+        assert_eq!(child_ids.len(), 1);
+        assert_eq!(
+            arena.get(child_ids[0]).unwrap().layout_rect.unwrap().size(),
+            Size::new(20.0, 20.0)
+        );
     }
 
     #[test]

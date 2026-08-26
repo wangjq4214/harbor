@@ -5,6 +5,46 @@
 
 use std::time::Instant;
 
+/// Terminal-owned visual policy for the default cell background.
+///
+/// The terminal keeps the tint and fallback semantics independent from any
+/// window, surface, or GPU type. Hosts only report whether a compositor
+/// backdrop is actually available for the current window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerminalAppearance {
+    rgba: [f32; 4],
+}
+
+impl TerminalAppearance {
+    /// Creates an appearance from a straight-alpha RGBA tint.
+    pub const fn new(rgba: [f32; 4]) -> Self {
+        Self { rgba }
+    }
+
+    /// Returns the configured tint used by a host compositor API.
+    pub const fn rgba(self) -> [f32; 4] {
+        self.rgba
+    }
+
+    /// Selects the default clear color for the current host environment.
+    ///
+    /// With Acrylic available the configured tint remains translucent. When
+    /// it is unavailable, the same RGB is made opaque for a readable fallback.
+    pub const fn clear_rgba(self, backdrop_available: bool) -> [f32; 4] {
+        if backdrop_available {
+            self.rgba
+        } else {
+            [self.rgba[0], self.rgba[1], self.rgba[2], 1.0]
+        }
+    }
+}
+
+impl Default for TerminalAppearance {
+    fn default() -> Self {
+        Self::new(harbor_config::BACKGROUND)
+    }
+}
+
 /// Host-neutral scheduling snapshot: immediate redraw need plus optional blink deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameDemand {
@@ -209,8 +249,30 @@ pub enum TerminalFocusEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameDemand;
+    use super::{FrameDemand, TerminalAppearance};
     use std::time::Instant;
+
+    #[test]
+    fn should_return_translucent_tint_when_backdrop_is_available() {
+        let appearance = TerminalAppearance::new([0.36, 0.20, 0.08, 0.25]);
+
+        assert_eq!(appearance.clear_rgba(true), [0.36, 0.20, 0.08, 0.25]);
+    }
+
+    #[test]
+    fn should_return_opaque_rgb_equivalent_when_backdrop_is_unavailable() {
+        let appearance = TerminalAppearance::new([0.36, 0.20, 0.08, 0.25]);
+
+        assert_eq!(appearance.clear_rgba(false), [0.36, 0.20, 0.08, 1.0]);
+    }
+
+    #[test]
+    fn default_appearance_uses_configured_background() {
+        assert_eq!(
+            TerminalAppearance::default().rgba(),
+            harbor_config::BACKGROUND
+        );
+    }
 
     #[test]
     fn should_report_eligible_present_when_frame_demand_is_empty() {
