@@ -153,6 +153,54 @@ Project domain concepts and terminology.
   - belongs to Layout Container
   - wraps View
 
+### Widget Decoration
+- **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - implemented by BoxDecoration
+
+### DecoratedBox
+- **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - contains BoxDecoration
+  - wraps View
+
+### BoxDecoration
+- **Definition:** A Flutter-style logical-pixel widget decoration value that defaults to no background fill and groups color, border, corner radius, and one or more shadows separately from child clipping.
+- **Relationships:**
+  - implements Widget Decoration
+  - contains BorderRadius
+  - contains BoxShadow
+  - references ClipBehavior
+  - belongs to DecoratedBox
+
+### BorderRadius
+- **Definition:** A box geometry value supporting both a uniform circular radius and independent radii for each of the four corners.
+- **Relationships:**
+  - belongs to BoxDecoration
+
+### BoxShadow
+- **Definition:** An outer box shadow value with color, offset, non-negative blur radius, and optionally negative spread radius that can be layered without affecting layout.
+- **Relationships:**
+  - belongs to BoxDecoration
+
+### Border
+- **Definition:** A first-version box outline value that applies one color and non-negative logical-pixel width uniformly to all four edges.
+- **Relationships:**
+  - belongs to BoxDecoration
+
+### ClipBehavior
+- **Definition:** An explicit `None`, `HardEdge`, or `AntiAlias` widget policy that applies rounded bounds consistently to child painting and hit testing while leaving shadows outside the clip.
+- **Relationships:**
+  - referenced by BoxDecoration
+
+### Decoration Paint Order
+- **Definition:** A stable widget painting sequence that draws shadows, background, child content, and border in that order.
+- **Relationships:**
+  - belongs to Widget Decoration
+  - references BoxDecoration
+
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
 - **Relationships:**
@@ -773,4 +821,12 @@ Project domain concepts and terminology.
 - **Relationships:**
   - depends on Padding Widget
   - wraps Terminal Widget Bridge
+  - belongs to Runtime Host
+
+### Terminal Decoration Preset
+- **Definition:** The application-level terminal appearance uses a 12dp radius, a 25%-opaque black outer shadow with 4dp downward offset and 12dp blur, zero spread, no default fill, and anti-aliased child clipping.
+- **Relationships:**
+  - wraps Terminal Widget Bridge
+  - contains BoxDecoration
+  - references ClipBehavior
   - belongs to Runtime Host
