@@ -46,7 +46,7 @@ pub use types::{
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.
 pub struct Terminal {
-    /// Screen (primary buffer; alt screen handled internally via in_alt).
+    /// Screen (primary buffer; alt screen handled via `saved_primary`).
     screen: Screen,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
@@ -187,7 +187,26 @@ impl Terminal {
 
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
     pub fn render(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
-        self.render_live(target, pass, gpu);
+        let Some(metrics) = self.text_metrics().copied() else {
+            return;
+        };
+        let viewport = RenderViewport::from_target(target, &metrics);
+        self.pointer.set_viewport(viewport);
+        self.pointer.set_input_scale(target.scale_factor);
+        let grid = viewport.compute_grid_size();
+        let grid_changed = self.resize_if_changed(grid);
+        if grid_changed {
+            self.pointer.clear();
+        }
+        self.ingest_and_blink(|io, screen| io.drain(screen));
+        let now = Instant::now();
+        let _ = self.pointer.tick(&mut self.screen, now);
+        let snap = self.screen.terminal_snapshot();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.sync_viewport(viewport, grid_changed);
+            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds());
+            renderer.draw(pass);
+        }
     }
 
     /// Replays last committed GPU buffers without preparing the live Screen.
@@ -201,7 +220,7 @@ impl Terminal {
         gpu: &GpuContext,
     ) {
         if self.retain_geometry_changed(target) {
-            self.render_live(target, pass, gpu);
+            self.render(target, pass, gpu);
             return;
         }
         if let Some(renderer) = &self.renderer {
@@ -219,31 +238,6 @@ impl Terminal {
             target,
             self.text_metrics(),
         )
-    }
-
-    fn render_live(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
-        let Some(metrics) = self.text_metrics().copied() else {
-            return;
-        };
-        let viewport = RenderViewport::from_target(target, &metrics);
-        self.pointer.set_viewport(viewport);
-        self.pointer.set_input_scale(target.scale_factor);
-        let grid = viewport.compute_grid_size();
-        let grid_changed = self.resize_if_changed(grid);
-        if grid_changed {
-            self.pointer.clear();
-        }
-        let before = self.cursor_pos();
-        self.ingest_screen(|io, screen| io.drain(screen));
-        self.maybe_reset_blink(before, false);
-        let now = Instant::now();
-        let _ = self.pointer.tick(&mut self.screen, now);
-        let snap = self.screen.terminal_snapshot();
-        if let Some(renderer) = &mut self.renderer {
-            renderer.sync_viewport(viewport, grid_changed);
-            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds());
-            renderer.draw(pass);
-        }
     }
 
     /// Host-neutral frame demand from ingested PTY, Cursor blink, and screen cursor flags.
@@ -279,6 +273,17 @@ impl Terminal {
         if !was_eligible && self.screen.ordinary_present_eligible() {
             self.pending_ordinary_present = true;
         }
+        result
+    }
+
+    /// Ingests PTY/parser work and resets blink when the cursor moved.
+    fn ingest_and_blink<R>(
+        &mut self,
+        ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R,
+    ) -> R {
+        let before = self.cursor_pos();
+        let result = self.ingest_screen(ingest);
+        self.maybe_reset_blink(before, false);
         result
     }
 
@@ -334,24 +339,17 @@ impl Terminal {
 
     /// Feeds raw PTY bytes through the streaming parser.
     pub fn put_bytes(&mut self, bytes: &[u8]) {
-        let before = self.cursor_pos();
-        self.ingest_screen(|io, screen| io.feed_pty_output(screen, bytes));
-        self.maybe_reset_blink(before, false);
+        self.ingest_and_blink(|io, screen| io.feed_pty_output(screen, bytes));
     }
 
     /// Feeds raw PTY bytes into the terminal parser, snapping to bottom first.
     pub fn process_output(&mut self, output: &[u8]) {
-        let before = self.cursor_pos();
-        self.ingest_screen(|io, screen| io.feed_pty_output_snapped(screen, output));
-        self.maybe_reset_blink(before, false);
+        self.ingest_and_blink(|io, screen| io.feed_pty_output_snapped(screen, output));
     }
 
     /// Drains all reader-thread output in FIFO order into the terminal parser.
     pub fn drain_pty(&mut self) -> bool {
-        let before = self.cursor_pos();
-        let drained = self.ingest_screen(|io, screen| io.drain(screen));
-        self.maybe_reset_blink(before, false);
-        drained
+        self.ingest_and_blink(|io, screen| io.drain(screen))
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.
@@ -379,19 +377,16 @@ impl Terminal {
                     || self.screen.input_modes().mouse_tracking
                         != harbor_types::MouseTrackingMode::Disabled
                 {
-                    let event = if let TerminalEvent::Pointer(reported) = event.clone() {
-                        let mut reported = self.pointer.prepare_mouse_event(reported);
-                        if let Some(position) = self
-                            .pointer
-                            .report_position(reported.position, &self.screen.terminal_snapshot())
-                        {
-                            reported.position = position;
-                        }
-                        TerminalEvent::Pointer(reported)
-                    } else {
-                        event.clone()
-                    };
-                    let wrote = self.ingest_screen(|io, screen| io.handle_event(screen, event))?;
+                    let mut reported = self.pointer.prepare_mouse_event(*pointer);
+                    if let Some(position) = self
+                        .pointer
+                        .report_position(reported.position, &self.screen.terminal_snapshot())
+                    {
+                        reported.position = position;
+                    }
+                    let wrote = self.ingest_screen(|io, screen| {
+                        io.handle_event(screen, TerminalEvent::Pointer(reported))
+                    })?;
                     outcome.capture_pointer = match pointer.phase {
                         TerminalPointerPhase::Down => {
                             self.pointer.begin_vt_capture(pointer.pointer_id);
@@ -493,9 +488,7 @@ impl Terminal {
 
     /// Drains pending PTY output before returning the current terminal snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
-        let before = self.cursor_pos();
-        self.ingest_screen(|io, screen| io.drain(screen));
-        self.maybe_reset_blink(before, false);
+        self.ingest_and_blink(|io, screen| io.drain(screen));
         self.snapshot()
     }
 
