@@ -277,10 +277,7 @@ impl Terminal {
     }
 
     /// Ingests PTY/parser work and resets blink when the cursor moved.
-    fn ingest_and_blink<R>(
-        &mut self,
-        ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R,
-    ) -> R {
+    fn ingest_and_blink<R>(&mut self, ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R) -> R {
         let before = self.cursor_pos();
         let result = self.ingest_screen(ingest);
         self.maybe_reset_blink(before, false);

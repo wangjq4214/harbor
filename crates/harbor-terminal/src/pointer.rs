@@ -383,7 +383,8 @@ impl PointerInteraction {
         let position = self.physical_position(position);
         let x = (position.0 - viewport.allocation_origin.0 - viewport.padding).max(0.0);
         let y = (position.1 - viewport.allocation_origin.1 - viewport.padding).max(0.0);
-        let row = ((y / viewport.line_height).floor() as usize).min(snapshot.rows.saturating_sub(1));
+        let row =
+            ((y / viewport.line_height).floor() as usize).min(snapshot.rows.saturating_sub(1));
         let col = ((x / viewport.cell_width).floor() as usize).min(snapshot.cols.saturating_sub(1));
         (row, col)
     }
