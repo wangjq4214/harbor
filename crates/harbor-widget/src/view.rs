@@ -22,6 +22,27 @@ impl Key {
     }
 }
 
+// ── ExternalRegistrations ───────────────────────────────────────────────────
+
+/// Side-channel registrations collected while building a View subtree.
+///
+/// Draw handlers, schedule providers, and frame-appearance providers travel as
+/// one bag from `BuildCx` through reconciliation into `Runtime`.
+#[derive(Default)]
+pub(crate) struct ExternalRegistrations {
+    pub(crate) draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
+    pub(crate) schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    pub(crate) frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+}
+
+impl ExternalRegistrations {
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.draws.append(&mut other.draws);
+        self.schedules.append(&mut other.schedules);
+        self.frame_appearances.append(&mut other.frame_appearances);
+    }
+}
+
 // ── BuildCx ─────────────────────────────────────────────────────────────────
 
 /// Per-build context for hook creation and Signal tracking.
@@ -29,9 +50,7 @@ pub struct BuildCx {
     pub(crate) current_fiber: Option<FiberId>,
     pub(crate) hooks: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
-    pub(crate) external_draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    pub(crate) external_schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    pub(crate) external_frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    pub(crate) externals: ExternalRegistrations,
 }
 
 impl BuildCx {
@@ -43,9 +62,7 @@ impl BuildCx {
             current_fiber: None,
             hooks: Vec::new(),
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         }
     }
 
@@ -55,7 +72,7 @@ impl BuildCx {
         id: ExternalDrawId,
         provider: Arc<ExternalFrameAppearanceFn>,
     ) {
-        self.external_frame_appearances.push((id, provider));
+        self.externals.frame_appearances.push((id, provider));
     }
 
     /// Registers an external draw handler for the current build.
@@ -64,7 +81,7 @@ impl BuildCx {
         id: ExternalDrawId,
         handler: Arc<ExternalDrawFn<'static>>,
     ) {
-        self.external_draws.push((id, handler));
+        self.externals.draws.push((id, handler));
     }
 
     /// Registers an external schedule provider for the current build.
@@ -73,7 +90,7 @@ impl BuildCx {
         id: ExternalDrawId,
         schedule: Arc<ExternalScheduleFn>,
     ) {
-        self.external_schedules.push((id, schedule));
+        self.externals.schedules.push((id, schedule));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -374,9 +391,7 @@ mod tests {
             current_fiber: None,
             hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         // First build: creates a new signal
@@ -389,9 +404,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -404,9 +417,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -423,9 +434,7 @@ mod tests {
             current_fiber: None,
             hooks: vec![],
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         // First build with u32
@@ -436,9 +445,7 @@ mod tests {
             current_fiber: None,
             hooks: cx.hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }
@@ -456,9 +463,9 @@ mod tests {
         cx.register_external_schedule(3, Arc::clone(&schedule));
 
         // Assert
-        assert_eq!(cx.external_schedules.len(), 1);
-        assert_eq!(cx.external_schedules[0].0, 3);
-        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
+        assert_eq!(cx.externals.schedules.len(), 1);
+        assert_eq!(cx.externals.schedules[0].0, 3);
+        assert!(Arc::ptr_eq(&cx.externals.schedules[0].1, &schedule));
     }
 
     #[test]

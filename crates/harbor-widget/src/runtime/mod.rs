@@ -4,7 +4,7 @@ mod frame_encoder;
 use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
-    reconcile_children_with_external_draws, unmount_fiber,
+    reconcile_children_with_externals, unmount_fiber,
 };
 use crate::input::event::{PointerPhase, UiEvent};
 #[cfg(test)]
@@ -23,7 +23,7 @@ use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
 };
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
-use crate::view::{BuildCx, Component};
+use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -280,9 +280,7 @@ impl Runtime {
             current_fiber: Some(root_id),
             hooks,
             hook_index: 0,
-            external_draws: Vec::new(),
-            external_schedules: Vec::new(),
-            external_frame_appearances: Vec::new(),
+            externals: ExternalRegistrations::default(),
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
@@ -300,34 +298,17 @@ impl Runtime {
         }
 
         // Reconcile children
-        let new_children = reconcile_children_with_external_draws(
+        let new_children = reconcile_children_with_externals(
             &mut self.arena,
             root_id,
             old_children,
             children,
-            &mut cx.external_draws,
-            &mut cx.external_schedules,
-            &mut cx.external_frame_appearances,
+            &mut cx.externals,
         );
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.children = new_children;
         }
-        self.external_draws.clear();
-        self.external_draws.extend(cx.external_draws.drain(..));
-        self.external_schedules.clear();
-        self.external_schedules
-            .extend(cx.external_schedules.drain(..));
-        self.external_frame_appearance = None;
-        for (id, provider) in cx.external_frame_appearances.drain(..) {
-            if self.external_frame_appearance.is_some() {
-                tracing::warn!(
-                    id,
-                    "multiple external frame-appearance providers; retaining the first"
-                );
-            } else {
-                self.external_frame_appearance = Some((id, provider));
-            }
-        }
+        self.install_externals(&mut cx.externals);
 
         // Layout
         let viewport_size = self
@@ -352,6 +333,26 @@ impl Runtime {
 
         // Clean input state
         self.events.clear_dead_targets(&self.arena);
+    }
+
+    /// Replaces Runtime-owned external registrations from one rebuild bag.
+    fn install_externals(&mut self, externals: &mut ExternalRegistrations) {
+        self.external_draws.clear();
+        self.external_draws.extend(externals.draws.drain(..));
+        self.external_schedules.clear();
+        self.external_schedules
+            .extend(externals.schedules.drain(..));
+        self.external_frame_appearance = None;
+        for (id, provider) in externals.frame_appearances.drain(..) {
+            if self.external_frame_appearance.is_some() {
+                tracing::warn!(
+                    id,
+                    "multiple external frame-appearance providers; retaining the first"
+                );
+            } else {
+                self.external_frame_appearance = Some((id, provider));
+            }
+        }
     }
 
     /// Returns the viewport installed for the current frame, if any.

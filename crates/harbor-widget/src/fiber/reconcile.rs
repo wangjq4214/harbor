@@ -1,8 +1,5 @@
 use super::{DirtyFlags, Fiber, FiberArena, FiberId};
-use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn,
-};
-use crate::view::{BuildCx, View, ViewContents};
+use crate::view::{BuildCx, ExternalRegistrations, View, ViewContents};
 use std::sync::Arc;
 
 // ── Reconciliation ───────────────────────────────────────────────────────────
@@ -34,23 +31,19 @@ pub(crate) fn create_fiber_from_view(
     parent_id: Option<FiberId>,
     view: View,
 ) -> FiberId {
-    create_fiber_from_view_with_external_draws(
+    create_fiber_from_view_with_externals(
         arena,
         parent_id,
         view,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
+        &mut ExternalRegistrations::default(),
     )
 }
 
-fn create_fiber_from_view_with_external_draws(
+fn create_fiber_from_view_with_externals(
     arena: &mut FiberArena,
     parent_id: Option<FiberId>,
     view: View,
-    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    externals: &mut ExternalRegistrations,
 ) -> FiberId {
     let key = view.key().cloned();
     let widget_type = view.widget_type();
@@ -61,14 +54,7 @@ fn create_fiber_from_view_with_external_draws(
     fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
     let id = arena.insert(fiber);
 
-    reconcile_fiber(
-        arena,
-        id,
-        view,
-        external_draws,
-        external_schedules,
-        external_frame_appearances,
-    );
+    reconcile_fiber(arena, id, view, externals);
     id
 }
 
@@ -79,23 +65,12 @@ fn reconcile_fiber(
     arena: &mut FiberArena,
     id: FiberId,
     view: View,
-    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    externals: &mut ExternalRegistrations,
 ) {
     let (contents, children, _key) = view.into_parts();
     match contents {
         ViewContents::Concrete(inner) => {
-            reconcile_concrete_fiber(
-                arena,
-                id,
-                inner,
-                children,
-                None,
-                external_draws,
-                external_schedules,
-                external_frame_appearances,
-            );
+            reconcile_concrete_fiber(arena, id, inner, children, None, externals);
         }
         ViewContents::Deferred { component, .. } => {
             let hooks = std::mem::take(&mut arena.get_mut(id).unwrap().hooks);
@@ -103,14 +78,10 @@ fn reconcile_fiber(
                 current_fiber: Some(id),
                 hooks,
                 hook_index: 0,
-                external_draws: Vec::new(),
-                external_schedules: Vec::new(),
-                external_frame_appearances: Vec::new(),
+                externals: ExternalRegistrations::default(),
             };
             let materialized = component.build(&mut cx);
-            external_draws.append(&mut cx.external_draws);
-            external_schedules.append(&mut cx.external_schedules);
-            external_frame_appearances.append(&mut cx.external_frame_appearances);
+            externals.append(&mut cx.externals);
             let hooks = cx.hooks;
             let (inner, materialized_children, _key) = materialized.decompose();
             reconcile_concrete_fiber(
@@ -119,24 +90,19 @@ fn reconcile_fiber(
                 inner,
                 materialized_children,
                 Some(hooks),
-                external_draws,
-                external_schedules,
-                external_frame_appearances,
+                externals,
             );
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reconcile_concrete_fiber(
     arena: &mut FiberArena,
     id: FiberId,
     inner: Arc<dyn crate::view::AnyView>,
     children: Vec<View>,
     hooks: Option<Vec<Box<dyn crate::signal::Hook>>>,
-    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    externals: &mut ExternalRegistrations,
 ) {
     let old_children = arena
         .get(id)
@@ -150,15 +116,8 @@ fn reconcile_concrete_fiber(
         }
     }
 
-    let new_children = reconcile_children_with_external_draws(
-        arena,
-        id,
-        &old_children,
-        children,
-        external_draws,
-        external_schedules,
-        external_frame_appearances,
-    );
+    let new_children =
+        reconcile_children_with_externals(arena, id, &old_children, children, externals);
     if let Some(fiber) = arena.get_mut(id) {
         fiber.children = new_children;
     }
@@ -175,25 +134,21 @@ pub(crate) fn reconcile_children(
     old_children: &[FiberId],
     new_views: Vec<View>,
 ) -> Vec<FiberId> {
-    reconcile_children_with_external_draws(
+    reconcile_children_with_externals(
         arena,
         parent_id,
         old_children,
         new_views,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
+        &mut ExternalRegistrations::default(),
     )
 }
 
-pub(crate) fn reconcile_children_with_external_draws(
+pub(crate) fn reconcile_children_with_externals(
     arena: &mut FiberArena,
     parent_id: FiberId,
     old_children: &[FiberId],
     new_views: Vec<View>,
-    external_draws: &mut Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
-    external_schedules: &mut Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    external_frame_appearances: &mut Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    externals: &mut ExternalRegistrations,
 ) -> Vec<FiberId> {
     let max_len = old_children.len().max(new_views.len());
     let mut new_child_ids = Vec::with_capacity(max_len);
@@ -214,25 +169,16 @@ pub(crate) fn reconcile_children_with_external_draws(
                 };
 
                 if can_reuse {
-                    reconcile_fiber(
-                        arena,
-                        old_id,
-                        view,
-                        external_draws,
-                        external_schedules,
-                        external_frame_appearances,
-                    );
+                    reconcile_fiber(arena, old_id, view, externals);
                     new_child_ids.push(old_id);
                 } else {
                     // Type or key mismatch -- unmount old, create new
                     unmount_fiber(arena, old_id);
-                    let new_id = create_fiber_from_view_with_external_draws(
+                    let new_id = create_fiber_from_view_with_externals(
                         arena,
                         Some(parent_id),
                         view,
-                        external_draws,
-                        external_schedules,
-                        external_frame_appearances,
+                        externals,
                     );
                     new_child_ids.push(new_id);
                 }
@@ -242,14 +188,8 @@ pub(crate) fn reconcile_children_with_external_draws(
                 unmount_fiber(arena, old_id);
             }
             (None, Some(view)) => {
-                let new_id = create_fiber_from_view_with_external_draws(
-                    arena,
-                    Some(parent_id),
-                    view,
-                    external_draws,
-                    external_schedules,
-                    external_frame_appearances,
-                );
+                let new_id =
+                    create_fiber_from_view_with_externals(arena, Some(parent_id), view, externals);
                 new_child_ids.push(new_id);
             }
             (None, None) => unreachable!("loop bound is max(old, new) so at least one is Some"),

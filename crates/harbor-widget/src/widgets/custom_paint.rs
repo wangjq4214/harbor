@@ -209,10 +209,10 @@ mod tests {
         custom_paint.build(&mut cx);
 
         // Assert: the handler is registered for the component's draw ID.
-        assert_eq!(cx.external_draws.len(), 1);
-        assert_eq!(cx.external_draws[0].0, 42);
-        assert!(Arc::ptr_eq(&cx.external_draws[0].1, &handler));
-        assert!(cx.external_schedules.is_empty());
+        assert_eq!(cx.externals.draws.len(), 1);
+        assert_eq!(cx.externals.draws[0].0, 42);
+        assert!(Arc::ptr_eq(&cx.externals.draws[0].1, &handler));
+        assert!(cx.externals.schedules.is_empty());
     }
 
     #[test]
@@ -225,8 +225,8 @@ mod tests {
         custom_paint.build(&mut cx);
 
         // Assert: no external draw registration is produced.
-        assert!(cx.external_draws.is_empty());
-        assert!(cx.external_schedules.is_empty());
+        assert!(cx.externals.draws.is_empty());
+        assert!(cx.externals.schedules.is_empty());
     }
 
     #[test]
@@ -242,10 +242,10 @@ mod tests {
         custom_paint.build(&mut cx);
 
         // Assert
-        assert!(cx.external_draws.is_empty());
-        assert_eq!(cx.external_schedules.len(), 1);
-        assert_eq!(cx.external_schedules[0].0, 7);
-        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
+        assert!(cx.externals.draws.is_empty());
+        assert_eq!(cx.externals.schedules.len(), 1);
+        assert_eq!(cx.externals.schedules[0].0, 7);
+        assert!(Arc::ptr_eq(&cx.externals.schedules[0].1, &schedule));
     }
 
     #[test]
@@ -259,9 +259,9 @@ mod tests {
 
         custom_paint.build(&mut cx);
 
-        assert_eq!(cx.external_frame_appearances.len(), 1);
-        assert_eq!(cx.external_frame_appearances[0].0, 42);
-        assert!(Arc::ptr_eq(&cx.external_frame_appearances[0].1, &provider));
+        assert_eq!(cx.externals.frame_appearances.len(), 1);
+        assert_eq!(cx.externals.frame_appearances[0].0, 42);
+        assert!(Arc::ptr_eq(&cx.externals.frame_appearances[0].1, &provider));
     }
 
     #[test]
@@ -280,12 +280,12 @@ mod tests {
         custom_paint.build(&mut cx);
 
         // Assert
-        assert_eq!(cx.external_draws.len(), 1);
-        assert_eq!(cx.external_draws[0].0, 11);
-        assert!(Arc::ptr_eq(&cx.external_draws[0].1, &handler));
-        assert_eq!(cx.external_schedules.len(), 1);
-        assert_eq!(cx.external_schedules[0].0, 11);
-        assert!(Arc::ptr_eq(&cx.external_schedules[0].1, &schedule));
+        assert_eq!(cx.externals.draws.len(), 1);
+        assert_eq!(cx.externals.draws[0].0, 11);
+        assert!(Arc::ptr_eq(&cx.externals.draws[0].1, &handler));
+        assert_eq!(cx.externals.schedules.len(), 1);
+        assert_eq!(cx.externals.schedules[0].0, 11);
+        assert!(Arc::ptr_eq(&cx.externals.schedules[0].1, &schedule));
     }
 
     #[test]

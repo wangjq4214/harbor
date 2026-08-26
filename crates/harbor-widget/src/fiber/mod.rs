@@ -9,7 +9,7 @@ pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
 
 pub(crate) use layout::layout_fiber;
 pub(crate) use paint::paint_fiber;
-pub(crate) use reconcile::{reconcile_children_with_external_draws, unmount_fiber};
+pub(crate) use reconcile::{reconcile_children_with_externals, unmount_fiber};
 
 #[cfg(test)]
 mod tests {

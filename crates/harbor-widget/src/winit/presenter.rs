@@ -39,24 +39,45 @@ impl WinitAdapter {
         }
 
         let acquisition = classify_surface_texture(target.surface().get_current_texture());
+        let commit = effects.force_present;
+        let reconfigure_after_present = matches!(&acquisition, FrameAcquisition::Suboptimal(_));
 
+        if matches!(&acquisition, FrameAcquisition::RecoveryRequired) {
+            target.reconfigure(self.surface_state.viewport());
+        }
+
+        let outcome = self.finish_acquisition(effects, acquisition, |output| {
+            execute_wgpu_frame(runtime, &target, output, commit)
+        });
+
+        if reconfigure_after_present {
+            target.reconfigure(self.surface_state.viewport());
+        }
+
+        outcome
+    }
+
+    /// Test seam for acquisition disposition without a native surface.
+    ///
+    /// Mirrors production recovery/retry policy from [`Self::render`], omitting
+    /// only Host-owned surface reconfiguration.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn finish_acquisition<T>(
+        &mut self,
+        effects: RuntimeEffects,
+        acquisition: FrameAcquisition<T>,
+        present: impl FnOnce(T) -> Result<(), FrameError>,
+    ) -> FrameOutcome {
         match acquisition {
             FrameAcquisition::Presented(output) => {
-                let commit = effects.force_present;
-                let outcome = self.finish_presentable(effects, output, false, |output| {
-                    execute_wgpu_frame(runtime, &target, output, commit)
-                });
+                let outcome = self.finish_presentable(effects, output, false, present);
                 if outcome.is_presented() {
                     self.surface_state.reset_after_success();
                 }
                 outcome
             }
             FrameAcquisition::Suboptimal(output) => {
-                let commit = effects.force_present;
-                let outcome = self.finish_presentable(effects, output, true, |output| {
-                    execute_wgpu_frame(runtime, &target, output, commit)
-                });
-                target.reconfigure(self.surface_state.viewport());
+                let outcome = self.finish_presentable(effects, output, true, present);
                 if outcome.is_fatal() || !outcome.is_presented() {
                     return outcome;
                 }
@@ -67,7 +88,6 @@ impl WinitAdapter {
                 FrameOutcome::presented_suboptimal(final_effects)
             }
             FrameAcquisition::RecoveryRequired => {
-                target.reconfigure(self.surface_state.viewport());
                 let mut recovery_effects = effects;
                 if self.surface_state.allow_recovery_retry() {
                     recovery_effects.merge(self.request_frame());
@@ -86,63 +106,6 @@ impl WinitAdapter {
                 FrameError::validation("surface returned a validation error"),
                 effects,
             ),
-        }
-    }
-
-    /// Test seam for acquisition disposition without a native surface.
-    ///
-    /// Mirrors production recovery/retry policy from [`Self::render`], omitting
-    /// only Host-owned surface reconfiguration.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn finish_acquisition<T>(
-        &mut self,
-        effects: RuntimeEffects,
-        acquisition: FrameAcquisition<T>,
-        present: impl FnOnce(T) -> Result<(), FrameError>,
-    ) -> FrameOutcome {
-        match (acquisition.kind(), acquisition) {
-            (FrameAcquisitionKind::Presented, FrameAcquisition::Presented(output)) => {
-                let outcome = self.finish_presentable(effects, output, false, present);
-                if outcome.is_presented() {
-                    self.surface_state.reset_after_success();
-                }
-                outcome
-            }
-            (FrameAcquisitionKind::Suboptimal, FrameAcquisition::Suboptimal(output)) => {
-                let outcome = self.finish_presentable(effects, output, true, present);
-                if outcome.is_fatal() || !outcome.is_presented() {
-                    return outcome;
-                }
-                let mut final_effects = outcome.into_effects();
-                if self.surface_state.allow_recovery_retry() {
-                    final_effects.merge(self.request_frame());
-                }
-                FrameOutcome::presented_suboptimal(final_effects)
-            }
-            (FrameAcquisitionKind::RecoveryRequired, FrameAcquisition::RecoveryRequired) => {
-                let mut recovery_effects = effects;
-                if self.surface_state.allow_recovery_retry() {
-                    recovery_effects.merge(self.request_frame());
-                    FrameOutcome::recovery_required(recovery_effects)
-                } else {
-                    FrameOutcome::fatal(
-                        FrameError::presentation(
-                            "surface remained lost or outdated after reconfiguration",
-                        ),
-                        recovery_effects,
-                    )
-                }
-            }
-            (FrameAcquisitionKind::Skipped, FrameAcquisition::Skipped) => {
-                FrameOutcome::skipped(effects)
-            }
-            (FrameAcquisitionKind::Validation, FrameAcquisition::Validation) => {
-                FrameOutcome::fatal(
-                    FrameError::validation("surface returned a validation error"),
-                    effects,
-                )
-            }
-            _ => unreachable!("acquisition kind must match its classification"),
         }
     }
 
@@ -177,52 +140,12 @@ pub(super) enum FrameAcquisition<T> {
     Validation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) enum FrameAcquisitionKind {
-    Presented,
-    Suboptimal,
-    RecoveryRequired,
-    Skipped,
-    Validation,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PresentableKind {
-    Presented,
-    Suboptimal,
-}
-
-impl<T> FrameAcquisition<T> {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn kind(&self) -> FrameAcquisitionKind {
-        match self {
-            Self::Presented(_) => FrameAcquisitionKind::Presented,
-            Self::Suboptimal(_) => FrameAcquisitionKind::Suboptimal,
-            Self::RecoveryRequired => FrameAcquisitionKind::RecoveryRequired,
-            Self::Skipped => FrameAcquisitionKind::Skipped,
-            Self::Validation => FrameAcquisitionKind::Validation,
-        }
-    }
-}
-
-pub(super) fn classify_presentable<T>(output: T, kind: PresentableKind) -> FrameAcquisition<T> {
-    match kind {
-        PresentableKind::Presented => FrameAcquisition::Presented(output),
-        PresentableKind::Suboptimal => FrameAcquisition::Suboptimal(output),
-    }
-}
-
 pub(super) fn classify_surface_texture(
     texture: wgpu::CurrentSurfaceTexture,
 ) -> FrameAcquisition<wgpu::SurfaceTexture> {
     match texture {
-        wgpu::CurrentSurfaceTexture::Success(output) => {
-            classify_presentable(output, PresentableKind::Presented)
-        }
-        wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
-            classify_presentable(output, PresentableKind::Suboptimal)
-        }
+        wgpu::CurrentSurfaceTexture::Success(output) => FrameAcquisition::Presented(output),
+        wgpu::CurrentSurfaceTexture::Suboptimal(output) => FrameAcquisition::Suboptimal(output),
         wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
             FrameAcquisition::RecoveryRequired
         }

@@ -601,10 +601,7 @@ impl WinitAdapter {
 #[cfg(test)]
 mod tests {
     use super::event::modifiers_to_widget;
-    use super::presenter::{
-        FrameAcquisition, FrameAcquisitionKind, PresentableKind, classify_presentable,
-        classify_surface_texture, execute_presented_frame,
-    };
+    use super::presenter::{FrameAcquisition, classify_surface_texture, execute_presented_frame};
     use super::*;
     use crate::effects::ControlFlowEffect;
     use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
@@ -699,35 +696,28 @@ mod tests {
     #[test]
     fn surface_texture_statuses_share_production_classification() {
         // wgpu keeps SurfaceTexture construction private, so Success and
-        // Suboptimal exercise the shared payload classification seam directly.
-        assert_eq!(
-            classify_presentable("success", PresentableKind::Presented).kind(),
-            FrameAcquisitionKind::Presented
-        );
-        assert_eq!(
-            classify_presentable("suboptimal", PresentableKind::Suboptimal).kind(),
-            FrameAcquisitionKind::Suboptimal
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost).kind(),
-            FrameAcquisitionKind::RecoveryRequired
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated).kind(),
-            FrameAcquisitionKind::RecoveryRequired
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout).kind(),
-            FrameAcquisitionKind::Skipped
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded).kind(),
-            FrameAcquisitionKind::Skipped
-        );
-        assert_eq!(
-            classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation).kind(),
-            FrameAcquisitionKind::Validation
-        );
+        // Suboptimal cannot be exercised here; the remaining statuses map
+        // through the same classify_surface_texture seam as production.
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost),
+            FrameAcquisition::RecoveryRequired
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated),
+            FrameAcquisition::RecoveryRequired
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout),
+            FrameAcquisition::Skipped
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded),
+            FrameAcquisition::Skipped
+        ));
+        assert!(matches!(
+            classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation),
+            FrameAcquisition::Validation
+        ));
     }
 
     #[test]
