@@ -21,6 +21,21 @@ pub(crate) struct EncodeScene<'a> {
     pub(crate) commit: bool,
 }
 
+/// Flushes a contiguous run of renderer slots without imposing paint order.
+fn flush_quad_range<'a>(
+    renderer: &'a QuadRenderer,
+    pass: &mut wgpu::RenderPass<'a>,
+    start: &mut Option<u32>,
+    count: &mut u32,
+    previous: &mut Option<u32>,
+) {
+    if let Some(start_slot) = start.take() {
+        renderer.encode_range(pass, start_slot, *count);
+    }
+    *count = 0;
+    *previous = None;
+}
+
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.
 ///
 /// Lifecycle: created empty with the Runtime; renderers are initialized once a
@@ -106,38 +121,24 @@ impl FrameEncoder {
 
         let raw_items = scene.scene_graph.items();
 
-        let has_external = !scene.external_draws.is_empty()
-            && raw_items.iter().any(|it| {
-                matches!(
-                    it.primitive,
-                    crate::scene::primitive::Primitive::External { .. }
-                )
-            });
-
-        let has_text = self.text_renderer.is_some()
-            && raw_items.iter().any(|it| {
-                matches!(
-                    it.primitive,
-                    crate::scene::primitive::Primitive::Text { .. }
-                )
-            });
-
-        if !has_external && !has_text {
-            renderer.encode(pass);
-            return;
-        }
-
+        // Renderer slots are retained by item ID and therefore are not a
+        // paint-order representation. Walk the raw scene sequence and only
+        // batch slots that are adjacent in that sequence and numerically
+        // adjacent in the instance buffer.
         let mut quad_range_start: Option<u32> = None;
-        let mut quad_range_end: u32 = 0;
+        let mut quad_range_count = 0u32;
+        let mut previous_slot = None;
 
         for item in raw_items {
             match &item.primitive {
                 crate::scene::primitive::Primitive::External { draw, rect } => {
-                    if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
-                    }
+                    flush_quad_range(
+                        renderer,
+                        pass,
+                        &mut quad_range_start,
+                        &mut quad_range_count,
+                        &mut previous_slot,
+                    );
 
                     if let Some(cb) = scene.external_draws.get(draw) {
                         let context = ExternalDrawContext::new(*rect, viewport.clone());
@@ -158,11 +159,13 @@ impl FrameEncoder {
                     }
                 }
                 crate::scene::primitive::Primitive::Text { .. } => {
-                    if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
-                    }
+                    flush_quad_range(
+                        renderer,
+                        pass,
+                        &mut quad_range_start,
+                        &mut quad_range_count,
+                        &mut previous_slot,
+                    );
 
                     if let Some(ref tr) = self.text_renderer {
                         tr.encode_item(pass, item.id);
@@ -170,23 +173,37 @@ impl FrameEncoder {
                 }
                 _ => {
                     if let Some(slot) = renderer.slot_of(item.id) {
-                        match quad_range_start {
-                            None => {
-                                quad_range_start = Some(slot);
-                                quad_range_end = slot;
-                            }
-                            Some(_) => {
-                                quad_range_end = quad_range_end.max(slot);
-                            }
+                        if previous_slot != Some(slot.saturating_sub(1)) {
+                            flush_quad_range(
+                                renderer,
+                                pass,
+                                &mut quad_range_start,
+                                &mut quad_range_count,
+                                &mut previous_slot,
+                            );
+                            quad_range_start = Some(slot);
                         }
+                        quad_range_count += 1;
+                        previous_slot = Some(slot);
+                    } else {
+                        flush_quad_range(
+                            renderer,
+                            pass,
+                            &mut quad_range_start,
+                            &mut quad_range_count,
+                            &mut previous_slot,
+                        );
                     }
                 }
             }
         }
 
-        if let Some(start) = quad_range_start {
-            let count = quad_range_end - start + 1;
-            renderer.encode_range(pass, start, count);
-        }
+        flush_quad_range(
+            renderer,
+            pass,
+            &mut quad_range_start,
+            &mut quad_range_count,
+            &mut previous_slot,
+        );
     }
 }

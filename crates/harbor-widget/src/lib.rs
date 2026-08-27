@@ -20,6 +20,7 @@ pub mod signal;
 pub mod text;
 pub mod view;
 pub mod widgets;
+pub use widgets::decorated_box::DecoratedBox;
 
 #[cfg(feature = "winit")]
 pub mod winit;

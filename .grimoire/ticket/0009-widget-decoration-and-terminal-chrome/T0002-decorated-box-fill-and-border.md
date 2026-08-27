@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec: 0009-widget-decoration-and-terminal-chrome](../../spec/0009-widget-decoration-and-terminal-chrome.md)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 

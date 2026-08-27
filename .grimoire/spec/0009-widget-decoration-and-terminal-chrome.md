@@ -1,7 +1,7 @@
 # Widget Decoration and Terminal Chrome
 
 **Spec ID:** 0009
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-08-26
 
 ## Requirement

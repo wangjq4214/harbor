@@ -1,10 +1,9 @@
 use crate::renderer::Viewport;
 use crate::scene::primitive::Primitive;
 use crate::scene::{SceneDelta, SceneItem};
+use bytemuck::Zeroable;
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
-
-// ── WGSL Shader ─────────────────────────────────────────────────────────────
 
 const QUAD_SHADER: &str = r#"
 struct VertexInput {
@@ -12,100 +11,136 @@ struct VertexInput {
 }
 
 struct InstanceInput {
-    @location(1) rect: vec4<f32>,    // x, y, w, h in NDC
-    @location(2) color: vec4<f32>,   // rgba
-    @location(3) radius: f32,        // corner radius (unused until Phase 2)
+    @location(1) rect: vec4<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) radii: vec4<f32>, // top-left, top-right, bottom-right, bottom-left
+    @location(4) border_width: f32,
+    @location(5) logical_size: vec2<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) local: vec2<f32>,
+    @location(2) size: vec2<f32>,
+    @location(3) radii: vec4<f32>,
+    @location(4) border_width: f32,
 }
 
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
-    // Transform unit quad to rect
-    let x = inst.rect.x + (vert.pos.x + 0.5) * inst.rect.z;
-    let y = inst.rect.y + (vert.pos.y + 0.5) * inst.rect.w;
-    return VertexOutput(vec4<f32>(x, y, 0.0, 1.0), inst.color);
+    let unit = vert.pos + vec2<f32>(0.5, 0.5);
+    let x = inst.rect.x + unit.x * inst.rect.z;
+    let y = inst.rect.y + unit.y * inst.rect.w;
+    return VertexOutput(
+        vec4<f32>(x, y, 0.0, 1.0),
+        inst.color,
+        unit * inst.logical_size,
+        inst.logical_size,
+        inst.radii,
+        inst.border_width,
+    );
+}
+
+fn rounded_box_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
+    // Select the radius by the point's quadrant, then use the standard
+    // rounded-rectangle SDF. In particular, the max(q, 0) term keeps the
+    // middle of each edge straight instead of measuring it from a corner.
+    let half_size = size * 0.5;
+    let centered = point - half_size;
+    var radius = radii.x; // top-left
+    if centered.x >= 0.0 {
+        radius = select(radii.y, radii.z, centered.y >= 0.0);
+    } else if centered.y >= 0.0 {
+        radius = radii.w; // bottom-left
+    }
+    let q = abs(centered) - half_size + vec2<f32>(radius, radius);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    if in.size.x <= 0.0 || in.size.y <= 0.0 {
+        discard;
+    }
+    let outer_distance = rounded_box_distance(in.local, in.size, in.radii);
+    // Derivatives express the signed-distance transition in framebuffer
+    // pixels, so the antialiasing width follows both DPI and perspective.
+    let outer_aa = max(fwidth(outer_distance), 0.001);
+    let outer_alpha = 1.0 - smoothstep(-outer_aa, outer_aa, outer_distance);
+    if in.border_width <= 0.0 {
+        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha);
+    }
+
+    let inset_size = max(in.size - vec2<f32>(2.0 * in.border_width), vec2<f32>(0.0));
+    if inset_size.x <= 0.0 || inset_size.y <= 0.0 {
+        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha);
+    }
+    let inner_radii = max(in.radii - vec4<f32>(in.border_width), vec4<f32>(0.0));
+        let inner_distance = rounded_box_distance(
+        in.local - vec2<f32>(in.border_width),
+        inset_size,
+        inner_radii,
+    );
+    let inner_aa = max(fwidth(inner_distance), 0.001);
+    let inner_alpha = 1.0 - smoothstep(-inner_aa, inner_aa, inner_distance);
+    return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * (1.0 - inner_alpha));
 }
 "#;
-
-// ── Instance Data (GPU layout) ──────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct QuadInstance {
-    rect: [f32; 4],  // x, y, w, h in NDC
-    color: [f32; 4], // rgba
-    radius: f32,     // corner radius
-    _pad: [f32; 3],  // padding for alignment
+    rect: [f32; 4],
+    color: [f32; 4],
+    /// Corner order is top-left, top-right, bottom-right, bottom-left.
+    radii: [f32; 4],
+    border_width: f32,
+    logical_size: [f32; 2],
+    _pad: f32,
 }
 
-// ── QuadRenderer ────────────────────────────────────────────────────────────
-
-/// Instanced quad GPU renderer.
-///
-/// Owns the pipeline, vertex/index buffers (one unit quad), and a dynamic
-/// instance buffer. Applies SceneDeltas to update the instance buffer and
-/// encodes instanced draw calls into a RenderPass.
+/// Instanced GPU renderer for legacy scalar and independently rounded quads.
 pub struct QuadRenderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    device: wgpu::Device,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
     instance_capacity: u32,
-    /// Free slots reclaimed from removed items, popped before allocating new ones.
     free_slots: Vec<u32>,
-    /// Maps SceneItem id -> instance buffer slot for lookups on modify/remove.
     id_to_slot: std::collections::BTreeMap<u64, u32>,
-    /// Reverse map: slot -> id
     slot_to_id: std::collections::BTreeMap<u32, u64>,
 }
 
 impl QuadRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        // Vertex data: unit quad centered at origin
-        let vertices: [[f32; 2]; 4] = [
-            [-0.5, -0.5], // bottom-left
-            [0.5, -0.5],  // bottom-right
-            [0.5, 0.5],   // top-right
-            [-0.5, 0.5],  // top-left
-        ];
+        let vertices: [[f32; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
         let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
-
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("widget-quad-vertex"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("widget-quad-index"),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-
-        // Start with capacity for 256 instances
-        let instance_capacity = 256u32;
+        let instance_capacity = 256;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("widget-quad-instance"),
-            size: (instance_capacity as u64) * std::mem::size_of::<QuadInstance>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            size: instance_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("widget-quad-shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(QUAD_SHADER)),
         });
-
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: 2 * std::mem::size_of::<f32>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -115,7 +150,6 @@ impl QuadRenderer {
                 shader_location: 0,
             }],
         };
-
         let instance_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<QuadInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -127,23 +161,31 @@ impl QuadRenderer {
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x4,
-                    offset: 4 * std::mem::size_of::<f32>() as u64,
+                    offset: 16,
                     shader_location: 2,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 8 * std::mem::size_of::<f32>() as u64,
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 32,
                     shader_location: 3,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 48,
+                    shader_location: 4,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 52,
+                    shader_location: 5,
                 },
             ],
         };
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("widget-quad-layout"),
             bind_group_layouts: &[],
             immediate_size: 0,
         });
-
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("widget-quad-pipeline"),
             layout: Some(&pipeline_layout),
@@ -163,25 +205,17 @@ impl QuadRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
+            primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
-
-        QuadRenderer {
+        Self {
             pipeline,
             vertex_buffer,
             index_buffer,
+            device: device.clone(),
             instance_buffer,
             instance_count: 0,
             instance_capacity,
@@ -191,120 +225,169 @@ impl QuadRenderer {
         }
     }
 
-    /// Applies a SceneDelta to the instance buffer, translating dp Rects to
-    /// NDC via the Viewport.
     pub fn update(&mut self, queue: &wgpu::Queue, delta: &SceneDelta, viewport: &Viewport) {
-        // For removed items, clear the slot for reuse
         for id in &delta.removed {
             if let Some(slot) = self.id_to_slot.remove(id) {
                 self.slot_to_id.remove(&slot);
-                // Reclaim the slot for future allocations
                 self.free_slots.push(slot);
-                // Write zeroed instance data to clear the slot
-                let instance = QuadInstance {
-                    rect: [0.0, 0.0, 0.0, 0.0],
-                    color: [0.0, 0.0, 0.0, 0.0],
-                    radius: 0.0,
-                    _pad: [0.0, 0.0, 0.0],
-                };
-                let offset = slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
-                queue.write_buffer(&self.instance_buffer, offset, bytemuck::bytes_of(&instance));
+                self.write_instance(queue, slot, QuadInstance::zeroed());
             }
         }
-
-        // For added items, allocate new slots
         for item in &delta.added {
-            let instance = self.item_to_instance(item, viewport);
-            let slot = self.allocate_slot();
-            if slot >= self.instance_capacity {
-                // Buffer full — item skipped. With free-list recycling, this
-                // only occurs when >256 quads are alive simultaneously.
-                // TODO: grow buffer by recreating with double capacity.
+            if !Self::is_quad_primitive(&item.primitive) {
                 continue;
             }
+            let Some(slot) = self.allocate_slot(queue) else {
+                continue;
+            };
             self.id_to_slot.insert(item.id, slot);
             self.slot_to_id.insert(slot, item.id);
-            let offset = slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
-            queue.write_buffer(&self.instance_buffer, offset, bytemuck::bytes_of(&instance));
+            self.write_instance(queue, slot, self.item_to_instance(item, viewport));
         }
-
-        // For modified items, update in place
         for item in &delta.modified {
-            if let Some(slot) = self.id_to_slot.get(&item.id) {
-                let instance = self.item_to_instance(item, viewport);
-                let offset = *slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
-                queue.write_buffer(&self.instance_buffer, offset, bytemuck::bytes_of(&instance));
+            if Self::is_quad_primitive(&item.primitive) {
+                if let Some(slot) = self.id_to_slot.get(&item.id).copied() {
+                    self.write_instance(queue, slot, self.item_to_instance(item, viewport));
+                } else if let Some(slot) = self.allocate_slot(queue) {
+                    self.id_to_slot.insert(item.id, slot);
+                    self.slot_to_id.insert(slot, item.id);
+                    self.write_instance(queue, slot, self.item_to_instance(item, viewport));
+                }
+            } else if let Some(slot) = self.id_to_slot.remove(&item.id) {
+                self.slot_to_id.remove(&slot);
+                self.free_slots.push(slot);
+                self.write_instance(queue, slot, QuadInstance::zeroed());
             }
         }
     }
 
-    /// Encodes all instanced draw calls into the RenderPass.
     pub fn encode<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
-        if self.instance_count == 0 {
-            return;
+        let count = self.instance_count.min(self.instance_capacity);
+        if count != 0 {
+            self.encode_impl(pass, 0, count);
         }
-        self.encode_impl(pass, 0, self.instance_count);
     }
 
-    /// Encodes a contiguous range of instance slots.
-    ///
-    /// Draws instances `[start, end)` from the instance buffer.  Zeroed
-    /// instances (removed items) in the range produce invisible quads, so
-    /// the range does not need to be sparse.
     pub fn encode_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
-        if count == 0 || start >= self.instance_count {
-            return;
+        let capacity = self.instance_count.min(self.instance_capacity);
+        if count != 0 && start < capacity {
+            self.encode_impl(pass, start, count.min(capacity - start));
         }
-        let count = count.min(self.instance_count - start);
-        self.encode_impl(pass, start, count);
     }
 
     fn encode_impl<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
+        let end = start.saturating_add(count).min(self.instance_capacity);
+        if start >= end {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..6, 0, start..(start + count));
+        pass.draw_indexed(0..6, 0, start..end);
     }
 
-    // ── Internal helpers ─────────────────────────────────────────────────
+    fn is_quad_primitive(primitive: &Primitive) -> bool {
+        matches!(
+            primitive,
+            Primitive::Quad { .. }
+                | Primitive::Border { .. }
+                | Primitive::RoundedQuad { .. }
+                | Primitive::RoundedBorder { .. }
+        )
+    }
 
     fn item_to_instance(&self, item: &SceneItem, viewport: &Viewport) -> QuadInstance {
-        match &item.primitive {
+        let (rect, color, radii, border_width) = match &item.primitive {
             Primitive::Quad {
                 rect,
                 color,
                 corner_radius,
-            } => {
-                let ndc = viewport.dp_rect_to_ndc(rect);
-                QuadInstance {
-                    rect: ndc,
-                    color: color.to_array(),
-                    radius: *corner_radius,
-                    _pad: [0.0, 0.0, 0.0],
-                }
-            }
-            // Non-Quad primitives produce zeroed instances (no-ops)
-            _ => QuadInstance {
-                rect: [0.0, 0.0, 0.0, 0.0],
-                color: [0.0, 0.0, 0.0, 0.0],
-                radius: 0.0,
-                _pad: [0.0, 0.0, 0.0],
-            },
+            } => (*rect, *color, [*corner_radius; 4], 0.0),
+            Primitive::Border {
+                rect,
+                width,
+                color,
+                corner_radius,
+            } => (*rect, *color, [*corner_radius; 4], *width),
+            Primitive::RoundedQuad {
+                rect,
+                color,
+                corner_radii,
+            } => (*rect, *color, *corner_radii, 0.0),
+            Primitive::RoundedBorder {
+                rect,
+                width,
+                color,
+                corner_radii,
+            } => (*rect, *color, *corner_radii, *width),
+            _ => return QuadInstance::zeroed(),
+        };
+        let size = rect.size();
+        QuadInstance {
+            rect: viewport.dp_rect_to_ndc(&rect),
+            color: color.to_array(),
+            radii,
+            border_width,
+            logical_size: [size.width, size.height],
+            _pad: 0.0,
         }
     }
 
-    /// Returns the instance buffer slot for a SceneItem ID, if present.
+    fn write_instance(&self, queue: &wgpu::Queue, slot: u32, instance: QuadInstance) {
+        queue.write_buffer(
+            &self.instance_buffer,
+            slot as u64 * std::mem::size_of::<QuadInstance>() as u64,
+            bytemuck::bytes_of(&instance),
+        );
+    }
+
     pub fn slot_of(&self, id: u64) -> Option<u32> {
         self.id_to_slot.get(&id).copied()
     }
 
-    fn allocate_slot(&mut self) -> u32 {
+    fn allocate_slot(&mut self, queue: &wgpu::Queue) -> Option<u32> {
         if let Some(slot) = self.free_slots.pop() {
-            return slot;
+            return Some(slot);
+        }
+        if self.instance_count == self.instance_capacity {
+            self.grow_instance_buffer(queue, self.instance_count.checked_add(1)?);
         }
         let slot = self.instance_count;
         self.instance_count += 1;
-        slot
+        Some(slot)
+    }
+
+    fn grow_instance_buffer(&mut self, queue: &wgpu::Queue, required_capacity: u32) {
+        debug_assert!(required_capacity > self.instance_capacity);
+        let new_capacity = self
+            .instance_capacity
+            .saturating_mul(2)
+            .max(required_capacity);
+        assert!(new_capacity > self.instance_capacity);
+
+        let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("widget-quad-instance-grown"),
+            size: new_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("widget-quad-instance-grow"),
+            });
+        encoder.copy_buffer_to_buffer(
+            &self.instance_buffer,
+            0,
+            &new_buffer,
+            0,
+            self.instance_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
+        );
+        queue.submit(Some(encoder.finish()));
+        self.instance_buffer = new_buffer;
+        self.instance_capacity = new_capacity;
     }
 }

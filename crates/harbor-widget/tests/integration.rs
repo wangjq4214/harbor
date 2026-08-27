@@ -1,9 +1,10 @@
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
-use harbor_widget::scene::primitive::Color;
+use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, Key, View};
 use harbor_widget::widgets::sized_box::SizedBox;
+use harbor_widget::{Border, BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -350,6 +351,91 @@ fn zero_padding_is_noop_at_runtime_level() {
     // Child should be at (0,0) and have same size
     let child = arena.get(root.children()[0]).unwrap();
     assert_eq!(child.layout_rect().unwrap().size(), Size::new(100.0, 50.0));
+}
+
+#[test]
+fn should_paint_decorated_box_in_background_child_border_order_without_false_clip_metadata() {
+    // Arrange
+    let border = Border::all(Color::BLUE, 2.0).unwrap();
+    let decoration = BoxDecoration::new()
+        .try_color(Color::RED)
+        .unwrap()
+        .border(border)
+        .border_radius(BorderRadius::all(8.0).unwrap());
+    let mut rt = Runtime::new();
+    rt.set_root(
+        DecoratedBox::new(decoration)
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::GREEN)),
+    );
+
+    // Act
+    rt.update(Instant::now());
+
+    // Assert
+    let delta = rt.pending_delta().unwrap();
+    assert_eq!(delta.added.len(), 3);
+    assert!(matches!(
+        delta.added[0].primitive,
+        Primitive::RoundedQuad { .. }
+    ));
+    assert!(matches!(delta.added[1].primitive, Primitive::Quad { .. }));
+    assert!(matches!(
+        delta.added[2].primitive,
+        Primitive::RoundedBorder { .. }
+    ));
+    // Rounded masks are deliberately deferred: the current render-pass API
+    // supports rectangular scissors only, so no rounded clip metadata is
+    // advertised to child or external draws.
+    assert!(delta.added.iter().all(|item| item.clips.is_empty()));
+    assert_eq!(delta.added[0].paint_order, 0);
+    assert_eq!(delta.added[1].paint_order, 1);
+    assert_eq!(delta.added[2].paint_order, 2);
+}
+
+#[test]
+fn should_preserve_layout_and_one_child_contract_for_decorated_box() {
+    // Arrange
+    let mut rt = Runtime::new();
+    rt.set_root(
+        DecoratedBox::new(BoxDecoration::new().try_color(Color::RED).unwrap())
+            .child(SizedBox::new(Size::new(40.0, 24.0))),
+    );
+
+    // Act
+    rt.update(Instant::now());
+
+    // Assert
+    let root = rt.arena().get(rt.root_id().unwrap()).unwrap();
+    assert_eq!(root.children().len(), 1);
+    assert_eq!(root.layout_rect().unwrap().size(), Size::new(40.0, 24.0));
+    assert_eq!(
+        rt.arena()
+            .get(root.children()[0])
+            .unwrap()
+            .layout_rect()
+            .unwrap()
+            .size(),
+        Size::new(40.0, 24.0)
+    );
+}
+
+#[test]
+fn should_emit_no_decoration_fill_when_color_is_absent() {
+    // Arrange
+    let mut rt = Runtime::new();
+    rt.set_root(
+        DecoratedBox::new(BoxDecoration::new())
+            .child(SizedBox::new(Size::new(12.0, 12.0)).color(Color::GREEN)),
+    );
+
+    // Act
+    rt.update(Instant::now());
+
+    // Assert
+    let delta = rt.pending_delta().unwrap();
+    assert_eq!(delta.added.len(), 1);
+    assert!(matches!(delta.added[0].primitive, Primitive::Quad { .. }));
 }
 
 // ── Align widget at runtime ─────────────────────────────────────────────────

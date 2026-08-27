@@ -239,6 +239,19 @@ pub enum Primitive {
         color: Color,
         corner_radius: f32,
     },
+    /// A fill with independently resolved corner radii.
+    RoundedQuad {
+        rect: Rect,
+        color: Color,
+        corner_radii: [f32; 4],
+    },
+    /// A uniform-width outline with independently resolved corner radii.
+    RoundedBorder {
+        rect: Rect,
+        width: f32,
+        color: Color,
+        corner_radii: [f32; 4],
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,
