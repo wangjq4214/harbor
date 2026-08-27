@@ -142,6 +142,13 @@ pub trait Component {
 
 // ── AnyView ─────────────────────────────────────────────────────────────────
 
+/// A widget's paint position relative to the recursive paint of its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintPhase {
+    BeforeChildren,
+    AfterChildren,
+}
+
 /// Internal type-erased View capability.
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
@@ -185,6 +192,22 @@ pub(crate) trait AnyView: 'static {
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         let _ = (rect, metrics);
         vec![]
+    }
+
+    /// Returns primitives for one position around child painting.
+    ///
+    /// Existing views implement only [`Self::paint_primitives`], so their
+    /// output remains before their children and they emit nothing afterward.
+    fn paint_primitives_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        metrics: &TextMetrics,
+    ) -> Vec<Primitive> {
+        match phase {
+            PaintPhase::BeforeChildren => self.paint_primitives(rect, metrics),
+            PaintPhase::AfterChildren => Vec::new(),
+        }
     }
 
     /// Returns true if the point (in widget-local coordinates) is inside

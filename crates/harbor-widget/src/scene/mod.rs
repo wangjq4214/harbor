@@ -1,5 +1,7 @@
+pub mod clip;
 pub mod primitive;
 
+use clip::RoundedClip;
 use hashbrown::{HashMap, HashSet};
 use primitive::Primitive;
 
@@ -10,6 +12,8 @@ use primitive::Primitive;
 pub struct SceneItem {
     pub id: u64,
     pub primitive: Primitive,
+    /// Active rounded ancestor clips in outer-to-inner order.
+    pub clips: Vec<RoundedClip>,
     pub paint_order: u32,
 }
 
@@ -150,7 +154,10 @@ impl SceneGraph {
             if item.id != 0 {
                 seen_ids.insert(item.id);
                 if let Some(old) = old_by_id.get(&item.id) {
-                    if old.paint_order != item.paint_order || old.primitive != item.primitive {
+                    if old.paint_order != item.paint_order
+                        || old.primitive != item.primitive
+                        || old.clips != item.clips
+                    {
                         modified.push(item.clone());
                     }
                 } else {
@@ -225,6 +232,7 @@ mod tests {
                 color: Color::WHITE,
                 corner_radius: 0.0,
             },
+            clips: Vec::new(),
             paint_order: order,
         }
     }
@@ -563,6 +571,7 @@ mod tests {
                 draw: 42u64 as ExternalDrawId,
                 rect: Rect::from_min_size(Point::new(0.0, 0.0), Size::new(800.0, 600.0)),
             },
+            clips: Vec::new(),
             paint_order: 0,
         };
         graph.diff(vec![external_item]);

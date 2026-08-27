@@ -16,7 +16,7 @@ mod tests {
     use super::*;
     use crate::layout::{BoxConstraints, Point, Size};
     use crate::signal::{PENDING_DIRTY, Signal};
-    use crate::view::{AnyView, Component, Key, View};
+    use crate::view::{AnyView, Component, Key, PaintPhase, View};
     pub(crate) use reconcile::{create_fiber_from_view, reconcile_children, unmount_fiber};
     use std::{
         any::TypeId,
@@ -188,6 +188,60 @@ mod tests {
         }
         fn intrinsic_size(&self, c: BoxConstraints, _metrics: &crate::text::TextMetrics) -> Size {
             c.constrain(Size::new(10.0, 10.0))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PhasePaintView {
+        before: Vec<crate::scene::primitive::Color>,
+        after: Vec<crate::scene::primitive::Color>,
+    }
+
+    impl PhasePaintView {
+        fn before(color: crate::scene::primitive::Color) -> Self {
+            Self {
+                before: vec![color],
+                after: Vec::new(),
+            }
+        }
+    }
+
+    impl AnyView for PhasePaintView {
+        fn key(&self) -> Option<&Key> {
+            None
+        }
+
+        fn widget_type(&self) -> TypeId {
+            TypeId::of::<Self>()
+        }
+
+        fn intrinsic_size(
+            &self,
+            constraints: BoxConstraints,
+            _metrics: &crate::text::TextMetrics,
+        ) -> Size {
+            constraints.constrain(Size::new(10.0, 10.0))
+        }
+
+        fn paint_primitives_for_phase(
+            &self,
+            phase: PaintPhase,
+            rect: crate::layout::Rect,
+            _metrics: &crate::text::TextMetrics,
+        ) -> Vec<crate::scene::primitive::Primitive> {
+            let colors = match phase {
+                PaintPhase::BeforeChildren => &self.before,
+                PaintPhase::AfterChildren => &self.after,
+            };
+            colors
+                .iter()
+                .copied()
+                .map(|color| crate::scene::primitive::Primitive::Quad {
+                    rect,
+                    color,
+                    corner_radius: 0.0,
+                })
+                .collect()
         }
     }
 
@@ -580,6 +634,71 @@ mod tests {
         let items = paint_fiber(&mut arena, fiber_id, 0, &mut next_scene_item_id);
         assert!(items.is_empty());
         assert!(arena.get(fiber_id).unwrap().scene_item_ids.is_empty());
+    }
+
+    #[test]
+    fn paint_fiber_orders_phase_primitives_and_retains_after_ids() {
+        use crate::scene::primitive::{Color, Primitive};
+
+        // Arrange: the parent emits before and after its child.
+        let parent = PhasePaintView {
+            before: vec![Color::RED],
+            after: vec![Color::BLUE],
+        };
+        let child = PhasePaintView::before(Color::GREEN);
+        let mut arena = FiberArena::new();
+        let root_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            View::new(parent, vec![View::new(child, vec![], None)], None),
+        );
+        layout_fiber(
+            &mut arena,
+            root_id,
+            BoxConstraints::loose(Size::new(100.0, 100.0)),
+            Point::ZERO,
+        );
+
+        // Act: paint once, then add one descendant primitive.
+        let mut next_scene_item_id = 1;
+        let first = paint_fiber(&mut arena, root_id, 0, &mut next_scene_item_id);
+        let child_id = arena.get(root_id).unwrap().children[0];
+        arena.get_mut(child_id).unwrap().view = Some(std::sync::Arc::new(PhasePaintView {
+            before: vec![Color::GREEN, Color::BLACK],
+            after: Vec::new(),
+        }));
+        let second = paint_fiber(&mut arena, root_id, 0, &mut next_scene_item_id);
+
+        // Assert: before → descendant → after; after identity remains stable.
+        assert_eq!(first.len(), 3);
+        assert_eq!(
+            first
+                .iter()
+                .map(|item| match item.primitive {
+                    Primitive::Quad { color, .. } => color,
+                    _ => unreachable!("phase test emits only quads"),
+                })
+                .collect::<Vec<_>>(),
+            vec![Color::RED, Color::GREEN, Color::BLUE]
+        );
+        assert_eq!(first[2].id, second[3].id);
+        assert_eq!(
+            second
+                .iter()
+                .map(|item| item.paint_order)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            second
+                .iter()
+                .map(|item| match item.primitive {
+                    Primitive::Quad { color, .. } => color,
+                    _ => unreachable!("phase test emits only quads"),
+                })
+                .collect::<Vec<_>>(),
+            vec![Color::RED, Color::GREEN, Color::BLACK, Color::BLUE]
+        );
     }
 
     #[test]

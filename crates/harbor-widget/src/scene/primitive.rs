@@ -44,6 +44,17 @@ impl Color {
         b: 1.0,
         a: 1.0,
     };
+    pub const TRANSPARENT: Self = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+
+    /// Returns true when every linear RGBA component is finite.
+    pub fn is_finite(&self) -> bool {
+        self.r.is_finite() && self.g.is_finite() && self.b.is_finite() && self.a.is_finite()
+    }
 
     pub fn to_array(&self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
@@ -254,6 +265,64 @@ mod tests {
         assert_eq!(Color::RED.to_array(), [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(Color::GREEN.to_array(), [0.0, 1.0, 0.0, 1.0]);
         assert_eq!(Color::BLUE.to_array(), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(Color::TRANSPARENT.to_array(), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn color_finiteness_checks_every_component() {
+        assert!(Color::TRANSPARENT.is_finite());
+        for color in [
+            Color {
+                r: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                r: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                r: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+        ] {
+            assert!(!color.is_finite());
+        }
     }
 
     #[test]

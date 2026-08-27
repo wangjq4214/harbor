@@ -71,8 +71,10 @@ pub struct Fiber {
     pub(crate) layout_rect: Option<Rect>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
-    /// Stable scene identities for this fiber's local primitive slots.
+    /// Stable scene identities for this fiber's before-child primitive slots.
     pub(crate) scene_item_ids: Vec<u64>,
+    /// Stable scene identities for this fiber's after-child primitive slots.
+    pub(crate) after_scene_item_ids: Vec<u64>,
 }
 
 impl Fiber {
@@ -92,6 +94,7 @@ impl Fiber {
             layout_rect: None,
             view,
             scene_item_ids: Vec::new(),
+            after_scene_item_ids: Vec::new(),
         }
     }
 

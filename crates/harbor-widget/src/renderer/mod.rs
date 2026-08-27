@@ -1,7 +1,40 @@
 pub mod quad;
 pub mod text_renderer;
 
+use crate::decoration::ClipBehavior;
 use crate::layout::{Rect, Size};
+use crate::scene::clip::RoundedClip;
+
+/// Renderer-ready rounded clip geometry in physical pixels.
+///
+/// Bounds intentionally use plain floating-point coordinates rather than the
+/// logical [`Rect`] type, making the unit conversion boundary explicit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicalRoundedClip {
+    min: (f32, f32),
+    max: (f32, f32),
+    radii: [f32; 4],
+    behavior: ClipBehavior,
+}
+
+impl PhysicalRoundedClip {
+    pub const fn min(&self) -> (f32, f32) {
+        self.min
+    }
+
+    pub const fn max(&self) -> (f32, f32) {
+        self.max
+    }
+
+    /// Returns physical radii clockwise from the top-left corner.
+    pub const fn radii(&self) -> [f32; 4] {
+        self.radii
+    }
+
+    pub const fn behavior(&self) -> ClipBehavior {
+        self.behavior
+    }
+}
 
 // ── Viewport ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +77,32 @@ impl Viewport {
         }
     }
 
+    /// Converts retained logical rounded-clip geometry to physical pixels
+    /// without introducing raster rounding or GPU state.
+    ///
+    /// The public logical and viewport values are finite, but their product
+    /// can exceed `f32` range. Saturation preserves a finite renderer boundary
+    /// for a later GPU encoder while leaving all representable products exact.
+    pub fn to_physical_clip(&self, clip: &RoundedClip) -> PhysicalRoundedClip {
+        let rect = clip.rect();
+        let radii = clip
+            .radii()
+            .as_array()
+            .map(|radius| scale_to_physical(radius, self.scale_factor));
+        PhysicalRoundedClip {
+            min: (
+                scale_to_physical(rect.min.x, self.scale_factor),
+                scale_to_physical(rect.min.y, self.scale_factor),
+            ),
+            max: (
+                scale_to_physical(rect.max.x, self.scale_factor),
+                scale_to_physical(rect.max.y, self.scale_factor),
+            ),
+            radii,
+            behavior: clip.behavior(),
+        }
+    }
+
     /// Returns true when both physical dimensions are non-zero.
     pub fn is_drawable(&self) -> bool {
         self.physical_size.0 > 0 && self.physical_size.1 > 0
@@ -73,6 +132,11 @@ impl Viewport {
     }
 }
 
+fn scale_to_physical(value: f32, scale_factor: f32) -> f32 {
+    let scaled = f64::from(value) * f64::from(scale_factor);
+    scaled.clamp(f64::from(-f32::MAX), f64::from(f32::MAX)) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +147,81 @@ mod tests {
         let vp = Viewport::new(800, 600, 1.0);
         assert_eq!(vp.logical_size, Size::new(800.0, 600.0));
         assert_eq!(vp.scale_factor, 1.0);
+    }
+
+    #[test]
+    fn physical_rounded_clip_preserves_fractional_scaled_geometry() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect::from_min_size(Point::new(1.25, 2.5), Size::new(10.0, 8.0)),
+            BorderRadius::only(1.0, 2.0, 3.0, 4.0).unwrap(),
+            ClipBehavior::AntiAlias,
+        )
+        .unwrap();
+        let physical = Viewport::new(600, 400, 1.5).to_physical_clip(&clip);
+
+        assert_eq!(physical.min(), (1.875, 3.75));
+        assert_eq!(physical.max(), (16.875, 15.75));
+        assert_eq!(physical.radii(), [1.5, 3.0, 4.5, 6.0]);
+        assert_eq!(physical.behavior(), ClipBehavior::AntiAlias);
+    }
+
+    #[test]
+    fn physical_rounded_clip_scales_at_one_and_two_times_without_rounding() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect::from_min_size(Point::new(1.25, 2.5), Size::new(4.0, 5.0)),
+            BorderRadius::all(1.25).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap();
+
+        let at_one = Viewport::new(100, 100, 1.0).to_physical_clip(&clip);
+        let at_two = Viewport::new(200, 200, 2.0).to_physical_clip(&clip);
+
+        assert_eq!(at_one.min(), (1.25, 2.5));
+        assert_eq!(at_one.max(), (5.25, 7.5));
+        assert_eq!(at_one.radii(), [1.25; 4]);
+        assert_eq!(at_two.min(), (2.5, 5.0));
+        assert_eq!(at_two.max(), (10.5, 15.0));
+        assert_eq!(at_two.radii(), [2.5; 4]);
+    }
+
+    #[test]
+    fn physical_rounded_clip_saturates_extreme_finite_products() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect {
+                min: Point::ZERO,
+                max: Point::new(f32::MAX, 1.0),
+            },
+            BorderRadius::all(1.0).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap();
+        let physical = Viewport::new(1, 1, 2.0).to_physical_clip(&clip);
+
+        assert_eq!(physical.max().0, f32::MAX);
+        assert!(
+            [
+                physical.min().0,
+                physical.min().1,
+                physical.max().0,
+                physical.max().1,
+                physical.radii()[0],
+                physical.radii()[1],
+                physical.radii()[2],
+                physical.radii()[3],
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+        );
     }
 
     #[test]

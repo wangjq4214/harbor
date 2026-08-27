@@ -1,3 +1,9 @@
+pub mod decoration;
+pub use decoration::{
+    Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecorationError,
+    NormalizedBorderRadius,
+};
+
 pub mod effects;
 pub use effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ExternalInvalidation, ImeEffect,

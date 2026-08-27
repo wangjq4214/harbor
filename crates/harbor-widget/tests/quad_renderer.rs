@@ -193,6 +193,7 @@ fn make_quad_item(id: u64, order: u32, x: f32, y: f32, w: f32, h: f32) -> SceneI
             color: Color::RED,
             corner_radius: 0.0,
         },
+        clips: Vec::new(),
         paint_order: order,
     }
 }
