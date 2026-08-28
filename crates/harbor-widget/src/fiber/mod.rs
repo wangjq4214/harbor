@@ -701,6 +701,66 @@ mod tests {
         );
     }
 
+    #[derive(Clone)]
+    struct ClipAncestor(crate::scene::clip::RoundedClip);
+
+    impl AnyView for ClipAncestor {
+        fn key(&self) -> Option<&Key> {
+            None
+        }
+
+        fn widget_type(&self) -> TypeId {
+            TypeId::of::<Self>()
+        }
+
+        fn intrinsic_size(
+            &self,
+            constraints: BoxConstraints,
+            _metrics: &crate::text::TextMetrics,
+        ) -> Size {
+            constraints.constrain(Size::new(20.0, 20.0))
+        }
+
+        fn descendant_clip(
+            &self,
+            _rect: crate::layout::Rect,
+        ) -> Option<crate::scene::clip::RoundedClip> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn paint_fiber_attaches_only_inherited_clips_to_descendant_items() {
+        let clip = crate::scene::clip::RoundedClip::new(
+            crate::layout::Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            crate::decoration::BorderRadius::all(4.0).unwrap(),
+            crate::decoration::ClipBehavior::HardEdge,
+        )
+        .unwrap();
+        let child = PhasePaintView::before(crate::scene::primitive::Color::RED);
+        let mut arena = FiberArena::new();
+        let root = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            View::new(
+                ClipAncestor(clip.clone()),
+                vec![View::new(child, vec![], None)],
+                None,
+            ),
+        );
+        layout_fiber(
+            &mut arena,
+            root,
+            BoxConstraints::loose(Size::new(20.0, 20.0)),
+            Point::ZERO,
+        );
+
+        let items = paint_fiber(&mut arena, root, 0, &mut 1);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].clips, vec![clip]);
+    }
+
     #[test]
     fn paint_fiber_nested_column_correct_paint_order() {
         use crate::scene::primitive::Color;

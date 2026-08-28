@@ -210,6 +210,29 @@ pub(crate) trait AnyView: 'static {
         }
     }
 
+    /// Returns phase primitives together with stable local paint-slot keys.
+    ///
+    /// Views that omit an effect may preserve identities of later effects by
+    /// retaining their original slot keys rather than shifting vector indexes.
+    fn paint_primitives_with_slots_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        metrics: &TextMetrics,
+    ) -> Vec<(u32, Primitive)> {
+        self.paint_primitives_for_phase(phase, rect, metrics)
+            .into_iter()
+            .enumerate()
+            .map(|(slot, primitive)| (slot as u32, primitive))
+            .collect()
+    }
+
+    /// Optional clip inherited by descendants. The view's own primitives are
+    /// intentionally painted before this clip is appended.
+    fn descendant_clip(&self, _rect: Rect) -> Option<crate::scene::clip::RoundedClip> {
+        None
+    }
+
     /// Returns true if the point (in widget-local coordinates) is inside
     /// the widget's hit-testable region.
     /// Default: point-in-rect test.

@@ -4,7 +4,7 @@ use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, Primitive,
 };
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
@@ -15,7 +15,6 @@ use std::sync::Arc;
 pub(crate) struct EncodeScene<'a> {
     pub(crate) scene_graph: &'a SceneGraph,
     pub(crate) pending_delta: &'a mut Option<SceneDelta>,
-    pub(crate) current_viewport: &'a mut Option<Viewport>,
     pub(crate) external_draws: &'a HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     pub(crate) external_eligible: &'a HashMap<ExternalDrawId, bool>,
     pub(crate) commit: bool,
@@ -44,6 +43,7 @@ pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
     text_renderer: Option<TextRenderer>,
     text_run_cache: TextRunCache,
+    encoded_viewport: Option<Viewport>,
 }
 
 impl FrameEncoder {
@@ -52,6 +52,7 @@ impl FrameEncoder {
             renderer: None,
             text_renderer: None,
             text_run_cache: TextRunCache::new(),
+            encoded_viewport: None,
         }
     }
 
@@ -111,15 +112,21 @@ impl FrameEncoder {
             None => return,
         };
 
-        if let Some(delta) = scene.pending_delta.as_ref() {
-            *scene.current_viewport = Some(viewport.clone());
+        let viewport_changed = self.encoded_viewport.as_ref() != Some(&viewport);
+        let delta = scene.pending_delta.take();
+        if let Some(delta) = delta.as_ref() {
             renderer.update(queue, delta, &viewport);
-            if let Some(ref mut tr) = self.text_renderer {
-                tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
-            }
         }
-
         let raw_items = scene.scene_graph.items();
+        if viewport_changed {
+            renderer.refresh_viewport(queue, raw_items, &viewport);
+        }
+        if (delta.is_some() || viewport_changed)
+            && let Some(ref mut tr) = self.text_renderer
+        {
+            tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
+        }
+        self.encoded_viewport = Some(viewport.clone());
 
         // Renderer slots are retained by item ID and therefore are not a
         // paint-order representation. Walk the raw scene sequence and only
@@ -131,7 +138,7 @@ impl FrameEncoder {
 
         for item in raw_items {
             match &item.primitive {
-                crate::scene::primitive::Primitive::External { draw, rect } => {
+                Primitive::External { draw, rect } => {
                     flush_quad_range(
                         renderer,
                         pass,
@@ -158,7 +165,7 @@ impl FrameEncoder {
                         );
                     }
                 }
-                crate::scene::primitive::Primitive::Text { .. } => {
+                Primitive::Text { .. } => {
                     flush_quad_range(
                         renderer,
                         pass,
@@ -171,7 +178,11 @@ impl FrameEncoder {
                         tr.encode_item(pass, item.id);
                     }
                 }
-                _ => {
+                Primitive::Quad { .. }
+                | Primitive::Border { .. }
+                | Primitive::RoundedQuad { .. }
+                | Primitive::RoundedBorder { .. }
+                | Primitive::OuterShadow { .. } => {
                     if let Some(slot) = renderer.slot_of(item.id) {
                         if previous_slot != Some(slot.saturating_sub(1)) {
                             flush_quad_range(

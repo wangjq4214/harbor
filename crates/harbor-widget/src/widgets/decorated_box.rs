@@ -13,6 +13,105 @@ pub struct DecoratedBox {
 }
 
 impl DecoratedBox {
+    /// Caps blur input so its three-sigma raster extent remains finite.
+    const MAX_BLUR_RADIUS: f32 = f32::MAX / 6.0;
+
+    /// Bounds the visual contribution of a Gaussian-like blur in logical pixels.
+    const fn blur_extent(blur_radius: f32) -> f32 {
+        blur_radius.min(Self::MAX_BLUR_RADIUS) * 3.0
+    }
+
+    /// Keeps every shadow rasterizable around its hard or soft SDF edge.
+    ///
+    /// The one-pixel floor gives zero and very small blur radii the same
+    /// finite derivative-aware raster boundary; the shader still limits soft
+    /// coverage to the requested blur extent.
+    const fn shadow_raster_extent(blur_radius: f32) -> f32 {
+        Self::blur_extent(blur_radius).max(1.0)
+    }
+
+    fn finite_f32(value: f64) -> Option<f32> {
+        (value.is_finite() && value.abs() <= f64::from(f32::MAX)).then_some(value as f32)
+    }
+
+    fn outer_shadow_primitive(
+        &self,
+        rect: Rect,
+        radius: BorderRadius,
+        shadow: &crate::decoration::BoxShadow,
+    ) -> Option<Primitive> {
+        let color = shadow.color();
+        if color.a <= 0.0 {
+            return None;
+        }
+        let spread = f64::from(shadow.spread_radius());
+        let offset = shadow.offset();
+        if shadow.blur_radius() == 0.0 && spread == 0.0 && offset.x == 0.0 && offset.y == 0.0 {
+            return None;
+        }
+        let min_x = f64::from(rect.min.x) - spread + f64::from(offset.x);
+        let min_y = f64::from(rect.min.y) - spread + f64::from(offset.y);
+        let max_x = f64::from(rect.max.x) + spread + f64::from(offset.x);
+        let max_y = f64::from(rect.max.y) + spread + f64::from(offset.y);
+        let shape_width = max_x - min_x;
+        let shape_height = max_y - min_y;
+        if !shape_width.is_finite()
+            || !shape_height.is_finite()
+            || shape_width <= 0.0
+            || shape_height <= 0.0
+            || shape_width > f64::from(f32::MAX)
+            || shape_height > f64::from(f32::MAX)
+        {
+            return None;
+        }
+        let extent = f64::from(Self::shadow_raster_extent(shadow.blur_radius()));
+        let blur_min_x = min_x - extent;
+        let blur_min_y = min_y - extent;
+        let blur_max_x = max_x + extent;
+        let blur_max_y = max_y + extent;
+        let blur_width = blur_max_x - blur_min_x;
+        let blur_height = blur_max_y - blur_min_y;
+        if !blur_width.is_finite()
+            || !blur_height.is_finite()
+            || blur_width <= 0.0
+            || blur_height <= 0.0
+            || blur_width > f64::from(f32::MAX)
+            || blur_height > f64::from(f32::MAX)
+        {
+            return None;
+        }
+        let shape_rect = Rect {
+            min: Point::new(Self::finite_f32(min_x)?, Self::finite_f32(min_y)?),
+            max: Point::new(Self::finite_f32(max_x)?, Self::finite_f32(max_y)?),
+        };
+        let blur_bounds = Rect {
+            min: Point::new(Self::finite_f32(blur_min_x)?, Self::finite_f32(blur_min_y)?),
+            max: Point::new(Self::finite_f32(blur_max_x)?, Self::finite_f32(blur_max_y)?),
+        };
+        let shape_size = shape_rect.size();
+        let blur_size = blur_bounds.size();
+        if !shape_size.width.is_finite()
+            || !shape_size.height.is_finite()
+            || shape_size.width <= 0.0
+            || shape_size.height <= 0.0
+            || !blur_size.width.is_finite()
+            || !blur_size.height.is_finite()
+            || blur_size.width <= 0.0
+            || blur_size.height <= 0.0
+        {
+            return None;
+        }
+        Some(Primitive::OuterShadow {
+            rect: blur_bounds,
+            shape_rect,
+            occluder_rect: rect,
+            color,
+            corner_radii: radius.normalize(shape_size).ok()?.as_array(),
+            occluder_radii: radius.normalize(rect.size()).ok()?.as_array(),
+            blur_radius: shadow.blur_radius().min(Self::MAX_BLUR_RADIUS),
+        })
+    }
+
     pub fn new(decoration: BoxDecoration) -> Self {
         Self {
             decoration,
@@ -90,7 +189,7 @@ impl AnyView for DecoratedBox {
         let Some(radii) = self
             .decoration
             .border_radius_value()
-            .unwrap_or_else(BorderRadius::default)
+            .unwrap_or_default()
             .normalize(rect.size())
             .ok()
             .map(|radii| radii.as_array())
@@ -99,17 +198,23 @@ impl AnyView for DecoratedBox {
         };
 
         match phase {
-            PaintPhase::BeforeChildren => self
-                .decoration
-                .color()
-                .filter(|color| color.a > 0.0)
-                .map(|color| Primitive::RoundedQuad {
-                    rect,
-                    color,
-                    corner_radii: radii,
-                })
-                .into_iter()
-                .collect(),
+            PaintPhase::BeforeChildren => {
+                let radius = self.decoration.border_radius_value().unwrap_or_default();
+                let mut primitives = self
+                    .decoration
+                    .shadows()
+                    .iter()
+                    .filter_map(|shadow| self.outer_shadow_primitive(rect, radius, shadow))
+                    .collect::<Vec<_>>();
+                primitives.extend(self.decoration.color().filter(|color| color.a > 0.0).map(
+                    |color| Primitive::RoundedQuad {
+                        rect,
+                        color,
+                        corner_radii: radii,
+                    },
+                ));
+                primitives
+            }
             PaintPhase::AfterChildren => self
                 .decoration
                 .border_value()
@@ -123,6 +228,54 @@ impl AnyView for DecoratedBox {
                 .into_iter()
                 .collect(),
         }
+    }
+
+    fn paint_primitives_with_slots_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        metrics: &TextMetrics,
+    ) -> Vec<(u32, Primitive)> {
+        if phase == PaintPhase::AfterChildren {
+            return self
+                .paint_primitives_for_phase(phase, rect, metrics)
+                .into_iter()
+                .enumerate()
+                .map(|(slot, primitive)| (slot as u32, primitive))
+                .collect();
+        }
+        let Some(radii) = self
+            .decoration
+            .border_radius_value()
+            .unwrap_or_default()
+            .normalize(rect.size())
+            .ok()
+            .map(|radii| radii.as_array())
+        else {
+            return Vec::new();
+        };
+        let radius = self.decoration.border_radius_value().unwrap_or_default();
+        let mut primitives = self
+            .decoration
+            .shadows()
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, shadow)| {
+                self.outer_shadow_primitive(rect, radius, shadow)
+                    .map(|primitive| (slot as u32, primitive))
+            })
+            .collect::<Vec<_>>();
+        if let Some(color) = self.decoration.color().filter(|color| color.a > 0.0) {
+            primitives.push((
+                u32::MAX,
+                Primitive::RoundedQuad {
+                    rect,
+                    color,
+                    corner_radii: radii,
+                },
+            ));
+        }
+        primitives
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::decoration::ClipBehavior;
 use crate::renderer::Viewport;
 use crate::scene::primitive::Primitive;
 use crate::scene::{SceneDelta, SceneItem};
@@ -16,6 +17,16 @@ struct InstanceInput {
     @location(3) radii: vec4<f32>, // top-left, top-right, bottom-right, bottom-left
     @location(4) border_width: f32,
     @location(5) logical_size: vec2<f32>,
+    @location(6) shape_rect: vec4<f32>, // origin x/y and size w/h within the instance
+    @location(7) blur_radius: f32,
+    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow
+    @location(9) clip_rect0: vec4<f32>, // local origin x/y and size w/h
+    @location(10) clip_radii0: vec4<f32>,
+    @location(11) clip_rect1: vec4<f32>,
+    @location(12) clip_radii1: vec4<f32>,
+    @location(13) clip_meta: vec4<u32>, // count, behavior0, behavior1, reserved
+    @location(14) occluder_rect: vec4<f32>,
+    @location(15) occluder_radii: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -25,6 +36,17 @@ struct VertexOutput {
     @location(2) size: vec2<f32>,
     @location(3) radii: vec4<f32>,
     @location(4) border_width: f32,
+    @location(5) shape_origin: vec2<f32>,
+    @location(6) shape_size: vec2<f32>,
+    @location(7) blur_radius: f32,
+    @interpolate(flat) @location(8) mode: u32,
+    @location(9) clip_rect0: vec4<f32>,
+    @location(10) clip_radii0: vec4<f32>,
+    @location(11) clip_rect1: vec4<f32>,
+    @location(12) clip_radii1: vec4<f32>,
+    @interpolate(flat) @location(13) clip_meta: vec4<u32>,
+    @location(14) occluder_rect: vec4<f32>,
+    @location(15) occluder_radii: vec4<f32>,
 }
 
 @vertex
@@ -39,6 +61,17 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         inst.logical_size,
         inst.radii,
         inst.border_width,
+        inst.shape_rect.xy,
+        inst.shape_rect.zw,
+        inst.blur_radius,
+        inst.mode,
+        inst.clip_rect0,
+        inst.clip_radii0,
+        inst.clip_rect1,
+        inst.clip_radii1,
+        inst.clip_meta,
+        inst.occluder_rect,
+        inst.occluder_radii,
     );
 }
 
@@ -58,23 +91,81 @@ fn rounded_box_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> 
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+fn rounded_clip_coverage(
+    point: vec2<f32>,
+    rect: vec4<f32>,
+    radii: vec4<f32>,
+    behavior: u32,
+) -> f32 {
+    if behavior == 0u {
+        return 1.0;
+    }
+    if behavior == 3u {
+        return 0.0;
+    }
+    let distance = rounded_box_distance(point - rect.xy, rect.zw, radii);
+    if behavior == 1u {
+        return select(1.0, 0.0, distance > 0.0);
+    }
+    let aa = max(fwidth(distance), 0.001);
+    return 1.0 - smoothstep(-aa, aa, distance);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.size.x <= 0.0 || in.size.y <= 0.0 {
         discard;
     }
+    var clip_alpha = 1.0;
+    if in.clip_meta.x > 0u {
+        clip_alpha *= rounded_clip_coverage(in.local, in.clip_rect0, in.clip_radii0, in.clip_meta.y);
+    }
+    if in.clip_meta.x > 1u {
+        clip_alpha *= rounded_clip_coverage(in.local, in.clip_rect1, in.clip_radii1, in.clip_meta.z);
+    }
+    if clip_alpha <= 0.0 {
+        discard;
+    }
+    if in.mode == 1u {
+        let distance = rounded_box_distance(
+            in.local - in.shape_origin,
+            in.shape_size,
+            in.radii,
+        );
+        var coverage = 1.0;
+        if in.blur_radius <= 0.0 {
+            let aa = max(fwidth(distance), 0.001);
+            coverage = 1.0 - smoothstep(-aa, aa, distance);
+        } else {
+            let blur_extent = max(in.blur_radius * 3.0, 0.001);
+            coverage = 1.0 - smoothstep(0.0, blur_extent, distance);
+        }
+        let occluder_distance = rounded_box_distance(
+            in.local - in.occluder_rect.xy,
+            in.occluder_rect.zw,
+            in.occluder_radii,
+        );
+        let occluder_aa = max(fwidth(occluder_distance), 0.001);
+        let exterior = smoothstep(-occluder_aa, occluder_aa, occluder_distance);
+        coverage = min(coverage, exterior);
+        if coverage <= 0.0 {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a * coverage * clip_alpha);
+    }
+
     let outer_distance = rounded_box_distance(in.local, in.size, in.radii);
     // Derivatives express the signed-distance transition in framebuffer
     // pixels, so the antialiasing width follows both DPI and perspective.
     let outer_aa = max(fwidth(outer_distance), 0.001);
     let outer_alpha = 1.0 - smoothstep(-outer_aa, outer_aa, outer_distance);
     if in.border_width <= 0.0 {
-        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha);
+        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * clip_alpha);
     }
 
     let inset_size = max(in.size - vec2<f32>(2.0 * in.border_width), vec2<f32>(0.0));
     if inset_size.x <= 0.0 || inset_size.y <= 0.0 {
-        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha);
+        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * clip_alpha);
     }
     let inner_radii = max(in.radii - vec4<f32>(in.border_width), vec4<f32>(0.0));
         let inner_distance = rounded_box_distance(
@@ -84,7 +175,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let inner_aa = max(fwidth(inner_distance), 0.001);
     let inner_alpha = 1.0 - smoothstep(-inner_aa, inner_aa, inner_distance);
-    return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * (1.0 - inner_alpha));
+    return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * (1.0 - inner_alpha) * clip_alpha);
 }
 "#;
 
@@ -97,7 +188,21 @@ struct QuadInstance {
     radii: [f32; 4],
     border_width: f32,
     logical_size: [f32; 2],
-    _pad: f32,
+    shape_rect: [f32; 4],
+    blur_radius: f32,
+    mode: u32,
+    clip_rect0: [f32; 4],
+    clip_radii0: [f32; 4],
+    clip_rect1: [f32; 4],
+    clip_radii1: [f32; 4],
+    clip_meta: [u32; 4],
+    occluder_rect: [f32; 4],
+    occluder_radii: [f32; 4],
+    _pad: [u32; 3],
+}
+
+fn finite_difference(lhs: f32, rhs: f32) -> f32 {
+    (f64::from(lhs) - f64::from(rhs)).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
 }
 
 /// Instanced GPU renderer for legacy scalar and independently rounded quads.
@@ -178,6 +283,56 @@ impl QuadRenderer {
                     format: wgpu::VertexFormat::Float32x2,
                     offset: 52,
                     shader_location: 5,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 60,
+                    shader_location: 6,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 76,
+                    shader_location: 7,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32,
+                    offset: 80,
+                    shader_location: 8,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 84,
+                    shader_location: 9,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 100,
+                    shader_location: 10,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 116,
+                    shader_location: 11,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 132,
+                    shader_location: 12,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32x4,
+                    offset: 148,
+                    shader_location: 13,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 164,
+                    shader_location: 14,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 180,
+                    shader_location: 15,
                 },
             ],
         };
@@ -261,6 +416,18 @@ impl QuadRenderer {
         }
     }
 
+    /// Re-uploads retained instances when viewport conversion changes without
+    /// changing renderer-neutral scene primitives.
+    pub fn refresh_viewport(&self, queue: &wgpu::Queue, items: &[SceneItem], viewport: &Viewport) {
+        for item in items {
+            if let Some(slot) = self.id_to_slot.get(&item.id).copied()
+                && Self::is_quad_primitive(&item.primitive)
+            {
+                self.write_instance(queue, slot, self.item_to_instance(item, viewport));
+            }
+        }
+    }
+
     pub fn encode<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         let count = self.instance_count.min(self.instance_capacity);
         if count != 0 {
@@ -294,43 +461,206 @@ impl QuadRenderer {
                 | Primitive::Border { .. }
                 | Primitive::RoundedQuad { .. }
                 | Primitive::RoundedBorder { .. }
+                | Primitive::OuterShadow { .. }
         )
     }
 
     fn item_to_instance(&self, item: &SceneItem, viewport: &Viewport) -> QuadInstance {
-        let (rect, color, radii, border_width) = match &item.primitive {
+        let (
+            rect,
+            shape_rect,
+            occluder_rect,
+            color,
+            radii,
+            occluder_radii,
+            border_width,
+            blur_radius,
+            mode,
+        ) = match &item.primitive {
             Primitive::Quad {
                 rect,
                 color,
                 corner_radius,
-            } => (*rect, *color, [*corner_radius; 4], 0.0),
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                *color,
+                [*corner_radius; 4],
+                [0.0; 4],
+                0.0,
+                0.0,
+                0,
+            ),
             Primitive::Border {
                 rect,
                 width,
                 color,
                 corner_radius,
-            } => (*rect, *color, [*corner_radius; 4], *width),
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                *color,
+                [*corner_radius; 4],
+                [0.0; 4],
+                *width,
+                0.0,
+                0,
+            ),
             Primitive::RoundedQuad {
                 rect,
                 color,
                 corner_radii,
-            } => (*rect, *color, *corner_radii, 0.0),
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                *color,
+                *corner_radii,
+                [0.0; 4],
+                0.0,
+                0.0,
+                0,
+            ),
             Primitive::RoundedBorder {
                 rect,
                 width,
                 color,
                 corner_radii,
-            } => (*rect, *color, *corner_radii, *width),
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                *color,
+                *corner_radii,
+                [0.0; 4],
+                *width,
+                0.0,
+                0,
+            ),
+            Primitive::OuterShadow {
+                rect,
+                shape_rect,
+                occluder_rect,
+                color,
+                corner_radii,
+                occluder_radii,
+                blur_radius,
+            } => (
+                *rect,
+                *shape_rect,
+                *occluder_rect,
+                *color,
+                *corner_radii,
+                *occluder_radii,
+                0.0,
+                *blur_radius,
+                1,
+            ),
             _ => return QuadInstance::zeroed(),
         };
         let size = rect.size();
+        let shape_size = shape_rect.size();
+        let active_clips = item
+            .clips
+            .iter()
+            .filter(|clip| clip.behavior() != ClipBehavior::None)
+            .collect::<Vec<_>>();
+        let mut clip_rects = [[0.0; 4]; 2];
+        let mut clip_radii = [[0.0; 4]; 2];
+        let mut clip_behaviors = [0u32; 2];
+        let exact_clip = |ancestor: &crate::scene::clip::RoundedClip| {
+            let bounds = ancestor.rect();
+            (
+                [
+                    finite_difference(bounds.min.x, rect.min.x),
+                    finite_difference(bounds.min.y, rect.min.y),
+                    finite_difference(bounds.max.x, bounds.min.x),
+                    finite_difference(bounds.max.y, bounds.min.y),
+                ],
+                ancestor.radii().as_array(),
+                match ancestor.behavior() {
+                    ClipBehavior::None => 0,
+                    ClipBehavior::HardEdge => 1,
+                    ClipBehavior::AntiAlias => 2,
+                },
+            )
+        };
+        if let Some(first) = active_clips.first() {
+            (clip_rects[0], clip_radii[0], clip_behaviors[0]) = exact_clip(first);
+        }
+        if active_clips.len() == 2 {
+            (clip_rects[1], clip_radii[1], clip_behaviors[1]) = exact_clip(active_clips[1]);
+        } else if active_clips.len() > 2 {
+            // Two rounded clips fit in the portable vertex-attribute budget.
+            // Conservatively precompose every remaining clip to an inscribed
+            // hard rectangle, so deep nesting may clip extra corner pixels but
+            // can never leak outside an authoritative ancestor.
+            let mut min_x = -f32::MAX;
+            let mut min_y = -f32::MAX;
+            let mut max_x = f32::MAX;
+            let mut max_y = f32::MAX;
+            for ancestor in &active_clips[1..] {
+                let bounds = ancestor.rect();
+                let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
+                let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                    as f32;
+                let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                    as f32;
+                let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                    as f32;
+                let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
+                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                    as f32;
+                min_x = min_x.max(inset_min_x);
+                min_y = min_y.max(inset_min_y);
+                max_x = max_x.min(inset_max_x);
+                max_y = max_y.min(inset_max_y);
+            }
+            clip_rects[1] = [
+                finite_difference(min_x, rect.min.x),
+                finite_difference(min_y, rect.min.y),
+                finite_difference(max_x.max(min_x), min_x),
+                finite_difference(max_y.max(min_y), min_y),
+            ];
+            clip_behaviors[1] = if max_x <= min_x || max_y <= min_y {
+                3
+            } else {
+                1
+            };
+        }
+        let clip_count = active_clips.len().min(2);
         QuadInstance {
             rect: viewport.dp_rect_to_ndc(&rect),
             color: color.to_array(),
             radii,
             border_width,
             logical_size: [size.width, size.height],
-            _pad: 0.0,
+            shape_rect: [
+                finite_difference(shape_rect.min.x, rect.min.x),
+                finite_difference(shape_rect.min.y, rect.min.y),
+                shape_size.width,
+                shape_size.height,
+            ],
+            blur_radius,
+            mode,
+            clip_rect0: clip_rects[0],
+            clip_radii0: clip_radii[0],
+            clip_rect1: clip_rects[1],
+            clip_radii1: clip_radii[1],
+            clip_meta: [clip_count as u32, clip_behaviors[0], clip_behaviors[1], 0],
+            occluder_rect: [
+                finite_difference(occluder_rect.min.x, rect.min.x),
+                finite_difference(occluder_rect.min.y, rect.min.y),
+                finite_difference(occluder_rect.max.x, occluder_rect.min.x),
+                finite_difference(occluder_rect.max.y, occluder_rect.min.y),
+            ],
+            occluder_radii,
+            _pad: [0; 3],
         }
     }
 

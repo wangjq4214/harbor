@@ -239,6 +239,20 @@ pub enum Primitive {
         color: Color,
         corner_radius: f32,
     },
+    /// A bounded outer-only rounded shadow in logical pixels.
+    ///
+    /// `rect` bounds raster coverage; `shape_rect` is the unblurred rounded
+    /// shadow shape after offset and spread. `occluder_rect` is the original
+    /// decorated box whose interior must remain free of outer-shadow coverage.
+    OuterShadow {
+        rect: Rect,
+        shape_rect: Rect,
+        occluder_rect: Rect,
+        color: Color,
+        corner_radii: [f32; 4],
+        occluder_radii: [f32; 4],
+        blur_radius: f32,
+    },
     /// A fill with independently resolved corner radii.
     RoundedQuad {
         rect: Rect,

@@ -399,7 +399,6 @@ impl Runtime {
             EncodeScene {
                 scene_graph: &self.scene_graph,
                 pending_delta: &mut self.pending_delta,
-                current_viewport: &mut self.current_viewport,
                 external_draws: &self.external_draws,
                 external_eligible: &self.external_eligible,
                 commit,
