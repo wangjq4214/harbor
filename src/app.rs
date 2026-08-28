@@ -1,6 +1,7 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
 mod confirmation;
+mod terminal_decoration_preset;
 
 use std::{
     cell::Cell,
@@ -33,6 +34,7 @@ use harbor_widget::effects::{
 use harbor_widget::layout::Point;
 use harbor_widget::text::GlyphFn;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
+use terminal_decoration_preset::build_main_terminal_root;
 
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
@@ -902,7 +904,6 @@ impl App {
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
         use crate::terminal_widget_bridge::TerminalWidgetBridge;
-        use harbor_widget::widgets::padding::Padding;
 
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
         let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
@@ -916,7 +917,7 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(Padding::all(2.0).child(bridge));
+        runtime.set_root(build_main_terminal_root(bridge));
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
