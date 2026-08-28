@@ -1,8 +1,10 @@
-use harbor_widget::layout::{Point, Size};
+use harbor_widget::layout::{Point, Rect, Size};
+use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, Key, View};
+use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{Border, BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
 use std::cell::RefCell;
@@ -518,4 +520,47 @@ fn stack_with_background_paint_count() {
     );
     assert!(delta.removed.is_empty());
     assert!(delta.modified.is_empty());
+}
+
+#[test]
+fn should_paint_custom_paint_after_fill_with_child_clip_only() {
+    let decoration = BoxDecoration::new()
+        .try_color(Color::RED)
+        .unwrap()
+        .border(Border::all(Color::BLUE, 2.0).unwrap())
+        .border_radius(BorderRadius::all(8.0).unwrap());
+    let mut rt = Runtime::new();
+    rt.set_viewport(Viewport::new(40, 24, 1.0));
+    rt.set_root(
+        DecoratedBox::new(decoration)
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(1)),
+    );
+    rt.update(Instant::now());
+
+    let delta = rt.pending_delta().unwrap();
+    assert_eq!(delta.added.len(), 3);
+    assert!(matches!(
+        delta.added[0].primitive,
+        Primitive::RoundedQuad { .. }
+    ));
+    assert!(matches!(
+        delta.added[1].primitive,
+        Primitive::External { .. }
+    ));
+    assert!(matches!(
+        delta.added[2].primitive,
+        Primitive::RoundedBorder { .. }
+    ));
+    assert!(delta.added[0].clips.is_empty());
+    assert_eq!(delta.added[1].clips.len(), 1);
+    assert_eq!(delta.added[1].clips[0].behavior(), ClipBehavior::HardEdge);
+    assert_eq!(
+        delta.added[1].clips[0].rect(),
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 24.0))
+    );
+    assert!(delta.added[2].clips.is_empty());
+    assert_eq!(delta.added[0].paint_order, 0);
+    assert_eq!(delta.added[1].paint_order, 1);
+    assert_eq!(delta.added[2].paint_order, 2);
 }

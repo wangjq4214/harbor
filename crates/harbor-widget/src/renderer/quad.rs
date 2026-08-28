@@ -1,4 +1,6 @@
+use crate::layout::Rect;
 use crate::renderer::{Viewport, finite_difference, pack_active_clips};
+use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::Primitive;
 use crate::scene::{SceneDelta, SceneItem};
 use bytemuck::Zeroable;
@@ -18,7 +20,7 @@ struct InstanceInput {
     @location(5) logical_size: vec2<f32>,
     @location(6) shape_rect: vec4<f32>, // origin x/y and size w/h within the instance
     @location(7) blur_radius: f32,
-    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow
+    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask
     @location(9) clip_rect0: vec4<f32>, // local origin x/y and size w/h
     @location(10) clip_radii0: vec4<f32>,
     @location(11) clip_rect1: vec4<f32>,
@@ -122,6 +124,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.clip_meta.x > 1u {
         clip_alpha *= rounded_clip_coverage(in.local, in.clip_rect1, in.clip_radii1, in.clip_meta.z);
     }
+    if in.mode == 2u {
+        return vec4<f32>(clip_alpha);
+    }
     if clip_alpha <= 0.0 {
         discard;
     }
@@ -200,13 +205,29 @@ struct QuadInstance {
     _pad: [u32; 3],
 }
 
+const CLIP_MASK_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::SrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::SrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// Instanced GPU renderer for legacy scalar and independently rounded quads.
 pub struct QuadRenderer {
     pipeline: wgpu::RenderPipeline,
+    clip_mask_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     device: wgpu::Device,
     instance_buffer: wgpu::Buffer,
+    clip_mask_instance_buffer: wgpu::Buffer,
+    clip_mask_capacity: u32,
     instance_count: u32,
     instance_capacity: u32,
     free_slots: Vec<u32>,
@@ -343,7 +364,10 @@ impl QuadRenderer {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(vertex_buffer_layout), Some(instance_buffer_layout)],
+                buffers: &[
+                    Some(vertex_buffer_layout.clone()),
+                    Some(instance_buffer_layout.clone()),
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -361,12 +385,47 @@ impl QuadRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let clip_mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("widget-quad-clip-mask-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vertex_buffer_layout), Some(instance_buffer_layout)],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(CLIP_MASK_BLEND),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let clip_mask_capacity = 8;
+        let clip_mask_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("widget-quad-clip-mask-instance"),
+            size: clip_mask_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             pipeline,
+            clip_mask_pipeline,
             vertex_buffer,
             index_buffer,
             device: device.clone(),
             instance_buffer,
+            clip_mask_instance_buffer,
+            clip_mask_capacity,
             instance_count: 0,
             instance_capacity,
             free_slots: Vec::new(),
@@ -447,6 +506,76 @@ impl QuadRenderer {
         pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         pass.draw_indexed(0..6, 0, start..end);
+    }
+
+    /// Uploads one dest-in instance per masked external before the paint walk.
+    ///
+    /// Queue writes complete before the submitted pass runs, so in-pass reuse of
+    /// a single slot would apply the last instance to every mask draw.
+    pub(crate) fn upload_clip_masks(
+        &mut self,
+        queue: &wgpu::Queue,
+        masks: &[(&[RoundedClip], Rect)],
+        viewport: &Viewport,
+    ) {
+        if masks.is_empty() {
+            return;
+        }
+        self.ensure_clip_mask_capacity(masks.len() as u32);
+        let instances: Vec<QuadInstance> = masks
+            .iter()
+            .map(|(clips, rect)| Self::clip_mask_instance(clips, *rect, viewport))
+            .collect();
+        queue.write_buffer(
+            &self.clip_mask_instance_buffer,
+            0,
+            bytemuck::cast_slice(&instances),
+        );
+    }
+
+    pub(crate) fn encode_clip_mask<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, slot: u32) {
+        pass.set_pipeline(&self.clip_mask_pipeline);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.clip_mask_instance_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..6, 0, slot..slot + 1);
+    }
+
+    fn clip_mask_instance(clips: &[RoundedClip], rect: Rect, viewport: &Viewport) -> QuadInstance {
+        let size = rect.size();
+        let packed = pack_active_clips(clips, rect.min);
+        QuadInstance {
+            rect: viewport.dp_rect_to_ndc(&rect),
+            color: [1.0, 1.0, 1.0, 1.0],
+            radii: [0.0; 4],
+            border_width: 0.0,
+            logical_size: [size.width, size.height],
+            shape_rect: [0.0, 0.0, size.width, size.height],
+            blur_radius: 0.0,
+            mode: 2,
+            clip_rect0: packed.clip_rect0,
+            clip_radii0: packed.clip_radii0,
+            clip_rect1: packed.clip_rect1,
+            clip_radii1: packed.clip_radii1,
+            clip_meta: packed.clip_meta,
+            occluder_rect: [0.0; 4],
+            occluder_radii: [0.0; 4],
+            _pad: [0; 3],
+        }
+    }
+
+    fn ensure_clip_mask_capacity(&mut self, required: u32) {
+        if required <= self.clip_mask_capacity {
+            return;
+        }
+        let new_capacity = self.clip_mask_capacity.saturating_mul(2).max(required);
+        self.clip_mask_instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("widget-quad-clip-mask-instance"),
+            size: new_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.clip_mask_capacity = new_capacity;
     }
 
     fn is_quad_primitive(primitive: &Primitive) -> bool {

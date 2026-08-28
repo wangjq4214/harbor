@@ -5,6 +5,7 @@ use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::scene::{SceneGraph, SceneItem};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
@@ -873,4 +874,122 @@ fn should_normalize_oversized_radii_when_child_clip_is_emitted() {
 
     // Assert
     assert_eq!(delta.added[0].clips[0].radii().as_array(), [5.0; 4]);
+}
+
+#[test]
+fn should_attach_rounded_clip_to_custom_paint_external_item() {
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(40, 24, 1.0));
+    runtime.set_root(
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(6.0).unwrap()))
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(1)),
+    );
+    runtime.update(Instant::now());
+
+    let delta = runtime
+        .pending_delta()
+        .cloned()
+        .expect("first update has a delta");
+    let external = delta
+        .added
+        .iter()
+        .find(|item| matches!(item.primitive, Primitive::External { .. }))
+        .expect("CustomPaint emits Primitive::External");
+    assert_eq!(external.clips.len(), 1);
+    assert_eq!(external.clips[0].behavior(), ClipBehavior::HardEdge);
+    assert_eq!(external.clips[0].radii().as_array(), [6.0; 4]);
+    assert_eq!(
+        external.clips[0].rect(),
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 24.0))
+    );
+}
+
+#[test]
+fn should_keep_wrapper_unclipped_when_custom_paint_child_receives_clip() {
+    let decoration = BoxDecoration::new()
+        .shadow(
+            BoxShadow::new()
+                .try_color(Color::BLUE)
+                .unwrap()
+                .try_offset(Point::new(2.0, 2.0))
+                .unwrap(),
+        )
+        .try_color(Color::GREEN)
+        .unwrap()
+        .border(Border::all(Color::WHITE, 1.0).unwrap())
+        .border_radius(BorderRadius::all(6.0).unwrap());
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(40, 24, 1.0));
+    runtime.set_root(
+        DecoratedBox::new(decoration)
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(1)),
+    );
+    runtime.update(Instant::now());
+
+    let delta = runtime
+        .pending_delta()
+        .cloned()
+        .expect("first update has a delta");
+    assert_eq!(delta.added.len(), 4);
+    assert!(matches!(
+        delta.added[0].primitive,
+        Primitive::OuterShadow { .. }
+    ));
+    assert!(matches!(
+        delta.added[1].primitive,
+        Primitive::RoundedQuad { .. }
+    ));
+    assert!(matches!(
+        delta.added[2].primitive,
+        Primitive::External { .. }
+    ));
+    assert!(matches!(
+        delta.added[3].primitive,
+        Primitive::RoundedBorder { .. }
+    ));
+    assert!(delta.added[0].clips.is_empty());
+    assert!(delta.added[1].clips.is_empty());
+    assert_eq!(delta.added[2].clips.len(), 1);
+    assert!(delta.added[3].clips.is_empty());
+}
+
+#[test]
+fn should_accumulate_nested_clips_on_custom_paint_external_item() {
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(40, 40, 1.0));
+    runtime.set_root(rounded_box(
+        8.0,
+        ClipBehavior::HardEdge,
+        Padding::all(10.0).child(rounded_box(
+            4.0,
+            ClipBehavior::AntiAlias,
+            CustomPaint::new(1),
+        )),
+    ));
+    runtime.update(Instant::now());
+
+    let delta = runtime
+        .pending_delta()
+        .cloned()
+        .expect("first update has a delta");
+    let external = delta
+        .added
+        .iter()
+        .find(|item| matches!(item.primitive, Primitive::External { .. }))
+        .expect("nested CustomPaint");
+    assert_eq!(external.clips.len(), 2);
+    assert_eq!(external.clips[0].behavior(), ClipBehavior::HardEdge);
+    assert_eq!(external.clips[0].radii().as_array(), [8.0; 4]);
+    assert_eq!(
+        external.clips[0].rect(),
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 40.0))
+    );
+    assert_eq!(external.clips[1].behavior(), ClipBehavior::AntiAlias);
+    assert_eq!(external.clips[1].radii().as_array(), [4.0; 4]);
+    assert_eq!(
+        external.clips[1].rect(),
+        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(20.0, 20.0))
+    );
 }

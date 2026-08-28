@@ -84,25 +84,36 @@ fn create_render_pass<'a>(
 }
 
 fn create_solid_pipeline(device: &wgpu::Device) -> Arc<wgpu::RenderPipeline> {
+    create_solid_pipeline_rgb(device, 0.0, 1.0, 0.0)
+}
+
+fn create_solid_pipeline_rgb(
+    device: &wgpu::Device,
+    r: f32,
+    g: f32,
+    b: f32,
+) -> Arc<wgpu::RenderPipeline> {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("custom-paint clipping test shader"),
         source: wgpu::ShaderSource::Wgsl(
-            r#"
+            format!(
+                r#"
                 @vertex
-                fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+                fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
                     var positions = array<vec2<f32>, 3>(
                         vec2<f32>(-1.0, -1.0),
                         vec2<f32>(3.0, -1.0),
                         vec2<f32>(-1.0, 3.0),
                     );
                     return vec4<f32>(positions[index], 0.0, 1.0);
-                }
+                }}
 
                 @fragment
-                fn fs_main() -> @location(0) vec4<f32> {
-                    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
-                }
+                fn fs_main() -> @location(0) vec4<f32> {{
+                    return vec4<f32>({r}, {g}, {b}, 1.0);
+                }}
             "#
+            )
             .into(),
         ),
     });
@@ -2123,4 +2134,465 @@ fn should_not_leak_outside_outer_bound_when_more_than_two_clips_are_packed() {
     assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
     assert_eq!(bgra(&pixels, 1, 16), [0, 0, 0, 0]);
     assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
+}
+
+fn encode_root_to_pixels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    root: impl harbor_widget::view::Component + 'static,
+    viewport: Viewport,
+    size: u32,
+) -> Vec<u8> {
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("custom-paint rounded clip target"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(root);
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("custom-paint rounded clip pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        runtime.encode(queue, &mut pass, viewport, false);
+    }
+    queue.submit(Some(encoder.finish()));
+    read_texture_sized(device, queue, &target, size)
+}
+
+fn solid_external(device: &wgpu::Device, draw_id: u64) -> CustomPaint {
+    solid_external_rgb(device, draw_id, 0.0, 1.0, 0.0)
+}
+
+fn solid_external_rgb(device: &wgpu::Device, draw_id: u64, r: f32, g: f32, b: f32) -> CustomPaint {
+    let pipeline = create_solid_pipeline_rgb(device, r, g, b);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, _| {
+        pass.set_pipeline(&pipeline);
+        pass.draw(0..3, 0..1);
+    });
+    CustomPaint::new(draw_id).handler(handler)
+}
+
+fn clipped_external(device: &wgpu::Device, behavior: ClipBehavior, radius: f32) -> DecoratedBox {
+    DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(radius).unwrap()))
+        .clip_behavior(behavior)
+        .child(solid_external(device, 1))
+}
+
+#[test]
+fn should_leave_custom_paint_corners_when_clip_policy_is_none() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        clipped_external(&device, ClipBehavior::None, 8.0),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 255, 0, 255]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_discard_custom_paint_pixels_outside_arc_when_clip_is_hard_edge() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        clipped_external(&device, ClipBehavior::HardEdge, 8.0),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 1, 1), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+    assert!(
+        bgra(&pixels, 16, 0)[1] > 200,
+        "straight top edge must remain covered: {:?}",
+        bgra(&pixels, 16, 0)
+    );
+}
+
+#[test]
+fn should_apply_fractional_coverage_when_custom_paint_clip_is_anti_alias() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        clipped_external(&device, ClipBehavior::AntiAlias, 8.0),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    let mut saw_fractional = false;
+    for y in 0..8 {
+        for x in 0..8 {
+            let alpha = bgra(&pixels, x, y)[3];
+            if alpha > 0 && alpha < 255 {
+                saw_fractional = true;
+            }
+        }
+    }
+    assert!(
+        saw_fractional,
+        "anti-aliased external clip must produce fractional coverage along the arc"
+    );
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let observed_id = Arc::new(AtomicU64::new(u64::MAX));
+    let observed_rect = Arc::new(Mutex::new(None));
+    let observed_mode = Arc::new(Mutex::new(None));
+    let id = Arc::clone(&observed_id);
+    let rects = Arc::clone(&observed_rect);
+    let modes = Arc::clone(&observed_mode);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, context, _, mode| {
+        id.store(draw_id, Ordering::SeqCst);
+        *rects.lock().unwrap() = Some(context.logical_rect);
+        *modes.lock().unwrap() = Some(mode);
+        assert_eq!(context.surface_size(), (32, 32));
+        assert_eq!(context.scale_factor(), 1.0);
+    });
+    encode_root_to_pixels(
+        &device,
+        &queue,
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(7).handler(handler)),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(observed_id.load(Ordering::SeqCst), 7);
+    assert_eq!(
+        *observed_rect.lock().unwrap(),
+        Some(Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)))
+    );
+    assert_eq!(*observed_mode.lock().unwrap(), Some(ExternalDrawMode::Live));
+}
+
+#[test]
+fn should_not_punch_following_widget_outside_custom_paint_allocation() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        Stack::new()
+            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED))
+            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(clipped_external(
+                &device,
+                ClipBehavior::HardEdge,
+                4.0,
+            ))),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 255, 255]);
+    assert_eq!(bgra(&pixels, 8, 8), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(
+                Padding::all(4.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external(&device, 1)),
+                ),
+            ),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_clip_custom_paint_when_viewport_scale_is_two() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        clipped_external(&device, ClipBehavior::HardEdge, 8.0),
+        Viewport::new(64, 64, 2.0),
+        64,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 32, 32), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pipeline = create_solid_pipeline(&device);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, mode| {
+        assert_eq!(mode, ExternalDrawMode::Retain);
+        pass.set_pipeline(&pipeline);
+        pass.draw(0..3, 0..1);
+    });
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(1).handler(handler).schedule(schedule)),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        Stack::new()
+            .child(
+                Padding::new(0.0, 16.0, 0.0, 0.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external(&device, 1)),
+                ),
+            )
+            .child(
+                Padding::new(0.0, 0.0, 0.0, 16.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external_rgb(&device, 2, 1.0, 0.0, 0.0)),
+                ),
+            ),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 31, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 8, 16), [0, 255, 0, 255]);
+    assert_eq!(bgra(&pixels, 24, 16), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED))
+            .child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_clip_custom_paint_when_viewport_scale_is_one_and_a_half() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        clipped_external(&device, ClipBehavior::HardEdge, 8.0),
+        Viewport::new(48, 48, 1.5),
+        48,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 24, 24), [0, 255, 0, 255]);
+}
+
+#[test]
+fn should_keep_independent_masks_when_more_than_eight_externals_share_a_pass() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let mut root = Stack::new();
+    for row in 0..3 {
+        for col in 0..3 {
+            let index = row * 3 + col;
+            let (r, g, b) = match index {
+                0 => (0.0, 1.0, 0.0),
+                8 => (1.0, 0.0, 0.0),
+                _ => (0.0, 0.0, 1.0),
+            };
+            root = root.child(
+                Padding::new(
+                    row as f32 * 16.0,
+                    (2 - col) as f32 * 16.0,
+                    (2 - row) as f32 * 16.0,
+                    col as f32 * 16.0,
+                )
+                .child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external_rgb(
+                        &device,
+                        index as u64 + 1,
+                        r,
+                        g,
+                        b,
+                    )),
+                ),
+            );
+        }
+    }
+    let pixels = encode_root_to_pixels(&device, &queue, root, Viewport::new(48, 48, 1.0), 48);
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 8, 8), [0, 255, 0, 255]);
+    assert_eq!(bgra(&pixels, 32, 32), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 40, 40), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_apply_later_mask_slot_when_unmasked_external_is_between() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        Stack::new()
+            .child(
+                Padding::new(0.0, 22.0, 0.0, 0.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external(&device, 1)),
+                ),
+            )
+            .child(
+                Padding::new(0.0, 11.0, 0.0, 11.0)
+                    .child(solid_external_rgb(&device, 2, 0.0, 0.0, 1.0)),
+            )
+            .child(
+                Padding::new(0.0, 0.0, 0.0, 22.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(solid_external_rgb(&device, 3, 1.0, 0.0, 0.0)),
+                ),
+            ),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 5, 16), [0, 255, 0, 255]);
+    assert_eq!(bgra(&pixels, 11, 0), [255, 0, 0, 255]);
+    assert_eq!(bgra(&pixels, 31, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 27, 16), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
+        return;
+    };
+    let pipeline = create_solid_pipeline(&device);
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, pass, _| {
+        let (x, y, w, h) = context.scissor_rect();
+        pass.set_scissor_rect(x, y, w, h);
+        pass.set_pipeline(&pipeline);
+        pass.draw(0..3, 0..1);
+    });
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+            .clip_behavior(ClipBehavior::HardEdge)
+            .child(CustomPaint::new(1).handler(handler)),
+        Viewport::new(32, 32, 1.0),
+        32,
+    );
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
 }
