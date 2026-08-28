@@ -1,5 +1,4 @@
-use crate::decoration::ClipBehavior;
-use crate::renderer::Viewport;
+use crate::renderer::{Viewport, finite_difference, pack_active_clips};
 use crate::scene::primitive::Primitive;
 use crate::scene::{SceneDelta, SceneItem};
 use bytemuck::Zeroable;
@@ -199,10 +198,6 @@ struct QuadInstance {
     occluder_rect: [f32; 4],
     occluder_radii: [f32; 4],
     _pad: [u32; 3],
-}
-
-fn finite_difference(lhs: f32, rhs: f32) -> f32 {
-    (f64::from(lhs) - f64::from(rhs)).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
 }
 
 /// Instanced GPU renderer for legacy scalar and independently rounded quads.
@@ -562,78 +557,7 @@ impl QuadRenderer {
         };
         let size = rect.size();
         let shape_size = shape_rect.size();
-        let active_clips = item
-            .clips
-            .iter()
-            .filter(|clip| clip.behavior() != ClipBehavior::None)
-            .collect::<Vec<_>>();
-        let mut clip_rects = [[0.0; 4]; 2];
-        let mut clip_radii = [[0.0; 4]; 2];
-        let mut clip_behaviors = [0u32; 2];
-        let exact_clip = |ancestor: &crate::scene::clip::RoundedClip| {
-            let bounds = ancestor.rect();
-            (
-                [
-                    finite_difference(bounds.min.x, rect.min.x),
-                    finite_difference(bounds.min.y, rect.min.y),
-                    finite_difference(bounds.max.x, bounds.min.x),
-                    finite_difference(bounds.max.y, bounds.min.y),
-                ],
-                ancestor.radii().as_array(),
-                match ancestor.behavior() {
-                    ClipBehavior::None => 0,
-                    ClipBehavior::HardEdge => 1,
-                    ClipBehavior::AntiAlias => 2,
-                },
-            )
-        };
-        if let Some(first) = active_clips.first() {
-            (clip_rects[0], clip_radii[0], clip_behaviors[0]) = exact_clip(first);
-        }
-        if active_clips.len() == 2 {
-            (clip_rects[1], clip_radii[1], clip_behaviors[1]) = exact_clip(active_clips[1]);
-        } else if active_clips.len() > 2 {
-            // Two rounded clips fit in the portable vertex-attribute budget.
-            // Conservatively precompose every remaining clip to an inscribed
-            // hard rectangle, so deep nesting may clip extra corner pixels but
-            // can never leak outside an authoritative ancestor.
-            let mut min_x = -f32::MAX;
-            let mut min_y = -f32::MAX;
-            let mut max_x = f32::MAX;
-            let mut max_y = f32::MAX;
-            for ancestor in &active_clips[1..] {
-                let bounds = ancestor.rect();
-                let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
-                let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                    as f32;
-                let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                    as f32;
-                let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                    as f32;
-                let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
-                    .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                    as f32;
-                min_x = min_x.max(inset_min_x);
-                min_y = min_y.max(inset_min_y);
-                max_x = max_x.min(inset_max_x);
-                max_y = max_y.min(inset_max_y);
-            }
-            clip_rects[1] = [
-                finite_difference(min_x, rect.min.x),
-                finite_difference(min_y, rect.min.y),
-                finite_difference(max_x.max(min_x), min_x),
-                finite_difference(max_y.max(min_y), min_y),
-            ];
-            clip_behaviors[1] = if max_x <= min_x || max_y <= min_y {
-                3
-            } else {
-                1
-            };
-        }
-        let clip_count = active_clips.len().min(2);
+        let packed = pack_active_clips(&item.clips, rect.min);
         QuadInstance {
             rect: viewport.dp_rect_to_ndc(&rect),
             color: color.to_array(),
@@ -648,11 +572,11 @@ impl QuadRenderer {
             ],
             blur_radius,
             mode,
-            clip_rect0: clip_rects[0],
-            clip_radii0: clip_radii[0],
-            clip_rect1: clip_rects[1],
-            clip_radii1: clip_radii[1],
-            clip_meta: [clip_count as u32, clip_behaviors[0], clip_behaviors[1], 0],
+            clip_rect0: packed.clip_rect0,
+            clip_radii0: packed.clip_radii0,
+            clip_rect1: packed.clip_rect1,
+            clip_radii1: packed.clip_radii1,
+            clip_meta: packed.clip_meta,
             occluder_rect: [
                 finite_difference(occluder_rect.min.x, rect.min.x),
                 finite_difference(occluder_rect.min.y, rect.min.y),

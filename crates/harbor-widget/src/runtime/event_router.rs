@@ -1,5 +1,6 @@
 //! Pointer/keyboard/focus event routing over the fiber tree.
 
+use crate::decoration::ClipBehavior;
 use crate::fiber::{FiberArena, FiberId};
 use crate::input::event::{FocusEvent, PointerPhase, UiEvent};
 use crate::input::event_ctx::EventCtx;
@@ -215,6 +216,15 @@ impl EventRouter {
         let rect = fiber.layout_rect?;
 
         if !rect.contains(point) {
+            return None;
+        }
+
+        if fiber
+            .view
+            .as_ref()
+            .and_then(|view| view.descendant_clip(rect))
+            .is_some_and(|clip| clip.behavior() != ClipBehavior::None && !clip.contains(point))
+        {
             return None;
         }
 

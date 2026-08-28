@@ -1,5 +1,6 @@
 use crate::decoration::{BorderRadius, BoxDecoration, ClipBehavior};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::Primitive;
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, PaintPhase, View};
@@ -126,13 +127,11 @@ impl DecoratedBox {
         self
     }
 
-    /// Selects the intended clipping policy for a future rounded-mask backend.
+    /// Selects the child clipping policy applied to paint and hit testing.
     ///
-    /// This slice preserves the policy as decoration configuration but does not
-    /// propagate it into SceneItems: the current external-draw API can only
-    /// honor rectangular scissors, so advertising rounded clipping would be a
-    /// false contract. A provider-owned mask/stencil boundary is required
-    /// before this setting can affect child rendering.
+    /// `None` leaves descendants unclipped. `HardEdge` and `AntiAlias` clip
+    /// descendants to this box's rounded shape without clipping this wrapper's
+    /// own shadow, fill, or border.
     pub fn clip_behavior(mut self, clip_behavior: ClipBehavior) -> Self {
         self.clip_behavior = clip_behavior;
         self
@@ -277,6 +276,14 @@ impl AnyView for DecoratedBox {
         }
         primitives
     }
+
+    fn descendant_clip(&self, rect: Rect) -> Option<RoundedClip> {
+        if self.clip_behavior == ClipBehavior::None || rect.size().is_empty() {
+            return None;
+        }
+        let radius = self.decoration.border_radius_value().unwrap_or_default();
+        RoundedClip::new(rect, radius, self.clip_behavior).ok()
+    }
 }
 
 #[cfg(test)]
@@ -372,5 +379,74 @@ mod tests {
                 )
                 .is_empty()
         );
+    }
+
+    fn layout_size(clip_behavior: ClipBehavior) -> Size {
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+            .clip_behavior(clip_behavior)
+            .child(SizedBox::new(Size::new(20.0, 10.0)))
+            .layout_children(
+                BoxConstraints::loose(Size::new(100.0, 100.0)),
+                &[Size::new(20.0, 10.0)],
+                &crate::runtime::DEFAULT_TEXT_METRICS,
+            )
+            .0
+    }
+
+    #[test]
+    fn should_return_none_when_clip_behavior_is_none() {
+        // Arrange
+        let widget =
+            DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+                .clip_behavior(ClipBehavior::None);
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0));
+
+        // Act
+        let clip = widget.descendant_clip(rect);
+
+        // Assert
+        assert!(clip.is_none());
+    }
+
+    #[test]
+    fn should_return_none_when_allocation_is_empty() {
+        // Arrange
+        let widget = DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge);
+
+        // Act
+        let clip = widget.descendant_clip(Rect::from_min_size(Point::ZERO, Size::ZERO));
+
+        // Assert
+        assert!(clip.is_none());
+    }
+
+    #[test]
+    fn should_return_rounded_clip_when_hard_edge_policy_is_active() {
+        // Arrange
+        let widget =
+            DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
+                .clip_behavior(ClipBehavior::HardEdge);
+        let rect = Rect::from_min_size(Point::new(2.0, 3.0), Size::new(20.0, 16.0));
+
+        // Act
+        let clip = widget.descendant_clip(rect).expect("active clip");
+
+        // Assert
+        assert_eq!(clip.rect(), rect);
+        assert_eq!(clip.behavior(), ClipBehavior::HardEdge);
+        assert_eq!(clip.radii().as_array(), [8.0; 4]);
+    }
+
+    #[test]
+    fn should_keep_layout_size_when_clip_policy_is_active() {
+        // Arrange / Act
+        let none = layout_size(ClipBehavior::None);
+        let hard = layout_size(ClipBehavior::HardEdge);
+        let anti_alias = layout_size(ClipBehavior::AntiAlias);
+
+        // Assert
+        assert_eq!(none, Size::new(20.0, 10.0));
+        assert_eq!(hard, none);
+        assert_eq!(anti_alias, none);
     }
 }

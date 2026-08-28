@@ -2,7 +2,7 @@ pub mod quad;
 pub mod text_renderer;
 
 use crate::decoration::ClipBehavior;
-use crate::layout::{Rect, Size};
+use crate::layout::{Point, Rect, Size};
 use crate::scene::clip::RoundedClip;
 
 /// Renderer-ready rounded clip geometry in physical pixels.
@@ -34,6 +34,100 @@ impl PhysicalRoundedClip {
     pub const fn behavior(&self) -> ClipBehavior {
         self.behavior
     }
+}
+
+/// Two GPU clip slots packed relative to an instance origin in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PackedClips {
+    pub clip_rect0: [f32; 4],
+    pub clip_radii0: [f32; 4],
+    pub clip_rect1: [f32; 4],
+    pub clip_radii1: [f32; 4],
+    pub clip_meta: [u32; 4],
+}
+
+pub(crate) fn finite_difference(lhs: f32, rhs: f32) -> f32 {
+    (f64::from(lhs) - f64::from(rhs)).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+}
+
+fn clip_behavior_code(behavior: ClipBehavior) -> u32 {
+    match behavior {
+        ClipBehavior::None => 0,
+        ClipBehavior::HardEdge => 1,
+        ClipBehavior::AntiAlias => 2,
+    }
+}
+
+fn exact_clip_slot(ancestor: &RoundedClip, origin: Point) -> ([f32; 4], [f32; 4], u32) {
+    let bounds = ancestor.rect();
+    (
+        [
+            finite_difference(bounds.min.x, origin.x),
+            finite_difference(bounds.min.y, origin.y),
+            finite_difference(bounds.max.x, bounds.min.x),
+            finite_difference(bounds.max.y, bounds.min.y),
+        ],
+        ancestor.radii().as_array(),
+        clip_behavior_code(ancestor.behavior()),
+    )
+}
+
+/// Packs ancestor clips into the two portable instance slots.
+///
+/// More than two active clips collapse remaining ancestors into an inscribed
+/// hard rectangle so content cannot escape an authoritative ancestor.
+pub(crate) fn pack_active_clips(clips: &[RoundedClip], origin: Point) -> PackedClips {
+    let active: Vec<&RoundedClip> = clips
+        .iter()
+        .filter(|clip| clip.behavior() != ClipBehavior::None)
+        .collect();
+    let mut packed = PackedClips::default();
+    if let Some(first) = active.first() {
+        (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) =
+            exact_clip_slot(first, origin);
+    }
+    if active.len() == 2 {
+        (packed.clip_rect1, packed.clip_radii1, packed.clip_meta[2]) =
+            exact_clip_slot(active[1], origin);
+    } else if active.len() > 2 {
+        let mut min_x = -f32::MAX;
+        let mut min_y = -f32::MAX;
+        let mut max_x = f32::MAX;
+        let mut max_y = f32::MAX;
+        for ancestor in &active[1..] {
+            let bounds = ancestor.rect();
+            let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
+            let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                as f32;
+            let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                as f32;
+            let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                as f32;
+            let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
+                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                as f32;
+            min_x = min_x.max(inset_min_x);
+            min_y = min_y.max(inset_min_y);
+            max_x = max_x.min(inset_max_x);
+            max_y = max_y.min(inset_max_y);
+        }
+        packed.clip_rect1 = [
+            finite_difference(min_x, origin.x),
+            finite_difference(min_y, origin.y),
+            finite_difference(max_x.max(min_x), min_x),
+            finite_difference(max_y.max(min_y), min_y),
+        ];
+        packed.clip_meta[2] = if max_x <= min_x || max_y <= min_y {
+            3
+        } else {
+            1
+        };
+    }
+    packed.clip_meta[0] = active.len().min(2) as u32;
+    packed
 }
 
 // ── Viewport ─────────────────────────────────────────────────────────────────
@@ -373,5 +467,137 @@ mod tests {
         assert!((ndc[0] - 0.75).abs() < 0.01);
         // y = 1 - 500/600*2 = 1 - 0.8333*2 = 1 - 1.6667 = -0.6667
         assert!((ndc[1] - (-0.6667)).abs() < 0.01);
+    }
+
+    fn test_clip(origin: Point, size: Size, radius: f32, behavior: ClipBehavior) -> RoundedClip {
+        RoundedClip::new(
+            Rect::from_min_size(origin, size),
+            crate::decoration::BorderRadius::all(radius).unwrap(),
+            behavior,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_filter_none_clips_when_packing_active_slots() {
+        // Arrange
+        let clips = [
+            test_clip(Point::ZERO, Size::new(20.0, 20.0), 4.0, ClipBehavior::None),
+            test_clip(
+                Point::new(1.0, 2.0),
+                Size::new(10.0, 8.0),
+                3.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 1);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_rect0, [1.0, 2.0, 10.0, 8.0]);
+        assert_eq!(packed.clip_radii0, [3.0; 4]);
+        assert_eq!(packed.clip_meta[2], 0);
+    }
+
+    #[test]
+    fn should_pack_two_exact_slots_when_two_clips_are_active() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(32.0, 32.0),
+                8.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(4.0, 4.0),
+                Size::new(24.0, 24.0),
+                2.0,
+                ClipBehavior::AntiAlias,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::new(1.0, 1.0));
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_meta[2], 2);
+        assert_eq!(packed.clip_rect0, [-1.0, -1.0, 32.0, 32.0]);
+        assert_eq!(packed.clip_radii0, [8.0; 4]);
+        assert_eq!(packed.clip_rect1, [3.0, 3.0, 24.0, 24.0]);
+        assert_eq!(packed.clip_radii1, [2.0; 4]);
+    }
+
+    #[test]
+    fn should_collapse_remaining_ancestors_to_inscribed_hard_rect_when_more_than_two_clips() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(32.0, 32.0),
+                8.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(4.0, 4.0),
+                Size::new(24.0, 24.0),
+                4.0,
+                ClipBehavior::AntiAlias,
+            ),
+            test_clip(
+                Point::new(8.0, 8.0),
+                Size::new(16.0, 16.0),
+                2.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_meta[2], 1);
+        assert_eq!(packed.clip_rect0, [0.0, 0.0, 32.0, 32.0]);
+        assert_eq!(packed.clip_rect1, [10.0, 10.0, 12.0, 12.0]);
+        assert_eq!(packed.clip_radii1, [0.0; 4]);
+    }
+
+    #[test]
+    fn should_encode_empty_coverage_when_collapsed_intersection_is_empty() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                0.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                12.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(16.0, 16.0),
+                Size::new(4.0, 4.0),
+                2.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[2], 3);
     }
 }

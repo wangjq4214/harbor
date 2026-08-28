@@ -1,5 +1,5 @@
 use crate::decoration::{BorderRadius, ClipBehavior, DecorationError, NormalizedBorderRadius};
-use crate::layout::Rect;
+use crate::layout::{Point, Rect};
 
 /// Retained logical geometry for clipping child content to a rounded rectangle.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +37,60 @@ impl RoundedClip {
     pub const fn behavior(&self) -> ClipBehavior {
         self.behavior
     }
+
+    /// Returns whether `point` is inside this clip using the HardEdge inclusion rule.
+    ///
+    /// The axis-aligned bounds use the same half-open rectangle as [`Rect::contains`].
+    /// A point in a corner square is inside only when it also lies on or inside that
+    /// corner's circular arc (`distance <= 0`). Zero radii therefore match rectangular
+    /// hit testing.
+    pub fn contains(&self, point: Point) -> bool {
+        if !self.rect.contains(point) {
+            return false;
+        }
+        let size = self.rect.size();
+        let local_x = f64::from(point.x) - f64::from(self.rect.min.x);
+        let local_y = f64::from(point.y) - f64::from(self.rect.min.y);
+        let width = f64::from(size.width);
+        let height = f64::from(size.height);
+        let radii = self.radii.as_array();
+        inside_corner(local_x, local_y, f64::from(radii[0]), 0.0, 0.0)
+            && inside_corner(local_x, local_y, f64::from(radii[1]), width, 0.0)
+            && inside_corner(local_x, local_y, f64::from(radii[2]), width, height)
+            && inside_corner(local_x, local_y, f64::from(radii[3]), 0.0, height)
+    }
+}
+
+fn inside_corner(local_x: f64, local_y: f64, radius: f64, corner_x: f64, corner_y: f64) -> bool {
+    if radius <= 0.0 {
+        return true;
+    }
+    let inward_x = if corner_x == 0.0 {
+        radius
+    } else {
+        corner_x - radius
+    };
+    let inward_y = if corner_y == 0.0 {
+        radius
+    } else {
+        corner_y - radius
+    };
+    let in_x = if corner_x == 0.0 {
+        local_x < radius
+    } else {
+        local_x > corner_x - radius
+    };
+    let in_y = if corner_y == 0.0 {
+        local_y < radius
+    } else {
+        local_y > corner_y - radius
+    };
+    if !(in_x && in_y) {
+        return true;
+    }
+    let dx = local_x - inward_x;
+    let dy = local_y - inward_y;
+    dx * dx + dy * dy <= radius * radius
 }
 
 fn validate_rect(rect: Rect) -> Result<(f64, f64), DecorationError> {
@@ -125,5 +179,145 @@ mod tests {
 
         assert_eq!(clip.rect(), rect);
         assert_eq!(clip.radii().as_array(), [0.0; 4]);
+    }
+
+    fn hard_clip(rect: Rect, radius: BorderRadius) -> RoundedClip {
+        RoundedClip::new(rect, radius, ClipBehavior::HardEdge).unwrap()
+    }
+
+    #[test]
+    fn should_match_rect_contains_when_radii_are_zero() {
+        // Arrange
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(10.0, 8.0));
+        let clip = hard_clip(rect, BorderRadius::default());
+
+        // Act / Assert
+        for point in [
+            Point::new(0.0, 0.0),
+            Point::new(9.0, 7.0),
+            Point::new(10.0, 4.0),
+            Point::new(5.0, 8.0),
+        ] {
+            assert_eq!(clip.contains(point), rect.contains(point));
+        }
+    }
+
+    #[test]
+    fn should_include_interior_point_when_radii_are_nonzero() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            BorderRadius::all(8.0).unwrap(),
+        );
+
+        // Act
+        let inside = clip.contains(Point::new(10.0, 10.0));
+
+        // Assert
+        assert!(inside);
+    }
+
+    #[test]
+    fn should_reject_point_when_inside_corner_cutout() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            BorderRadius::all(8.0).unwrap(),
+        );
+
+        // Act
+        let in_cutout = clip.contains(Point::new(0.0, 0.0));
+
+        // Assert
+        assert!(!in_cutout);
+    }
+
+    #[test]
+    fn should_include_point_when_exactly_on_corner_arc() {
+        // Arrange
+        let clip = RoundedClip::new(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            BorderRadius::all(8.0).unwrap(),
+            ClipBehavior::AntiAlias,
+        )
+        .unwrap();
+
+        // Act
+        // 3-4-5 from the top-left corner center (8, 8) lands on the arc.
+        let on_arc = clip.contains(Point::new(5.0, 4.0));
+
+        // Assert
+        assert!(on_arc);
+    }
+
+    #[test]
+    fn should_include_point_when_on_straight_edge_outside_corner_square() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            BorderRadius::all(8.0).unwrap(),
+        );
+
+        // Act
+        let on_edge = clip.contains(Point::new(8.0, 0.0));
+
+        // Assert
+        assert!(on_edge);
+    }
+
+    #[test]
+    fn should_contain_nothing_when_rect_is_empty() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::new(4.0, 6.0), Size::ZERO),
+            BorderRadius::all(4.0).unwrap(),
+        );
+
+        // Act
+        let origin = clip.contains(Point::new(4.0, 6.0));
+        let nearby = clip.contains(Point::new(4.1, 6.1));
+
+        // Assert
+        assert!(!origin);
+        assert!(!nearby);
+    }
+
+    #[test]
+    fn should_use_normalized_radii_when_requested_radii_exceed_box() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 10.0)),
+            BorderRadius::all(50.0).unwrap(),
+        );
+
+        // Act
+        let cutout = clip.contains(Point::new(0.0, 0.0));
+        let along_top = clip.contains(Point::new(5.0, 0.0));
+
+        // Assert
+        assert_eq!(clip.radii().as_array(), [5.0; 4]);
+        assert!(!cutout);
+        assert!(along_top);
+    }
+
+    #[test]
+    fn should_reject_only_rounded_corners_when_radii_are_independent() {
+        // Arrange
+        let clip = hard_clip(
+            Rect::from_min_size(Point::ZERO, Size::new(20.0, 20.0)),
+            BorderRadius::only(8.0, 0.0, 0.0, 0.0).unwrap(),
+        );
+
+        // Act
+        let top_left = clip.contains(Point::new(0.0, 0.0));
+        let top_right = clip.contains(Point::new(19.0, 0.0));
+        let bottom_left = clip.contains(Point::new(0.0, 19.0));
+        let on_arc = clip.contains(Point::new(5.0, 4.0));
+
+        // Assert
+        assert!(!top_left);
+        assert!(top_right);
+        assert!(bottom_left);
+        assert!(on_arc);
     }
 }

@@ -5,6 +5,7 @@ use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::scene::{SceneGraph, SceneItem};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
 use std::cell::RefCell;
@@ -12,13 +13,27 @@ use std::rc::Rc;
 use std::time::Instant;
 
 fn update_decoration(decoration: BoxDecoration) -> harbor_widget::scene::SceneDelta {
+    paint(DecoratedBox::new(decoration).child(SizedBox::new(Size::new(40.0, 24.0))))
+}
+
+fn paint(root: impl Component + 'static) -> harbor_widget::scene::SceneDelta {
     let mut runtime = Runtime::new();
-    runtime.set_root(DecoratedBox::new(decoration).child(SizedBox::new(Size::new(40.0, 24.0))));
+    runtime.set_root(root);
     runtime.update(Instant::now());
     runtime
         .pending_delta()
         .cloned()
         .expect("first update has a delta")
+}
+
+fn rounded_box(
+    radius: f32,
+    clip_behavior: ClipBehavior,
+    child: impl Component + 'static,
+) -> DecoratedBox {
+    DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(radius).unwrap()))
+        .clip_behavior(clip_behavior)
+        .child(child)
 }
 
 #[test]
@@ -522,14 +537,24 @@ fn resolves_asymmetric_radii_once_for_fill_and_border() {
 }
 
 #[test]
-fn active_clip_policy_is_configuration_only_until_rounded_masks_exist() {
-    let box_widget = DecoratedBox::new(BoxDecoration::new())
-        .clip_behavior(ClipBehavior::AntiAlias)
-        .child(SizedBox::new(Size::new(10.0, 10.0)));
+fn active_clip_policy_attaches_normalized_clip_to_child_items() {
+    let box_widget =
+        DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()))
+            .clip_behavior(ClipBehavior::AntiAlias)
+            .child(SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED));
     assert_eq!(box_widget.clip_behavior_value(), ClipBehavior::AntiAlias);
 
-    let delta = update_decoration(box_widget.decoration().clone());
-    assert!(delta.added.iter().all(|item| item.clips.is_empty()));
+    let mut runtime = Runtime::new();
+    runtime.set_root(box_widget);
+    runtime.update(Instant::now());
+    let delta = runtime
+        .pending_delta()
+        .cloned()
+        .expect("first update has a delta");
+    assert_eq!(delta.added.len(), 1);
+    assert_eq!(delta.added[0].clips.len(), 1);
+    assert_eq!(delta.added[0].clips[0].behavior(), ClipBehavior::AntiAlias);
+    assert_eq!(delta.added[0].clips[0].radii().as_array(), [4.0; 4]);
 }
 
 #[test]
@@ -694,4 +719,158 @@ fn malformed_layout_geometry_does_not_panic_when_clip_policy_is_active() {
     // The wrapper no longer constructs a fallible rounded clip during paint;
     // malformed geometry is therefore handled by the renderer boundary.
     let _ = widget;
+}
+
+#[test]
+fn should_emit_no_clip_when_policy_is_none() {
+    // Arrange
+    let widget = rounded_box(
+        8.0,
+        ClipBehavior::None,
+        SizedBox::new(Size::new(20.0, 20.0)).color(Color::RED),
+    );
+
+    // Act
+    let delta = paint(widget);
+
+    // Assert
+    assert_eq!(delta.added.len(), 1);
+    assert!(delta.added[0].clips.is_empty());
+}
+
+#[test]
+fn should_leave_shadow_fill_and_border_unclipped_when_child_clip_is_active() {
+    // Arrange
+    let decoration = BoxDecoration::new()
+        .shadow(
+            BoxShadow::new()
+                .try_color(Color::BLUE)
+                .unwrap()
+                .try_offset(Point::new(2.0, 2.0))
+                .unwrap(),
+        )
+        .try_color(Color::GREEN)
+        .unwrap()
+        .border(Border::all(Color::WHITE, 1.0).unwrap())
+        .border_radius(BorderRadius::all(6.0).unwrap());
+    let widget = DecoratedBox::new(decoration)
+        .clip_behavior(ClipBehavior::HardEdge)
+        .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::RED));
+
+    // Act
+    let delta = paint(widget);
+
+    // Assert
+    assert_eq!(delta.added.len(), 4);
+    assert!(matches!(
+        delta.added[0].primitive,
+        Primitive::OuterShadow { .. }
+    ));
+    assert!(matches!(
+        delta.added[1].primitive,
+        Primitive::RoundedQuad { .. }
+    ));
+    assert!(matches!(
+        delta.added[2].primitive,
+        Primitive::Quad {
+            color: Color::RED,
+            ..
+        }
+    ));
+    assert!(matches!(
+        delta.added[3].primitive,
+        Primitive::RoundedBorder { .. }
+    ));
+    assert!(delta.added[0].clips.is_empty());
+    assert!(delta.added[1].clips.is_empty());
+    assert_eq!(delta.added[2].clips.len(), 1);
+    assert_eq!(delta.added[2].clips[0].behavior(), ClipBehavior::HardEdge);
+    assert!(delta.added[3].clips.is_empty());
+}
+
+#[test]
+fn should_accumulate_clips_outer_to_inner_when_decorated_boxes_are_nested() {
+    // Arrange
+    let widget = rounded_box(
+        8.0,
+        ClipBehavior::HardEdge,
+        Padding::all(10.0).child(rounded_box(
+            4.0,
+            ClipBehavior::AntiAlias,
+            SizedBox::new(Size::new(20.0, 20.0)).color(Color::RED),
+        )),
+    );
+
+    // Act
+    let delta = paint(widget);
+
+    // Assert
+    let child = delta
+        .added
+        .iter()
+        .find(|item| {
+            matches!(
+                item.primitive,
+                Primitive::Quad {
+                    color: Color::RED,
+                    ..
+                }
+            )
+        })
+        .expect("nested child fill");
+    assert_eq!(child.clips.len(), 2);
+    assert_eq!(child.clips[0].behavior(), ClipBehavior::HardEdge);
+    assert_eq!(child.clips[0].radii().as_array(), [8.0; 4]);
+    assert_eq!(
+        child.clips[0].rect(),
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 40.0))
+    );
+    assert_eq!(child.clips[1].behavior(), ClipBehavior::AntiAlias);
+    assert_eq!(child.clips[1].radii().as_array(), [4.0; 4]);
+    assert_eq!(
+        child.clips[1].rect(),
+        Rect::from_min_size(Point::new(10.0, 10.0), Size::new(20.0, 20.0))
+    );
+}
+
+#[test]
+fn should_keep_child_layout_rect_when_clip_policy_changes() {
+    // Arrange
+    let child = SizedBox::new(Size::new(40.0, 24.0)).color(Color::RED);
+    let rect_of = |behavior: ClipBehavior| {
+        let delta = paint(rounded_box(8.0, behavior, child.clone()));
+        match delta.added[0].primitive {
+            Primitive::Quad { rect, .. } => rect,
+            _ => panic!("expected child quad"),
+        }
+    };
+
+    // Act
+    let none = rect_of(ClipBehavior::None);
+    let hard = rect_of(ClipBehavior::HardEdge);
+    let anti_alias = rect_of(ClipBehavior::AntiAlias);
+
+    // Assert
+    assert_eq!(
+        none,
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 24.0))
+    );
+    assert_eq!(hard, none);
+    assert_eq!(anti_alias, none);
+}
+
+#[test]
+fn should_normalize_oversized_radii_when_child_clip_is_emitted() {
+    // Arrange
+    let widget = rounded_box(
+        50.0,
+        ClipBehavior::HardEdge,
+        SizedBox::new(Size::new(20.0, 10.0)).color(Color::RED),
+    );
+
+    // Act
+    let delta = paint(widget);
+
+    // Assert
+    assert_eq!(delta.added[0].clips[0].radii().as_array(), [5.0; 4]);
 }

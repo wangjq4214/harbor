@@ -7,6 +7,7 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::focus_scope::FocusScope;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::stack::Stack;
+use harbor_widget::{BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -38,6 +39,23 @@ fn test_button(label: &str, flag: Arc<AtomicBool>) -> Button {
     Button::new(label).on_click(move |_ctx| {
         flag.store(true, Ordering::SeqCst);
     })
+}
+
+fn click(rt: &mut Runtime, position: Point) {
+    rt.dispatch(
+        pointer_event(position, PointerPhase::Down, PointerButton::Left, 0),
+        now(),
+    );
+    rt.dispatch(
+        pointer_event(position, PointerPhase::Up, PointerButton::Left, 0),
+        now(),
+    );
+}
+
+fn clipped_button(label: &str, flag: Arc<AtomicBool>, clip_behavior: ClipBehavior) -> DecoratedBox {
+    DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(16.0).unwrap()))
+        .clip_behavior(clip_behavior)
+        .child(test_button(label, flag))
 }
 
 // ── Pointer click routing ────────────────────────────────────────────────────
@@ -798,4 +816,143 @@ fn should_ignore_update_with_no_root() {
     let mut rt = Runtime::new();
     let req = rt.update(now());
     assert!(!req.request_redraw);
+}
+
+// ── Rounded descendant clip hit testing ──────────────────────────────────────
+
+#[test]
+fn should_miss_clipped_child_when_pointer_is_in_corner_cutout() {
+    // Arrange
+    let clicked = Arc::new(AtomicBool::new(false));
+    let mut rt = Runtime::new();
+    rt.set_root(clipped_button(
+        "OK",
+        clicked.clone(),
+        ClipBehavior::HardEdge,
+    ));
+    rt.update(now());
+
+    // Act
+    click(&mut rt, Point::new(0.0, 0.0));
+
+    // Assert
+    assert!(
+        !clicked.load(Ordering::SeqCst),
+        "corner cutout must not target the clipped child"
+    );
+}
+
+#[test]
+fn should_hit_clipped_child_when_pointer_is_inside_rounded_shape() {
+    // Arrange
+    let clicked = Arc::new(AtomicBool::new(false));
+    let mut rt = Runtime::new();
+    rt.set_root(clipped_button(
+        "OK",
+        clicked.clone(),
+        ClipBehavior::HardEdge,
+    ));
+    rt.update(now());
+
+    // Act
+    click(&mut rt, Point::new(26.0, 16.0));
+
+    // Assert
+    assert!(
+        clicked.load(Ordering::SeqCst),
+        "interior pointer must keep child targeting"
+    );
+}
+
+#[test]
+fn should_deliver_to_captor_when_pointer_moves_into_corner_cutout() {
+    // Arrange
+    let clicked = Arc::new(AtomicBool::new(false));
+    let mut rt = Runtime::new();
+    rt.set_root(clipped_button(
+        "OK",
+        clicked.clone(),
+        ClipBehavior::HardEdge,
+    ));
+    rt.update(now());
+    rt.dispatch(
+        pointer_event(
+            Point::new(26.0, 16.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            2,
+        ),
+        now(),
+    );
+    assert!(rt.input().captor(2).is_some());
+
+    // Act
+    rt.dispatch(
+        pointer_event(
+            Point::new(0.0, 0.0),
+            PointerPhase::Move,
+            PointerButton::Left,
+            2,
+        ),
+        now(),
+    );
+    rt.dispatch(
+        pointer_event(
+            Point::new(0.0, 0.0),
+            PointerPhase::Up,
+            PointerButton::Left,
+            2,
+        ),
+        now(),
+    );
+
+    // Assert
+    assert!(
+        clicked.load(Ordering::SeqCst),
+        "captured pointer must keep routing after leaving the rounded shape"
+    );
+}
+
+#[test]
+fn should_hit_sibling_behind_cutout_when_front_child_is_clipped() {
+    // Arrange
+    let front = Arc::new(AtomicBool::new(false));
+    let behind = Arc::new(AtomicBool::new(false));
+    let stack = Stack::new()
+        .child(test_button("Bottom", behind.clone()))
+        .child(clipped_button("Hi", front.clone(), ClipBehavior::HardEdge));
+    let mut rt = Runtime::new();
+    rt.set_root(stack);
+    rt.update(now());
+
+    // Act
+    click(&mut rt, Point::new(0.0, 0.0));
+
+    // Assert
+    assert!(
+        !front.load(Ordering::SeqCst),
+        "clipped front child must miss the cutout"
+    );
+    assert!(
+        behind.load(Ordering::SeqCst),
+        "sibling behind the cutout must receive the pointer"
+    );
+}
+
+#[test]
+fn should_hit_rectangular_child_when_clip_policy_is_none() {
+    // Arrange
+    let clicked = Arc::new(AtomicBool::new(false));
+    let mut rt = Runtime::new();
+    rt.set_root(clipped_button("OK", clicked.clone(), ClipBehavior::None));
+    rt.update(now());
+
+    // Act
+    click(&mut rt, Point::new(0.0, 0.0));
+
+    // Assert
+    assert!(
+        clicked.load(Ordering::SeqCst),
+        "ClipBehavior::None must keep rectangular hit testing"
+    );
 }

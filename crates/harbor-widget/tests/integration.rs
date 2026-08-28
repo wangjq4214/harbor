@@ -354,7 +354,7 @@ fn zero_padding_is_noop_at_runtime_level() {
 }
 
 #[test]
-fn should_paint_decorated_box_in_background_child_border_order_without_false_clip_metadata() {
+fn should_paint_decorated_box_in_background_child_border_order_with_child_clip_only() {
     // Arrange
     let border = Border::all(Color::BLUE, 2.0).unwrap();
     let decoration = BoxDecoration::new()
@@ -384,10 +384,10 @@ fn should_paint_decorated_box_in_background_child_border_order_without_false_cli
         delta.added[2].primitive,
         Primitive::RoundedBorder { .. }
     ));
-    // Rounded masks are deliberately deferred: the current render-pass API
-    // supports rectangular scissors only, so no rounded clip metadata is
-    // advertised to child or external draws.
-    assert!(delta.added.iter().all(|item| item.clips.is_empty()));
+    assert!(delta.added[0].clips.is_empty());
+    assert_eq!(delta.added[1].clips.len(), 1);
+    assert_eq!(delta.added[1].clips[0].behavior(), ClipBehavior::HardEdge);
+    assert!(delta.added[2].clips.is_empty());
     assert_eq!(delta.added[0].paint_order, 0);
     assert_eq!(delta.added[1].paint_order, 1);
     assert_eq!(delta.added[2].paint_order, 2);

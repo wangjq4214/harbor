@@ -217,6 +217,29 @@ fn make_rounded_item(id: u64, primitive: Primitive) -> SceneItem {
     }
 }
 
+fn bgra(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
+    [
+        pixels[offset],
+        pixels[offset + 1],
+        pixels[offset + 2],
+        pixels[offset + 3],
+    ]
+}
+
+fn clipped_child_quad(behavior: ClipBehavior, origin: Point, size: f32, radius: f32) -> SceneItem {
+    let mut item = make_quad_item(1, 0, origin.x, origin.y, size, size);
+    item.clips.push(
+        RoundedClip::new(
+            Rect::from_min_size(origin, Size::new(size, size)),
+            BorderRadius::all(radius).unwrap(),
+            behavior,
+        )
+        .unwrap(),
+    );
+    item
+}
+
 fn render_quad_item(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1899,4 +1922,205 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     // Assert
     assert_eq!(*live_mode.lock().unwrap(), Some(ExternalDrawMode::Live));
     assert_eq!(*retain_mode.lock().unwrap(), Some(ExternalDrawMode::Retain));
+}
+
+#[test]
+fn should_discard_child_pixels_outside_arc_when_clip_is_hard_edge() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for hard-edge clip test");
+        return;
+    };
+    let item = clipped_child_quad(ClipBehavior::HardEdge, Point::ZERO, 32.0, 8.0);
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
+
+    // Assert
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 1, 1), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
+    assert!(
+        bgra(&pixels, 16, 0)[2] > 200,
+        "straight top edge must remain covered: {:?}",
+        bgra(&pixels, 16, 0)
+    );
+}
+
+#[test]
+fn should_apply_fractional_coverage_when_clip_is_anti_alias() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for anti-alias clip test");
+        return;
+    };
+    let item = clipped_child_quad(ClipBehavior::AntiAlias, Point::ZERO, 32.0, 8.0);
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
+
+    // Assert
+    let mut saw_fractional = false;
+    for y in 0..8 {
+        for x in 0..8 {
+            let alpha = bgra(&pixels, x, y)[3];
+            if alpha > 0 && alpha < 255 {
+                saw_fractional = true;
+            }
+        }
+    }
+    assert!(
+        saw_fractional,
+        "anti-aliased clip must produce fractional coverage along the arc"
+    );
+    assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_clip_child_quad_when_viewport_scale_is_one_and_a_half() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for 1.5x clip test");
+        return;
+    };
+    let item = clipped_child_quad(ClipBehavior::HardEdge, Point::new(0.25, 0.25), 20.0, 8.0);
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(48, 48, 1.5), 48);
+
+    // Assert
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert!(
+        bgra(&pixels, 16, 16)[2] > 200,
+        "interior at 1.5x must keep child color: {:?}",
+        bgra(&pixels, 16, 16)
+    );
+}
+
+#[test]
+fn should_clip_child_quad_when_viewport_scale_is_two() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for 2x clip test");
+        return;
+    };
+    let item = clipped_child_quad(ClipBehavior::HardEdge, Point::new(0.5, 0.5), 16.0, 6.0);
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(64, 64, 2.0), 64);
+
+    // Assert
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert!(
+        bgra(&pixels, 16, 16)[2] > 200,
+        "interior at 2x must keep child color: {:?}",
+        bgra(&pixels, 16, 16)
+    );
+}
+
+#[test]
+fn should_keep_unclipped_wrapper_pixels_in_cutout_when_child_clip_is_active() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for wrapper cutout test");
+        return;
+    };
+    let fill = SceneItem {
+        id: 1,
+        primitive: Primitive::Quad {
+            rect: Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+            color: Color::BLUE,
+            corner_radius: 0.0,
+        },
+        clips: Vec::new(),
+        paint_order: 0,
+    };
+    let mut child = make_quad_item(2, 1, 0.0, 0.0, 32.0, 32.0);
+    child.clips.push(
+        RoundedClip::new(
+            Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+            BorderRadius::all(8.0).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap(),
+    );
+
+    // Act
+    let pixels = render_quad_items(
+        &device,
+        &queue,
+        vec![fill, child],
+        Viewport::new(32, 32, 1.0),
+        32,
+        None,
+    );
+
+    // Assert
+    assert_eq!(bgra(&pixels, 0, 0), [255, 0, 0, 255]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_intersect_nested_clips_when_two_rounded_ancestors_are_active() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for nested clip test");
+        return;
+    };
+    let mut item = make_quad_item(1, 0, 0.0, 0.0, 32.0, 32.0);
+    item.clips.push(
+        RoundedClip::new(
+            Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+            BorderRadius::all(8.0).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap(),
+    );
+    item.clips.push(
+        RoundedClip::new(
+            Rect::from_min_size(Point::new(4.0, 4.0), Size::new(24.0, 24.0)),
+            BorderRadius::all(4.0).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap(),
+    );
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
+
+    // Assert
+    assert_eq!(bgra(&pixels, 4, 4), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
+}
+
+#[test]
+fn should_not_leak_outside_outer_bound_when_more_than_two_clips_are_packed() {
+    // Arrange
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for packed clip test");
+        return;
+    };
+    let mut item = make_quad_item(1, 0, 0.0, 0.0, 32.0, 32.0);
+    for (origin, size, radius) in [
+        (Point::ZERO, 32.0, 8.0),
+        (Point::new(2.0, 2.0), 28.0, 4.0),
+        (Point::new(4.0, 4.0), 24.0, 4.0),
+    ] {
+        item.clips.push(
+            RoundedClip::new(
+                Rect::from_min_size(origin, Size::new(size, size)),
+                BorderRadius::all(radius).unwrap(),
+                ClipBehavior::HardEdge,
+            )
+            .unwrap(),
+        );
+    }
+
+    // Act
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
+
+    // Assert
+    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 1, 16), [0, 0, 0, 0]);
+    assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
 }
