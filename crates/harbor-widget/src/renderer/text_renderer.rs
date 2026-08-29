@@ -131,6 +131,14 @@ struct GlyphInstance {
     _pad: [f32; 2],
 }
 
+#[derive(Copy, Clone, Debug)]
+struct TextInstanceBatch<'a> {
+    glyphs: &'a [GlyphLayout],
+    origin: Point,
+    color: Color,
+    clips: &'a [RoundedClip],
+}
+
 // ── TextRenderer ────────────────────────────────────────────────────────────
 
 /// GPU renderer for textured glyph quads.
@@ -322,11 +330,13 @@ impl TextRenderer {
                 self.write_instances(
                     queue,
                     next_offset,
-                    run_data.glyphs.as_slice(),
-                    *origin,
-                    *color,
+                    TextInstanceBatch {
+                        glyphs: run_data.glyphs.as_slice(),
+                        origin: *origin,
+                        color: *color,
+                        clips: &item.clips,
+                    },
                     viewport,
-                    &item.clips,
                 );
                 self.id_to_offset.insert(item.id, (next_offset, count));
                 next_offset += count;
@@ -357,23 +367,22 @@ impl TextRenderer {
         &self,
         queue: &wgpu::Queue,
         start: u32,
-        glyphs: &[GlyphLayout],
-        origin: Point,
-        color: Color,
+        batch: TextInstanceBatch<'_>,
         viewport: &Viewport,
-        clips: &[RoundedClip],
     ) {
-        let instances: Vec<GlyphInstance> = glyphs
+        let instances: Vec<GlyphInstance> = batch
+            .glyphs
             .iter()
             .map(|g| {
-                let glyph_origin = Point::new(origin.x + g.origin.x, origin.y + g.origin.y);
+                let glyph_origin =
+                    Point::new(batch.origin.x + g.origin.x, batch.origin.y + g.origin.y);
                 let dp_rect = Rect::from_min_size(glyph_origin, Size::new(g.width, g.height));
                 let ndc = viewport.dp_rect_to_ndc(&dp_rect);
-                let packed = pack_active_clips(clips, glyph_origin);
+                let packed = pack_active_clips(batch.clips, glyph_origin);
                 GlyphInstance {
                     rect: ndc,
                     uv: [g.uv_left, g.uv_top, g.uv_right, g.uv_bottom],
-                    color: color.to_array(),
+                    color: batch.color.to_array(),
                     clip_rect0: packed.clip_rect0,
                     clip_radii0: packed.clip_radii0,
                     clip_rect1: packed.clip_rect1,
