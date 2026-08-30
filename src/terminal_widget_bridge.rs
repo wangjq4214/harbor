@@ -683,7 +683,6 @@ mod tests {
                 key: WidgetKey::PageUp,
                 modifiers: Modifiers::default(),
             }),
-            std::time::Instant::now(),
         );
 
         // Assert: open-gate delivery scrolls; KeyDown invalidates paint.
@@ -707,7 +706,6 @@ mod tests {
                 key: WidgetKey::PageUp,
                 modifiers: Modifiers::default(),
             }),
-            std::time::Instant::now(),
         );
 
         // Assert: gated non-wheel is swallowed without delivery or redraw wake.
@@ -735,7 +733,6 @@ mod tests {
                 PointerButton::Left,
                 0,
             )),
-            std::time::Instant::now(),
         );
 
         // Assert: gated wheel still delivers and wakes when the viewport moves.
