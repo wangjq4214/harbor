@@ -23,9 +23,9 @@ impl TerminalDecorationPreset {
                 a: 0.25,
             })
             .expect("product shadow color is finite")
-            .try_offset(Point::new(0.0, 4.0))
+            .try_offset(Point::new(0.0, 3.0))
             .expect("product shadow offset is finite")
-            .try_blur_radius(12.0)
+            .try_blur_radius(3.0)
             .expect("product shadow blur is finite and non-negative")
             .try_spread_radius(0.0)
             .expect("product shadow spread is finite");
@@ -47,9 +47,34 @@ impl TerminalDecorationPreset {
     }
 }
 
-/// Main-window root: the implemented 2dp inset around the product decoration.
-pub(crate) fn build_main_terminal_root(child: impl Component + 'static) -> Padding {
-    Padding::all(2.0).child(TerminalDecorationPreset::wrap(child))
+/// Main-window root: a 12dp inset around the product decoration with a
+/// backdrop-aware white base fill.
+///
+/// With an acrylic backdrop the base is a faint white veil (alpha 0.06) so the
+/// compositor material stays visible; without a backdrop it is opaque white so
+/// the transparent frame clear never shows through as black.
+pub(crate) fn build_main_terminal_root(
+    backdrop_available: bool,
+    child: impl Component + 'static,
+) -> Padding {
+    let base = if backdrop_available {
+        Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.06,
+        }
+    } else {
+        Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }
+    };
+    Padding::all(12.0)
+        .background(base)
+        .child(TerminalDecorationPreset::wrap(child))
 }
 
 #[cfg(test)]
@@ -74,7 +99,7 @@ mod tests {
         if let Some(viewport) = viewport {
             runtime.set_viewport(viewport);
         }
-        runtime.set_root(build_main_terminal_root(CustomPaint::new(1)));
+        runtime.set_root(build_main_terminal_root(false, CustomPaint::new(1)));
         let effects = runtime.update(Instant::now());
         (runtime, effects)
     }
@@ -140,22 +165,77 @@ mod tests {
                 a: 0.25,
             }
         );
-        assert_eq!(shadow.offset(), Point::new(0.0, 4.0));
-        assert_eq!(shadow.blur_radius(), 12.0);
+        assert_eq!(shadow.offset(), Point::new(0.0, 3.0));
+        assert_eq!(shadow.blur_radius(), 3.0);
         assert_eq!(shadow.spread_radius(), 0.0);
     }
 
     #[test]
-    fn should_apply_two_dp_inset_without_background_when_building_main_terminal_root() {
+    fn should_apply_twelve_dp_inset_with_opaque_white_background_when_no_backdrop() {
         // Arrange / Act
-        let root = build_main_terminal_root(CustomPaint::new(1));
+        let root = build_main_terminal_root(false, CustomPaint::new(1));
 
         // Assert
-        assert_eq!(root.top, 2.0);
-        assert_eq!(root.right, 2.0);
-        assert_eq!(root.bottom, 2.0);
-        assert_eq!(root.left, 2.0);
-        assert_eq!(root.background, None);
+        assert_eq!(root.top, 12.0);
+        assert_eq!(root.right, 12.0);
+        assert_eq!(root.bottom, 12.0);
+        assert_eq!(root.left, 12.0);
+        assert_eq!(
+            root.background,
+            Some(Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn should_apply_faint_white_veil_when_backdrop_is_available() {
+        // Arrange / Act
+        let root = build_main_terminal_root(true, CustomPaint::new(1));
+
+        // Assert
+        assert_eq!(
+            root.background,
+            Some(Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.06,
+            })
+        );
+    }
+
+    #[test]
+    fn should_emit_faint_veil_quad_and_keep_inset_when_backdrop_is_available() {
+        // Arrange
+        let mut runtime = Runtime::new();
+        runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+        let _effects = runtime.update(Instant::now());
+        let items = painted_items(&runtime);
+
+        // Act
+        let veil_item = items
+            .iter()
+            .find(|item| matches!(item.primitive, Primitive::Quad { .. }))
+            .expect("backdrop-aware base emits a Quad fill");
+        let Primitive::Quad { color, .. } = &veil_item.primitive else {
+            panic!("base fill item must be a Quad");
+        };
+
+        // Assert — faint white veil lets the compositor material stay visible.
+        assert_eq!(color.r, 1.0);
+        assert_eq!(color.g, 1.0);
+        assert_eq!(color.b, 1.0);
+        assert_eq!(color.a, 0.06);
+
+        // Assert — the 12dp inset is independent of the backdrop fact.
+        let (_, _padding_rect, _, decorated_rect, _, external_rect) = fiber_chain(&runtime);
+        let expected_child = Rect::from_min_size(Point::new(12.0, 12.0), Size::new(776.0, 576.0));
+        assert_eq!(decorated_rect, expected_child);
+        assert_eq!(external_rect, expected_child);
     }
 
     #[test]
@@ -174,40 +254,51 @@ mod tests {
         ) = fiber_chain(&runtime);
         let items = painted_items(&runtime);
 
-        // Assert — fiber types and 2dp inset on the 800×600 fallback
+        // Assert — fiber types and 12dp inset on the 800×600 fallback
         assert_eq!(padding_type, TypeId::of::<Padding>());
         assert_eq!(decorated_type, TypeId::of::<DecoratedBox>());
         assert_eq!(external_type, TypeId::of::<CustomPaint>());
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));
         assert_eq!(padding_rect.size(), Size::new(800.0, 600.0));
-        let expected_child = Rect::from_min_size(Point::new(2.0, 2.0), Size::new(796.0, 596.0));
+        let expected_child = Rect::from_min_size(Point::new(12.0, 12.0), Size::new(776.0, 576.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
 
-        // Assert — OuterShadow then External; no fill or border
+        // Assert — base fill quad, then OuterShadow, then External
         let mut primitives = items.iter().map(|item| &item.primitive);
         let first = primitives
             .find(|primitive| {
                 matches!(
                     primitive,
-                    Primitive::OuterShadow { .. }
+                    Primitive::Quad { .. }
+                        | Primitive::OuterShadow { .. }
                         | Primitive::External { .. }
                         | Primitive::RoundedQuad { .. }
                         | Primitive::RoundedBorder { .. }
                 )
             })
             .expect("decoration or external primitive");
+        let Primitive::Quad { color, .. } = first else {
+            panic!("first matching primitive must be the white base Quad");
+        };
+        assert_eq!(color.a, 1.0);
+
+        // Assert — OuterShadow after the base quad, before the External
+        let shadow_item = items
+            .iter()
+            .find(|item| matches!(item.primitive, Primitive::OuterShadow { .. }))
+            .expect("decoration emits OuterShadow");
         let Primitive::OuterShadow {
             color,
             blur_radius,
             occluder_rect,
             ..
-        } = first
+        } = &shadow_item.primitive
         else {
-            panic!("first matching primitive must be OuterShadow");
+            panic!("shadow item must be OuterShadow");
         };
         assert_eq!(color.a, 0.25);
-        assert_eq!(*blur_radius, 12.0);
+        assert_eq!(*blur_radius, 3.0);
         assert_eq!(*occluder_rect, expected_child);
 
         assert!(
@@ -256,7 +347,7 @@ mod tests {
             external_rect,
         ) = fiber_chain(&runtime);
 
-        // Assert — layout exists; 2dp deflate saturates at zero
+        // Assert — layout exists; 12dp deflate saturates at zero
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));
         assert_eq!(decorated_rect.size(), Size::ZERO);
         assert_eq!(external_rect.size(), Size::ZERO);
@@ -269,7 +360,7 @@ mod tests {
     #[test]
     fn should_normalize_clip_radii_to_child_size_when_viewport_is_smaller_than_radius() {
         // Arrange
-        let viewport = Viewport::new(20, 20, 1.0);
+        let viewport = Viewport::new(40, 40, 1.0);
         let logical = viewport.logical_size;
 
         // Act
@@ -286,10 +377,10 @@ mod tests {
 
         // Assert
         let expected_child = Rect::from_min_size(
-            Point::new(2.0, 2.0),
-            Size::new(logical.width - 4.0, logical.height - 4.0),
+            Point::new(12.0, 12.0),
+            Size::new(logical.width - 24.0, logical.height - 24.0),
         );
-        assert_eq!(decorated_rect.min, Point::new(2.0, 2.0));
+        assert_eq!(decorated_rect.min, Point::new(12.0, 12.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
 

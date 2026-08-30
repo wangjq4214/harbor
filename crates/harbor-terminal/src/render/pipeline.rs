@@ -23,6 +23,7 @@ impl TerminalRenderPipeline {
         font_book: FontBook,
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
+        tint: [f32; 4],
     ) -> anyhow::Result<Self> {
         let (surface_w, surface_h) = gpu.surface_size();
         let viewport = RenderViewport::with_surface(
@@ -31,7 +32,7 @@ impl TerminalRenderPipeline {
             (surface_w, surface_h),
             (surface_w, surface_h),
         );
-        let background = Background::new(gpu, snap, metrics.cell_width, metrics.line_height);
+        let background = Background::new(gpu, snap, metrics.cell_width, metrics.line_height, tint);
         let text = Text::new(gpu, font_book, metrics, snap, &viewport)?;
         let decoration = Decoration::new(gpu, snap, metrics);
         let selection = Selection::new(gpu, metrics.cell_width, metrics.line_height);
@@ -73,6 +74,7 @@ impl TerminalRenderPipeline {
         damage: Option<&UpdateDamage>,
         now: Instant,
         selection_bounds: Option<harbor_types::SelectionBounds>,
+        tint: [f32; 4],
     ) {
         let viewport = self.viewport;
         if let Some(damage) = damage {
@@ -91,13 +93,13 @@ impl TerminalRenderPipeline {
                 }
             };
             self.background
-                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
+                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport, tint);
             self.text
                 .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
             self.decoration
                 .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
         } else {
-            self.background.prepare(gpu, Some(snap), &viewport);
+            self.background.prepare(gpu, Some(snap), &viewport, tint);
             self.text.prepare(gpu, Some(snap), &viewport);
             self.decoration.prepare(gpu, Some(snap), &viewport);
         }

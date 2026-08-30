@@ -2,9 +2,7 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn, Primitive,
-};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
 use std::any::TypeId;
@@ -26,20 +24,18 @@ impl Key {
 
 /// Side-channel registrations collected while building a View subtree.
 ///
-/// Draw handlers, schedule providers, and frame-appearance providers travel as
-/// one bag from `BuildCx` through reconciliation into `Runtime`.
+/// Draw handlers and schedule providers travel as one bag from `BuildCx`
+/// through reconciliation into `Runtime`.
 #[derive(Default)]
 pub(crate) struct ExternalRegistrations {
     pub(crate) draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     pub(crate) schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    pub(crate) frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 }
 
 impl ExternalRegistrations {
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.draws.append(&mut other.draws);
         self.schedules.append(&mut other.schedules);
-        self.frame_appearances.append(&mut other.frame_appearances);
     }
 }
 
@@ -64,15 +60,6 @@ impl BuildCx {
             hook_index: 0,
             externals: ExternalRegistrations::default(),
         }
-    }
-
-    /// Registers a provider for the current frame's default clear appearance.
-    pub fn register_external_frame_appearance(
-        &mut self,
-        id: ExternalDrawId,
-        provider: Arc<ExternalFrameAppearanceFn>,
-    ) {
-        self.externals.frame_appearances.push((id, provider));
     }
 
     /// Registers an external draw handler for the current build.

@@ -782,7 +782,7 @@ Project domain concepts and terminology.
   - communicates with Runtime Host
 
 ### Windows Acrylic Backdrop
-- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, with a 20–30% warm-brown tint while the terminal's default background remains unfilled, explicit cell colors render normally, and unavailable acrylic falls back to opaque warm brown.
+- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, with a 20–30% warm-brown tint drawn by the terminal background layer itself for default cells, explicit cell colors render normally, and unavailable acrylic falls back to an opaque white window base with an opaque warm-brown terminal background.
 - **Synonyms:** system acrylic, DWM system backdrop, TransientWindow backdrop, Windows Terminal-style acrylic
 - **Relationships:**
   - belongs to Runtime Host
@@ -811,22 +811,43 @@ Project domain concepts and terminology.
   - referenced by Windows Acrylic Backdrop
 
 ### Default Background Cell
-- **Definition:** A terminal cell whose background is `Color::Default`, which the background layer does not fill so the surface clear color and compositor backdrop remain visible.
+- **Definition:** A terminal cell whose background is `Color::Default`, filled by the terminal background layer with a backdrop-aware tint (translucent warm brown over acrylic, opaque warm brown otherwise) driven by a startup backdrop flag.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Windows Acrylic Backdrop
 
 ### Terminal Window Inset
-- **Definition:** An application-level layout rule that wraps the terminal root view in uniform 16 logical-pixel padding between the terminal viewport and its window edges.
+- **Definition:** An application-level layout rule that wraps the terminal root view in uniform 12 logical-pixel padding between the terminal viewport and its window edges.
 - **Relationships:**
   - depends on Padding Widget
   - wraps Terminal Widget Bridge
   - belongs to Runtime Host
 
 ### Terminal Decoration Preset
-- **Definition:** The application-level terminal appearance uses a 12dp radius, a 25%-opaque black outer shadow with 4dp downward offset and 12dp blur, zero spread, no default fill, and anti-aliased child clipping.
+- **Definition:** The application-level terminal appearance uses a 12dp radius, a 25%-opaque black outer shadow with 3dp downward offset and 3dp blur, zero spread, no default fill, and anti-aliased child clipping.
 - **Relationships:**
   - wraps Terminal Widget Bridge
   - contains BoxDecoration
   - references ClipBehavior
   - belongs to Runtime Host
+
+### External Frame Appearance
+- **Definition:** A former per-runtime provider for the whole-surface clear color, removed in favor of a transparent frame clear for external-draw runtimes and host-owned base fills.
+- **Relationships:**
+  - belonged to Runtime Frame Presentation
+  - was provided by Terminal Widget Bridge
+  - replaced by Window Base Fill
+
+### Window Base Fill
+- **Definition:** A white fill owned by the root Padding element whose alpha varies by backdrop availability (faint 0.06 white over acrylic, opaque white otherwise), tinting the window inset and rounded-corner cutouts in one paint path.
+- **Relationships:**
+  - belongs to Runtime Host
+  - painted by Padding Widget
+  - replaces External Frame Appearance
+
+### Rounded Clip Mask
+- **Definition:** A dest-in GPU pass (quad shader mode 2) that multiplies framebuffer RGB and alpha by rounded-rect coverage to erase external-draw pixels outside ancestor rounded clips.
+- **Relationships:**
+  - belongs to Widget Renderer
+  - implements ClipBehavior
+  - consumes External Frame Appearance pixels (erased corners reveal the frame clear color)

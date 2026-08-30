@@ -678,7 +678,7 @@ impl App {
             .map_err(AppError::Pty)?
             .into_parts();
         let event_proxy = self.event_proxy.clone();
-        let terminal = Terminal::new_with_appearance(
+        let mut terminal = Terminal::new_with_appearance(
             size,
             pty_read,
             pty_write,
@@ -693,6 +693,7 @@ impl App {
                     .is_ok()
             },
         );
+        terminal.set_backdrop_available(main_window_backdrop_available);
         // Terminal is UI-thread-only (not Send/Sync); Arc is required so the
         // CustomPaint ExternalDrawFn can share ownership with AppRuntime.
         #[allow(clippy::arc_with_non_send_sync)]
@@ -917,7 +918,10 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(build_main_terminal_root(bridge));
+        runtime.set_root(build_main_terminal_root(
+            self.runtime.backdrop_available,
+            bridge,
+        ));
         runtime.init_renderer(gpu.device(), gpu.format());
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
