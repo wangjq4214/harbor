@@ -77,17 +77,6 @@ impl AnyView for PreviewPane {
         constraints.constrain(Size::new(width, height))
     }
 
-    fn layout_children(
-        &self,
-        constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        let own = self.intrinsic_size(constraints, metrics);
-        let positions = vec![Point::ZERO; child_sizes.len()];
-        (own, positions)
-    }
-
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         let offset = self.scroll_offset.load(Ordering::Relaxed);
         let end = (offset + self.visible_lines).min(self.wrapped_lines.len());

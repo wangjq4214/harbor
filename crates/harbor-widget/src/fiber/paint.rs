@@ -98,13 +98,8 @@ fn retain_scene_item_ids(
     } else {
         &mut fiber.scene_item_slots
     };
-    let legacy_ids = if after_children {
-        &mut fiber.after_scene_item_ids
-    } else {
-        &mut fiber.scene_item_ids
-    };
 
-    let ids = primitives
+    primitives
         .iter()
         .map(|(slot, _)| {
             if let Some((_, id)) = slots
@@ -121,19 +116,17 @@ fn retain_scene_item_ids(
                 id
             }
         })
-        .collect::<Vec<_>>();
-    *legacy_ids = ids.clone();
-    ids
+        .collect::<Vec<_>>()
 }
 
 fn append_scene_items(
     items: &mut Vec<SceneItem>,
-    scene_item_ids: Vec<u64>,
+    item_ids: Vec<u64>,
     primitives: Vec<(u32, crate::scene::primitive::Primitive)>,
     clips: &[crate::scene::clip::RoundedClip],
     order: &mut u32,
 ) {
-    for (id, (_, primitive)) in scene_item_ids.into_iter().zip(primitives) {
+    for (id, (_, primitive)) in item_ids.into_iter().zip(primitives) {
         items.push(SceneItem {
             id,
             primitive,

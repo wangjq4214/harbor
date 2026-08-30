@@ -1,4 +1,4 @@
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
@@ -48,18 +48,6 @@ impl AnyView for SizedBox {
         constraints.constrain(self.size)
     }
 
-    fn layout_children(
-        &self,
-        constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        (
-            self.intrinsic_size(constraints, metrics),
-            vec![Point::ZERO; child_sizes.len()],
-        )
-    }
-
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         match self.color {
             Some(color) => vec![Primitive::Quad {
@@ -75,6 +63,7 @@ impl AnyView for SizedBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Point;
 
     #[test]
     fn sized_box_build() {

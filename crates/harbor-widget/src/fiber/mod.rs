@@ -633,7 +633,9 @@ mod tests {
             Some(std::sync::Arc::new(SizedBox::new(Size::new(100.0, 50.0))));
         let items = paint_fiber(&mut arena, fiber_id, 0, &mut next_scene_item_id);
         assert!(items.is_empty());
-        assert!(arena.get(fiber_id).unwrap().scene_item_ids.is_empty());
+        // Slot-keyed identity retention keeps the old slot entry alive so a
+        // later primitive with the same slot key reuses its scene item id.
+        assert_eq!(arena.get(fiber_id).unwrap().scene_item_slots.len(), 1);
     }
 
     #[test]

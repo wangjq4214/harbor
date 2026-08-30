@@ -107,19 +107,45 @@ pub(crate) struct EncodeScene<'a> {
     pub(crate) commit: bool,
 }
 
-/// Flushes a contiguous run of renderer slots without imposing paint order.
-fn flush_quad_range<'a>(
-    renderer: &'a QuadRenderer,
-    pass: &mut wgpu::RenderPass<'a>,
-    start: &mut Option<u32>,
-    count: &mut u32,
-    previous: &mut Option<u32>,
-) {
-    if let Some(start_slot) = start.take() {
-        renderer.encode_range(pass, start_slot, *count);
+/// Tracks the contiguous run of quad-renderer slots being batched into one
+/// draw call. A slot extends the run only while numerically adjacent to the
+/// previous one; anything else flushes the open run first.
+struct QuadRun {
+    start: Option<u32>,
+    count: u32,
+    previous: Option<u32>,
+}
+
+impl QuadRun {
+    fn new() -> Self {
+        Self {
+            start: None,
+            count: 0,
+            previous: None,
+        }
     }
-    *count = 0;
-    *previous = None;
+
+    fn flush<'a>(&mut self, renderer: &'a QuadRenderer, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(start_slot) = self.start.take() {
+            renderer.encode_range(pass, start_slot, self.count);
+        }
+        self.count = 0;
+        self.previous = None;
+    }
+
+    fn extend<'a>(
+        &mut self,
+        renderer: &'a QuadRenderer,
+        pass: &mut wgpu::RenderPass<'a>,
+        slot: u32,
+    ) {
+        if self.previous != Some(slot.saturating_sub(1)) {
+            self.flush(renderer, pass);
+            self.start = Some(slot);
+        }
+        self.count += 1;
+        self.previous = Some(slot);
+    }
 }
 
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.
@@ -215,63 +241,46 @@ impl FrameEncoder {
         }
         self.encoded_viewport = Some(viewport.clone());
 
-        let clip_masks: Vec<(&[RoundedClip], Rect)> = raw_items
-            .iter()
-            .filter_map(|item| {
-                let Primitive::External { draw, rect } = &item.primitive else {
-                    return None;
-                };
-                if !scene.external_draws.contains_key(draw) {
-                    return None;
-                }
-                let eligible = scene.external_eligible.get(draw).copied().unwrap_or(true);
-                let invocation = plan_external_draw(
-                    *draw,
-                    *rect,
-                    &item.clips,
-                    &viewport,
-                    eligible,
-                    scene.commit,
-                )?;
-                invocation
-                    .apply_rounded_mask
-                    .then_some((item.clips.as_slice(), *rect))
-            })
-            .collect();
+        // Plan every external draw once per frame. Items that survive
+        // planning also seed the clip-mask upload pass, so the draw loop can
+        // reuse the plan instead of recomputing it.
+        let mut external_invocations: HashMap<u64, ExternalDrawInvocation> = HashMap::new();
+        let mut clip_masks: Vec<(&[RoundedClip], Rect)> = Vec::new();
+        for item in raw_items {
+            let Primitive::External { draw, rect } = &item.primitive else {
+                continue;
+            };
+            if !scene.external_draws.contains_key(draw) {
+                continue;
+            }
+            let eligible = scene.external_eligible.get(draw).copied().unwrap_or(true);
+            let Some(invocation) =
+                plan_external_draw(*draw, *rect, &item.clips, &viewport, eligible, scene.commit)
+            else {
+                continue;
+            };
+            if invocation.apply_rounded_mask {
+                clip_masks.push((item.clips.as_slice(), *rect));
+            }
+            external_invocations.insert(item.id, invocation);
+        }
         renderer.upload_clip_masks(queue, &clip_masks, &viewport);
-        let mut next_mask_slot = 0u32;
 
         // Renderer slots are retained by item ID and therefore are not a
         // paint-order representation. Walk the raw scene sequence and only
         // batch slots that are adjacent in that sequence and numerically
         // adjacent in the instance buffer.
-        let mut quad_range_start: Option<u32> = None;
-        let mut quad_range_count = 0u32;
-        let mut previous_slot = None;
+        let mut quad_run = QuadRun::new();
+        let mut next_mask_slot = 0u32;
 
         for item in raw_items {
             match &item.primitive {
-                Primitive::External { draw, rect } => {
-                    flush_quad_range(
-                        renderer,
-                        pass,
-                        &mut quad_range_start,
-                        &mut quad_range_count,
-                        &mut previous_slot,
-                    );
-
-                    if let Some(cb) = scene.external_draws.get(draw) {
-                        let eligible = scene.external_eligible.get(draw).copied().unwrap_or(true);
-                        let Some(invocation) = plan_external_draw(
-                            *draw,
-                            *rect,
-                            &item.clips,
-                            &viewport,
-                            eligible,
-                            scene.commit,
-                        ) else {
-                            continue;
-                        };
+                Primitive::External { draw, .. } => {
+                    quad_run.flush(renderer, pass);
+                    if let (Some(invocation), Some(cb)) = (
+                        external_invocations.get(&item.id),
+                        scene.external_draws.get(draw),
+                    ) {
                         pass.set_scissor_rect(
                             invocation.scissor.0,
                             invocation.scissor.1,
@@ -299,13 +308,7 @@ impl FrameEncoder {
                     }
                 }
                 Primitive::Text { .. } => {
-                    flush_quad_range(
-                        renderer,
-                        pass,
-                        &mut quad_range_start,
-                        &mut quad_range_count,
-                        &mut previous_slot,
-                    );
+                    quad_run.flush(renderer, pass);
 
                     if let Some(ref tr) = self.text_renderer {
                         tr.encode_item(pass, item.id);
@@ -317,38 +320,15 @@ impl FrameEncoder {
                 | Primitive::RoundedBorder { .. }
                 | Primitive::OuterShadow { .. } => {
                     if let Some(slot) = renderer.slot_of(item.id) {
-                        if previous_slot != Some(slot.saturating_sub(1)) {
-                            flush_quad_range(
-                                renderer,
-                                pass,
-                                &mut quad_range_start,
-                                &mut quad_range_count,
-                                &mut previous_slot,
-                            );
-                            quad_range_start = Some(slot);
-                        }
-                        quad_range_count += 1;
-                        previous_slot = Some(slot);
+                        quad_run.extend(renderer, pass, slot);
                     } else {
-                        flush_quad_range(
-                            renderer,
-                            pass,
-                            &mut quad_range_start,
-                            &mut quad_range_count,
-                            &mut previous_slot,
-                        );
+                        quad_run.flush(renderer, pass);
                     }
                 }
             }
         }
 
-        flush_quad_range(
-            renderer,
-            pass,
-            &mut quad_range_start,
-            &mut quad_range_count,
-            &mut previous_slot,
-        );
+        quad_run.flush(renderer, pass);
     }
 }
 

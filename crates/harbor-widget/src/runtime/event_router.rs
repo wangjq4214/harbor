@@ -70,8 +70,8 @@ impl EventRouter {
                     if arena.contains(captor) {
                         Some(captor)
                     } else {
-                        self.input
-                            .apply(std::mem::take(&mut EventCtx::new().take_commands()), arena);
+                        // The capture entry refers to a dead fiber; the next
+                        // rebuild clears it. Until then the event is dropped.
                         None
                     }
                 } else {

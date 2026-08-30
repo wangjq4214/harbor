@@ -42,14 +42,18 @@ fn test_button(label: &str, flag: Arc<AtomicBool>) -> Button {
 }
 
 fn click(rt: &mut Runtime, position: Point) {
-    rt.dispatch(
-        pointer_event(position, PointerPhase::Down, PointerButton::Left, 0),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(position, PointerPhase::Up, PointerButton::Left, 0),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        position,
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
+    rt.dispatch(pointer_event(
+        position,
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
 }
 
 fn clipped_button(label: &str, flag: Arc<AtomicBool>, clip_behavior: ClipBehavior) -> DecoratedBox {
@@ -68,30 +72,24 @@ fn should_fire_onclick_on_pointer_up_after_down() {
     rt.update(now());
 
     // Dispatch pointer down inside button bounds (~92x32 at origin)
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         !clicked.load(Ordering::SeqCst),
         "onClick should not fire on Down"
     );
 
     // Dispatch pointer up — onClick should fire now
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         clicked.load(Ordering::SeqCst),
         "onClick should fire on Up after Down"
@@ -106,24 +104,18 @@ fn should_not_fire_onclick_when_pointer_down_outside_button() {
     rt.update(now());
 
     // Dispatch pointer down far outside button bounds
-    rt.dispatch(
-        pointer_event(
-            Point::new(500.0, 500.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(500.0, 500.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(500.0, 500.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(500.0, 500.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         !clicked.load(Ordering::SeqCst),
         "onClick should not fire when clicking empty space"
@@ -140,30 +132,24 @@ fn should_capture_pointer_on_down_and_release_on_up() {
     rt.update(now());
 
     // Down: button captures pointer 0
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         rt.input().captor(0).is_some(),
         "pointer should be captured after Down"
     );
 
     // Up: button releases and fires onClick
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         rt.input().captor(0).is_none(),
         "pointer should be released after Up"
@@ -179,26 +165,20 @@ fn should_deliver_events_to_captor_regardless_of_position() {
     rt.update(now());
 
     // Capture the pointer with Down inside the button
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            1,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        1,
+    ));
 
     // Now dispatch Up at a position far outside — captor still receives it
-    rt.dispatch(
-        pointer_event(
-            Point::new(500.0, 500.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            1,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(500.0, 500.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        1,
+    ));
     assert!(
         clicked.load(Ordering::SeqCst),
         "captured button should receive Up even when pointer moved outside"
@@ -223,24 +203,18 @@ fn should_route_pointer_to_topmost_overlapping_widget() {
     // Button "Bottom" 6 chars → ~92x32; "Top" 3 chars → ~62x32
     // Both at origin. Click at (50, 16) hits both; topmost (Top, last child) should win.
     let pointer_id = 0;
-    rt.dispatch(
-        pointer_event(
-            Point::new(50.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            pointer_id,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(50.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            pointer_id,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(50.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        pointer_id,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(50.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        pointer_id,
+    ));
 
     assert!(
         top_clicked.load(Ordering::SeqCst),
@@ -268,24 +242,18 @@ fn should_route_to_underlying_widget_when_point_outside_topmost_bounds() {
     // Top button is ~62px wide, Bottom is ~92px wide.
     // Click at (80, 16) — outside Top bounds but inside Bottom.
     let pointer_id = 1;
-    rt.dispatch(
-        pointer_event(
-            Point::new(80.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            pointer_id,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(80.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            pointer_id,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(80.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        pointer_id,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(80.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        pointer_id,
+    ));
 
     assert!(
         bottom_clicked.load(Ordering::SeqCst),
@@ -310,7 +278,7 @@ fn should_activate_button_on_enter_when_focused() {
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
 
-    rt.dispatch(key_down(Key::Enter), now());
+    rt.dispatch(key_down(Key::Enter));
     assert!(
         clicked.load(Ordering::SeqCst),
         "Enter key should activate focused button"
@@ -327,7 +295,7 @@ fn should_activate_button_on_space_when_focused() {
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
 
-    rt.dispatch(key_down(Key::Space), now());
+    rt.dispatch(key_down(Key::Space));
     assert!(
         clicked.load(Ordering::SeqCst),
         "Space key should activate focused button"
@@ -342,7 +310,7 @@ fn should_not_activate_button_on_key_when_not_focused() {
     rt.update(now());
 
     // No focus set — keyboard events have no target
-    rt.dispatch(key_down(Key::Enter), now());
+    rt.dispatch(key_down(Key::Enter));
     assert!(
         !clicked.load(Ordering::SeqCst),
         "Enter should not activate unfocused button"
@@ -367,24 +335,18 @@ fn should_deliver_pointer_events_inside_non_modal_focus_scope() {
     rt.update(now());
 
     // Click inside the FocusScope/Button bounds
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
 
     assert!(
         clicked.load(Ordering::SeqCst),
@@ -408,24 +370,18 @@ fn should_only_fire_targeted_button_in_stack() {
     rt.update(now());
 
     // Click inside Second only (~62px) — should only fire Second
-    rt.dispatch(
-        pointer_event(
-            Point::new(40.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            10,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(40.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            10,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(40.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        10,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(40.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        10,
+    ));
 
     assert!(top_clicked.load(Ordering::SeqCst));
     assert!(!bottom_clicked.load(Ordering::SeqCst));
@@ -437,10 +393,12 @@ fn should_only_fire_targeted_button_in_stack() {
 fn should_not_crash_dispatch_with_no_root() {
     let mut rt = Runtime::new();
     // Dispatch before any root is set
-    let req = rt.dispatch(
-        pointer_event(Point::ZERO, PointerPhase::Down, PointerButton::Left, 0),
-        now(),
-    );
+    let req = rt.dispatch(pointer_event(
+        Point::ZERO,
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     assert!(!req.request_redraw);
 }
 
@@ -452,15 +410,12 @@ fn should_return_needs_redraw_false_when_no_handler_requests_paint() {
     rt.update(now());
 
     // Dispatch a move event — SizedBox ignores all events
-    let req = rt.dispatch(
-        pointer_event(
-            Point::new(50.0, 16.0),
-            PointerPhase::Move,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    let req = rt.dispatch(pointer_event(
+        Point::new(50.0, 16.0),
+        PointerPhase::Move,
+        PointerButton::Left,
+        0,
+    ));
     assert!(
         !req.request_redraw,
         "Move event on SizedBox (ignores all events) should not trigger redraw"
@@ -476,35 +431,26 @@ fn should_honor_pointer_id_isolation() {
     rt.update(now());
 
     // Pointer 0: Down captures, no Up
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
 
     // Pointer 1: Down+Up in same position → fires onClick (separate capture context)
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            1,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            1,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        1,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        1,
+    ));
 
     // Pointer 1's onClick fired; pointer 0 is still captured
     assert!(clicked.load(Ordering::SeqCst));
@@ -520,15 +466,12 @@ fn should_clear_capture_when_set_root_replaces_tree() {
     rt.update(now());
 
     // Capture pointer on old tree
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            5,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        5,
+    ));
     assert!(rt.input().captor(5).is_some());
 
     // Replace root — capture cleared since old fiber is gone
@@ -563,7 +506,7 @@ fn should_block_keyboard_events_when_modal_is_active_and_nothing_focused() {
 
     // Keyboard event with no focused widget —
     // path is [root_id], and modal blocks it
-    rt.dispatch(key_down(Key::Enter), now());
+    rt.dispatch(key_down(Key::Enter));
     assert!(
         !inside_key.load(Ordering::SeqCst),
         "Enter should not reach inside button when nothing is focused under modal"
@@ -612,7 +555,7 @@ fn should_deliver_focus_gained_to_focused_button() {
 
     // Deliver FocusEvent::Gained — should not crash
     use harbor_widget::input::event::FocusEvent;
-    rt.dispatch(UiEvent::Focus(FocusEvent::Gained), now());
+    rt.dispatch(UiEvent::Focus(FocusEvent::Gained));
     // Button handles FocusEvent but does not request repaint
 }
 
@@ -627,7 +570,7 @@ fn should_deliver_focus_lost_to_button() {
 
     // Deliver FocusEvent::Lost
     use harbor_widget::input::event::FocusEvent;
-    rt.dispatch(UiEvent::Focus(FocusEvent::Lost), now());
+    rt.dispatch(UiEvent::Focus(FocusEvent::Lost));
     // Should not crash; button transitions to Normal
 }
 
@@ -641,27 +584,21 @@ fn should_handle_pointer_cancel_and_release_capture() {
     rt.update(now());
 
     // Down: capture pointer 0
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     assert!(rt.input().captor(0).is_some());
 
     // Cancel: should release capture and NOT fire onClick
-    rt.dispatch(
-        UiEvent::Pointer(PointerEvent::new(
-            Point::new(46.0, 16.0),
-            PointerPhase::Cancel,
-            PointerButton::Left,
-            0,
-        )),
-        now(),
-    );
+    rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+        Point::new(46.0, 16.0),
+        PointerPhase::Cancel,
+        PointerButton::Left,
+        0,
+    )));
     assert!(
         rt.input().captor(0).is_none(),
         "pointer should be released on Cancel"
@@ -681,24 +618,18 @@ fn should_fire_onclick_on_right_click_since_button_does_not_filter_by_button_typ
     rt.set_root(test_button("OK", clicked.clone()));
     rt.update(now());
 
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Right,
-            0,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(46.0, 16.0),
-            PointerPhase::Up,
-            PointerButton::Right,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Right,
+        0,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(46.0, 16.0),
+        PointerPhase::Up,
+        PointerButton::Right,
+        0,
+    ));
     // Current behavior: Button fires onClick for any button type
     assert!(
         clicked.load(Ordering::SeqCst),
@@ -714,15 +645,12 @@ fn should_not_crash_on_wheel_event() {
     rt.set_root(Button::new("OK"));
     rt.update(now());
 
-    let req = rt.dispatch(
-        UiEvent::Pointer(PointerEvent::new(
-            Point::new(46.0, 16.0),
-            PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
-            PointerButton::Left,
-            0,
-        )),
-        now(),
-    );
+    let req = rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+        Point::new(46.0, 16.0),
+        PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
+        PointerButton::Left,
+        0,
+    )));
     assert!(
         !req.request_redraw,
         "Wheel event (ignored by Button) should not trigger redraw"
@@ -738,15 +666,12 @@ fn should_route_move_event_to_button_without_crashing() {
     rt.update(now());
 
     // Move inside the button bounds — button handles it (sets hover state)
-    let req = rt.dispatch(
-        pointer_event(
-            Point::new(50.0, 16.0),
-            PointerPhase::Move,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    let req = rt.dispatch(pointer_event(
+        Point::new(50.0, 16.0),
+        PointerPhase::Move,
+        PointerButton::Left,
+        0,
+    ));
     // Move inside the button bounds — button handles it (sets hover, requests paint)
     assert!(
         req.request_redraw,
@@ -763,7 +688,7 @@ fn should_not_crash_on_keyboard_with_no_focused_widget() {
     rt.update(now());
 
     // No focus set — keyboard events go to root via keyboard path
-    let req = rt.dispatch(key_down(Key::Tab), now());
+    let req = rt.dispatch(key_down(Key::Tab));
     // Tab on Button (not FocusScope) is ignored
     assert!(!req.request_redraw);
 }
@@ -875,36 +800,27 @@ fn should_deliver_to_captor_when_pointer_moves_into_corner_cutout() {
         ClipBehavior::HardEdge,
     ));
     rt.update(now());
-    rt.dispatch(
-        pointer_event(
-            Point::new(26.0, 16.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            2,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(26.0, 16.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        2,
+    ));
     assert!(rt.input().captor(2).is_some());
 
     // Act
-    rt.dispatch(
-        pointer_event(
-            Point::new(0.0, 0.0),
-            PointerPhase::Move,
-            PointerButton::Left,
-            2,
-        ),
-        now(),
-    );
-    rt.dispatch(
-        pointer_event(
-            Point::new(0.0, 0.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            2,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(0.0, 0.0),
+        PointerPhase::Move,
+        PointerButton::Left,
+        2,
+    ));
+    rt.dispatch(pointer_event(
+        Point::new(0.0, 0.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        2,
+    ));
 
     // Assert
     assert!(

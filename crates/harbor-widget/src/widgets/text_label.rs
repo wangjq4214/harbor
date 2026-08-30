@@ -1,6 +1,4 @@
-use crate::input::event::UiEvent;
-use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
@@ -55,17 +53,6 @@ impl AnyView for TextLabel {
         constraints.constrain(Size::new(width, height))
     }
 
-    fn layout_children(
-        &self,
-        constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        let own = self.intrinsic_size(constraints, metrics);
-        let positions = vec![Point::ZERO; child_sizes.len()];
-        (own, positions)
-    }
-
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
         vec![Primitive::Text {
             text: Arc::from(self.text.as_str()),
@@ -73,15 +60,14 @@ impl AnyView for TextLabel {
             color: self.color,
         }]
     }
-
-    fn handle_event(&self, _event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
-        EventHandled::Ignored
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::event::UiEvent;
+    use crate::input::event_ctx::{EventCtx, EventHandled};
+    use crate::layout::Point;
 
     #[test]
     fn text_label_intrinsic_size_uses_cell_width() {

@@ -71,12 +71,9 @@ pub struct Fiber {
     pub(crate) layout_rect: Option<Rect>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
-    /// Stable scene identities for this fiber's before-child primitive slots.
-    pub(crate) scene_item_ids: Vec<u64>,
     /// Primitive-slot keys keep filtered shadows from renumbering later items.
     pub(crate) scene_item_slots: Vec<(u32, u64)>,
-    /// Stable scene identities for this fiber's after-child primitive slots.
-    pub(crate) after_scene_item_ids: Vec<u64>,
+    /// Primitive-slot keys for this fiber's after-child primitive slots.
     pub(crate) after_scene_item_slots: Vec<(u32, u64)>,
 }
 
@@ -96,9 +93,7 @@ impl Fiber {
             flags: DirtyFlags::NONE,
             layout_rect: None,
             view,
-            scene_item_ids: Vec::new(),
             scene_item_slots: Vec::new(),
-            after_scene_item_ids: Vec::new(),
             after_scene_item_slots: Vec::new(),
         }
     }
