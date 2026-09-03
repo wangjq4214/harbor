@@ -31,9 +31,9 @@ pub struct EventCtx {
     propagation_stopped: bool,
     needs_paint: bool,
     clipboard_write: Option<String>,
+    cursor_effect: Option<crate::effects::CursorEffect>,
     current_fiber: Option<FiberId>,
 }
-
 impl EventCtx {
     pub fn new() -> Self {
         EventCtx {
@@ -41,10 +41,10 @@ impl EventCtx {
             propagation_stopped: false,
             needs_paint: false,
             clipboard_write: None,
+            cursor_effect: None,
             current_fiber: None,
         }
     }
-
     /// Set by Runtime before calling handle_event, so capture_pointer knows
     /// which fiber is the captor.
     pub(crate) fn set_current_fiber(&mut self, id: FiberId) {
@@ -84,6 +84,20 @@ impl EventCtx {
 
     pub(crate) fn take_clipboard_write(&mut self) -> Option<String> {
         self.clipboard_write.take()
+    }
+
+    /// Request that the runtime change the system cursor shape.
+    pub fn set_cursor(&mut self, shape: crate::effects::CursorShape) {
+        self.cursor_effect = Some(crate::effects::CursorEffect::set_cursor(shape));
+    }
+
+    /// Request that the runtime reset the system cursor to default.
+    pub fn reset_cursor(&mut self) {
+        self.cursor_effect = Some(crate::effects::CursorEffect::reset());
+    }
+
+    pub(crate) fn take_cursor_effect(&mut self) -> Option<crate::effects::CursorEffect> {
+        self.cursor_effect.take()
     }
 
     /// Mark the current widget as needing a repaint.

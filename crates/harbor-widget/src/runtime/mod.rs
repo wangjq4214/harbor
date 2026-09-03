@@ -380,6 +380,11 @@ impl Runtime {
             .init_text_renderer(device, format, bind_group_layout, bind_group);
     }
 
+    /// Updates the active text bind group consumed by the text renderer.
+    pub fn set_text_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        self.encoder.set_text_bind_group(bind_group);
+    }
+
     /// Applies the pending SceneDelta to the GPU renderers and encodes draw
     /// calls into the RenderPass. No-op if the quad renderer hasn't been
     /// initialized or there is no pending delta.
@@ -451,6 +456,9 @@ impl Runtime {
         let mut effects = RuntimeEffects::from_redraw(needs_redraw);
         if let Some(text) = self.events.take_clipboard() {
             effects.clipboard = Some(ClipboardEffect::write(text));
+        }
+        if let Some(cursor) = self.events.take_cursor() {
+            effects.cursor = Some(cursor);
         }
         effects
     }

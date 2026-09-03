@@ -13,6 +13,7 @@ use crate::layout::{Point, Rect};
 pub(crate) struct EventRouter {
     input: InputState,
     pending_clipboard: Option<String>,
+    pending_cursor: Option<crate::effects::CursorEffect>,
 }
 
 impl EventRouter {
@@ -20,6 +21,7 @@ impl EventRouter {
         Self {
             input: InputState::new(),
             pending_clipboard: None,
+            pending_cursor: None,
         }
     }
 
@@ -29,6 +31,10 @@ impl EventRouter {
 
     pub(crate) fn take_clipboard(&mut self) -> Option<String> {
         self.pending_clipboard.take()
+    }
+
+    pub(crate) fn take_cursor(&mut self) -> Option<crate::effects::CursorEffect> {
+        self.pending_cursor.take()
     }
 
     /// Clears focus/capture entries pointing at dead fibers after a rebuild.
@@ -129,10 +135,14 @@ impl EventRouter {
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
         let clipboard_write = ctx.take_clipboard_write();
+        let cursor_effect = ctx.take_cursor_effect();
         let previous_focus = self.input.focused;
         let needs_paint = self.input.apply(ctx.take_commands(), arena);
         if clipboard_write.is_some() {
             self.pending_clipboard = clipboard_write;
+        }
+        if cursor_effect.is_some() {
+            self.pending_cursor = cursor_effect;
         }
         let next_focus = self.input.focused;
         let focus_needs_paint = if previous_focus != next_focus {

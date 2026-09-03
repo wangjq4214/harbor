@@ -866,6 +866,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "harbor-text",
+ "harbor-types",
  "hashbrown 0.17.1",
  "pollster",
  "slotmap",

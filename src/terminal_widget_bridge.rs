@@ -21,6 +21,7 @@ use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 use crate::app::current_gpu;
 
 /// Default external-draw identifier matching the previous terminal-owned constant.
+#[allow(dead_code)]
 const DEFAULT_DRAW_ID: ExternalDrawId = 1;
 
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
@@ -172,9 +173,18 @@ pub struct TerminalWidgetBridge {
 }
 
 impl TerminalWidgetBridge {
-    /// Creates a bridge that paints and receives input for `terminal`.
+    /// Creates a bridge that paints and receives input for `terminal` with the default draw id.
+    #[allow(dead_code)]
     pub fn new(terminal: Arc<Mutex<Terminal>>, gate_active: Arc<AtomicBool>) -> Self {
-        let draw_id = DEFAULT_DRAW_ID;
+        Self::with_draw_id(DEFAULT_DRAW_ID, terminal, gate_active)
+    }
+
+    /// Creates a bridge with an explicit external draw identifier.
+    pub fn with_draw_id(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]

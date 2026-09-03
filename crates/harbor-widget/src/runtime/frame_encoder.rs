@@ -21,10 +21,112 @@ pub(crate) struct EncodeScene<'a> {
     pub(crate) commit: bool,
 }
 
+/// Helper that partitions a slice of slot indices into contiguous `(start, count)` ranges.
+#[cfg(test)]
+pub(crate) fn collect_quad_ranges(slots: &[u32]) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    let mut current_range: Option<(u32, u32)> = None;
+
+    for &slot in slots {
+        match current_range.as_mut() {
+            None => {
+                current_range = Some((slot, 1));
+            }
+            Some((start, count)) => {
+                if slot == *start + *count {
+                    *count += 1;
+                } else {
+                    ranges.push((*start, *count));
+                    current_range = Some((slot, 1));
+                }
+            }
+        }
+    }
+
+    if let Some(range) = current_range {
+        ranges.push(range);
+    }
+
+    ranges
+}
+
+/// Represents an abstract draw command recorded during paint-order encoding.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EncodedDrawCommand {
+    QuadRange { start: u32, count: u32 },
+    TextItem(u64),
+    ExternalItem(ExternalDrawId),
+}
+
+/// Helper that simulates the exact batching and barrier-splitting logic used in `FrameEncoder::encode`.
+#[cfg(test)]
+pub(crate) fn plan_draw_commands(
+    items: &[(u64, &crate::scene::primitive::Primitive)],
+    slot_of: impl Fn(u64) -> Option<u32>,
+) -> Vec<EncodedDrawCommand> {
+    let mut commands = Vec::new();
+    let mut quad_range_start: Option<u32> = None;
+    let mut quad_range_count: u32 = 0;
+
+    for &(id, prim) in items {
+        match prim {
+            crate::scene::primitive::Primitive::External { draw, .. } => {
+                if let Some(start) = quad_range_start.take() {
+                    commands.push(EncodedDrawCommand::QuadRange {
+                        start,
+                        count: quad_range_count,
+                    });
+                    quad_range_count = 0;
+                }
+                commands.push(EncodedDrawCommand::ExternalItem(*draw));
+            }
+            crate::scene::primitive::Primitive::Text { .. } => {
+                if let Some(start) = quad_range_start.take() {
+                    commands.push(EncodedDrawCommand::QuadRange {
+                        start,
+                        count: quad_range_count,
+                    });
+                    quad_range_count = 0;
+                }
+                commands.push(EncodedDrawCommand::TextItem(id));
+            }
+            _ => {
+                if let Some(slot) = slot_of(id) {
+                    match quad_range_start {
+                        None => {
+                            quad_range_start = Some(slot);
+                            quad_range_count = 1;
+                        }
+                        Some(start) => {
+                            if slot == start + quad_range_count {
+                                quad_range_count += 1;
+                            } else {
+                                commands.push(EncodedDrawCommand::QuadRange {
+                                    start,
+                                    count: quad_range_count,
+                                });
+                                quad_range_start = Some(slot);
+                                quad_range_count = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(start) = quad_range_start {
+        commands.push(EncodedDrawCommand::QuadRange {
+            start,
+            count: quad_range_count,
+        });
+    }
+
+    commands
+}
+
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.
-///
-/// Lifecycle: created empty with the Runtime; renderers are initialized once a
-/// wgpu Device is available; encode runs each frame after the tree paint pass.
 pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
     text_renderer: Option<TextRenderer>,
@@ -59,14 +161,17 @@ impl FrameEncoder {
         ));
     }
 
+    pub(crate) fn set_text_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        if let Some(tr) = &mut self.text_renderer {
+            tr.set_bind_group(bind_group);
+        }
+    }
+
     pub(crate) fn text_run_cache(&mut self) -> &mut TextRunCache {
         &mut self.text_run_cache
     }
 
     /// Prepares cached glyph layouts from the current retained scene.
-    ///
-    /// Scene item IDs are the cache keys, so a repeated preparation pass leaves
-    /// unchanged text in place and releases entries for removed text items.
     pub(crate) fn prepare_text_runs(
         &mut self,
         scene_graph: &SceneGraph,
@@ -99,7 +204,7 @@ impl FrameEncoder {
         if let Some(delta) = scene.pending_delta.as_ref() {
             *scene.current_viewport = Some(viewport.clone());
             renderer.update(queue, delta, &viewport);
-            if let Some(ref mut tr) = self.text_renderer {
+            if let Some(tr) = &mut self.text_renderer {
                 tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
             }
         }
@@ -128,15 +233,14 @@ impl FrameEncoder {
         }
 
         let mut quad_range_start: Option<u32> = None;
-        let mut quad_range_end: u32 = 0;
+        let mut quad_range_count: u32 = 0;
 
         for item in raw_items {
             match &item.primitive {
                 crate::scene::primitive::Primitive::External { draw, rect } => {
                     if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
+                        renderer.encode_range(pass, start, quad_range_count);
+                        quad_range_count = 0;
                     }
 
                     if let Some(cb) = scene.external_draws.get(draw) {
@@ -159,12 +263,11 @@ impl FrameEncoder {
                 }
                 crate::scene::primitive::Primitive::Text { .. } => {
                     if let Some(start) = quad_range_start.take() {
-                        let count = quad_range_end - start + 1;
-                        renderer.encode_range(pass, start, count);
-                        quad_range_end = 0;
+                        renderer.encode_range(pass, start, quad_range_count);
+                        quad_range_count = 0;
                     }
 
-                    if let Some(ref tr) = self.text_renderer {
+                    if let Some(tr) = &self.text_renderer {
                         tr.encode_item(pass, item.id);
                     }
                 }
@@ -173,10 +276,16 @@ impl FrameEncoder {
                         match quad_range_start {
                             None => {
                                 quad_range_start = Some(slot);
-                                quad_range_end = slot;
+                                quad_range_count = 1;
                             }
-                            Some(_) => {
-                                quad_range_end = quad_range_end.max(slot);
+                            Some(start) => {
+                                if slot == start + quad_range_count {
+                                    quad_range_count += 1;
+                                } else {
+                                    renderer.encode_range(pass, start, quad_range_count);
+                                    quad_range_start = Some(slot);
+                                    quad_range_count = 1;
+                                }
                             }
                         }
                     }
@@ -185,8 +294,144 @@ impl FrameEncoder {
         }
 
         if let Some(start) = quad_range_start {
-            let count = quad_range_end - start + 1;
-            renderer.encode_range(pass, start, count);
+            renderer.encode_range(pass, start, quad_range_count);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{Point, Rect};
+    use crate::scene::primitive::{Color, Primitive};
+
+    #[test]
+    fn collect_quad_ranges_contiguous() {
+        let slots = vec![0, 1, 2, 3];
+        assert_eq!(collect_quad_ranges(&slots), vec![(0, 4)]);
+    }
+
+    #[test]
+    fn collect_quad_ranges_non_contiguous_and_reverse() {
+        let slots = vec![5, 2, 8, 9, 1];
+        assert_eq!(
+            collect_quad_ranges(&slots),
+            vec![(5, 1), (2, 1), (8, 2), (1, 1)]
+        );
+    }
+
+    #[test]
+    fn collect_quad_ranges_empty() {
+        let slots: Vec<u32> = vec![];
+        assert!(collect_quad_ranges(&slots).is_empty());
+    }
+
+    #[test]
+    fn plan_draw_commands_preserves_quad_text_quad_interleaving() {
+        // Simulates: Quad(id 1, slot 0) -> Text(id 2) -> Quad(id 3, slot 1)
+        // Even though slot 0 and slot 1 are numerically contiguous, the Text item in between
+        // MUST flush the first quad range so that Quad 1 is drawn BEFORE Text 2, and Quad 3 AFTER Text 2.
+        let quad1 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::ZERO, crate::layout::Size::new(100.0, 30.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+        let text2 = Primitive::Text {
+            text: Arc::from("Tab"),
+            origin: Point::ZERO,
+            color: Color::WHITE,
+        };
+        let quad3 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::new(0.0, 30.0), crate::layout::Size::new(100.0, 30.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+
+        let items = vec![(1, &quad1), (2, &text2), (3, &quad3)];
+        let slot_map = |id| match id {
+            1 => Some(0),
+            3 => Some(1),
+            _ => None,
+        };
+
+        let commands = plan_draw_commands(&items, slot_map);
+        assert_eq!(
+            commands,
+            vec![
+                EncodedDrawCommand::QuadRange { start: 0, count: 1 },
+                EncodedDrawCommand::TextItem(2),
+                EncodedDrawCommand::QuadRange { start: 1, count: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_draw_commands_batches_consecutive_quads_without_barriers() {
+        let quad1 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::ZERO, crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+        let quad2 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::new(10.0, 0.0), crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+        let quad3 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::new(20.0, 0.0), crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+
+        let items = vec![(1, &quad1), (2, &quad2), (3, &quad3)];
+        // Slots 5, 6, 7 are contiguous
+        let slot_map = |id| match id {
+            1 => Some(5),
+            2 => Some(6),
+            3 => Some(7),
+            _ => None,
+        };
+
+        let commands = plan_draw_commands(&items, slot_map);
+        assert_eq!(
+            commands,
+            vec![EncodedDrawCommand::QuadRange { start: 5, count: 3 }]
+        );
+    }
+
+    #[test]
+    fn plan_draw_commands_preserves_paint_order_for_reverse_slots() {
+        let quad1 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::ZERO, crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+        let quad2 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::new(10.0, 0.0), crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+        let quad3 = Primitive::Quad {
+            rect: Rect::from_min_size(Point::new(20.0, 0.0), crate::layout::Size::new(10.0, 10.0)),
+            color: Color::WHITE,
+            corner_radius: 0.0,
+        };
+
+        let items = vec![(1, &quad1), (2, &quad2), (3, &quad3)];
+        let slot_map = |id| match id {
+            1 => Some(5),
+            2 => Some(2),
+            3 => Some(3),
+            _ => None,
+        };
+
+        let commands = plan_draw_commands(&items, slot_map);
+        assert_eq!(
+            commands,
+            vec![
+                EncodedDrawCommand::QuadRange { start: 5, count: 1 },
+                EncodedDrawCommand::QuadRange { start: 2, count: 2 },
+            ]
+        );
     }
 }

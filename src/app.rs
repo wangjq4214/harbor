@@ -1,6 +1,7 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
 mod confirmation;
+pub mod session;
 
 use std::{
     cell::Cell,
@@ -90,10 +91,80 @@ fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
     )
 }
 
+fn is_new_tab_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && modifiers.shift_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("t"))
+    )
+}
+
+fn is_split_horizontal_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && modifiers.shift_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("d"))
+    )
+}
+
+fn is_split_vertical_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && modifiers.shift_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character == "+" || character == "=")
+    )
+}
+
+fn is_close_pane_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && modifiers.shift_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("w"))
+    )
+}
+
+fn is_cycle_tab_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> Option<bool> {
+    if let WindowEvent::KeyboardInput { event, .. } = event {
+        if event.state == ElementState::Pressed
+            && modifiers.control_key()
+            && !modifiers.alt_key()
+            && !modifiers.super_key()
+            && matches!(
+                &event.logical_key,
+                Key::Named(winit::keyboard::NamedKey::Tab)
+            )
+        {
+            return Some(!modifiers.shift_key());
+        }
+    }
+    None
+}
+
 /// Maps host wake events to source-agnostic runtime invalidation.
 fn external_invalidation_for_app_event(event: AppEvent) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady => Some(ExternalInvalidation::new()),
+        _ => None,
     }
 }
 
@@ -231,6 +302,8 @@ struct AppRuntime {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     terminal: Option<Arc<Mutex<Terminal>>>,
+    session_state: Option<crate::app::session::AppSessionState>,
+    tab_position: harbor_types::TabBarPosition,
     /// Host-owned gate mirrored into the terminal bridge for in-tree input suppression.
     input_gate: Arc<AtomicBool>,
     /// Widget framework runtime.
@@ -399,22 +472,62 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Handles redraw wakes posted by the terminal reader thread.
+    /// Handles redraw wakes and UI events posted by background workers or widgets.
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        let Some(invalidation) = external_invalidation_for_app_event(event) else {
-            return;
-        };
-        let (Some(adapter), Some(runtime), Some(window)) = (
-            self.runtime.winit_adapter.as_mut(),
-            self.runtime.widget_runtime.as_mut(),
-            self.runtime.window.as_ref(),
-        ) else {
-            return;
-        };
-        let effects = adapter.invalidate_external(runtime, invalidation);
-        Self::apply_window_effects(window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
+        match event {
+            AppEvent::TerminalOutputReady => {
+                let Some(invalidation) =
+                    external_invalidation_for_app_event(AppEvent::TerminalOutputReady)
+                else {
+                    return;
+                };
+                let (Some(adapter), Some(runtime), Some(window)) = (
+                    self.runtime.winit_adapter.as_mut(),
+                    self.runtime.widget_runtime.as_mut(),
+                    self.runtime.window.as_ref(),
+                ) else {
+                    return;
+                };
+                let effects = adapter.invalidate_external(runtime, invalidation);
+                Self::apply_window_effects(window, &effects);
+                if let Some(control_flow) = effects.control_flow {
+                    Self::apply_control_flow(event_loop, control_flow);
+                }
+            }
+            AppEvent::SelectSession(idx) => {
+                if let Some(session_state) = self.runtime.session_state.as_mut() {
+                    if let Some(session) = session_state.sessions.get(idx) {
+                        let id = session.id;
+                        session_state.switch_session(id);
+                    }
+                }
+                self.apply_update_root_effects(event_loop);
+            }
+            AppEvent::CloseSession(idx) => {
+                let has_sessions = if let Some(session_state) = self.runtime.session_state.as_mut()
+                {
+                    if let Some(session) = session_state.sessions.get(idx) {
+                        let id = session.id;
+                        session_state.close_session(id);
+                    }
+                    !session_state.sessions.is_empty()
+                } else {
+                    false
+                };
+                if !has_sessions {
+                    event_loop.exit();
+                    return;
+                }
+                self.apply_update_root_effects(event_loop);
+            }
+            AppEvent::NewSession => {
+                if let Ok(new_term) = self.spawn_terminal() {
+                    if let Some(session_state) = self.runtime.session_state.as_mut() {
+                        session_state.new_session(new_term, "");
+                    }
+                    self.apply_update_root_effects(event_loop);
+                }
+            }
         }
     }
 
@@ -484,12 +597,12 @@ impl ApplicationHandler<AppEvent> for App {
                         && let Ok(mut terminal) = terminal.lock()
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
-                        if let Err(error) =
+                        let write_result =
                             write_confirmation_outcome(&result, input_modes, |bytes| {
                                 terminal.write_pty(bytes)
-                            })
-                        {
-                            tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+                            });
+                        if let Err(error) = write_result {
+                            tracing::warn!(error = %error, "failed to write confirmed paste");
                         }
                     }
                     self.runtime.input_gate.store(false, Ordering::Release);
@@ -512,7 +625,7 @@ impl ApplicationHandler<AppEvent> for App {
         let (Some(_gpu), Some(_terminal), Some(window)) = (
             self.runtime.gpu.as_mut(),
             self.runtime.terminal.as_ref(),
-            self.runtime.window.as_ref(),
+            self.runtime.window.as_ref().cloned(),
         ) else {
             return;
         };
@@ -531,14 +644,69 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        if self
-            .runtime
-            .winit_adapter
-            .as_ref()
-            .is_some_and(|adapter| is_paste_shortcut(&event, adapter.modifiers()))
-        {
-            self.paste_from_clipboard(event_loop);
-            return;
+        if let Some(adapter) = self.runtime.winit_adapter.as_ref() {
+            let modifiers = adapter.modifiers();
+
+            if is_paste_shortcut(&event, modifiers) {
+                self.paste_from_clipboard(event_loop);
+                return;
+            }
+
+            if is_new_tab_shortcut(&event, modifiers) {
+                if let Ok(new_term) = self.spawn_terminal() {
+                    if let Some(session_state) = self.runtime.session_state.as_mut() {
+                        session_state.new_session(new_term, "");
+                    }
+                    self.apply_update_root_effects(event_loop);
+                }
+                return;
+            }
+
+            if is_split_horizontal_shortcut(&event, modifiers) {
+                if let Ok(new_term) = self.spawn_terminal() {
+                    if let Some(session_state) = self.runtime.session_state.as_mut() {
+                        session_state
+                            .split_active_pane(new_term, harbor_types::SplitDirection::Horizontal);
+                    }
+                    self.apply_update_root_effects(event_loop);
+                }
+                return;
+            }
+
+            if is_split_vertical_shortcut(&event, modifiers) {
+                if let Ok(new_term) = self.spawn_terminal() {
+                    if let Some(session_state) = self.runtime.session_state.as_mut() {
+                        session_state
+                            .split_active_pane(new_term, harbor_types::SplitDirection::Vertical);
+                    }
+                    self.apply_update_root_effects(event_loop);
+                }
+                return;
+            }
+
+            if is_close_pane_shortcut(&event, modifiers) {
+                let has_sessions = if let Some(session_state) = self.runtime.session_state.as_mut()
+                {
+                    session_state.close_active_pane();
+                    !session_state.sessions.is_empty()
+                } else {
+                    false
+                };
+                if !has_sessions {
+                    event_loop.exit();
+                    return;
+                }
+                self.apply_update_root_effects(event_loop);
+                return;
+            }
+
+            if let Some(forward) = is_cycle_tab_shortcut(&event, modifiers) {
+                if let Some(session_state) = self.runtime.session_state.as_mut() {
+                    session_state.cycle_session(forward);
+                }
+                self.apply_update_root_effects(event_loop);
+                return;
+            }
         }
 
         let outcome = match (
@@ -555,12 +723,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             _ => None,
         };
-        if let Some(outcome) = outcome
-            && outcome.handled
-        {
-            Self::apply_window_effects(window, &outcome.effects);
-            if let Some(control_flow) = outcome.effects.control_flow {
-                Self::apply_control_flow(event_loop, control_flow);
+        if let Some(outcome) = outcome {
+            if outcome.handled {
+                Self::apply_window_effects(&window, &outcome.effects);
+                if let Some(control_flow) = outcome.effects.control_flow {
+                    Self::apply_control_flow(event_loop, control_flow);
+                }
             }
         }
 
@@ -580,6 +748,8 @@ impl App {
                 window: None,
                 gpu: None,
                 terminal: None,
+                session_state: None,
+                tab_position: harbor_types::TabBarPosition::Left,
                 input_gate: Arc::new(AtomicBool::new(false)),
                 widget_runtime: None,
                 winit_adapter: None,
@@ -698,6 +868,12 @@ impl App {
 
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
+        let session_state = crate::app::session::AppSessionState::new(
+            Arc::clone(&terminal),
+            Arc::clone(&self.runtime.input_gate),
+        );
+        self.runtime.session_state = Some(session_state);
+        self.runtime.tab_position = harbor_types::TabBarPosition::Left;
         self.runtime.terminal = Some(terminal);
         self.runtime.backdrop_available = main_window_backdrop_available;
         let mut winit_adapter = WinitAdapter::from_window(&window);
@@ -847,8 +1023,7 @@ impl App {
             let widget_runtime = self.runtime.widget_runtime.as_mut()?;
             // Install the thread-local GPU pointer before borrowing frame
             // resources so CustomPaint can resolve GpuContext during encode.
-            // Configuration updates go through GpuContext::configure_size so
-            // encode never aliases a mutable SurfaceConfiguration borrow.
+            let terminal_ref = self.runtime.terminal.as_ref();
             Some(with_current_gpu(gpu, || {
                 let mut configure = |width, height| gpu.configure_size(width, height);
                 let (surface, device, queue) = gpu.borrow_frame();
@@ -861,18 +1036,20 @@ impl App {
                     backdrop_available,
                     gpu.alpha_mode(),
                 );
-                adapter.render(widget_runtime, target)
+                adapter.render_with_prepare(widget_runtime, target, |runtime| {
+                    if let Some(term_arc) = terminal_ref {
+                        if let Ok(term) = term_arc.lock() {
+                            if let Some(bind_group) = term.text_bind_group() {
+                                runtime.set_text_bind_group(bind_group);
+                            }
+                            runtime.prepare_text_runs(&|ch| term.text_glyph(ch).copied());
+                        }
+                    }
+                })
             }))
         })() else {
             return false;
         };
-
-        let effects = outcome.effects().clone();
-        Self::apply_window_effects(window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
-        }
-
         let presented = outcome.is_presented();
         if presented {
             self.frame.mark_first_present();
@@ -901,11 +1078,30 @@ impl App {
     /// The returned effects are produced during the bootstrap focus transition
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
-        use crate::terminal_widget_bridge::TerminalWidgetBridge;
-        use harbor_widget::widgets::padding::Padding;
+        let proxy1 = self.event_proxy.clone();
+        let on_select = Some(Arc::new(move |idx| {
+            let _ = proxy1.send_event(AppEvent::SelectSession(idx));
+        }) as Arc<dyn Fn(usize) + Send + Sync>);
 
-        let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
-        let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
+        let proxy2 = self.event_proxy.clone();
+        let on_close = Some(Arc::new(move |idx| {
+            let _ = proxy2.send_event(AppEvent::CloseSession(idx));
+        }) as Arc<dyn Fn(usize) + Send + Sync>);
+
+        let proxy3 = self.event_proxy.clone();
+        let on_new = Some(Arc::new(move || {
+            let _ = proxy3.send_event(AppEvent::NewSession);
+        }) as Arc<dyn Fn() + Send + Sync>);
+
+        let mut root_comp = self
+            .runtime
+            .session_state
+            .as_ref()
+            .unwrap()
+            .build_root_component(self.runtime.tab_position);
+        root_comp.on_select = on_select;
+        root_comp.on_close = on_close;
+        root_comp.on_new = on_new;
 
         let gpu = self.runtime.gpu.as_ref().unwrap();
         let window = self.runtime.window.as_ref().unwrap();
@@ -916,20 +1112,124 @@ impl App {
             window.scale_factor() as f32,
         );
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(Padding::all(2.0).child(bridge));
+        runtime.set_root(root_comp);
         runtime.init_renderer(gpu.device(), gpu.format());
+        if let Some(term_arc) = self.runtime.terminal.as_ref() {
+            if let Ok(mut term) = term_arc.lock() {
+                term.ensure_glyphs("Terminal 1234567890+x -", gpu);
+                if let (Some(layout), Some(bind_group)) =
+                    (term.text_bind_group_layout(), term.text_bind_group())
+                {
+                    runtime.init_text_renderer(gpu.device(), gpu.format(), layout, bind_group);
+                }
+            }
+        }
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
         runtime.focus_first_focusable();
 
-        // Bootstrap focus is a local widget-state transition, not a native
-        // focus event. Consume its deferred CustomPaint notification now so
-        // the first native window event cannot replay it.
         runtime.drain_external_input();
         initial_effects.merge(runtime.take_pending_effects());
 
         self.runtime.widget_runtime = Some(runtime);
         initial_effects
+    }
+
+    fn update_root_view(&mut self) -> RuntimeEffects {
+        let proxy1 = self.event_proxy.clone();
+        let on_select = Some(Arc::new(move |idx| {
+            let _ = proxy1.send_event(AppEvent::SelectSession(idx));
+        }) as Arc<dyn Fn(usize) + Send + Sync>);
+
+        let proxy2 = self.event_proxy.clone();
+        let on_close = Some(Arc::new(move |idx| {
+            let _ = proxy2.send_event(AppEvent::CloseSession(idx));
+        }) as Arc<dyn Fn(usize) + Send + Sync>);
+
+        let proxy3 = self.event_proxy.clone();
+        let on_new = Some(Arc::new(move || {
+            let _ = proxy3.send_event(AppEvent::NewSession);
+        }) as Arc<dyn Fn() + Send + Sync>);
+
+        let (active_terminal, mut root_comp) = {
+            let Some(session_state) = self.runtime.session_state.as_ref() else {
+                return RuntimeEffects::default();
+            };
+            (
+                session_state.active_terminal(),
+                session_state.build_root_component(self.runtime.tab_position),
+            )
+        };
+        root_comp.on_select = on_select;
+        root_comp.on_close = on_close;
+        root_comp.on_new = on_new;
+
+        self.runtime.terminal = active_terminal;
+        let Some(runtime) = self.runtime.widget_runtime.as_mut() else {
+            return RuntimeEffects::default();
+        };
+        if let (Some(term_arc), Some(gpu)) =
+            (self.runtime.terminal.as_ref(), self.runtime.gpu.as_ref())
+        {
+            if let Ok(mut term) = term_arc.lock() {
+                term.ensure_glyphs("Terminal 1234567890+x -", gpu);
+                if let Some(bind_group) = term.text_bind_group() {
+                    runtime.set_text_bind_group(bind_group);
+                }
+            }
+        }
+        runtime.set_root(root_comp);
+        let mut effects = runtime.update(Instant::now());
+        runtime.focus_first_focusable();
+        runtime.drain_external_input();
+        effects.merge(runtime.take_pending_effects());
+        effects.request_redraw = true;
+        effects
+    }
+
+    fn apply_update_root_effects(&mut self, event_loop: &ActiveEventLoop) {
+        let raw_effects = self.update_root_view();
+        let (Some(adapter), Some(window)) = (
+            self.runtime.winit_adapter.as_mut(),
+            self.runtime.window.as_ref(),
+        ) else {
+            return;
+        };
+        let mut effects = adapter.fold_effects(raw_effects);
+        effects.merge(adapter.request_frame());
+        Self::apply_window_effects(window, &effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+        window.request_redraw();
+    }
+    fn spawn_terminal(&self) -> std::result::Result<Arc<Mutex<Terminal>>, AppError> {
+        let gpu = self.runtime.gpu.as_ref().unwrap();
+        let fonts = load_system_fonts().map_err(AppError::Renderer)?;
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let size = Terminal::terminal_size_for(gpu, &metrics);
+        let appearance = TerminalAppearance::default();
+        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size)
+            .map_err(AppError::Pty)?
+            .into_parts();
+        let event_proxy = self.event_proxy.clone();
+        let terminal = Terminal::new_with_appearance(
+            size,
+            pty_read,
+            pty_write,
+            pty_control,
+            gpu,
+            fonts,
+            metrics,
+            appearance,
+            move || {
+                event_proxy
+                    .send_event(AppEvent::TerminalOutputReady)
+                    .is_ok()
+            },
+        );
+        #[allow(clippy::arc_with_non_send_sync)]
+        Ok(Arc::new(Mutex::new(terminal)))
     }
 }
 

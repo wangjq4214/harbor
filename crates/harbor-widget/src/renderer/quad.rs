@@ -234,6 +234,19 @@ impl QuadRenderer {
                 let instance = self.item_to_instance(item, viewport);
                 let offset = *slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
                 queue.write_buffer(&self.instance_buffer, offset, bytemuck::bytes_of(&instance));
+            } else if matches!(item.primitive, Primitive::Quad { .. }) {
+                let instance = self.item_to_instance(item, viewport);
+                let slot = self.allocate_slot();
+                if slot < self.instance_capacity {
+                    self.id_to_slot.insert(item.id, slot);
+                    self.slot_to_id.insert(slot, item.id);
+                    let offset = slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
+                    queue.write_buffer(
+                        &self.instance_buffer,
+                        offset,
+                        bytemuck::bytes_of(&instance),
+                    );
+                }
             }
         }
     }

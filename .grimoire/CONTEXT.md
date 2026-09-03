@@ -774,3 +774,46 @@ Project domain concepts and terminology.
   - depends on Padding Widget
   - wraps Terminal Widget Bridge
   - belongs to Runtime Host
+
+### Terminal Session
+- **Definition:** An active top-level terminal workspace containing a Pane Layout Tree and active pane tracking.
+- **Synonyms:** Session
+- **Relationships:**
+  - contains Pane Layout Tree
+  - contains Pane
+  - belongs to Runtime Host
+
+### Pane
+- **Definition:** The fundamental terminal tile entity hosting an individual PTY process, terminal emulator instance, input focus, and custom paint renderer.
+- **Relationships:**
+  - belongs to Terminal Session
+  - belongs to Pane Layout Tree
+  - contains Terminal
+
+### Pane Layout Tree
+- **Definition:** A recursive tree data structure describing the horizontal and vertical split hierarchy and sizing ratios of Panes within a Terminal Session.
+- **Synonyms:** Layout Tree, Split Tree
+- **Relationships:**
+  - contains Pane
+  - contains Pane Divider
+  - belongs to Terminal Session
+
+### Pane Divider
+- **Definition:** A draggable visual boundary rendered between adjacent split panes that dynamically adjusts layout size ratios.
+- **Synonyms:** Sash, Divider, Splitter
+- **Relationships:**
+  - belongs to Pane Layout Tree
+
+### Tab Bar
+- **Definition:** A proposed dynamic navigation bar that renders tab navigation items referencing active Terminal Sessions across top, bottom, left, or right window edges with overflow scrolling.
+- **Relationships:**
+  - references Terminal Session
+  - belongs to Runtime Host
+
+### SplitContainer
+- **Definition:** A proposed generic two-child layout container in harbor-widget that manages split orientation, divider position, ratio clamping, and pointer-drag interaction.
+- **Synonyms:** SplitView, Split Panel
+- **Relationships:**
+  - contains Pane Divider
+  - implements Layout Container
+  - belongs to Harbor Widget Runtime

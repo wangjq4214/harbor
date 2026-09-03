@@ -4,6 +4,11 @@
 
 use std::borrow::Cow;
 
+pub mod layout;
+pub use layout::{
+    PaneId, PaneLayoutNode, SessionId, SplitDirection, TabBarPosition, TerminalSession,
+};
+
 // ── Color ────────────────────────────────────────────────────────────────────
 
 /// Terminal color value.

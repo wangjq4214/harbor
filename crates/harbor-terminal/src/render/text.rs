@@ -211,8 +211,8 @@ pub struct Text {
     dirty: bool,
     rows: usize,
     cols: usize,
+    ensured_chars: Vec<char>,
 }
-
 impl Text {
     pub fn is_dirty(&self) -> bool {
         self.dirty
@@ -233,13 +233,14 @@ impl Text {
 
     /// Ensures dialog text characters are rasterized into the atlas.
     pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
-        chars.sort_unstable();
-        chars.dedup();
-        let result = self.atlas.rasterize_new(&self.fonts, &chars);
+        for c in text.chars().filter(|&c| c != ' ') {
+            if !self.ensured_chars.contains(&c) {
+                self.ensured_chars.push(c);
+            }
+        }
+        let result = self.atlas.rasterize_new(&self.fonts, &self.ensured_chars);
         self.apply_rasterize_result(gpu, result);
     }
-
     /// Apply CPU atlas changes to the GPU atlas / vertex dirty state.
     fn apply_rasterize_result(&mut self, gpu: &GpuContext, result: harbor_text::RasterizeResult) {
         match atlas_gpu_sync(&result) {
@@ -273,7 +274,13 @@ impl Text {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format(), &bind_group_layout);
 
         let mut atlas = GlyphAtlas::new();
-        let all_chars = Self::collect_all_chars(snap);
+        let mut all_chars: Vec<char> = snap
+            .cells
+            .iter()
+            .filter_map(|cell| if cell.ch != ' ' { Some(cell.ch) } else { None })
+            .collect();
+        all_chars.sort_unstable();
+        all_chars.dedup();
         atlas.rebuild(&fonts, &all_chars);
         let gpu_atlas = GpuGlyphAtlas::new(gpu.device(), gpu.queue(), &bind_group_layout, &atlas);
 
@@ -296,8 +303,8 @@ impl Text {
             dirty: true,
             rows,
             cols,
+            ensured_chars: Vec::new(),
         };
-
         let verts = layer.build_all_vertices(snap, viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
@@ -309,12 +316,13 @@ impl Text {
         self.dirty = true;
     }
 
-    fn collect_all_chars(snap: &TerminalSnapshot) -> Vec<char> {
+    fn collect_all_chars(&self, snap: &TerminalSnapshot) -> Vec<char> {
         let mut chars: Vec<char> = snap
             .cells
             .iter()
             .filter_map(|cell| if cell.ch != ' ' { Some(cell.ch) } else { None })
             .collect();
+        chars.extend(self.ensured_chars.iter().copied());
         chars.sort_unstable();
         chars.dedup();
         chars
@@ -478,10 +486,9 @@ impl Text {
 
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
-            let all_chars = Self::collect_all_chars(snap);
+            let all_chars = self.collect_all_chars(snap);
             self.atlas.rebuild(&self.fonts, &all_chars);
             self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
-
             let new_cap = snap
                 .rows
                 .checked_mul(snap.cols)

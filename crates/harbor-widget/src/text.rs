@@ -37,6 +37,7 @@ pub struct TextRunData {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct CachedTextRun {
     text: String,
     metrics: TextMetrics,
@@ -76,7 +77,6 @@ impl TextRunCache {
     /// Inserts or updates the run for a stable scene item ID.
     ///
     /// Returns `true` when glyph layout was rebuilt and `false` when the
-    /// existing text and metrics already matched.
     pub fn upsert(
         &mut self,
         id: TextRunId,
@@ -84,12 +84,18 @@ impl TextRunCache {
         metrics: &TextMetrics,
         glyph_fn: &GlyphFn<'_>,
     ) -> bool {
-        if self
-            .runs
-            .get(&id)
-            .is_some_and(|run| run.text == text && text_metrics_equal(&run.metrics, metrics))
-        {
-            return false;
+        let new_data = Self::layout_run(text, metrics, glyph_fn);
+        if let Some(run) = self.runs.get_mut(&id) {
+            if run.text == text
+                && text_metrics_equal(&run.metrics, metrics)
+                && glyph_layouts_equal(&run.data, &new_data)
+            {
+                return false;
+            }
+            run.text = text.to_owned();
+            run.metrics = *metrics;
+            run.data = new_data;
+            return true;
         }
 
         // A compatibility registration may have associated this ID with a
@@ -100,7 +106,7 @@ impl TextRunCache {
             CachedTextRun {
                 text: text.to_owned(),
                 metrics: *metrics,
-                data: Self::layout_run(text, metrics, glyph_fn),
+                data: new_data,
             },
         );
         true
@@ -238,6 +244,21 @@ pub(crate) fn text_metrics_equal(left: &TextMetrics, right: &TextMetrics) -> boo
         && left.underline_thickness.to_bits() == right.underline_thickness.to_bits()
         && left.strikethrough_position.to_bits() == right.strikethrough_position.to_bits()
         && left.strikethrough_thickness.to_bits() == right.strikethrough_thickness.to_bits()
+}
+
+pub(crate) fn glyph_layouts_equal(left: &TextRunData, right: &TextRunData) -> bool {
+    if left.glyphs.len() != right.glyphs.len() {
+        return false;
+    }
+    left.glyphs.iter().zip(right.glyphs.iter()).all(|(a, b)| {
+        a.origin == b.origin
+            && a.width.to_bits() == b.width.to_bits()
+            && a.height.to_bits() == b.height.to_bits()
+            && a.uv_left.to_bits() == b.uv_left.to_bits()
+            && a.uv_top.to_bits() == b.uv_top.to_bits()
+            && a.uv_right.to_bits() == b.uv_right.to_bits()
+            && a.uv_bottom.to_bits() == b.uv_bottom.to_bits()
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
