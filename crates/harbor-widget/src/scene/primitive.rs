@@ -44,6 +44,17 @@ impl Color {
         b: 1.0,
         a: 1.0,
     };
+    pub const TRANSPARENT: Self = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+
+    /// Returns true when every linear RGBA component is finite.
+    pub fn is_finite(&self) -> bool {
+        self.r.is_finite() && self.g.is_finite() && self.b.is_finite() && self.a.is_finite()
+    }
 
     pub fn to_array(&self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
@@ -54,29 +65,6 @@ impl Color {
 
 pub type TextRunId = u64;
 pub type ExternalDrawId = u64;
-
-/// A plain clear-color value supplied by an external paint provider.
-///
-/// The widget runtime carries this value without knowing which terminal or
-/// compositor produced it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ExternalFrameAppearance {
-    pub rgba: [f32; 4],
-}
-
-impl ExternalFrameAppearance {
-    pub const fn new(rgba: [f32; 4]) -> Self {
-        Self { rgba }
-    }
-}
-
-/// Signature for a provider of the current frame's default clear appearance.
-///
-/// `backdrop_available` is a host fact; the provider owns the resulting color
-/// policy. `None` means the provider cannot supply a color for this invocation.
-/// Providers must not acquire, submit, or present GPU work.
-pub type ExternalFrameAppearanceFn =
-    dyn Fn(ExternalDrawId, bool) -> Option<ExternalFrameAppearance> + 'static;
 
 /// Immutable geometry context for one retained external draw invocation.
 #[derive(Clone, Debug, PartialEq)]
@@ -117,16 +105,22 @@ impl ExternalDrawContext {
 
     /// Clamped physical scissor `(x, y, width, height)` for wgpu.
     pub fn scissor_rect(&self) -> (u32, u32, u32, u32) {
-        let scale = self.scale_factor();
-        let (surf_w, surf_h) = self.surface_size();
+        Self::compute_scissor(self.logical_rect, self.scale_factor(), self.surface_size())
+    }
+
+    pub(crate) fn compute_scissor(
+        logical_rect: Rect,
+        scale: f32,
+        (surf_w, surf_h): (u32, u32),
+    ) -> (u32, u32, u32, u32) {
         if surf_w == 0 || surf_h == 0 {
             return (0, 0, 0, 0);
         }
 
-        let left = (self.logical_rect.min.x * scale).floor() as i64;
-        let top = (self.logical_rect.min.y * scale).floor() as i64;
-        let right = (self.logical_rect.max.x * scale).ceil() as i64;
-        let bottom = (self.logical_rect.max.y * scale).ceil() as i64;
+        let left = (logical_rect.min.x * scale).floor() as i64;
+        let top = (logical_rect.min.y * scale).floor() as i64;
+        let right = (logical_rect.max.x * scale).ceil() as i64;
+        let bottom = (logical_rect.max.y * scale).ceil() as i64;
 
         let clip_left = left.clamp(0, surf_w as i64);
         let clip_top = top.clamp(0, surf_h as i64);
@@ -228,6 +222,33 @@ pub enum Primitive {
         color: Color,
         corner_radius: f32,
     },
+    /// A bounded outer-only rounded shadow in logical pixels.
+    ///
+    /// `rect` bounds raster coverage; `shape_rect` is the unblurred rounded
+    /// shadow shape after offset and spread. `occluder_rect` is the original
+    /// decorated box whose interior must remain free of outer-shadow coverage.
+    OuterShadow {
+        rect: Rect,
+        shape_rect: Rect,
+        occluder_rect: Rect,
+        color: Color,
+        corner_radii: [f32; 4],
+        occluder_radii: [f32; 4],
+        blur_radius: f32,
+    },
+    /// A fill with independently resolved corner radii.
+    RoundedQuad {
+        rect: Rect,
+        color: Color,
+        corner_radii: [f32; 4],
+    },
+    /// A uniform-width outline with independently resolved corner radii.
+    RoundedBorder {
+        rect: Rect,
+        width: f32,
+        color: Color,
+        corner_radii: [f32; 4],
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,
@@ -241,19 +262,70 @@ mod tests {
     use crate::renderer::Viewport;
 
     #[test]
-    fn external_frame_appearance_preserves_plain_rgba() {
-        let appearance = ExternalFrameAppearance::new([0.36, 0.20, 0.08, 0.25]);
-
-        assert_eq!(appearance.rgba, [0.36, 0.20, 0.08, 0.25]);
-    }
-
-    #[test]
     fn color_constants() {
         assert_eq!(Color::WHITE.to_array(), [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(Color::BLACK.to_array(), [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(Color::RED.to_array(), [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(Color::GREEN.to_array(), [0.0, 1.0, 0.0, 1.0]);
         assert_eq!(Color::BLUE.to_array(), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(Color::TRANSPARENT.to_array(), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn color_finiteness_checks_every_component() {
+        assert!(Color::TRANSPARENT.is_finite());
+        for color in [
+            Color {
+                r: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::NAN,
+                ..Color::WHITE
+            },
+            Color {
+                r: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                r: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                g: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                b: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+            Color {
+                a: f32::NEG_INFINITY,
+                ..Color::WHITE
+            },
+        ] {
+            assert!(!color.is_finite());
+        }
     }
 
     #[test]

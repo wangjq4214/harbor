@@ -79,9 +79,6 @@ impl InputState {
                 EventCommand::InvalidatePaint => {
                     needs_paint = true;
                 }
-                EventCommand::StopPropagation => {
-                    // Handled by EventCtx during the walk; no state change needed.
-                }
             }
         }
         needs_paint
@@ -279,7 +276,6 @@ mod tests {
             vec![
                 EventCommand::RequestFocus(fid),
                 EventCommand::InvalidatePaint,
-                EventCommand::StopPropagation,
             ],
             &arena,
         );

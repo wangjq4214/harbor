@@ -1,9 +1,7 @@
 use crate::input::event::{PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn, Primitive,
-};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
 use std::sync::Arc;
@@ -25,7 +23,6 @@ pub struct CustomPaint {
     pub draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
     schedule: Option<Arc<ExternalScheduleFn>>,
-    frame_appearance: Option<Arc<ExternalFrameAppearanceFn>>,
     on_input: Option<Arc<ExternalInputFn>>,
     children: Vec<View>,
 }
@@ -36,7 +33,6 @@ impl CustomPaint {
             draw_id,
             handler: None,
             schedule: None,
-            frame_appearance: None,
             on_input: None,
             children: vec![],
         }
@@ -51,12 +47,6 @@ impl CustomPaint {
     /// Sets the schedule provider consulted before idle wait selection.
     pub fn schedule(mut self, schedule: Arc<ExternalScheduleFn>) -> Self {
         self.schedule = Some(schedule);
-        self
-    }
-
-    /// Sets the provider for the current frame's default clear appearance.
-    pub fn frame_appearance(mut self, provider: Arc<ExternalFrameAppearanceFn>) -> Self {
-        self.frame_appearance = Some(provider);
         self
     }
 
@@ -80,9 +70,6 @@ impl Component for CustomPaint {
         }
         if let Some(schedule) = &self.schedule {
             cx.register_external_schedule(self.draw_id, Arc::clone(schedule));
-        }
-        if let Some(provider) = &self.frame_appearance {
-            cx.register_external_frame_appearance(self.draw_id, Arc::clone(provider));
         }
         View::new(self.clone(), self.children.clone(), None)
     }
@@ -250,22 +237,6 @@ mod tests {
         assert_eq!(cx.externals.schedules.len(), 1);
         assert_eq!(cx.externals.schedules[0].0, 7);
         assert!(Arc::ptr_eq(&cx.externals.schedules[0].1, &schedule));
-    }
-
-    #[test]
-    fn should_register_frame_appearance_provider_when_configured() {
-        use crate::scene::primitive::{ExternalFrameAppearance, ExternalFrameAppearanceFn};
-
-        let provider: Arc<ExternalFrameAppearanceFn> =
-            Arc::new(|_, _| Some(ExternalFrameAppearance::new([0.2, 0.3, 0.4, 0.5])));
-        let custom_paint = CustomPaint::new(42).frame_appearance(Arc::clone(&provider));
-        let mut cx = BuildCx::stub();
-
-        custom_paint.build(&mut cx);
-
-        assert_eq!(cx.externals.frame_appearances.len(), 1);
-        assert_eq!(cx.externals.frame_appearances[0].0, 42);
-        assert!(Arc::ptr_eq(&cx.externals.frame_appearances[0].1, &provider));
     }
 
     #[test]

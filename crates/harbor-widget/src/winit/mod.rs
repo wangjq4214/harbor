@@ -18,7 +18,6 @@ use crate::runtime::Runtime;
 use crate::scheduler::FrameScheduler;
 use crate::winit::event::{
     ime_suppresses_keyboard, keyboard_to_uievent, modifiers_to_widget, mouse_button,
-    mouse_button_index, physical_size_for_scale_change,
 };
 use crate::winit::surface::SurfaceState;
 use std::time::Instant;
@@ -64,7 +63,6 @@ struct TouchContact {
     device_id: winit::event::DeviceId,
     source_id: u64,
     pointer_id: u64,
-    position: Point,
 }
 
 /// Per-window state for the winit integration.
@@ -73,7 +71,6 @@ pub struct WinitAdapter {
     /// The latest mouse cursor position in physical pixels.
     mouse_position: Point,
     scale_factor: f32,
-    ime_enabled: bool,
     ime_preedit: Option<String>,
     /// Active touch contacts and their namespaced public pointer ids.
     touch_contacts: Vec<TouchContact>,
@@ -112,7 +109,6 @@ impl WinitAdapter {
             } else {
                 1.0
             },
-            ime_enabled: false,
             ime_preedit: None,
             touch_contacts: Vec::new(),
             mouse_release_quarantine: [false; 3],
@@ -155,8 +151,7 @@ impl WinitAdapter {
 
     /// Folds a raw runtime effect batch through the per-window scheduler.
     pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
-        self.scheduler
-            .schedule_retaining_ineligibility(effects, FrameScheduler::RUNTIME_WAKE)
+        self.scheduler.schedule_retaining_ineligibility(effects)
     }
 
     /// Forwards source-agnostic host work through runtime external invalidation
@@ -169,7 +164,7 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
         let core_effects = runtime.invalidate_external(work);
         self.scheduler
-            .schedule_retaining_ineligibility(core_effects, FrameScheduler::EXTERNAL_WAKE)
+            .schedule_retaining_ineligibility(core_effects)
     }
 
     /// Observes `RedrawRequested`: runs a runtime update and consumes the
@@ -199,9 +194,7 @@ impl WinitAdapter {
         if due_redraw {
             dirty_effects.request_redraw = true;
         }
-        let mut scheduled = self
-            .scheduler
-            .schedule(dirty_effects, FrameScheduler::RUNTIME_WAKE);
+        let mut scheduled = self.scheduler.schedule(dirty_effects);
         // Control-flow from the dirty turn was folded into scheduler state.
         // The idle calculation owns the host-facing wait mode (including host
         // deadlines and due-deadline normalization), so drop the raw CF here
@@ -267,13 +260,12 @@ impl WinitAdapter {
             };
         };
 
-        let mut effects = runtime.dispatch(ui_event, Instant::now());
+        let mut effects = runtime.dispatch(ui_event);
         if matches!(event, WindowEvent::Focused(false)) {
             effects.merge(runtime.cancel_pointer_captures(self.logical_pointer_position()));
             self.modifiers = ModifiersState::empty();
-            // Focus loss ends the current composition and clears IME
-            // enablement so a later focus session cannot inherit suppression.
-            self.ime_enabled = false;
+            // Focus loss ends the current composition so a later focus
+            // session cannot inherit IME suppression.
             self.ime_preedit = None;
             self.touch_contacts.clear();
             effects.merge(RuntimeEffects {
@@ -299,13 +291,13 @@ impl WinitAdapter {
             )),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.set_scale_factor(*scale_factor as f32);
-                // Combine the new scale with the host's current physical size
-                // when available. Falling back to SurfaceState is only for
-                // headless tests that omit a window size hint.
-                let (width, height) = physical_size_for_scale_change(
-                    physical_size,
-                    self.surface_state.viewport().physical_size,
-                );
+                // Prefer the host's current physical size on DPI change; fall
+                // back to SurfaceState only when the host omitted a hint
+                // (headless tests).
+                let (width, height) = match physical_size {
+                    Some(size) => size,
+                    None => self.surface_state.viewport().physical_size,
+                };
                 Some(self.handle_surface_transition(runtime, width, height, self.scale_factor))
             }
             _ => None,
@@ -325,10 +317,7 @@ impl WinitAdapter {
         self.surface_state.reset_recovery_budget();
 
         if changed && self.surface_state.can_acquire() {
-            effects.merge(
-                self.scheduler
-                    .schedule(runtime.update(Instant::now()), FrameScheduler::RUNTIME_WAKE),
-            );
+            effects.merge(self.scheduler.schedule(runtime.update(Instant::now())));
             effects.merge(self.request_frame());
         }
         WinitEventOutcome::handled(effects)
@@ -359,7 +348,7 @@ impl WinitAdapter {
                 button,
                 ..
             } => {
-                let Some(index) = mouse_button_index(*button) else {
+                let Some((index, _)) = mouse_button(*button) else {
                     return false;
                 };
                 if self.mouse_release_quarantine[index] {
@@ -374,7 +363,7 @@ impl WinitAdapter {
                 button,
                 ..
             } => {
-                let Some(index) = mouse_button_index(*button) else {
+                let Some((index, _)) = mouse_button(*button) else {
                     return false;
                 };
                 self.mouse_release_quarantine[index] = false;
@@ -432,7 +421,7 @@ impl WinitAdapter {
                 WinitEventOutcome::unhandled()
             };
         };
-        WinitEventOutcome::handled(self.fold_effects(runtime.dispatch(ui_event, Instant::now())))
+        WinitEventOutcome::handled(self.fold_effects(runtime.dispatch(ui_event)))
     }
 
     fn convert_event(&mut self, event: &WindowEvent) -> Option<UiEvent> {
@@ -442,7 +431,6 @@ impl WinitAdapter {
                 None
             }
             WindowEvent::Ime(ime) => self.convert_ime(ime),
-            WindowEvent::KeyboardInput { event, .. } => self.convert_keyboard(event),
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = Point::new(position.x as f32, position.y as f32);
                 Some(UiEvent::Pointer(
@@ -456,7 +444,7 @@ impl WinitAdapter {
                 ))
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let button = mouse_button(*button)?;
+                let (_, button) = mouse_button(*button)?;
                 let phase = match state {
                     ElementState::Pressed => PointerPhase::Down,
                     ElementState::Released => PointerPhase::Up,
@@ -492,10 +480,9 @@ impl WinitAdapter {
                     TouchPhase::Cancelled => PointerPhase::Cancel,
                 };
                 let pointer_id = self.touch_pointer_id(touch.device_id, touch.id);
-                let position = self.update_touch_position(
-                    touch.device_id,
-                    touch.id,
-                    Point::new(touch.location.x as f32, touch.location.y as f32),
+                let position = Point::new(
+                    touch.location.x as f32 / self.scale_factor,
+                    touch.location.y as f32 / self.scale_factor,
                 );
                 if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
                     self.touch_contacts.retain(|contact| {
@@ -519,12 +506,10 @@ impl WinitAdapter {
     fn convert_ime(&mut self, event: &Ime) -> Option<UiEvent> {
         match event {
             Ime::Enabled => {
-                self.ime_enabled = true;
                 self.ime_preedit = None;
                 None
             }
             Ime::Disabled => {
-                self.ime_enabled = false;
                 self.ime_preedit = None;
                 None
             }
@@ -537,16 +522,6 @@ impl WinitAdapter {
                 (!text.is_empty()).then(|| UiEvent::Keyboard(KeyboardEvent::Ime(text.clone())))
             }
         }
-    }
-
-    fn convert_keyboard(&self, event: &winit::event::KeyEvent) -> Option<UiEvent> {
-        keyboard_to_uievent(
-            &event.logical_key,
-            event.state,
-            event.location,
-            self.modifiers,
-            self.ime_preedit.is_some(),
-        )
     }
 
     fn touch_pointer_id(&mut self, device_id: winit::event::DeviceId, source_id: u64) -> u64 {
@@ -567,27 +542,8 @@ impl WinitAdapter {
             device_id,
             source_id,
             pointer_id,
-            position: Point::ZERO,
         });
         pointer_id
-    }
-
-    fn update_touch_position(
-        &mut self,
-        device_id: winit::event::DeviceId,
-        source_id: u64,
-        position: Point,
-    ) -> Point {
-        let contact = self
-            .touch_contacts
-            .iter_mut()
-            .find(|contact| contact.device_id == device_id && contact.source_id == source_id)
-            .expect("touch contact allocated before position lookup");
-        contact.position = position;
-        Point::new(
-            position.x / self.scale_factor,
-            position.y / self.scale_factor,
-        )
     }
 
     fn logical_pointer_position(&self) -> Point {
@@ -810,16 +766,6 @@ mod tests {
             Some((1024, 768))
         );
         assert!(outcome.effects.request_redraw);
-    }
-
-    #[test]
-    fn should_prefer_host_physical_size_on_scale_change() {
-        // Arrange / Act / Assert: DPI events must not keep the pre-DPI physical size.
-        assert_eq!(
-            physical_size_for_scale_change(Some((1600, 1200)), (800, 600)),
-            (1600, 1200)
-        );
-        assert_eq!(physical_size_for_scale_change(None, (800, 600)), (800, 600));
     }
 
     #[test]
@@ -1319,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn ime_enabled_does_not_suppress_direct_character_or_control_keys_without_preedit() {
+    fn ime_enable_clears_preedit_without_suppressing_direct_keys() {
         let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
         adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
@@ -1556,11 +1502,17 @@ mod tests {
 
     #[test]
     fn mouse_button_mapping_covers_supported_and_unsupported_variants() {
-        assert_eq!(mouse_button(MouseButton::Left), Some(PointerButton::Left));
-        assert_eq!(mouse_button(MouseButton::Right), Some(PointerButton::Right));
+        assert_eq!(
+            mouse_button(MouseButton::Left),
+            Some((0, PointerButton::Left))
+        );
+        assert_eq!(
+            mouse_button(MouseButton::Right),
+            Some((1, PointerButton::Right))
+        );
         assert_eq!(
             mouse_button(MouseButton::Middle),
-            Some(PointerButton::Middle)
+            Some((2, PointerButton::Middle))
         );
         assert_eq!(mouse_button(MouseButton::Other(8)), None);
     }
@@ -1815,13 +1767,11 @@ mod tests {
     fn focus_loss_clears_window_transient_state() {
         let mut adapter = WinitAdapter::new();
         adapter.modifiers = ModifiersState::SHIFT;
-        adapter.ime_enabled = true;
         adapter.ime_preedit = Some("draft".into());
         let mut runtime = Runtime::new();
         let outcome = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
         assert!(outcome.handled);
         assert_eq!(adapter.modifiers, ModifiersState::empty());
-        assert!(!adapter.ime_enabled);
         assert!(adapter.ime_preedit.is_none());
 
         adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
@@ -1838,15 +1788,13 @@ mod tests {
     }
 
     #[test]
-    fn adapters_keep_pointer_and_ime_state_isolated() {
+    fn adapters_keep_pointer_state_isolated() {
         let mut first = WinitAdapter::new();
         let second = WinitAdapter::new();
         first.set_scale_factor(2.0);
         first.mouse_position = Point::new(10.0, 20.0);
-        first.ime_enabled = true;
         assert_eq!(second.scale_factor, 1.0);
         assert_eq!(second.mouse_position, Point::ZERO);
-        assert!(!second.ime_enabled);
     }
 
     #[test]

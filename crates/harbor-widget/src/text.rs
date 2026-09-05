@@ -53,10 +53,6 @@ struct CachedTextRun {
 /// scene IDs are removed as part of the same preparation pass.
 pub struct TextRunCache {
     runs: HashMap<TextRunId, CachedTextRun>,
-    // Kept for the legacy anonymous registration helper. Runtime-owned scene
-    // preparation always supplies a stable SceneItem id via `upsert`.
-    next_id: TextRunId,
-    dedup: HashMap<(u64, u64), TextRunId>,
 }
 
 impl Default for TextRunCache {
@@ -69,8 +65,6 @@ impl TextRunCache {
     pub fn new() -> Self {
         TextRunCache {
             runs: HashMap::new(),
-            next_id: 1,
-            dedup: HashMap::new(),
         }
     }
 
@@ -98,9 +92,6 @@ impl TextRunCache {
             return true;
         }
 
-        // A compatibility registration may have associated this ID with a
-        // previous key. Scene IDs own their current contents.
-        self.dedup.retain(|_, registered_id| *registered_id != id);
         self.runs.insert(
             id,
             CachedTextRun {
@@ -116,55 +107,11 @@ impl TextRunCache {
     pub fn retain_live_ids(&mut self, live_ids: impl IntoIterator<Item = TextRunId>) {
         let live_ids: HashSet<TextRunId> = live_ids.into_iter().collect();
         self.runs.retain(|id, _| live_ids.contains(id));
-        self.dedup
-            .retain(|_, registered_id| self.runs.contains_key(registered_id));
     }
 
     /// Removes one run by its stable scene item ID.
     pub fn remove(&mut self, id: TextRunId) -> Option<TextRunData> {
-        self.dedup.retain(|_, registered_id| *registered_id != id);
         self.runs.remove(&id).map(|run| run.data)
-    }
-
-    /// Registers a run under a caller-supplied ID.
-    ///
-    /// This is retained as a compatibility spelling for [`Self::upsert`]. New
-    /// Runtime code should use `upsert` with a SceneItem ID directly.
-    pub fn register_with_id(
-        &mut self,
-        id: TextRunId,
-        text: &str,
-        metrics: &TextMetrics,
-        glyph_fn: &GlyphFn<'_>,
-    ) {
-        self.upsert(id, text, metrics, glyph_fn);
-    }
-
-    /// Registers a run with an anonymous ID.
-    ///
-    /// This legacy helper is not used by Runtime scene preparation. It remains
-    /// available for inexpensive source compatibility with cache-only callers.
-    pub fn register(
-        &mut self,
-        text: &str,
-        metrics: &TextMetrics,
-        glyph_fn: &GlyphFn<'_>,
-    ) -> TextRunId {
-        let key = Self::dedup_key(text, metrics);
-        if let Some(&existing_id) = self.dedup.get(&key)
-            && self.runs.contains_key(&existing_id)
-        {
-            return existing_id;
-        }
-
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .expect("text run ID allocator exhausted");
-        self.upsert(id, text, metrics, glyph_fn);
-        self.dedup.insert(key, id);
-        id
     }
 
     /// Returns the cached glyph data for a stable scene item ID.
@@ -175,7 +122,6 @@ impl TextRunCache {
     /// Clears all cached runs.
     pub fn clear(&mut self) {
         self.runs.clear();
-        self.dedup.clear();
     }
 
     /// Returns the number of cached runs.
@@ -214,25 +160,6 @@ impl TextRunCache {
         }
 
         TextRunData { glyphs }
-    }
-
-    fn dedup_key(text: &str, metrics: &TextMetrics) -> (u64, u64) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        text.hash(&mut h);
-        let text_hash = h.finish();
-
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        metrics.cell_width.to_bits().hash(&mut h);
-        metrics.line_height.to_bits().hash(&mut h);
-        metrics.ascent.to_bits().hash(&mut h);
-        metrics.underline_position.to_bits().hash(&mut h);
-        metrics.underline_thickness.to_bits().hash(&mut h);
-        metrics.strikethrough_position.to_bits().hash(&mut h);
-        metrics.strikethrough_thickness.to_bits().hash(&mut h);
-        let metrics_hash = h.finish();
-
-        (text_hash, metrics_hash)
     }
 }
 
@@ -309,24 +236,24 @@ mod tests {
     #[test]
     fn empty_string_returns_zero_glyphs() {
         let mut cache = TextRunCache::new();
-        let id = cache.register("", &test_metrics(), &test_glyph_fn);
-        let run = cache.get(id).unwrap();
+        cache.upsert(1, "", &test_metrics(), &test_glyph_fn);
+        let run = cache.get(1).unwrap();
         assert!(run.glyphs.is_empty());
     }
 
     #[test]
     fn single_char_returns_one_glyph() {
         let mut cache = TextRunCache::new();
-        let id = cache.register("A", &test_metrics(), &test_glyph_fn);
-        let run = cache.get(id).unwrap();
+        cache.upsert(1, "A", &test_metrics(), &test_glyph_fn);
+        let run = cache.get(1).unwrap();
         assert_eq!(run.glyphs.len(), 1);
     }
 
     #[test]
     fn multi_char_advances_pen() {
         let mut cache = TextRunCache::new();
-        let id = cache.register("ABC", &test_metrics(), &test_glyph_fn);
-        let run = cache.get(id).unwrap();
+        cache.upsert(1, "ABC", &test_metrics(), &test_glyph_fn);
+        let run = cache.get(1).unwrap();
         assert_eq!(run.glyphs.len(), 3);
         assert!((run.glyphs[1].origin.x - 10.0).abs() < 0.01);
         assert!((run.glyphs[2].origin.x - 20.0).abs() < 0.01);
@@ -335,17 +262,19 @@ mod tests {
     #[test]
     fn missing_glyph_skips_but_advances() {
         let mut cache = TextRunCache::new();
-        let id = cache.register("A", &test_metrics(), &empty_glyph_fn);
-        let run = cache.get(id).unwrap();
+        cache.upsert(1, "A", &test_metrics(), &empty_glyph_fn);
+        let run = cache.get(1).unwrap();
         assert!(run.glyphs.is_empty());
     }
 
     #[test]
-    fn different_runs_have_different_ids() {
+    fn separate_scene_ids_cache_separate_runs() {
         let mut cache = TextRunCache::new();
-        let id1 = cache.register("A", &test_metrics(), &test_glyph_fn);
-        let id2 = cache.register("B", &test_metrics(), &test_glyph_fn);
-        assert_ne!(id1, id2);
+        cache.upsert(1, "A", &test_metrics(), &test_glyph_fn);
+        cache.upsert(2, "B", &test_metrics(), &test_glyph_fn);
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get(1).is_some());
+        assert!(cache.get(2).is_some());
     }
 
     #[test]
@@ -385,7 +314,7 @@ mod tests {
     #[test]
     fn clear_removes_all_runs() {
         let mut cache = TextRunCache::new();
-        cache.register("A", &test_metrics(), &test_glyph_fn);
+        cache.upsert(1, "A", &test_metrics(), &test_glyph_fn);
         assert!(!cache.is_empty());
         cache.clear();
         assert!(cache.is_empty());
@@ -423,8 +352,8 @@ mod tests {
             })
         };
         let mut cache = TextRunCache::new();
-        let id = cache.register("X", &test_metrics(), &fn_zero_width);
-        let run = cache.get(id).unwrap();
+        cache.upsert(1, "X", &test_metrics(), &fn_zero_width);
+        let run = cache.get(1).unwrap();
         assert!(run.glyphs.is_empty());
     }
 }

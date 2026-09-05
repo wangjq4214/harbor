@@ -26,7 +26,7 @@ pub use parser::TerminalParser;
 pub use pointer::PointerInteraction;
 pub use render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
-    TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
+    TerminalPrepareOptions, TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
     alpha_mode_supports_transparency,
 };
 pub use screen::{
@@ -56,6 +56,9 @@ pub struct Terminal {
     pointer: PointerInteraction,
     /// Terminal-owned default-background tint and fallback policy.
     appearance: TerminalAppearance,
+    /// Host compositor fact: true when an acrylic backdrop is available.
+    /// Drives the default-background tint alpha via `appearance.clear_rgba`.
+    backdrop_available: bool,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
     pending_ordinary_present: bool,
 }
@@ -115,8 +118,14 @@ impl Terminal {
         terminal.appearance = appearance;
         let snap = terminal.screen.terminal_snapshot();
 
-        let renderer = TerminalRenderPipeline::new(gpu, font_book, metrics, &snap)
-            .expect("terminal render pipeline init");
+        let renderer = TerminalRenderPipeline::new(
+            gpu,
+            font_book,
+            metrics,
+            &snap,
+            appearance.clear_rgba(false),
+        )
+        .expect("terminal render pipeline init");
 
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
@@ -143,6 +152,7 @@ impl Terminal {
             renderer: None,
             pointer: PointerInteraction::new(),
             appearance: TerminalAppearance::default(),
+            backdrop_available: false,
             pending_ordinary_present: false,
         }
     }
@@ -176,12 +186,31 @@ impl Terminal {
         self.appearance.rgba()
     }
 
+    /// Records the host compositor backdrop fact for the default background.
+    ///
+    /// Set once at startup; the background layer rebuilds when the resolved
+    /// tint changes on the next prepare.
+    pub fn set_backdrop_available(&mut self, available: bool) {
+        self.backdrop_available = available;
+    }
+
     /// Prepares GPU resources for all render components.
     pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {
         let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
-            renderer.prepare(gpu, &snap, damage, now, self.pointer.bounds(), true);
+            let tint = self.appearance.clear_rgba(self.backdrop_available);
+            renderer.prepare(
+                gpu,
+                &snap,
+                damage,
+                now,
+                self.pointer.bounds(),
+                TerminalPrepareOptions {
+                    cursor_focused: true,
+                    tint,
+                },
+            );
         }
     }
 
@@ -206,16 +235,24 @@ impl Terminal {
         self.pointer.set_input_scale(target.scale_factor);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
-        if grid_changed {
-            self.pointer.clear();
-        }
         self.ingest_and_blink(|io, screen| io.drain(screen));
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
-            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds(), cursor_focused);
+            let tint = self.appearance.clear_rgba(self.backdrop_available);
+            renderer.prepare(
+                gpu,
+                &snap,
+                None,
+                now,
+                self.pointer.bounds(),
+                TerminalPrepareOptions {
+                    cursor_focused,
+                    tint,
+                },
+            );
             renderer.draw(pass);
         }
     }

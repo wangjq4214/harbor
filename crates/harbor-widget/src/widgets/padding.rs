@@ -65,14 +65,7 @@ impl AnyView for Padding {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // layout_fiber measures descendants before calling layout_children.
         // This intrinsic fallback therefore represents the child-free case.
-        let child_size = Size::ZERO;
-        let own = Size::new(
-            (child_size.width + self.left + self.right)
-                .clamp(constraints.min.width, constraints.max.width),
-            (child_size.height + self.top + self.bottom)
-                .clamp(constraints.min.height, constraints.max.height),
-        );
-        constraints.constrain(own)
+        constraints.constrain(Size::new(self.left + self.right, self.top + self.bottom))
     }
 
     fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
@@ -86,28 +79,27 @@ impl AnyView for Padding {
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
         let child_size = child_sizes.first().copied().unwrap_or(Size::ZERO);
-        let own_width = (child_size.width + self.left + self.right)
-            .clamp(constraints.min.width, constraints.max.width);
-        let own_height = (child_size.height + self.top + self.bottom)
-            .clamp(constraints.min.height, constraints.max.height);
-        let own = Size::new(own_width, own_height);
-        let child_pos = Point::new(self.left, self.top);
-        if child_sizes.is_empty() {
-            (own, vec![])
+        let own = constraints.constrain(Size::new(
+            child_size.width + self.left + self.right,
+            child_size.height + self.top + self.bottom,
+        ));
+        let positions = if child_sizes.is_empty() {
+            vec![]
         } else {
-            (own, vec![child_pos])
-        }
+            vec![Point::new(self.left, self.top)]
+        };
+        (own, positions)
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
-        match self.background {
-            Some(color) => vec![Primitive::Quad {
+        self.background
+            .map(|color| Primitive::Quad {
                 rect,
                 color,
                 corner_radius: 0.0,
-            }],
-            None => vec![],
-        }
+            })
+            .into_iter()
+            .collect()
     }
 }
 

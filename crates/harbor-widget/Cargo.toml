@@ -19,3 +19,4 @@ winit = ["dep:winit"]
 
 [dev-dependencies]
 pollster = { workspace = true }
+harbor-text = { workspace = true }

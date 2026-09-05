@@ -1,5 +1,7 @@
+pub mod clip;
 pub mod primitive;
 
+use clip::RoundedClip;
 use hashbrown::{HashMap, HashSet};
 use primitive::Primitive;
 
@@ -10,6 +12,8 @@ use primitive::Primitive;
 pub struct SceneItem {
     pub id: u64,
     pub primitive: Primitive,
+    /// Active rounded ancestor clips in outer-to-inner order.
+    pub clips: Vec<RoundedClip>,
     pub paint_order: u32,
 }
 
@@ -133,9 +137,8 @@ impl SceneGraph {
         let mut removed = Vec::new();
         let mut modified = Vec::new();
 
-        let old_ids: HashSet<u64> = self.items.iter().map(|i| i.id).collect();
         let old_by_id: HashMap<u64, &SceneItem> = self.items.iter().map(|i| (i.id, i)).collect();
-        let mut reserved_ids = old_ids.clone();
+        let mut reserved_ids: HashSet<u64> = old_by_id.keys().copied().collect();
         reserved_ids.extend(
             incoming
                 .iter()
@@ -155,7 +158,9 @@ impl SceneGraph {
                     {
                         removed.push(old.id);
                         added.push(item.clone());
-                    } else if old.paint_order != item.paint_order || old.primitive != item.primitive
+                    } else if old.paint_order != item.paint_order
+                        || old.primitive != item.primitive
+                        || old.clips != item.clips
                     {
                         modified.push(item.clone());
                     }
@@ -190,7 +195,6 @@ impl SceneGraph {
 
         // Drop old_by_id to release immutable borrow on self.items
         drop(old_by_id);
-        drop(old_ids);
 
         self.items = new_items;
 
@@ -231,6 +235,7 @@ mod tests {
                 color: Color::WHITE,
                 corner_radius: 0.0,
             },
+            clips: Vec::new(),
             paint_order: order,
         }
     }
@@ -498,6 +503,7 @@ mod tests {
         let quad_item = SceneItem {
             id: 10,
             paint_order: 0,
+            clips: Vec::new(),
             primitive: Primitive::Quad {
                 rect: Rect::from_min_size(Point::ZERO, Size::new(10.0, 10.0)),
                 color: Color::WHITE,
@@ -511,6 +517,7 @@ mod tests {
         let text_item = SceneItem {
             id: 10,
             paint_order: 0,
+            clips: Vec::new(),
             primitive: Primitive::Text {
                 text: std::sync::Arc::from("Hello"),
                 origin: Point::ZERO,
@@ -600,6 +607,7 @@ mod tests {
                 draw: 42u64 as ExternalDrawId,
                 rect: Rect::from_min_size(Point::new(0.0, 0.0), Size::new(800.0, 600.0)),
             },
+            clips: Vec::new(),
             paint_order: 0,
         };
         graph.diff(vec![external_item]);

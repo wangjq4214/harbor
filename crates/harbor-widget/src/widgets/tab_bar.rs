@@ -802,7 +802,11 @@ mod tests {
 
     fn assert_primitive_inside(primitive: &Primitive, bounds: Rect, metrics: &TextMetrics) {
         match primitive {
-            Primitive::Quad { rect, .. } | Primitive::Border { rect, .. } => {
+            Primitive::Quad { rect, .. }
+            | Primitive::Border { rect, .. }
+            | Primitive::OuterShadow { rect, .. }
+            | Primitive::RoundedQuad { rect, .. }
+            | Primitive::RoundedBorder { rect, .. } => {
                 assert!(
                     rect.min.x >= bounds.min.x,
                     "primitive starts left of bar: {rect:?}"
@@ -1187,6 +1191,7 @@ mod tests {
             .map(|(i, p)| crate::scene::SceneItem {
                 id: i as u64 + 1,
                 primitive: p,
+                clips: Vec::new(),
                 paint_order: i as u32,
             })
             .collect();
@@ -1204,6 +1209,7 @@ mod tests {
             .map(|(i, p)| crate::scene::SceneItem {
                 id: i as u64 + 1,
                 primitive: p,
+                clips: Vec::new(),
                 paint_order: i as u32,
             })
             .collect();
@@ -1221,6 +1227,7 @@ mod tests {
             .map(|(i, p)| crate::scene::SceneItem {
                 id: i as u64 + 1,
                 primitive: p,
+                clips: Vec::new(),
                 paint_order: i as u32,
             })
             .collect();
@@ -1237,6 +1244,7 @@ mod tests {
             .map(|(i, p)| crate::scene::SceneItem {
                 id: i as u64 + 1,
                 primitive: p,
+                clips: Vec::new(),
                 paint_order: i as u32,
             })
             .collect();

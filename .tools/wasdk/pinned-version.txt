@@ -1,0 +1,3 @@
+Microsoft.WindowsAppSDK 1.8.260804001
+Microsoft.WindowsAppSDK.Foundation 1.8.260803002
+Microsoft.WindowsAppSDK.InteractiveExperiences 1.8.260708001

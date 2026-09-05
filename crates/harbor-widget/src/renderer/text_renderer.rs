@@ -1,5 +1,7 @@
-use crate::renderer::Viewport;
+use crate::layout::{Point, Rect, Size};
+use crate::renderer::{Viewport, pack_active_clips};
 use crate::scene::SceneGraph;
+use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::Color;
 use crate::text::{GlyphLayout, TextRunCache};
 use std::borrow::Cow;
@@ -13,30 +15,72 @@ struct VertexInput {
 }
 
 struct InstanceInput {
-    @location(1) rect: vec4<f32>,     // x, y, w, h in NDC
-    @location(2) uv_rect: vec4<f32>,  // left, top, right, bottom in atlas UV
-    @location(3) color: vec4<f32>,    // rgba
+    @location(1) rect: vec4<f32>,
+    @location(2) uv_rect: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) clip_rect0: vec4<f32>,
+    @location(5) clip_radii0: vec4<f32>,
+    @location(6) clip_rect1: vec4<f32>,
+    @location(7) clip_radii1: vec4<f32>,
+    @location(8) clip_meta: vec4<u32>,
+    @location(9) logical_size: vec2<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) local: vec2<f32>,
+    @location(3) clip_rect0: vec4<f32>,
+    @location(4) clip_radii0: vec4<f32>,
+    @location(5) clip_rect1: vec4<f32>,
+    @location(6) clip_radii1: vec4<f32>,
+    @interpolate(flat) @location(7) clip_meta: vec4<u32>,
 }
 
 @group(0) @binding(0) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(1) var glyph_sampler: sampler;
 
+fn rounded_box_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
+    let half_size = size * 0.5;
+    let centered = point - half_size;
+    var radius = radii.x;
+    if centered.x >= 0.0 {
+        radius = select(radii.y, radii.z, centered.y >= 0.0);
+    } else if centered.y >= 0.0 {
+        radius = radii.w;
+    }
+    let q = abs(centered) - half_size + vec2<f32>(radius, radius);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+fn rounded_clip_coverage(
+    point: vec2<f32>,
+    rect: vec4<f32>,
+    radii: vec4<f32>,
+    behavior: u32,
+) -> f32 {
+    if behavior == 0u {
+        return 1.0;
+    }
+    if behavior == 3u {
+        return 0.0;
+    }
+    let distance = rounded_box_distance(point - rect.xy, rect.zw, radii);
+    if behavior == 1u {
+        return select(1.0, 0.0, distance > 0.0);
+    }
+    let aa = max(fwidth(distance), 0.001);
+    return 1.0 - smoothstep(-aa, aa, distance);
+}
+
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
-    // Map unit quad [-0.5,0.5] to NDC rect
-    let x = inst.rect.x + (vert.pos.x + 0.5) * inst.rect.z;
-    let y = inst.rect.y + (vert.pos.y + 0.5) * inst.rect.w;
-
-    // Map unit quad to atlas UV sub-rect
-    // vert.pos.x in [-0.5, 0.5] -> t in [0, 1]
-    let tx = vert.pos.x + 0.5;  // [0, 1]
-    let ty = vert.pos.y + 0.5;  // [0, 1]
+    let unit = vert.pos + vec2<f32>(0.5, 0.5);
+    let x = inst.rect.x + unit.x * inst.rect.z;
+    let y = inst.rect.y + unit.y * inst.rect.w;
+    let tx = vert.pos.x + 0.5;
+    let ty = vert.pos.y + 0.5;
     let u = inst.uv_rect.x + tx * (inst.uv_rect.z - inst.uv_rect.x);
     let v = inst.uv_rect.y + ty * (inst.uv_rect.w - inst.uv_rect.y);
 
@@ -44,13 +88,29 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         vec4<f32>(x, y, 0.0, 1.0),
         vec2<f32>(u, v),
         inst.color,
+        unit * inst.logical_size,
+        inst.clip_rect0,
+        inst.clip_radii0,
+        inst.clip_rect1,
+        inst.clip_radii1,
+        inst.clip_meta,
     );
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    var clip_alpha = 1.0;
+    if in.clip_meta.x > 0u {
+        clip_alpha *= rounded_clip_coverage(in.local, in.clip_rect0, in.clip_radii0, in.clip_meta.y);
+    }
+    if in.clip_meta.x > 1u {
+        clip_alpha *= rounded_clip_coverage(in.local, in.clip_rect1, in.clip_radii1, in.clip_meta.z);
+    }
+    if clip_alpha <= 0.0 {
+        discard;
+    }
     let sampled = textureSample(glyph_atlas, glyph_sampler, in.uv);
-    return vec4<f32>(in.color.rgb, in.color.a * sampled.r);
+    return vec4<f32>(in.color.rgb, in.color.a * sampled.r * clip_alpha);
 }
 "#;
 
@@ -59,9 +119,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlyphInstance {
-    rect: [f32; 4],  // x, y, w, h in NDC
-    uv: [f32; 4],    // left, top, right, bottom
-    color: [f32; 4], // rgba
+    rect: [f32; 4],
+    uv: [f32; 4],
+    color: [f32; 4],
+    clip_rect0: [f32; 4],
+    clip_radii0: [f32; 4],
+    clip_rect1: [f32; 4],
+    clip_radii1: [f32; 4],
+    clip_meta: [u32; 4],
+    logical_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+#[derive(Copy, Clone, Debug)]
+struct TextInstanceBatch<'a> {
+    glyphs: &'a [GlyphLayout],
+    origin: Point,
+    color: Color,
+    clips: &'a [RoundedClip],
 }
 
 // ── TextRenderer ────────────────────────────────────────────────────────────
@@ -137,13 +212,43 @@ impl TextRenderer {
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x4,
-                    offset: 4 * std::mem::size_of::<f32>() as u64,
+                    offset: 16,
                     shader_location: 2,
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x4,
-                    offset: 8 * std::mem::size_of::<f32>() as u64,
+                    offset: 32,
                     shader_location: 3,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 48,
+                    shader_location: 4,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 64,
+                    shader_location: 5,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 80,
+                    shader_location: 6,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 96,
+                    shader_location: 7,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32x4,
+                    offset: 112,
+                    shader_location: 8,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 128,
+                    shader_location: 9,
                 },
             ],
         };
@@ -230,9 +335,12 @@ impl TextRenderer {
                 self.write_instances(
                     queue,
                     next_offset,
-                    run_data.glyphs.as_slice(),
-                    *origin,
-                    *color,
+                    TextInstanceBatch {
+                        glyphs: run_data.glyphs.as_slice(),
+                        origin: *origin,
+                        color: *color,
+                        clips: &item.clips,
+                    },
                     viewport,
                 );
                 self.id_to_offset.insert(item.id, (next_offset, count));
@@ -264,25 +372,29 @@ impl TextRenderer {
         &self,
         queue: &wgpu::Queue,
         start: u32,
-        glyphs: &[GlyphLayout],
-        origin: crate::layout::Point,
-        color: Color,
+        batch: TextInstanceBatch<'_>,
         viewport: &Viewport,
     ) {
-        let instances: Vec<GlyphInstance> = glyphs
+        let instances: Vec<GlyphInstance> = batch
+            .glyphs
             .iter()
             .map(|g| {
-                let dp_left = origin.x + g.origin.x;
-                let dp_top = origin.y + g.origin.y;
-                let dp_rect = crate::layout::Rect::from_min_size(
-                    crate::layout::Point::new(dp_left, dp_top),
-                    crate::layout::Size::new(g.width, g.height),
-                );
+                let glyph_origin =
+                    Point::new(batch.origin.x + g.origin.x, batch.origin.y + g.origin.y);
+                let dp_rect = Rect::from_min_size(glyph_origin, Size::new(g.width, g.height));
                 let ndc = viewport.dp_rect_to_ndc(&dp_rect);
+                let packed = pack_active_clips(batch.clips, glyph_origin);
                 GlyphInstance {
                     rect: ndc,
                     uv: [g.uv_left, g.uv_top, g.uv_right, g.uv_bottom],
-                    color: color.to_array(),
+                    color: batch.color.to_array(),
+                    clip_rect0: packed.clip_rect0,
+                    clip_radii0: packed.clip_radii0,
+                    clip_rect1: packed.clip_rect1,
+                    clip_radii1: packed.clip_radii1,
+                    clip_meta: packed.clip_meta,
+                    logical_size: [g.width, g.height],
+                    _pad: [0.0; 2],
                 }
             })
             .collect();

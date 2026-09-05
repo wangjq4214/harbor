@@ -56,11 +56,11 @@ impl AnyView for FocusScope {
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // FocusScope delegates to children — it's a passthrough container
-        let child_size = self
-            .children
-            .first()
-            .map(|_| Size::new(constraints.max.width, constraints.max.height))
-            .unwrap_or(Size::ZERO);
+        let child_size = if self.children.is_empty() {
+            Size::ZERO
+        } else {
+            constraints.max
+        };
         constraints.constrain(child_size)
     }
 
