@@ -349,7 +349,27 @@ fn create_main_surface(
     instance: &wgpu::Instance,
     window: &Arc<Window>,
     backends: wgpu::Backends,
+    shared_visual: Option<*mut core::ffi::c_void>,
 ) -> Result<(wgpu::Surface<'static>, Option<CompositionHost>)> {
+    if !backends.contains(wgpu::Backends::DX12) {
+        return Ok((
+            instance
+                .create_surface(Arc::clone(window))
+                .context("create surface")?,
+            None,
+        ));
+    }
+
+    if let Some(visual) = shared_visual {
+        return Ok((
+            unsafe {
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(visual))
+            }
+            .context("create shared composition surface")?,
+            None,
+        ));
+    }
+
     if !backends.contains(wgpu::Backends::DX12) {
         return Ok((
             instance
@@ -435,7 +455,21 @@ pub struct GpuContext {
 impl GpuContext {
     /// Creates the GPU surface, device, queue, surface configuration, and the
     /// shared colored-quad pipeline from the window.
-    pub async fn new(window: Arc<Window>) -> Result<Self> {
+    /// A shared DirectComposition visual can be provided by the host when a
+    /// platform backdrop (e.g. the WASDK acrylic controller) already owns the
+    /// window's topmost composition target; the surface then hosts its swap
+    /// chain on that visual instead of creating a competing target.
+    ///
+    /// # Safety
+    /// If `shared_visual` is `Some`, it must point to a valid, non-null
+    /// `IDCompositionVisual` on the calling UI thread and remain alive until
+    /// this future completes or is dropped. The resulting surface retains its
+    /// own COM reference. The host must retain the associated composition
+    /// target/tree for as long as it wants the surface to be displayed.
+    pub async unsafe fn new(
+        window: Arc<Window>,
+        shared_visual: Option<*mut core::ffi::c_void>,
+    ) -> Result<Self> {
         let size = window.inner_size();
         tracing::info!(
             width = size.width,
@@ -449,9 +483,13 @@ impl GpuContext {
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         }));
         #[cfg(target_os = "windows")]
-        let (surface, composition_host) = create_main_surface(&instance, &window, backends)?;
+        let (surface, composition_host) =
+            create_main_surface(&instance, &window, backends, shared_visual)?;
         #[cfg(not(target_os = "windows"))]
-        let surface = instance.create_surface(window).context("create surface")?;
+        let surface = {
+            let _ = shared_visual;
+            instance.create_surface(window).context("create surface")?
+        };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,

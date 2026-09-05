@@ -47,34 +47,37 @@ impl TerminalDecorationPreset {
     }
 }
 
-/// Main-window root: a 12dp inset around the product decoration with a
-/// backdrop-aware white base fill.
+/// Main-window root: a 12dp inset around the product decoration.
 ///
-/// With an acrylic backdrop the base is a faint white veil (alpha 0.06) so the
-/// compositor material stays visible; without a backdrop it is opaque white so
-/// the transparent frame clear never shows through as black.
+/// With a compositor backdrop the root paints nothing so the unified window
+/// tint (ADR 0026) shows through; without one it paints the opaque fallback
+/// so the transparent frame clear never shows through as black.
 pub(crate) fn build_main_terminal_root(
     backdrop_available: bool,
     child: impl Component + 'static,
 ) -> Padding {
-    let base = if backdrop_available {
-        Color {
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
-            a: 0.06,
-        }
+    // Product/native colors are sRGB; widget colors feed a linear-light shader.
+    let fallback = harbor_config::WindowBackdropStyle::default()
+        .fallback
+        .map(|channel| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        });
+    let root = Padding::all(12.0);
+    let root = if backdrop_available {
+        root
     } else {
-        Color {
-            r: 1.0,
-            g: 1.0,
-            b: 1.0,
+        root.background(Color {
+            r: fallback[0],
+            g: fallback[1],
+            b: fallback[2],
             a: 1.0,
-        }
+        })
     };
-    Padding::all(12.0)
-        .background(base)
-        .child(TerminalDecorationPreset::wrap(child))
+    root.child(TerminalDecorationPreset::wrap(child))
 }
 
 #[cfg(test)]
@@ -171,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn should_apply_twelve_dp_inset_with_opaque_white_background_when_no_backdrop() {
+    fn should_apply_twelve_dp_inset_with_opaque_fallback_when_no_backdrop() {
         // Arrange / Act
         let root = build_main_terminal_root(false, CustomPaint::new(1));
 
@@ -180,62 +183,155 @@ mod tests {
         assert_eq!(root.right, 12.0);
         assert_eq!(root.bottom, 12.0);
         assert_eq!(root.left, 12.0);
-        assert_eq!(
-            root.background,
-            Some(Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            })
-        );
+        assert_opaque_fallback_color(root.background.expect("opaque root background"));
+    }
+
+    fn assert_opaque_fallback_color(color: Color) {
+        // An sRGB framebuffer encodes linear shader output back to display bytes.
+        for channel in [color.r, color.g, color.b] {
+            let srgb = if channel <= 0.0031308 {
+                channel * 12.92
+            } else {
+                1.055 * channel.powf(1.0 / 2.4) - 0.055
+            };
+            assert_eq!((srgb * 255.0).round() as u8, 0x1E);
+        }
+        assert_eq!(color.a, 1.0);
     }
 
     #[test]
-    fn should_apply_faint_white_veil_when_backdrop_is_available() {
+    fn should_omit_root_background_when_backdrop_is_available() {
         // Arrange / Act
         let root = build_main_terminal_root(true, CustomPaint::new(1));
 
-        // Assert
-        assert_eq!(
-            root.background,
-            Some(Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 0.06,
-            })
-        );
+        // Assert — the compositor tint shows through instead.
+        assert_eq!(root.background, None);
     }
 
     #[test]
-    fn should_emit_faint_veil_quad_and_keep_inset_when_backdrop_is_available() {
+    fn should_emit_no_root_quad_and_keep_inset_when_backdrop_is_available() {
         // Arrange
         let mut runtime = Runtime::new();
         runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
         let _effects = runtime.update(Instant::now());
         let items = painted_items(&runtime);
 
-        // Act
-        let veil_item = items
-            .iter()
-            .find(|item| matches!(item.primitive, Primitive::Quad { .. }))
-            .expect("backdrop-aware base emits a Quad fill");
-        let Primitive::Quad { color, .. } = &veil_item.primitive else {
-            panic!("base fill item must be a Quad");
-        };
-
-        // Assert — faint white veil lets the compositor material stay visible.
-        assert_eq!(color.r, 1.0);
-        assert_eq!(color.g, 1.0);
-        assert_eq!(color.b, 1.0);
-        assert_eq!(color.a, 0.06);
+        // Assert — no root Quad: the compositor tint shows through instead.
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item.primitive, Primitive::Quad { .. })),
+            "backdrop-aware root must not emit a base Quad"
+        );
 
         // Assert — the 12dp inset is independent of the backdrop fact.
         let (_, _padding_rect, _, decorated_rect, _, external_rect) = fiber_chain(&runtime);
         let expected_child = Rect::from_min_size(Point::new(12.0, 12.0), Size::new(776.0, 576.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
+    }
+
+    #[test]
+    fn should_paint_dark_fallback_across_viewport_when_backdrop_is_unavailable() {
+        for (width, height) in [(800, 600), (40, 40), (10, 10)] {
+            // Arrange — CustomPaint is an in-memory terminal stand-in.
+            let viewport = Viewport::new(width, height, 1.0);
+            let expected_rect = Rect::from_min_size(Point::new(0.0, 0.0), viewport.logical_size);
+
+            // Act
+            let (runtime, _) = mounted_main_root(Some(viewport));
+            let items = painted_items(&runtime);
+
+            // Assert — inspect the actual paint output, not Padding configuration.
+            let first = items.first().expect("opaque root emits its fallback");
+            let Primitive::Quad { rect, color, .. } = &first.primitive else {
+                panic!("opaque fallback must paint before the shadow and terminal");
+            };
+            assert_eq!(*rect, expected_rect);
+            assert_opaque_fallback_color(*color);
+            assert!(
+                first.clips.is_empty(),
+                "fallback must fill the rounded cutouts"
+            );
+        }
+    }
+
+    #[test]
+    fn should_preserve_decoration_paint_when_backdrop_is_available() {
+        for (width, height) in [(800, 600), (40, 40)] {
+            // Arrange
+            let mut runtime = Runtime::new();
+            runtime.set_viewport(Viewport::new(width, height, 1.0));
+            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+
+            // Act
+            runtime.update(Instant::now());
+            let items = painted_items(&runtime);
+
+            // Assert — only the base fill disappears; shadow and clipped content remain.
+            assert_eq!(items.len(), 2);
+            let expected_child = Rect::from_min_size(
+                Point::new(12.0, 12.0),
+                Size::new(width as f32 - 24.0, height as f32 - 24.0),
+            );
+            let Primitive::OuterShadow {
+                color,
+                blur_radius,
+                occluder_rect,
+                ..
+            } = &items[0].primitive
+            else {
+                panic!("shadow must paint before the terminal");
+            };
+            assert_eq!(color.a, 0.25);
+            assert_eq!(*blur_radius, 3.0);
+            assert_eq!(*occluder_rect, expected_child);
+            assert!(
+                items[0].clips.is_empty(),
+                "child clip must not clip the shadow"
+            );
+            assert!(matches!(
+                items[1].primitive,
+                Primitive::External { draw: 1, rect } if rect == expected_child
+            ));
+            let clip = items[1]
+                .clips
+                .last()
+                .expect("terminal keeps its rounded clip");
+            assert_eq!(clip.behavior(), ClipBehavior::AntiAlias);
+            let radius = if width == 40 { 8.0 } else { 12.0 };
+            assert_eq!(clip.radii().as_array(), [radius; 4]);
+        }
+    }
+
+    #[test]
+    fn should_omit_base_fill_when_backdrop_viewport_has_no_content_space() {
+        for (width, height) in [(0, 0), (10, 10), (24, 24)] {
+            // Arrange
+            let mut runtime = Runtime::new();
+            runtime.set_viewport(Viewport::new(width, height, 1.0));
+            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+
+            // Act
+            let effects = runtime.update(Instant::now());
+            let items = painted_items(&runtime);
+
+            // Assert — even collapsed content must not restore the old white veil.
+            assert!(
+                !items
+                    .iter()
+                    .any(|item| matches!(item.primitive, Primitive::Quad { .. }))
+            );
+            for item in &items {
+                if let Primitive::External { rect, .. } = item.primitive {
+                    assert_eq!(rect.size(), Size::ZERO);
+                }
+            }
+            assert!(!matches!(
+                effects.control_flow,
+                Some(ControlFlowEffect::WaitUntil(_))
+            ));
+        }
     }
 
     #[test]
@@ -279,7 +375,7 @@ mod tests {
             })
             .expect("decoration or external primitive");
         let Primitive::Quad { color, .. } = first else {
-            panic!("first matching primitive must be the white base Quad");
+            panic!("first matching primitive must be the opaque base Quad")
         };
         assert_eq!(color.a, 1.0);
 

@@ -782,8 +782,8 @@ Project domain concepts and terminology.
   - communicates with Runtime Host
 
 ### Windows Acrylic Backdrop
-- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, with a 20–30% warm-brown tint drawn by the terminal background layer itself for default cells, explicit cell colors render normally, and unavailable acrylic falls back to an opaque white window base with an opaque warm-brown terminal background.
-- **Synonyms:** system acrylic, DWM system backdrop, TransientWindow backdrop, Windows Terminal-style acrylic
+- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, carrying a unified compositor-level white tint at 6% opacity, with a warm-brown tint drawn by the terminal background layer for default cells, explicit cell colors rendered normally, and unavailable acrylic falling back to an opaque dark-gray window base with an opaque warm-brown terminal background.
+- **Synonyms:** system acrylic, DWM system backdrop, DesktopAcrylicController backdrop, AccentPolicy backdrop, Windows Terminal-style acrylic
 - **Relationships:**
   - belongs to Runtime Host
   - depends on Default Background Cell
@@ -839,11 +839,24 @@ Project domain concepts and terminology.
   - replaced by Window Base Fill
 
 ### Window Base Fill
-- **Definition:** A white fill owned by the root Padding element whose alpha varies by backdrop availability (faint 0.06 white over acrylic, opaque white otherwise), tinting the window inset and rounded-corner cutouts in one paint path.
+- **Definition:** An opaque dark-gray fill owned by the root Padding element painted only when no compositor backdrop is available, tinting the window inset and rounded-corner cutouts in one paint path.
 - **Relationships:**
   - belongs to Runtime Host
   - painted by Padding Widget
   - replaces External Frame Appearance
+
+### Window Backdrop Tint
+- **Definition:** A compositor-level color overlay (white at 0.06 tint opacity, default luminosity) applied uniformly across the whole main window including the caption strip through a three-tier chain: DesktopAcrylicController when WASDK initialization and IsSupported() succeed, AccentPolicy otherwise, and an opaque #1E1E1E fill as the final fallback.
+- **Relationships:**
+  - belongs to Runtime Host
+  - implements Windows Acrylic Backdrop
+  - owns the acrylic-available veil formerly painted by Window Base Fill
+
+### Window Backdrop Backend
+- **Definition:** A host-layer backend abstraction that applies the unified Window Backdrop Tint without exposing Windows version or platform details, selected once at bootstrap into one of three Windows tiers or a non-Windows no-op.
+- **Relationships:**
+  - belongs to Runtime Host
+  - implements Window Backdrop Tint
 
 ### Rounded Clip Mask
 - **Definition:** A dest-in GPU pass (quad shader mode 2) that multiplies framebuffer RGB and alpha by rounded-rect coverage to erase external-draw pixels outside ancestor rounded clips.

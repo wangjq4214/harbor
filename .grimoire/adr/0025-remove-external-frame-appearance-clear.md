@@ -1,6 +1,7 @@
 # Remove External Frame Appearance Clear Provider
 
-**Status:** Completed
+**Status:** Superseded
+**Superseded by:** [0026-unified-window-backdrop-tint-chain.md](./0026-unified-window-backdrop-tint-chain.md)
 **Date:** 2025-08-28
 
 ## Context

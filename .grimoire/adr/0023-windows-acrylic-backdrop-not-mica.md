@@ -1,6 +1,7 @@
 # Windows Acrylic Backdrop, Not Mica
 
-**Status:** Completed
+**Status:** Superseded
+**Superseded by:** [0026-unified-window-backdrop-tint-chain.md](./0026-unified-window-backdrop-tint-chain.md)
 **Date:** 2026-08-25
 
 ## Context
