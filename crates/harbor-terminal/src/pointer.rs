@@ -166,7 +166,6 @@ impl PointerInteraction {
         self.interrupt_outcome(redraw)
     }
 
-
     /// Releases the active pointer and clears button state after a selection interrupt.
     fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
         let release_pointer = self.active.take().map(ActivePointer::pointer_id);

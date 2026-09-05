@@ -100,14 +100,15 @@ fn collapse_ancestor_insets(
 }
 
 pub(crate) fn pack_active_clips(clips: &[RoundedClip], origin: Point) -> PackedClips {
-    let mut active = clips.iter().filter(|clip| clip.behavior() != ClipBehavior::None);
+    let mut active = clips
+        .iter()
+        .filter(|clip| clip.behavior() != ClipBehavior::None);
     let Some(first) = active.next() else {
         return PackedClips::default();
     };
 
     let mut packed = PackedClips::default();
-    (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) =
-        exact_clip_slot(first, origin);
+    (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) = exact_clip_slot(first, origin);
 
     let Some(second) = active.next() else {
         packed.clip_meta[0] = 1;

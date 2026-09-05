@@ -245,7 +245,6 @@ impl Decoration {
             pass.draw(0..vertex_count, 0..1);
         }
     }
-
 }
 
 #[cfg(test)]

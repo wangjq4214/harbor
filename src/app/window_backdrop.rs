@@ -275,7 +275,7 @@ fn accent_policy_status(window: &Window, style: &WindowBackdropStyle) -> Backdro
         } else {
             BackdropTier::OpaqueFallback
         },
-        backdrop_available: accent_available
+        backdrop_available: accent_available,
     }
 }
 
@@ -429,9 +429,7 @@ fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
     };
 
     let hwnd = h.hwnd.get();
-    let user32 = unsafe {
-        GetModuleHandleW(w!("user32.dll").as_ptr())
-    };
+    let user32 = unsafe { GetModuleHandleW(w!("user32.dll").as_ptr()) };
     if user32 == 0 {
         tracing::warn!("accent acrylic skipped: user32.dll unavailable");
         return false;
