@@ -22,6 +22,7 @@ use winit::{
 };
 
 use crate::event::AppEvent;
+use crate::terminal_widget_bridge::TerminalWidgetBridge;
 use confirmation::ConfirmationWindow;
 use harbor_pty::PtyEndpoints;
 use harbor_terminal::{
@@ -213,15 +214,11 @@ impl DialogOverlay {
                     let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_fn);
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
-                        DialogOutcome::Fatal(error)
-                    } else {
-                        self.window = Some(confirmation);
-                        DialogOutcome::None
+                        return DialogOutcome::Fatal(error);
                     }
-                } else {
-                    self.window = Some(confirmation);
-                    DialogOutcome::None
                 }
+                self.window = Some(confirmation);
+                DialogOutcome::None
             }
         }
     }
@@ -420,10 +417,7 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         };
         let effects = adapter.invalidate_external(runtime, invalidation);
-        Self::apply_window_effects(window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
-        }
+        Self::apply_effects(window, &effects, event_loop);
     }
 
     /// Called when the event loop is about to block.
@@ -482,13 +476,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             };
             match &result {
-                DialogOutcome::Cancelled => {
-                    self.runtime.input_gate.store(false, Ordering::Release);
-                    self.request_main_frame(event_loop);
-                    return;
-                }
-                DialogOutcome::Confirmed(_) => {
-                    if let Some(terminal) = self.runtime.terminal.as_ref()
+                DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
+                    if let DialogOutcome::Confirmed(_) = &result
+                        && let Some(terminal) = self.runtime.terminal.as_ref()
                         && let Ok(mut terminal) = terminal.lock()
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
@@ -517,11 +507,7 @@ impl ApplicationHandler<AppEvent> for App {
             .input_gate
             .store(gate_active, Ordering::Release);
 
-        let (Some(_gpu), Some(_terminal), Some(window)) = (
-            self.runtime.gpu.as_mut(),
-            self.runtime.terminal.as_ref(),
-            self.runtime.window.as_ref(),
-        ) else {
+        let Some(window) = self.runtime.window.as_ref() else {
             return;
         };
 
@@ -566,10 +552,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(outcome) = outcome
             && outcome.handled
         {
-            Self::apply_window_effects(window, &outcome.effects);
-            if let Some(control_flow) = outcome.effects.control_flow {
-                Self::apply_control_flow(event_loop, control_flow);
-            }
+            Self::apply_effects(window, &outcome.effects, event_loop);
         }
 
         if let WindowEvent::RedrawRequested = event {
@@ -690,10 +673,7 @@ impl App {
         if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
             let mut effects = adapter.fold_effects(initial_effects);
             effects.merge(adapter.request_frame());
-            Self::apply_window_effects(&window, &effects);
-            if let Some(control_flow) = effects.control_flow {
-                Self::apply_control_flow(event_loop, control_flow);
-            }
+            Self::apply_effects(&window, &effects, event_loop);
         }
         let _ = self.render_frame(event_loop);
         Ok(())
@@ -737,6 +717,18 @@ impl App {
         event_loop.set_control_flow(control_flow_for_effect(effect));
     }
 
+    /// Applies window effects and updates control flow when requested.
+    pub(crate) fn apply_effects(
+        window: &Window,
+        effects: &RuntimeEffects,
+        event_loop: &ActiveEventLoop,
+    ) {
+        Self::apply_window_effects(window, effects);
+        if let Some(control_flow) = effects.control_flow {
+            Self::apply_control_flow(event_loop, control_flow);
+        }
+    }
+
     fn request_main_frame(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(adapter), Some(window)) = (
             self.runtime.winit_adapter.as_mut(),
@@ -745,10 +737,7 @@ impl App {
             return;
         };
         let effects = adapter.request_frame();
-        Self::apply_window_effects(window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
-        }
+        Self::apply_effects(window, &effects, event_loop);
     }
 
     /// Reads the clipboard and either writes a safe direct paste or opens the
@@ -849,10 +838,7 @@ impl App {
         };
 
         let effects = outcome.effects().clone();
-        Self::apply_window_effects(window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            Self::apply_control_flow(event_loop, control_flow);
-        }
+        Self::apply_effects(window, &effects, event_loop);
 
         let presented = outcome.is_presented();
         if presented {
@@ -882,8 +868,6 @@ impl App {
     /// The returned effects are produced during the bootstrap focus transition
     /// and must be applied after the native window is available.
     fn init_widget_runtime(&mut self) -> RuntimeEffects {
-        use crate::terminal_widget_bridge::TerminalWidgetBridge;
-
         let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
         let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
 

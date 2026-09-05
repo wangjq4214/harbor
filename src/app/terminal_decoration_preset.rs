@@ -1,7 +1,7 @@
 //! Host-owned product decoration for the main terminal root.
 //!
 //! Appearance lives here so `harbor-terminal` and `TerminalWidgetBridge` stay
-//! free of visual-style properties. The 2dp window inset stays a separate
+//! free of visual-style properties. The 4dp window inset stays a separate
 //! `Padding` composition in [`build_main_terminal_root`].
 
 use harbor_widget::layout::Point;
@@ -34,18 +34,14 @@ impl TerminalDecorationPreset {
             .shadow(shadow)
     }
 
-    pub(crate) fn clip_behavior() -> ClipBehavior {
-        ClipBehavior::AntiAlias
-    }
-
     pub(crate) fn wrap(child: impl Component + 'static) -> DecoratedBox {
         DecoratedBox::new(Self::decoration())
-            .clip_behavior(Self::clip_behavior())
+            .clip_behavior(ClipBehavior::AntiAlias)
             .child(child)
     }
 }
 
-/// Main-window root: a 12dp inset around the product decoration.
+/// Main-window root: a 4dp inset around the product decoration.
 ///
 /// With a compositor backdrop the root paints nothing so the unified window
 /// tint (ADR 0026) shows through; without one it paints the opaque fallback

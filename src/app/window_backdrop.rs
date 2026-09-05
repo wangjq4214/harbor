@@ -15,6 +15,8 @@ pub(crate) mod wasdk;
 
 #[cfg(target_os = "windows")]
 use std::cell::RefCell;
+#[cfg(target_os = "windows")]
+use windows_core::w;
 
 use harbor_config::WindowBackdropStyle;
 use winit::window::{Window, WindowAttributes};
@@ -50,32 +52,18 @@ pub(crate) trait WindowBackdropBackend {
 
 /// Selects a backend for the given OS facts without touching any platform API.
 pub(crate) fn select_backend(build: u32, wasdk_ok: bool) -> Box<dyn WindowBackdropBackend> {
+    #[cfg(target_os = "windows")]
     match selected_tier(build, wasdk_ok) {
-        BackdropTier::WasdkAcrylic => {
-            #[cfg(target_os = "windows")]
-            {
-                Box::new(WasdkAcrylicBackend::new())
-            }
-            #[cfg(not(target_os = "windows"))]
-            unreachable!("wasdk tier is unreachable outside Windows")
-        }
-        BackdropTier::DwmTransientAcrylic => {
-            #[cfg(target_os = "windows")]
-            {
-                Box::new(DwmTransientAcrylicBackend)
-            }
-            #[cfg(not(target_os = "windows"))]
-            unreachable!("DWM transient tier is unreachable outside Windows")
-        }
-        BackdropTier::AccentPolicyAcrylic => {
-            #[cfg(target_os = "windows")]
-            {
-                Box::new(AccentPolicyBackend)
-            }
-            #[cfg(not(target_os = "windows"))]
-            unreachable!("accent tier is unreachable outside Windows")
-        }
+        BackdropTier::WasdkAcrylic => Box::new(WasdkAcrylicBackend::new()),
+        BackdropTier::DwmTransientAcrylic => Box::new(DwmTransientAcrylicBackend),
+        BackdropTier::AccentPolicyAcrylic => Box::new(AccentPolicyBackend),
         BackdropTier::OpaqueFallback => Box::new(OpaqueBackend),
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (build, wasdk_ok);
+        Box::new(OpaqueBackend)
     }
 }
 
@@ -92,13 +80,13 @@ pub(crate) fn selected_tier(build: u32, wasdk_ok: bool) -> BackdropTier {
         if build >= 22_621 {
             return BackdropTier::DwmTransientAcrylic;
         }
-        if build != 0 {
-            return BackdropTier::AccentPolicyAcrylic;
-        }
+        BackdropTier::AccentPolicyAcrylic
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = (build, wasdk_ok);
-    BackdropTier::OpaqueFallback
+    {
+        let _ = (build, wasdk_ok);
+        BackdropTier::OpaqueFallback
+    }
 }
 
 /// Probes the Windows App SDK runtime and reports tier-1 availability.
@@ -214,15 +202,7 @@ impl WindowBackdropBackend for WasdkAcrylicBackend {
                 backdrop_available: true,
             };
         }
-        let accent_available = apply_accent_policy(window, style);
-        BackdropStatus {
-            tier: if accent_available {
-                BackdropTier::AccentPolicyAcrylic
-            } else {
-                BackdropTier::OpaqueFallback
-            },
-            backdrop_available: accent_available,
-        }
+        accent_policy_status(window, style)
     }
 }
 // ── Tier 2: DWM TransientWindow acrylic ─────────────────────────────────────
@@ -253,15 +233,7 @@ impl WindowBackdropBackend for DwmTransientAcrylicBackend {
         }
 
         tracing::warn!("DWM transient acrylic unavailable; falling back to accent policy");
-        let accent_available = apply_accent_policy(window, style);
-        BackdropStatus {
-            tier: if accent_available {
-                BackdropTier::AccentPolicyAcrylic
-            } else {
-                BackdropTier::OpaqueFallback
-            },
-            backdrop_available: accent_available,
-        }
+        accent_policy_status(window, style)
     }
 }
 
@@ -281,15 +253,7 @@ impl WindowBackdropBackend for AccentPolicyBackend {
     }
 
     fn apply(&self, window: &Window, style: &WindowBackdropStyle) -> BackdropStatus {
-        let accent_available = apply_accent_policy(window, style);
-        BackdropStatus {
-            tier: if accent_available {
-                BackdropTier::AccentPolicyAcrylic
-            } else {
-                BackdropTier::OpaqueFallback
-            },
-            backdrop_available: accent_available,
-        }
+        accent_policy_status(window, style)
     }
 }
 
@@ -299,6 +263,20 @@ fn apply_accent_policy(window: &Window, style: &WindowBackdropStyle) -> bool {
     extend_dwm_frame_into_client_area(window)
         && apply_acrylic_accent_backdrop(window, style_tint_abgr(style))
         && dwm_composition_enabled()
+}
+
+/// Applies tier-2 accent-policy acrylic and constructs the resulting backdrop status.
+#[cfg(target_os = "windows")]
+fn accent_policy_status(window: &Window, style: &WindowBackdropStyle) -> BackdropStatus {
+    let accent_available = apply_accent_policy(window, style);
+    BackdropStatus {
+        tier: if accent_available {
+            BackdropTier::AccentPolicyAcrylic
+        } else {
+            BackdropTier::OpaqueFallback
+        },
+        backdrop_available: accent_available
+    }
 }
 
 /// Extends the DWM frame through the client area so transparent
@@ -452,22 +430,7 @@ fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
 
     let hwnd = h.hwnd.get();
     let user32 = unsafe {
-        GetModuleHandleW(
-            [
-                b'u' as u16,
-                b's' as u16,
-                b'e' as u16,
-                b'r' as u16,
-                b'3' as u16,
-                b'2' as u16,
-                b'.' as u16,
-                b'd' as u16,
-                b'l' as u16,
-                b'l' as u16,
-                0,
-            ]
-            .as_ptr(),
-        )
+        GetModuleHandleW(w!("user32.dll").as_ptr())
     };
     if user32 == 0 {
         tracing::warn!("accent acrylic skipped: user32.dll unavailable");

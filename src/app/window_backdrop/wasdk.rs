@@ -14,7 +14,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
 };
-use windows_core::Interface;
+use windows_core::{Interface, w};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -210,54 +210,9 @@ fn initialize_bootstrap() -> bool {
     const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
     const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 
-    let name = [
-        b'M' as u16,
-        b'i' as u16,
-        b'c' as u16,
-        b'r' as u16,
-        b'o' as u16,
-        b's' as u16,
-        b'o' as u16,
-        b'f' as u16,
-        b't' as u16,
-        b'.' as u16,
-        b'W' as u16,
-        b'i' as u16,
-        b'n' as u16,
-        b'd' as u16,
-        b'o' as u16,
-        b'w' as u16,
-        b's' as u16,
-        b'.' as u16,
-        b'A' as u16,
-        b'p' as u16,
-        b'p' as u16,
-        b'R' as u16,
-        b'u' as u16,
-        b'n' as u16,
-        b't' as u16,
-        b'i' as u16,
-        b'm' as u16,
-        b'e' as u16,
-        b'.' as u16,
-        b'B' as u16,
-        b'o' as u16,
-        b'o' as u16,
-        b't' as u16,
-        b's' as u16,
-        b't' as u16,
-        b'r' as u16,
-        b'a' as u16,
-        b'p' as u16,
-        b'.' as u16,
-        b'd' as u16,
-        b'l' as u16,
-        b'l' as u16,
-        0,
-    ];
     let module = unsafe {
         LoadLibraryExW(
-            name.as_ptr(),
+            w!("Microsoft.WindowsAppRuntime.Bootstrap.dll").as_ptr(),
             0,
             LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
         )
