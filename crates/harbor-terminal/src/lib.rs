@@ -26,7 +26,7 @@ pub use parser::TerminalParser;
 pub use pointer::PointerInteraction;
 pub use render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
-    TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
+    TerminalPrepareOptions, TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
     alpha_mode_supports_transparency,
 };
 pub use screen::{
@@ -200,12 +200,33 @@ impl Terminal {
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
             let tint = self.appearance.clear_rgba(self.backdrop_available);
-            renderer.prepare(gpu, &snap, damage, now, self.pointer.bounds(), tint);
+            renderer.prepare(
+                gpu,
+                &snap,
+                damage,
+                now,
+                self.pointer.bounds(),
+                TerminalPrepareOptions {
+                    cursor_focused: true,
+                    tint,
+                },
+            );
         }
     }
 
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
     pub fn render(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
+        self.render_with_cursor_focus(target, pass, gpu, true);
+    }
+
+    /// Coordinates prepare + draw while rendering the cursor only for the focused pane.
+    pub fn render_with_cursor_focus(
+        &mut self,
+        target: RenderTarget,
+        pass: &mut wgpu::RenderPass,
+        gpu: &GpuContext,
+        cursor_focused: bool,
+    ) {
         let Some(metrics) = self.text_metrics().copied() else {
             return;
         };
@@ -221,7 +242,17 @@ impl Terminal {
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
             let tint = self.appearance.clear_rgba(self.backdrop_available);
-            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds(), tint);
+            renderer.prepare(
+                gpu,
+                &snap,
+                None,
+                now,
+                self.pointer.bounds(),
+                TerminalPrepareOptions {
+                    cursor_focused,
+                    tint,
+                },
+            );
             renderer.draw(pass);
         }
     }
@@ -236,8 +267,24 @@ impl Terminal {
         pass: &mut wgpu::RenderPass,
         gpu: &GpuContext,
     ) {
-        if self.retain_geometry_changed(target) {
-            self.render(target, pass, gpu);
+        self.draw_retained_with_cursor_focus(target, pass, gpu, true);
+    }
+
+    /// Replays retained buffers; inactive panes retain their prepared steady cursor.
+    pub fn draw_retained_with_cursor_focus(
+        &mut self,
+        target: RenderTarget,
+        pass: &mut wgpu::RenderPass,
+        gpu: &GpuContext,
+        cursor_focused: bool,
+    ) {
+        if self.retain_geometry_changed(target)
+            || self
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.cursor_focus_changed(cursor_focused))
+        {
+            self.render_with_cursor_focus(target, pass, gpu, cursor_focused);
             return;
         }
         if let Some(renderer) = &self.renderer {
@@ -262,10 +309,19 @@ impl Terminal {
     /// Without a renderer/Cursor, returns an empty demand aside from synchronized-output
     /// eligibility and a redraw notify when this ingest released ordinary presentation.
     pub fn frame_demand(&mut self, now: Instant) -> FrameDemand {
+        self.frame_demand_with_cursor_focus(now, true)
+    }
+
+    /// Reports frame demand while suppressing cursor-only work for an unfocused pane.
+    pub fn frame_demand_with_cursor_focus(
+        &mut self,
+        now: Instant,
+        cursor_focused: bool,
+    ) -> FrameDemand {
         let drained = self.drain_pty();
         let snap = self.snapshot();
         let mut demand = match &self.renderer {
-            Some(renderer) => renderer.cursor.frame_demand(&snap, now),
+            Some(renderer) => renderer.cursor.frame_demand(&snap, now, cursor_focused),
             None => FrameDemand::empty(),
         };
         if let Some(deadline) = self.pointer.auto_scroll_deadline() {

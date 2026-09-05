@@ -153,7 +153,12 @@ impl SceneGraph {
             if item.id != 0 {
                 seen_ids.insert(item.id);
                 if let Some(old) = old_by_id.get(&item.id) {
-                    if old.paint_order != item.paint_order
+                    if std::mem::discriminant(&old.primitive)
+                        != std::mem::discriminant(&item.primitive)
+                    {
+                        removed.push(old.id);
+                        added.push(item.clone());
+                    } else if old.paint_order != item.paint_order
                         || old.primitive != item.primitive
                         || old.clips != item.clips
                     {
@@ -492,6 +497,39 @@ mod tests {
         assert!(delta3.added.is_empty());
     }
 
+    #[test]
+    fn diff_primitive_discriminant_change_emits_removed_and_added() {
+        let mut graph = SceneGraph::new();
+        let quad_item = SceneItem {
+            id: 10,
+            paint_order: 0,
+            clips: Vec::new(),
+            primitive: Primitive::Quad {
+                rect: Rect::from_min_size(Point::ZERO, Size::new(10.0, 10.0)),
+                color: Color::WHITE,
+                corner_radius: 0.0,
+            },
+        };
+        let delta1 = graph.diff(vec![quad_item]);
+        assert_eq!(delta1.added.len(), 1);
+
+        // Same ID 10 now becomes a Text item
+        let text_item = SceneItem {
+            id: 10,
+            paint_order: 0,
+            clips: Vec::new(),
+            primitive: Primitive::Text {
+                text: std::sync::Arc::from("Hello"),
+                origin: Point::ZERO,
+                color: Color::WHITE,
+            },
+        };
+        let delta2 = graph.diff(vec![text_item]);
+        assert_eq!(delta2.removed, vec![10]);
+        assert_eq!(delta2.added.len(), 1);
+        assert_eq!(delta2.added[0].id, 10);
+        assert!(delta2.modified.is_empty());
+    }
     // ── items() accessor ──────────────────────────────────────────────
 
     #[test]

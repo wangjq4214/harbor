@@ -6,6 +6,13 @@ use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
 use harbor_types::{TerminalSnapshot, UpdateDamage};
 use std::time::Instant;
 
+/// Per-frame presentation state that affects terminal renderer preparation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerminalPrepareOptions {
+    pub cursor_focused: bool,
+    pub tint: [f32; 4],
+}
+
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
     viewport: RenderViewport,
@@ -15,6 +22,7 @@ pub struct TerminalRenderPipeline {
     pub selection: Selection,
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
+    last_cursor_focused: Option<bool>,
 }
 
 impl TerminalRenderPipeline {
@@ -47,6 +55,7 @@ impl TerminalRenderPipeline {
             selection,
             cursor,
             scrollbar,
+            last_cursor_focused: None,
         })
     }
 
@@ -74,8 +83,12 @@ impl TerminalRenderPipeline {
         damage: Option<&UpdateDamage>,
         now: Instant,
         selection_bounds: Option<harbor_types::SelectionBounds>,
-        tint: [f32; 4],
+        options: TerminalPrepareOptions,
     ) {
+        let TerminalPrepareOptions {
+            cursor_focused,
+            tint,
+        } = options;
         let viewport = self.viewport;
         if let Some(damage) = damage {
             let full_ranges;
@@ -105,8 +118,14 @@ impl TerminalRenderPipeline {
         }
         self.selection.set_bounds(selection_bounds);
         self.selection.prepare(gpu, Some(snap), &viewport);
-        self.cursor.prepare(gpu, Some(snap), &viewport, now);
+        self.cursor
+            .prepare(gpu, Some(snap), &viewport, now, cursor_focused);
+        self.last_cursor_focused = Some(cursor_focused);
         self.scrollbar.prepare(gpu, Some(snap), &viewport);
+    }
+
+    pub fn cursor_focus_changed(&self, cursor_focused: bool) -> bool {
+        self.last_cursor_focused != Some(cursor_focused)
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {

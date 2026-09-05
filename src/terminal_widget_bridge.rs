@@ -21,7 +21,10 @@ use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 use crate::app::current_gpu;
 
 /// Default external-draw identifier matching the previous terminal-owned constant.
+#[allow(dead_code)]
 const DEFAULT_DRAW_ID: ExternalDrawId = 1;
+
+pub type CursorFocusFn = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
 pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> RenderTarget {
@@ -171,19 +174,65 @@ pub struct TerminalWidgetBridge {
 }
 
 impl TerminalWidgetBridge {
-    /// Creates a bridge that paints and receives input for `terminal`.
+    /// Creates a bridge that paints and receives input for `terminal` with the default draw id.
+    #[allow(dead_code)]
     pub fn new(terminal: Arc<Mutex<Terminal>>, gate_active: Arc<AtomicBool>) -> Self {
-        let draw_id = DEFAULT_DRAW_ID;
+        Self::with_draw_id(DEFAULT_DRAW_ID, terminal, gate_active)
+    }
+
+    /// Creates a bridge with an explicit external draw identifier.
+    pub fn with_draw_id(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self::with_draw_id_and_cursor_focus(draw_id, terminal, gate_active, true, None)
+    }
+
+    /// Creates a pane bridge whose cursor and blink schedule are enabled only while focused.
+    pub fn with_draw_id_and_cursor_focus(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+        cursor_focused: bool,
+        on_activate: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::with_draw_id_and_cursor_focus_provider(
+            draw_id,
+            terminal,
+            gate_active,
+            Arc::new(move || cursor_focused),
+            on_activate,
+        )
+    }
+
+    /// Creates a pane bridge backed by a live cursor-focus source.
+    pub fn with_draw_id_and_cursor_focus_provider(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+        cursor_focused: CursorFocusFn,
+        on_activate: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
+        let draw_cursor_focused = Arc::clone(&cursor_focused);
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
             dispatch_matched_draw(draw_id, id, context, |target| {
                 current_gpu(|gpu| {
                     if let Ok(mut term) = draw_terminal.lock() {
+                        let cursor_focused = draw_cursor_focused();
                         match mode {
-                            ExternalDrawMode::Live => term.render(target, pass, gpu),
-                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+                            ExternalDrawMode::Live => {
+                                term.render_with_cursor_focus(target, pass, gpu, cursor_focused)
+                            }
+                            ExternalDrawMode::Retain => term.draw_retained_with_cursor_focus(
+                                target,
+                                pass,
+                                gpu,
+                                cursor_focused,
+                            ),
                         }
                     }
                 });
@@ -191,15 +240,28 @@ impl TerminalWidgetBridge {
         });
 
         let schedule_terminal = Arc::clone(&terminal);
+        let schedule_cursor_focused = cursor_focused;
         #[allow(clippy::arc_with_non_send_sync)]
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, now| {
-            schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
+            schedule_demand_for_terminal_with_cursor_focus(
+                draw_id,
+                id,
+                &schedule_terminal,
+                now,
+                schedule_cursor_focused(),
+            )
         });
 
         let input_gate = Arc::clone(&gate_active);
         let input_terminal = Arc::clone(&terminal);
+        let activate = on_activate;
         #[allow(clippy::arc_with_non_send_sync)]
         let on_input: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
+            if matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Down)
+                && let Some(activate) = &activate
+            {
+                activate();
+            }
             if gate_suppresses_event(input_gate.load(Ordering::Acquire), event) {
                 return EventHandled::Handled;
             }
@@ -266,11 +328,22 @@ impl Component for TerminalWidgetBridge {
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
+#[cfg(test)]
 pub(crate) fn schedule_demand_for_terminal(
     owned_id: ExternalDrawId,
     invoked_id: ExternalDrawId,
     terminal: &Mutex<Terminal>,
     now: std::time::Instant,
+) -> ExternalScheduleDemand {
+    schedule_demand_for_terminal_with_cursor_focus(owned_id, invoked_id, terminal, now, true)
+}
+
+pub(crate) fn schedule_demand_for_terminal_with_cursor_focus(
+    owned_id: ExternalDrawId,
+    invoked_id: ExternalDrawId,
+    terminal: &Mutex<Terminal>,
+    now: std::time::Instant,
+    cursor_focused: bool,
 ) -> ExternalScheduleDemand {
     if invoked_id != owned_id {
         return ExternalScheduleDemand::empty();
@@ -278,7 +351,7 @@ pub(crate) fn schedule_demand_for_terminal(
     let Ok(mut term) = terminal.lock() else {
         return ExternalScheduleDemand::empty();
     };
-    let demand = term.frame_demand(now);
+    let demand = term.frame_demand_with_cursor_focus(now, cursor_focused);
     ExternalScheduleDemand {
         redraw_now: demand.redraw_now,
         deadline: demand.deadline,
@@ -603,6 +676,48 @@ mod tests {
         assert!(rt.focus_first_focusable());
         let _ = rt.drain_external_input();
         rt
+    }
+
+    #[test]
+    fn should_activate_an_unfocused_pane_on_pointer_down() {
+        let activated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let activated_for_callback = Arc::clone(&activated);
+        let gate = Arc::new(AtomicBool::new(false));
+        let bridge = TerminalWidgetBridge::with_draw_id_and_cursor_focus(
+            7,
+            headless_terminal(8, 40),
+            Arc::clone(&gate),
+            false,
+            Some(Arc::new(move || {
+                activated_for_callback.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        let mut runtime = harbor_widget::runtime::Runtime::new();
+        runtime.set_root(bridge);
+        runtime.update(std::time::Instant::now());
+
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(10.0, 10.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            9,
+        )));
+
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(10.0, 10.0),
+            PointerPhase::Down,
+            PointerButton::Right,
+            10,
+        )));
+        gate.store(true, Ordering::Release);
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(10.0, 10.0),
+            PointerPhase::Down,
+            PointerButton::Middle,
+            11,
+        )));
+
+        assert_eq!(activated.load(Ordering::SeqCst), 3);
     }
 
     #[test]

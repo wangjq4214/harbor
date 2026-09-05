@@ -8,5 +8,8 @@ pub mod padding;
 pub mod preview_pane;
 pub mod row;
 pub mod sized_box;
+pub mod split_container;
 pub mod stack;
+pub mod tab_bar;
+pub mod tabbed_layout;
 pub mod text_label;

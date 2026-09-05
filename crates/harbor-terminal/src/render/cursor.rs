@@ -40,8 +40,30 @@ struct LastCursorState {
     shape: CursorShape,
 }
 
-fn should_render_cursor(snap: &TerminalSnapshot, blink_visible: bool) -> bool {
-    snap.cursor_visible && (!snap.cursor_blink || blink_visible)
+fn should_render_cursor(
+    snap: &TerminalSnapshot,
+    blink_visible: bool,
+    cursor_focused: bool,
+) -> bool {
+    snap.cursor_visible && (!snap.cursor_blink || !cursor_focused || blink_visible)
+}
+
+fn cursor_frame_demand(
+    snap: &TerminalSnapshot,
+    blink: &CursorBlinkState,
+    now: Instant,
+    cursor_focused: bool,
+) -> FrameDemand {
+    let deadline = if cursor_focused && snap.cursor_visible && snap.cursor_blink {
+        Some(blink.next_deadline(now))
+    } else {
+        None
+    };
+    FrameDemand {
+        redraw_now: cursor_focused && blink.pending_redraw(),
+        deadline,
+        ordinary_present_eligible: true,
+    }
 }
 
 /// Combined cursor rendering + blink state machine.
@@ -92,17 +114,13 @@ impl Cursor {
     }
 
     /// Host-neutral frame demand derived from blink state and screen cursor flags.
-    pub fn frame_demand(&self, snap: &TerminalSnapshot, now: Instant) -> FrameDemand {
-        let deadline = if snap.cursor_visible && snap.cursor_blink {
-            Some(self.blink.next_deadline(now))
-        } else {
-            None
-        };
-        FrameDemand {
-            redraw_now: self.blink.pending_redraw(),
-            deadline,
-            ordinary_present_eligible: true,
-        }
+    pub fn frame_demand(
+        &self,
+        snap: &TerminalSnapshot,
+        now: Instant,
+        cursor_focused: bool,
+    ) -> FrameDemand {
+        cursor_frame_demand(snap, &self.blink, now, cursor_focused)
     }
 
     pub fn commit_frame(&mut self) {
@@ -155,6 +173,7 @@ impl Cursor {
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
         now: Instant,
+        cursor_focused: bool,
     ) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
@@ -162,7 +181,7 @@ impl Cursor {
             return;
         };
 
-        let visible = should_render_cursor(snap, self.blink.phase_visible(now));
+        let visible = should_render_cursor(snap, self.blink.phase_visible(now), cursor_focused);
         let shape = snap.cursor_shape;
 
         let state_changed = self.last_cursor.is_none_or(|last| {
@@ -245,7 +264,7 @@ impl Cursor {
 
 #[cfg(test)]
 mod tests {
-    use super::should_render_cursor;
+    use super::{cursor_frame_demand, should_render_cursor};
     use crate::render::CursorBlinkState;
     use crate::{FrameDemand, Terminal};
     use harbor_config::BLINK_INTERVAL_MS;
@@ -257,32 +276,27 @@ mod tests {
         blink: &CursorBlinkState,
         now: Instant,
     ) -> FrameDemand {
-        let deadline = if snap.cursor_visible && snap.cursor_blink {
-            Some(blink.next_deadline(now))
-        } else {
-            None
-        };
-        FrameDemand {
-            redraw_now: blink.pending_redraw(),
-            deadline,
-            ordinary_present_eligible: true,
-        }
+        cursor_frame_demand(snap, blink, now, true)
     }
 
     #[test]
     fn dectcem_controls_rendered_cursor_visibility() {
         let mut terminal = Terminal::new_headless(3, 3);
-        assert!(should_render_cursor(&terminal.snapshot(), true));
-        assert!(!should_render_cursor(&terminal.snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), true, true));
+        assert!(!should_render_cursor(&terminal.snapshot(), false, true));
+        assert!(should_render_cursor(&terminal.snapshot(), true, false));
+        assert!(should_render_cursor(&terminal.snapshot(), false, false));
 
         terminal.put_bytes(b"\x1b[2 q");
-        assert!(should_render_cursor(&terminal.snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), false, true));
+        assert!(should_render_cursor(&terminal.snapshot(), false, false));
 
         terminal.put_bytes(b"\x1b[?25l");
-        assert!(!should_render_cursor(&terminal.snapshot(), true));
+        assert!(!should_render_cursor(&terminal.snapshot(), true, true));
+        assert!(!should_render_cursor(&terminal.snapshot(), true, false));
 
         terminal.put_bytes(b"\x1b[?25h");
-        assert!(should_render_cursor(&terminal.snapshot(), true));
+        assert!(should_render_cursor(&terminal.snapshot(), true, true));
     }
 
     #[test]
@@ -302,6 +316,18 @@ mod tests {
             Some(t0 + Duration::from_millis(BLINK_INTERVAL_MS))
         );
         assert!(demand.ordinary_present_eligible);
+    }
+
+    #[test]
+    fn should_omit_cursor_deadline_and_redraw_when_pane_is_not_focused() {
+        let terminal = Terminal::new_headless(3, 3);
+        let t0 = Instant::now();
+        let mut blink = CursorBlinkState::new(t0);
+        blink.reset(t0);
+
+        let demand = cursor_frame_demand(&terminal.snapshot(), &blink, t0, false);
+
+        assert_eq!(demand, FrameDemand::empty());
     }
 
     #[test]
@@ -368,15 +394,26 @@ mod tests {
         let snap = terminal.snapshot();
 
         // Act + Assert — blinking visible phase
-        assert!(should_render_cursor(&snap, blink.phase_visible(t0)));
+        assert!(should_render_cursor(&snap, blink.phase_visible(t0), true));
         // blinking hidden phase
-        assert!(!should_render_cursor(&snap, blink.phase_visible(hidden_at)));
+        assert!(!should_render_cursor(
+            &snap,
+            blink.phase_visible(hidden_at),
+            true
+        ));
+        // Unfocused panes retain a steady cursor without scheduling blink frames.
+        assert!(should_render_cursor(
+            &snap,
+            blink.phase_visible(hidden_at),
+            false
+        ));
 
         terminal.put_bytes(b"\x1b[2 q"); // steady: draw even when phase would be hidden
         let steady = terminal.snapshot();
         assert!(should_render_cursor(
             &steady,
-            blink.phase_visible(hidden_at)
+            blink.phase_visible(hidden_at),
+            true
         ));
     }
 }

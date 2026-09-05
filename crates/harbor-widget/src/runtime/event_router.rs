@@ -14,6 +14,7 @@ use crate::layout::{Point, Rect};
 pub(crate) struct EventRouter {
     input: InputState,
     pending_clipboard: Option<String>,
+    pending_cursor: Option<crate::effects::CursorEffect>,
 }
 
 impl EventRouter {
@@ -21,6 +22,7 @@ impl EventRouter {
         Self {
             input: InputState::new(),
             pending_clipboard: None,
+            pending_cursor: None,
         }
     }
 
@@ -30,6 +32,10 @@ impl EventRouter {
 
     pub(crate) fn take_clipboard(&mut self) -> Option<String> {
         self.pending_clipboard.take()
+    }
+
+    pub(crate) fn take_cursor(&mut self) -> Option<crate::effects::CursorEffect> {
+        self.pending_cursor.take()
     }
 
     /// Clears focus/capture entries pointing at dead fibers after a rebuild.
@@ -129,11 +135,16 @@ impl EventRouter {
     }
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
-        if let Some(text) = ctx.take_clipboard_write() {
-            self.pending_clipboard = Some(text);
-        }
+        let clipboard_write = ctx.take_clipboard_write();
+        let cursor_effect = ctx.take_cursor_effect();
         let previous_focus = self.input.focused;
         let needs_paint = self.input.apply(ctx.take_commands(), arena);
+        if clipboard_write.is_some() {
+            self.pending_clipboard = clipboard_write;
+        }
+        if cursor_effect.is_some() {
+            self.pending_cursor = cursor_effect;
+        }
         let next_focus = self.input.focused;
         let focus_needs_paint = if previous_focus != next_focus {
             self.notify_focus_transition(arena, previous_focus, next_focus)
@@ -188,6 +199,25 @@ impl EventRouter {
             }
         }
         None
+    }
+
+    pub(crate) fn find_external_draw(
+        arena: &FiberArena,
+        fiber_id: FiberId,
+        draw_id: crate::scene::primitive::ExternalDrawId,
+    ) -> Option<FiberId> {
+        let fiber = arena.get(fiber_id)?;
+        if fiber
+            .view
+            .as_ref()
+            .is_some_and(|view| view.external_draw_id() == Some(draw_id))
+        {
+            return Some(fiber_id);
+        }
+        fiber
+            .children
+            .iter()
+            .find_map(|child| Self::find_external_draw(arena, *child, draw_id))
     }
 
     pub(crate) fn tree_has_modal(arena: &FiberArena, fiber_id: FiberId) -> bool {

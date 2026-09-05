@@ -28,9 +28,14 @@ impl Stack {
         self.background = Some(color);
         self
     }
-
     pub fn child(mut self, child: impl Component + 'static) -> Self {
         self.children.push(View::deferred(child));
+        self
+    }
+
+    /// Appends raw child Views directly.
+    pub fn views(mut self, views: impl IntoIterator<Item = View>) -> Self {
+        self.children.extend(views);
         self
     }
 }

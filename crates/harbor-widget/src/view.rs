@@ -159,6 +159,18 @@ pub(crate) trait AnyView: 'static {
         constraints
     }
 
+    /// Returns the constraints this view imposes on each child individually.
+    /// Multi-child layout containers (such as TabbedLayout or SplitContainer)
+    /// override this to pass partition-specific tight/loose constraints to each child.
+    fn children_constraints(
+        &self,
+        child_count: usize,
+        constraints: BoxConstraints,
+        _metrics: &TextMetrics,
+    ) -> Vec<BoxConstraints> {
+        vec![self.child_constraints(constraints); child_count]
+    }
+
     /// Computes the layout of this widget given child intrinsic sizes and
     /// Runtime-owned text metrics. Returns own size and child origins (relative
     /// to self). Default: positions all children at origin with own size from
@@ -239,6 +251,11 @@ pub(crate) trait AnyView: 'static {
     /// Default: false.
     fn is_focusable(&self) -> bool {
         false
+    }
+
+    /// External draw identity for focus restoration, when this is an external-paint leaf.
+    fn external_draw_id(&self) -> Option<crate::scene::primitive::ExternalDrawId> {
+        None
     }
 
     /// Whether this widget is a modal scope — events targeting widgets outside

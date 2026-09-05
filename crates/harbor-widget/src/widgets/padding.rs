@@ -40,8 +40,13 @@ impl Padding {
         self.child = Some(View::deferred(child));
         self
     }
-}
 
+    /// Sets this padding's only child directly from a View.
+    pub fn view(mut self, view: View) -> Self {
+        self.child = Some(view);
+        self
+    }
+}
 impl Component for Padding {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)

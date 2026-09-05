@@ -304,6 +304,11 @@ impl TextRenderer {
         }
     }
 
+    /// Updates the texture bind group to match the active glyph atlas.
+    pub fn set_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        self.bind_group = bind_group.clone();
+    }
+
     /// Rebuilds text instance offsets from the retained scene.
     ///
     /// Repacking every changed frame makes modified runs safe even when their

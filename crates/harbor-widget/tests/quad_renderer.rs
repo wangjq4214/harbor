@@ -1113,6 +1113,117 @@ fn should_return_correct_slot_after_update() {
 }
 
 #[test]
+fn should_reproject_retained_quad_for_each_viewport_change_kind() {
+    let Some((device, queue)) = try_create_device() else {
+        return;
+    };
+    let initial_viewport = Viewport::new(32, 32, 1.0);
+    let cases = [
+        (Viewport::new(64, 32, 1.0), (2, 4), (6, 4)),
+        (Viewport::new(32, 64, 1.0), (4, 2), (4, 6)),
+        (Viewport::new(32, 32, 2.0), (12, 12), (20, 20)),
+    ];
+
+    for (resized_viewport, filled_pixel, empty_pixel) in cases {
+        let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let delta = SceneDelta {
+            added: vec![make_quad_item(7, 0, 0.0, 0.0, 8.0, 8.0)],
+            removed: vec![],
+            modified: vec![],
+        };
+        renderer.update(&queue, &delta, &initial_viewport);
+        renderer.refresh_viewport(&queue, &delta.added, &resized_viewport);
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("retained viewport reprojection target"),
+            size: wgpu::Extent3d {
+                width: 32,
+                height: 32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("retained viewport reprojection pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            renderer.encode(&mut pass);
+        }
+        queue.submit(Some(encoder.finish()));
+
+        let pixels = read_texture(&device, &queue, &target);
+        let pixel = |(x, y): (u32, u32)| {
+            let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
+            &pixels[offset..offset + 4]
+        };
+        assert_eq!(pixel(filled_pixel), &[0, 0, 255, 255]);
+        assert_eq!(pixel(empty_pixel), &[0, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn should_not_leak_quad_instances_on_repeated_encodes_with_many_tabs() {
+    use harbor_types::{SessionId, TabBarPosition};
+    use harbor_widget::widgets::tab_bar::{TabBar, TabItem};
+
+    let Some((device, queue)) = try_create_device() else {
+        return;
+    };
+    let viewport = Viewport::new(800, 600, 1.0);
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_viewport(viewport.clone());
+    let tabs = (1..=5)
+        .map(|id| TabItem::new(SessionId(id), format!("Terminal {id}"), id == 5))
+        .collect();
+    runtime.set_root(TabBar::new(TabBarPosition::Left, tabs, 4));
+    runtime.update(Instant::now());
+
+    for _ in 0..11 {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = create_render_pass(&device, &mut encoder);
+            runtime.encode(&queue, &mut pass, viewport.clone(), false);
+        }
+        encoder.finish();
+    }
+    assert!(runtime.pending_delta().is_none());
+
+    let tabs = (1..=6)
+        .map(|id| TabItem::new(SessionId(id), format!("Terminal {id}"), id == 6))
+        .collect();
+    runtime.set_root(TabBar::new(TabBarPosition::Left, tabs, 5));
+    runtime.update(Instant::now());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = create_render_pass(&device, &mut encoder);
+        runtime.encode(&queue, &mut pass, viewport, false);
+    }
+    encoder.finish();
+    assert!(runtime.pending_delta().is_none());
+}
+
+#[test]
 fn should_return_none_after_item_removed() {
     let Some((device, queue)) = try_create_device() else {
         return;

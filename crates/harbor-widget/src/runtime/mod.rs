@@ -361,6 +361,11 @@ impl Runtime {
             .init_text_renderer(device, format, bind_group_layout, bind_group);
     }
 
+    /// Updates the active text bind group consumed by the text renderer.
+    pub fn set_text_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        self.encoder.set_text_bind_group(bind_group);
+    }
+
     /// Applies the pending SceneDelta to the GPU renderers and encodes draw
     /// calls into the RenderPass. No-op if the quad renderer hasn't been
     /// initialized or there is no pending delta.
@@ -430,6 +435,9 @@ impl Runtime {
         let mut effects = RuntimeEffects::from_redraw(needs_redraw);
         if let Some(text) = self.events.take_clipboard() {
             effects.clipboard = Some(ClipboardEffect::write(text));
+        }
+        if let Some(cursor) = self.events.take_cursor() {
+            effects.cursor = Some(cursor);
         }
         effects
     }
@@ -552,6 +560,21 @@ impl Runtime {
         } else {
             false
         }
+    }
+
+    /// Focuses the external-paint leaf matching `draw_id`.
+    pub fn focus_external_draw(
+        &mut self,
+        draw_id: crate::scene::primitive::ExternalDrawId,
+    ) -> bool {
+        let Some(root_id) = self.root_id else {
+            return false;
+        };
+        let Some(fiber_id) = EventRouter::find_external_draw(&self.arena, root_id, draw_id) else {
+            return false;
+        };
+        self.transition_focus(Some(fiber_id));
+        true
     }
 
     /// Clears the focused fiber.
@@ -1281,6 +1304,30 @@ mod tests {
         assert!(
             fiber.view.as_ref().unwrap().is_focusable(),
             "focused widget should be focusable (the Button, not the SizedBox)"
+        );
+    }
+
+    #[test]
+    fn should_focus_the_custom_paint_matching_an_external_draw_id() {
+        use crate::widgets::column::Column;
+
+        let mut runtime = Runtime::new();
+        runtime.set_root(
+            Column::new()
+                .child(CustomPaint::new(11))
+                .child(CustomPaint::new(22)),
+        );
+        runtime.update(now());
+
+        assert!(runtime.focus_external_draw(22));
+        let focused = runtime.input().focused.expect("focused external draw");
+        assert_eq!(
+            runtime
+                .arena()
+                .get(focused)
+                .and_then(|fiber| fiber.view.as_ref())
+                .and_then(|view| view.external_draw_id()),
+            Some(22)
         );
     }
 

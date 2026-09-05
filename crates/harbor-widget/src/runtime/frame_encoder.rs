@@ -194,6 +194,12 @@ impl FrameEncoder {
         ));
     }
 
+    pub(crate) fn set_text_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        if let Some(renderer) = &mut self.text_renderer {
+            renderer.set_bind_group(bind_group);
+        }
+    }
+
     pub(crate) fn text_run_cache(&mut self) -> &mut TextRunCache {
         &mut self.text_run_cache
     }
