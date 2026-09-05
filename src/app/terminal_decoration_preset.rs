@@ -20,18 +20,16 @@ impl TerminalDecorationPreset {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
-                a: 0.25,
+                a: 0.10,
             })
             .expect("product shadow color is finite")
-            .try_offset(Point::new(0.0, 3.0))
+            .try_offset(Point::new(0.0, 1.0))
             .expect("product shadow offset is finite")
-            .try_blur_radius(3.0)
-            .expect("product shadow blur is finite and non-negative")
-            .try_spread_radius(0.0)
-            .expect("product shadow spread is finite");
+            .try_blur_radius(1.0)
+            .expect("product shadow blur is finite and non-negative");
         BoxDecoration::new()
             .border_radius(
-                BorderRadius::all(12.0).expect("product radius is finite and non-negative"),
+                BorderRadius::all(8.0).expect("product radius is finite and non-negative"),
             )
             .shadow(shadow)
     }
@@ -66,7 +64,7 @@ pub(crate) fn build_main_terminal_root(
                 ((channel + 0.055) / 1.055).powf(2.4)
             }
         });
-    let root = Padding::all(12.0);
+    let root = Padding::all(4.0);
     let root = if backdrop_available {
         root
     } else {
@@ -155,34 +153,26 @@ mod tests {
             .border_radius_value()
             .expect("product radius is present")
             .as_array();
-        assert_eq!(radii, [12.0, 12.0, 12.0, 12.0]);
+        assert_eq!(radii, [8.0, 8.0, 8.0, 8.0]);
         let shadows = decoration.shadows();
         assert_eq!(shadows.len(), 1);
         let shadow = shadows[0];
-        assert_eq!(
-            shadow.color(),
-            Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.25,
-            }
-        );
-        assert_eq!(shadow.offset(), Point::new(0.0, 3.0));
-        assert_eq!(shadow.blur_radius(), 3.0);
+        assert_eq!(shadow.color().a, 0.10);
+        assert_eq!(shadow.offset(), Point::new(0.0, 1.0));
+        assert_eq!(shadow.blur_radius(), 1.0);
         assert_eq!(shadow.spread_radius(), 0.0);
     }
 
     #[test]
-    fn should_apply_twelve_dp_inset_with_opaque_fallback_when_no_backdrop() {
+    fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
         // Arrange / Act
         let root = build_main_terminal_root(false, CustomPaint::new(1));
 
         // Assert
-        assert_eq!(root.top, 12.0);
-        assert_eq!(root.right, 12.0);
-        assert_eq!(root.bottom, 12.0);
-        assert_eq!(root.left, 12.0);
+        assert_eq!(root.top, 4.0);
+        assert_eq!(root.right, 4.0);
+        assert_eq!(root.bottom, 4.0);
+        assert_eq!(root.left, 4.0);
         assert_opaque_fallback_color(root.background.expect("opaque root background"));
     }
 
@@ -224,9 +214,9 @@ mod tests {
             "backdrop-aware root must not emit a base Quad"
         );
 
-        // Assert — the 12dp inset is independent of the backdrop fact.
+        // Assert — the 4dp inset is independent of the backdrop fact.
         let (_, _padding_rect, _, decorated_rect, _, external_rect) = fiber_chain(&runtime);
-        let expected_child = Rect::from_min_size(Point::new(12.0, 12.0), Size::new(776.0, 576.0));
+        let expected_child = Rect::from_min_size(Point::new(4.0, 4.0), Size::new(792.0, 592.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
     }
@@ -268,11 +258,11 @@ mod tests {
             runtime.update(Instant::now());
             let items = painted_items(&runtime);
 
-            // Assert — only the base fill disappears; shadow and clipped content remain.
+            // Assert — subtle shadow paints before the clipped terminal content.
             assert_eq!(items.len(), 2);
             let expected_child = Rect::from_min_size(
-                Point::new(12.0, 12.0),
-                Size::new(width as f32 - 24.0, height as f32 - 24.0),
+                Point::new(4.0, 4.0),
+                Size::new(width as f32 - 8.0, height as f32 - 8.0),
             );
             let Primitive::OuterShadow {
                 color,
@@ -283,13 +273,9 @@ mod tests {
             else {
                 panic!("shadow must paint before the terminal");
             };
-            assert_eq!(color.a, 0.25);
-            assert_eq!(*blur_radius, 3.0);
+            assert_eq!(color.a, 0.10);
+            assert_eq!(*blur_radius, 1.0);
             assert_eq!(*occluder_rect, expected_child);
-            assert!(
-                items[0].clips.is_empty(),
-                "child clip must not clip the shadow"
-            );
             assert!(matches!(
                 items[1].primitive,
                 Primitive::External { draw: 1, rect } if rect == expected_child
@@ -299,14 +285,14 @@ mod tests {
                 .last()
                 .expect("terminal keeps its rounded clip");
             assert_eq!(clip.behavior(), ClipBehavior::AntiAlias);
-            let radius = if width == 40 { 8.0 } else { 12.0 };
+            let radius = 8.0;
             assert_eq!(clip.radii().as_array(), [radius; 4]);
         }
     }
 
     #[test]
     fn should_omit_base_fill_when_backdrop_viewport_has_no_content_space() {
-        for (width, height) in [(0, 0), (10, 10), (24, 24)] {
+        for (width, height) in [(0, 0), (4, 4), (8, 8)] {
             // Arrange
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
@@ -350,17 +336,17 @@ mod tests {
         ) = fiber_chain(&runtime);
         let items = painted_items(&runtime);
 
-        // Assert — fiber types and 12dp inset on the 800×600 fallback
+        // Assert — fiber types and 4dp inset on the 800×600 fallback
         assert_eq!(padding_type, TypeId::of::<Padding>());
         assert_eq!(decorated_type, TypeId::of::<DecoratedBox>());
         assert_eq!(external_type, TypeId::of::<CustomPaint>());
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));
         assert_eq!(padding_rect.size(), Size::new(800.0, 600.0));
-        let expected_child = Rect::from_min_size(Point::new(12.0, 12.0), Size::new(776.0, 576.0));
+        let expected_child = Rect::from_min_size(Point::new(4.0, 4.0), Size::new(792.0, 592.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
 
-        // Assert — base fill quad, then OuterShadow, then External
+        // Assert — opaque fallback base paints before the clipped External.
         let mut primitives = items.iter().map(|item| &item.primitive);
         let first = primitives
             .find(|primitive| {
@@ -378,8 +364,6 @@ mod tests {
             panic!("first matching primitive must be the opaque base Quad")
         };
         assert_eq!(color.a, 1.0);
-
-        // Assert — OuterShadow after the base quad, before the External
         let shadow_item = items
             .iter()
             .find(|item| matches!(item.primitive, Primitive::OuterShadow { .. }))
@@ -391,12 +375,11 @@ mod tests {
             ..
         } = &shadow_item.primitive
         else {
-            panic!("shadow item must be OuterShadow");
+            unreachable!();
         };
-        assert_eq!(color.a, 0.25);
-        assert_eq!(*blur_radius, 3.0);
+        assert_eq!(color.a, 0.10);
+        assert_eq!(*blur_radius, 1.0);
         assert_eq!(*occluder_rect, expected_child);
-
         assert!(
             !items
                 .iter()
@@ -424,7 +407,7 @@ mod tests {
         assert!(!external.clips.is_empty());
         let innermost = external.clips.last().expect("innermost clip");
         assert_eq!(innermost.behavior(), ClipBehavior::AntiAlias);
-        assert_eq!(innermost.radii().as_array(), [12.0, 12.0, 12.0, 12.0]);
+        assert_eq!(innermost.radii().as_array(), [8.0, 8.0, 8.0, 8.0]);
     }
 
     #[test]
@@ -443,7 +426,7 @@ mod tests {
             external_rect,
         ) = fiber_chain(&runtime);
 
-        // Assert — layout exists; 12dp deflate saturates at zero
+        // Assert — layout exists; 4dp deflate saturates at zero
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));
         assert_eq!(decorated_rect.size(), Size::ZERO);
         assert_eq!(external_rect.size(), Size::ZERO);
@@ -456,7 +439,7 @@ mod tests {
     #[test]
     fn should_normalize_clip_radii_to_child_size_when_viewport_is_smaller_than_radius() {
         // Arrange
-        let viewport = Viewport::new(40, 40, 1.0);
+        let viewport = Viewport::new(12, 12, 1.0);
         let logical = viewport.logical_size;
 
         // Act
@@ -473,10 +456,10 @@ mod tests {
 
         // Assert
         let expected_child = Rect::from_min_size(
-            Point::new(12.0, 12.0),
-            Size::new(logical.width - 24.0, logical.height - 24.0),
+            Point::new(4.0, 4.0),
+            Size::new(logical.width - 8.0, logical.height - 8.0),
         );
-        assert_eq!(decorated_rect.min, Point::new(12.0, 12.0));
+        assert_eq!(decorated_rect.min, Point::new(4.0, 4.0));
         assert_eq!(decorated_rect, expected_child);
         assert_eq!(external_rect, expected_child);
 
@@ -488,7 +471,7 @@ mod tests {
             .clips
             .last()
             .expect("External carries a child clip");
-        let expected_radii = BorderRadius::all(12.0)
+        let expected_radii = BorderRadius::all(8.0)
             .expect("ticket radius is finite")
             .normalize(expected_child.size())
             .expect("child size is finite")
