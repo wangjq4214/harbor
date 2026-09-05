@@ -127,11 +127,9 @@ impl PaneLayoutNode {
             }
         };
 
-        if found {
-            if let Some(replacement) = promoted {
-                *self = replacement;
-                return Some(target);
-            }
+        if found && let Some(replacement) = promoted {
+            *self = replacement;
+            return Some(target);
         }
 
         let (found_sec, promoted_sec) = match self {
@@ -149,11 +147,9 @@ impl PaneLayoutNode {
             _ => (false, None),
         };
 
-        if found_sec {
-            if let Some(replacement) = promoted_sec {
-                *self = replacement;
-                return Some(target);
-            }
+        if found_sec && let Some(replacement) = promoted_sec {
+            *self = replacement;
+            return Some(target);
         }
 
         match self {

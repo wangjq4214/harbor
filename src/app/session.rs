@@ -398,6 +398,7 @@ impl Component for SessionRootComponent {
     }
 }
 #[cfg(test)]
+#[allow(clippy::arc_with_non_send_sync)]
 mod tests {
     use super::*;
     use harbor_widget::widgets::custom_paint::CustomPaint;

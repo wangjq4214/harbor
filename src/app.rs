@@ -144,18 +144,17 @@ fn is_close_pane_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> boo
 }
 
 fn is_cycle_tab_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> Option<bool> {
-    if let WindowEvent::KeyboardInput { event, .. } = event {
-        if event.state == ElementState::Pressed
-            && modifiers.control_key()
-            && !modifiers.alt_key()
-            && !modifiers.super_key()
-            && matches!(
-                &event.logical_key,
-                Key::Named(winit::keyboard::NamedKey::Tab)
-            )
-        {
-            return Some(!modifiers.shift_key());
-        }
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed
+        && modifiers.control_key()
+        && !modifiers.alt_key()
+        && !modifiers.super_key()
+        && matches!(
+            &event.logical_key,
+            Key::Named(winit::keyboard::NamedKey::Tab)
+        )
+    {
+        return Some(!modifiers.shift_key());
     }
     None
 }
@@ -495,11 +494,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             AppEvent::SelectSession(idx) => {
-                if let Some(session_state) = self.runtime.session_state.as_mut() {
-                    if let Some(session) = session_state.sessions.get(idx) {
-                        let id = session.id;
-                        session_state.switch_session(id);
-                    }
+                if let Some(session_state) = self.runtime.session_state.as_mut()
+                    && let Some(session) = session_state.sessions.get(idx)
+                {
+                    let id = session.id;
+                    session_state.switch_session(id);
                 }
                 self.apply_update_root_effects(event_loop);
             }
@@ -738,12 +737,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             _ => None,
         };
-        if let Some(outcome) = outcome {
-            if outcome.handled {
-                Self::apply_window_effects(&window, &outcome.effects);
-                if let Some(control_flow) = outcome.effects.control_flow {
-                    Self::apply_control_flow(event_loop, control_flow);
-                }
+        if let Some(outcome) = outcome
+            && outcome.handled
+        {
+            Self::apply_window_effects(&window, &outcome.effects);
+            if let Some(control_flow) = outcome.effects.control_flow {
+                Self::apply_control_flow(event_loop, control_flow);
             }
         }
 
@@ -1085,13 +1084,13 @@ impl App {
                     gpu.alpha_mode(),
                 );
                 adapter.render_with_prepare(widget_runtime, target, |runtime| {
-                    if let Some(term_arc) = terminal_ref {
-                        if let Ok(term) = term_arc.lock() {
-                            if let Some(bind_group) = term.text_bind_group() {
-                                runtime.set_text_bind_group(bind_group);
-                            }
-                            runtime.prepare_text_runs(&|ch| term.text_glyph(ch).copied());
+                    if let Some(term_arc) = terminal_ref
+                        && let Ok(term) = term_arc.lock()
+                    {
+                        if let Some(bind_group) = term.text_bind_group() {
+                            runtime.set_text_bind_group(bind_group);
                         }
+                        runtime.prepare_text_runs(&|ch| term.text_glyph(ch).copied());
                     }
                 })
             }))
@@ -1164,14 +1163,14 @@ impl App {
         let mut runtime = harbor_widget::runtime::Runtime::new();
         runtime.set_root(root_comp);
         runtime.init_renderer(gpu.device(), gpu.format());
-        if let Some(term_arc) = self.runtime.terminal.as_ref() {
-            if let Ok(mut term) = term_arc.lock() {
-                term.ensure_glyphs("Terminal 1234567890+x -", gpu);
-                if let (Some(layout), Some(bind_group)) =
-                    (term.text_bind_group_layout(), term.text_bind_group())
-                {
-                    runtime.init_text_renderer(gpu.device(), gpu.format(), layout, bind_group);
-                }
+        if let Some(term_arc) = self.runtime.terminal.as_ref()
+            && let Ok(mut term) = term_arc.lock()
+        {
+            term.ensure_glyphs("Terminal 1234567890+x -", gpu);
+            if let (Some(layout), Some(bind_group)) =
+                (term.text_bind_group_layout(), term.text_bind_group())
+            {
+                runtime.init_text_renderer(gpu.device(), gpu.format(), layout, bind_group);
             }
         }
         runtime.set_viewport(initial_viewport);
