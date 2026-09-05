@@ -19,12 +19,14 @@ use std::cell::RefCell;
 use harbor_config::WindowBackdropStyle;
 use winit::window::{Window, WindowAttributes};
 
-/// Which tier of the three-tier backdrop chain (ADR 0026) is active.
+/// Which tier of the Windows backdrop fallback chain is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BackdropTier {
     /// Windows App SDK `DesktopAcrylicController` acrylic.
     WasdkAcrylic,
-    /// Accent-policy acrylic.
+    /// DWM `DWMSBT_TRANSIENTWINDOW` acrylic on Windows 11.
+    DwmTransientAcrylic,
+    /// Legacy accent-policy acrylic.
     AccentPolicyAcrylic,
     /// No compositor backdrop.
     OpaqueFallback,
@@ -44,13 +46,6 @@ pub(crate) struct BackdropStatus {
 pub(crate) trait WindowBackdropBackend {
     fn configure_attributes(&self, attrs: WindowAttributes) -> WindowAttributes;
     fn apply(&self, window: &Window, style: &WindowBackdropStyle) -> BackdropStatus;
-
-    /// A shared DirectComposition visual owned by the backend, when the
-    /// backdrop owns the window's topmost composition target and the
-    /// renderer must present into it instead of creating its own.
-    fn composition_visual(&self) -> Option<*mut core::ffi::c_void> {
-        None
-    }
 }
 
 /// Selects a backend for the given OS facts without touching any platform API.
@@ -59,15 +54,23 @@ pub(crate) fn select_backend(build: u32, wasdk_ok: bool) -> Box<dyn WindowBackdr
         BackdropTier::WasdkAcrylic => {
             #[cfg(target_os = "windows")]
             {
-                return Box::new(WasdkAcrylicBackend::new());
+                Box::new(WasdkAcrylicBackend::new())
             }
             #[cfg(not(target_os = "windows"))]
             unreachable!("wasdk tier is unreachable outside Windows")
         }
+        BackdropTier::DwmTransientAcrylic => {
+            #[cfg(target_os = "windows")]
+            {
+                Box::new(DwmTransientAcrylicBackend)
+            }
+            #[cfg(not(target_os = "windows"))]
+            unreachable!("DWM transient tier is unreachable outside Windows")
+        }
         BackdropTier::AccentPolicyAcrylic => {
             #[cfg(target_os = "windows")]
             {
-                return Box::new(AccentPolicyBackend);
+                Box::new(AccentPolicyBackend)
             }
             #[cfg(not(target_os = "windows"))]
             unreachable!("accent tier is unreachable outside Windows")
@@ -85,6 +88,9 @@ pub(crate) fn selected_tier(build: u32, wasdk_ok: bool) -> BackdropTier {
         }
         if wasdk_ok {
             return BackdropTier::WasdkAcrylic;
+        }
+        if build >= 22_621 {
+            return BackdropTier::DwmTransientAcrylic;
         }
         if build != 0 {
             return BackdropTier::AccentPolicyAcrylic;
@@ -218,13 +224,48 @@ impl WindowBackdropBackend for WasdkAcrylicBackend {
             backdrop_available: accent_available,
         }
     }
+}
+// ── Tier 2: DWM TransientWindow acrylic ─────────────────────────────────────
 
-    fn composition_visual(&self) -> Option<*mut core::ffi::c_void> {
-        self.state.borrow().as_ref().map(|state| state.visual_ptr())
+/// Restores the native Windows 11 acrylic path when the App Runtime is absent.
+#[cfg(target_os = "windows")]
+pub(crate) struct DwmTransientAcrylicBackend;
+
+#[cfg(target_os = "windows")]
+impl WindowBackdropBackend for DwmTransientAcrylicBackend {
+    fn configure_attributes(&self, attrs: WindowAttributes) -> WindowAttributes {
+        use winit::platform::windows::{BackdropType, WindowAttributesExtWindows};
+        attrs
+            .with_transparent(true)
+            .with_no_redirection_bitmap(true)
+            .with_system_backdrop(BackdropType::TransientWindow)
+            .with_title_background_color(None)
+    }
+
+    fn apply(&self, window: &Window, style: &WindowBackdropStyle) -> BackdropStatus {
+        let transient_available =
+            extend_dwm_frame_into_client_area(window) && transient_window_backdrop_applied(window);
+        if transient_available {
+            return BackdropStatus {
+                tier: BackdropTier::DwmTransientAcrylic,
+                backdrop_available: true,
+            };
+        }
+
+        tracing::warn!("DWM transient acrylic unavailable; falling back to accent policy");
+        let accent_available = apply_accent_policy(window, style);
+        BackdropStatus {
+            tier: if accent_available {
+                BackdropTier::AccentPolicyAcrylic
+            } else {
+                BackdropTier::OpaqueFallback
+            },
+            backdrop_available: accent_available,
+        }
     }
 }
 
-// ── Tier 2: accent-policy acrylic ───────────────────────────────────────────
+// ── Tier 3: accent-policy acrylic ───────────────────────────────────────────
 
 /// Windows 10 accent-policy acrylic migrated from the old app.rs bootstrap.
 #[cfg(target_os = "windows")]
@@ -313,6 +354,53 @@ fn dwm_composition_enabled() -> bool {
     let mut enabled = 0_i32;
     let result = unsafe { DwmIsCompositionEnabled(&mut enabled) };
     result == 0 && enabled != 0
+}
+
+/// Verifies that DWM accepted the requested TransientWindow acrylic backdrop.
+#[cfg(target_os = "windows")]
+fn transient_window_backdrop_applied(window: &Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+    const DWMSBT_TRANSIENTWINDOW: u32 = 3;
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmGetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *mut core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    if !dwm_composition_enabled() {
+        tracing::warn!("transient acrylic skipped: DWM composition is disabled");
+        return false;
+    }
+    let Ok(handle) = window.window_handle() else {
+        tracing::warn!("transient acrylic verification skipped: window handle unavailable");
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        tracing::warn!("transient acrylic verification skipped: non-Win32 window handle");
+        return false;
+    };
+
+    let mut backdrop_type = 0_u32;
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            handle.hwnd.get(),
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&mut backdrop_type as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    if result != 0 {
+        tracing::warn!(result, "DwmGetWindowAttribute failed for transient acrylic");
+        return false;
+    }
+    backdrop_type == DWMSBT_TRANSIENTWINDOW
 }
 
 /// `WCA_ACCENT_POLICY` attribute for `SetWindowCompositionAttribute`.
@@ -414,7 +502,7 @@ fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
     }
 }
 
-// ── Tier 3 / non-Windows: opaque no-op ───────────────────────────────────────
+// ── Tier 4 / non-Windows: opaque no-op ───────────────────────────────────────
 
 /// Performs no compositor work; the host paints the opaque fallback itself.
 pub(crate) struct OpaqueBackend;
@@ -501,22 +589,6 @@ mod opaque_backend_tests {
     }
 
     #[test]
-    fn should_return_no_shared_visual_when_backend_has_not_been_applied() {
-        for build in [0, 19_045, 22_621, 26_100] {
-            for wasdk_ok in [false, true] {
-                // Arrange — selection is pure and must not create native resources.
-                let backend = select_backend(build, wasdk_ok);
-
-                // Act
-                let visual = backend.composition_visual();
-
-                // Assert — the GPU must not receive an uninitialized visual.
-                assert!(visual.is_none(), "build={build}, wasdk_ok={wasdk_ok}");
-            }
-        }
-    }
-
-    #[test]
     fn should_preserve_window_attributes_when_opaque_backend_configures_them() {
         // Arrange
         let mut attributes = Window::default_attributes();
@@ -560,8 +632,19 @@ mod tests {
     }
 
     #[test]
-    fn should_select_accent_backend_for_known_builds_without_wasdk() {
-        for build in [1, 19_045, 22_621, 26_100, u32::MAX] {
+    fn should_restore_dwm_transient_acrylic_without_wasdk_on_windows_11() {
+        for build in [22_621, 26_100, u32::MAX] {
+            assert_eq!(
+                selected_tier(build, false),
+                BackdropTier::DwmTransientAcrylic,
+                "build {build}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_select_accent_backend_without_wasdk_before_windows_11_22h2() {
+        for build in [1, 19_045, 22_620] {
             assert_eq!(
                 selected_tier(build, false),
                 BackdropTier::AccentPolicyAcrylic,
@@ -569,7 +652,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn should_select_opaque_backend_when_probe_fails_on_unknown_build() {
         assert_eq!(

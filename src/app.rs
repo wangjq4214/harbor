@@ -628,14 +628,10 @@ impl App {
             tier,
             backdrop_available: backdrop_applied,
         } = backdrop.apply(&window, &backdrop_style);
-        let shared_visual = backdrop.composition_visual();
         self.runtime.backdrop = Some(backdrop);
 
-        // SAFETY: the backend supplied a live IDCompositionVisual and is retained
-        // in AppRuntime throughout this synchronous UI-thread initialization and
-        // the surface lifetime. wgpu retains its own COM reference to the visual.
-        let gpu = pollster::block_on(unsafe { GpuContext::new(window.clone(), shared_visual) })
-            .map_err(AppError::Renderer)?;
+        let gpu =
+            pollster::block_on(GpuContext::new(window.clone())).map_err(AppError::Renderer)?;
         let main_window_backdrop_available =
             backdrop_applied && alpha_mode_supports_transparency(gpu.alpha_mode());
         #[cfg(target_os = "windows")]

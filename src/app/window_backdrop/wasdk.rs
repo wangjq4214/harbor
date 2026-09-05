@@ -23,14 +23,6 @@ pub(crate) struct AcrylicState {
     _controller: generated::DesktopAcrylicController,
     _target: windows::UI::Composition::Desktop::DesktopWindowTarget,
     _container: windows::UI::Composition::ContainerVisual,
-    dcomp_visual: windows::Win32::Graphics::DirectComposition::IDCompositionVisual,
-}
-
-impl AcrylicState {
-    /// The classic DirectComposition visual hosting the renderer surface.
-    pub(crate) fn visual_ptr(&self) -> *mut core::ffi::c_void {
-        windows_core::Interface::as_raw(&self.dcomp_visual)
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +50,7 @@ static RUNTIME: OnceLock<WasdkRuntime> = OnceLock::new();
 
 /// Initializes the Windows App SDK bootstrap, a DispatcherQueue, and probes
 /// `DesktopAcrylicController::IsSupported()`. Returns false on any failure so
-/// the selector falls back to tier 2.
+/// the selector falls back to the best OS-provided acrylic tier.
 pub(crate) fn try_initialize() -> bool {
     if RUNTIME.get().is_some() {
         return true;
@@ -66,22 +58,22 @@ pub(crate) fn try_initialize() -> bool {
     initialize_com_apartment();
 
     if !initialize_bootstrap() {
-        tracing::warn!("Windows App SDK bootstrap unavailable; using accent-policy acrylic");
+        tracing::warn!("Windows App SDK bootstrap unavailable; using OS acrylic fallback");
         return false;
     }
     let Ok(dispatcher) = create_dispatcher_queue() else {
-        tracing::warn!("dispatcher queue creation failed; using accent-policy acrylic");
+        tracing::warn!("dispatcher queue creation failed; using OS acrylic fallback");
         return false;
     };
     let supported = generated::DesktopAcrylicController::IsSupported().unwrap_or(false);
     if !supported {
-        tracing::warn!("DesktopAcrylicController unsupported; using accent-policy acrylic");
+        tracing::warn!("DesktopAcrylicController unsupported; using OS acrylic fallback");
         return false;
     }
     let window_id_interop = match interop::WindowIdInterop::load() {
         Ok(interop) => interop,
         Err(error) => {
-            tracing::warn!(%error, "WindowId interop unavailable; using accent-policy acrylic");
+            tracing::warn!(%error, "WindowId interop unavailable; using OS acrylic fallback");
             return false;
         }
     };
@@ -109,6 +101,9 @@ fn initialize_com_apartment() {
     // probe failure below rather than a fatal error.
     let _ = unsafe { RoInitialize(RO_INIT_SINGLETHREADED) };
 }
+
+/// The desktop composition target layer for the backdrop material is always the lower slot.
+pub(crate) const BACKDROP_TARGET_IS_TOPMOST: bool = false;
 
 /// Applies the unified tint through a `DesktopAcrylicController` attached to
 /// the window's desktop composition target.
@@ -148,15 +143,9 @@ pub(crate) fn apply_controller(
     let compositor = windows::UI::Composition::Compositor::new()?;
     let interop: windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop =
         compositor.cast()?;
-    let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, true) }?;
+    let target = unsafe { interop.CreateDesktopWindowTarget(hwnd, BACKDROP_TARGET_IS_TOPMOST) }?;
     let container = compositor.CreateContainerVisual()?;
     target.SetRoot(&container)?;
-    // The renderer hosts its swap chain on this same visual (classic
-    // DirectComposition interop) so the window keeps exactly one topmost
-    // composition target shared by the backdrop and the GPU surface.
-    let dcomp_visual: windows::Win32::Graphics::DirectComposition::IDCompositionVisual =
-        container.cast()?;
-
     let controller = generated::DesktopAcrylicController::new()?;
     let configuration = generated::SystemBackdropConfiguration::new()?;
 
@@ -190,7 +179,6 @@ pub(crate) fn apply_controller(
         _controller: controller,
         _target: target,
         _container: container,
-        dcomp_visual,
     })
 }
 
@@ -319,4 +307,36 @@ fn hwnd_of(window: &Window) -> Result<HWND, WasdkError> {
         return Err(WasdkError::NonWin32Window);
     };
     Ok(HWND(h.hwnd.get() as *mut core::ffi::c_void))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_configure_lower_backdrop_target_as_non_topmost_when_on_windows() {
+        // Arrange
+        let expected = false;
+
+        // Act
+        let is_topmost = BACKDROP_TARGET_IS_TOPMOST;
+
+        // Assert
+        assert_eq!(is_topmost, expected);
+    }
+
+    #[test]
+    fn should_occupy_distinct_composition_layers_when_stacked_with_renderer() {
+        // Arrange
+        let backdrop_topmost = BACKDROP_TARGET_IS_TOPMOST;
+        let renderer_topmost = harbor_terminal::render::gpu::RENDER_TARGET_IS_TOPMOST;
+
+        // Act
+        let is_distinct = backdrop_topmost != renderer_topmost;
+
+        // Assert — ADR 0028: backdrop in lower slot, renderer in upper slot
+        assert!(is_distinct);
+        assert!(!backdrop_topmost);
+        assert!(renderer_topmost);
+    }
 }

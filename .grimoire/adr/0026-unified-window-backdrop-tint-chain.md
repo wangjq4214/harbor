@@ -9,17 +9,18 @@ The native caption strip and the client area showed a visible color seam: the cl
 
 ## Decision
 
-Apply one compositor-level backdrop tint to the whole main window through a three-tier chain:
+Apply one compositor-level backdrop tint to the whole main window through the fallback chain amended by ADR 0028:
 
 1. Windows App SDK initialization succeeds AND `DesktopAcrylicController::IsSupported()` → tinted acrylic via `DesktopAcrylicController`, covering the caption strip.
-2. Otherwise → AccentPolicy acrylic with the same tint values.
-3. Otherwise → opaque `#1E1E1E` fallback fill.
+2. On Windows 11 22H2 or newer without a usable App Runtime → native `DWMSBT_TRANSIENTWINDOW` acrylic.
+3. On older Windows builds → AccentPolicy acrylic with the same tint values.
+4. Otherwise → opaque `#1E1E1E` fallback fill.
 
-The tint is a single `WindowBackdropStyle` (white, TintOpacity 0.06, LuminosityOpacity 1.0) shared by every tier; the terminal panel keeps its warm-brown layer, and the client root stops painting the white veil. Windows App SDK bindings are self-generated with `windows-bindgen` from a pinned WinAppSDK version and vendored into the repository. Distribution stays framework-dependent: a missing Windows App Runtime simply falls to tier 2.
+The tint is a single `WindowBackdropStyle` (white, TintOpacity 0.06, LuminosityOpacity 1.0) shared by the WASDK and AccentPolicy tiers; the terminal panel keeps its warm-brown layer, and the client root stops painting the white veil. DWM TransientWindow is retained as an untintable availability fallback. Windows App SDK bindings are self-generated with `windows-bindgen` from a pinned WinAppSDK version and vendored into the repository.
 
 ## Consequences
 
-- Supersedes ADR 0023's Windows 11 `DWMSBT_TRANSIENTWINDOW` path and ADR 0025's host-root white veil.
-- Windows 10 keeps AccentPolicy; Windows 11 without the App Runtime degrades to the same tier.
+- ADR 0028 restores ADR 0023's Windows 11 `DWMSBT_TRANSIENTWINDOW` path only when the tintable WASDK path is unavailable.
+- Windows 10 keeps AccentPolicy; Windows 11 without the App Runtime retains native Acrylic.
 - Builds need no network once bindings are vendored.
 - Requires a bootstrap-failure and `IsSupported()` check before window styling.

@@ -185,6 +185,19 @@ mod surface_tests {
         assert_eq!(selected_backends(), wgpu::Backends::DX12);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_configure_render_target_as_topmost_when_on_windows() {
+        // Arrange
+        let expected = true;
+
+        // Act
+        let is_topmost = RENDER_TARGET_IS_TOPMOST;
+
+        // Assert
+        assert_eq!(is_topmost, expected);
+    }
+
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
             row,
@@ -344,32 +357,16 @@ impl CompositionHost {
     }
 }
 
+/// The desktop composition target layer for the renderer surface is always the upper slot (ADR 0028).
+#[cfg(target_os = "windows")]
+pub const RENDER_TARGET_IS_TOPMOST: bool = true;
+
 #[cfg(target_os = "windows")]
 fn create_main_surface(
     instance: &wgpu::Instance,
     window: &Arc<Window>,
     backends: wgpu::Backends,
-    shared_visual: Option<*mut core::ffi::c_void>,
 ) -> Result<(wgpu::Surface<'static>, Option<CompositionHost>)> {
-    if !backends.contains(wgpu::Backends::DX12) {
-        return Ok((
-            instance
-                .create_surface(Arc::clone(window))
-                .context("create surface")?,
-            None,
-        ));
-    }
-
-    if let Some(visual) = shared_visual {
-        return Ok((
-            unsafe {
-                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(visual))
-            }
-            .context("create shared composition surface")?,
-            None,
-        ));
-    }
-
     if !backends.contains(wgpu::Backends::DX12) {
         return Ok((
             instance
@@ -392,7 +389,7 @@ fn create_main_surface(
     };
     let target = unsafe {
         device
-            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), true)
+            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), RENDER_TARGET_IS_TOPMOST)
             .context("create DirectComposition window target")?
     };
     let visual = unsafe {
@@ -455,21 +452,7 @@ pub struct GpuContext {
 impl GpuContext {
     /// Creates the GPU surface, device, queue, surface configuration, and the
     /// shared colored-quad pipeline from the window.
-    /// A shared DirectComposition visual can be provided by the host when a
-    /// platform backdrop (e.g. the WASDK acrylic controller) already owns the
-    /// window's topmost composition target; the surface then hosts its swap
-    /// chain on that visual instead of creating a competing target.
-    ///
-    /// # Safety
-    /// If `shared_visual` is `Some`, it must point to a valid, non-null
-    /// `IDCompositionVisual` on the calling UI thread and remain alive until
-    /// this future completes or is dropped. The resulting surface retains its
-    /// own COM reference. The host must retain the associated composition
-    /// target/tree for as long as it wants the surface to be displayed.
-    pub async unsafe fn new(
-        window: Arc<Window>,
-        shared_visual: Option<*mut core::ffi::c_void>,
-    ) -> Result<Self> {
+    pub async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         tracing::info!(
             width = size.width,
@@ -483,13 +466,9 @@ impl GpuContext {
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         }));
         #[cfg(target_os = "windows")]
-        let (surface, composition_host) =
-            create_main_surface(&instance, &window, backends, shared_visual)?;
+        let (surface, composition_host) = create_main_surface(&instance, &window, backends)?;
         #[cfg(not(target_os = "windows"))]
-        let surface = {
-            let _ = shared_visual;
-            instance.create_surface(window).context("create surface")?
-        };
+        let surface = instance.create_surface(window).context("create surface")?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
