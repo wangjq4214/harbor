@@ -35,7 +35,7 @@ impl TerminalRenderPipeline {
         let background = Background::new(gpu, snap, metrics.cell_width, metrics.line_height, tint);
         let text = Text::new(gpu, font_book, metrics, snap, &viewport)?;
         let decoration = Decoration::new(gpu, snap, metrics);
-        let selection = Selection::new(gpu, metrics.cell_width, metrics.line_height);
+        let selection = Selection::new(gpu);
         let cursor = Cursor::new(gpu, metrics);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 

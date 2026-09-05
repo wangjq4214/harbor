@@ -76,12 +76,7 @@ pub struct Decoration {
     strikethrough_buffer: wgpu::Buffer,
     rows: usize,
     cols: usize,
-    cell_width: f32,
-    line_height: f32,
-    underline_pos: f32,
-    underline_thickness: f32,
-    strikethrough_pos: f32,
-    strikethrough_thickness: f32,
+    metrics: TextMetrics,
     dirty: bool,
 }
 
@@ -119,12 +114,7 @@ impl Decoration {
             strikethrough_buffer,
             rows,
             cols,
-            cell_width: metrics.cell_width,
-            line_height: metrics.line_height,
-            underline_pos: metrics.underline_position,
-            underline_thickness: metrics.underline_thickness,
-            strikethrough_pos: metrics.strikethrough_position,
-            strikethrough_thickness: metrics.strikethrough_thickness,
+            metrics,
             dirty: false,
         }
     }
@@ -141,15 +131,6 @@ impl Decoration {
         viewport: &RenderViewport,
     ) {
         let (surf_w, surf_h) = viewport.surface_dimensions();
-        let metrics = TextMetrics {
-            cell_width: self.cell_width,
-            line_height: self.line_height,
-            ascent: self.line_height,
-            underline_position: self.underline_pos,
-            underline_thickness: self.underline_thickness,
-            strikethrough_position: self.strikethrough_pos,
-            strikethrough_thickness: self.strikethrough_thickness,
-        };
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<ColoredVertex>();
         let plan = gpu.upload_plan(
@@ -173,8 +154,8 @@ impl Decoration {
                 self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
                 self.strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
             }
-            let u = build_underline_vertices(&metrics, snap, viewport);
-            let s = build_strikethrough_vertices(&metrics, snap, viewport);
+            let u = build_underline_vertices(&self.metrics, snap, viewport);
+            let s = build_strikethrough_vertices(&self.metrics, snap, viewport);
             gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
             gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
             self.rows = snap.rows;
@@ -189,18 +170,19 @@ impl Decoration {
 
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding decoration draw batch (full)");
-            let u = build_underline_vertices(&metrics, snap, viewport);
-            let s = build_strikethrough_vertices(&metrics, snap, viewport);
+            let u = build_underline_vertices(&self.metrics, snap, viewport);
+            let s = build_strikethrough_vertices(&self.metrics, snap, viewport);
             gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
             gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
                 let (_, cell_y) = viewport.cell_pos(range.row, 0);
-                let u_top = cell_y + self.underline_pos;
-                let u_bottom = u_top + self.underline_thickness;
-                let s_top = cell_y + self.strikethrough_pos - self.strikethrough_thickness / 2.0;
-                let s_bottom = s_top + self.strikethrough_thickness;
+                let u_top = cell_y + self.metrics.underline_position;
+                let u_bottom = u_top + self.metrics.underline_thickness;
+                let s_top = cell_y + self.metrics.strikethrough_position
+                    - self.metrics.strikethrough_thickness / 2.0;
+                let s_bottom = s_top + self.metrics.strikethrough_thickness;
 
                 let mut u_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
@@ -264,9 +246,6 @@ impl Decoration {
         }
     }
 
-    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
-        self.dirty = true;
-    }
 }
 
 #[cfg(test)]

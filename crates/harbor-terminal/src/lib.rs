@@ -214,9 +214,6 @@ impl Terminal {
         self.pointer.set_input_scale(target.scale_factor);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
-        if grid_changed {
-            self.pointer.clear();
-        }
         self.ingest_and_blink(|io, screen| io.drain(screen));
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);

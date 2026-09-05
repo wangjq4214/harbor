@@ -352,25 +352,8 @@ impl TerminalIo {
             _ => return false,
         };
 
-        if screen.is_alt() {
-            return true;
-        }
-
-        let lines = Self::wheel_to_lines(dy, is_pixel);
-        if lines > 0 {
-            screen.scroll_up(lines as usize);
-        } else if lines < 0 {
-            screen.scroll_down(lines.unsigned_abs());
-        }
+        screen.scroll_wheel(dy, is_pixel);
         true
-    }
-
-    fn wheel_to_lines(dy: f32, is_pixel: bool) -> isize {
-        if is_pixel {
-            (dy / 20.0) as isize
-        } else {
-            (dy * 3.0) as isize
-        }
     }
 
     // ── mode control ──────────────────────────────────────────────────

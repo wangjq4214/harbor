@@ -155,13 +155,6 @@ impl PointerInteraction {
         self.selection.has_selection() && !self.selection.is_range_empty()
     }
 
-    pub fn clear_selection(&mut self) -> bool {
-        let changed = self.selection.has_selection() || self.selection.is_dragging();
-        self.selection.clear();
-        self.active = None;
-        changed
-    }
-
     pub fn clear_selection_outcome(&mut self) -> TerminalEventOutcome {
         let redraw = self.selection.has_selection() || self.selection.is_dragging();
         self.selection.clear();
@@ -173,13 +166,6 @@ impl PointerInteraction {
         self.interrupt_outcome(redraw)
     }
 
-    pub fn on_key_press(&mut self) -> bool {
-        let changed = self.selection.on_key_press();
-        if changed {
-            self.active = None;
-        }
-        changed
-    }
 
     /// Releases the active pointer and clears button state after a selection interrupt.
     fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
@@ -218,19 +204,8 @@ impl PointerInteraction {
         match event.phase {
             TerminalPointerPhase::WheelLine { dy, .. }
             | TerminalPointerPhase::WheelPixel { dy, .. } => {
-                if snapshot.is_alt {
-                    return TerminalEventOutcome::default();
-                }
-                let lines = if matches!(event.phase, TerminalPointerPhase::WheelLine { .. }) {
-                    (dy * 3.0) as isize
-                } else {
-                    (dy / 20.0) as isize
-                };
-                if lines > 0 {
-                    screen.scroll_up(lines as usize);
-                } else if lines < 0 {
-                    screen.scroll_down(lines.unsigned_abs());
-                }
+                let is_pixel = matches!(event.phase, TerminalPointerPhase::WheelPixel { .. });
+                let lines = screen.scroll_wheel(dy, is_pixel);
                 TerminalEventOutcome {
                     redraw: lines != 0,
                     ..TerminalEventOutcome::default()
