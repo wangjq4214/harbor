@@ -185,6 +185,19 @@ mod surface_tests {
         assert_eq!(selected_backends(), wgpu::Backends::DX12);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn should_configure_render_target_as_topmost_when_on_windows() {
+        // Arrange
+        let expected = true;
+
+        // Act
+        let is_topmost = RENDER_TARGET_IS_TOPMOST;
+
+        // Assert
+        assert_eq!(is_topmost, expected);
+    }
+
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
             row,
@@ -344,6 +357,10 @@ impl CompositionHost {
     }
 }
 
+/// The desktop composition target layer for the renderer surface is always the upper slot (ADR 0028).
+#[cfg(target_os = "windows")]
+pub const RENDER_TARGET_IS_TOPMOST: bool = true;
+
 #[cfg(target_os = "windows")]
 fn create_main_surface(
     instance: &wgpu::Instance,
@@ -372,7 +389,7 @@ fn create_main_surface(
     };
     let target = unsafe {
         device
-            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), true)
+            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), RENDER_TARGET_IS_TOPMOST)
             .context("create DirectComposition window target")?
     };
     let visual = unsafe {

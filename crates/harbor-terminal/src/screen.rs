@@ -342,6 +342,25 @@ impl Screen {
         self.normal.scroll_to_bottom();
     }
 
+    /// Converts a mouse wheel delta (line or pixel) to row changes and scrolls the primary screen.
+    /// Alt-screen wheel events are consumed without scrolling. Returns the signed line count.
+    pub fn scroll_wheel(&mut self, dy: f32, is_pixel: bool) -> isize {
+        if self.is_alt() {
+            return 0;
+        }
+        let lines = if is_pixel {
+            (dy / 20.0) as isize
+        } else {
+            (dy * 3.0) as isize
+        };
+        if lines > 0 {
+            self.scroll_up(lines as usize);
+        } else if lines < 0 {
+            self.scroll_down(lines.unsigned_abs());
+        }
+        lines
+    }
+
     // ── alt screen ─────────────────────────────────────────────────────
 
     pub fn is_alt(&self) -> bool {

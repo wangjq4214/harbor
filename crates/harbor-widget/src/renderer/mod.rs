@@ -1,7 +1,151 @@
 pub mod quad;
 pub mod text_renderer;
 
-use crate::layout::{Rect, Size};
+use crate::decoration::ClipBehavior;
+use crate::layout::{Point, Rect, Size};
+use crate::scene::clip::RoundedClip;
+
+/// Renderer-ready rounded clip geometry in physical pixels.
+///
+/// Bounds intentionally use plain floating-point coordinates rather than the
+/// logical [`Rect`] type, making the unit conversion boundary explicit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicalRoundedClip {
+    min: (f32, f32),
+    max: (f32, f32),
+    radii: [f32; 4],
+    behavior: ClipBehavior,
+}
+
+impl PhysicalRoundedClip {
+    pub const fn min(&self) -> (f32, f32) {
+        self.min
+    }
+
+    pub const fn max(&self) -> (f32, f32) {
+        self.max
+    }
+
+    /// Returns physical radii clockwise from the top-left corner.
+    pub const fn radii(&self) -> [f32; 4] {
+        self.radii
+    }
+
+    pub const fn behavior(&self) -> ClipBehavior {
+        self.behavior
+    }
+}
+
+/// Two GPU clip slots packed relative to an instance origin in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PackedClips {
+    pub clip_rect0: [f32; 4],
+    pub clip_radii0: [f32; 4],
+    pub clip_rect1: [f32; 4],
+    pub clip_radii1: [f32; 4],
+    pub clip_meta: [u32; 4],
+}
+
+pub(crate) fn finite_difference(lhs: f32, rhs: f32) -> f32 {
+    (f64::from(lhs) - f64::from(rhs)).clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+}
+
+fn clip_behavior_code(behavior: ClipBehavior) -> u32 {
+    match behavior {
+        ClipBehavior::None => 0,
+        ClipBehavior::HardEdge => 1,
+        ClipBehavior::AntiAlias => 2,
+    }
+}
+
+fn exact_clip_slot(ancestor: &RoundedClip, origin: Point) -> ([f32; 4], [f32; 4], u32) {
+    let bounds = ancestor.rect();
+    (
+        [
+            finite_difference(bounds.min.x, origin.x),
+            finite_difference(bounds.min.y, origin.y),
+            finite_difference(bounds.max.x, bounds.min.x),
+            finite_difference(bounds.max.y, bounds.min.y),
+        ],
+        ancestor.radii().as_array(),
+        clip_behavior_code(ancestor.behavior()),
+    )
+}
+
+/// Packs ancestor clips into the two portable instance slots.
+///
+/// More than two active clips collapse remaining ancestors into an inscribed
+/// hard rectangle so content cannot escape an authoritative ancestor.
+fn collapse_ancestor_insets(
+    ancestor: &RoundedClip,
+    min_x: &mut f32,
+    min_y: &mut f32,
+    max_x: &mut f32,
+    max_y: &mut f32,
+) {
+    let bounds = ancestor.rect();
+    let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
+    let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    *min_x = (*min_x).max(inset_min_x);
+    *min_y = (*min_y).max(inset_min_y);
+    *max_x = (*max_x).min(inset_max_x);
+    *max_y = (*max_y).min(inset_max_y);
+}
+
+pub(crate) fn pack_active_clips(clips: &[RoundedClip], origin: Point) -> PackedClips {
+    let mut active = clips
+        .iter()
+        .filter(|clip| clip.behavior() != ClipBehavior::None);
+    let Some(first) = active.next() else {
+        return PackedClips::default();
+    };
+
+    let mut packed = PackedClips::default();
+    (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) = exact_clip_slot(first, origin);
+
+    let Some(second) = active.next() else {
+        packed.clip_meta[0] = 1;
+        return packed;
+    };
+
+    packed.clip_meta[0] = 2;
+    let Some(third) = active.next() else {
+        (packed.clip_rect1, packed.clip_radii1, packed.clip_meta[2]) =
+            exact_clip_slot(second, origin);
+        return packed;
+    };
+
+    let mut min_x = -f32::MAX;
+    let mut min_y = -f32::MAX;
+    let mut max_x = f32::MAX;
+    let mut max_y = f32::MAX;
+
+    collapse_ancestor_insets(second, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+    collapse_ancestor_insets(third, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+    for ancestor in active {
+        collapse_ancestor_insets(ancestor, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+    }
+
+    packed.clip_rect1 = [
+        finite_difference(min_x, origin.x),
+        finite_difference(min_y, origin.y),
+        finite_difference(max_x.max(min_x), min_x),
+        finite_difference(max_y.max(min_y), min_y),
+    ];
+    packed.clip_meta[2] = if max_x <= min_x || max_y <= min_y {
+        3
+    } else {
+        1
+    };
+    packed
+}
 
 // ── Viewport ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +188,32 @@ impl Viewport {
         }
     }
 
+    /// Converts retained logical rounded-clip geometry to physical pixels
+    /// without introducing raster rounding or GPU state.
+    ///
+    /// The public logical and viewport values are finite, but their product
+    /// can exceed `f32` range. Saturation preserves a finite renderer boundary
+    /// for a later GPU encoder while leaving all representable products exact.
+    pub fn to_physical_clip(&self, clip: &RoundedClip) -> PhysicalRoundedClip {
+        let rect = clip.rect();
+        let radii = clip
+            .radii()
+            .as_array()
+            .map(|radius| scale_to_physical(radius, self.scale_factor));
+        PhysicalRoundedClip {
+            min: (
+                scale_to_physical(rect.min.x, self.scale_factor),
+                scale_to_physical(rect.min.y, self.scale_factor),
+            ),
+            max: (
+                scale_to_physical(rect.max.x, self.scale_factor),
+                scale_to_physical(rect.max.y, self.scale_factor),
+            ),
+            radii,
+            behavior: clip.behavior(),
+        }
+    }
+
     /// Returns true when both physical dimensions are non-zero.
     pub fn is_drawable(&self) -> bool {
         self.physical_size.0 > 0 && self.physical_size.1 > 0
@@ -73,6 +243,11 @@ impl Viewport {
     }
 }
 
+fn scale_to_physical(value: f32, scale_factor: f32) -> f32 {
+    let scaled = f64::from(value) * f64::from(scale_factor);
+    scaled.clamp(f64::from(-f32::MAX), f64::from(f32::MAX)) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +258,81 @@ mod tests {
         let vp = Viewport::new(800, 600, 1.0);
         assert_eq!(vp.logical_size, Size::new(800.0, 600.0));
         assert_eq!(vp.scale_factor, 1.0);
+    }
+
+    #[test]
+    fn physical_rounded_clip_preserves_fractional_scaled_geometry() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect::from_min_size(Point::new(1.25, 2.5), Size::new(10.0, 8.0)),
+            BorderRadius::only(1.0, 2.0, 3.0, 4.0).unwrap(),
+            ClipBehavior::AntiAlias,
+        )
+        .unwrap();
+        let physical = Viewport::new(600, 400, 1.5).to_physical_clip(&clip);
+
+        assert_eq!(physical.min(), (1.875, 3.75));
+        assert_eq!(physical.max(), (16.875, 15.75));
+        assert_eq!(physical.radii(), [1.5, 3.0, 4.5, 6.0]);
+        assert_eq!(physical.behavior(), ClipBehavior::AntiAlias);
+    }
+
+    #[test]
+    fn physical_rounded_clip_scales_at_one_and_two_times_without_rounding() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect::from_min_size(Point::new(1.25, 2.5), Size::new(4.0, 5.0)),
+            BorderRadius::all(1.25).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap();
+
+        let at_one = Viewport::new(100, 100, 1.0).to_physical_clip(&clip);
+        let at_two = Viewport::new(200, 200, 2.0).to_physical_clip(&clip);
+
+        assert_eq!(at_one.min(), (1.25, 2.5));
+        assert_eq!(at_one.max(), (5.25, 7.5));
+        assert_eq!(at_one.radii(), [1.25; 4]);
+        assert_eq!(at_two.min(), (2.5, 5.0));
+        assert_eq!(at_two.max(), (10.5, 15.0));
+        assert_eq!(at_two.radii(), [2.5; 4]);
+    }
+
+    #[test]
+    fn physical_rounded_clip_saturates_extreme_finite_products() {
+        use crate::decoration::{BorderRadius, ClipBehavior};
+        use crate::scene::clip::RoundedClip;
+
+        let clip = RoundedClip::new(
+            Rect {
+                min: Point::ZERO,
+                max: Point::new(f32::MAX, 1.0),
+            },
+            BorderRadius::all(1.0).unwrap(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap();
+        let physical = Viewport::new(1, 1, 2.0).to_physical_clip(&clip);
+
+        assert_eq!(physical.max().0, f32::MAX);
+        assert!(
+            [
+                physical.min().0,
+                physical.min().1,
+                physical.max().0,
+                physical.max().1,
+                physical.radii()[0],
+                physical.radii()[1],
+                physical.radii()[2],
+                physical.radii()[3],
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+        );
     }
 
     #[test]
@@ -234,5 +484,137 @@ mod tests {
         assert!((ndc[0] - 0.75).abs() < 0.01);
         // y = 1 - 500/600*2 = 1 - 0.8333*2 = 1 - 1.6667 = -0.6667
         assert!((ndc[1] - (-0.6667)).abs() < 0.01);
+    }
+
+    fn test_clip(origin: Point, size: Size, radius: f32, behavior: ClipBehavior) -> RoundedClip {
+        RoundedClip::new(
+            Rect::from_min_size(origin, size),
+            crate::decoration::BorderRadius::all(radius).unwrap(),
+            behavior,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn should_filter_none_clips_when_packing_active_slots() {
+        // Arrange
+        let clips = [
+            test_clip(Point::ZERO, Size::new(20.0, 20.0), 4.0, ClipBehavior::None),
+            test_clip(
+                Point::new(1.0, 2.0),
+                Size::new(10.0, 8.0),
+                3.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 1);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_rect0, [1.0, 2.0, 10.0, 8.0]);
+        assert_eq!(packed.clip_radii0, [3.0; 4]);
+        assert_eq!(packed.clip_meta[2], 0);
+    }
+
+    #[test]
+    fn should_pack_two_exact_slots_when_two_clips_are_active() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(32.0, 32.0),
+                8.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(4.0, 4.0),
+                Size::new(24.0, 24.0),
+                2.0,
+                ClipBehavior::AntiAlias,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::new(1.0, 1.0));
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_meta[2], 2);
+        assert_eq!(packed.clip_rect0, [-1.0, -1.0, 32.0, 32.0]);
+        assert_eq!(packed.clip_radii0, [8.0; 4]);
+        assert_eq!(packed.clip_rect1, [3.0, 3.0, 24.0, 24.0]);
+        assert_eq!(packed.clip_radii1, [2.0; 4]);
+    }
+
+    #[test]
+    fn should_collapse_remaining_ancestors_to_inscribed_hard_rect_when_more_than_two_clips() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(32.0, 32.0),
+                8.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(4.0, 4.0),
+                Size::new(24.0, 24.0),
+                4.0,
+                ClipBehavior::AntiAlias,
+            ),
+            test_clip(
+                Point::new(8.0, 8.0),
+                Size::new(16.0, 16.0),
+                2.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[1], 1);
+        assert_eq!(packed.clip_meta[2], 1);
+        assert_eq!(packed.clip_rect0, [0.0, 0.0, 32.0, 32.0]);
+        assert_eq!(packed.clip_rect1, [10.0, 10.0, 12.0, 12.0]);
+        assert_eq!(packed.clip_radii1, [0.0; 4]);
+    }
+
+    #[test]
+    fn should_encode_empty_coverage_when_collapsed_intersection_is_empty() {
+        // Arrange
+        let clips = [
+            test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                0.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                12.0,
+                ClipBehavior::HardEdge,
+            ),
+            test_clip(
+                Point::new(16.0, 16.0),
+                Size::new(4.0, 4.0),
+                2.0,
+                ClipBehavior::HardEdge,
+            ),
+        ];
+
+        // Act
+        let packed = pack_active_clips(&clips, Point::ZERO);
+
+        // Assert
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_meta[2], 3);
     }
 }

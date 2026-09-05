@@ -220,7 +220,7 @@ Vim and tmux receive deterministic keyboard, paste, focus, mouse, and committed 
 
 - Handle shell crash, device loss, out-of-memory, and panic logging.
 - Add TOML configuration, themes, search, and Windows packaging.
-- Main-window Windows Acrylic through Default Background Cells: Windows 11 build 22621+ uses DWM TransientWindow; Windows 10 and earlier builds use accent-policy Acrylic in the client area. Windows 10 Caption Degradation — an opaque caption strip on some themes — is accepted; system min/max/close buttons stay DWM-drawn. Paste confirmation is excluded and stays an opaque separate window.
+- Main-window Windows Acrylic through Default Background Cells uses a unified compositor tint: DesktopAcrylicController when the Windows App SDK is available, otherwise accent-policy Acrylic, with an opaque dark fallback. Windows 10 Caption Degradation — an opaque caption strip on some themes — is accepted; system min/max/close buttons stay DWM-drawn. Paste confirmation is excluded and stays an opaque separate window.
 - Run documented Windows dogfood sessions and record known exclusions.
 
 ### Exit gate

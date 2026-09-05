@@ -14,10 +14,7 @@ use crate::layout::{BoxConstraints, Point, Size};
 use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
-use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearance, ExternalFrameAppearanceFn,
-    ExternalScheduleFn,
-};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
@@ -50,7 +47,7 @@ thread_local! {
 ///
 /// Calls outside a Runtime dispatch are ignored because there is no safe
 /// owner for the event; CustomPaint always runs inside `Runtime::dispatch`.
-pub fn queue_external_input(
+pub(crate) fn queue_external_input(
     id: crate::scene::primitive::ExternalDrawId,
     event: crate::input::event::UiEvent,
 ) {
@@ -102,8 +99,7 @@ pub struct Runtime {
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     external_schedules: HashMap<ExternalDrawId, Arc<ExternalScheduleFn>>,
-    /// At most one frame-appearance provider is expected for a Runtime.
-    external_frame_appearance: Option<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
+    /// Tracks per-draw present eligibility for synchronized output.
     external_eligible: HashMap<ExternalDrawId, bool>,
     events: EventRouter,
     encoder: FrameEncoder,
@@ -136,7 +132,6 @@ impl Runtime {
             current_viewport: None,
             external_draws: HashMap::new(),
             external_schedules: HashMap::new(),
-            external_frame_appearance: None,
             external_eligible: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
@@ -188,12 +183,9 @@ impl Runtime {
         // Full rebuild from root with empty old children
         self.rebuild_root(root_id, &[]);
 
-        // Mark root dirty (first update will trigger a redraw)
-        if let Some(fiber) = self.arena.get_mut(root_id) {
-            fiber.flags.insert(DirtyFlags::BUILD_DIRTY);
-            fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
-        }
-        mark_dirty_for(self.runtime_id, root_id);
+        // The first update presents this tree: arm the redraw edge without
+        // rebuilding the identical tree a second time.
+        self.pending_effects.merge(RuntimeEffects::request_redraw());
     }
 
     /// Processes dirty fibers and runs layout.
@@ -342,17 +334,6 @@ impl Runtime {
         self.external_schedules.clear();
         self.external_schedules
             .extend(externals.schedules.drain(..));
-        self.external_frame_appearance = None;
-        for (id, provider) in externals.frame_appearances.drain(..) {
-            if self.external_frame_appearance.is_some() {
-                tracing::warn!(
-                    id,
-                    "multiple external frame-appearance providers; retaining the first"
-                );
-            } else {
-                self.external_frame_appearance = Some((id, provider));
-            }
-        }
     }
 
     /// Returns the viewport installed for the current frame, if any.
@@ -399,7 +380,6 @@ impl Runtime {
             EncodeScene {
                 scene_graph: &self.scene_graph,
                 pending_delta: &mut self.pending_delta,
-                current_viewport: &mut self.current_viewport,
                 external_draws: &self.external_draws,
                 external_eligible: &self.external_eligible,
                 commit,
@@ -407,14 +387,13 @@ impl Runtime {
         );
     }
 
-    /// Resolves the terminal-owned default clear appearance for a frame.
+    /// Resolves whether this Runtime owns at least one external draw handler.
     ///
-    /// Returns `None` when the Runtime has no external appearance provider;
-    /// presenters then use their own opaque fallback (for example, dialogs).
-    pub fn frame_appearance(&self, backdrop_available: bool) -> Option<ExternalFrameAppearance> {
-        self.external_frame_appearance
-            .as_ref()
-            .and_then(|(id, provider)| provider(*id, backdrop_available))
+    /// Presenters use this to select the frame clear policy: runtimes that own
+    /// external draws (e.g. the main window) clear transparently, while plain
+    /// widget runtimes (e.g. dialogs) keep an opaque fallback clear.
+    pub fn has_external_draws(&self) -> bool {
+        !self.external_draws.is_empty()
     }
 
     /// Signals that the viewport has changed (e.g., due to window resize).
@@ -442,7 +421,7 @@ impl Runtime {
     ///
     /// Routes the event through capture → target → bubble phases,
     /// then applies any commands issued by handlers.
-    pub fn dispatch(&mut self, event: UiEvent, _now: Instant) -> RuntimeEffects {
+    pub fn dispatch(&mut self, event: UiEvent) -> RuntimeEffects {
         let _scope = RuntimeScope::enter(self.runtime_id);
         let needs_redraw = self.events.route_event(&self.arena, self.root_id, &event);
         if needs_redraw && let Some(root_id) = self.root_id {
@@ -463,15 +442,14 @@ impl Runtime {
         let pointer_ids = self.events.input().captured_pointer_ids();
         let mut effects = RuntimeEffects::default();
         for pointer_id in pointer_ids {
-            effects.merge(self.dispatch(
-                UiEvent::Pointer(crate::input::event::PointerEvent::new(
+            effects.merge(
+                self.dispatch(UiEvent::Pointer(crate::input::event::PointerEvent::new(
                     position,
                     PointerPhase::Cancel,
                     crate::input::event::PointerButton::Left,
                     pointer_id,
-                )),
-                Instant::now(),
-            ));
+                ))),
+            );
         }
         effects
     }
@@ -504,13 +482,6 @@ impl Runtime {
     pub fn prepare_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
         self.encoder
             .prepare_text_runs(&self.scene_graph, &self.text_metrics, glyph_fn);
-    }
-
-    /// Backwards-compatible spelling for [`Self::prepare_text_runs`].
-    ///
-    /// This no longer reads a pending queue or thread-local state.
-    pub fn register_pending_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
-        self.prepare_text_runs(glyph_fn);
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -660,9 +631,7 @@ mod tests {
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase,
     };
     use crate::input::event_ctx::EventCtx;
-    use crate::scene::primitive::{
-        ExternalFrameAppearance, ExternalFrameAppearanceFn, ExternalScheduleDemand,
-    };
+    use crate::scene::primitive::ExternalScheduleDemand;
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
@@ -971,44 +940,65 @@ mod tests {
     // ── Accessors ──────────────────────────────────────────────────────
 
     #[test]
-    fn should_resolve_external_frame_appearance_with_host_backdrop_fact() {
-        let provider: Arc<ExternalFrameAppearanceFn> = Arc::new(|_, backdrop| {
-            if backdrop {
-                Some(ExternalFrameAppearance::new([0.1, 0.2, 0.3, 0.25]))
-            } else {
-                Some(ExternalFrameAppearance::new([0.1, 0.2, 0.3, 1.0]))
-            }
-        });
-        let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(77).frame_appearance(provider));
+    fn runtime_without_external_draws_reports_none() {
+        let rt = Runtime::new();
 
-        assert_eq!(
-            rt.frame_appearance(true).map(|appearance| appearance.rgba),
-            Some([0.1, 0.2, 0.3, 0.25])
-        );
-        assert_eq!(
-            rt.frame_appearance(false).map(|appearance| appearance.rgba),
-            Some([0.1, 0.2, 0.3, 1.0])
-        );
+        assert!(!rt.has_external_draws());
     }
 
     #[test]
-    fn should_retain_first_external_frame_appearance_provider_deterministically() {
-        let first: Arc<ExternalFrameAppearanceFn> =
-            Arc::new(|_, _| Some(ExternalFrameAppearance::new([1.0, 0.0, 0.0, 1.0])));
-        let second: Arc<ExternalFrameAppearanceFn> =
-            Arc::new(|_, _| Some(ExternalFrameAppearance::new([0.0, 1.0, 0.0, 1.0])));
+    fn runtime_with_custom_paint_root_reports_external_draws() {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(
-            Column::new()
-                .child(CustomPaint::new(1).frame_appearance(first))
-                .child(CustomPaint::new(2).frame_appearance(second)),
-        );
+        rt.set_root(CustomPaint::new(77).handler(handler));
+        rt.update(now());
 
-        assert_eq!(
-            rt.frame_appearance(true).map(|appearance| appearance.rgba),
-            Some([1.0, 0.0, 0.0, 1.0])
-        );
+        assert!(rt.has_external_draws());
+    }
+
+    #[test]
+    fn should_report_no_external_draws_when_custom_paint_has_no_handler() {
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(77));
+        rt.update(now());
+
+        assert!(!rt.has_external_draws());
+    }
+
+    #[test]
+    fn should_report_no_external_draws_when_custom_paint_registers_only_a_schedule() {
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(78).schedule(schedule));
+        rt.update(now());
+
+        assert!(!rt.has_external_draws());
+    }
+
+    #[test]
+    fn should_report_external_draws_when_handler_is_nested_in_subtree() {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let mut rt = Runtime::new();
+        rt.set_root(Column::new().child(CustomPaint::new(79).handler(handler)));
+        rt.update(now());
+
+        assert!(rt.has_external_draws());
+    }
+
+    #[test]
+    fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(80).handler(handler));
+        rt.update(now());
+        assert!(rt.has_external_draws());
+
+        // Act — replacing the root rebuilds and reinstalls the external bag.
+        rt.set_root(Button::new("OK"));
+        rt.update(now());
+
+        // Assert
+        assert!(!rt.has_external_draws());
     }
 
     #[test]
@@ -1100,13 +1090,10 @@ mod tests {
         rt.drain_external_input();
 
         let first = rt.input().focused;
-        let effects = rt.dispatch(
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: Key::Tab,
-                modifiers: Modifiers::default(),
-            }),
-            now(),
-        );
+        let effects = rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        }));
 
         assert!(effects.request_redraw);
         assert_ne!(rt.input().focused, first);
@@ -1193,15 +1180,12 @@ mod tests {
         rt.update(now());
 
         // Down to capture pointer 99
-        rt.dispatch(
-            UiEvent::Pointer(PointerEvent::new(
-                Point::new(46.0, 16.0),
-                PointerPhase::Down,
-                PointerButton::Left,
-                99,
-            )),
-            now(),
-        );
+        rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(46.0, 16.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            99,
+        )));
         assert!(
             rt.input().captor(99).is_some(),
             "pointer 99 should be captured"
@@ -1218,15 +1202,12 @@ mod tests {
         );
 
         // Sending events for now-released pointer should not panic
-        let req = rt.dispatch(
-            UiEvent::Pointer(PointerEvent::new(
-                Point::new(46.0, 16.0),
-                PointerPhase::Up,
-                PointerButton::Left,
-                99,
-            )),
-            now(),
-        );
+        let req = rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(46.0, 16.0),
+            PointerPhase::Up,
+            PointerButton::Left,
+            99,
+        )));
         let _ = req;
     }
 
@@ -1401,16 +1382,6 @@ mod tests {
             84.0
         );
         assert_eq!(second.text_metrics().cell_width, 20.0);
-    }
-
-    #[test]
-    fn legacy_text_preparation_spelling_forwards_to_scene_preparation() {
-        let mut rt = Runtime::new();
-        rt.set_root(TextLabel::new("Confirm paste?"));
-
-        rt.register_pending_text_runs(&|_ch| None);
-
-        assert_eq!(rt.text_run_cache().len(), 1);
     }
 
     // ── external schedule merge ─────────────────────────────────────────

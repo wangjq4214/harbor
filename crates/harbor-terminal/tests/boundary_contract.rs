@@ -158,6 +158,36 @@ fn should_only_support_premultiplied_alpha_for_transparent_terminal_frames() {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn should_expose_topmost_render_target_flag_when_on_windows() {
+    // Arrange
+    let expected = true;
+
+    // Act
+    let is_topmost = harbor_terminal::render::gpu::RENDER_TARGET_IS_TOPMOST;
+
+    // Assert
+    assert_eq!(is_topmost, expected);
+}
+
+#[test]
+fn should_support_safe_gpu_context_construction_without_shared_visual_when_instantiated() {
+    // Arrange
+    fn assert_safe_signature<F, Fut>(_: F)
+    where
+        F: Fn(std::sync::Arc<winit::window::Window>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<harbor_terminal::render::gpu::GpuContext>>,
+    {
+    }
+
+    // Act
+    let constructor = harbor_terminal::render::gpu::GpuContext::new;
+
+    // Assert
+    assert_safe_signature(constructor);
+}
+
 // ── TerminalEvent ───────────────────────────────────────────────────────────
 
 #[test]
