@@ -105,16 +105,22 @@ impl ExternalDrawContext {
 
     /// Clamped physical scissor `(x, y, width, height)` for wgpu.
     pub fn scissor_rect(&self) -> (u32, u32, u32, u32) {
-        let scale = self.scale_factor();
-        let (surf_w, surf_h) = self.surface_size();
+        Self::compute_scissor(self.logical_rect, self.scale_factor(), self.surface_size())
+    }
+
+    pub(crate) fn compute_scissor(
+        logical_rect: Rect,
+        scale: f32,
+        (surf_w, surf_h): (u32, u32),
+    ) -> (u32, u32, u32, u32) {
         if surf_w == 0 || surf_h == 0 {
             return (0, 0, 0, 0);
         }
 
-        let left = (self.logical_rect.min.x * scale).floor() as i64;
-        let top = (self.logical_rect.min.y * scale).floor() as i64;
-        let right = (self.logical_rect.max.x * scale).ceil() as i64;
-        let bottom = (self.logical_rect.max.y * scale).ceil() as i64;
+        let left = (logical_rect.min.x * scale).floor() as i64;
+        let top = (logical_rect.min.y * scale).floor() as i64;
+        let right = (logical_rect.max.x * scale).ceil() as i64;
+        let bottom = (logical_rect.max.y * scale).ceil() as i64;
 
         let clip_left = left.clamp(0, surf_w as i64);
         let clip_top = top.clamp(0, surf_h as i64);

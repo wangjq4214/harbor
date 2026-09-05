@@ -129,12 +129,11 @@ impl EventRouter {
     }
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
-        let clipboard_write = ctx.take_clipboard_write();
+        if let Some(text) = ctx.take_clipboard_write() {
+            self.pending_clipboard = Some(text);
+        }
         let previous_focus = self.input.focused;
         let needs_paint = self.input.apply(ctx.take_commands(), arena);
-        if clipboard_write.is_some() {
-            self.pending_clipboard = clipboard_write;
-        }
         let next_focus = self.input.focused;
         let focus_needs_paint = if previous_focus != next_focus {
             self.notify_focus_transition(arena, previous_focus, next_focus)

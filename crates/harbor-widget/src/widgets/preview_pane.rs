@@ -23,7 +23,6 @@ pub struct PreviewPane {
     line_height: f32,
     visible_lines: usize,
     color: Color,
-    children: Vec<View>,
 }
 
 impl PreviewPane {
@@ -39,7 +38,6 @@ impl PreviewPane {
             line_height,
             visible_lines,
             color: Color::WHITE,
-            children: vec![],
         }
     }
 
@@ -51,7 +49,7 @@ impl PreviewPane {
 
 impl Component for PreviewPane {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), vec![], None)
     }
 }
 

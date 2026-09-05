@@ -137,9 +137,8 @@ impl SceneGraph {
         let mut removed = Vec::new();
         let mut modified = Vec::new();
 
-        let old_ids: HashSet<u64> = self.items.iter().map(|i| i.id).collect();
         let old_by_id: HashMap<u64, &SceneItem> = self.items.iter().map(|i| (i.id, i)).collect();
-        let mut reserved_ids = old_ids.clone();
+        let mut reserved_ids: HashSet<u64> = old_by_id.keys().copied().collect();
         reserved_ids.extend(
             incoming
                 .iter()
@@ -191,7 +190,6 @@ impl SceneGraph {
 
         // Drop old_by_id to release immutable borrow on self.items
         drop(old_by_id);
-        drop(old_ids);
 
         self.items = new_items;
 

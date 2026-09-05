@@ -76,57 +76,73 @@ fn exact_clip_slot(ancestor: &RoundedClip, origin: Point) -> ([f32; 4], [f32; 4]
 ///
 /// More than two active clips collapse remaining ancestors into an inscribed
 /// hard rectangle so content cannot escape an authoritative ancestor.
+fn collapse_ancestor_insets(
+    ancestor: &RoundedClip,
+    min_x: &mut f32,
+    min_y: &mut f32,
+    max_x: &mut f32,
+    max_y: &mut f32,
+) {
+    let bounds = ancestor.rect();
+    let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
+    let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
+        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+    *min_x = (*min_x).max(inset_min_x);
+    *min_y = (*min_y).max(inset_min_y);
+    *max_x = (*max_x).min(inset_max_x);
+    *max_y = (*max_y).min(inset_max_y);
+}
+
 pub(crate) fn pack_active_clips(clips: &[RoundedClip], origin: Point) -> PackedClips {
-    let active: Vec<&RoundedClip> = clips
-        .iter()
-        .filter(|clip| clip.behavior() != ClipBehavior::None)
-        .collect();
+    let mut active = clips.iter().filter(|clip| clip.behavior() != ClipBehavior::None);
+    let Some(first) = active.next() else {
+        return PackedClips::default();
+    };
+
     let mut packed = PackedClips::default();
-    if let Some(first) = active.first() {
-        (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) =
-            exact_clip_slot(first, origin);
-    }
-    if active.len() == 2 {
+    (packed.clip_rect0, packed.clip_radii0, packed.clip_meta[1]) =
+        exact_clip_slot(first, origin);
+
+    let Some(second) = active.next() else {
+        packed.clip_meta[0] = 1;
+        return packed;
+    };
+
+    packed.clip_meta[0] = 2;
+    let Some(third) = active.next() else {
         (packed.clip_rect1, packed.clip_radii1, packed.clip_meta[2]) =
-            exact_clip_slot(active[1], origin);
-    } else if active.len() > 2 {
-        let mut min_x = -f32::MAX;
-        let mut min_y = -f32::MAX;
-        let mut max_x = f32::MAX;
-        let mut max_y = f32::MAX;
-        for ancestor in &active[1..] {
-            let bounds = ancestor.rect();
-            let inset = ancestor.radii().as_array().into_iter().fold(0.0, f32::max);
-            let inset_min_x = (f64::from(bounds.min.x) + f64::from(inset))
-                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                as f32;
-            let inset_min_y = (f64::from(bounds.min.y) + f64::from(inset))
-                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                as f32;
-            let inset_max_x = (f64::from(bounds.max.x) - f64::from(inset))
-                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                as f32;
-            let inset_max_y = (f64::from(bounds.max.y) - f64::from(inset))
-                .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                as f32;
-            min_x = min_x.max(inset_min_x);
-            min_y = min_y.max(inset_min_y);
-            max_x = max_x.min(inset_max_x);
-            max_y = max_y.min(inset_max_y);
-        }
-        packed.clip_rect1 = [
-            finite_difference(min_x, origin.x),
-            finite_difference(min_y, origin.y),
-            finite_difference(max_x.max(min_x), min_x),
-            finite_difference(max_y.max(min_y), min_y),
-        ];
-        packed.clip_meta[2] = if max_x <= min_x || max_y <= min_y {
-            3
-        } else {
-            1
-        };
+            exact_clip_slot(second, origin);
+        return packed;
+    };
+
+    let mut min_x = -f32::MAX;
+    let mut min_y = -f32::MAX;
+    let mut max_x = f32::MAX;
+    let mut max_y = f32::MAX;
+
+    collapse_ancestor_insets(second, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+    collapse_ancestor_insets(third, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+    for ancestor in active {
+        collapse_ancestor_insets(ancestor, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
     }
-    packed.clip_meta[0] = active.len().min(2) as u32;
+
+    packed.clip_rect1 = [
+        finite_difference(min_x, origin.x),
+        finite_difference(min_y, origin.y),
+        finite_difference(max_x.max(min_x), min_x),
+        finite_difference(max_y.max(min_y), min_y),
+    ];
+    packed.clip_meta[2] = if max_x <= min_x || max_y <= min_y {
+        3
+    } else {
+        1
+    };
     packed
 }
 

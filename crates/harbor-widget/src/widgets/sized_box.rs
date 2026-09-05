@@ -11,16 +11,11 @@ use crate::view::{AnyView, BuildCx, Component, Key, View};
 pub struct SizedBox {
     pub size: Size,
     pub color: Option<Color>,
-    children: Vec<View>,
 }
 
 impl SizedBox {
     pub fn new(size: Size) -> Self {
-        SizedBox {
-            size,
-            color: None,
-            children: vec![],
-        }
+        SizedBox { size, color: None }
     }
 
     pub fn color(mut self, color: Color) -> Self {
@@ -31,7 +26,7 @@ impl SizedBox {
 
 impl Component for SizedBox {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), vec![], None)
     }
 }
 

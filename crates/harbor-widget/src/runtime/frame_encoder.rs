@@ -25,19 +25,25 @@ enum ExternalClipPlan {
 
 impl ExternalClipPlan {
     fn from(rect: Rect, clips: &[RoundedClip], viewport: &Viewport) -> Self {
-        let context = ExternalDrawContext::new(rect, viewport.clone());
-        if context.is_empty() {
+        let mut scissor = ExternalDrawContext::compute_scissor(
+            rect,
+            viewport.scale_factor,
+            viewport.physical_size,
+        );
+        if scissor.2 == 0 || scissor.3 == 0 {
             return Self::Skip;
         }
-        let mut scissor = context.scissor_rect();
         let mut apply_rounded_mask = false;
         for clip in clips {
             if clip.behavior() == ClipBehavior::None {
                 continue;
             }
             apply_rounded_mask = true;
-            let clip_scissor =
-                ExternalDrawContext::new(clip.rect(), viewport.clone()).scissor_rect();
+            let clip_scissor = ExternalDrawContext::compute_scissor(
+                clip.rect(),
+                viewport.scale_factor,
+                viewport.physical_size,
+            );
             scissor = intersect_scissor(scissor, clip_scissor);
             if scissor.2 == 0 || scissor.3 == 0 {
                 return Self::Skip;

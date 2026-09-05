@@ -14,7 +14,6 @@ use std::sync::Arc;
 pub struct TextLabel {
     text: String,
     color: Color,
-    children: Vec<View>,
 }
 
 impl TextLabel {
@@ -22,7 +21,6 @@ impl TextLabel {
         TextLabel {
             text: text.into(),
             color: Color::WHITE,
-            children: vec![],
         }
     }
 
@@ -34,7 +32,7 @@ impl TextLabel {
 
 impl Component for TextLabel {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), vec![], None)
     }
 }
 
