@@ -184,7 +184,7 @@ pub(super) fn execute_wgpu_frame(
     commit: bool,
 ) -> Result<(), FrameError> {
     let clear_color = frame_clear_color(
-        resolve_frame_appearance(runtime, target.backdrop_available()),
+        frame_clear_rgba(runtime.has_external_draws()),
         target.alpha_mode(),
     );
     let viewport = runtime
@@ -234,13 +234,17 @@ pub(super) fn execute_wgpu_frame(
     )
 }
 
-/// Resolves the external frame appearance, using opaque black for runtimes
-/// without an external provider (such as the confirmation dialog).
-pub(super) fn resolve_frame_appearance(runtime: &Runtime, backdrop_available: bool) -> [f32; 4] {
-    runtime
-        .frame_appearance(backdrop_available)
-        .map(|appearance| appearance.rgba)
-        .unwrap_or([0.0, 0.0, 0.0, 1.0])
+/// Selects the frame clear color for a runtime.
+///
+/// Runtimes that own external draws (e.g. the main window) clear transparently
+/// so host-owned fills and the compositor backdrop remain visible; plain widget
+/// runtimes (e.g. the confirmation dialog) keep an opaque black clear.
+pub(super) fn frame_clear_rgba(has_external_draws: bool) -> [f32; 4] {
+    if has_external_draws {
+        [0.0, 0.0, 0.0, 0.0]
+    } else {
+        [0.0, 0.0, 0.0, 1.0]
+    }
 }
 
 /// Converts a straight-alpha RGBA clear value into the representation
@@ -445,18 +449,17 @@ impl FrameError {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_clear_color, resolve_frame_appearance};
-    use crate::runtime::Runtime;
+    use super::{frame_clear_color, frame_clear_rgba};
     use wgpu::CompositeAlphaMode;
 
     #[test]
-    fn should_use_opaque_black_when_runtime_has_no_appearance_provider() {
-        let runtime = Runtime::new();
+    fn should_clear_transparently_when_runtime_owns_external_draws() {
+        assert_eq!(frame_clear_rgba(true), [0.0, 0.0, 0.0, 0.0]);
+    }
 
-        assert_eq!(
-            resolve_frame_appearance(&runtime, true),
-            [0.0, 0.0, 0.0, 1.0]
-        );
+    #[test]
+    fn should_clear_opaque_black_when_runtime_has_no_external_draws() {
+        assert_eq!(frame_clear_rgba(false), [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

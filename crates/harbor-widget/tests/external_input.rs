@@ -45,7 +45,7 @@ fn should_queue_and_drain_external_input_round_trip() {
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
-    rt.dispatch(event.clone(), now());
+    rt.dispatch(event.clone());
 
     // Act: drain the owning Runtime
     let drained = rt.drain_external_input();
@@ -64,8 +64,8 @@ fn should_drain_clears_queue() {
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
-    rt.dispatch(key_down(Key::Tab), now());
-    rt.dispatch(key_down(Key::Space), now());
+    rt.dispatch(key_down(Key::Tab));
+    rt.dispatch(key_down(Key::Space));
 
     // Act: first drain
     let first = rt.drain_external_input();
@@ -84,15 +84,15 @@ fn should_support_multiple_draw_ids() {
     first.update(now());
     assert!(first.focus_first_focusable());
     first.drain_external_input();
-    first.dispatch(key_down(Key::ArrowUp), now());
-    first.dispatch(key_down(Key::Enter), now());
+    first.dispatch(key_down(Key::ArrowUp));
+    first.dispatch(key_down(Key::Enter));
 
     let mut second = Runtime::new();
     second.set_root(CustomPaint::new(20));
     second.update(now());
     assert!(second.focus_first_focusable());
     second.drain_external_input();
-    second.dispatch(key_down(Key::ArrowDown), now());
+    second.dispatch(key_down(Key::ArrowDown));
 
     // Assert: neither Runtime can drain the other's events.
     let first_events = first.drain_external_input();
@@ -112,18 +112,6 @@ fn should_drain_empty_when_no_events_queued() {
 }
 
 #[test]
-fn should_ignore_events_queued_without_an_active_runtime_dispatch() {
-    // Arrange: the trampoline is called outside Runtime::dispatch.
-    harbor_widget::runtime::queue_external_input(404, key_down(Key::Enter));
-
-    // Act: inspect a fresh Runtime's queue.
-    let rt = Runtime::new();
-
-    // Assert: an unowned event is not retained or assigned to a later Runtime.
-    assert!(rt.drain_external_input().is_empty());
-}
-
-#[test]
 fn should_support_pointer_events() {
     let pe = pointer_event(
         Point::new(100.0, 200.0),
@@ -136,7 +124,7 @@ fn should_support_pointer_events() {
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
-    rt.dispatch(pe.clone(), now());
+    rt.dispatch(pe.clone());
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].0, 99);
@@ -158,7 +146,7 @@ fn should_queue_event_when_custom_paint_dispatches_through_runtime() {
     // Act: dispatch a keyboard event through runtime (CustomPaint handles it,
     // queues to external input trampoline)
     let event = key_down(Key::Escape);
-    rt.dispatch(event.clone(), now());
+    rt.dispatch(event.clone());
 
     // Drain
     let drained = rt.drain_external_input();
@@ -183,23 +171,20 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
     assert!(rt.focus_first_focusable());
     assert_eq!(rt.input().focused(), Some(root_id));
     rt.drain_external_input();
-    rt.dispatch(key_down(Key::Enter), now());
+    rt.dispatch(key_down(Key::Enter));
     assert_eq!(rt.drain_external_input().len(), 1);
 
     rt.clear_focus();
-    rt.dispatch(
-        pointer_event(
-            Point::new(400.0, 300.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(400.0, 300.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     assert_eq!(rt.input().focused(), Some(root_id));
     rt.drain_external_input();
 
-    rt.dispatch(key_down(Key::Escape), now());
+    rt.dispatch(key_down(Key::Escape));
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].0, 12);
@@ -215,9 +200,9 @@ fn should_queue_multiple_custom_paint_events_across_dispatch() {
     rt.drain_external_input();
 
     // Act: dispatch events via Runtime (CustomPaint queues them)
-    rt.dispatch(key_down(Key::Enter), now());
-    rt.dispatch(key_down(Key::ArrowDown), now());
-    rt.dispatch(key_down(Key::ArrowUp), now());
+    rt.dispatch(key_down(Key::Enter));
+    rt.dispatch(key_down(Key::ArrowDown));
+    rt.dispatch(key_down(Key::ArrowUp));
 
     // Drain
     let drained = rt.drain_external_input();
@@ -240,25 +225,19 @@ fn should_queue_pointer_events_from_custom_paint() {
     rt.update(now());
 
     // Dispatch pointer down + up
-    rt.dispatch(
-        pointer_event(
-            Point::new(400.0, 300.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(400.0, 300.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
     rt.drain_external_input();
-    rt.dispatch(
-        pointer_event(
-            Point::new(400.0, 300.0),
-            PointerPhase::Up,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(400.0, 300.0),
+        PointerPhase::Up,
+        PointerButton::Left,
+        0,
+    ));
 
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
@@ -276,16 +255,13 @@ fn should_not_queue_when_no_custom_paint_in_tree() {
     rt.update(now());
 
     // Act: dispatch events
-    rt.dispatch(key_down(Key::Enter), now());
-    rt.dispatch(
-        pointer_event(
-            Point::new(50.0, 25.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(key_down(Key::Enter));
+    rt.dispatch(pointer_event(
+        Point::new(50.0, 25.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
 
     // Assert: nothing queued (SizedBox doesn't implement external input)
     let drained = rt.drain_external_input();
@@ -305,7 +281,7 @@ fn should_drain_empty_between_dispatches_when_already_drained() {
     rt.drain_external_input();
 
     // First dispatch
-    rt.dispatch(key_down(Key::Tab), now());
+    rt.dispatch(key_down(Key::Tab));
     let first = rt.drain_external_input();
     assert_eq!(first.len(), 1);
 
@@ -329,7 +305,7 @@ fn should_queue_wheel_events_from_custom_paint() {
         PointerButton::Left,
         0,
     ));
-    rt.dispatch(wheel.clone(), now());
+    rt.dispatch(wheel.clone());
 
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
@@ -347,7 +323,7 @@ fn should_queue_focus_events_from_custom_paint() {
     rt.drain_external_input();
 
     let focus = UiEvent::Focus(harbor_widget::input::event::FocusEvent::Gained);
-    rt.dispatch(focus.clone(), now());
+    rt.dispatch(focus.clone());
 
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
@@ -367,7 +343,7 @@ fn should_queue_move_events_from_custom_paint() {
         PointerButton::Left,
         1,
     );
-    rt.dispatch(move_evt, now());
+    rt.dispatch(move_evt);
 
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
@@ -441,7 +417,7 @@ fn should_only_queue_for_focused_custom_paint() {
     rt.drain_external_input();
 
     // Keyboard event: should route to focused CustomPaint, which queues
-    rt.dispatch(key_down(Key::Space), now());
+    rt.dispatch(key_down(Key::Space));
 
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
@@ -463,7 +439,7 @@ fn should_leave_external_queue_empty_when_on_input_is_set() {
     rt.drain_external_input();
 
     // Act
-    rt.dispatch(key_down(Key::Enter), now());
+    rt.dispatch(key_down(Key::Enter));
     let drained = rt.drain_external_input();
 
     // Assert
@@ -485,15 +461,12 @@ fn should_request_focus_on_pointer_down_when_on_input_is_set() {
     assert_eq!(rt.input().focused(), None);
 
     // Act
-    rt.dispatch(
-        pointer_event(
-            Point::new(400.0, 300.0),
-            PointerPhase::Down,
-            PointerButton::Left,
-            0,
-        ),
-        now(),
-    );
+    rt.dispatch(pointer_event(
+        Point::new(400.0, 300.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
 
     // Assert: focus request still happens before the adapter runs.
     assert_eq!(rt.input().focused(), Some(root_id));

@@ -27,7 +27,7 @@ impl Selection {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, _cell_width: f32, _line_height: f32) -> Self {
+    pub fn new(gpu: &GpuContext) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {

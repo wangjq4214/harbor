@@ -2,9 +2,7 @@ use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawId, ExternalFrameAppearanceFn, ExternalScheduleFn, Primitive,
-};
+use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
 use std::any::TypeId;
@@ -26,20 +24,18 @@ impl Key {
 
 /// Side-channel registrations collected while building a View subtree.
 ///
-/// Draw handlers, schedule providers, and frame-appearance providers travel as
-/// one bag from `BuildCx` through reconciliation into `Runtime`.
+/// Draw handlers and schedule providers travel as one bag from `BuildCx`
+/// through reconciliation into `Runtime`.
 #[derive(Default)]
 pub(crate) struct ExternalRegistrations {
     pub(crate) draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     pub(crate) schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
-    pub(crate) frame_appearances: Vec<(ExternalDrawId, Arc<ExternalFrameAppearanceFn>)>,
 }
 
 impl ExternalRegistrations {
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.draws.append(&mut other.draws);
         self.schedules.append(&mut other.schedules);
-        self.frame_appearances.append(&mut other.frame_appearances);
     }
 }
 
@@ -64,15 +60,6 @@ impl BuildCx {
             hook_index: 0,
             externals: ExternalRegistrations::default(),
         }
-    }
-
-    /// Registers a provider for the current frame's default clear appearance.
-    pub fn register_external_frame_appearance(
-        &mut self,
-        id: ExternalDrawId,
-        provider: Arc<ExternalFrameAppearanceFn>,
-    ) {
-        self.externals.frame_appearances.push((id, provider));
     }
 
     /// Registers an external draw handler for the current build.
@@ -142,6 +129,13 @@ pub trait Component {
 
 // ── AnyView ─────────────────────────────────────────────────────────────────
 
+/// A widget's paint position relative to the recursive paint of its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintPhase {
+    BeforeChildren,
+    AfterChildren,
+}
+
 /// Internal type-erased View capability.
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
@@ -185,6 +179,45 @@ pub(crate) trait AnyView: 'static {
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         let _ = (rect, metrics);
         vec![]
+    }
+
+    /// Returns primitives for one position around child painting.
+    ///
+    /// Existing views implement only [`Self::paint_primitives`], so their
+    /// output remains before their children and they emit nothing afterward.
+    fn paint_primitives_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        metrics: &TextMetrics,
+    ) -> Vec<Primitive> {
+        match phase {
+            PaintPhase::BeforeChildren => self.paint_primitives(rect, metrics),
+            PaintPhase::AfterChildren => Vec::new(),
+        }
+    }
+
+    /// Returns phase primitives together with stable local paint-slot keys.
+    ///
+    /// Views that omit an effect may preserve identities of later effects by
+    /// retaining their original slot keys rather than shifting vector indexes.
+    fn paint_primitives_with_slots_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        metrics: &TextMetrics,
+    ) -> Vec<(u32, Primitive)> {
+        self.paint_primitives_for_phase(phase, rect, metrics)
+            .into_iter()
+            .enumerate()
+            .map(|(slot, primitive)| (slot as u32, primitive))
+            .collect()
+    }
+
+    /// Optional clip inherited by descendants. The view's own primitives are
+    /// intentionally painted before this clip is appended.
+    fn descendant_clip(&self, _rect: Rect) -> Option<crate::scene::clip::RoundedClip> {
+        None
     }
 
     /// Returns true if the point (in widget-local coordinates) is inside

@@ -19,7 +19,6 @@ pub(crate) enum EventCommand {
     ReleasePointer(u64),
     NavigateFocus { scope: FiberId, forward: bool },
     InvalidatePaint,
-    StopPropagation,
 }
 
 // ── EventCtx ────────────────────────────────────────────────────────────────
@@ -96,7 +95,6 @@ impl EventCtx {
     /// or subsequent phases will receive this event.
     pub fn stop_propagation(&mut self) {
         self.propagation_stopped = true;
-        self.commands.push(EventCommand::StopPropagation);
     }
 
     /// Request focus navigation within a FocusScope.
@@ -193,10 +191,7 @@ mod tests {
         assert!(!ctx.is_propagation_stopped());
         ctx.stop_propagation();
         assert!(ctx.is_propagation_stopped());
-        // Command also recorded
-        let cmds = ctx.take_commands();
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0], EventCommand::StopPropagation);
+        assert!(ctx.take_commands().is_empty());
     }
 
     #[test]
@@ -211,7 +206,7 @@ mod tests {
     fn take_commands_drains() {
         let mut ctx = EventCtx::new();
         ctx.invalidate_paint();
-        ctx.stop_propagation();
+        ctx.request_focus(dummy_fiber_id());
         let cmds = ctx.take_commands();
         assert_eq!(cmds.len(), 2);
         // Second take is empty
@@ -226,8 +221,7 @@ mod tests {
         ctx.request_focus(fid);
         ctx.capture_pointer(0);
         ctx.invalidate_paint();
-        ctx.stop_propagation();
         let cmds = ctx.take_commands();
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 3);
     }
 }

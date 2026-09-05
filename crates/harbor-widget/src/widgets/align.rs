@@ -57,11 +57,7 @@ impl AnyView for Align {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = Size::new(
-            constraints.max.width.max(constraints.min.width),
-            constraints.max.height.max(constraints.min.height),
-        );
-        let own = constraints.constrain(own);
+        let own = constraints.constrain(constraints.max);
         if child_sizes.is_empty() {
             return (own, vec![]);
         }

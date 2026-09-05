@@ -6,7 +6,6 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
     FrameError, FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget,
@@ -180,46 +179,6 @@ fn custom_paint_runtime(draw_id: u64) -> Runtime {
     assert!(runtime.focus_first_focusable());
     runtime.drain_external_input();
     runtime
-}
-
-#[test]
-fn should_return_none_when_frame_appearance_provider_declines() {
-    // Arrange
-    let provider = Arc::new(|_, _| None);
-    let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(8).frame_appearance(provider));
-
-    // Act
-    let appearance = runtime.frame_appearance(true);
-
-    // Assert
-    assert!(appearance.is_none());
-}
-
-#[test]
-fn should_retain_first_frame_appearance_provider_for_duplicate_draw_ids() {
-    // Arrange
-    let first = Arc::new(|_, _| {
-        Some(harbor_widget::scene::primitive::ExternalFrameAppearance::new([1.0, 0.0, 0.0, 1.0]))
-    });
-    let second = Arc::new(|_, _| {
-        Some(harbor_widget::scene::primitive::ExternalFrameAppearance::new([0.0, 1.0, 0.0, 1.0]))
-    });
-    let mut runtime = Runtime::new();
-    runtime.set_root(
-        Column::new()
-            .child(CustomPaint::new(7).frame_appearance(first))
-            .child(CustomPaint::new(7).frame_appearance(second)),
-    );
-
-    // Act
-    let appearance = runtime.frame_appearance(true);
-
-    // Assert
-    assert_eq!(
-        appearance.map(|value| value.rgba),
-        Some([1.0, 0.0, 0.0, 1.0])
-    );
 }
 
 #[test]

@@ -159,45 +159,32 @@ pub struct RuntimeEffects {
 
 impl Default for RuntimeEffects {
     fn default() -> Self {
-        Self {
-            request_redraw: false,
-            control_flow: None,
-            cursor: None,
-            ime: None,
-            clipboard: None,
-            ordinary_present_eligible: true,
-            force_present: false,
-            has_deferred_externals: false,
-        }
+        Self::DEFAULT
     }
 }
 
 impl RuntimeEffects {
+    pub const DEFAULT: Self = Self {
+        request_redraw: false,
+        control_flow: None,
+        cursor: None,
+        ime: None,
+        clipboard: None,
+        ordinary_present_eligible: true,
+        force_present: false,
+        has_deferred_externals: false,
+    };
+
     /// Creates an effect batch containing only a redraw request.
     pub const fn request_redraw() -> Self {
-        Self {
-            request_redraw: true,
-            control_flow: None,
-            cursor: None,
-            ime: None,
-            clipboard: None,
-            ordinary_present_eligible: true,
-            force_present: false,
-            has_deferred_externals: false,
-        }
+        Self::from_redraw(true)
     }
 
     /// Creates an effect batch from the current redraw decision.
     pub const fn from_redraw(request_redraw: bool) -> Self {
         Self {
             request_redraw,
-            control_flow: None,
-            cursor: None,
-            ime: None,
-            clipboard: None,
-            ordinary_present_eligible: true,
-            force_present: false,
-            has_deferred_externals: false,
+            ..Self::DEFAULT
         }
     }
 
@@ -205,13 +192,8 @@ impl RuntimeEffects {
     pub const fn force_present() -> Self {
         Self {
             request_redraw: true,
-            control_flow: None,
-            cursor: None,
-            ime: None,
-            clipboard: None,
-            ordinary_present_eligible: true,
             force_present: true,
-            has_deferred_externals: false,
+            ..Self::DEFAULT
         }
     }
 

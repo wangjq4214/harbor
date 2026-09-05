@@ -1,0 +1,13 @@
+# Downloaded WASDK metadata and reference material — not part of the repo.
+*.nupkg
+*.json
+sdk/
+foundation/
+interactive/
+winui/
+base/
+ie-test/
+wasdk-samples/
+windows-bindgen-*/
+wb.crate
+gen/target/

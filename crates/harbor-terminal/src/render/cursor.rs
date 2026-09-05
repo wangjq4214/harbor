@@ -53,11 +53,6 @@ pub struct Cursor {
     vertex_buffer: wgpu::Buffer,
     /// Number of vertices to draw (0 when cursor is off-snap or hidden).
     vertex_count: u32,
-    /// Whether the cursor should be rendered this frame (controlled by blink
-    /// timer or steady-on when blinking is disabled).
-    visible: bool,
-    /// Cursor shape (Block, Underline, Bar).
-    shape: CursorShape,
     /// Idle blink phase and pending immediate-redraw flag.
     blink: CursorBlinkState,
     /// Cell dimensions in logical pixels.
@@ -82,8 +77,6 @@ impl Cursor {
             pipeline,
             vertex_buffer,
             vertex_count: 0,
-            visible: true,
-            shape: CursorShape::Block,
             blink: CursorBlinkState::new(Instant::now()),
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
@@ -169,25 +162,25 @@ impl Cursor {
             return;
         };
 
-        self.visible = should_render_cursor(snap, self.blink.phase_visible(now));
-        self.shape = snap.cursor_shape;
+        let visible = should_render_cursor(snap, self.blink.phase_visible(now));
+        let shape = snap.cursor_shape;
 
         let state_changed = self.last_cursor.is_none_or(|last| {
-            last.visible != self.visible
+            last.visible != visible
                 || last.x != snap.cursor_x
                 || last.y != snap.cursor_y
-                || last.shape != self.shape
+                || last.shape != shape
         });
 
         if !self.dirty && !state_changed {
             return;
         }
 
-        if self.visible && snap.cursor_x < snap.cols && snap.cursor_y < snap.rows {
+        if visible && snap.cursor_x < snap.cols && snap.cursor_y < snap.rows {
             let (surf_w, surf_h) = viewport.surface_dimensions();
             let (cell_x, cell_y) = viewport.cell_pos(snap.cursor_y, snap.cursor_x);
 
-            let (left, top, right, bottom) = match self.shape {
+            let (left, top, right, bottom) = match shape {
                 CursorShape::Block => (
                     cell_x,
                     cell_y,
@@ -222,10 +215,10 @@ impl Cursor {
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;
             self.last_cursor = Some(LastCursorState {
-                visible: self.visible,
+                visible,
                 x: snap.cursor_x,
                 y: snap.cursor_y,
-                shape: self.shape,
+                shape,
             });
         } else {
             self.vertex_count = 0;

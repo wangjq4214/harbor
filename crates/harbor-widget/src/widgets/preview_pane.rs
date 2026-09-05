@@ -23,7 +23,6 @@ pub struct PreviewPane {
     line_height: f32,
     visible_lines: usize,
     color: Color,
-    children: Vec<View>,
 }
 
 impl PreviewPane {
@@ -39,7 +38,6 @@ impl PreviewPane {
             line_height,
             visible_lines,
             color: Color::WHITE,
-            children: vec![],
         }
     }
 
@@ -51,7 +49,7 @@ impl PreviewPane {
 
 impl Component for PreviewPane {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), vec![], None)
     }
 }
 
@@ -75,17 +73,6 @@ impl AnyView for PreviewPane {
         let width = max_line_chars as f32 * cell_width + 4.0;
         let height = self.visible_lines as f32 * self.line_height;
         constraints.constrain(Size::new(width, height))
-    }
-
-    fn layout_children(
-        &self,
-        constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        let own = self.intrinsic_size(constraints, metrics);
-        let positions = vec![Point::ZERO; child_sizes.len()];
-        (own, positions)
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {

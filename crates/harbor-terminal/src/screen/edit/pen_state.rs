@@ -328,10 +328,8 @@ impl PenState {
 
     pub(crate) fn clear_tab_stops(&mut self, cursor_x: usize, mode: usize) {
         match mode {
-            0 => {
-                if cursor_x < self.tab_stops.0.len() {
-                    self.tab_stops.0[cursor_x] = false;
-                }
+            0 if cursor_x < self.tab_stops.0.len() => {
+                self.tab_stops.0[cursor_x] = false;
             }
             3 => {
                 self.tab_stops.0.fill(false);

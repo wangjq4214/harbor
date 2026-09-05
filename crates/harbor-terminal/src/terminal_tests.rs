@@ -3075,3 +3075,23 @@ fn should_restore_eligibility_when_last_chunk_enables_2026_then_eof() {
     assert!(demand.ordinary_present_eligible);
     assert!(demand.redraw_now);
 }
+
+// ── Backdrop availability ────────────────────────────────────────────
+
+#[test]
+fn should_default_backdrop_availability_to_false_when_headless() {
+    let terminal = Terminal::new_headless(2, 4);
+
+    assert!(!terminal.backdrop_available);
+}
+
+#[test]
+fn should_record_backdrop_availability_through_the_setter() {
+    let mut terminal = Terminal::new_headless(2, 4);
+
+    terminal.set_backdrop_available(true);
+    assert!(terminal.backdrop_available);
+
+    terminal.set_backdrop_available(false);
+    assert!(!terminal.backdrop_available);
+}

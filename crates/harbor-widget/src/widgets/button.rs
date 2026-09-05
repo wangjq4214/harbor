@@ -146,18 +146,6 @@ impl AnyView for ButtonView {
         constraints.constrain(Size::new(width, height))
     }
 
-    fn layout_children(
-        &self,
-        constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        (
-            self.intrinsic_size(constraints, metrics),
-            vec![Point::ZERO; child_sizes.len()],
-        )
-    }
-
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         let state = *self.state.read();
         let bg = state.background_color();
@@ -199,10 +187,6 @@ impl AnyView for ButtonView {
         }
 
         prims
-    }
-
-    fn hit_test(&self, point: Point, rect: Rect) -> bool {
-        rect.contains(point)
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {

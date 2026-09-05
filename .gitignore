@@ -2,3 +2,7 @@
 
 *.log
 dhat-heap.json
+
+# Local tooling & agent runtime artifacts
+.pi/tasks/
+.tools/qa/
