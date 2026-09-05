@@ -15,7 +15,6 @@ use std::sync::Arc;
 pub(crate) struct EncodeScene<'a> {
     pub(crate) scene_graph: &'a SceneGraph,
     pub(crate) pending_delta: &'a mut Option<SceneDelta>,
-    pub(crate) current_viewport: &'a mut Option<Viewport>,
     pub(crate) external_draws: &'a HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     pub(crate) external_eligible: &'a HashMap<ExternalDrawId, bool>,
     pub(crate) commit: bool,
@@ -131,6 +130,11 @@ pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
     text_renderer: Option<TextRenderer>,
     text_run_cache: TextRunCache,
+    encoded_viewport: Option<Viewport>,
+}
+
+fn viewport_refresh_needed(encoded: Option<&Viewport>, viewport: &Viewport) -> bool {
+    encoded != Some(viewport)
 }
 
 impl FrameEncoder {
@@ -139,11 +143,13 @@ impl FrameEncoder {
             renderer: None,
             text_renderer: None,
             text_run_cache: TextRunCache::new(),
+            encoded_viewport: None,
         }
     }
 
     pub(crate) fn init_renderer(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
         self.renderer = Some(QuadRenderer::new(device, format));
+        self.encoded_viewport = None;
     }
 
     pub(crate) fn init_text_renderer(
@@ -201,13 +207,23 @@ impl FrameEncoder {
             None => return,
         };
 
-        if let Some(delta) = scene.pending_delta.as_ref() {
-            *scene.current_viewport = Some(viewport.clone());
-            renderer.update(queue, delta, &viewport);
-            if let Some(tr) = &mut self.text_renderer {
-                tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
-            }
+        let viewport_changed = viewport_refresh_needed(self.encoded_viewport.as_ref(), &viewport);
+        let delta_applied = if let Some(delta) = scene.pending_delta.take() {
+            renderer.update(queue, &delta, &viewport);
+            true
+        } else {
+            false
+        };
+
+        if viewport_changed {
+            renderer.refresh_viewport(queue, scene.scene_graph.items(), &viewport);
         }
+        if (delta_applied || viewport_changed)
+            && let Some(tr) = &mut self.text_renderer
+        {
+            tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
+        }
+        self.encoded_viewport = Some(viewport.clone());
 
         let raw_items = scene.scene_graph.items();
 
@@ -304,6 +320,26 @@ mod tests {
     use super::*;
     use crate::layout::{Point, Rect};
     use crate::scene::primitive::{Color, Primitive};
+
+    #[test]
+    fn viewport_refresh_detects_each_single_axis_and_scale_change() {
+        let initial = Viewport::new(800, 600, 1.0);
+
+        assert!(viewport_refresh_needed(
+            Some(&initial),
+            &Viewport::new(900, 600, 1.0)
+        ));
+        assert!(viewport_refresh_needed(
+            Some(&initial),
+            &Viewport::new(800, 700, 1.0)
+        ));
+        assert!(viewport_refresh_needed(
+            Some(&initial),
+            &Viewport::new(800, 600, 1.25)
+        ));
+        assert!(!viewport_refresh_needed(Some(&initial), &initial));
+        assert!(viewport_refresh_needed(None, &initial));
+    }
 
     #[test]
     fn collect_quad_ranges_contiguous() {

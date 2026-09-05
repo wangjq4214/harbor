@@ -105,6 +105,19 @@ impl SplitContainer {
         self
     }
 
+    fn partition_lengths(&self, total: f32) -> (f32, f32, f32) {
+        let total = total.max(0.0);
+        let sash = self.sash_thickness.min(total);
+        let available = total - sash;
+        if available <= 0.0 {
+            return (sash, 0.0, 0.0);
+        }
+
+        let effective_min = self.min_pane_size.min(available / 2.0);
+        let first = (available * self.ratio).clamp(effective_min, available - effective_min);
+        (sash, first, available - first)
+    }
+
     /// Computes the sash divider rect given total container bounds.
     pub fn sash_rect(&self, total_size: Size) -> Rect {
         let total = match self.direction {
@@ -112,12 +125,7 @@ impl SplitContainer {
             SplitDirection::Vertical => total_size.height,
         };
 
-        let sash = self.sash_thickness;
-        let available = (total - sash).max(0.0);
-        let min_s = self.min_pane_size;
-
-        let max_first = (available - min_s).max(min_s);
-        let first_len = (available * self.ratio).clamp(min_s.min(max_first), max_first);
+        let (sash, first_len, _) = self.partition_lengths(total);
 
         match self.direction {
             SplitDirection::Horizontal => Rect::from_min_size(
@@ -181,23 +189,45 @@ impl AnyView for SplitContainer {
         constraints.max
     }
 
+    fn children_constraints(
+        &self,
+        _child_count: usize,
+        constraints: BoxConstraints,
+        _metrics: &TextMetrics,
+    ) -> Vec<BoxConstraints> {
+        let size = constraints.constrain(constraints.max);
+        let total = match self.direction {
+            SplitDirection::Horizontal => size.width,
+            SplitDirection::Vertical => size.height,
+        };
+
+        let (_, first_len, second_len) = self.partition_lengths(total);
+
+        match self.direction {
+            SplitDirection::Horizontal => vec![
+                BoxConstraints::tight(Size::new(first_len, size.height)),
+                BoxConstraints::tight(Size::new(second_len, size.height)),
+            ],
+            SplitDirection::Vertical => vec![
+                BoxConstraints::tight(Size::new(size.width, first_len)),
+                BoxConstraints::tight(Size::new(size.width, second_len)),
+            ],
+        }
+    }
+
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         _child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let size = constraints.max;
+        let size = constraints.constrain(constraints.max);
         let total = match self.direction {
             SplitDirection::Horizontal => size.width,
             SplitDirection::Vertical => size.height,
         };
 
-        let sash = self.sash_thickness;
-        let available = (total - sash).max(0.0);
-        let min_s = self.min_pane_size;
-        let max_first = (available - min_s).max(min_s);
-        let first_len = (available * self.ratio).clamp(min_s.min(max_first), max_first);
+        let (sash, first_len, _) = self.partition_lengths(total);
 
         let positions = match self.direction {
             SplitDirection::Horizontal => vec![Point::ZERO, Point::new(first_len + sash, 0.0)],
@@ -214,11 +244,110 @@ impl AnyView for SplitContainer {
             sash_local.size(),
         );
 
-        vec![Primitive::Quad {
+        let mut prims = Vec::with_capacity(7);
+
+        // 1. Sash background quad
+        prims.push(Primitive::Quad {
             rect: sash_world,
             color: self.sash_color,
             corner_radius: 0.0,
-        }]
+        });
+
+        // 2. Sash boundary divider lines separating first and second panes
+        let divider_color = Color {
+            r: 0.32,
+            g: 0.36,
+            b: 0.42,
+            a: 1.0,
+        };
+        match self.direction {
+            SplitDirection::Horizontal => {
+                // Left divider line of the sash (right edge of first pane)
+                prims.push(Primitive::Quad {
+                    rect: Rect::from_min_size(
+                        Point::new(sash_world.min.x, sash_world.min.y),
+                        Size::new(1.0, sash_world.size().height),
+                    ),
+                    color: divider_color,
+                    corner_radius: 0.0,
+                });
+                // Right divider line of the sash (left edge of second pane)
+                prims.push(Primitive::Quad {
+                    rect: Rect::from_min_size(
+                        Point::new(sash_world.max.x - 1.0, sash_world.min.y),
+                        Size::new(1.0, sash_world.size().height),
+                    ),
+                    color: divider_color,
+                    corner_radius: 0.0,
+                });
+            }
+            SplitDirection::Vertical => {
+                // Top divider line of the sash (bottom edge of first pane)
+                prims.push(Primitive::Quad {
+                    rect: Rect::from_min_size(
+                        Point::new(sash_world.min.x, sash_world.min.y),
+                        Size::new(sash_world.size().width, 1.0),
+                    ),
+                    color: divider_color,
+                    corner_radius: 0.0,
+                });
+                // Bottom divider line of the sash (top edge of second pane)
+                prims.push(Primitive::Quad {
+                    rect: Rect::from_min_size(
+                        Point::new(sash_world.min.x, sash_world.max.y - 1.0),
+                        Size::new(sash_world.size().width, 1.0),
+                    ),
+                    color: divider_color,
+                    corner_radius: 0.0,
+                });
+            }
+        }
+
+        // 3. Outer pane boundary borders to ensure each pane has crisp, visible borders
+        let pane_border_color = Color {
+            r: 0.22,
+            g: 0.24,
+            b: 0.28,
+            a: 1.0,
+        };
+        // Top border
+        prims.push(Primitive::Quad {
+            rect: Rect::from_min_size(
+                Point::new(rect.min.x, rect.min.y),
+                Size::new(rect.size().width, 1.0),
+            ),
+            color: pane_border_color,
+            corner_radius: 0.0,
+        });
+        // Bottom border
+        prims.push(Primitive::Quad {
+            rect: Rect::from_min_size(
+                Point::new(rect.min.x, rect.max.y - 1.0),
+                Size::new(rect.size().width, 1.0),
+            ),
+            color: pane_border_color,
+            corner_radius: 0.0,
+        });
+        // Left border
+        prims.push(Primitive::Quad {
+            rect: Rect::from_min_size(
+                Point::new(rect.min.x, rect.min.y),
+                Size::new(1.0, rect.size().height),
+            ),
+            color: pane_border_color,
+            corner_radius: 0.0,
+        });
+        // Right border
+        prims.push(Primitive::Quad {
+            rect: Rect::from_min_size(
+                Point::new(rect.max.x - 1.0, rect.min.y),
+                Size::new(1.0, rect.size().height),
+            ),
+            color: pane_border_color,
+            corner_radius: 0.0,
+        });
+
+        prims
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
@@ -272,12 +401,10 @@ impl AnyView for SplitContainer {
                         return EventHandled::Handled;
                     }
                 }
-                PointerPhase::Cancel => {
-                    if self.dragging.swap(false, Ordering::Relaxed) {
-                        ctx.release_pointer(pe.pointer_id);
-                        ctx.reset_cursor();
-                        return EventHandled::Handled;
-                    }
+                PointerPhase::Cancel if self.dragging.swap(false, Ordering::Relaxed) => {
+                    ctx.release_pointer(pe.pointer_id);
+                    ctx.reset_cursor();
+                    return EventHandled::Handled;
                 }
                 _ => {}
             }
@@ -343,6 +470,50 @@ mod tests {
         let (_size, positions) = split.layout_children(constraints, &[], &metrics);
         assert_eq!(positions[1], Point::new(34.0, 0.0));
     }
+
+    #[test]
+    fn split_container_shrinks_minimums_to_fit_tiny_horizontal_and_vertical_bounds() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+
+        for (direction, size) in [
+            (SplitDirection::Horizontal, Size::new(24.0, 80.0)),
+            (SplitDirection::Vertical, Size::new(80.0, 24.0)),
+        ] {
+            let split = SplitContainer::new(direction, 0.95)
+                .sash_thickness(4.0)
+                .min_pane_size(32.0);
+            let constraints = BoxConstraints::tight(size);
+            let child_constraints = split.children_constraints(2, constraints, &metrics);
+            let (_, positions) = split.layout_children(constraints, &[], &metrics);
+
+            match direction {
+                SplitDirection::Horizontal => {
+                    assert_eq!(child_constraints[0].max.width, 10.0);
+                    assert_eq!(child_constraints[1].max.width, 10.0);
+                    assert_eq!(positions[1], Point::new(14.0, 0.0));
+                    assert!(positions[1].x + child_constraints[1].max.width <= size.width);
+                }
+                SplitDirection::Vertical => {
+                    assert_eq!(child_constraints[0].max.height, 10.0);
+                    assert_eq!(child_constraints[1].max.height, 10.0);
+                    assert_eq!(positions[1], Point::new(0.0, 14.0));
+                    assert!(positions[1].y + child_constraints[1].max.height <= size.height);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_container_caps_sash_when_container_is_smaller_than_sash() {
+        let split = SplitContainer::new(SplitDirection::Horizontal, 0.5)
+            .sash_thickness(8.0)
+            .min_pane_size(32.0);
+        let size = Size::new(3.0, 40.0);
+        let sash = split.sash_rect(size);
+
+        assert_eq!(sash, Rect::from_min_size(Point::ZERO, Size::new(3.0, 40.0)));
+    }
+
     #[test]
     fn split_container_clamps_ratio_and_reports_sash_hits() {
         let clamped_low = SplitContainer::new(SplitDirection::Horizontal, 0.0);
@@ -425,5 +596,123 @@ mod tests {
             ),
             EventHandled::Handled
         );
+    }
+
+    #[test]
+    fn split_container_horizontal_paint_primitives_has_sash_and_boundaries() {
+        let split = SplitContainer::new(SplitDirection::Horizontal, 0.5)
+            .sash_thickness(4.0)
+            .min_pane_size(10.0);
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(204.0, 100.0));
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+
+        let prims = split.paint_primitives(rect, &metrics);
+        // Expect 7 primitives: 1 sash bg + 2 sash divider lines + 4 outer borders
+        assert_eq!(prims.len(), 7);
+
+        // Sash quad (x = 100, width = 4, height = 100)
+        match &prims[0] {
+            Primitive::Quad { rect: r, color, .. } => {
+                assert_eq!(r.min.x, 100.0);
+                assert_eq!(r.size().width, 4.0);
+                assert_eq!(r.size().height, 100.0);
+                assert_eq!(*color, DEFAULT_SASH_COLOR);
+            }
+            _ => panic!("expected sash quad"),
+        }
+
+        // Left divider line (x = 100, width = 1)
+        match &prims[1] {
+            Primitive::Quad { rect: r, color, .. } => {
+                assert_eq!(r.min.x, 100.0);
+                assert_eq!(r.size().width, 1.0);
+                assert_eq!(color.r, 0.32);
+            }
+            _ => panic!("expected left divider line"),
+        }
+
+        // Right divider line (x = 103, width = 1)
+        match &prims[2] {
+            Primitive::Quad { rect: r, color, .. } => {
+                assert_eq!(r.min.x, 103.0);
+                assert_eq!(r.size().width, 1.0);
+                assert_eq!(color.r, 0.32);
+            }
+            _ => panic!("expected right divider line"),
+        }
+    }
+
+    #[test]
+    fn split_container_vertical_paint_primitives_has_sash_and_boundaries() {
+        let split = SplitContainer::new(SplitDirection::Vertical, 0.5)
+            .sash_thickness(4.0)
+            .min_pane_size(10.0);
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 204.0));
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+
+        let prims = split.paint_primitives(rect, &metrics);
+        assert_eq!(prims.len(), 7);
+
+        // Sash quad (y = 100, height = 4, width = 100)
+        match &prims[0] {
+            Primitive::Quad { rect: r, .. } => {
+                assert_eq!(r.min.y, 100.0);
+                assert_eq!(r.size().height, 4.0);
+                assert_eq!(r.size().width, 100.0);
+            }
+            _ => panic!("expected sash quad"),
+        }
+
+        // Top divider line (y = 100, height = 1)
+        match &prims[1] {
+            Primitive::Quad { rect: r, .. } => {
+                assert_eq!(r.min.y, 100.0);
+                assert_eq!(r.size().height, 1.0);
+            }
+            _ => panic!("expected top divider line"),
+        }
+
+        // Bottom divider line (y = 103, height = 1)
+        match &prims[2] {
+            Primitive::Quad { rect: r, .. } => {
+                assert_eq!(r.min.y, 103.0);
+                assert_eq!(r.size().height, 1.0);
+            }
+            _ => panic!("expected bottom divider line"),
+        }
+    }
+
+    #[test]
+    fn split_container_children_constraints_match_partition() {
+        let split = SplitContainer::new(SplitDirection::Horizontal, 0.5)
+            .sash_thickness(4.0)
+            .min_pane_size(10.0);
+        let constraints = BoxConstraints::tight(Size::new(204.0, 100.0));
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+
+        let cc = split.children_constraints(2, constraints, &metrics);
+        assert_eq!(cc.len(), 2);
+        // Total = 204, sash = 4, available = 200, 50% = 100
+        assert_eq!(cc[0].min, Size::new(100.0, 100.0));
+        assert_eq!(cc[0].max, Size::new(100.0, 100.0));
+        assert_eq!(cc[1].min, Size::new(100.0, 100.0));
+        assert_eq!(cc[1].max, Size::new(100.0, 100.0));
+    }
+
+    #[test]
+    fn split_container_vertical_children_constraints_match_partition() {
+        let split = SplitContainer::new(SplitDirection::Vertical, 0.5)
+            .sash_thickness(4.0)
+            .min_pane_size(10.0);
+        let constraints = BoxConstraints::tight(Size::new(100.0, 204.0));
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+
+        let cc = split.children_constraints(2, constraints, &metrics);
+        assert_eq!(cc.len(), 2);
+        // Total = 204, sash = 4, available = 200, 50% = 100
+        assert_eq!(cc[0].min, Size::new(100.0, 100.0));
+        assert_eq!(cc[0].max, Size::new(100.0, 100.0));
+        assert_eq!(cc[1].min, Size::new(100.0, 100.0));
+        assert_eq!(cc[1].max, Size::new(100.0, 100.0));
     }
 }

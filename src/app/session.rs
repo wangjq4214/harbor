@@ -1,10 +1,10 @@
 //! Multi-session tab management and pane tree view composition.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::terminal_widget_bridge::TerminalWidgetBridge;
+use crate::terminal_widget_bridge::{CursorFocusFn, TerminalWidgetBridge};
 use harbor_terminal::Terminal;
 use harbor_types::{PaneId, PaneLayoutNode, SessionId, SplitDirection, TabBarPosition};
 use harbor_widget::view::{BuildCx, Component, View};
@@ -13,6 +13,8 @@ use harbor_widget::widgets::split_container::SplitContainer;
 use harbor_widget::widgets::tab_bar::{OnClose, OnNew, OnSelect, TabBar, TabItem};
 use harbor_widget::widgets::tabbed_layout::TabbedLayout;
 
+pub type OnPaneActivate = Arc<dyn Fn(PaneId) + Send + Sync>;
+
 /// Top-level application state managing all terminal sessions and pane trees.
 pub struct AppSessionState {
     pub sessions: Vec<harbor_types::TerminalSession>,
@@ -20,6 +22,7 @@ pub struct AppSessionState {
     pub terminals: HashMap<PaneId, Arc<Mutex<Terminal>>>,
     pub gate_active: Arc<AtomicBool>,
     pub tab_scroll_offset: Arc<std::sync::atomic::AtomicU32>,
+    active_cursor_pane: Arc<AtomicU64>,
     next_session_id: u64,
     next_pane_id: u64,
 }
@@ -41,6 +44,7 @@ impl AppSessionState {
             terminals,
             gate_active,
             tab_scroll_offset: Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits())),
+            active_cursor_pane: Arc::new(AtomicU64::new(pane_id.0)),
             next_session_id: 2,
             next_pane_id: 2,
         }
@@ -77,14 +81,22 @@ impl AppSessionState {
         self.active_session().map(|s| s.active_pane)
     }
 
+    fn sync_active_cursor_pane(&self) {
+        let pane_id = self.active_pane_id().map_or(0, |pane_id| pane_id.0);
+        self.active_cursor_pane.store(pane_id, Ordering::Release);
+    }
+
     /// Sets the active pane focus for the active session.
-    #[allow(dead_code)]
-    pub fn set_active_pane(&mut self, pane_id: PaneId) {
-        if let Some(session) = self.active_session_mut() {
-            if session.layout.find_leaf(pane_id) {
-                session.active_pane = pane_id;
-            }
+    pub fn set_active_pane(&mut self, pane_id: PaneId) -> bool {
+        if let Some(session) = self.active_session_mut()
+            && session.layout.find_leaf(pane_id)
+            && session.active_pane != pane_id
+        {
+            session.active_pane = pane_id;
+            self.active_cursor_pane.store(pane_id.0, Ordering::Release);
+            return true;
         }
+        false
     }
 
     /// Returns the active `Terminal` instance.
@@ -113,13 +125,21 @@ impl AppSessionState {
         let session = harbor_types::TerminalSession::new(session_id, pane_id, display_title);
         self.sessions.push(session);
         self.active_session = session_id;
+        self.active_cursor_pane.store(pane_id.0, Ordering::Release);
         session_id
     }
 
     /// Switches the active session to `target`.
     pub fn switch_session(&mut self, target: SessionId) -> bool {
-        if self.sessions.iter().any(|s| s.id == target) {
+        if let Some(active_pane) = self
+            .sessions
+            .iter()
+            .find(|session| session.id == target)
+            .map(|session| session.active_pane)
+        {
             self.active_session = target;
+            self.active_cursor_pane
+                .store(active_pane.0, Ordering::Release);
             true
         } else {
             false
@@ -146,6 +166,7 @@ impl AppSessionState {
         };
 
         self.active_session = self.sessions[next_idx].id;
+        self.sync_active_cursor_pane();
     }
 
     /// Closes the specified session, tearing down all its panes.
@@ -160,6 +181,7 @@ impl AppSessionState {
         }
 
         if self.sessions.is_empty() {
+            self.sync_active_cursor_pane();
             return None;
         }
 
@@ -171,6 +193,8 @@ impl AppSessionState {
             };
             self.active_session = self.sessions[next_idx].id;
         }
+
+        self.sync_active_cursor_pane();
 
         Some(self.active_session)
     }
@@ -190,6 +214,8 @@ impl AppSessionState {
             .layout
             .split_leaf(active_pane, new_pane_id, direction);
         session.active_pane = new_pane_id;
+        self.active_cursor_pane
+            .store(new_pane_id.0, Ordering::Release);
         Some(new_pane_id)
     }
 
@@ -218,6 +244,7 @@ impl AppSessionState {
             Some(removed)
         } else {
             self.terminals.remove(&removed);
+            self.sync_active_cursor_pane();
             Some(removed)
         }
     }
@@ -227,15 +254,27 @@ impl AppSessionState {
         node: &PaneLayoutNode,
         terminals: &HashMap<PaneId, Arc<Mutex<Terminal>>>,
         gate_active: Arc<AtomicBool>,
+        active_cursor_pane: Arc<AtomicU64>,
+        on_pane_activate: Option<OnPaneActivate>,
         cx: &mut BuildCx,
     ) -> View {
         match node {
             PaneLayoutNode::Leaf(pane_id) => {
                 if let Some(term) = terminals.get(pane_id) {
-                    let bridge = TerminalWidgetBridge::with_draw_id(
+                    let activate = on_pane_activate.map(|callback| {
+                        let pane_id = *pane_id;
+                        Arc::new(move || callback(pane_id)) as Arc<dyn Fn() + Send + Sync>
+                    });
+                    let cursor_pane = Arc::clone(&active_cursor_pane);
+                    let draw_id = pane_id.0;
+                    let cursor_focused: CursorFocusFn =
+                        Arc::new(move || cursor_pane.load(Ordering::Acquire) == draw_id);
+                    let bridge = TerminalWidgetBridge::with_draw_id_and_cursor_focus_provider(
                         pane_id.0,
                         Arc::clone(term),
                         gate_active,
+                        cursor_focused,
+                        activate,
                     );
                     bridge.build(cx)
                 } else {
@@ -248,9 +287,22 @@ impl AppSessionState {
                 first,
                 second,
             } => {
-                let first_view =
-                    Self::build_pane_node(first, terminals, Arc::clone(&gate_active), cx);
-                let second_view = Self::build_pane_node(second, terminals, gate_active, cx);
+                let first_view = Self::build_pane_node(
+                    first,
+                    terminals,
+                    Arc::clone(&gate_active),
+                    Arc::clone(&active_cursor_pane),
+                    on_pane_activate.clone(),
+                    cx,
+                );
+                let second_view = Self::build_pane_node(
+                    second,
+                    terminals,
+                    gate_active,
+                    active_cursor_pane,
+                    on_pane_activate,
+                    cx,
+                );
                 let split = SplitContainer::new(*direction, *ratio).views(first_view, second_view);
                 split.build(cx)
             }
@@ -281,6 +333,9 @@ impl AppSessionState {
             terminals: self.terminals.clone(),
             gate_active: Arc::clone(&self.gate_active),
             tab_scroll_offset: Arc::clone(&self.tab_scroll_offset),
+            active_pane: self.active_pane_id(),
+            active_cursor_pane: Arc::clone(&self.active_cursor_pane),
+            on_pane_activate: None,
             on_select: None,
             on_close: None,
             on_new: None,
@@ -298,6 +353,9 @@ pub struct SessionRootComponent {
     pub terminals: HashMap<PaneId, Arc<Mutex<Terminal>>>,
     pub gate_active: Arc<AtomicBool>,
     pub tab_scroll_offset: Arc<std::sync::atomic::AtomicU32>,
+    pub active_pane: Option<PaneId>,
+    pub active_cursor_pane: Arc<AtomicU64>,
+    pub on_pane_activate: Option<OnPaneActivate>,
     pub on_select: Option<OnSelect>,
     pub on_close: Option<OnClose>,
     pub on_new: Option<OnNew>,
@@ -321,16 +379,19 @@ impl Component for SessionRootComponent {
         }
         let tab_bar_view = tab_bar.build(cx);
 
-        let pane_tree_view = if let Some(layout) = &self.active_layout {
-            AppSessionState::build_pane_node(
-                layout,
-                &self.terminals,
-                Arc::clone(&self.gate_active),
-                cx,
-            )
-        } else {
-            Column::new().build(cx)
-        };
+        let pane_tree_view =
+            if let (Some(layout), Some(_)) = (&self.active_layout, self.active_pane) {
+                AppSessionState::build_pane_node(
+                    layout,
+                    &self.terminals,
+                    Arc::clone(&self.gate_active),
+                    Arc::clone(&self.active_cursor_pane),
+                    self.on_pane_activate.clone(),
+                    cx,
+                )
+            } else {
+                Column::new().build(cx)
+            };
 
         let layout = TabbedLayout::new(self.tab_position, tab_bar_view, pane_tree_view);
         layout.build(cx)
@@ -388,6 +449,27 @@ mod tests {
         let closed = state.close_active_pane();
         assert_eq!(closed, Some(PaneId(2)));
         assert_eq!(state.active_pane_id(), Some(PaneId(1)));
+    }
+
+    #[test]
+    fn session_state_changes_active_pane_only_for_a_different_existing_leaf() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let term = Arc::new(Mutex::new(Terminal::new_headless(24, 80)));
+        let mut state = AppSessionState::new(term, gate);
+        let second = state
+            .split_active_pane(
+                Arc::new(Mutex::new(Terminal::new_headless(24, 80))),
+                SplitDirection::Horizontal,
+            )
+            .expect("split pane");
+
+        assert!(!state.set_active_pane(second));
+        assert!(!state.set_active_pane(PaneId(999)));
+        assert_eq!(state.active_pane_id(), Some(second));
+        assert_eq!(state.active_cursor_pane.load(Ordering::Acquire), second.0);
+        assert!(state.set_active_pane(PaneId(1)));
+        assert_eq!(state.active_pane_id(), Some(PaneId(1)));
+        assert_eq!(state.active_cursor_pane.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -450,6 +532,8 @@ mod tests {
             &state.active_session().expect("active session").layout,
             &state.terminals,
             Arc::clone(&state.gate_active),
+            Arc::clone(&state.active_cursor_pane),
+            None,
             &mut cx,
         );
         assert_eq!(
@@ -467,6 +551,8 @@ mod tests {
             &state.active_session().expect("active session").layout,
             &state.terminals,
             Arc::clone(&state.gate_active),
+            Arc::clone(&state.active_cursor_pane),
+            None,
             &mut cx,
         );
         assert_eq!(

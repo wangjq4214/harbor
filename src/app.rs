@@ -528,6 +528,21 @@ impl ApplicationHandler<AppEvent> for App {
                     self.apply_update_root_effects(event_loop);
                 }
             }
+            AppEvent::ActivatePane(pane_id) => {
+                let active_terminal = self.runtime.session_state.as_mut().and_then(|state| {
+                    state
+                        .set_active_pane(pane_id)
+                        .then(|| state.active_terminal())
+                });
+                let Some(active_terminal) = active_terminal else {
+                    return;
+                };
+                self.sync_active_terminal(active_terminal);
+                if let Some(runtime) = self.runtime.widget_runtime.as_mut() {
+                    runtime.focus_external_draw(pane_id.0);
+                }
+                self.request_main_frame(event_loop);
+            }
         }
     }
 
@@ -741,6 +756,39 @@ impl ApplicationHandler<AppEvent> for App {
 
 // ── App (own methods) ─────────────────────────────────────────────────────
 impl App {
+    fn pane_activation_callback(&self) -> session::OnPaneActivate {
+        let proxy = self.event_proxy.clone();
+        Arc::new(move |pane_id| {
+            let _ = proxy.send_event(AppEvent::ActivatePane(pane_id));
+        })
+    }
+
+    fn restore_active_pane_focus(
+        runtime: &mut harbor_widget::runtime::Runtime,
+        active_pane: Option<harbor_types::PaneId>,
+    ) {
+        if !active_pane.is_some_and(|pane_id| runtime.focus_external_draw(pane_id.0)) {
+            runtime.focus_first_focusable();
+        }
+    }
+
+    fn sync_active_terminal(&mut self, active_terminal: Option<Arc<Mutex<Terminal>>>) {
+        self.runtime.terminal = active_terminal;
+        let (Some(term_arc), Some(gpu), Some(runtime)) = (
+            self.runtime.terminal.as_ref(),
+            self.runtime.gpu.as_ref(),
+            self.runtime.widget_runtime.as_mut(),
+        ) else {
+            return;
+        };
+        if let Ok(mut term) = term_arc.lock() {
+            term.ensure_glyphs("Terminal 1234567890+x -", gpu);
+            if let Some(bind_group) = term.text_bind_group() {
+                runtime.set_text_bind_group(bind_group);
+            }
+        }
+    }
+
     /// Creates the application shell with no initial window, GPU, or terminal.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
@@ -1102,6 +1150,8 @@ impl App {
         root_comp.on_select = on_select;
         root_comp.on_close = on_close;
         root_comp.on_new = on_new;
+        root_comp.on_pane_activate = Some(self.pane_activation_callback());
+        let active_pane = root_comp.active_pane;
 
         let gpu = self.runtime.gpu.as_ref().unwrap();
         let window = self.runtime.window.as_ref().unwrap();
@@ -1126,7 +1176,7 @@ impl App {
         }
         runtime.set_viewport(initial_viewport);
         let mut initial_effects = runtime.update(Instant::now());
-        runtime.focus_first_focusable();
+        Self::restore_active_pane_focus(&mut runtime, active_pane);
 
         runtime.drain_external_input();
         initial_effects.merge(runtime.take_pending_effects());
@@ -1151,36 +1201,28 @@ impl App {
             let _ = proxy3.send_event(AppEvent::NewSession);
         }) as Arc<dyn Fn() + Send + Sync>);
 
-        let (active_terminal, mut root_comp) = {
+        let (active_terminal, active_pane, mut root_comp) = {
             let Some(session_state) = self.runtime.session_state.as_ref() else {
                 return RuntimeEffects::default();
             };
             (
                 session_state.active_terminal(),
+                session_state.active_pane_id(),
                 session_state.build_root_component(self.runtime.tab_position),
             )
         };
         root_comp.on_select = on_select;
         root_comp.on_close = on_close;
         root_comp.on_new = on_new;
+        root_comp.on_pane_activate = Some(self.pane_activation_callback());
 
-        self.runtime.terminal = active_terminal;
+        self.sync_active_terminal(active_terminal);
         let Some(runtime) = self.runtime.widget_runtime.as_mut() else {
             return RuntimeEffects::default();
         };
-        if let (Some(term_arc), Some(gpu)) =
-            (self.runtime.terminal.as_ref(), self.runtime.gpu.as_ref())
-        {
-            if let Ok(mut term) = term_arc.lock() {
-                term.ensure_glyphs("Terminal 1234567890+x -", gpu);
-                if let Some(bind_group) = term.text_bind_group() {
-                    runtime.set_text_bind_group(bind_group);
-                }
-            }
-        }
         runtime.set_root(root_comp);
         let mut effects = runtime.update(Instant::now());
-        runtime.focus_first_focusable();
+        Self::restore_active_pane_focus(runtime, active_pane);
         runtime.drain_external_input();
         effects.merge(runtime.take_pending_effects());
         effects.request_redraw = true;

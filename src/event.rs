@@ -14,4 +14,6 @@ pub(crate) enum AppEvent {
     CloseSession(usize),
     /// The new tab "+" button was clicked.
     NewSession,
+    /// A terminal pane was focused by pointer interaction.
+    ActivatePane(harbor_types::PaneId),
 }

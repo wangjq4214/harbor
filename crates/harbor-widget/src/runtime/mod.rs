@@ -404,7 +404,6 @@ impl Runtime {
             EncodeScene {
                 scene_graph: &self.scene_graph,
                 pending_delta: &mut self.pending_delta,
-                current_viewport: &mut self.current_viewport,
                 external_draws: &self.external_draws,
                 external_eligible: &self.external_eligible,
                 commit,
@@ -589,6 +588,21 @@ impl Runtime {
         } else {
             false
         }
+    }
+
+    /// Focuses the external-paint leaf matching `draw_id`.
+    pub fn focus_external_draw(
+        &mut self,
+        draw_id: crate::scene::primitive::ExternalDrawId,
+    ) -> bool {
+        let Some(root_id) = self.root_id else {
+            return false;
+        };
+        let Some(fiber_id) = EventRouter::find_external_draw(&self.arena, root_id, draw_id) else {
+            return false;
+        };
+        self.transition_focus(Some(fiber_id));
+        true
     }
 
     /// Clears the focused fiber.
@@ -1308,6 +1322,30 @@ mod tests {
         assert!(
             fiber.view.as_ref().unwrap().is_focusable(),
             "focused widget should be focusable (the Button, not the SizedBox)"
+        );
+    }
+
+    #[test]
+    fn should_focus_the_custom_paint_matching_an_external_draw_id() {
+        use crate::widgets::column::Column;
+
+        let mut runtime = Runtime::new();
+        runtime.set_root(
+            Column::new()
+                .child(CustomPaint::new(11))
+                .child(CustomPaint::new(22)),
+        );
+        runtime.update(now());
+
+        assert!(runtime.focus_external_draw(22));
+        let focused = runtime.input().focused.expect("focused external draw");
+        assert_eq!(
+            runtime
+                .arena()
+                .get(focused)
+                .and_then(|fiber| fiber.view.as_ref())
+                .and_then(|view| view.external_draw_id()),
+            Some(22)
         );
     }
 

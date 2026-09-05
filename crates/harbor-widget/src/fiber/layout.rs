@@ -29,10 +29,17 @@ fn measure_fiber(
         });
     };
 
-    let child_constraints = view.child_constraints(constraints);
+    let child_constraints = view.children_constraints(children.len(), constraints, metrics);
     let measured_children = children
         .into_iter()
-        .map(|child_id| measure_fiber(arena, child_id, child_constraints, metrics))
+        .enumerate()
+        .map(|(i, child_id)| {
+            let c = child_constraints
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| view.child_constraints(constraints));
+            measure_fiber(arena, child_id, c, metrics)
+        })
         .collect::<Vec<_>>();
     let child_sizes = measured_children
         .iter()

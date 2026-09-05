@@ -124,6 +124,10 @@ impl AnyView for CustomPaint {
         true
     }
 
+    fn external_draw_id(&self) -> Option<ExternalDrawId> {
+        Some(self.draw_id)
+    }
+
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         if matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Down)
             && let Some(fiber) = ctx.current_fiber()

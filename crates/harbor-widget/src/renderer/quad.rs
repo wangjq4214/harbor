@@ -251,6 +251,21 @@ impl QuadRenderer {
         }
     }
 
+    /// Reprojects every retained quad after a viewport-only change.
+    pub fn refresh_viewport(&self, queue: &wgpu::Queue, items: &[SceneItem], viewport: &Viewport) {
+        for item in items {
+            if !matches!(item.primitive, Primitive::Quad { .. }) {
+                continue;
+            }
+            let Some(slot) = self.id_to_slot.get(&item.id) else {
+                continue;
+            };
+            let instance = self.item_to_instance(item, viewport);
+            let offset = *slot as u64 * std::mem::size_of::<QuadInstance>() as u64;
+            queue.write_buffer(&self.instance_buffer, offset, bytemuck::bytes_of(&instance));
+        }
+    }
+
     /// Encodes all instanced draw calls into the RenderPass.
     pub fn encode<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         if self.instance_count == 0 {

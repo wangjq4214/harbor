@@ -200,6 +200,25 @@ impl EventRouter {
         None
     }
 
+    pub(crate) fn find_external_draw(
+        arena: &FiberArena,
+        fiber_id: FiberId,
+        draw_id: crate::scene::primitive::ExternalDrawId,
+    ) -> Option<FiberId> {
+        let fiber = arena.get(fiber_id)?;
+        if fiber
+            .view
+            .as_ref()
+            .is_some_and(|view| view.external_draw_id() == Some(draw_id))
+        {
+            return Some(fiber_id);
+        }
+        fiber
+            .children
+            .iter()
+            .find_map(|child| Self::find_external_draw(arena, *child, draw_id))
+    }
+
     pub(crate) fn tree_has_modal(arena: &FiberArena, fiber_id: FiberId) -> bool {
         let fiber = match arena.get(fiber_id) {
             Some(f) => f,
