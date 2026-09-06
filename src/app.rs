@@ -12,13 +12,15 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(target_os = "windows")]
+use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, ModifiersState},
-    window::{CursorIcon, Theme, Window, WindowId},
+    window::{CursorIcon, Icon, Theme, Window, WindowId},
 };
 
 use crate::event::AppEvent;
@@ -41,6 +43,27 @@ use window_backdrop::{
     BackdropStatus, WindowBackdropBackend, os_build, select_backend, wasdk_available,
 };
 
+/// Decodes the 256×256 PNG produced by the build script for the native window icon.
+fn harbor_window_icon() -> Option<Icon> {
+    let image = match image::load_from_memory(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/harbor-window.png"
+    ))) {
+        Ok(image) => image.into_rgba8(),
+        Err(error) => {
+            tracing::warn!(%error, "failed to decode bundled application icon");
+            return None;
+        }
+    };
+    let (width, height) = image.dimensions();
+    match Icon::from_rgba(image.into_raw(), width, height) {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            tracing::warn!(%error, "failed to create application window icon");
+            None
+        }
+    }
+}
 // ── Thread-local GPU context scope for widget external draw pass ──────────────
 
 thread_local! {
@@ -608,8 +631,13 @@ impl App {
         let backdrop = select_backend(os_build(), wasdk_available());
         let mut window_attrs = Window::default_attributes()
             .with_title("Harbor")
+            .with_window_icon(harbor_window_icon())
             .with_theme(Some(Theme::Dark))
             .with_visible(false);
+        #[cfg(target_os = "windows")]
+        {
+            window_attrs = window_attrs.with_taskbar_icon(harbor_window_icon());
+        }
         window_attrs = backdrop.configure_attributes(window_attrs);
 
         let window = Arc::new(event_loop.create_window(window_attrs)?);
@@ -617,7 +645,12 @@ impl App {
         window.set_ime_allowed(true);
 
         #[cfg(target_os = "windows")]
-        suppress_caption_title_and_icon(&window);
+        {
+            suppress_caption_title_and_icon(&window);
+            // Apply these after caption theming, which may reset the HWND icon slots.
+            window.set_window_icon(harbor_window_icon());
+            window.set_taskbar_icon(harbor_window_icon());
+        }
         let backdrop_style = harbor_config::WindowBackdropStyle::default();
         let BackdropStatus {
             tier,
@@ -928,45 +961,6 @@ const WTNCA_NODRAWCAPTION: u32 = 0x1;
 /// Do not draw the window icon in the title bar.
 #[cfg(target_os = "windows")]
 const WTNCA_NODRAWICON: u32 = 0x2;
-/// Replaces the small title-bar icon for an HWND.
-#[cfg(target_os = "windows")]
-const WM_SETICON: u32 = 0x0080;
-/// The small icon, which Windows uses in the title bar.
-#[cfg(target_os = "windows")]
-const ICON_SMALL: usize = 0;
-
-/// Returns a process-lifetime transparent icon for the native caption.
-///
-/// Passing a null icon to `WM_SETICON` is insufficient because Windows can
-/// fall back to the window-class icon. A transparent window-level icon blocks
-/// that fallback without changing the big icon used by Alt-Tab and the taskbar.
-#[cfg(target_os = "windows")]
-fn transparent_caption_icon() -> Option<isize> {
-    use std::sync::OnceLock;
-
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn CreateIcon(
-            instance: isize,
-            width: i32,
-            height: i32,
-            planes: u8,
-            bits_per_pixel: u8,
-            and_bits: *const u8,
-            xor_bits: *const u8,
-        ) -> isize;
-    }
-
-    static ICON: OnceLock<Option<isize>> = OnceLock::new();
-    *ICON.get_or_init(|| {
-        // Monochrome icon scanlines are WORD-aligned. An all-one AND mask and
-        // all-zero XOR mask leave the destination pixel fully unchanged.
-        let and_bits = [0xff_u8; 2];
-        let xor_bits = [0_u8; 2];
-        let icon = unsafe { CreateIcon(0, 1, 1, 1, 1, and_bits.as_ptr(), xor_bits.as_ptr()) };
-        (icon != 0).then_some(icon)
-    })
-}
 
 /// Pure packing of undrawn-caption theme flags for `WTA_OPTIONS`.
 ///
@@ -999,7 +993,6 @@ fn suppress_caption_title_and_icon(window: &Window) {
             pv_attribute: *const WtaOptions,
             cb_attribute: u32,
         ) -> i32;
-        fn SendMessageW(hwnd: isize, message: u32, w_param: usize, l_param: isize) -> isize;
     }
 
     let Ok(handle) = window.window_handle() else {
@@ -1027,17 +1020,6 @@ fn suppress_caption_title_and_icon(window: &Window) {
     };
     if hr < 0 {
         tracing::warn!(hr, "SetWindowThemeAttribute failed for caption nodraw");
-    }
-
-    // WTA_NONCLIENT is advisory under DWM. Use a transparent per-window small
-    // icon rather than null: null permits fallback to the window-class icon.
-    // Leave the big icon alone so Alt-Tab and taskbar identity are unchanged.
-    if let Some(icon) = transparent_caption_icon() {
-        unsafe {
-            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon);
-        }
-    } else {
-        tracing::warn!("failed to create transparent caption icon");
     }
 }
 
@@ -1097,6 +1079,10 @@ fn paint_gdi_background(window: &Window, fallback: [f32; 3]) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bundled_window_icon_decodes() {
+        assert!(harbor_window_icon().is_some());
+    }
     #[cfg(target_os = "windows")]
     #[test]
     fn should_pack_nodraw_caption_and_icon_flags() {
