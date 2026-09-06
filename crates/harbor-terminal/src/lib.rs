@@ -1,6 +1,7 @@
 mod damage;
 mod input;
 mod io;
+mod model;
 mod normal_buf;
 mod parser;
 mod pointer;
@@ -13,14 +14,15 @@ mod types;
 
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
+pub use harbor_config::Color;
 use harbor_pty::PtyControl;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
-pub use harbor_types::should_confirm_multiline;
-pub use harbor_types::{
+use io::TerminalIo;
+pub use model::should_confirm_multiline;
+pub use model::{
     InputModes, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage,
     safe_preview_line,
 };
-use io::TerminalIo;
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use pointer::PointerInteraction;
@@ -30,8 +32,8 @@ pub use render::{
     alpha_mode_supports_transparency,
 };
 pub use screen::{
-    AltScreenAction, Cell, CellAttrs, CharacterProtection, Color, CursorShape, CursorStyleArg,
-    Screen, ScreenReader, SelectionBounds,
+    AltScreenAction, Cell, CellAttrs, CharacterProtection, CursorShape, CursorStyleArg, Screen,
+    ScreenReader, SelectionBounds,
 };
 pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,
@@ -390,7 +392,7 @@ impl Terminal {
             TerminalEvent::Pointer(pointer) => {
                 if !self.pointer.has_viewport()
                     || self.screen.input_modes().mouse_tracking
-                        != harbor_types::MouseTrackingMode::Disabled
+                        != crate::model::MouseTrackingMode::Disabled
                 {
                     let mut reported = self.pointer.prepare_mouse_event(*pointer);
                     if let Some(position) = self

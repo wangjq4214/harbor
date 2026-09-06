@@ -1,5 +1,6 @@
+use crate::model::TerminalSnapshot;
+use harbor_config::Palette;
 use harbor_text::TextMetrics;
-use harbor_types::{Palette, TerminalSnapshot};
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
@@ -328,7 +329,7 @@ mod tests {
         terminal.put_str("\x1b[4;9;7mX");
         let snap = terminal.screen().terminal_snapshot();
         let palette = Palette {
-            background: harbor_types::Rgba::from_rgba8(10, 20, 30, 64),
+            background: harbor_config::Rgba::from_rgba8(10, 20, 30, 64),
             ..Palette::default()
         };
         let expected = [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0];

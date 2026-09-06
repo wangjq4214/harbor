@@ -1,9 +1,10 @@
 use crate::damage::DirtyRange;
+use crate::model::{TerminalSnapshot, UpdateDamage};
 use crate::render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection, Text,
 };
+use harbor_config::Palette;
 use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
-use harbor_types::{Palette, TerminalSnapshot, UpdateDamage};
 use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
@@ -81,7 +82,7 @@ impl TerminalRenderPipeline {
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
         now: Instant,
-        selection_bounds: Option<harbor_types::SelectionBounds>,
+        selection_bounds: Option<crate::model::SelectionBounds>,
         tint: [f32; 4],
     ) {
         let viewport = self.viewport;

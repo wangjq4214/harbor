@@ -5,8 +5,8 @@
 //! into the edit engine live on `Screen` (the coordinator).
 
 use crate::InputModes;
+use crate::model::CursorShape;
 use crate::normal_buf::NormalBuf;
-use harbor_types::CursorShape;
 
 use super::edit::Rect;
 
@@ -127,7 +127,7 @@ pub(crate) struct TerminalModes {
     /// Bracketed paste mode (DECSET ?2004).
     pub(crate) bracketed_paste: bool,
     /// DEC mouse event reporting mode.
-    pub(crate) mouse_tracking: harbor_types::MouseTrackingMode,
+    pub(crate) mouse_tracking: crate::model::MouseTrackingMode,
     /// SGR extended mouse coordinate encoding (DECSET ?1006).
     pub(crate) mouse_sgr: bool,
 }
@@ -143,7 +143,7 @@ impl TerminalModes {
             application_cursor: false,
             application_keypad: false,
             bracketed_paste: false,
-            mouse_tracking: harbor_types::MouseTrackingMode::Disabled,
+            mouse_tracking: crate::model::MouseTrackingMode::Disabled,
             mouse_sgr: false,
         }
     }
@@ -215,14 +215,14 @@ impl CursorEngine {
         self.cursor.visible
     }
 
-    pub(crate) fn set_cursor_style(&mut self, arg: harbor_types::CursorStyleArg) {
+    pub(crate) fn set_cursor_style(&mut self, arg: crate::model::CursorStyleArg) {
         let (shape, blink) = match arg {
-            harbor_types::CursorStyleArg::BlinkingBlock => (CursorShape::Block, true),
-            harbor_types::CursorStyleArg::SteadyBlock => (CursorShape::Block, false),
-            harbor_types::CursorStyleArg::BlinkingUnderline => (CursorShape::Underline, true),
-            harbor_types::CursorStyleArg::SteadyUnderline => (CursorShape::Underline, false),
-            harbor_types::CursorStyleArg::BlinkingBar => (CursorShape::Bar, true),
-            harbor_types::CursorStyleArg::SteadyBar => (CursorShape::Bar, false),
+            crate::model::CursorStyleArg::BlinkingBlock => (CursorShape::Block, true),
+            crate::model::CursorStyleArg::SteadyBlock => (CursorShape::Block, false),
+            crate::model::CursorStyleArg::BlinkingUnderline => (CursorShape::Underline, true),
+            crate::model::CursorStyleArg::SteadyUnderline => (CursorShape::Underline, false),
+            crate::model::CursorStyleArg::BlinkingBar => (CursorShape::Bar, true),
+            crate::model::CursorStyleArg::SteadyBar => (CursorShape::Bar, false),
         };
         self.cursor.shape = shape;
         self.cursor.blink = blink;
@@ -437,23 +437,23 @@ impl CursorEngine {
             66 => self.modes.application_keypad = enabled,
             1000 => {
                 self.modes.mouse_tracking = if enabled {
-                    harbor_types::MouseTrackingMode::Button
+                    crate::model::MouseTrackingMode::Button
                 } else {
-                    harbor_types::MouseTrackingMode::Disabled
+                    crate::model::MouseTrackingMode::Disabled
                 }
             }
             1002 => {
                 self.modes.mouse_tracking = if enabled {
-                    harbor_types::MouseTrackingMode::ButtonMotion
+                    crate::model::MouseTrackingMode::ButtonMotion
                 } else {
-                    harbor_types::MouseTrackingMode::Disabled
+                    crate::model::MouseTrackingMode::Disabled
                 }
             }
             1003 => {
                 self.modes.mouse_tracking = if enabled {
-                    harbor_types::MouseTrackingMode::AnyMotion
+                    crate::model::MouseTrackingMode::AnyMotion
                 } else {
-                    harbor_types::MouseTrackingMode::Disabled
+                    crate::model::MouseTrackingMode::Disabled
                 }
             }
             1006 => self.modes.mouse_sgr = enabled,
@@ -492,15 +492,15 @@ impl CursorEngine {
             69 => Some(self.margins.enabled),
             1000 => Some(matches!(
                 self.modes.mouse_tracking,
-                harbor_types::MouseTrackingMode::Button
+                crate::model::MouseTrackingMode::Button
             )),
             1002 => Some(matches!(
                 self.modes.mouse_tracking,
-                harbor_types::MouseTrackingMode::ButtonMotion
+                crate::model::MouseTrackingMode::ButtonMotion
             )),
             1003 => Some(matches!(
                 self.modes.mouse_tracking,
-                harbor_types::MouseTrackingMode::AnyMotion
+                crate::model::MouseTrackingMode::AnyMotion
             )),
             1006 => Some(self.modes.mouse_sgr),
             2004 => Some(self.modes.bracketed_paste),

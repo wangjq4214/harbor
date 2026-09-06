@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use harbor_types::{Palette, Rgba};
+use harbor_config::{Palette, Rgba};
 
 /// Terminal-owned visual policy for the startup palette and backdrop fallback.
 #[derive(Clone, Copy, Debug, PartialEq)]

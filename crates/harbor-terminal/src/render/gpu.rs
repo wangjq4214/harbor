@@ -18,7 +18,7 @@ use windows::core::Interface;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use harbor_types::DirtyRange;
+use crate::model::DirtyRange;
 
 /// Upload operation selected for a dirty grid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

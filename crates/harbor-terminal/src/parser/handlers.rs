@@ -4,9 +4,9 @@ use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttribute
 use super::mode_query::ModeQuery;
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
+use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 use harbor_parser::{Params, VtHandler};
-use harbor_types::{CharacterProtection, CursorStyleArg};
 
 /// Applies recognized VT actions to a `Screen`.
 pub struct ScreenHandler<'a> {

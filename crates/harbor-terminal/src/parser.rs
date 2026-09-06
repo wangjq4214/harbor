@@ -11,10 +11,10 @@ mod incremental_tests;
 #[cfg(test)]
 mod tests;
 
+use crate::model::AltScreenAction;
 use crate::screen::Screen;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
-use harbor_types::AltScreenAction;
 use status_strings::DecrqssRequest;
 use xtgettcap::XtgettcapRequest;
 

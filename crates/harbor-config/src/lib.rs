@@ -10,7 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use harbor_types::{Palette, Rgba};
+mod color;
+pub use color::{Color, Palette, Rgba};
 use toml::{Table, Value};
 
 pub const FONT_SIZE: f32 = 24.0;

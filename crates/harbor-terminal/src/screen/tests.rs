@@ -1618,8 +1618,8 @@ fn should_expose_decrqss_getters_for_sgr_regions_style_and_protection() {
     screen.set_scroll_region(2, 8);
     screen.set_private_mode(69, true);
     screen.set_left_right_margins(3, 15);
-    screen.set_cursor_style(harbor_types::CursorStyleArg::SteadyUnderline);
-    screen.set_character_protection(harbor_types::CharacterProtection::Protected);
+    screen.set_cursor_style(crate::model::CursorStyleArg::SteadyUnderline);
+    screen.set_character_protection(crate::model::CharacterProtection::Protected);
 
     // Act / Assert — public Screen observation surface used by DECRQSS.
     let (fg, bg, attrs) = screen.current_sgr();
@@ -1630,11 +1630,11 @@ fn should_expose_decrqss_getters_for_sgr_regions_style_and_protection() {
     assert_eq!(screen.left_right_margins(), (3, 15));
     assert_eq!(
         screen.cursor_style(),
-        harbor_types::CursorStyleArg::SteadyUnderline
+        crate::model::CursorStyleArg::SteadyUnderline
     );
     assert_eq!(
         screen.character_protection(),
-        harbor_types::CharacterProtection::Protected
+        crate::model::CharacterProtection::Protected
     );
 
     // Act — disabling DECLRMM must preserve saved margins for later queries.
@@ -2093,9 +2093,9 @@ fn scrolling_preserves_the_column_chosen_by_the_caller() {
 fn test_decsca_protected_attr() {
     let mut screen = Screen::new(5, 5);
     assert!(!screen.pen_state.pen.protected);
-    screen.set_character_protection(harbor_types::CharacterProtection::Protected);
+    screen.set_character_protection(crate::model::CharacterProtection::Protected);
     assert!(screen.pen_state.pen.protected);
-    screen.set_character_protection(harbor_types::CharacterProtection::Unprotected);
+    screen.set_character_protection(crate::model::CharacterProtection::Unprotected);
     assert!(!screen.pen_state.pen.protected);
 }
 
@@ -3222,10 +3222,10 @@ fn alt_screen_restores_all_state_groups() {
     screen.set_private_mode(6, true); // origin mode
     screen.set_private_mode(7, false); // autowrap off
     screen.set_private_mode(25, false); // cursor invisible
-    screen.set_cursor_style(harbor_types::CursorStyleArg::SteadyBlock); // block, no blink
+    screen.set_cursor_style(crate::model::CursorStyleArg::SteadyBlock); // block, no blink
     screen.set_standard_mode(4, true); // insert mode
     screen.set_standard_mode(20, true); // line feed mode
-    screen.set_character_protection(harbor_types::CharacterProtection::Protected); // protected
+    screen.set_character_protection(crate::model::CharacterProtection::Protected); // protected
     screen.set_sgr_slice(&[Some(1), Some(31), Some(42)]);
     screen.write_char('X'); // set last_char (advances cursor to 1)
     screen.cursor.cursor.x = 5;
@@ -3247,10 +3247,10 @@ fn alt_screen_restores_all_state_groups() {
     screen.set_private_mode(6, false);
     screen.set_private_mode(7, true); // autowrap on
     screen.set_private_mode(25, true); // cursor visible
-    screen.set_cursor_style(harbor_types::CursorStyleArg::BlinkingBar); // bar, blink
+    screen.set_cursor_style(crate::model::CursorStyleArg::BlinkingBar); // bar, blink
     screen.set_standard_mode(4, false); // replace mode
     screen.set_standard_mode(20, false); // normal line feed
-    screen.set_character_protection(harbor_types::CharacterProtection::Unprotected); // not protected
+    screen.set_character_protection(crate::model::CharacterProtection::Unprotected); // not protected
     screen.set_sgr_slice(&[Some(0)]);
     screen.set_scroll_region(0, 0);
     screen.clear_tab_stops(3);
