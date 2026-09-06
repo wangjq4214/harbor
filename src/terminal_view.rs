@@ -29,22 +29,35 @@ thread_local! {
     static CURRENT_GPU: Cell<Option<*const GpuContext>> = const { Cell::new(None) };
 }
 
-/// Executes a closure with `gpu` set as the thread-local active GPU context.
-/// Resets to `None` on return or unwind.
-pub(crate) fn with_current_gpu<R>(gpu: &GpuContext, f: impl FnOnce() -> R) -> R {
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CURRENT_GPU.with(|c| c.set(None));
-        }
-    }
-    CURRENT_GPU.with(|c| c.set(Some(gpu as *const GpuContext)));
-    let _guard = Guard;
-    f()
+/// Scoped thread-local GPU context binding for widget render passes containing terminal custom paint.
+pub(crate) struct GpuDrawScope<'a> {
+    _marker: std::marker::PhantomData<&'a GpuContext>,
 }
 
-/// Accesses the active GPU context if within a `with_current_gpu` scope.
-pub(crate) fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
+impl<'a> GpuDrawScope<'a> {
+    /// Binds `gpu` as the thread-local context for the duration of `f`.
+    /// Restores the previous context on return or unwind.
+    pub(crate) fn enter<R>(gpu: &'a GpuContext, f: impl FnOnce() -> R) -> R {
+        struct ResetGuard(Option<*const GpuContext>);
+        impl Drop for ResetGuard {
+            fn drop(&mut self) {
+                CURRENT_GPU.with(|c| c.set(self.0));
+            }
+        }
+        let prev = CURRENT_GPU.with(|c| c.replace(Some(gpu as *const GpuContext)));
+        let _guard = ResetGuard(prev);
+        f()
+    }
+}
+
+/// Executes a closure with `gpu` bound as the active GPU context.
+#[inline]
+pub(crate) fn with_current_gpu<R>(gpu: &GpuContext, f: impl FnOnce() -> R) -> R {
+    GpuDrawScope::enter(gpu, f)
+}
+
+/// Accesses the active GPU context from within a `GpuDrawScope`. Private to this module.
+fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
     CURRENT_GPU.with(|c| {
         let ptr = c.get()?;
         let gpu = unsafe { &*ptr };

@@ -29,7 +29,7 @@ use crate::dialog::{
 use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::telemetry::{
-    FrameState, HIDDEN_STARTUP_RETRY_DELAY, TracingFrameLifecycleSink,
+    FrameState, HIDDEN_STARTUP_RETRY_DELAY,
 };
 use crate::terminal_view::{
     TerminalWidgetBridge, build_main_terminal_root, with_current_gpu,
@@ -42,19 +42,19 @@ use harbor_terminal::{
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
 
-/// Runtime resources that exist while the window is alive.
-pub(crate) struct ShellRuntime {
-    window: Option<Arc<Window>>,
-    gpu: Option<GpuContext>,
-    terminal: Option<Arc<Mutex<Terminal>>>,
+/// Active session resources that exist while the window and renderer are alive.
+pub(crate) struct ActiveSession {
+    window: Arc<Window>,
+    gpu: GpuContext,
+    terminal: Arc<Mutex<Terminal>>,
     /// Host-owned gate mirrored into the terminal bridge for in-tree input suppression.
     input_gate: Arc<AtomicBool>,
     /// Widget framework runtime.
-    widget_runtime: Option<harbor_widget::runtime::Runtime>,
+    widget_runtime: harbor_widget::runtime::Runtime,
     /// Main-window input adapter, sharing the runtime's window lifecycle.
-    winit_adapter: Option<WinitAdapter>,
+    winit_adapter: WinitAdapter,
     /// Selected window backdrop backend, held for the window lifetime.
-    backdrop: Option<Box<dyn WindowBackdropBackend>>,
+    _backdrop: Box<dyn WindowBackdropBackend>,
     /// Host fact injected into the Widget presenter for terminal clear policy.
     backdrop_available: bool,
     /// Keeps a newly-created window hidden until its first frame is presented.
@@ -64,9 +64,9 @@ pub(crate) struct ShellRuntime {
     dialog: DialogOverlay,
 }
 
-/// Winit coordinator over concrete lifecycle state groups.
+/// Winit coordinator managing the application lifecycle and active session state.
 pub(crate) struct Shell {
-    runtime: ShellRuntime,
+    session: Option<ActiveSession>,
     frame: FrameState,
     event_proxy: EventLoopProxy<AppEvent>,
 }
@@ -98,49 +98,19 @@ impl ApplicationHandler<AppEvent> for Shell {
         let Some(invalidation) = external_invalidation_for_app_event(event) else {
             return;
         };
-        let (Some(adapter), Some(runtime), Some(window)) = (
-            self.runtime.winit_adapter.as_mut(),
-            self.runtime.widget_runtime.as_mut(),
-            self.runtime.window.as_ref(),
-        ) else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
-        let effects = adapter.invalidate_external(runtime, invalidation);
-        apply_effects(window, &effects, event_loop);
+        session.handle_user_event(event_loop, invalidation);
     }
 
     /// Called when the event loop is about to block.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = Instant::now();
         let host_deadline = self.frame.next_steady_state_deadline();
-
-        let mut combined_flow = ControlFlowEffect::Wait;
-        if let (Some(adapter), Some(runtime), Some(window)) = (
-            self.runtime.winit_adapter.as_mut(),
-            self.runtime.widget_runtime.as_mut(),
-            self.runtime.window.as_ref(),
-        ) {
-            let main_effects = adapter.about_to_wait(runtime, now, host_deadline);
-            apply_window_effects(window, &main_effects);
-            if let Some(flow) = main_effects.control_flow {
-                combined_flow = flow;
-            }
-        }
-
-        if let Some(confirmation_flow) = self.runtime.dialog.about_to_wait(now) {
-            combined_flow = combined_flow.arbitrate(confirmation_flow);
-        }
-
-        if let Some(deadline) = self.runtime.startup_retry_deadline {
-            if now >= deadline {
-                self.runtime.startup_retry_deadline = None;
-                self.request_main_frame(event_loop);
-            } else {
-                combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
-            }
-        }
-
-        apply_control_flow(event_loop, combined_flow);
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.about_to_wait(event_loop, host_deadline);
     }
 
     /// Dispatches window-level events: resize, redraw, close, and terminal input.
@@ -150,25 +120,79 @@ impl ApplicationHandler<AppEvent> for Shell {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let dialog_window_id = self.runtime.dialog.window_id();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.handle_window_event(event_loop, window_id, event, &mut self.frame);
+    }
+}
+
+// ── ActiveSession (active window lifecycle) ───────────────────────────────
+impl ActiveSession {
+    fn handle_user_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        invalidation: harbor_widget::effects::ExternalInvalidation,
+    ) {
+        let effects = self
+            .winit_adapter
+            .invalidate_external(&mut self.widget_runtime, invalidation);
+        apply_effects(&self.window, &effects, event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
+        let now = Instant::now();
+        let main_effects =
+            self.winit_adapter
+                .about_to_wait(&mut self.widget_runtime, now, host_deadline);
+        apply_window_effects(&self.window, &main_effects);
+        let mut combined_flow = main_effects.control_flow.unwrap_or(ControlFlowEffect::Wait);
+
+        if let Some(confirmation_flow) = self.dialog.about_to_wait(now) {
+            combined_flow = combined_flow.arbitrate(confirmation_flow);
+        }
+
+        if let Some(deadline) = self.startup_retry_deadline {
+            if now >= deadline {
+                self.startup_retry_deadline = None;
+                self.request_main_frame(event_loop);
+            } else {
+                combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
+            }
+        }
+
+        apply_control_flow(event_loop, combined_flow);
+    }
+
+    fn handle_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+        frame: &mut FrameState,
+    ) {
+        let dialog_window_id = self.dialog.window_id();
         if dialog_window_id == Some(window_id) {
             let result = {
-                let term_guard = self.runtime.terminal.as_ref().map(|t| t.lock().unwrap());
-                let dialog = &mut self.runtime.dialog;
-                let gpu = self.runtime.gpu.as_ref();
-                match term_guard.as_ref() {
-                    Some(terminal) => {
-                        let glyph_fn = |ch| terminal.text_glyph(ch).copied();
-                        dialog.handle_event(&event, event_loop, gpu, Some(&glyph_fn))
+                let dialog = &mut self.dialog;
+                let gpu = &self.gpu;
+                if matches!(event, WindowEvent::RedrawRequested) {
+                    let term_guard = self.terminal.lock().ok();
+                    match term_guard.as_ref() {
+                        Some(terminal) => {
+                            let glyph_fn = |ch| terminal.text_glyph(ch).copied();
+                            dialog.handle_event(&event, event_loop, Some(gpu), Some(&glyph_fn))
+                        }
+                        None => dialog.handle_event(&event, event_loop, Some(gpu), None),
                     }
-                    None => dialog.handle_event(&event, event_loop, gpu, None),
+                } else {
+                    dialog.handle_event(&event, event_loop, Some(gpu), None)
                 }
             };
             match &result {
                 DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
                     if let DialogOutcome::Confirmed(_) = &result
-                        && let Some(terminal) = self.runtime.terminal.as_ref()
-                        && let Ok(mut terminal) = terminal.lock()
+                        && let Ok(mut terminal) = self.terminal.lock()
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
                         if let Err(error) =
@@ -179,7 +203,7 @@ impl ApplicationHandler<AppEvent> for Shell {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
                         }
                     }
-                    self.runtime.input_gate.store(false, Ordering::Release);
+                    self.input_gate.store(false, Ordering::Release);
                     self.request_main_frame(event_loop);
                     return;
                 }
@@ -191,16 +215,10 @@ impl ApplicationHandler<AppEvent> for Shell {
                 DialogOutcome::None => {}
             }
         }
-        let gate_active = self.runtime.dialog.is_active();
-        self.runtime
-            .input_gate
-            .store(gate_active, Ordering::Release);
 
-        let Some(window) = self.runtime.window.as_ref() else {
-            return;
-        };
+        let gate_active = self.dialog.is_active();
 
-        if window.id() != window_id {
+        if self.window.id() != window_id {
             return;
         }
 
@@ -214,41 +232,151 @@ impl ApplicationHandler<AppEvent> for Shell {
             return;
         }
 
-        if self
-            .runtime
-            .winit_adapter
-            .as_ref()
-            .is_some_and(|adapter| is_paste_shortcut(&event, adapter.modifiers()))
-        {
+        if is_paste_shortcut(&event, self.winit_adapter.modifiers()) {
             self.paste_from_clipboard(event_loop);
             return;
         }
 
-        let outcome = match (
-            self.runtime.winit_adapter.as_mut(),
-            self.runtime.widget_runtime.as_mut(),
-        ) {
-            (Some(adapter), Some(widget_runtime)) => {
-                let size = window.inner_size();
-                Some(adapter.handle_event_with_size(
-                    widget_runtime,
-                    &event,
-                    Some((size.width, size.height)),
-                ))
-            }
-            _ => None,
-        };
-        if let Some(outcome) = outcome
-            && outcome.handled
-        {
-            apply_effects(window, &outcome.effects, event_loop);
+        let size = self.window.inner_size();
+        let outcome = self.winit_adapter.handle_event_with_size(
+            &mut self.widget_runtime,
+            &event,
+            Some((size.width, size.height)),
+        );
+        if outcome.handled {
+            apply_effects(&self.window, &outcome.effects, event_loop);
         }
 
         if let WindowEvent::RedrawRequested = event {
             tracing::trace!("redraw requested");
-            self.render_frame(event_loop);
+            self.render_frame(event_loop, frame);
         }
     }
+
+    fn request_main_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let effects = self.winit_adapter.request_frame();
+        apply_effects(&self.window, &effects, event_loop);
+    }
+
+    fn paste_from_clipboard(&mut self, event_loop: &ActiveEventLoop) {
+        let raw_text =
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to read clipboard text");
+                    return;
+                }
+            };
+
+        let confirmation = {
+            let Ok(mut terminal) = self.terminal.lock() else {
+                tracing::warn!("terminal lock unavailable for clipboard paste");
+                return;
+            };
+            let input_modes = terminal.drain_and_snapshot().input_modes;
+
+            match PasteDisposition::decide(input_modes, &raw_text) {
+                PasteDisposition::SendDirect => {
+                    if let Err(error) =
+                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
+                    {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+                    }
+                    return;
+                }
+                PasteDisposition::Confirm { raw_text } => {
+                    terminal.ensure_glyphs(&raw_text, &self.gpu);
+                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
+                        terminal.text_metrics().copied(),
+                        terminal.text_bind_group_layout(),
+                        terminal.text_bind_group(),
+                    ) else {
+                        tracing::warn!(
+                            "terminal text resources unavailable for paste confirmation"
+                        );
+                        return;
+                    };
+                    ConfirmationWindow::new(
+                        raw_text,
+                        event_loop,
+                        &self.gpu,
+                        metrics,
+                        text_bind_group_layout,
+                        text_bind_group,
+                        Some(&self.window),
+                    )
+                }
+            }
+        };
+
+        self.dialog.open(confirmation);
+        self.input_gate.store(true, Ordering::Release);
+    }
+
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop, frame: &mut FrameState) -> bool {
+        let outcome = with_current_gpu(&self.gpu, || {
+            let mut configure = |width, height| self.gpu.configure_size(width, height);
+            let (surface, device, queue) = self.gpu.borrow_frame();
+            let target = WinitFrameTarget::new(
+                &self.window,
+                surface,
+                device,
+                queue,
+                &mut configure,
+                self.backdrop_available,
+                self.gpu.alpha_mode(),
+            );
+            self.winit_adapter.render(&mut self.widget_runtime, target)
+        });
+
+        let effects = outcome.effects().clone();
+        apply_effects(&self.window, &effects, event_loop);
+
+        let presented = outcome.is_presented();
+        if presented {
+            frame.mark_first_present();
+            let _ = frame.next_steady_state_deadline();
+            if self.show_pending {
+                self.window.set_visible(true);
+                self.show_pending = false;
+                self.startup_retry_deadline = None;
+            }
+        } else if let FrameOutcome::Fatal(error, _) = &outcome {
+            tracing::error!(?error, "fatal main-window frame error");
+            event_loop.exit();
+        }
+
+        if matches!(&outcome, FrameOutcome::Skipped(_)) && self.show_pending {
+            self.startup_retry_deadline = Some(Instant::now() + HIDDEN_STARTUP_RETRY_DELAY);
+        }
+        presented
+    }
+}
+
+/// Initializes the widget runtime with a terminal bridge root.
+fn init_widget_runtime(
+    window: &Arc<Window>,
+    gpu: &GpuContext,
+    terminal: &Arc<Mutex<Terminal>>,
+    input_gate: &Arc<AtomicBool>,
+    backdrop_available: bool,
+) -> (harbor_widget::runtime::Runtime, RuntimeEffects) {
+    let bridge = TerminalWidgetBridge::new(Arc::clone(terminal), Arc::clone(input_gate));
+    let initial_size = window.inner_size();
+    let initial_viewport = harbor_widget::renderer::Viewport::new(
+        initial_size.width,
+        initial_size.height,
+        window.scale_factor() as f32,
+    );
+    let mut runtime = harbor_widget::runtime::Runtime::new();
+    runtime.set_root(build_main_terminal_root(backdrop_available, bridge));
+    runtime.init_renderer(gpu.device(), gpu.format());
+    runtime.set_viewport(initial_viewport);
+    let mut initial_effects = runtime.update(Instant::now());
+    runtime.focus_first_focusable();
+    runtime.drain_external_input();
+    initial_effects.merge(runtime.take_pending_effects());
+    (runtime, initial_effects)
 }
 
 // ── Shell (own methods) ───────────────────────────────────────────────────
@@ -256,27 +384,15 @@ impl Shell {
     /// Creates the application shell with no initial window, GPU, or terminal.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
-            runtime: ShellRuntime {
-                window: None,
-                gpu: None,
-                terminal: None,
-                input_gate: Arc::new(AtomicBool::new(false)),
-                widget_runtime: None,
-                winit_adapter: None,
-                backdrop: None,
-                backdrop_available: false,
-                show_pending: false,
-                startup_retry_deadline: None,
-                dialog: DialogOverlay::new(),
-            },
-            frame: FrameState::new(std::rc::Rc::new(TracingFrameLifecycleSink)),
+            session: None,
+            frame: FrameState::new(),
             event_proxy,
         }
     }
 
     /// Creates the main window, GPU context, font atlas, and terminal engine.
     fn try_resume(&mut self, event_loop: &ActiveEventLoop) -> std::result::Result<(), ShellError> {
-        if self.runtime.window.is_some() {
+        if self.session.is_some() {
             return Ok(());
         }
 
@@ -323,7 +439,6 @@ impl Shell {
             tier,
             backdrop_available: backdrop_applied,
         } = backdrop.apply(&window, &backdrop_style);
-        self.runtime.backdrop = Some(backdrop);
 
         let gpu =
             pollster::block_on(GpuContext::new(window.clone())).map_err(ShellError::Renderer)?;
@@ -375,184 +490,43 @@ impl Shell {
         );
         terminal.set_backdrop_available(main_window_backdrop_available);
         // Terminal is UI-thread-only (not Send/Sync); Arc is required so the
-        // CustomPaint ExternalDrawFn can share ownership with ShellRuntime.
+        // CustomPaint ExternalDrawFn can share ownership with ActiveSession.
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
 
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
-        self.runtime.gpu = Some(gpu);
-        self.runtime.terminal = Some(terminal);
-        self.runtime.backdrop_available = main_window_backdrop_available;
         let mut winit_adapter = WinitAdapter::from_window(&window);
         winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
-        self.runtime.winit_adapter = Some(winit_adapter);
-        self.runtime.window = Some(window.clone());
-        self.runtime.show_pending = true;
-        let initial_effects = self.init_widget_runtime();
-        if let Some(adapter) = self.runtime.winit_adapter.as_mut() {
-            let mut effects = adapter.fold_effects(initial_effects);
-            effects.merge(adapter.request_frame());
-            apply_effects(&window, &effects, event_loop);
-        }
-        let _ = self.render_frame(event_loop);
-        Ok(())
-    }
 
-    fn request_main_frame(&mut self, event_loop: &ActiveEventLoop) {
-        let (Some(adapter), Some(window)) = (
-            self.runtime.winit_adapter.as_mut(),
-            self.runtime.window.as_ref(),
-        ) else {
-            return;
-        };
-        let effects = adapter.request_frame();
-        apply_effects(window, &effects, event_loop);
-    }
-
-    /// Reads the clipboard and either writes a safe direct paste or opens the
-    /// native confirmation window for a multiline paste requiring confirmation.
-    fn paste_from_clipboard(&mut self, event_loop: &ActiveEventLoop) {
-        let raw_text =
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                Ok(text) => text,
-                Err(error) => {
-                    tracing::warn!(error = %error, "failed to read clipboard text");
-                    return;
-                }
-            };
-
-        let confirmation = {
-            let (Some(gpu), Some(main_window), Some(terminal)) = (
-                self.runtime.gpu.as_ref(),
-                self.runtime.window.as_deref(),
-                self.runtime.terminal.as_ref(),
-            ) else {
-                return;
-            };
-            let Ok(mut terminal) = terminal.lock() else {
-                tracing::warn!("terminal lock unavailable for clipboard paste");
-                return;
-            };
-            let input_modes = terminal.drain_and_snapshot().input_modes;
-
-            match PasteDisposition::decide(input_modes, &raw_text) {
-                PasteDisposition::SendDirect => {
-                    if let Err(error) =
-                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
-                    {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
-                    }
-                    return;
-                }
-                PasteDisposition::Confirm { raw_text } => {
-                    terminal.ensure_glyphs(&raw_text, gpu);
-                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
-                        terminal.text_metrics().copied(),
-                        terminal.text_bind_group_layout(),
-                        terminal.text_bind_group(),
-                    ) else {
-                        tracing::warn!(
-                            "terminal text resources unavailable for paste confirmation"
-                        );
-                        return;
-                    };
-                    ConfirmationWindow::new(
-                        raw_text,
-                        event_loop,
-                        gpu,
-                        metrics,
-                        text_bind_group_layout,
-                        text_bind_group,
-                        Some(main_window),
-                    )
-                }
-            }
-        };
-
-        self.runtime.dialog.open(confirmation);
-        self.runtime.input_gate.store(true, Ordering::Release);
-    }
-
-    /// Runs one borrowed main-window frame through the winit integration.
-    fn render_frame(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let Some(window) = self.runtime.window.as_ref() else {
-            return false;
-        };
-
-        let Some(outcome) = (|| {
-            let gpu = self.runtime.gpu.as_ref()?;
-            let backdrop_available = self.runtime.backdrop_available;
-            let adapter = self.runtime.winit_adapter.as_mut()?;
-            let widget_runtime = self.runtime.widget_runtime.as_mut()?;
-            Some(with_current_gpu(gpu, || {
-                let mut configure = |width, height| gpu.configure_size(width, height);
-                let (surface, device, queue) = gpu.borrow_frame();
-                let target = WinitFrameTarget::new(
-                    window,
-                    surface,
-                    device,
-                    queue,
-                    &mut configure,
-                    backdrop_available,
-                    gpu.alpha_mode(),
-                );
-                adapter.render(widget_runtime, target)
-            }))
-        })() else {
-            return false;
-        };
-
-        let effects = outcome.effects().clone();
-        apply_effects(window, &effects, event_loop);
-
-        let presented = outcome.is_presented();
-        if presented {
-            self.frame.mark_first_present();
-            let _ = self.frame.next_steady_state_deadline();
-            if self.runtime.show_pending {
-                window.set_visible(true);
-                self.runtime.show_pending = false;
-                self.runtime.startup_retry_deadline = None;
-            }
-        } else if let FrameOutcome::Fatal(error, _) = &outcome {
-            tracing::error!(?error, "fatal main-window frame error");
-            event_loop.exit();
-        }
-
-        if matches!(&outcome, FrameOutcome::Skipped(_)) && self.runtime.show_pending {
-            self.runtime.startup_retry_deadline = Some(Instant::now() + HIDDEN_STARTUP_RETRY_DELAY);
-        }
-        presented
-    }
-
-    /// Initializes the widget runtime with a terminal bridge root.
-    fn init_widget_runtime(&mut self) -> RuntimeEffects {
-        let terminal_arc = self.runtime.terminal.as_ref().unwrap().clone();
-        let bridge = TerminalWidgetBridge::new(terminal_arc, Arc::clone(&self.runtime.input_gate));
-
-        let gpu = self.runtime.gpu.as_ref().unwrap();
-        let window = self.runtime.window.as_ref().unwrap();
-        let initial_size = window.inner_size();
-        let initial_viewport = harbor_widget::renderer::Viewport::new(
-            initial_size.width,
-            initial_size.height,
-            window.scale_factor() as f32,
+        let input_gate = Arc::new(AtomicBool::new(false));
+        let (widget_runtime, initial_effects) = init_widget_runtime(
+            &window,
+            &gpu,
+            &terminal,
+            &input_gate,
+            main_window_backdrop_available,
         );
-        let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(build_main_terminal_root(
-            self.runtime.backdrop_available,
-            bridge,
-        ));
-        runtime.init_renderer(gpu.device(), gpu.format());
-        runtime.set_viewport(initial_viewport);
-        let mut initial_effects = runtime.update(Instant::now());
-        runtime.focus_first_focusable();
 
-        runtime.drain_external_input();
-        initial_effects.merge(runtime.take_pending_effects());
+        let mut session = ActiveSession {
+            window,
+            gpu,
+            terminal,
+            input_gate,
+            widget_runtime,
+            winit_adapter,
+            _backdrop: backdrop,
+            backdrop_available: main_window_backdrop_available,
+            show_pending: true,
+            startup_retry_deadline: None,
+            dialog: DialogOverlay::new(),
+        };
 
-        self.runtime.widget_runtime = Some(runtime);
-        initial_effects
+        let mut effects = session.winit_adapter.fold_effects(initial_effects);
+        effects.merge(session.winit_adapter.request_frame());
+        apply_effects(&session.window, &effects, event_loop);
+        let _ = session.render_frame(event_loop, &mut self.frame);
+        self.session = Some(session);
+        Ok(())
     }
 }
 

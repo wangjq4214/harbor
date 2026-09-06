@@ -37,11 +37,6 @@ pub(crate) fn ime_cursor_area(position: Point) -> (LogicalPosition<f64>, Logical
     )
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ClipboardHostAction {
-    Deferred(ClipboardEffect),
-}
-
 /// Returns the operation metadata safe to include in clipboard logs.
 pub(crate) fn clipboard_log_metadata(effect: &ClipboardEffect) -> (&'static str, usize) {
     match effect {
@@ -62,11 +57,9 @@ pub(crate) fn log_deferred_clipboard_effect(effect: &ClipboardEffect) {
     );
 }
 
-/// Keeps an owned clipboard effect at the platform-neutral boundary until a
-/// host result channel exists.
-pub(crate) fn apply_clipboard_effect(effect: ClipboardEffect) -> ClipboardHostAction {
-    log_deferred_clipboard_effect(&effect);
-    ClipboardHostAction::Deferred(effect)
+/// Handles an unfulfilled clipboard effect by logging that host channels are deferred.
+pub(crate) fn apply_clipboard_effect(effect: &ClipboardEffect) {
+    log_deferred_clipboard_effect(effect);
 }
 
 /// Applies adapter-authorized window effects without calculating wait policy.
@@ -93,7 +86,7 @@ pub(crate) fn apply_window_effects(window: &Window, effects: &RuntimeEffects) {
                 }
             }
             ClipboardEffect::Read => {
-                let _ = apply_clipboard_effect(ClipboardEffect::Read);
+                apply_clipboard_effect(&ClipboardEffect::Read);
             }
         }
     }
@@ -236,14 +229,14 @@ mod tests {
 
     #[test]
     fn clipboard_effects_are_explicitly_deferred_without_a_discarding_read() {
-        assert_eq!(
-            apply_clipboard_effect(ClipboardEffect::Read),
-            ClipboardHostAction::Deferred(ClipboardEffect::Read)
-        );
-        assert_eq!(
-            apply_clipboard_effect(ClipboardEffect::write("copied")),
-            ClipboardHostAction::Deferred(ClipboardEffect::write("copied"))
-        );
+        let (_res, capture) = with_clipboard_capture(|| {
+            apply_clipboard_effect(&ClipboardEffect::Read);
+            apply_clipboard_effect(&ClipboardEffect::write("copied"));
+        });
+        let events = capture.events.lock().expect("clipboard events lock");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].get("operation"), Some(&"read".to_string()));
+        assert_eq!(events[1].get("operation"), Some(&"write".to_string()));
     }
 
     #[test]
@@ -252,15 +245,10 @@ mod tests {
         let secret = "clipboard-secret-not-for-logs";
 
         // Act: defer the effect under a scoped tracing subscriber.
-        let (action, capture) =
-            with_clipboard_capture(|| apply_clipboard_effect(ClipboardEffect::write(secret)));
+        let (_res, capture) =
+            with_clipboard_capture(|| apply_clipboard_effect(&ClipboardEffect::write(secret)));
 
-        // Assert: the host action remains deferred and the warning exposes only
-        // operation metadata, never the clipboard contents.
-        assert_eq!(
-            action,
-            ClipboardHostAction::Deferred(ClipboardEffect::write(secret))
-        );
+        // Assert: the warning exposes only operation metadata, never the clipboard contents.
         let events = capture.events.lock().expect("clipboard events lock");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].get("operation"), Some(&"write".to_string()));

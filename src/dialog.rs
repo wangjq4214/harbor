@@ -16,6 +16,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_terminal::safe_preview_line;
+use unicode_width::UnicodeWidthChar;
 use harbor_terminal::{GpuContext, InputModes, TextMetrics};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
@@ -54,7 +55,8 @@ fn centered_dialog_position(
 
 /// Wraps preview text at `max_chars` characters per line, after escaping
 /// control characters via `safe_preview_line`.
-pub(crate) fn wrap_preview_text(raw_text: &str, max_chars: usize) -> Vec<String> {
+pub(crate) fn wrap_preview_text(raw_text: &str, max_columns: usize) -> Vec<String> {
+    let max_columns = max_columns.max(1);
     let mut wrapped = Vec::new();
     for line in raw_text.lines() {
         let escaped = safe_preview_line(line);
@@ -62,23 +64,19 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_chars: usize) -> Vec<String>
             wrapped.push(String::new());
             continue;
         }
-        let mut start = 0;
-        while start < escaped.len() {
-            let mut end = (start + max_chars).min(escaped.len());
-            // Back up to a char boundary if we landed mid-char.
-            while !escaped.is_char_boundary(end) {
-                end -= 1;
+        let mut current_line = String::new();
+        let mut current_width = 0;
+        for ch in escaped.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            if current_width + ch_width > max_columns && !current_line.is_empty() {
+                wrapped.push(std::mem::take(&mut current_line));
+                current_width = 0;
             }
-            // When max_chars is too small to fit even one multi-byte character,
-            // advance past the current character so we don't loop forever.
-            if end == start {
-                end = start + 1;
-                while end < escaped.len() && !escaped.is_char_boundary(end) {
-                    end += 1;
-                }
-            }
-            wrapped.push(escaped[start..end].to_string());
-            start = end;
+            current_line.push(ch);
+            current_width += ch_width;
+        }
+        if !current_line.is_empty() {
+            wrapped.push(current_line);
         }
     }
     wrapped
@@ -890,13 +888,23 @@ mod tests {
 
     #[test]
     fn should_wrap_escaped_text_that_becomes_longer_after_escaping() {
-        // Control chars 0x01 and 0x02 become multi-byte Unicode control pictures
-        // (U+2401, U+2402 = 3 bytes each). Wrapping at max_chars=2 (bytes) produces
-        // one element per character since most of them span >2 bytes.
+        // Control chars 0x01 and 0x02 become single-width Unicode control pictures
+        // (U+2401, U+2402). Wrapping at max_columns=2 wraps after 2 visual columns.
         let input = "a\x01b\x02c";
         let result = wrap_preview_text(input, 2);
-        // Escaped: "a" (1B), "␁" (3B), "b" (1B), "␂" (3B), "c" (1B)
-        assert_eq!(result, vec!["a", "\u{2401}", "b", "\u{2402}", "c"]);
+        assert_eq!(result, vec!["a\u{2401}", "b\u{2402}", "c"]);
+    }
+
+    #[test]
+    fn should_wrap_cjk_characters_by_display_width() {
+        // CJK characters occupy 2 visual columns each. Wrapping at 4 columns
+        // fits 2 characters per line.
+        let result = wrap_preview_text("你好世界", 4);
+        assert_eq!(result, vec!["你好", "世界"]);
+
+        // Wrapping at 3 columns fits 1 CJK char (2 cols); the second char would exceed 3 cols.
+        let result = wrap_preview_text("你好世界", 3);
+        assert_eq!(result, vec!["你", "好", "世", "界"]);
     }
 
     // ── scroll_preview ──────────────────────────────────────────────────

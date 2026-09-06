@@ -38,9 +38,9 @@ impl FrameLifecycleSink for TracingFrameLifecycleSink {
 }
 
 #[cfg(test)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct RecordingFrameLifecycleSink {
-    events: std::cell::RefCell<Vec<FrameLifecycleEvent>>,
+    events: std::rc::Rc<std::cell::RefCell<Vec<FrameLifecycleEvent>>>,
 }
 
 #[cfg(test)]
@@ -58,16 +58,33 @@ impl FrameLifecycleSink for RecordingFrameLifecycleSink {
 }
 
 /// Host frame lifecycle telemetry.
-pub(crate) struct FrameState {
+pub(crate) struct FrameState<S = TracingFrameLifecycleSink> {
     /// Set after the first successful surface present.
     first_present_at: Option<Instant>,
     /// Once-only gate for the steady-state dwell marker.
     steady_state_emitted: bool,
-    lifecycle: std::rc::Rc<dyn FrameLifecycleSink>,
+    lifecycle: S,
 }
 
-impl FrameState {
-    pub(crate) fn new(lifecycle: std::rc::Rc<dyn FrameLifecycleSink>) -> Self {
+impl Default for FrameState<TracingFrameLifecycleSink> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameState<TracingFrameLifecycleSink> {
+    pub(crate) fn new() -> Self {
+        Self {
+            first_present_at: None,
+            steady_state_emitted: false,
+            lifecycle: TracingFrameLifecycleSink,
+        }
+    }
+}
+
+impl<S: FrameLifecycleSink> FrameState<S> {
+    #[cfg(test)]
+    pub(crate) fn with_sink(lifecycle: S) -> Self {
         Self {
             first_present_at: None,
             steady_state_emitted: false,
@@ -131,22 +148,12 @@ mod tests {
     use super::*;
 
     fn empty_frame() -> FrameState {
-        FrameState::new(std::rc::Rc::new(TracingFrameLifecycleSink))
+        FrameState::new()
     }
 
-    #[derive(Clone)]
-    struct RecordingFrameLifecycleSinkHandle(std::rc::Rc<RecordingFrameLifecycleSink>);
-
-    impl FrameLifecycleSink for RecordingFrameLifecycleSinkHandle {
-        fn emit(&self, event: FrameLifecycleEvent) {
-            self.0.emit(event);
-        }
-    }
-
-    fn recording_frame() -> (FrameState, std::rc::Rc<RecordingFrameLifecycleSink>) {
-        let sink = std::rc::Rc::new(RecordingFrameLifecycleSink::default());
-        let handle = std::rc::Rc::new(RecordingFrameLifecycleSinkHandle(sink.clone()));
-        (FrameState::new(handle), sink)
+    fn recording_frame() -> (FrameState<RecordingFrameLifecycleSink>, RecordingFrameLifecycleSink) {
+        let sink = RecordingFrameLifecycleSink::default();
+        (FrameState::with_sink(sink.clone()), sink)
     }
 
     #[test]
