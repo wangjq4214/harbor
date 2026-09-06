@@ -1,5 +1,6 @@
+use crate::model::TerminalSnapshot;
+use harbor_config::Rgba;
 use harbor_text::TextMetrics;
-use harbor_types::{Rgba, TerminalSnapshot};
 use std::time::Instant;
 
 use super::cursor_blink::CursorBlinkState;
@@ -258,10 +259,10 @@ impl Cursor {
 #[cfg(test)]
 mod tests {
     use super::should_render_cursor;
+    use crate::model::TerminalSnapshot;
     use crate::render::CursorBlinkState;
     use crate::{FrameDemand, Terminal};
     use harbor_config::BLINK_INTERVAL_MS;
-    use harbor_types::TerminalSnapshot;
     use std::time::{Duration, Instant};
 
     fn demand_from_blink(

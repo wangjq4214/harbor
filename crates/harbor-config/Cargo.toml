@@ -5,5 +5,4 @@ edition = "2024"
 
 [dependencies]
 dirs = { workspace = true }
-harbor-types = { workspace = true }
 toml = { workspace = true }

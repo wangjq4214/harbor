@@ -1,4 +1,4 @@
-use harbor_types::TerminalSize;
+use crate::model::TerminalSize;
 
 use crate::types::RenderTarget;
 use harbor_text::TextMetrics;

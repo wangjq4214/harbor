@@ -4,7 +4,7 @@
 //! snapshots and extracted text without mutation. This separates
 //! the read path from the mutation methods on `Screen`.
 
-use harbor_types::{SelectionBounds, TerminalSnapshot};
+use crate::model::{SelectionBounds, TerminalSnapshot};
 
 use super::Screen;
 

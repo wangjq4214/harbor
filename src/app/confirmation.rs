@@ -14,8 +14,8 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use harbor_terminal::safe_preview_line;
 use harbor_terminal::{GpuContext, TextMetrics};
-use harbor_types::safe_preview_line;
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::text::GlyphFn;

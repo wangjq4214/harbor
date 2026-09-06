@@ -11,8 +11,8 @@ use std::{
     thread::JoinHandle,
 };
 
+use crate::model::{AltScreenAction, TerminalSize};
 use harbor_pty::PtyControl;
-use harbor_types::{AltScreenAction, TerminalSize};
 
 use crate::input::TerminalInputEncoder;
 use crate::parser::TerminalParser;
@@ -259,7 +259,10 @@ impl TerminalIo {
     pub(crate) fn resize_pty(&mut self, size: TerminalSize) {
         if let Some(pty) = self.pty.as_mut()
             && let Some(control) = pty.control.as_mut()
-            && let Err(error) = control.resize(size)
+            && let Err(error) = control.resize(harbor_pty::TerminalSize {
+                rows: size.rows,
+                cols: size.cols,
+            })
         {
             tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
         }
@@ -279,7 +282,7 @@ impl TerminalIo {
         self.drain(screen);
 
         if matches!(&event, TerminalEvent::Pointer(_))
-            && screen.input_modes().mouse_tracking != harbor_types::MouseTrackingMode::Disabled
+            && screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
         {
             if let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) {
                 self.write_pty(&bytes)?;

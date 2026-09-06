@@ -4,8 +4,9 @@
 //! Cell-erase uses the current pen to produce blank cells tinted with the
 //! active foreground, background, and attributes.
 
+use crate::model::{Cell, CellAttrs, CharacterProtection};
+use harbor_config::Color;
 use harbor_parser::Params;
-use harbor_types::{Cell, CellAttrs, CharacterProtection, Color};
 
 /// Current SGR pen state — the active foreground, background, attributes,
 /// and protection flag applied to each newly written character.
