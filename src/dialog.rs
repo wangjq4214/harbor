@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use winit::{
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
-    keyboard::{Key, NamedKey},
-    window::Window,
+    keyboard::{Key, ModifiersState, NamedKey},
+    window::{Window, WindowId},
 };
 
 #[cfg(target_os = "windows")]
@@ -14,8 +14,9 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_terminal::safe_preview_line;
-use harbor_terminal::{GpuContext, TextMetrics};
+use harbor_terminal::{GpuContext, InputModes, TextMetrics};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::text::GlyphFn;
@@ -27,7 +28,7 @@ use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::row::Row;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
-use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
+use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 use std::time::Instant;
 
 pub(crate) const DIALOG_WIDTH: u32 = 600;
@@ -120,6 +121,102 @@ pub(crate) enum ConfirmationResult {
     None,
     Cancelled,
     Confirmed,
+}
+
+#[derive(Debug)]
+pub(crate) enum DialogOutcome {
+    None,
+    Cancelled,
+    Confirmed(String),
+    Fatal(FrameError),
+}
+
+/// Encodes the unchanged confirmation text with the modes current at the
+/// moment of confirmation, then performs exactly one Host-owned PTY write.
+pub(crate) fn write_confirmation_outcome<E>(
+    outcome: &DialogOutcome,
+    input_modes: InputModes,
+    write: impl FnOnce(&[u8]) -> Result<(), E>,
+) -> Result<bool, E> {
+    let DialogOutcome::Confirmed(raw_text) = outcome else {
+        return Ok(false);
+    };
+    let bytes = input_modes.paste(raw_text.as_bytes());
+    write(bytes.as_ref())?;
+    Ok(true)
+}
+
+pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed
+                && modifiers.control_key()
+                && !modifiers.alt_key()
+                && !modifiers.super_key()
+                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("v"))
+    )
+}
+
+/// Owns the optional paste-confirmation dialog and mediates its lifecycle.
+pub(crate) struct DialogOverlay {
+    window: Option<ConfirmationWindow>,
+}
+
+impl DialogOverlay {
+    pub(crate) fn new() -> Self {
+        Self { window: None }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.window.is_some()
+    }
+
+    pub(crate) fn window_id(&self) -> Option<WindowId> {
+        self.window.as_ref().map(|w| w.window_id())
+    }
+
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
+        self.window.as_mut().map(|window| window.about_to_wait(now))
+    }
+
+    /// Dispatches a window event to the active confirmation dialog.
+    pub(crate) fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        event_loop: &ActiveEventLoop,
+        gpu: Option<&GpuContext>,
+        glyph_fn: Option<&GlyphFn>,
+    ) -> DialogOutcome {
+        let Some(mut confirmation) = self.window.take() else {
+            return DialogOutcome::None;
+        };
+        match confirmation.handle_event(event, event_loop) {
+            ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
+            ConfirmationResult::Confirmed => {
+                let raw_text = confirmation.raw_text().to_owned();
+                DialogOutcome::Confirmed(raw_text)
+            }
+            ConfirmationResult::None => {
+                if matches!(event, WindowEvent::RedrawRequested)
+                    && let (Some(gpu), Some(glyph_fn)) = (gpu, glyph_fn)
+                {
+                    let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_fn);
+                    confirmation.apply_frame_effects(&frame, event_loop);
+                    if let Some(error) = frame.fatal_error().cloned() {
+                        return DialogOutcome::Fatal(error);
+                    }
+                }
+                self.window = Some(confirmation);
+                DialogOutcome::None
+            }
+        }
+    }
+
+    /// Installs a new confirmation dialog, replacing any existing one.
+    pub(crate) fn open(&mut self, confirmation: ConfirmationWindow) {
+        self.window = Some(confirmation);
+    }
 }
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
@@ -269,9 +366,9 @@ impl ConfirmationWindow {
         initial_effects.merge(runtime.take_pending_effects());
         let mut effects = adapter.fold_effects(initial_effects);
         effects.merge(adapter.request_frame());
-        super::App::apply_window_effects(&window, &effects);
+        apply_window_effects(&window, &effects);
         if let Some(control_flow) = effects.control_flow {
-            super::App::apply_control_flow(event_loop, control_flow);
+            apply_control_flow(event_loop, control_flow);
         }
 
         ConfirmationWindow {
@@ -295,7 +392,7 @@ impl ConfirmationWindow {
     /// Applies idle redraw effects to this window and returns its wait request.
     pub(crate) fn about_to_wait(&mut self, now: Instant) -> ControlFlowEffect {
         let effects = self.adapter.about_to_wait(&mut self.runtime, now, None);
-        super::App::apply_window_effects(&self.window, &effects);
+        apply_window_effects(&self.window, &effects);
         effects.control_flow.unwrap_or(ControlFlowEffect::Wait)
     }
 
@@ -358,9 +455,9 @@ impl ConfirmationWindow {
             event,
             Some((size.width, size.height)),
         );
-        super::App::apply_window_effects(&self.window, &outcome.effects);
+        apply_window_effects(&self.window, &outcome.effects);
         if let Some(control_flow) = outcome.effects.control_flow {
-            super::App::apply_control_flow(event_loop, control_flow);
+            apply_control_flow(event_loop, control_flow);
         }
 
         confirmation_result(&self.confirmed, &self.cancelled)
@@ -405,18 +502,18 @@ impl ConfirmationWindow {
     /// Applies host-visible effects for this confirmation window only.
     pub(crate) fn apply_frame_effects(&self, frame: &FrameOutcome, event_loop: &ActiveEventLoop) {
         let effects = frame.effects();
-        super::App::apply_window_effects(&self.window, effects);
+        apply_window_effects(&self.window, effects);
         if let Some(control_flow) = effects.control_flow {
-            super::App::apply_control_flow(event_loop, control_flow);
+            apply_control_flow(event_loop, control_flow);
         }
     }
 
     /// Wakes only the confirmation window; the main App scheduler is unrelated.
     fn request_frame(&mut self, event_loop: &ActiveEventLoop) {
         let effects = self.adapter.request_frame();
-        super::App::apply_window_effects(&self.window, &effects);
+        apply_window_effects(&self.window, &effects);
         if let Some(control_flow) = effects.control_flow {
-            super::App::apply_control_flow(event_loop, control_flow);
+            apply_control_flow(event_loop, control_flow);
         }
     }
 }
@@ -935,5 +1032,83 @@ mod tests {
             std::any::TypeId::of::<harbor_widget::widgets::button::Button>(),
             "focused widget should be a Button"
         );
+    }
+
+    #[test]
+    fn confirmed_paste_writes_unchanged_raw_text_with_current_modes() {
+        let outcome = DialogOutcome::Confirmed("first\r\nsecond\t\x1b[A".to_owned());
+        let mut writes = Vec::new();
+
+        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |bytes| {
+            writes.push(bytes.to_vec());
+            Ok::<_, ()>(())
+        })
+        .expect("capture writer succeeds");
+
+        assert!(wrote);
+        assert_eq!(writes, vec![b"first\r\nsecond\t\x1b[A".to_vec()]);
+    }
+
+    #[test]
+    fn confirmed_paste_uses_bracketed_mode_current_at_confirmation_time() {
+        let outcome = DialogOutcome::Confirmed("first\nsecond".to_owned());
+        let mut writes = Vec::new();
+        let modes = InputModes {
+            bracketed_paste: true,
+            ..InputModes::default()
+        };
+
+        let wrote = write_confirmation_outcome(&outcome, modes, |bytes| {
+            writes.push(bytes.to_vec());
+            Ok::<_, ()>(())
+        })
+        .expect("capture writer succeeds");
+
+        assert!(wrote);
+        assert_eq!(writes, vec![b"\x1b[200~first\nsecond\x1b[201~".to_vec()]);
+    }
+
+    #[test]
+    fn cancelled_or_closed_confirmation_never_calls_the_writer() {
+        for outcome in [DialogOutcome::Cancelled, DialogOutcome::None] {
+            let wrote = write_confirmation_outcome(
+                &outcome,
+                InputModes::default(),
+                |_| -> Result<(), ()> {
+                    panic!("cancelled and native-close outcomes must not write to the PTY")
+                },
+            )
+            .expect("no-write outcome cannot fail");
+            assert!(!wrote);
+        }
+    }
+
+    #[test]
+    fn should_not_write_to_pty_when_confirmation_frame_is_fatal() {
+        let outcome = DialogOutcome::Fatal(FrameError::out_of_memory());
+        let write_attempts = std::cell::Cell::new(0);
+
+        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
+            write_attempts.set(write_attempts.get() + 1);
+            Ok::<_, ()>(())
+        })
+        .expect("fatal outcome cannot invoke the writer");
+
+        assert!(!wrote);
+        assert_eq!(write_attempts.get(), 0);
+    }
+
+    #[test]
+    fn should_return_the_writer_error_after_one_confirmed_paste_attempt() {
+        let outcome = DialogOutcome::Confirmed("paste".to_owned());
+        let write_attempts = std::cell::Cell::new(0);
+
+        let result = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
+            write_attempts.set(write_attempts.get() + 1);
+            Err::<(), _>("PTY disconnected")
+        });
+
+        assert_eq!(result, Err("PTY disconnected"));
+        assert_eq!(write_attempts.get(), 1);
     }
 }
