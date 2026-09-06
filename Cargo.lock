@@ -786,7 +786,6 @@ dependencies = [
  "harbor-config",
  "harbor-pty",
  "harbor-terminal",
- "harbor-types",
  "harbor-widget",
  "pollster",
  "thiserror 2.0.19",
@@ -804,7 +803,6 @@ name = "harbor-config"
 version = "0.1.0"
 dependencies = [
  "dirs",
- "harbor-types",
  "toml",
 ]
 
@@ -820,7 +818,6 @@ name = "harbor-pty"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "harbor-types",
  "parking_lot",
  "tracing",
  "windows",
@@ -838,7 +835,6 @@ dependencies = [
  "harbor-parser",
  "harbor-pty",
  "harbor-text",
- "harbor-types",
  "proptest",
  "tracing",
  "unicode-width",
@@ -853,7 +849,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "harbor-config",
- "harbor-types",
  "hashbrown 0.17.1",
  "tracing",
  "tracing-subscriber",
@@ -861,10 +856,6 @@ dependencies = [
  "windows",
  "windows-core",
 ]
-
-[[package]]
-name = "harbor-types"
-version = "0.1.0"
 
 [[package]]
 name = "harbor-widget"

@@ -648,9 +648,15 @@ impl App {
 
         let size = Terminal::terminal_size_for(&gpu, &metrics);
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
-        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size, &shell_command)
-            .map_err(AppError::Pty)?
-            .into_parts();
+        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(
+            harbor_pty::TerminalSize {
+                rows: size.rows,
+                cols: size.cols,
+            },
+            &shell_command,
+        )
+        .map_err(AppError::Pty)?
+        .into_parts();
         let event_proxy = self.event_proxy.clone();
         let mut terminal = Terminal::new_with_appearance(
             size,

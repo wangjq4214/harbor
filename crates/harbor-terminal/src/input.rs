@@ -1,11 +1,11 @@
 //! Terminal keyboard event encoding for the direct PTY input path.
 
 use crate::InputModes;
+use crate::model::MouseTrackingMode;
 use crate::types::{
     TerminalEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
     TerminalPointerEvent, TerminalPointerPhase,
 };
-use harbor_types::MouseTrackingMode;
 
 /// Encodes supported terminal keyboard events against the terminal's current modes.
 pub(super) struct TerminalInputEncoder;
@@ -346,7 +346,7 @@ mod tests {
     fn should_encode_sgr_button_press_and_release_but_not_motion_in_button_mode() {
         // Arrange
         let modes = InputModes {
-            mouse_tracking: harbor_types::MouseTrackingMode::Button,
+            mouse_tracking: crate::model::MouseTrackingMode::Button,
             mouse_sgr: true,
             ..InputModes::default()
         };
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn should_encode_wheel_modifiers_after_wheel_button_selection() {
         let modes = InputModes {
-            mouse_tracking: harbor_types::MouseTrackingMode::AnyMotion,
+            mouse_tracking: crate::model::MouseTrackingMode::AnyMotion,
             mouse_sgr: true,
             ..InputModes::default()
         };
@@ -410,7 +410,7 @@ mod tests {
     fn should_encode_sgr_motion_and_wheel_buttons_with_valid_coordinates() {
         // Arrange
         let modes = InputModes {
-            mouse_tracking: harbor_types::MouseTrackingMode::AnyMotion,
+            mouse_tracking: crate::model::MouseTrackingMode::AnyMotion,
             mouse_sgr: true,
             ..InputModes::default()
         };

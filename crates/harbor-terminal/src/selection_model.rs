@@ -4,7 +4,7 @@
 //! auto-scroll scheduling.  No GPU or window dependencies — testable without
 //! a rendering context.
 
-use harbor_types::{SelectionBounds, TerminalSnapshot};
+use crate::model::{SelectionBounds, TerminalSnapshot};
 use std::time::{Duration, Instant};
 
 /// Returns whether a character belongs to a double-click word.

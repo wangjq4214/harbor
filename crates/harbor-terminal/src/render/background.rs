@@ -1,4 +1,5 @@
-use harbor_types::{Palette, TerminalSnapshot};
+use crate::model::TerminalSnapshot;
+use harbor_config::Palette;
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
@@ -390,7 +391,7 @@ mod tests {
         let snap = terminal.screen().terminal_snapshot();
         let viewport = RenderViewport::new(10.0, 20.0);
         let mut palette = Palette::default();
-        palette.normal[1] = harbor_types::Rgba::from_rgb8(1, 2, 3);
+        palette.normal[1] = harbor_config::Rgba::from_rgb8(1, 2, 3);
 
         let verts =
             Background::build_background_row_vertices_with_palette(0, &snap, &viewport, &palette);

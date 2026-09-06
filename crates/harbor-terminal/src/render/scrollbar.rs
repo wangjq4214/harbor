@@ -1,4 +1,4 @@
-use harbor_types::TerminalSnapshot;
+use crate::model::TerminalSnapshot;
 use wgpu::util::DeviceExt;
 
 use harbor_config::{

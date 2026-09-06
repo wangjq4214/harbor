@@ -1,8 +1,9 @@
 //! Bounded in-flight DECRQSS request and canonical status-string serialization.
 
+use crate::model::{CellAttrs, CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
+use harbor_config::Color;
 use harbor_parser::Params;
-use harbor_types::{CellAttrs, CharacterProtection, Color, CursorStyleArg};
 
 /// Maximum Pt bytes retained for a single DECRQSS request.
 const MAX_PT: usize = 16;

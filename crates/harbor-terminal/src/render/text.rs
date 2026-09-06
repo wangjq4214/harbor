@@ -1,4 +1,5 @@
-use harbor_types::{Palette, TerminalSnapshot};
+use crate::model::TerminalSnapshot;
+use harbor_config::Palette;
 
 use anyhow::Result;
 use wgpu::util::DeviceExt;

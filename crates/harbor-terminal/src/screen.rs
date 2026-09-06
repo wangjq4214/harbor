@@ -29,14 +29,14 @@ pub use self::reader::ScreenReader;
 
 // ── re-exports ────────────────────────────────────────────────────────
 
-pub use harbor_types::AltScreenAction;
-pub use harbor_types::Cell;
-pub use harbor_types::CellAttrs;
-pub use harbor_types::CharacterProtection;
-pub use harbor_types::Color;
-pub use harbor_types::CursorShape;
-pub use harbor_types::CursorStyleArg;
-pub use harbor_types::SelectionBounds;
+pub use crate::model::AltScreenAction;
+pub use crate::model::Cell;
+pub use crate::model::CellAttrs;
+pub use crate::model::CharacterProtection;
+pub use crate::model::CursorShape;
+pub use crate::model::CursorStyleArg;
+pub use crate::model::SelectionBounds;
+pub use harbor_config::Color;
 
 /// State reported by DECRPM for a queried terminal mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -290,7 +290,7 @@ impl Screen {
         ScreenReader::new(self)
     }
 
-    pub fn terminal_snapshot(&self) -> harbor_types::TerminalSnapshot {
+    pub fn terminal_snapshot(&self) -> crate::model::TerminalSnapshot {
         self.reader().terminal_snapshot()
     }
 

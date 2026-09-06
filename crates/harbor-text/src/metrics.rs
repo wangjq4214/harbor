@@ -1,5 +1,4 @@
 use harbor_config::TEXT_PADDING;
-use harbor_types::TerminalSize;
 
 /// Backend-neutral primary font measurements.
 ///
@@ -78,7 +77,8 @@ impl TextMetrics {
         }
     }
 
-    pub fn terminal_size(self, width: u32, height: u32) -> TerminalSize {
+    /// Returns `(rows, cols)` that fit within the pixel dimensions.
+    pub fn grid_dimensions(self, width: u32, height: u32) -> (usize, usize) {
         // Keep this boundary total even for legacy callers that construct the
         // public record literal directly instead of using FontMetrics::new.
         let cell_width = positive_dimension_or_one(self.cell_width);
@@ -86,10 +86,10 @@ impl TextMetrics {
         let text_width = (width as f32 - TEXT_PADDING * 2.0).max(cell_width);
         let text_height = (height as f32 - TEXT_PADDING * 2.0).max(line_height);
 
-        TerminalSize {
-            rows: (text_height / line_height).floor().max(1.0) as usize,
-            cols: (text_width / cell_width).floor().max(1.0) as usize,
-        }
+        (
+            (text_height / line_height).floor().max(1.0) as usize,
+            (text_width / cell_width).floor().max(1.0) as usize,
+        )
     }
 }
 
@@ -122,9 +122,9 @@ mod tests {
         let metrics = make_metrics(10.0, 20.0);
         // width=100, height=200 → text area = (100-32, 200-32) = (68, 168)
         // cols = floor(68/10) = 6, rows = floor(168/20) = 8
-        let size = metrics.terminal_size(100, 200);
-        assert_eq!(size.cols, 6);
-        assert_eq!(size.rows, 8);
+        let size = metrics.grid_dimensions(100, 200);
+        assert_eq!(size.1, 6);
+        assert_eq!(size.0, 8);
     }
 
     #[test]
@@ -132,9 +132,9 @@ mod tests {
         let metrics = make_metrics(8.0, 16.0);
         // width=128 → text_width = 128-32 = 96 → 96/8 = 12 cols
         // height=256 → text_height = 256-32 = 224 → 224/16 = 14 rows
-        let size = metrics.terminal_size(128, 256);
-        assert_eq!(size.cols, 12);
-        assert_eq!(size.rows, 14);
+        let size = metrics.grid_dimensions(128, 256);
+        assert_eq!(size.1, 12);
+        assert_eq!(size.0, 14);
     }
 
     #[test]
@@ -142,18 +142,18 @@ mod tests {
         let metrics = make_metrics(1000.0, 1000.0);
         // Small window: 10x10. text_width = max(10-32, 1000) = 1000.
         // cols = floor(1000/1000) = 1, rows = floor(1000/1000) = 1
-        let size = metrics.terminal_size(10, 10);
-        assert_eq!(size.cols, 1);
-        assert_eq!(size.rows, 1);
+        let size = metrics.grid_dimensions(10, 10);
+        assert_eq!(size.1, 1);
+        assert_eq!(size.0, 1);
     }
 
     #[test]
     fn terminal_size_handles_zero_window() {
         let metrics = make_metrics(10.0, 20.0);
         // Zero window → text area clamped to cell_width / line_height.
-        let size = metrics.terminal_size(0, 0);
-        assert_eq!(size.cols, 1);
-        assert_eq!(size.rows, 1);
+        let size = metrics.grid_dimensions(0, 0);
+        assert_eq!(size.1, 1);
+        assert_eq!(size.0, 1);
     }
 
     #[test]
@@ -167,9 +167,9 @@ mod tests {
             strikethrough_position: 0.0,
             strikethrough_thickness: 1.5,
         };
-        let size = metrics.terminal_size(0, 0);
-        assert_eq!(size.cols, 1);
-        assert_eq!(size.rows, 1);
+        let size = metrics.grid_dimensions(0, 0);
+        assert_eq!(size.1, 1);
+        assert_eq!(size.0, 1);
     }
 
     #[test]
@@ -177,9 +177,9 @@ mod tests {
         let metrics = make_metrics(8.0, 16.0);
         // Typical 1920×1080 with 16px padding → (1888, 1048)
         // cols = floor(1888/8) = 236, rows = floor(1048/16) = 65
-        let size = metrics.terminal_size(1920, 1080);
-        assert!(size.cols > 100, "should fit many columns");
-        assert!(size.rows > 20, "should fit many rows");
+        let size = metrics.grid_dimensions(1920, 1080);
+        assert!(size.1 > 100, "should fit many columns");
+        assert!(size.0 > 20, "should fit many rows");
     }
 
     // ── FontMetrics tests ─────────────────────────────────────────────

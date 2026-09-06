@@ -23,7 +23,6 @@ use unix::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
 use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
 
 use anyhow::ensure;
-use harbor_types::TerminalSize;
 
 /// Startup shell executable and discrete arguments.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -39,6 +38,13 @@ impl ShellCommand {
 }
 
 // ── PtySize ──────────────────────────────────────────────────────────────────
+
+/// Terminal dimensions accepted by the PTY API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalSize {
+    pub rows: usize,
+    pub cols: usize,
+}
 
 /// ConPTY-compatible terminal size; Windows APIs require signed 16-bit cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

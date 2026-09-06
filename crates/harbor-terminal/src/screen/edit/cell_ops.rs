@@ -4,9 +4,9 @@
 //! that take `&mut PenState`, `&mut NormalBuf`, and `&mut CursorEngine` (or
 //! `&CursorEngine` for read-only cursor access).
 
+use crate::model::Cell;
 use crate::normal_buf::NormalBuf;
 use harbor_parser::Params;
-use harbor_types::Cell;
 use unicode_width::UnicodeWidthChar;
 
 use super::super::cursor::CursorEngine;

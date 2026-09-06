@@ -1,5 +1,5 @@
+pub use crate::model::DirtyRange;
 use bitvec::prelude::BitVec;
-pub use harbor_types::DirtyRange;
 
 /// Tracks dirty grid cells and rows for incremental GPU uploads.
 ///

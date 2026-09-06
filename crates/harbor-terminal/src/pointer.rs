@@ -84,7 +84,7 @@ impl PointerInteraction {
     pub fn report_position(
         &self,
         position: (f32, f32),
-        snapshot: &harbor_types::TerminalSnapshot,
+        snapshot: &crate::model::TerminalSnapshot,
     ) -> Option<(f32, f32)> {
         let viewport = self.viewport?;
         let (row, col) = self.grid_cell(position, snapshot, &viewport);
@@ -351,7 +351,7 @@ impl PointerInteraction {
     fn grid_cell(
         &self,
         position: (f32, f32),
-        snapshot: &harbor_types::TerminalSnapshot,
+        snapshot: &crate::model::TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> (usize, usize) {
         let position = self.physical_position(position);
@@ -366,7 +366,7 @@ impl PointerInteraction {
     fn pixel_to_cell(
         &self,
         position: (f32, f32),
-        snapshot: &harbor_types::TerminalSnapshot,
+        snapshot: &crate::model::TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> GenPos {
         let (row, col) = self.grid_cell(position, snapshot, viewport);

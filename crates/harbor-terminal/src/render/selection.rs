@@ -1,4 +1,5 @@
-use harbor_types::{Rgba, SelectionBounds, TerminalSnapshot};
+use crate::model::{SelectionBounds, TerminalSnapshot};
+use harbor_config::Rgba;
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext};
