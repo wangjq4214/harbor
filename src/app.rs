@@ -631,6 +631,7 @@ impl App {
         let backdrop = select_backend(os_build(), wasdk_available());
         let mut window_attrs = Window::default_attributes()
             .with_title("Harbor")
+            .with_inner_size(LogicalSize::new(1200.0, 600.0))
             .with_window_icon(harbor_window_icon())
             .with_theme(Some(Theme::Dark))
             .with_visible(false);
