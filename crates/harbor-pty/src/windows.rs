@@ -25,7 +25,8 @@ use ::windows::{
                 DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread,
-                STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+                STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+                WaitForSingleObject,
             },
         },
     },
@@ -338,6 +339,7 @@ impl Drop for Pty {
 fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCESS_INFORMATION> {
     let mut startup_info = STARTUPINFOEXW::default();
     startup_info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
     let mut process_info = PROCESS_INFORMATION::default();
@@ -654,8 +656,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an interactive Windows ConPTY shell"]
-    fn shell_prompt_output_is_readable() {
+    fn shell_prompt_output_is_readable_through_pseudoconsole() {
         let (_pty, mut reader) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
