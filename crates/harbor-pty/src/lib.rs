@@ -25,6 +25,19 @@ use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
 use anyhow::ensure;
 use harbor_types::TerminalSize;
 
+/// Startup shell executable and discrete arguments.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ShellCommand {
+    pub program: Option<String>,
+    pub args: Vec<String>,
+}
+
+impl ShellCommand {
+    pub fn new(program: Option<String>, args: Vec<String>) -> Self {
+        Self { program, args }
+    }
+}
+
 // ── PtySize ──────────────────────────────────────────────────────────────────
 
 /// ConPTY-compatible terminal size; Windows APIs require signed 16-bit cells.
@@ -133,8 +146,8 @@ pub struct PtyControl {
 
 impl PtyEndpoints {
     /// Spawns a shell and returns its independent terminal-owned endpoints.
-    pub fn spawn_shell(size: TerminalSize) -> anyhow::Result<Self> {
-        let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?)?;
+    pub fn spawn_shell(size: TerminalSize, command: &ShellCommand) -> anyhow::Result<Self> {
+        let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?, command)?;
         let (reader_shutdown, completion) = ReaderShutdown::new();
         let (reader, writer, pty) = pty.into_endpoints(reader);
         Ok(Self {
@@ -309,10 +322,12 @@ mod tests {
     fn windows_endpoints_write_resize_and_shutdown_without_blocking_ui() {
         use std::time::{Duration, Instant};
 
-        let (mut reader, mut writer, mut control) =
-            PtyEndpoints::spawn_shell(TerminalSize { rows: 24, cols: 80 })
-                .expect("Windows ConPTY endpoints should start")
-                .into_parts();
+        let (mut reader, mut writer, mut control) = PtyEndpoints::spawn_shell(
+            TerminalSize { rows: 24, cols: 80 },
+            &ShellCommand::default(),
+        )
+        .expect("Windows ConPTY endpoints should start")
+        .into_parts();
         let reader_thread = std::thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             while reader.read(&mut buffer).is_ok_and(|length| length != 0) {}

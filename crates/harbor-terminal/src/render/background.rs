@@ -1,4 +1,4 @@
-use harbor_types::TerminalSnapshot;
+use harbor_types::{Palette, TerminalSnapshot};
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
@@ -17,6 +17,7 @@ pub struct Background {
     rows: usize,
     cols: usize,
     tint: [f32; 4],
+    palette: Palette,
 }
 
 impl Background {
@@ -33,6 +34,7 @@ impl Background {
         cell_width: f32,
         line_height: f32,
         tint: [f32; 4],
+        palette: Palette,
     ) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
@@ -54,6 +56,7 @@ impl Background {
             rows,
             cols,
             tint,
+            palette,
         };
 
         // Build initial vertex data and upload.
@@ -96,13 +99,23 @@ impl Background {
         gpu.write_buffer(&self.full_rect_buffer, 0, bytemuck::cast_slice(&full_rect));
     }
 
-    /// Builds background vertices for a single row's cells.
+    /// Builds background vertices using the built-in palette.
     pub fn build_background_row_vertices(
         row: usize,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> Vec<ColoredVertex> {
-        Self::build_background_range_vertices(row, 0, snap.cols, snap, viewport)
+        Self::build_background_row_vertices_with_palette(row, snap, viewport, &Palette::default())
+    }
+
+    /// Builds background vertices using an injected startup palette.
+    pub fn build_background_row_vertices_with_palette(
+        row: usize,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        palette: &Palette,
+    ) -> Vec<ColoredVertex> {
+        Self::build_background_range_vertices(row, 0, snap.cols, snap, viewport, palette)
     }
 
     /// Builds background vertices for a slice of columns in a single row `[start_col, end_col)`.
@@ -116,6 +129,7 @@ impl Background {
         end_col: usize,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
+        palette: &Palette,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity((end_col - start_col) * 6);
         let (surf_w, surf_h) = viewport.surface_dimensions();
@@ -126,9 +140,9 @@ impl Background {
                 let (left, top, right, bottom) = viewport.cell_bounds(row, col);
 
                 let color = if inverse {
-                    cell.fg.to_rgba()
+                    palette.resolve(cell.fg)
                 } else {
-                    cell.bg.to_rgba()
+                    palette.resolve(cell.bg)
                 };
 
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
@@ -151,7 +165,12 @@ impl Background {
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
         for row in 0..snap.rows {
-            verts.extend(Self::build_background_row_vertices(row, snap, viewport));
+            verts.extend(Self::build_background_row_vertices_with_palette(
+                row,
+                snap,
+                viewport,
+                &self.palette,
+            ));
         }
         verts
     }
@@ -217,6 +236,7 @@ impl Background {
                     range.end_col,
                     snap,
                     viewport,
+                    &self.palette,
                 );
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
@@ -326,7 +346,14 @@ mod tests {
         let viewport = RenderViewport::new(10.0, 20.0);
 
         // Act
-        let verts = Background::build_background_range_vertices(0, 0, 3, &snap, &viewport);
+        let verts = Background::build_background_range_vertices(
+            0,
+            0,
+            3,
+            &snap,
+            &viewport,
+            &Palette::default(),
+        );
 
         // Assert — the non-default cell emits one positioned, colored quad.
         assert_eq!(verts.len(), 18, "three cells × six vertices");
@@ -354,6 +381,21 @@ mod tests {
                 "default cell must not be tinted per-cell"
             );
         }
+    }
+
+    #[test]
+    fn injected_palette_controls_ansi_background_vertices() {
+        let mut terminal = Terminal::new_headless(1, 1);
+        terminal.put_str("\x1b[41mX");
+        let snap = terminal.screen().terminal_snapshot();
+        let viewport = RenderViewport::new(10.0, 20.0);
+        let mut palette = Palette::default();
+        palette.normal[1] = harbor_types::Rgba::from_rgb8(1, 2, 3);
+
+        let verts =
+            Background::build_background_row_vertices_with_palette(0, &snap, &viewport, &palette);
+
+        assert_eq!(verts[0].color, palette.normal[1].components());
     }
 
     fn assert_close(actual: [f32; 2], expected: [f32; 2], message: &str) {

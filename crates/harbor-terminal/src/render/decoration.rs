@@ -1,8 +1,9 @@
 use harbor_text::TextMetrics;
-use harbor_types::TerminalSnapshot;
+use harbor_types::{Palette, TerminalSnapshot};
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use super::text::glyph_color_with_palette;
 use crate::render::RenderViewport;
 use crate::{CellAttrs, DirtyRange};
 
@@ -14,6 +15,7 @@ pub fn build_underline_vertices(
     metrics: &TextMetrics,
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
+    palette: &Palette,
 ) -> Vec<ColoredVertex> {
     let (surf_w, surf_h) = viewport.surface_dimensions();
     let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
@@ -25,7 +27,7 @@ pub fn build_underline_vertices(
             let cell = snap.cell(row, col);
             if cell.attrs.contains(CellAttrs::UNDERLINE) && cell.ch != ' ' {
                 let (left, _, right, _) = viewport.cell_bounds(row, col);
-                let color = cell.fg.to_rgba();
+                let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
                     left, u_top, right, u_bottom, color, surf_w, surf_h,
                 ));
@@ -43,6 +45,7 @@ pub fn build_strikethrough_vertices(
     metrics: &TextMetrics,
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
+    palette: &Palette,
 ) -> Vec<ColoredVertex> {
     let (surf_w, surf_h) = viewport.surface_dimensions();
     let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
@@ -54,7 +57,7 @@ pub fn build_strikethrough_vertices(
             let cell = snap.cell(row, col);
             if cell.attrs.contains(CellAttrs::STRIKETHROUGH) && cell.ch != ' ' {
                 let (left, _, right, _) = viewport.cell_bounds(row, col);
-                let color = cell.fg.to_rgba();
+                let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
                     left, s_top, right, s_bottom, color, surf_w, surf_h,
                 ));
@@ -77,6 +80,7 @@ pub struct Decoration {
     rows: usize,
     cols: usize,
     metrics: TextMetrics,
+    palette: Palette,
     dirty: bool,
 }
 
@@ -85,7 +89,12 @@ impl Decoration {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, metrics: TextMetrics) -> Self {
+    pub fn new(
+        gpu: &GpuContext,
+        snap: &TerminalSnapshot,
+        metrics: TextMetrics,
+        palette: Palette,
+    ) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
         let rows = snap.rows;
@@ -103,8 +112,8 @@ impl Decoration {
             (surface_w, surface_h),
             (surface_w, surface_h),
         );
-        let u = build_underline_vertices(&metrics, snap, &viewport);
-        let s = build_strikethrough_vertices(&metrics, snap, &viewport);
+        let u = build_underline_vertices(&metrics, snap, &viewport, &palette);
+        let s = build_strikethrough_vertices(&metrics, snap, &viewport, &palette);
         gpu.write_buffer(&underline_buffer, 0, bytemuck::cast_slice(&u));
         gpu.write_buffer(&strikethrough_buffer, 0, bytemuck::cast_slice(&s));
 
@@ -115,6 +124,7 @@ impl Decoration {
             rows,
             cols,
             metrics,
+            palette,
             dirty: false,
         }
     }
@@ -154,8 +164,8 @@ impl Decoration {
                 self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
                 self.strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
             }
-            let u = build_underline_vertices(&self.metrics, snap, viewport);
-            let s = build_strikethrough_vertices(&self.metrics, snap, viewport);
+            let u = build_underline_vertices(&self.metrics, snap, viewport, &self.palette);
+            let s = build_strikethrough_vertices(&self.metrics, snap, viewport, &self.palette);
             gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
             gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
             self.rows = snap.rows;
@@ -170,8 +180,8 @@ impl Decoration {
 
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding decoration draw batch (full)");
-            let u = build_underline_vertices(&self.metrics, snap, viewport);
-            let s = build_strikethrough_vertices(&self.metrics, snap, viewport);
+            let u = build_underline_vertices(&self.metrics, snap, viewport, &self.palette);
+            let s = build_strikethrough_vertices(&self.metrics, snap, viewport, &self.palette);
             gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
             gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
         } else {
@@ -190,7 +200,8 @@ impl Decoration {
                     let cell = snap.cell(range.row, col);
                     if cell.attrs.contains(CellAttrs::UNDERLINE) && cell.ch != ' ' {
                         let (left, _, right, _) = viewport.cell_bounds(range.row, col);
-                        let color = cell.fg.to_rgba();
+                        let color =
+                            glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
                         u_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
                             left, u_top, right, u_bottom, color, surf_w, surf_h,
                         ));
@@ -200,7 +211,8 @@ impl Decoration {
 
                     if cell.attrs.contains(CellAttrs::STRIKETHROUGH) && cell.ch != ' ' {
                         let (left, _, right, _) = viewport.cell_bounds(range.row, col);
-                        let color = cell.fg.to_rgba();
+                        let color =
+                            glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
                         s_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
                             left, s_top, right, s_bottom, color, surf_w, surf_h,
                         ));
@@ -276,7 +288,7 @@ mod tests {
         let viewport = test_viewport();
         let metrics = test_metrics();
 
-        let u_verts = build_underline_vertices(&metrics, &snap, &viewport);
+        let u_verts = build_underline_vertices(&metrics, &snap, &viewport, &Palette::default());
         assert_eq!(u_verts.len(), 2 * 4 * 6);
         assert_ne!(
             u_verts[0].position,
@@ -284,7 +296,7 @@ mod tests {
             "first cell underline should not be degenerate"
         );
 
-        let s_verts = build_strikethrough_vertices(&metrics, &snap, &viewport);
+        let s_verts = build_strikethrough_vertices(&metrics, &snap, &viewport, &Palette::default());
         assert_eq!(s_verts.len(), 2 * 4 * 6);
         assert_eq!(
             s_verts[0].position,
@@ -301,12 +313,32 @@ mod tests {
         let viewport = test_viewport();
         let metrics = test_metrics();
 
-        let s_verts = build_strikethrough_vertices(&metrics, &snap, &viewport);
+        let s_verts = build_strikethrough_vertices(&metrics, &snap, &viewport, &Palette::default());
         assert_eq!(s_verts.len(), 2 * 4 * 6);
         assert_ne!(
             s_verts[0].position,
             [0.0, 0.0],
             "strikethrough should not be degenerate"
         );
+    }
+
+    #[test]
+    fn inverse_decorations_use_effective_glyph_color() {
+        let mut terminal = Terminal::new_headless(1, 1);
+        terminal.put_str("\x1b[4;9;7mX");
+        let snap = terminal.screen().terminal_snapshot();
+        let palette = Palette {
+            background: harbor_types::Rgba::from_rgba8(10, 20, 30, 64),
+            ..Palette::default()
+        };
+        let expected = [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0];
+
+        let underline =
+            build_underline_vertices(&test_metrics(), &snap, &test_viewport(), &palette);
+        let strikethrough =
+            build_strikethrough_vertices(&test_metrics(), &snap, &test_viewport(), &palette);
+
+        assert_eq!(underline[0].color, expected);
+        assert_eq!(strikethrough[0].color, expected);
     }
 }

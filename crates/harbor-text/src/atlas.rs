@@ -255,6 +255,7 @@ impl AtlasStore {
 pub struct GlyphAtlas {
     resolution: HashMap<ResolutionKey, GlyphResolution>,
     store: AtlasStore,
+    font_size: FontSize,
 }
 
 impl Default for GlyphAtlas {
@@ -268,6 +269,7 @@ impl GlyphAtlas {
         Self {
             resolution: HashMap::new(),
             store: AtlasStore::new(),
+            font_size: FontSize::new(FONT_SIZE).expect("default font size must be valid"),
         }
     }
 
@@ -284,7 +286,8 @@ impl GlyphAtlas {
         chars.sort_unstable();
         chars.dedup();
 
-        let size = FontSize::new(FONT_SIZE).expect("configured font size must be valid");
+        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
+        self.font_size = size;
         let style = FontStyle::REGULAR;
 
         // Collect only new available glyphs (not yet cached), deduplicated by GlyphKey.
@@ -357,7 +360,8 @@ impl GlyphAtlas {
     /// Resolution cache is retained. `chars` should be pre-filtered and
     /// deduplicated by the caller. Glyphs are sorted by height descending.
     pub fn rebuild(&mut self, fonts: &FontBook, chars: &[char]) {
-        let size = FontSize::new(FONT_SIZE).expect("configured font size must be valid");
+        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
+        self.font_size = size;
         let style = FontStyle::REGULAR;
         let mut keys: Vec<GlyphKey> = Vec::new();
         let mut seen: HashSet<GlyphKey> = HashSet::new();
@@ -417,8 +421,7 @@ impl GlyphAtlas {
     /// Looks up a cached glyph by character. Returns `None` if not cached
     /// or if the character resolved as unavailable.
     pub fn glyph_by_char(&self, ch: char) -> Option<&AtlasGlyph> {
-        let size = FontSize::new(FONT_SIZE).expect("configured font size must be valid");
-        let request = ResolutionKey::new(ch, size, FontStyle::REGULAR);
+        let request = ResolutionKey::new(ch, self.font_size, FontStyle::REGULAR);
         match self.resolution.get(&request)? {
             GlyphResolution::Available(key) => self.store.glyph(*key),
             GlyphResolution::Unavailable => None,
@@ -448,7 +451,7 @@ impl GlyphAtlas {
 mod tests {
     use super::*;
     use crate::contracts::{FaceId, GlyphId};
-    use crate::font::{load_system_fonts, with_font_env};
+    use crate::font::load_system_fonts;
 
     fn expect_key(resolution: GlyphResolution) -> GlyphKey {
         match resolution {
@@ -458,7 +461,7 @@ mod tests {
     }
 
     fn test_font_book() -> FontBook {
-        with_font_env(None, || load_system_fonts().expect("load test font"))
+        load_system_fonts(&harbor_config::FontSettings::default()).expect("load test font")
     }
 
     /// Helper: resolve a char to a GlyphKey via the font book.
@@ -609,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn should_pack_latin_and_space_when_harbor_font_unset() {
+    fn should_pack_latin_and_space_with_system_primary() {
         // Arrange — default DirectWrite primary (T0002; no system fallback yet).
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();

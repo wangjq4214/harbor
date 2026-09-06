@@ -1,5 +1,5 @@
 use harbor_text::TextMetrics;
-use harbor_types::TerminalSnapshot;
+use harbor_types::{Rgba, TerminalSnapshot};
 use std::time::Instant;
 
 use super::cursor_blink::CursorBlinkState;
@@ -16,16 +16,18 @@ struct VertexInput {
 }
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
 }
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(in.position, 0.0, 1.0);
+    out.color = in.color;
     return out;
 }
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 1.0, 1.0, 0.8);
+    return in.color;
 }
 "#;
 
@@ -61,6 +63,7 @@ pub struct Cursor {
     /// Cached state from last prepare call to avoid re-writing vertex buffer.
     last_cursor: Option<LastCursorState>,
     /// Set true when window size changes or metric updates occur.
+    color: Rgba,
     dirty: bool,
 }
 
@@ -69,7 +72,7 @@ impl Cursor {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, metrics: TextMetrics) -> Self {
+    pub fn new(gpu: &GpuContext, metrics: TextMetrics, color: Rgba) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let vertex_buffer =
             gpu::create_vertex_buffer(gpu.device(), &[TexturedVertex::default(); 6]);
@@ -81,6 +84,7 @@ impl Cursor {
             cell_width: metrics.cell_width,
             line_height: metrics.line_height,
             last_cursor: None,
+            color,
             dirty: true,
         }
     }
@@ -208,9 +212,17 @@ impl Cursor {
             };
 
             let vertices = TexturedVertex::from_pixel_rect(
-                left, top, right, bottom, 0.0, 0.0, 1.0,
+                left,
+                top,
+                right,
+                bottom,
+                0.0,
+                0.0,
+                1.0,
                 1.0, // UV unused, shader outputs solid color
-                [1.0; 4], surf_w, surf_h,
+                self.color.components(),
+                surf_w,
+                surf_h,
             );
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
             self.vertex_count = 6;

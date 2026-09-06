@@ -6,7 +6,7 @@ Project domain concepts and terminology.
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
 
 ### System Default Font Selection
-- **Definition:** The Windows `harbor-text` policy that honors an environment-variable font override and otherwise delegates primary font selection to the operating system.
+- **Definition:** The Windows `harbor-text` policy that selects a configured TOML font family when available and otherwise delegates primary font selection to the operating system.
 - **Relationships:**
   - depends on System-Native Font Loading
 
@@ -677,3 +677,16 @@ Project domain concepts and terminology.
   - belongs to Widget Renderer
   - implements ClipBehavior
   - consumes External Frame Appearance pixels (erased corners reveal the frame clear color)
+
+### TOML User Settings
+- **Definition:** Startup-only user preferences loaded from `~/.harbor/config.toml`; missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
+- **Relationships:**
+  - configures Terminal
+  - configures System Default Font Selection
+  - configures Window Backdrop Tint
+
+### Hex Color Setting
+- **Definition:** A TOML color string in `#RRGGBB` or `#RRGGBBAA` form, where omitted alpha means opaque and eight-digit colors preserve alpha for terminal backgrounds.
+- **Relationships:**
+  - belongs to TOML User Settings
+  - configures Default Background Cell

@@ -17,7 +17,7 @@ The largest remaining product gaps are:
 - incomplete IME preedit and candidate-window integration;
 - rendering gaps such as combining marks and box-drawing alignment;
 - incomplete latency, benchmark, and Windows dogfood evidence;
-- no user configuration, themes, search, or release packaging.
+- startup TOML settings are delivered; themes, search, and release packaging remain missing.
 
 Repository hygiene is also incomplete: a Windows CI workflow is still required, and all standard quality gates must be made continuously repeatable.
 
@@ -219,7 +219,7 @@ Vim and tmux receive deterministic keyboard, paste, focus, mouse, and committed 
 ### Product and stability
 
 - Handle shell crash, device loss, out-of-memory, and panic logging.
-- Add TOML configuration, themes, search, and Windows packaging.
+- Maintain startup TOML configuration; add themes, search, and Windows packaging.
 - Main-window Windows Acrylic through Default Background Cells uses a unified compositor tint: DesktopAcrylicController when the Windows App SDK is available, otherwise accent-policy Acrylic, with an opaque dark fallback. Windows 10 Caption Degradation — an opaque caption strip on some themes — is accepted; system min/max/close buttons stay DWM-drawn. Paste confirmation is excluded and stays an opaque separate window.
 - Run documented Windows dogfood sessions and record known exclusions.
 
