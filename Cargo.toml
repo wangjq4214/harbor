@@ -40,6 +40,7 @@ toml = "0.9"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 wgpu = "30.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 winit = { version = "0.30", features = ["rwh_06"] }
 
 [dependencies]
@@ -52,6 +53,7 @@ harbor-widget = { workspace = true, features = ["winit"] }
 # external
 anyhow = { workspace = true }
 arboard = { workspace = true }
+image = { workspace = true }
 dhat = { workspace = true, optional = true }
 dirs = { workspace = true }
 pollster = { workspace = true }
@@ -61,10 +63,16 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 wgpu = { workspace = true }
 windows-core = { workspace = true }
+unicode-width = { workspace = true }
 winit = { workspace = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }
+
+[build-dependencies]
+ico = "0.5"
+image = { workspace = true }
+winresource = "0.1"
 
 [features]
 default = []
