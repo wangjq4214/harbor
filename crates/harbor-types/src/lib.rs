@@ -21,79 +21,160 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-/// Standard ANSI color palette (indices 0-7).
-const ANSI_COLORS: [[f32; 3]; 8] = [
-    [0.0, 0.0, 0.0],          // Black
-    [0.8039, 0.0, 0.0],       // Red
-    [0.0, 0.8039, 0.0],       // Green
-    [0.8039, 0.8039, 0.0],    // Yellow
-    [0.0, 0.0, 0.8039],       // Blue
-    [0.8039, 0.0, 0.8039],    // Magenta
-    [0.0, 0.8039, 0.8039],    // Cyan
-    [0.8980, 0.8980, 0.8980], // White
-];
+/// Normalized red/green/blue/alpha color used at rendering boundaries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rgba([f32; 4]);
 
-/// Bright ANSI color palette (indices 0-7) — lighter variants.
-const BRIGHT_COLORS: [[f32; 3]; 8] = [
-    [0.4980, 0.4980, 0.4980], // Bright Black (Gray)
-    [1.0, 0.0, 0.0],          // Bright Red
-    [0.0, 1.0, 0.0],          // Bright Green
-    [1.0, 1.0, 0.0],          // Bright Yellow
-    [0.3608, 0.3608, 1.0],    // Bright Blue
-    [1.0, 0.0, 1.0],          // Bright Magenta
-    [0.0, 1.0, 1.0],          // Bright Cyan
-    [1.0, 1.0, 1.0],          // Bright White
-];
+impl Rgba {
+    pub const fn new(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
+        Self([red, green, blue, alpha])
+    }
+
+    pub const fn from_rgb8(red: u8, green: u8, blue: u8) -> Self {
+        Self::from_rgba8(red, green, blue, u8::MAX)
+    }
+
+    pub const fn from_rgba8(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
+        Self([
+            red as f32 / 255.0,
+            green as f32 / 255.0,
+            blue as f32 / 255.0,
+            alpha as f32 / 255.0,
+        ])
+    }
+
+    pub const fn components(self) -> [f32; 4] {
+        self.0
+    }
+}
+
+impl From<Rgba> for [f32; 4] {
+    fn from(value: Rgba) -> Self {
+        value.components()
+    }
+}
+
+impl std::str::FromStr for Rgba {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let hex = value.strip_prefix('#').ok_or("color must start with '#'")?;
+        if !hex.is_ascii() {
+            return Err("color contains a non-hexadecimal digit");
+        }
+        if hex.len() != 6 && hex.len() != 8 {
+            return Err("color must contain 6 or 8 hexadecimal digits");
+        }
+        let byte = |offset| {
+            u8::from_str_radix(&hex[offset..offset + 2], 16)
+                .map_err(|_| "color contains a non-hexadecimal digit")
+        };
+        Ok(Self::from_rgba8(
+            byte(0)?,
+            byte(2)?,
+            byte(4)?,
+            if hex.len() == 8 { byte(6)? } else { u8::MAX },
+        ))
+    }
+}
+
+/// Runtime terminal palette. Protocol colors remain semantic [`Color`] values
+/// and are resolved only when a renderer needs concrete RGBA components.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Palette {
+    pub foreground: Rgba,
+    pub background: Rgba,
+    pub cursor: Rgba,
+    pub selection: Rgba,
+    pub normal: [Rgba; 8],
+    pub bright: [Rgba; 8],
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            foreground: Rgba::from_rgb8(255, 255, 255),
+            background: Rgba::new(0.36, 0.20, 0.08, 0.25),
+            cursor: Rgba::from_rgba8(255, 255, 255, 204),
+            selection: Rgba::new(0.3, 0.5, 0.9, 0.4),
+            normal: [
+                Rgba::from_rgb8(0, 0, 0),
+                Rgba::from_rgb8(205, 0, 0),
+                Rgba::from_rgb8(0, 205, 0),
+                Rgba::from_rgb8(205, 205, 0),
+                Rgba::from_rgb8(0, 0, 205),
+                Rgba::from_rgb8(205, 0, 205),
+                Rgba::from_rgb8(0, 205, 205),
+                Rgba::from_rgb8(229, 229, 229),
+            ],
+            bright: [
+                Rgba::from_rgb8(127, 127, 127),
+                Rgba::from_rgb8(255, 0, 0),
+                Rgba::from_rgb8(0, 255, 0),
+                Rgba::from_rgb8(255, 255, 0),
+                Rgba::from_rgb8(92, 92, 255),
+                Rgba::from_rgb8(255, 0, 255),
+                Rgba::from_rgb8(0, 255, 255),
+                Rgba::from_rgb8(255, 255, 255),
+            ],
+        }
+    }
+}
+
+impl Palette {
+    /// Resolves a foreground/semantic color. [`Color::Default`] means the
+    /// configured default foreground; default backgrounds are handled by the
+    /// renderer's clear layer using [`Self::background`].
+    pub fn resolve(&self, color: Color) -> [f32; 4] {
+        match color {
+            Color::Default => self.foreground.into(),
+            Color::Named(n) => self
+                .normal
+                .get(n as usize)
+                .copied()
+                .unwrap_or(Rgba::from_rgb8(0, 0, 0))
+                .into(),
+            Color::Bright(n) => self
+                .bright
+                .get(n as usize)
+                .copied()
+                .unwrap_or(Rgba::from_rgb8(0, 0, 0))
+                .into(),
+            Color::Indexed(n @ 0..=7) => self.normal[n as usize].into(),
+            Color::Indexed(n @ 8..=15) => self.bright[(n - 8) as usize].into(),
+            Color::Indexed(n @ 16..=231) => {
+                let index = n - 16;
+                let expand = |component: u8| match component {
+                    0 => 0.0,
+                    1 => 95.0 / 255.0,
+                    2 => 135.0 / 255.0,
+                    3 => 175.0 / 255.0,
+                    4 => 215.0 / 255.0,
+                    _ => 1.0,
+                };
+                [
+                    expand(index / 36),
+                    expand((index % 36) / 6),
+                    expand(index % 6),
+                    1.0,
+                ]
+            }
+            Color::Indexed(n) => {
+                let value = (8 + (n - 232) * 10) as f32 / 255.0;
+                [value, value, value, 1.0]
+            }
+            Color::Rgb(red, green, blue) => Rgba::from_rgb8(red, green, blue).into(),
+        }
+    }
+}
 
 impl Color {
-    /// Converts to normalized [r, g, b, a] at full opacity.
-    /// `Default` returns white; background layers skip `Default` cells.
+    /// Resolves using the built-in default palette.
+    ///
+    /// New rendering code should prefer [`Palette::resolve`] with the palette
+    /// supplied by application settings.
     pub fn to_rgba(self) -> [f32; 4] {
-        match self {
-            Color::Default => [1.0, 1.0, 1.0, 1.0],
-            Color::Named(n) => {
-                let &[r, g, b] = ANSI_COLORS.get(n as usize).unwrap_or(&[0.0, 0.0, 0.0]);
-                [r, g, b, 1.0]
-            }
-            Color::Bright(n) => {
-                let &[r, g, b] = BRIGHT_COLORS.get(n as usize).unwrap_or(&[0.0, 0.0, 0.0]);
-                [r, g, b, 1.0]
-            }
-            Color::Indexed(n) => match n {
-                0..=7 => {
-                    let [r, g, b] = ANSI_COLORS[n as usize];
-                    [r, g, b, 1.0]
-                }
-                8..=15 => {
-                    let [r, g, b] = BRIGHT_COLORS[(n - 8) as usize];
-                    [r, g, b, 1.0]
-                }
-                16..=231 => {
-                    let idx = n - 16;
-                    let r = idx / 36;
-                    let g = (idx % 36) / 6;
-                    let b = idx % 6;
-                    let expand = |v: u8| -> f32 {
-                        match v {
-                            0 => 0.0,
-                            1 => 95.0 / 255.0,
-                            2 => 135.0 / 255.0,
-                            3 => 175.0 / 255.0,
-                            4 => 215.0 / 255.0,
-                            _ => 1.0,
-                        }
-                    };
-                    [expand(r), expand(g), expand(b), 1.0]
-                }
-                _ => {
-                    // 232-255: greyscale ramp from (8,8,8) to (238,238,238)
-                    let step = n - 232;
-                    let v = (8 + step * 10) as f32 / 255.0;
-                    [v, v, v, 1.0]
-                }
-            },
-            Color::Rgb(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
-        }
+        Palette::default().resolve(self)
     }
 }
 
@@ -526,7 +607,7 @@ pub enum UpdateDamage {
 
 #[cfg(test)]
 mod tests {
-    use super::{CursorShape, CursorStyleArg};
+    use super::{Color, CursorShape, CursorStyleArg, Palette, Rgba};
 
     #[test]
     fn cursor_shape_default_is_block() {
@@ -551,6 +632,72 @@ mod tests {
         assert_eq!(
             CursorStyleArg::from_param(99),
             CursorStyleArg::BlinkingBlock
+        );
+    }
+
+    #[test]
+    fn rgba_parses_six_and_eight_digit_hex() {
+        assert_eq!("#Aa10fF".parse(), Ok(Rgba::from_rgb8(0xaa, 0x10, 0xff)));
+        assert_eq!(
+            "#5C331440".parse(),
+            Ok(Rgba::from_rgba8(0x5c, 0x33, 0x14, 0x40))
+        );
+        assert!("5C3314".parse::<Rgba>().is_err());
+        assert!("#12345".parse::<Rgba>().is_err());
+        assert!("#GG0000".parse::<Rgba>().is_err());
+        assert!("#aééx".parse::<Rgba>().is_err());
+    }
+    #[test]
+    fn default_palette_preserves_translucent_cursor() {
+        assert_eq!(
+            Palette::default().cursor,
+            Rgba::from_rgba8(255, 255, 255, 204)
+        );
+    }
+
+    #[test]
+    fn palette_resolves_semantic_and_low_index_colors() {
+        let mut palette = Palette {
+            foreground: Rgba::from_rgb8(1, 2, 3),
+            ..Palette::default()
+        };
+        palette.normal[2] = Rgba::from_rgb8(4, 5, 6);
+        palette.bright[2] = Rgba::from_rgb8(7, 8, 9);
+
+        assert_eq!(
+            palette.resolve(Color::Default),
+            Rgba::from_rgb8(1, 2, 3).components()
+        );
+        assert_eq!(
+            palette.resolve(Color::Named(2)),
+            Rgba::from_rgb8(4, 5, 6).components()
+        );
+        assert_eq!(
+            palette.resolve(Color::Bright(2)),
+            Rgba::from_rgb8(7, 8, 9).components()
+        );
+        assert_eq!(
+            palette.resolve(Color::Indexed(2)),
+            Rgba::from_rgb8(4, 5, 6).components()
+        );
+        assert_eq!(
+            palette.resolve(Color::Indexed(10)),
+            Rgba::from_rgb8(7, 8, 9).components()
+        );
+    }
+
+    #[test]
+    fn palette_preserves_extended_index_formulas_and_truecolor() {
+        let palette = Palette::default();
+        assert_eq!(palette.resolve(Color::Indexed(16)), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(palette.resolve(Color::Indexed(231)), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            palette.resolve(Color::Indexed(232)),
+            [8.0 / 255.0, 8.0 / 255.0, 8.0 / 255.0, 1.0]
+        );
+        assert_eq!(
+            palette.resolve(Color::Rgb(10, 20, 30)),
+            Rgba::from_rgb8(10, 20, 30).components()
         );
     }
 }

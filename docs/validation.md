@@ -67,6 +67,7 @@ replay/campaign evidence, arbitrary-input checklist claims remain unchecked.
 | OSC/DCS or external side effect | Boundary, cancellation, permission, and payload-limit tests                                |
 | Keyboard, mouse, focus, or IME  | Deterministic encoder/routing tests plus a Windows runtime smoke test                      |
 | PTY lifecycle                   | Spawn, read, write, resize, child exit, shutdown, and leak-safe failure behavior           |
+| Startup configuration           | Loader fallback/atomic-color tests, font-size/family tests, shell quoting tests, renderer palette tests, and Windows smoke |
 | Renderer behavior               | CPU-side geometry tests, GPU encode coverage where practical, and visual/runtime evidence  |
 | Performance optimization        | Before/after capture under the same scenario; correctness gates remain green               |
 | Documentation-only change       | Local-link and language-policy checks; code tests are optional unless claims changed       |
@@ -98,6 +99,8 @@ The Windows daily-use gate requires recorded sessions with representative worklo
 - alternate screen transitions
 - heavy scrollback and sustained output
 - selection, clipboard, bracketed paste, and paste confirmation
+
+For startup settings, copy `config.example.toml` to `~/.harbor/config.toml` and verify the configured family/size, `pwsh.exe -NoLogo`, default/ANSI colors, cursor, selection, and translucent background on the first frame. Repeat with Acrylic unavailable. Then test one invalid scalar field, one invalid color, and invalid TOML: scalar fallback must remain local, color failure must reset the whole palette, and document failure must use complete defaults. Confirm the configured terminal background does not change the compositor backdrop tint.
 
 Unix runtime acceptance belongs to roadmap phase P8 and does not block earlier Windows phases.
 

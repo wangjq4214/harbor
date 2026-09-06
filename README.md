@@ -14,7 +14,7 @@
 - 🧩 Declarative `harbor-widget` runtime with retained scenes, event routing, focus, `CustomPaint`, and winit frame integration
 - 🔤 DirectWrite primary-font selection and system fallback
 
-🚧 Known gaps include terminal replies, several OSC families, mouse and focus protocols, IME preedit display, wide-cell normalization in some editing operations, combining marks, box-drawing alignment, configuration, search, packaging, and runtime performance evidence.
+🚧 Known gaps include several OSC families, mouse and focus protocols, IME preedit display, combining marks, box-drawing alignment, themes, search, packaging, and runtime performance evidence.
 
 ## 🛠️ Build and Run
 
@@ -22,7 +22,15 @@
 cargo run
 ```
 
-🪟 Harbor currently requires Windows for an operational PTY session. `HARBOR_FONT` may point to a font file used as the primary DirectWrite face.
+🪟 Harbor currently requires Windows for an operational PTY session.
+
+## ⚙️ Startup Configuration
+
+Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
+
+Font family and size, shell program/arguments, default terminal colors, and ANSI colors 0–15 are configurable. Invalid font or shell fields fall back independently. An invalid supplied color resets the entire color palette to defaults. Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
+
+A missing font family falls back to DirectWrite system monospace selection. A missing shell program uses `COMSPEC`, then `cmd.exe`; if a configured executable cannot be started, Harbor retries that default shell without the configured arguments. The terminal background alpha is preserved, but this setting does not alter the Windows Acrylic backdrop tint.
 
 ## ✅ Quality Gates
 

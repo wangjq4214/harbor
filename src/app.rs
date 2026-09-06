@@ -24,7 +24,7 @@ use winit::{
 use crate::event::AppEvent;
 use crate::terminal_widget_bridge::TerminalWidgetBridge;
 use confirmation::ConfirmationWindow;
-use harbor_pty::PtyEndpoints;
+use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{
     GpuContext, InputModes, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,
     alpha_mode_supports_transparency, load_system_fonts,
@@ -592,7 +592,19 @@ impl App {
         }
 
         tracing::info!("creating window");
-        let appearance = TerminalAppearance::default();
+        let loaded = harbor_config::load();
+        for diagnostic in &loaded.diagnostics {
+            match diagnostic.level {
+                harbor_config::DiagnosticLevel::Warning => {
+                    tracing::warn!(message = %diagnostic.message, "settings warning");
+                }
+                harbor_config::DiagnosticLevel::Error => {
+                    tracing::error!(message = %diagnostic.message, "settings fallback");
+                }
+            }
+        }
+        let settings = loaded.settings;
+        let appearance = TerminalAppearance::from_palette(settings.colors);
         let backdrop = select_backend(os_build(), wasdk_available());
         let mut window_attrs = Window::default_attributes()
             .with_title("Harbor")
@@ -631,11 +643,12 @@ impl App {
         );
 
         // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
-        let fonts = load_system_fonts().map_err(AppError::Renderer)?;
+        let fonts = load_system_fonts(&settings.font).map_err(AppError::Renderer)?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
 
         let size = Terminal::terminal_size_for(&gpu, &metrics);
-        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size)
+        let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
+        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(size, &shell_command)
             .map_err(AppError::Pty)?
             .into_parts();
         let event_proxy = self.event_proxy.clone();

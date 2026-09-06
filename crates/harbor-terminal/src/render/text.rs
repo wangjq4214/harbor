@@ -1,4 +1,4 @@
-use harbor_types::TerminalSnapshot;
+use harbor_types::{Palette, TerminalSnapshot};
 
 use anyhow::Result;
 use wgpu::util::DeviceExt;
@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 use super::gpu::{self, GpuContext, TexturedVertex, UploadMode};
 use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange};
+#[cfg(test)]
 use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
 use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, TextMetrics};
@@ -38,18 +39,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Computes the glyph color for a terminal cell based on its attributes.
-/// Inverse swaps fg↔bg. Bold is rendered via the glyph's rasterised weight;
-/// it does not change the foreground color.
+/// Computes glyph color using the built-in palette.
 pub fn glyph_color(fg: Color, bg: Color, attrs: CellAttrs) -> [f32; 4] {
+    glyph_color_with_palette(&Palette::default(), fg, bg, attrs)
+}
+
+/// Computes glyph color using an injected startup palette.
+pub fn glyph_color_with_palette(
+    palette: &Palette,
+    fg: Color,
+    bg: Color,
+    attrs: CellAttrs,
+) -> [f32; 4] {
     if attrs.contains(CellAttrs::INVERSE) {
         if bg == Color::Default {
-            [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0]
+            let [red, green, blue, _] = palette.background.components();
+            [red, green, blue, 1.0]
         } else {
-            bg.to_rgba()
+            palette.resolve(bg)
         }
     } else {
-        fg.to_rgba()
+        palette.resolve(fg)
     }
 }
 
@@ -211,6 +221,7 @@ pub struct Text {
     dirty: bool,
     rows: usize,
     cols: usize,
+    palette: Palette,
 }
 
 impl Text {
@@ -268,6 +279,7 @@ impl Text {
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
+        palette: Palette,
     ) -> Result<Self> {
         let bind_group_layout = gpu::create_texture_bind_group_layout(gpu.device());
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format(), &bind_group_layout);
@@ -296,6 +308,7 @@ impl Text {
             dirty: true,
             rows,
             cols,
+            palette,
         };
 
         let verts = layer.build_all_vertices(snap, viewport);
@@ -383,7 +396,7 @@ impl Text {
                     glyph_right += offset;
                 }
 
-                let color = glyph_color(cell.fg, cell.bg, cell.attrs);
+                let color = glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
 
                 verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
                     glyph_left,

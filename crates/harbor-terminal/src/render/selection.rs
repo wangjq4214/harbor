@@ -1,9 +1,8 @@
-use harbor_types::{SelectionBounds, TerminalSnapshot};
+use harbor_types::{Rgba, SelectionBounds, TerminalSnapshot};
 use std::sync::Arc;
 
 use super::gpu::{self, ColoredVertex, GpuContext};
 use crate::render::RenderViewport;
-use harbor_config::SELECTION_COLOR;
 
 // ── Selection (outer — GPU) ──────────────────────────────────────
 
@@ -19,6 +18,7 @@ pub struct Selection {
     /// Last projection inputs used for the vertex upload.
     last_projection: Option<(u64, usize, usize, usize, usize, RenderViewport)>,
     /// Whether vertex buffer needs re-upload.
+    color: Rgba,
     dirty: bool,
 }
 
@@ -27,7 +27,7 @@ impl Selection {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext) -> Self {
+    pub fn new(gpu: &GpuContext, color: Rgba) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {
@@ -37,6 +37,7 @@ impl Selection {
             vertex_cap: 0,
             bounds: None,
             last_projection: None,
+            color,
             dirty: true,
         }
     }
@@ -98,7 +99,7 @@ impl Selection {
                     top,
                     right,
                     bottom,
-                    SELECTION_COLOR,
+                    self.color.components(),
                     surf_w,
                     surf_h,
                 );
