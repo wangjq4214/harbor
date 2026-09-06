@@ -28,12 +28,8 @@ use crate::dialog::{
 };
 use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
-use crate::telemetry::{
-    FrameState, HIDDEN_STARTUP_RETRY_DELAY,
-};
-use crate::terminal_view::{
-    TerminalWidgetBridge, build_main_terminal_root, with_current_gpu,
-};
+use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
+use crate::terminal_view::{TerminalWidgetBridge, build_main_terminal_root, with_current_gpu};
 use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{
     GpuContext, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,

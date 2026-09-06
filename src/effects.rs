@@ -79,8 +79,8 @@ pub(crate) fn apply_window_effects(window: &Window, effects: &RuntimeEffects) {
     if let Some(clipboard) = effects.clipboard.clone() {
         match clipboard {
             ClipboardEffect::Write(contents) => {
-                if let Err(error) = arboard::Clipboard::new()
-                    .and_then(|mut clipboard| clipboard.set_text(contents))
+                if let Err(error) =
+                    arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(contents))
                 {
                     tracing::warn!(error = %error, "failed to write clipboard effect");
                 }

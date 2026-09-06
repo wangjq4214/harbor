@@ -12,9 +12,7 @@ pub(crate) enum AppEvent {
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
-pub(crate) fn external_invalidation_for_app_event(
-    event: AppEvent,
-) -> Option<ExternalInvalidation> {
+pub(crate) fn external_invalidation_for_app_event(event: AppEvent) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady => Some(ExternalInvalidation::new()),
     }

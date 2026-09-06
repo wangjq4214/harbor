@@ -18,12 +18,12 @@ use harbor_widget::scene::primitive::{
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
-use std::cell::Cell;
 use harbor_terminal::GpuContext;
 use harbor_widget::layout::Point;
 use harbor_widget::scene::primitive::Color;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::{BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
+use std::cell::Cell;
 
 thread_local! {
     static CURRENT_GPU: Cell<Option<*const GpuContext>> = const { Cell::new(None) };
@@ -1316,7 +1316,10 @@ mod decoration_tests {
             };
             assert_eq!(*rect, expected_rect);
             assert_opaque_fallback_color(*color);
-            assert!(first.clips.is_empty(), "fallback must fill the rounded cutouts");
+            assert!(
+                first.clips.is_empty(),
+                "fallback must fill the rounded cutouts"
+            );
         }
     }
 

@@ -16,7 +16,6 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_terminal::safe_preview_line;
-use unicode_width::UnicodeWidthChar;
 use harbor_terminal::{GpuContext, InputModes, TextMetrics};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
@@ -31,6 +30,7 @@ use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 use std::time::Instant;
+use unicode_width::UnicodeWidthChar;
 
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;

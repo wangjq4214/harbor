@@ -151,7 +151,10 @@ mod tests {
         FrameState::new()
     }
 
-    fn recording_frame() -> (FrameState<RecordingFrameLifecycleSink>, RecordingFrameLifecycleSink) {
+    fn recording_frame() -> (
+        FrameState<RecordingFrameLifecycleSink>,
+        RecordingFrameLifecycleSink,
+    ) {
         let sink = RecordingFrameLifecycleSink::default();
         (FrameState::with_sink(sink.clone()), sink)
     }
