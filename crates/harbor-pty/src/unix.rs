@@ -2,7 +2,7 @@ use std::thread::JoinHandle;
 
 use anyhow::bail;
 
-use crate::{PtySize, ReaderShutdown};
+use crate::{PtySize, ReaderShutdown, ShellCommand};
 
 pub struct Pty;
 
@@ -11,7 +11,10 @@ pub struct PtyReader;
 pub struct PtyWriter;
 
 impl Pty {
-    pub fn spawn_shell(_size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
+    pub fn spawn_shell(
+        _size: PtySize,
+        _command: &ShellCommand,
+    ) -> anyhow::Result<(Self, PtyReader)> {
         bail!("pty is not implemented on unix")
     }
 

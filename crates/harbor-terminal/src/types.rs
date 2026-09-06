@@ -5,43 +5,51 @@
 
 use std::time::Instant;
 
-/// Terminal-owned visual policy for the default cell background.
-///
-/// The terminal keeps the tint and fallback semantics independent from any
-/// window, surface, or GPU type. Hosts only report whether a compositor
-/// backdrop is actually available for the current window.
+use harbor_types::{Palette, Rgba};
+
+/// Terminal-owned visual policy for the startup palette and backdrop fallback.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalAppearance {
-    rgba: [f32; 4],
+    palette: Palette,
 }
 
 impl TerminalAppearance {
-    /// Creates an appearance from a straight-alpha RGBA tint.
-    pub const fn new(rgba: [f32; 4]) -> Self {
-        Self { rgba }
+    /// Preserves the legacy construction seam while replacing only the default background.
+    pub fn new(rgba: [f32; 4]) -> Self {
+        let palette = Palette {
+            background: Rgba::new(rgba[0], rgba[1], rgba[2], rgba[3]),
+            ..Palette::default()
+        };
+        Self { palette }
     }
 
-    /// Returns the configured tint used by a host compositor API.
+    pub const fn from_palette(palette: Palette) -> Self {
+        Self { palette }
+    }
+
+    pub const fn palette(self) -> Palette {
+        self.palette
+    }
+
+    /// Returns the configured terminal background tint.
     pub const fn rgba(self) -> [f32; 4] {
-        self.rgba
+        self.palette.background.components()
     }
 
     /// Selects the default clear color for the current host environment.
-    ///
-    /// With Acrylic available the configured tint remains translucent. When
-    /// it is unavailable, the same RGB is made opaque for a readable fallback.
     pub const fn clear_rgba(self, backdrop_available: bool) -> [f32; 4] {
+        let rgba = self.rgba();
         if backdrop_available {
-            self.rgba
+            rgba
         } else {
-            [self.rgba[0], self.rgba[1], self.rgba[2], 1.0]
+            [rgba[0], rgba[1], rgba[2], 1.0]
         }
     }
 }
 
 impl Default for TerminalAppearance {
     fn default() -> Self {
-        Self::new(harbor_config::BACKGROUND)
+        Self::from_palette(Palette::default())
     }
 }
 

@@ -77,7 +77,7 @@ Do not combine unrelated workloads into one capture when attribution matters.
 | Build profile and features |       |
 | Machine and OS             |       |
 | GPU backend and adapter    |       |
-| Font set / `HARBOR_FONT`   |       |
+| Font family and size       |       |
 | Window and terminal size   |       |
 | Workload                   |       |
 | Dwell time                 |       |

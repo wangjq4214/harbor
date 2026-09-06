@@ -124,6 +124,7 @@ impl Terminal {
             metrics,
             &snap,
             appearance.clear_rgba(false),
+            appearance.palette(),
         )
         .expect("terminal render pipeline init");
 

@@ -14,25 +14,28 @@
 
 use std::{
     cell::{Cell, RefCell},
-    os::windows::ffi::OsStrExt,
-    path::Path,
     rc::Rc,
 };
+#[cfg(test)]
+use std::{os::windows::ffi::OsStrExt, path::Path};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use hashbrown::HashMap;
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FACE_TYPE, DWRITE_FONT_FILE_TYPE,
-    DWRITE_FONT_SIMULATIONS_NONE, DWRITE_FONT_STRETCH, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_GLYPH_METRICS, DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_ENABLED,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
+    DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE_ENABLED,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_READING_DIRECTION_LEFT_TO_RIGHT,
     DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
     DWRITE_TEXTURE_ALIASED_1x1, DWriteCreateFactory, IDWriteFactory, IDWriteFactory2,
-    IDWriteFontCollection, IDWriteFontFace, IDWriteFontFace1, IDWriteFontFace3,
-    IDWriteFontFallback, IDWriteFontFile, IDWriteLocalizedStrings, IDWriteNumberSubstitution,
-    IDWriteTextAnalysisSource, IDWriteTextAnalysisSource_Impl,
+    IDWriteFontCollection, IDWriteFontFace, IDWriteFontFace1, IDWriteFontFallback, IDWriteFontFile,
+    IDWriteLocalizedStrings, IDWriteNumberSubstitution, IDWriteTextAnalysisSource,
+    IDWriteTextAnalysisSource_Impl,
+};
+#[cfg(test)]
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_FONT_FACE_TYPE, DWRITE_FONT_FILE_TYPE, DWRITE_FONT_SIMULATIONS_NONE, IDWriteFontFace3,
 };
 use windows::core::{BOOL, ComObjectInner as _, Interface, implement};
 
@@ -262,12 +265,49 @@ impl DwriteState {
         }
     }
 
+    /// Opens a configured family when usable, otherwise warns and falls back to
+    /// the existing system monospace selection policy.
+    pub(crate) fn open_primary_with_sink(
+        family: Option<&str>,
+        size: f32,
+        lifecycle: Rc<dyn FontLifecycleSink>,
+    ) -> Result<Self> {
+        let (factory, fallback, locale) = open_factory_fallback_locale()?;
+        let selected = family
+            .map(|family| select_family_primary(&factory, family))
+            .transpose();
+        let (primary_face, descriptor) = match selected {
+            Ok(Some(primary)) => primary,
+            Ok(None) => select_system_primary(&factory)?,
+            Err(error) => {
+                tracing::warn!(family, %error, "configured font family unavailable; using system primary");
+                select_system_primary(&factory)?
+            }
+        };
+        let primary_metrics = font_metrics_from_face(&primary_face, size)
+            .context("measure DirectWrite primary face")?;
+        let faces = NativeFaceRegistry::with_primary(primary_face)
+            .context("register DirectWrite primary face")?;
+        Ok(Self::from_session(
+            DirectWriteSession {
+                factory,
+                fallback,
+                descriptor,
+                faces: Rc::new(RefCell::new(faces)),
+                locale,
+                lifecycle,
+            },
+            primary_metrics,
+        ))
+    }
+
     /// Select a system monospace/fixed-pitch primary face and retain it.
     #[cfg(test)]
     pub(crate) fn open_system_primary() -> Result<Self> {
         Self::open_system_primary_with_sink(Rc::new(crate::lifecycle::TracingFontLifecycleSink))
     }
 
+    #[cfg(test)]
     pub(crate) fn open_system_primary_with_sink(
         lifecycle: Rc<dyn FontLifecycleSink>,
     ) -> Result<Self> {
@@ -299,6 +339,7 @@ impl DwriteState {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn open_configured_primary_with_sink(
         path: &Path,
         lifecycle: Rc<dyn FontLifecycleSink>,
@@ -332,9 +373,6 @@ impl DwriteState {
     }
 
     pub fn font_metrics(&self, size: f32) -> FontMetrics {
-        if size.to_bits() == harbor_config::FONT_SIZE.to_bits() {
-            return self.primary_metrics;
-        }
         let faces = self.session.faces.borrow();
         let Some(primary) = faces.get(PRIMARY_FACE_ID) else {
             return self.primary_metrics;
@@ -635,6 +673,7 @@ fn windows_user_locale() -> Result<Vec<u16>> {
     Ok(buffer)
 }
 
+#[cfg(test)]
 fn create_face_from_path(factory: &IDWriteFactory, path: &Path) -> Result<IDWriteFontFace> {
     if path.as_os_str().is_empty() {
         bail!("configured font path is empty");
@@ -776,6 +815,70 @@ fn select_system_primary(
     selected.ok_or_else(|| anyhow!("no usable system monospace face"))
 }
 
+fn select_family_primary(
+    factory: &IDWriteFactory2,
+    requested: &str,
+) -> Result<(IDWriteFontFace, PrimaryDescriptor)> {
+    let base: IDWriteFactory = factory.cast()?;
+    let mut collection: Option<IDWriteFontCollection> = None;
+    unsafe {
+        base.GetSystemFontCollection(&mut collection, false)
+            .context("GetSystemFontCollection")?;
+    }
+    let collection = collection.ok_or_else(|| anyhow!("system font collection was null"))?;
+    let wide = requested
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut family_index = 0;
+    let mut exists = BOOL::default();
+    unsafe {
+        collection
+            .FindFamilyName(
+                windows::core::PCWSTR(wide.as_ptr()),
+                &mut family_index,
+                &mut exists,
+            )
+            .context("FindFamilyName")?;
+    }
+    if !exists.as_bool() {
+        bail!("font family `{requested}` was not found");
+    }
+    let family = unsafe { collection.GetFontFamily(family_index) }?;
+    let font = unsafe {
+        family.GetFirstMatchingFont(
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+        )
+    }?;
+    if unsafe { font.IsSymbolFont() }.as_bool() {
+        bail!("font family `{requested}` is a symbol font");
+    }
+    let face = unsafe { font.CreateFontFace() }?;
+    let face1: IDWriteFontFace1 = face
+        .cast()
+        .context("configured font does not expose IDWriteFontFace1")?;
+    if !unsafe { face1.IsMonospacedFont() }.as_bool() {
+        bail!("font family `{requested}` is not monospaced");
+    }
+    let mut glyphs = [0u16; 1];
+    let codepoints = [u32::from('M')];
+    unsafe { face.GetGlyphIndices(codepoints.as_ptr(), 1, glyphs.as_mut_ptr()) }?;
+    if glyphs[0] == 0 {
+        bail!("font family `{requested}` has no Latin primary glyph");
+    }
+    let descriptor = PrimaryDescriptor {
+        face_id: PRIMARY_FACE_ID,
+        family_name: localized_family_name_from_family(&family)?,
+        weight: unsafe { font.GetWeight() },
+        style: unsafe { font.GetStyle() },
+        stretch: unsafe { font.GetStretch() },
+    };
+    Ok((face, descriptor))
+}
+
+#[cfg(test)]
 fn describe_face(face: &IDWriteFontFace) -> Result<PrimaryDescriptor> {
     let face3: IDWriteFontFace3 = face
         .cast()
@@ -946,8 +1049,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual E2E: cold-start Harbor with HARBOR_FONT unset and verify first Latin frame"]
-    fn should_present_first_latin_frame_when_harbor_font_unset() {
+    #[ignore = "manual E2E: cold-start Harbor and verify first Latin frame"]
+    fn should_present_first_latin_frame_with_system_primary() {
         let _ = DwriteState::open_system_primary().expect("system primary available for E2E");
     }
 
@@ -1038,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn should_open_system_primary_when_no_harbor_font() {
+    fn should_open_system_primary_without_configured_family() {
         DwriteState::open_system_primary().expect("expected system primary face");
     }
 

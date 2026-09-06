@@ -34,7 +34,7 @@ use ::windows::{
 };
 use anyhow::{Context as _, ensure};
 
-use crate::{PtySize, ReaderShutdown};
+use crate::{PtySize, ReaderShutdown, ShellCommand};
 
 /// Windows ConPTY session and the handles that must outlive the shell process.
 pub struct Pty {
@@ -64,7 +64,7 @@ pub struct PtyWriter {
 }
 
 impl Pty {
-    pub fn spawn_shell(size: PtySize) -> anyhow::Result<(Self, PtyReader)> {
+    pub fn spawn_shell(size: PtySize, command: &ShellCommand) -> anyhow::Result<(Self, PtyReader)> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "creating windows pty");
 
@@ -100,7 +100,7 @@ impl Pty {
             PseudoConsole::create(size, input_read.handle(), output_write.handle())?;
         tracing::info!("created pseudo console");
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
-        let process_info = create_shell_process(&attribute_list)?;
+        let process_info = create_shell_process(&attribute_list, command)?;
         tracing::info!("created shell process");
 
         // The suspended process cannot create children before Job assignment succeeds.
@@ -336,17 +336,42 @@ impl Drop for Pty {
     }
 }
 
-fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCESS_INFORMATION> {
+fn create_shell_process(
+    attribute_list: &AttributeList,
+    command: &ShellCommand,
+) -> anyhow::Result<PROCESS_INFORMATION> {
     let mut startup_info = STARTUPINFOEXW::default();
     startup_info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
-    let mut process_info = PROCESS_INFORMATION::default();
-    let mut command_line = shell_command_line();
     let environment_block = build_environment_block();
+    let mut command_line = shell_command_line(command);
     tracing::info!("creating shell process");
+    match try_create_shell_process(&startup_info, &mut command_line, &environment_block) {
+        Ok(process_info) => Ok(process_info),
+        Err(error) if command.program.is_some() => {
+            tracing::warn!(
+                configured_program = ?command.program,
+                %error,
+                "configured shell failed to start; retrying the default shell"
+            );
+            let mut fallback_line = shell_command_line(&ShellCommand::default());
+            try_create_shell_process(&startup_info, &mut fallback_line, &environment_block)
+                .with_context(|| {
+                    format!("configured shell failed ({error}); default shell also failed")
+                })
+        }
+        Err(error) => Err(error).context("failed to create default shell process"),
+    }
+}
 
+fn try_create_shell_process(
+    startup_info: &STARTUPINFOEXW,
+    command_line: &mut [u16],
+    environment_block: &[u16],
+) -> windows::core::Result<PROCESS_INFORMATION> {
+    let mut process_info = PROCESS_INFORMATION::default();
     unsafe {
         CreateProcessW(
             PCWSTR::null(),
@@ -357,12 +382,10 @@ fn create_shell_process(attribute_list: &AttributeList) -> anyhow::Result<PROCES
             EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
             Some(environment_block.as_ptr().cast()),
             PCWSTR::null(),
-            &startup_info as *const STARTUPINFOEXW as *const _,
+            startup_info as *const STARTUPINFOEXW as *const _,
             &mut process_info,
         )
-    }
-    .context("failed to create shell process")?;
-
+    }?;
     Ok(process_info)
 }
 fn terminate_process(process_info: &PROCESS_INFORMATION) {
@@ -373,11 +396,49 @@ fn terminate_process(process_info: &PROCESS_INFORMATION) {
     }
 }
 
-fn shell_command_line() -> Vec<u16> {
-    let command = std::env::var_os("COMSPEC")
+fn shell_command_line(command: &ShellCommand) -> Vec<u16> {
+    shell_command_line_with_comspec(command, std::env::var_os("COMSPEC"))
+}
+
+fn shell_command_line_with_comspec(command: &ShellCommand, comspec: Option<OsString>) -> Vec<u16> {
+    let program = command
+        .program
+        .as_deref()
+        .filter(|program| !program.trim().is_empty())
+        .map(OsString::from)
+        .or_else(|| comspec.filter(|program| !program.to_string_lossy().trim().is_empty()))
         .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"));
-    tracing::info!(command = ?command, "selected shell command");
-    command.encode_wide().chain(std::iter::once(0)).collect()
+    tracing::info!(program = ?program, args = ?command.args, "selected shell command");
+
+    let mut encoded = Vec::new();
+    append_windows_argument(&mut encoded, &program.encode_wide().collect::<Vec<_>>());
+    for argument in &command.args {
+        encoded.push(b' ' as u16);
+        append_windows_argument(&mut encoded, &argument.encode_utf16().collect::<Vec<_>>());
+    }
+    encoded.push(0);
+    encoded
+}
+
+/// Quotes one argv element according to the Windows CommandLineToArgvW rules.
+fn append_windows_argument(output: &mut Vec<u16>, argument: &[u16]) {
+    output.push(b'"' as u16);
+    let mut backslashes = 0;
+    for &unit in argument {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+        } else if unit == b'"' as u16 {
+            output.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            output.push(unit);
+            backslashes = 0;
+        } else {
+            output.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+            output.push(unit);
+            backslashes = 0;
+        }
+    }
+    output.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    output.push(b'"' as u16);
 }
 
 /// Builds a case-insensitively sorted, double-null-terminated UTF-16LE environment block
@@ -645,7 +706,8 @@ mod tests {
 
     #[test]
     fn rejects_empty_size() {
-        let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }) {
+        let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }, &ShellCommand::default())
+        {
             Ok(_) => panic!("zero-row pty size unexpectedly spawned a shell"),
             Err(error) => error,
         };
@@ -656,8 +718,80 @@ mod tests {
     }
 
     #[test]
+    fn missing_program_uses_comspec_and_preserves_args() {
+        let command = ShellCommand::new(None, vec!["-NoLogo".to_owned()]);
+        let encoded = shell_command_line_with_comspec(
+            &command,
+            Some(OsString::from(r"C:\Program Files\cmd.exe")),
+        );
+        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+
+        assert_eq!(line, "\"C:\\Program Files\\cmd.exe\" \"-NoLogo\"");
+    }
+
+    #[test]
+    fn missing_program_and_comspec_use_cmd_exe() {
+        let encoded = shell_command_line_with_comspec(&ShellCommand::default(), None);
+        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+
+        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\"");
+    }
+
+    #[test]
+    fn whitespace_only_comspec_uses_cmd_exe_fallback() {
+        let encoded =
+            shell_command_line_with_comspec(&ShellCommand::default(), Some(OsString::from("   ")));
+        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+
+        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\"");
+    }
+
+    #[test]
+    fn configured_program_and_args_form_a_quoted_windows_command_line() {
+        let command = ShellCommand::new(
+            Some(r"C:\Program Files\PowerShell\pwsh.exe".to_owned()),
+            vec![
+                "-NoLogo".to_owned(),
+                "a b".to_owned(),
+                r#"say \"hi\""#.to_owned(),
+            ],
+        );
+
+        let encoded = shell_command_line(&command);
+        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+
+        assert_eq!(
+            line,
+            "\"C:\\Program Files\\PowerShell\\pwsh.exe\" \"-NoLogo\" \"a b\" \"say \\\\\\\"hi\\\\\\\"\""
+        );
+    }
+
+    #[test]
+    fn trailing_backslashes_are_doubled_before_closing_quote() {
+        let mut encoded = Vec::new();
+        append_windows_argument(
+            &mut encoded,
+            &r"C:\path\".encode_utf16().collect::<Vec<_>>(),
+        );
+        assert_eq!(String::from_utf16(&encoded).unwrap(), "\"C:\\path\\\\\"");
+    }
+
+    #[test]
+    fn unavailable_configured_shell_retries_default_shell() {
+        let command = ShellCommand::new(
+            Some("harbor-definitely-missing-shell.exe".to_owned()),
+            vec!["--invalid-for-default-shell".to_owned()],
+        );
+
+        if let Err(error) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &command) {
+            panic!("configured-shell fallback failed: {error:#}");
+        }
+    }
+
+    #[test]
     fn shell_prompt_output_is_readable_through_pseudoconsole() {
-        let (_pty, mut reader) = Pty::spawn_shell(PtySize { rows: 24, cols: 80 }).unwrap();
+        let (_pty, mut reader) =
+            Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &ShellCommand::default()).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
 

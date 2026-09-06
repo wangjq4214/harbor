@@ -3,7 +3,7 @@ use crate::render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection, Text,
 };
 use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
-use harbor_types::{TerminalSnapshot, UpdateDamage};
+use harbor_types::{Palette, TerminalSnapshot, UpdateDamage};
 use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
@@ -24,6 +24,7 @@ impl TerminalRenderPipeline {
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
         tint: [f32; 4],
+        palette: Palette,
     ) -> anyhow::Result<Self> {
         let (surface_w, surface_h) = gpu.surface_size();
         let viewport = RenderViewport::with_surface(
@@ -32,11 +33,18 @@ impl TerminalRenderPipeline {
             (surface_w, surface_h),
             (surface_w, surface_h),
         );
-        let background = Background::new(gpu, snap, metrics.cell_width, metrics.line_height, tint);
-        let text = Text::new(gpu, font_book, metrics, snap, &viewport)?;
-        let decoration = Decoration::new(gpu, snap, metrics);
-        let selection = Selection::new(gpu);
-        let cursor = Cursor::new(gpu, metrics);
+        let background = Background::new(
+            gpu,
+            snap,
+            metrics.cell_width,
+            metrics.line_height,
+            tint,
+            palette,
+        );
+        let text = Text::new(gpu, font_book, metrics, snap, &viewport, palette)?;
+        let decoration = Decoration::new(gpu, snap, metrics, palette);
+        let selection = Selection::new(gpu, palette.selection);
+        let cursor = Cursor::new(gpu, metrics, palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
