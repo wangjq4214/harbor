@@ -3,13 +3,18 @@
     windows_subsystem = "windows"
 )]
 
-mod app;
+mod backdrop;
+mod chrome;
+mod dialog;
+mod effects;
 mod event;
-mod terminal_widget_bridge;
+mod shell;
+mod telemetry;
+mod terminal_view;
 
 use anyhow::{Context as _, Result};
-use app::App;
 use event::AppEvent;
+use shell::Shell;
 use std::path::PathBuf;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
@@ -30,8 +35,8 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .context("create event loop")?;
-    let mut app = App::new(event_loop.create_proxy());
-    event_loop.run_app(&mut app).context("run event loop")?;
+    let mut shell = Shell::new(event_loop.create_proxy());
+    event_loop.run_app(&mut shell).context("run event loop")?;
 
     Ok(())
 }
