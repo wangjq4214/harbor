@@ -1,12 +1,23 @@
 pub mod align;
 pub mod button;
 pub mod column;
+pub mod constrained_box;
 pub mod custom_paint;
 pub mod decorated_box;
+pub mod flex;
+pub mod flexible;
 pub mod focus_scope;
 pub mod padding;
 pub mod preview_pane;
 pub mod row;
+pub mod separator;
 pub mod sized_box;
 pub mod stack;
 pub mod text_label;
+
+pub use column::Column;
+pub use constrained_box::ConstrainedBox;
+pub use flex::{Axis, Flex, MainAxisAlignment};
+pub use flexible::{Expanded, Flexible, Spacer};
+pub use row::Row;
+pub use separator::Separator;

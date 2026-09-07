@@ -157,6 +157,21 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
+    #[cfg(test)]
+    pub(crate) fn resource_handles(
+        &self,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroup, [wgpu::Buffer; 3]) {
+        (
+            self.pipeline.clone(),
+            self.bind_group.clone(),
+            [
+                self.vertex_buffer.clone(),
+                self.index_buffer.clone(),
+                self.instance_buffer.clone(),
+            ],
+        )
+    }
+
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,

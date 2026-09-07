@@ -1,4 +1,7 @@
-use crate::layout::{Alignment, BoxConstraints, Point, Rect, Size};
+use super::flex::{Axis, FlexLayout, MainAxisAlignment, finite_fill};
+use crate::layout::{
+    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, Key, View};
@@ -8,6 +11,8 @@ use crate::view::{AnyView, BuildCx, Component, Key, View};
 pub struct Column {
     pub cross_axis_alignment: Alignment,
     pub background: Option<Color>,
+    pub main_axis_alignment: MainAxisAlignment,
+    gap: f32,
     children: Vec<View>,
 }
 
@@ -22,6 +27,8 @@ impl Column {
         Column {
             cross_axis_alignment: Alignment::Start,
             background: None,
+            main_axis_alignment: MainAxisAlignment::Start,
+            gap: 0.0,
             children: vec![],
         }
     }
@@ -29,6 +36,26 @@ impl Column {
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
         self.cross_axis_alignment = alignment;
         self
+    }
+
+    /// Sets a finite, nonnegative minimum gap in logical pixels.
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
+        self.main_axis_alignment = alignment;
+        self
+    }
+
+    fn engine(&self) -> FlexLayout {
+        FlexLayout {
+            axis: Axis::Vertical,
+            gap: self.gap,
+            main_axis_alignment: self.main_axis_alignment,
+            cross_axis_alignment: self.cross_axis_alignment,
+        }
     }
 
     pub fn background(mut self, color: Color) -> Self {
@@ -58,9 +85,20 @@ impl AnyView for Column {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // Column fills available width; height is sum of children but unknown
-        // at intrinsic-time (children are laid out bottom-up by layout_fiber).
-        constraints.constrain(Size::new(constraints.max.width, constraints.max.height))
+        finite_fill(constraints)
+    }
+
+    fn accepts_flex_children(&self) -> bool {
+        true
+    }
+
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &mut dyn ChildMeasurer,
+        _metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        self.engine().layout(constraints, children)
     }
 
     fn layout_children(
@@ -69,20 +107,7 @@ impl AnyView for Column {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let max_width: f32 = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
-        let total_height: f32 = child_sizes.iter().map(|s| s.height).sum();
-        let own = constraints.constrain(Size::new(max_width, total_height));
-        let mut y = 0.0;
-        let positions: Vec<Point> = child_sizes
-            .iter()
-            .map(|s| {
-                let x = self.cross_axis_alignment.position(s.width, own.width);
-                let pos = Point::new(x, y);
-                y += s.height;
-                pos
-            })
-            .collect();
-        (own, positions)
+        self.engine().layout_children(constraints, child_sizes)
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {

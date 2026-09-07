@@ -150,12 +150,7 @@ impl Runtime {
             return;
         }
         self.text_metrics = text_metrics;
-        if let Some(root_id) = self.root_id {
-            if let Some(fiber) = self.arena.get_mut(root_id) {
-                fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
-            }
-            mark_dirty_for(self.runtime_id, root_id);
-        }
+        self.invalidate_layout();
     }
 
     /// Sets the root component and performs the initial build + layout.
@@ -195,23 +190,47 @@ impl Runtime {
     /// turns, so hosts can wait until the next deadline without polling.
     pub fn update(&mut self, now: Instant) -> RuntimeEffects {
         let mut effects = std::mem::take(&mut self.pending_effects);
-        let dirty = take_dirty(self.runtime_id);
+        effects.merge(self.flush_pending_work());
+        effects.merge(self.collect_external_schedule(now));
+        effects
+    }
 
-        if !dirty.is_empty()
-            && let Some(root_id) = self.root_id
+    /// Layout invalidation is separate from the signal/external build queue:
+    /// resizing or replacing metrics must not evaluate Components or registrations.
+    fn invalidate_layout(&mut self) {
+        if let Some(root_id) = self.root_id
+            && let Some(fiber) = self.arena.get_mut(root_id)
         {
+            fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
+        }
+    }
+
+    /// Commits geometry before either painting or routing subsequent input.
+    /// Schedule providers are deliberately only polled by `update`, not here.
+    fn flush_pending_work(&mut self) -> RuntimeEffects {
+        let dirty = take_dirty(self.runtime_id);
+        let Some(root_id) = self.root_id else {
+            return RuntimeEffects::default();
+        };
+        if !dirty.is_empty() {
+            // Signals only enqueue fibers (without setting flags). Rebuild the
+            // full root conservatively: changed content/factors affect siblings.
             let old_children = self
                 .arena
                 .get(root_id)
-                .map(|f| f.children.clone())
+                .map(|fiber| fiber.children.clone())
                 .unwrap_or_default();
-
             self.rebuild_root(root_id, &old_children);
-            effects.merge(RuntimeEffects::request_redraw());
+        } else if self
+            .arena
+            .get(root_id)
+            .is_some_and(|fiber| fiber.flags.contains(DirtyFlags::LAYOUT_DIRTY))
+        {
+            self.layout_and_paint(root_id);
+        } else {
+            return RuntimeEffects::default();
         }
-
-        effects.merge(self.collect_external_schedule(now));
-        effects
+        RuntimeEffects::request_redraw()
     }
 
     /// Queries registered external schedule providers and folds their demands.
@@ -302,7 +321,13 @@ impl Runtime {
         }
         self.install_externals(&mut cx.externals);
 
-        // Layout
+        self.layout_and_paint(root_id);
+
+        // Clean input state
+        self.events.clear_dead_targets(&self.arena);
+    }
+
+    fn layout_and_paint(&mut self, root_id: FiberId) {
         let viewport_size = self
             .current_viewport
             .as_ref()
@@ -316,15 +341,18 @@ impl Runtime {
             Point::ZERO,
             &self.text_metrics,
         );
-        if let Some(fiber) = self.arena.get_mut(root_id) {
-            fiber.flags.remove(DirtyFlags::LAYOUT_DIRTY);
-        }
-
-        // Paint
         self.run_paint_pass();
 
-        // Clean input state
-        self.events.clear_dead_targets(&self.arena);
+        // The layout transaction retains prior/fallback geometry on failure.
+        // Consume this attempt even then: only a new invalidation may retry it.
+        // A root pass completes work for descendants as well as the root.
+        let mut pending = vec![root_id];
+        while let Some(id) = pending.pop() {
+            if let Some(fiber) = self.arena.get_mut(id) {
+                fiber.flags = DirtyFlags::NONE;
+                pending.extend_from_slice(&fiber.children);
+            }
+        }
     }
 
     /// Replaces Runtime-owned external registrations from one rebuild bag.
@@ -406,12 +434,7 @@ impl Runtime {
             return false;
         }
         self.current_viewport = Some(viewport);
-        if let Some(root_id) = self.root_id {
-            if let Some(fiber) = self.arena.get_mut(root_id) {
-                fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
-            }
-            mark_dirty_for(self.runtime_id, root_id);
-        }
+        self.invalidate_layout();
         true
     }
 
@@ -420,8 +443,11 @@ impl Runtime {
     /// Dispatches a UI event into the widget tree.
     ///
     /// Routes the event through capture → target → bubble phases,
-    /// then applies any commands issued by handlers.
+    /// then applies any commands issued by handlers. Returns only this event's
+    /// effects; prior work committed for routing is retained for the next update.
     pub fn dispatch(&mut self, event: UiEvent) -> RuntimeEffects {
+        let pending = self.flush_pending_work();
+        self.pending_effects.merge(pending);
         let _scope = RuntimeScope::enter(self.runtime_id);
         let needs_redraw = self.events.route_event(&self.arena, self.root_id, &event);
         if needs_redraw && let Some(root_id) = self.root_id {
@@ -644,6 +670,241 @@ mod tests {
 
     fn now() -> Instant {
         Instant::now()
+    }
+
+    #[test]
+    fn dispatch_does_not_attribute_pending_focus_redraw_to_consumed_keyboard_event() {
+        use crate::input::event_ctx::EventHandled;
+
+        let deliveries = Arc::new(AtomicU64::new(0));
+        let delivered = deliveries.clone();
+        let mut rt = Runtime::new();
+        rt.set_root(CustomPaint::new(42).on_input(Arc::new(move |event, _ctx| {
+            if matches!(event, UiEvent::Keyboard(_)) {
+                delivered.fetch_add(1, Ordering::SeqCst);
+            }
+            // Like the terminal input gate: consume without requesting paint.
+            EventHandled::Handled
+        })));
+        assert!(rt.update(now()).request_redraw);
+        assert!(rt.focus_first_focusable());
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::PageUp,
+            modifiers: Modifiers::default(),
+        });
+
+        assert_eq!(rt.dispatch(event.clone()), RuntimeEffects::default());
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+        assert!(rt.pending_effects.request_redraw);
+        assert!(rt.update(now()).request_redraw);
+        assert!(!rt.update(now()).request_redraw);
+        assert_eq!(rt.dispatch(event), RuntimeEffects::default());
+        assert!(!rt.update(now()).request_redraw);
+    }
+
+    #[test]
+    fn consumed_resize_delta_only_modifies_content_and_preserves_registrations() {
+        use crate::layout::Alignment;
+        use crate::scene::primitive::{Color, Primitive};
+        use crate::view::View;
+        use crate::{ConstrainedBox, Expanded, Row, Separator};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct RegisteredRoot(Rc<Cell<usize>>);
+        impl Component for RegisteredRoot {
+            fn build(&self, cx: &mut BuildCx) -> View {
+                self.0.set(self.0.get() + 1);
+                // Fresh registrations on each build make identity checks detect
+                // even a rebuild which otherwise emits identical scene content.
+                let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+                let schedule: Arc<ExternalScheduleFn> =
+                    Arc::new(|_, _| ExternalScheduleDemand::empty());
+                Row::new()
+                    .cross_axis_alignment(Alignment::Stretch)
+                    .child(
+                        ConstrainedBox::new()
+                            .min_width(200.0)
+                            .max_width(200.0)
+                            .child(SizedBox::new(Size::new(200.0, 80.0)).color(Color::RED)),
+                    )
+                    .child(Separator::vertical().color(Color::WHITE))
+                    .child(
+                        Expanded::new()
+                            .child(CustomPaint::new(42).handler(handler).schedule(schedule)),
+                    )
+                    .build(cx)
+            }
+        }
+
+        let builds = Rc::new(Cell::new(0));
+        let mut rt = Runtime::new();
+        rt.set_viewport(Viewport::new(1000, 80, 1.0));
+        rt.set_root(RegisteredRoot(builds.clone()));
+        rt.update(now());
+        let initial = rt.pending_delta.take().unwrap();
+        assert_eq!(initial.added.len(), 3);
+        let initial_ids = initial.added.iter().map(|item| item.id).collect::<Vec<_>>();
+        let external_id = initial
+            .added
+            .iter()
+            .find_map(|item| {
+                matches!(item.primitive, Primitive::External { draw: 42, .. }).then_some(item.id)
+            })
+            .unwrap();
+        let draw = rt.external_draws[&42].clone();
+        let schedule = rt.external_schedules[&42].clone();
+
+        rt.set_viewport(Viewport::new(1200, 80, 1.0));
+        let effects = rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(1199.0, 40.0),
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        )));
+        assert_eq!(effects, RuntimeEffects::default());
+        assert!(rt.pending_effects.request_redraw);
+        let resized = rt.pending_delta.take().unwrap();
+        assert!(resized.added.is_empty());
+        assert!(resized.removed.is_empty());
+        assert_eq!(resized.modified.len(), 1);
+        assert_eq!(resized.modified[0].id, external_id);
+        assert!(matches!(resized.modified[0].primitive,
+            Primitive::External { rect, draw: 42 } if rect.size() == Size::new(999.0, 80.0)));
+        assert_eq!(
+            rt.scene_graph
+                .items()
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            initial_ids
+        );
+        assert_eq!(builds.get(), 1);
+        assert_eq!(rt.external_draws.len(), 1);
+        assert_eq!(rt.external_schedules.len(), 1);
+        assert!(Arc::ptr_eq(&draw, &rt.external_draws[&42]));
+        assert!(Arc::ptr_eq(&schedule, &rt.external_schedules[&42]));
+
+        assert!(!rt.set_viewport(Viewport::new(1200, 80, 1.0)));
+        assert!(rt.update(now()).request_redraw);
+        assert!(!rt.update(now()).request_redraw);
+        assert!(rt.pending_delta.is_none());
+        assert!(rt.set_viewport(Viewport::new(2400, 160, 2.0)));
+        assert!(rt.update(now()).request_redraw);
+        assert!(rt.pending_delta.take().unwrap().is_empty());
+        assert_eq!(builds.get(), 1);
+        assert!(Arc::ptr_eq(&draw, &rt.external_draws[&42]));
+        assert!(Arc::ptr_eq(&schedule, &rt.external_schedules[&42]));
+    }
+
+    #[test]
+    fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
+        use crate::layout::Rect;
+        use crate::view::{AnyView, Key, View};
+        use crate::widgets::padding::Padding;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct FragileLeaf {
+            fail: Rc<Cell<bool>>,
+            measurements: Rc<Cell<usize>>,
+        }
+        impl Component for FragileLeaf {
+            fn build(&self, _cx: &mut BuildCx) -> View {
+                View::new(self.clone(), vec![], None)
+            }
+        }
+        impl AnyView for FragileLeaf {
+            fn key(&self) -> Option<&Key> {
+                None
+            }
+            fn widget_type(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Self>()
+            }
+            fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
+                self.measurements.set(self.measurements.get() + 1);
+                if self.fail.get() {
+                    Size::new(f32::NAN, 10.0)
+                } else {
+                    constraints.constrain(Size::new(20.0, 10.0))
+                }
+            }
+        }
+        fn snapshot(rt: &Runtime) -> Vec<(FiberId, Rect)> {
+            let mut pending = vec![rt.root_id.unwrap()];
+            let mut rects = vec![];
+            while let Some(id) = pending.pop() {
+                let fiber = rt.arena.get(id).unwrap();
+                assert!(fiber.flags.is_empty(), "unfinished flags on {id:?}");
+                rects.push((id, fiber.layout_rect.unwrap()));
+                pending.extend_from_slice(&fiber.children);
+            }
+            rects
+        }
+
+        let fail = Rc::new(Cell::new(false));
+        let measurements = Rc::new(Cell::new(0));
+        let mut rt = Runtime::new();
+        rt.set_root(Padding::all(2.0).child(FragileLeaf {
+            fail: fail.clone(),
+            measurements: measurements.clone(),
+        }));
+        rt.update(now());
+        let committed = snapshot(&rt);
+        let child = committed[1].0;
+        fail.set(true);
+        rt.arena
+            .get_mut(child)
+            .unwrap()
+            .flags
+            .insert(DirtyFlags::LAYOUT_DIRTY);
+        rt.arena
+            .get_mut(child)
+            .unwrap()
+            .flags
+            .insert(DirtyFlags::PAINT_DIRTY);
+        rt.arena
+            .get_mut(child)
+            .unwrap()
+            .flags
+            .insert(DirtyFlags::HIT_TEST_DIRTY);
+        rt.set_viewport(Viewport::new(100, 100, 1.0));
+        assert!(rt.update(now()).request_redraw);
+        assert_eq!(snapshot(&rt), committed);
+        assert!(
+            rt.arena
+                .get(rt.root_id.unwrap())
+                .unwrap()
+                .layout_error()
+                .is_some()
+        );
+        let failed_measurements = measurements.get();
+        assert!(!rt.update(now()).request_redraw);
+        rt.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::ZERO,
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        )));
+        assert_eq!(measurements.get(), failed_measurements);
+
+        fail.set(false);
+        rt.set_text_metrics(TextMetrics {
+            line_height: 21.0,
+            ..DEFAULT_TEXT_METRICS
+        });
+        assert!(rt.update(now()).request_redraw);
+        assert_eq!(snapshot(&rt), committed);
+        assert!(
+            rt.arena
+                .get(rt.root_id.unwrap())
+                .unwrap()
+                .layout_error()
+                .is_none()
+        );
+        assert_eq!(measurements.get(), failed_measurements + 1);
+        assert!(!rt.update(now()).request_redraw);
     }
 
     #[test]

@@ -21,7 +21,12 @@ pub mod signal;
 pub mod text;
 pub mod view;
 pub mod widgets;
+pub use layout::{Alignment, FlexFit};
 pub use widgets::decorated_box::DecoratedBox;
+pub use widgets::{
+    Axis, Column, ConstrainedBox, Expanded, Flex, Flexible, MainAxisAlignment, Row, Separator,
+    Spacer,
+};
 
 #[cfg(feature = "winit")]
 pub mod winit;

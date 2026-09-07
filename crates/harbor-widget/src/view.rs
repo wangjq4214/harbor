@@ -1,7 +1,9 @@
 use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{
+    BoxConstraints, ChildMeasurer, LayoutError, ParentData, ParentLayout, Point, Rect, Size,
+};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
@@ -151,6 +153,36 @@ pub(crate) trait AnyView: 'static {
     /// Computes the intrinsic size given layout constraints and Runtime-owned
     /// text metrics.
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+
+    /// Metadata for the immediate layout parent; it never tunnels through views.
+    fn parent_data(&self) -> ParentData {
+        ParentData::default()
+    }
+
+    /// Whether this parent consumes flex metadata on its immediate children.
+    fn accepts_flex_children(&self) -> bool {
+        false
+    }
+
+    /// Measures and places immediate children without access to retained geometry.
+    /// The default adapter preserves the legacy single-constraint layout protocol.
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &mut dyn ChildMeasurer,
+        metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        let child_constraints = self.child_constraints(constraints);
+        let child_sizes = (0..children.len())
+            .map(|index| children.measure(index, child_constraints))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (size, origins) = self.layout_children(constraints, &child_sizes, metrics);
+        Ok(ParentLayout {
+            size,
+            placements: origins.into_iter().enumerate().collect(),
+            diagnostics: Vec::new(),
+        })
+    }
 
     /// Returns the constraints this view imposes on each child. Containers may
     /// override this to reserve space for their own layout; the default preserves

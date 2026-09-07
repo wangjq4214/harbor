@@ -71,9 +71,11 @@ Project domain concepts and terminology.
   - produces Fiber Tree
 
 ### BoxConstraints
-- **Definition:** A layout primitive expressing the minimum and maximum size a parent imposes on a child, driving the single-pass layout algorithm.
+- **Definition:** A layout primitive expressing parent-imposed minimum and maximum child size, consumed by bounded parent-directed measurement followed by an atomic final-geometry commit. Positive infinity denotes an unbounded maximum, never a measured extent.
 - **Relationships:**
-  - consumed by RenderNode layout
+  - consumed by Fiber layout through indexed child measurement
+  - preserves legacy min-wins constrain semantics; ConstrainedBox separately enforces local bounds within the authoritative parent interval
+  - see [Parent-Directed Flex Layout](../docs/flex-layout.md) for allocation, overflow and measurement limits
 
 ### Generation Arena
 - **Definition:** A slotmap-based array where each slot has a generation counter; stale references (FiberId) are detected by generation mismatch on access.

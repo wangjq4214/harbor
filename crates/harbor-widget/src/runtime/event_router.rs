@@ -214,26 +214,29 @@ impl EventRouter {
         let fiber = arena.get(fiber_id)?;
         let rect = fiber.layout_rect?;
 
-        if !rect.contains(point) {
-            return None;
-        }
-
+        // Only explicit ancestor clips limit descendants. A parent's allocation
+        // is not an implicit clip: an overflowing child can still be visible.
         if fiber
             .view
             .as_ref()
             .and_then(|view| view.descendant_clip(rect))
             .is_some_and(|clip| clip.behavior() != ClipBehavior::None && !clip.contains(point))
         {
+            // Preserve explicit-clip routing: a clipped corner must also let
+            // siblings behind this wrapper receive input, not hit the wrapper.
             return None;
         }
-
-        let children = fiber.children.clone();
-        for &child_id in children.iter().rev() {
+        for &child_id in fiber.children.iter().rev() {
             if let Some(hit) = Self::hit_test_walk(arena, child_id, point) {
                 return Some(hit);
             }
         }
 
+        // Only the widget's own hit is bounded by its allocation, including
+        // half-open edges and the zero-area rule.
+        if !rect.contains(point) {
+            return None;
+        }
         let local_point = Point::new(point.x - rect.min.x, point.y - rect.min.y);
         let local_rect = Rect::from_min_size(Point::ZERO, rect.size());
         if let Some(ref view) = fiber.view

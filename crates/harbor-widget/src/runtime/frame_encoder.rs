@@ -339,6 +339,10 @@ impl FrameEncoder {
 }
 
 #[cfg(test)]
+#[path = "layout_resources_tests.rs"]
+mod layout_resources_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::decoration::BorderRadius;

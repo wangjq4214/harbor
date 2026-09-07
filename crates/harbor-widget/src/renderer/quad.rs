@@ -236,6 +236,20 @@ pub struct QuadRenderer {
 }
 
 impl QuadRenderer {
+    /// Test-only handle snapshots prove retention, not just stable scene IDs.
+    #[cfg(test)]
+    pub(crate) fn resource_handles(&self) -> ([wgpu::RenderPipeline; 2], [wgpu::Buffer; 4]) {
+        (
+            [self.pipeline.clone(), self.clip_mask_pipeline.clone()],
+            [
+                self.vertex_buffer.clone(),
+                self.index_buffer.clone(),
+                self.instance_buffer.clone(),
+                self.clip_mask_instance_buffer.clone(),
+            ],
+        )
+    }
+
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let vertices: [[f32; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
         let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];

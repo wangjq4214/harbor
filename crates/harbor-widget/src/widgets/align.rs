@@ -47,8 +47,8 @@ impl AnyView for Align {
     }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // Align fills available space
-        constraints.max
+        // Fill bounded axes; an unbounded axis has no space to fill.
+        constraints.fill_bounded(Size::ZERO)
     }
 
     fn layout_children(
@@ -57,7 +57,8 @@ impl AnyView for Align {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = constraints.constrain(constraints.max);
+        let natural = child_sizes.first().copied().unwrap_or(Size::ZERO);
+        let own = constraints.fill_bounded(natural);
         if child_sizes.is_empty() {
             return (own, vec![]);
         }
@@ -83,6 +84,34 @@ impl AnyView for Align {
 mod tests {
     use super::*;
     use crate::widgets::sized_box::SizedBox;
+
+    #[test]
+    fn should_use_natural_extent_on_unbounded_axes() {
+        let align = Align::new(Alignment::Center);
+        let metrics = &crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints {
+            min: Size::new(10.0, 5.0),
+            max: Size::new(f32::INFINITY, 80.0),
+        };
+        assert_eq!(
+            align.intrinsic_size(constraints, metrics),
+            Size::new(10.0, 80.0)
+        );
+        let (size, positions) =
+            align.layout_children(constraints, &[Size::new(30.0, 20.0)], metrics);
+        assert_eq!(size, Size::new(30.0, 80.0));
+        assert_eq!(positions, vec![Point::new(0.0, 30.0)]);
+        assert_eq!(
+            align
+                .layout_children(
+                    BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+                    &[],
+                    metrics
+                )
+                .0,
+            Size::ZERO,
+        );
+    }
 
     #[test]
     fn align_center() {

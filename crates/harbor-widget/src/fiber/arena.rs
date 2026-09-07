@@ -1,4 +1,4 @@
-use crate::layout::Rect;
+use crate::layout::{LayoutDiagnostic, LayoutError, Rect};
 use crate::signal::Hook;
 use crate::view::{AnyView, Key};
 use slotmap::SlotMap;
@@ -69,6 +69,8 @@ pub struct Fiber {
     pub(crate) parent: Option<FiberId>,
     pub(crate) flags: DirtyFlags,
     pub(crate) layout_rect: Option<Rect>,
+    pub(crate) layout_diagnostics: Vec<LayoutDiagnostic>,
+    pub(crate) layout_error: Option<LayoutError>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
     /// Primitive-slot keys keep filtered shadows from renumbering later items.
@@ -92,6 +94,8 @@ impl Fiber {
             parent: None,
             flags: DirtyFlags::NONE,
             layout_rect: None,
+            layout_diagnostics: Vec::new(),
+            layout_error: None,
             view,
             scene_item_slots: Vec::new(),
             after_scene_item_slots: Vec::new(),
@@ -106,6 +110,16 @@ impl Fiber {
     /// Layout rectangle in tree coordinates, if laid out.
     pub fn layout_rect(&self) -> Option<Rect> {
         self.layout_rect
+    }
+
+    /// Diagnostics belonging to the last committed layout, not failed trials.
+    pub fn layout_diagnostics(&self) -> &[LayoutDiagnostic] {
+        &self.layout_diagnostics
+    }
+
+    /// The most recent failed layout attempt, cleared on a successful commit.
+    pub fn layout_error(&self) -> Option<LayoutError> {
+        self.layout_error
     }
 
     /// Child fiber ids in paint order.

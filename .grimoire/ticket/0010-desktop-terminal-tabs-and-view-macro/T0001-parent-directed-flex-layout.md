@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec: 0010-desktop-terminal-tabs-and-view-macro](../../spec/0010-desktop-terminal-tabs-and-view-macro.md)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 

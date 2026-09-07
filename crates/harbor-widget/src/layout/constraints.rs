@@ -40,6 +40,49 @@ impl BoxConstraints {
         )
     }
 
+    /// Fills bounded axes, using finite natural content (at least the minimum)
+    /// on unbounded axes. Callers supply validated constraints and natural size.
+    pub(crate) fn fill_bounded(&self, natural: Size) -> Size {
+        let axis = |min: f32, max: f32, natural: f32| {
+            if max.is_finite() {
+                max
+            } else {
+                natural.max(min)
+            }
+        };
+        Size::new(
+            axis(self.min.width, self.max.width, natural.width),
+            axis(self.min.height, self.max.height, natural.height),
+        )
+    }
+
+    /// Validates layout bounds. Only maximum bounds may be positive infinity.
+    pub fn validate(&self) -> Result<(), super::LayoutError> {
+        let valid_axis =
+            |min: f32, max: f32| min.is_finite() && min >= 0.0 && !max.is_nan() && max >= min;
+        if valid_axis(self.min.width, self.max.width)
+            && valid_axis(self.min.height, self.max.height)
+        {
+            Ok(())
+        } else {
+            Err(super::LayoutError::InvalidConstraints)
+        }
+    }
+
+    /// Enforces these requested bounds within the authoritative parent interval.
+    ///
+    /// Unlike [`Self::constrain`], a local minimum never overrides the parent's
+    /// maximum. Both intervals are validated before clamping; contradictory
+    /// local bounds are errors rather than silently repaired.
+    pub fn enforce(&self, parent: Self) -> Result<Self, super::LayoutError> {
+        self.validate()?;
+        parent.validate()?;
+        Ok(Self {
+            min: parent.constrain(self.min),
+            max: parent.constrain(self.max),
+        })
+    }
+
     /// Returns constraints with `insets` removed from each axis, saturating at zero.
     pub fn deflate(&self, insets: Size) -> Self {
         let deflate_axis = |value: f32, inset: f32| (value - inset).max(0.0);
@@ -58,6 +101,80 @@ impl BoxConstraints {
     /// Returns true if min == max (a single valid size).
     pub fn is_tight(&self) -> bool {
         self.min == self.max
+    }
+}
+
+#[cfg(test)]
+mod enforcement_tests {
+    use super::*;
+    use crate::layout::LayoutError;
+
+    #[test]
+    fn fill_bounded_uses_natural_extent_and_minimum_only_on_unbounded_axes() {
+        let bounds = BoxConstraints {
+            min: Size::new(5.0, 10.0),
+            max: Size::new(100.0, f32::INFINITY),
+        };
+        assert_eq!(
+            bounds.fill_bounded(Size::new(200.0, 7.0)),
+            Size::new(100.0, 10.0)
+        );
+        assert_eq!(
+            bounds.fill_bounded(Size::new(0.0, 20.0)),
+            Size::new(100.0, 20.0)
+        );
+        let bounds = BoxConstraints {
+            min: Size::new(10.0, 5.0),
+            max: Size::new(f32::INFINITY, 100.0),
+        };
+        assert_eq!(
+            bounds.fill_bounded(Size::new(20.0, 200.0)),
+            Size::new(20.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn parent_bounds_win_on_both_sides_without_changing_legacy_constrain() {
+        let parent = BoxConstraints {
+            min: Size::new(20.0, 30.0),
+            max: Size::new(100.0, 90.0),
+        };
+        assert_eq!(
+            BoxConstraints::tight(Size::new(200.0, 5.0))
+                .enforce(parent)
+                .unwrap(),
+            BoxConstraints::tight(Size::new(100.0, 30.0))
+        );
+        let local = BoxConstraints {
+            min: Size::new(200.0, 0.0),
+            max: Size::new(100.0, 90.0),
+        };
+        assert_eq!(local.constrain(Size::ZERO).width, 200.0);
+        assert_eq!(local.enforce(parent), Err(LayoutError::InvalidConstraints));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_bounds_but_allows_unbounded_maxima() {
+        for value in [f32::NAN, -1.0, f32::NEG_INFINITY, f32::INFINITY] {
+            let bounds = BoxConstraints {
+                min: Size::new(value, 0.0),
+                max: Size::new(f32::INFINITY, 10.0),
+            };
+            assert_eq!(bounds.validate(), Err(LayoutError::InvalidConstraints));
+        }
+        for value in [f32::NAN, -1.0, f32::NEG_INFINITY] {
+            let bounds = BoxConstraints::loose(Size::new(10.0, value));
+            assert_eq!(bounds.validate(), Err(LayoutError::InvalidConstraints));
+        }
+        assert_eq!(
+            BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)).validate(),
+            Ok(())
+        );
+        let parent = BoxConstraints::tight(Size::new(0.0, 0.0));
+        assert_eq!(
+            BoxConstraints::tight(Size::new(200.0, 200.0)).enforce(parent),
+            Ok(parent)
+        );
     }
 }
 

@@ -59,7 +59,7 @@ impl AnyView for FocusScope {
         let child_size = if self.children.is_empty() {
             Size::ZERO
         } else {
-            constraints.max
+            constraints.fill_bounded(Size::ZERO)
         };
         constraints.constrain(child_size)
     }
@@ -70,7 +70,10 @@ impl AnyView for FocusScope {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = constraints.constrain(Size::new(constraints.max.width, constraints.max.height));
+        let natural = child_sizes.iter().fold(Size::ZERO, |size, child| {
+            Size::new(size.width.max(child.width), size.height.max(child.height))
+        });
+        let own = constraints.fill_bounded(natural);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
@@ -98,6 +101,32 @@ mod tests {
     use crate::input::event::Modifiers;
 
     use super::*;
+
+    #[test]
+    fn should_use_finite_child_extent_under_unbounded_constraints() {
+        let scope = FocusScope::new();
+        let metrics = &crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints {
+            min: Size::new(10.0, 40.0),
+            max: Size::new(f32::INFINITY, f32::INFINITY),
+        };
+        let (size, origins) = scope.layout_children(
+            constraints,
+            &[Size::new(30.0, 20.0), Size::new(20.0, 60.0)],
+            metrics,
+        );
+        assert_eq!(size, Size::new(30.0, 60.0));
+        assert_eq!(origins, vec![Point::ZERO; 2]);
+        assert_eq!(
+            scope.layout_children(constraints, &[], metrics).0,
+            constraints.min
+        );
+        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO));
+        assert_eq!(
+            with_child.intrinsic_size(constraints, metrics),
+            constraints.min
+        );
+    }
 
     #[test]
     fn focus_scope_not_modal_by_default() {
