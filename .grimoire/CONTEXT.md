@@ -685,6 +685,28 @@ Project domain concepts and terminology.
   - configures System Default Font Selection
   - configures Window Backdrop Tint
 
+
+### Terminal Tab
+- **Definition:** An application-owned terminal session identified by a stable TabId, retaining its Terminal and PTY resources independently of whether its side-rail item is active.
+- **Relationships:**
+  - contains Terminal
+  - referenced by Terminal Tab Manager
+  - communicates with Terminal Widget Bridge
+
+### Terminal Tab Manager
+- **Definition:** The Runtime Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
+- **Relationships:**
+  - contains Terminal Tab
+  - belongs to Runtime Host
+  - communicates with Harbor Widget Runtime
+
+### Widget View Macro
+- **Definition:** An internal experimental Rust-style `view!(cx, {...})` function-like procedural macro that expands ordinary widget constructor expressions and declarative child nesting into the existing Component/View build model without adding runtime semantics.
+- **Synonyms:** view! DSL
+- **Relationships:**
+  - produces View
+  - references BuildCx
+  - belongs to Harbor Widget Runtime
 ### Hex Color Setting
 - **Definition:** A TOML color string in `#RRGGBB` or `#RRGGBBAA` form, where omitted alpha means opaque and eight-digit colors preserve alpha for terminal backgrounds.
 - **Relationships:**
