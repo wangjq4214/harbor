@@ -122,8 +122,8 @@ impl DecoratedBox {
     }
 
     /// Replaces the staged child. A DecoratedBox always owns at most one child.
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.child = Some(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 
@@ -149,6 +149,27 @@ impl DecoratedBox {
 impl Component for DecoratedBox {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)
+    }
+}
+
+impl crate::WithChildren for DecoratedBox {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let mut incoming = children.into_views();
+        let received = usize::from(self.child.is_some()) + incoming.len();
+        if received > 1 {
+            return Err(crate::ChildConstructionError::too_many(
+                "DecoratedBox",
+                crate::ChildCardinality::Single,
+                received,
+            ));
+        }
+        if let Some(child) = incoming.pop() {
+            self.child = Some(child);
+        }
+        Ok(self)
     }
 }
 

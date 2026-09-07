@@ -36,6 +36,24 @@ impl Component for TextLabel {
     }
 }
 
+impl crate::WithChildren for TextLabel {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let received = children.len();
+        if received == 0 {
+            Ok(self)
+        } else {
+            Err(crate::ChildConstructionError::too_many(
+                "TextLabel",
+                crate::ChildCardinality::Leaf,
+                received,
+            ))
+        }
+    }
+}
+
 impl AnyView for TextLabel {
     fn key(&self) -> Option<&ViewKey> {
         None

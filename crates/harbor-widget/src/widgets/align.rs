@@ -25,8 +25,9 @@ impl Align {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+    /// Appends a child while preserving the existing multi-child behavior.
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.children.push(child.into_child_view());
         self
     }
 }
@@ -34,6 +35,16 @@ impl Align {
 impl Component for Align {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.children.clone(), None)
+    }
+}
+
+impl crate::WithChildren for Align {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.children.extend(children.into_views());
+        Ok(self)
     }
 }
 

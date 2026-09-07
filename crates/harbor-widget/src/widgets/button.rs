@@ -115,6 +115,24 @@ impl Component for Button {
     }
 }
 
+impl crate::WithChildren for Button {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let received = children.len();
+        if received == 0 {
+            Ok(self)
+        } else {
+            Err(crate::ChildConstructionError::too_many(
+                "Button",
+                crate::ChildCardinality::Leaf,
+                received,
+            ))
+        }
+    }
+}
+
 /// The materialized button view. Configuration is copied from [`Button`] while
 /// its visual state remains owned by the Fiber hook that built it.
 #[derive(Clone)]

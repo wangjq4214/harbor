@@ -1,3 +1,4 @@
+use super::reconcile::ReconcileDiagnostic;
 use crate::layout::{LayoutDiagnostic, LayoutError, Rect};
 use crate::signal::Hook;
 use crate::view::{AnyView, Key};
@@ -71,6 +72,8 @@ pub struct Fiber {
     pub(crate) layout_rect: Option<Rect>,
     pub(crate) layout_diagnostics: Vec<LayoutDiagnostic>,
     pub(crate) layout_error: Option<LayoutError>,
+    /// Diagnostics from the most recent child reconciliation.
+    pub(crate) reconcile_diagnostics: Vec<ReconcileDiagnostic>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
     /// Primitive-slot keys keep filtered shadows from renumbering later items.
@@ -96,6 +99,7 @@ impl Fiber {
             layout_rect: None,
             layout_diagnostics: Vec::new(),
             layout_error: None,
+            reconcile_diagnostics: Vec::new(),
             view,
             scene_item_slots: Vec::new(),
             after_scene_item_slots: Vec::new(),
@@ -120,6 +124,11 @@ impl Fiber {
     /// The most recent failed layout attempt, cleared on a successful commit.
     pub fn layout_error(&self) -> Option<LayoutError> {
         self.layout_error
+    }
+
+    /// Diagnostics from the last child reconciliation, cleared on a clean pass.
+    pub fn reconcile_diagnostics(&self) -> &[ReconcileDiagnostic] {
+        &self.reconcile_diagnostics
     }
 
     /// Child fiber ids in paint order.

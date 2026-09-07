@@ -30,6 +30,24 @@ impl Component for SizedBox {
     }
 }
 
+impl crate::WithChildren for SizedBox {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let received = children.len();
+        if received == 0 {
+            Ok(self)
+        } else {
+            Err(crate::ChildConstructionError::too_many(
+                "SizedBox",
+                crate::ChildCardinality::Leaf,
+                received,
+            ))
+        }
+    }
+}
+
 impl AnyView for SizedBox {
     fn key(&self) -> Option<&Key> {
         None

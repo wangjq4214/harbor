@@ -42,8 +42,8 @@ impl Flexible {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.child = Some(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 }
@@ -51,6 +51,27 @@ impl Flexible {
 impl Component for Flexible {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)
+    }
+}
+
+impl crate::WithChildren for Flexible {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let mut incoming = children.into_views();
+        let received = usize::from(self.child.is_some()) + incoming.len();
+        if received > 1 {
+            return Err(crate::ChildConstructionError::too_many(
+                "Flexible",
+                crate::ChildCardinality::Single,
+                received,
+            ));
+        }
+        if let Some(child) = incoming.pop() {
+            self.child = Some(child);
+        }
+        Ok(self)
     }
 }
 
@@ -113,7 +134,7 @@ impl Expanded {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
         self.inner = self.inner.child(child);
         self
     }
@@ -126,6 +147,16 @@ impl Component for Expanded {
             self.inner.child.iter().cloned().collect(),
             None,
         )
+    }
+}
+
+impl crate::WithChildren for Expanded {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.inner = crate::WithChildren::with_children(self.inner, children)?;
+        Ok(self)
     }
 }
 
@@ -184,5 +215,23 @@ impl Spacer {
 impl Component for Spacer {
     fn build(&self, cx: &mut BuildCx) -> View {
         self.inner.build(cx)
+    }
+}
+
+impl crate::WithChildren for Spacer {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let received = children.len();
+        if received == 0 {
+            Ok(self)
+        } else {
+            Err(crate::ChildConstructionError::too_many(
+                "Spacer",
+                crate::ChildCardinality::Leaf,
+                received,
+            ))
+        }
     }
 }

@@ -53,6 +53,24 @@ impl Component for PreviewPane {
     }
 }
 
+impl crate::WithChildren for PreviewPane {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let received = children.len();
+        if received == 0 {
+            Ok(self)
+        } else {
+            Err(crate::ChildConstructionError::too_many(
+                "PreviewPane",
+                crate::ChildCardinality::Leaf,
+                received,
+            ))
+        }
+    }
+}
+
 impl AnyView for PreviewPane {
     fn key(&self) -> Option<&ViewKey> {
         None

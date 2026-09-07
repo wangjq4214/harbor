@@ -6,6 +6,7 @@ mod paint;
 mod reconcile;
 
 pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
+pub use reconcile::{ReconcileDiagnostic, ReconcileSiblingList};
 
 pub(crate) use layout::layout_fiber;
 pub(crate) use paint::paint_fiber;
@@ -501,6 +502,247 @@ mod tests {
         assert_eq!(new_children[1], old_children[1]);
         // Third should be unmounted
         assert!(!arena.contains(old_children[2]));
+    }
+
+    #[test]
+    fn reconcile_keyed_children_reuse_across_reorder() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![
+                    keyed_test_view("a", "a"),
+                    keyed_test_view("b", "b"),
+                    keyed_test_view("c", "c"),
+                ],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![
+                keyed_test_view("c", "c"),
+                keyed_test_view("a", "a"),
+                keyed_test_view("b", "b"),
+            ],
+        );
+
+        assert_eq!(
+            new_children,
+            vec![old_children[2], old_children[0], old_children[1]]
+        );
+        assert!(new_children.iter().all(|&id| arena.contains(id)));
+    }
+
+    #[test]
+    fn reconcile_keyed_middle_removal_preserves_later_fiber() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![
+                    keyed_test_view("a", "a"),
+                    keyed_test_view("b", "b"),
+                    keyed_test_view("c", "c"),
+                ],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![keyed_test_view("a", "a"), keyed_test_view("c", "c")],
+        );
+
+        assert_eq!(new_children, vec![old_children[0], old_children[2]]);
+        assert!(!arena.contains(old_children[1]));
+    }
+
+    #[test]
+    fn reconcile_mixed_keyed_and_unkeyed_children_only_reuses_unkeyed_positionally() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![
+                    test_view("unkeyed-a"),
+                    keyed_test_view("keyed-b", "b"),
+                    test_view("unkeyed-c"),
+                ],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![
+                keyed_test_view("keyed-b", "b"),
+                test_view("new-unkeyed"),
+                test_view("unkeyed-c"),
+            ],
+        );
+
+        assert_eq!(new_children[0], old_children[1]);
+        assert_ne!(new_children[1], old_children[0]);
+        assert_eq!(new_children[2], old_children[2]);
+        assert!(!arena.contains(old_children[0]));
+    }
+
+    #[test]
+    fn reconcile_duplicate_old_key_fails_closed_and_reports_diagnostic() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![
+                    keyed_test_view("first-a", "a"),
+                    keyed_test_view("second-a", "a"),
+                    keyed_test_view("b", "b"),
+                ],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![keyed_test_view("a", "a"), keyed_test_view("b", "b")],
+        );
+
+        assert_ne!(new_children[0], old_children[0]);
+        assert_ne!(new_children[0], old_children[1]);
+        assert_eq!(new_children[1], old_children[2]);
+        assert!(!arena.contains(old_children[0]));
+        assert!(!arena.contains(old_children[1]));
+        assert_eq!(
+            arena.get(parent_id).unwrap().reconcile_diagnostics(),
+            &[ReconcileDiagnostic::DuplicateSiblingKey {
+                parent: parent_id,
+                list: ReconcileSiblingList::Previous,
+                key: Key::new("a"),
+                occurrences: vec![0, 1],
+            }],
+        );
+    }
+
+    #[test]
+    fn reconcile_same_key_with_different_type_replaces_fiber() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children("parent", vec![keyed_test_view("keyed", "same")]),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![View::new(OtherView, Vec::new(), Some(Key::new("same")))],
+        );
+
+        assert_ne!(new_children[0], old_children[0]);
+        assert!(!arena.contains(old_children[0]));
+    }
+
+    #[test]
+    fn reconcile_diagnostics_clear_after_a_clean_pass() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![
+                    keyed_test_view("first-a", "a"),
+                    keyed_test_view("second-a", "a"),
+                ],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+        let recovered_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![keyed_test_view("a", "a")],
+        );
+        assert!(
+            !arena
+                .get(parent_id)
+                .unwrap()
+                .reconcile_diagnostics()
+                .is_empty()
+        );
+        arena.get_mut(parent_id).unwrap().children = recovered_children.clone();
+
+        reconcile_children(
+            &mut arena,
+            parent_id,
+            &recovered_children,
+            vec![keyed_test_view("a", "a")],
+        );
+
+        assert!(
+            arena
+                .get(parent_id)
+                .unwrap()
+                .reconcile_diagnostics()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reconcile_duplicate_new_key_creates_distinct_fibers_and_reports_diagnostic() {
+        let mut arena = FiberArena::new();
+        let parent_id = create_fiber_from_view(
+            &mut arena,
+            no_parent(),
+            test_view_with_children(
+                "parent",
+                vec![keyed_test_view("a", "a"), keyed_test_view("b", "b")],
+            ),
+        );
+        let old_children = arena.get(parent_id).unwrap().children.clone();
+
+        let new_children = reconcile_children(
+            &mut arena,
+            parent_id,
+            &old_children,
+            vec![
+                keyed_test_view("first-a", "a"),
+                keyed_test_view("second-a", "a"),
+            ],
+        );
+
+        assert_ne!(new_children[0], new_children[1]);
+        assert!(new_children.iter().all(|&id| !old_children.contains(&id)));
+        assert!(old_children.iter().all(|&id| !arena.contains(id)));
+        assert_eq!(
+            arena.get(parent_id).unwrap().reconcile_diagnostics(),
+            &[ReconcileDiagnostic::DuplicateSiblingKey {
+                parent: parent_id,
+                list: ReconcileSiblingList::Incoming,
+                key: Key::new("a"),
+                occurrences: vec![0, 1],
+            }],
+        );
     }
 
     #[test]

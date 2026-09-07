@@ -1,3 +1,18 @@
+pub mod construction;
+pub use construction::{
+    ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
+    WithChildren,
+};
+
+/// Public construction helpers consumed by generated view code.
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use crate::construction::{
+        ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
+        WithChildren,
+    };
+}
+
 pub mod decoration;
 pub use decoration::{
     Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecorationError,

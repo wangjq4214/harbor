@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec: 0010-desktop-terminal-tabs-and-view-macro](../../spec/0010-desktop-terminal-tabs-and-view-macro.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -10,11 +10,11 @@ Dynamic widget children have stable keyed identity, and both handwritten builder
 
 ## Layers
 
-- [ ] **Widget API:** Add `IntoChildView`, ordered `Children`, `WithChildren`, `ComponentExt::keyed`, and hidden macro-support re-exports.
-- [ ] **Fiber and Reconciliation:** Complete keyed sibling insert/delete/reorder matching and duplicate-key diagnostics.
-- [ ] **Layout/Renderer:** Preserve existing child order, layout, paint order, and retained SceneItem identity after correct reconciliation.
-- [ ] **Runtime Host:** None; TabId integration follows later.
-- [ ] **Verification:** Compare keyed/unkeyed behavior, hook/focus preservation, stale generations, cardinality, and handwritten compatibility.
+- [x] **Widget API:** Add `IntoChildView`, ordered `Children`, `WithChildren`, `ComponentExt::keyed`, and hidden macro-support re-exports.
+- [x] **Fiber and Reconciliation:** Complete keyed sibling insert/delete/reorder matching and duplicate-key diagnostics.
+- [x] **Layout/Renderer:** Preserve existing child order, layout, paint order, and retained SceneItem identity after correct reconciliation.
+- [x] **Runtime Host:** None; TabId integration follows later.
+- [x] **Verification:** Compare keyed/unkeyed behavior, hook/focus preservation, stale generations, cardinality, and handwritten compatibility.
 
 ## Approach
 
@@ -36,13 +36,13 @@ Dynamic widget children have stable keyed identity, and both handwritten builder
 
 ## Acceptance
 
-- [ ] Closing the middle keyed child preserves the later child's Fiber, hooks, focus eligibility, and retained identity.
-- [ ] Inserting or reordering keyed children does not migrate state between keys.
-- [ ] Duplicate sibling keys produce a deterministic diagnostic and never alias one Fiber.
-- [ ] Unkeyed children retain documented positional reconciliation.
-- [ ] Single-child attachment rejects multiple children clearly; multi-child attachment preserves source order.
-- [ ] External code can key and compose public Components without naming or implementing crate-private `AnyView`.
-- [ ] Existing handwritten widget builders remain source-compatible unless a separately documented correction is required.
+- [x] Closing the middle keyed child preserves the later child's Fiber, hooks, focus eligibility, and retained identity.
+- [x] Inserting or reordering keyed children does not migrate state between keys.
+- [x] Duplicate sibling keys produce a deterministic diagnostic and never alias one Fiber.
+- [x] Unkeyed children retain documented positional reconciliation.
+- [x] Single-child attachment rejects multiple children clearly; multi-child attachment preserves source order.
+- [x] External code can key and compose public Components without naming or implementing crate-private `AnyView`.
+- [x] Existing handwritten widget builders remain source-compatible unless a separately documented correction is required.
 
 ## Out of Scope
 

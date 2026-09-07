@@ -17,8 +17,21 @@ use std::sync::Arc;
 pub struct Key(String);
 
 impl Key {
+    /// Creates a key from a string-like value.
     pub fn new(s: impl Into<String>) -> Self {
-        Key(s.into())
+        Self(s.into())
+    }
+}
+
+impl From<String> for Key {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for Key {
+    fn from(value: &str) -> Self {
+        Self::new(value)
     }
 }
 
@@ -126,7 +139,15 @@ impl BuildCx {
 /// State is managed via `BuildCx::use_state` and stored in Fibers, not in
 /// the Component struct itself.
 pub trait Component {
+    /// Builds this component's opaque view tree.
     fn build(&self, cx: &mut BuildCx) -> View;
+
+    /// Returns this component's explicit, parent-local reconciliation key.
+    ///
+    /// Components without a key use positional sibling reconciliation.
+    fn key(&self) -> Option<Key> {
+        None
+    }
 }
 
 // ── AnyView ─────────────────────────────────────────────────────────────────
@@ -321,13 +342,25 @@ impl View {
     ///
     /// The concrete component TypeId is retained so deferred views reconcile
     /// with the same identity as their eventual Fiber.
+    /// Overrides this View's reconciliation key without changing its contents or
+    /// introducing a wrapper View node.
+    pub(crate) fn with_explicit_key(mut self, key: Key) -> Self {
+        self.explicit_key = Some(key);
+        self
+    }
+
+    /// Defers building a component until reconciliation assigns it a Fiber.
+    ///
+    /// The concrete component TypeId and explicit key are retained so deferred
+    /// views reconcile with the same identity as their eventual Fiber.
     pub fn deferred<C: Component + 'static>(component: C) -> Self {
+        let explicit_key = component.key();
         View {
             contents: ViewContents::Deferred {
                 component: Arc::new(component),
                 widget_type: TypeId::of::<C>(),
             },
-            explicit_key: None,
+            explicit_key,
             children: vec![],
         }
     }

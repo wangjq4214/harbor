@@ -974,6 +974,162 @@ mod tests {
     }
 
     #[test]
+    fn keyed_children_middle_removal_preserves_retained_scene_item_identity() {
+        use crate::construction::ComponentExt;
+        use crate::scene::primitive::Color;
+        use crate::signal::Signal;
+        use crate::view::View;
+        use crate::widgets::column::Column;
+
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct TabContainer {
+            signal: Rc<RefCell<Option<Signal<Vec<&'static str>>>>>,
+        }
+
+        impl Component for TabContainer {
+            fn build(&self, cx: &mut BuildCx) -> View {
+                let items_state = cx.use_state(|| vec!["a", "b", "c"]);
+                *self.signal.borrow_mut() = Some(items_state.clone());
+                let items = items_state.read();
+                let mut col = Column::new();
+                for key in items.iter() {
+                    col = col.child(
+                        SizedBox::new(Size::new(50.0, 20.0))
+                            .color(Color::RED)
+                            .keyed(*key),
+                    );
+                }
+                col.build(cx)
+            }
+        }
+
+        let signal_holder = Rc::new(RefCell::new(None));
+        let mut rt = Runtime::new();
+        rt.set_root(TabContainer {
+            signal: signal_holder.clone(),
+        });
+        rt.update(now());
+
+        let initial_items: Vec<_> = rt.scene_graph.items().to_vec();
+        assert_eq!(initial_items.len(), 3);
+        let id_a = initial_items[0].id;
+        let id_b = initial_items[1].id;
+        let id_c = initial_items[2].id;
+        let initial_delta = rt.pending_delta.take().unwrap();
+        assert_eq!(initial_delta.added.len(), 3);
+
+        // Remove child B by updating parent's items signal: ["a", "c"]
+        signal_holder.borrow().as_ref().unwrap().set(vec!["a", "c"]);
+        rt.update(now());
+
+        let remaining_items = rt.scene_graph.items();
+        assert_eq!(remaining_items.len(), 2);
+        assert_eq!(remaining_items[0].id, id_a);
+        assert_eq!(
+            remaining_items[1].id, id_c,
+            "scene item ID of surviving child C must be preserved"
+        );
+
+        let delta = rt
+            .pending_delta
+            .take()
+            .expect("expected delta after child removal");
+        assert!(
+            delta.removed.contains(&id_b),
+            "unmounted child B's scene item must be in removed delta"
+        );
+        assert!(
+            !delta.added.iter().any(|item| item.id == id_c),
+            "surviving child C must not be re-allocated as an added item"
+        );
+        assert_eq!(
+            delta.modified.len(),
+            1,
+            "surviving child C repositioned within column"
+        );
+        assert_eq!(delta.modified[0].id, id_c);
+    }
+
+    #[test]
+    fn keyed_children_reorder_preserves_scene_item_identities() {
+        use crate::construction::ComponentExt;
+        use crate::scene::primitive::Color;
+        use crate::signal::Signal;
+        use crate::view::View;
+        use crate::widgets::column::Column;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Clone)]
+        struct ReorderContainer {
+            order: Rc<RefCell<Option<Signal<Vec<&'static str>>>>>,
+        }
+
+        impl Component for ReorderContainer {
+            fn build(&self, cx: &mut BuildCx) -> View {
+                let state = cx.use_state(|| vec!["a", "b", "c"]);
+                *self.order.borrow_mut() = Some(state.clone());
+                let items = state.read();
+                let mut col = Column::new();
+                for key in items.iter() {
+                    col = col.child(
+                        SizedBox::new(Size::new(50.0, 20.0))
+                            .color(Color::RED)
+                            .keyed(*key),
+                    );
+                }
+                col.build(cx)
+            }
+        }
+
+        let order_holder = Rc::new(RefCell::new(None));
+        let mut rt = Runtime::new();
+        rt.set_root(ReorderContainer {
+            order: order_holder.clone(),
+        });
+        rt.update(now());
+
+        let initial_items: Vec<_> = rt.scene_graph.items().to_vec();
+        assert_eq!(initial_items.len(), 3);
+        let (id_a, id_b, id_c) = (
+            initial_items[0].id,
+            initial_items[1].id,
+            initial_items[2].id,
+        );
+        let _ = rt.pending_delta.take();
+
+        // Reorder to ["c", "a", "b"]
+        order_holder
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .set(vec!["c", "a", "b"]);
+        rt.update(now());
+
+        let new_items = rt.scene_graph.items();
+        assert_eq!(new_items.len(), 3);
+        assert_eq!(new_items[0].id, id_c);
+        assert_eq!(new_items[1].id, id_a);
+        assert_eq!(new_items[2].id, id_b);
+
+        let delta = rt
+            .pending_delta
+            .take()
+            .expect("expected delta after reorder");
+        assert!(
+            delta.added.is_empty(),
+            "reordered items must not be re-added"
+        );
+        assert!(
+            delta.removed.is_empty(),
+            "reordered items must not be removed"
+        );
+    }
+
+    #[test]
     fn nested_deferred_component_preserves_state_and_subscribes_its_fiber() {
         use crate::signal::Signal;
         use crate::view::{BuildCx, Component, View};

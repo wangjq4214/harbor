@@ -57,8 +57,8 @@ impl CustomPaint {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.children.push(child.into_child_view());
         self
     }
 }
@@ -72,6 +72,16 @@ impl Component for CustomPaint {
             cx.register_external_schedule(self.draw_id, Arc::clone(schedule));
         }
         View::new(self.clone(), self.children.clone(), None)
+    }
+}
+
+impl crate::WithChildren for CustomPaint {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.children.extend(children.into_views());
+        Ok(self)
     }
 }
 

@@ -36,8 +36,8 @@ impl Padding {
     }
 
     /// Sets this padding's only child, replacing any previously staged child.
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.child = Some(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 }
@@ -45,6 +45,27 @@ impl Padding {
 impl Component for Padding {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)
+    }
+}
+
+impl crate::WithChildren for Padding {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        let mut incoming = children.into_views();
+        let received = usize::from(self.child.is_some()) + incoming.len();
+        if received > 1 {
+            return Err(crate::ChildConstructionError::too_many(
+                "Padding",
+                crate::ChildCardinality::Single,
+                received,
+            ));
+        }
+        if let Some(child) = incoming.pop() {
+            self.child = Some(child);
+        }
+        Ok(self)
     }
 }
 
