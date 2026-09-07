@@ -10,6 +10,7 @@ slotmap = { workspace = true }
 harbor-text = { workspace = true }
 wgpu = { workspace = true }
 tracing = { workspace = true }
+harbor-widget-macros = { workspace = true }
 winit = { workspace = true, optional = true }
 
 [features]

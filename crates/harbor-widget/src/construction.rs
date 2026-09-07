@@ -76,6 +76,25 @@ impl Children {
     }
 }
 
+/// Normalizes one deferred child or an existing [`Children`] collection for
+/// declarative interpolation.
+pub trait IntoChildren {
+    /// Appends this value after all children already staged in `children`.
+    fn append_to(self, children: &mut Children);
+}
+
+impl<T: IntoChildView> IntoChildren for T {
+    fn append_to(self, children: &mut Children) {
+        children.push(self);
+    }
+}
+
+impl IntoChildren for Children {
+    fn append_to(self, children: &mut Children) {
+        children.views.extend(self.views);
+    }
+}
+
 impl<T: IntoChildView> Extend<T> for Children {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         Self::extend(self, iter);
@@ -181,6 +200,15 @@ impl<C: Component> Component for Keyed<C> {
 
     fn key(&self) -> Option<Key> {
         Some(self.key.clone())
+    }
+}
+
+impl<C: WithChildren> WithChildren for Keyed<C> {
+    fn with_children(self, children: Children) -> Result<Self, ChildConstructionError> {
+        Ok(Self {
+            component: self.component.with_children(children)?,
+            key: self.key,
+        })
     }
 }
 

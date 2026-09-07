@@ -1,0 +1,18 @@
+error[E0277]: the trait bound `usize: IntoChildren` is not satisfied
+ --> tests/ui/fail/non_component_interpolation.rs:7:49
+  |
+7 |     let _ = view!(&mut cx, Column::new() => { { 42usize } });
+  |                                                 ^^^^^^^ the trait `harbor_widget::view::Component` is not implemented for `usize`
+  |
+  = help: the following other types implement trait `harbor_widget::view::Component`:
+            Align
+            Button
+            Column
+            ConstrainedBox
+            CustomPaint
+            DecoratedBox
+            Expanded
+            Flex
+          and $N others
+  = note: required for `usize` to implement `IntoChildView`
+  = note: required for `usize` to implement `IntoChildren`

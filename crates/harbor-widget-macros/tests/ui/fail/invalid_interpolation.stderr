@@ -1,0 +1,13 @@
+error: unexpected end of input, view! interpolation requires an expression
+ --> tests/ui/fail/invalid_interpolation.rs:7:48
+  |
+7 |     let _ = view!(&mut cx, Column::new() => { {} });
+  |                                                ^
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/invalid_interpolation.rs:2:5
+  |
+2 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

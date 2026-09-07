@@ -1,16 +1,18 @@
 pub mod construction;
 pub use construction::{
-    ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
-    WithChildren,
+    ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, IntoChildren,
+    Keyed, WithChildren,
 };
+pub use harbor_widget_macros::view;
 
 /// Public construction helpers consumed by generated view code.
 #[doc(hidden)]
 pub mod __macro_support {
     pub use crate::construction::{
-        ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
-        WithChildren,
+        ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView,
+        IntoChildren, Keyed, WithChildren,
     };
+    pub use crate::view::Component;
 }
 
 pub mod decoration;
@@ -42,6 +44,9 @@ pub use widgets::{
     Axis, Column, ConstrainedBox, Expanded, Flex, Flexible, MainAxisAlignment, Row, Separator,
     Spacer,
 };
+
+#[cfg(test)]
+mod macro_tests;
 
 #[cfg(feature = "winit")]
 pub mod winit;

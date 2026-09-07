@@ -6,7 +6,9 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::{ChildCardinality, Children, ComponentExt, IntoChildView, Keyed, WithChildren};
+use harbor_widget::{
+    ChildCardinality, Children, ComponentExt, IntoChildView, IntoChildren, Keyed, WithChildren,
+};
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,6 +44,38 @@ fn children_accept_components_and_existing_views_in_source_order() {
     let mut children = Children::one(PublicComponent.keyed("first"));
     children.push(existing_view);
     children.extend([PublicComponent.keyed("third")]);
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(Column::new().with_children(children).unwrap());
+    runtime.update(Instant::now());
+
+    let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+    let child_ids = root.children();
+    assert_eq!(child_ids.len(), 3);
+    assert_eq!(
+        runtime.arena().get(child_ids[0]).unwrap().widget_type(),
+        TypeId::of::<Keyed<PublicComponent>>()
+    );
+    assert_eq!(
+        runtime.arena().get(child_ids[1]).unwrap().widget_type(),
+        TypeId::of::<SizedBox>()
+    );
+    assert_eq!(
+        runtime.arena().get(child_ids[2]).unwrap().widget_type(),
+        TypeId::of::<Keyed<PublicComponent>>()
+    );
+}
+
+#[test]
+fn into_children_normalizes_single_values_and_collections_in_order() {
+    let mut build_cx = BuildCx::stub();
+    let existing_view = SizedBox::new(Size::new(20.0, 10.0)).build(&mut build_cx);
+    let mut children = Children::new();
+
+    IntoChildren::append_to(PublicComponent.keyed("first"), &mut children);
+    IntoChildren::append_to(existing_view, &mut children);
+    IntoChildren::append_to(Children::new(), &mut children);
+    IntoChildren::append_to(Children::one(PublicComponent.keyed("third")), &mut children);
 
     let mut runtime = Runtime::new();
     runtime.set_root(Column::new().with_children(children).unwrap());
@@ -120,19 +154,17 @@ impl Component for StatefulButton {
     }
 }
 
+type TabItems = Vec<(&'static str, StatefulButton)>;
+type TabItemsSignal = Rc<RefCell<Option<Signal<TabItems>>>>;
+
 #[derive(Clone)]
 struct TabList {
-    items: Rc<RefCell<Option<Signal<Vec<(&'static str, StatefulButton)>>>>>,
-    initial: Vec<(&'static str, StatefulButton)>,
+    items: TabItemsSignal,
+    initial: TabItems,
 }
 
 impl TabList {
-    fn new(
-        initial: Vec<(&'static str, StatefulButton)>,
-    ) -> (
-        Self,
-        Rc<RefCell<Option<Signal<Vec<(&'static str, StatefulButton)>>>>>,
-    ) {
+    fn new(initial: TabItems) -> (Self, TabItemsSignal) {
         let holder = Rc::new(RefCell::new(None));
         (
             Self {
