@@ -3,7 +3,7 @@ use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::Primitive;
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, PaintPhase, View};
+use crate::view::{AnyView, BuildCx, Component, PaintPhase, View};
 
 /// A layout-neutral single-child wrapper that paints a box decoration.
 #[derive(Clone)]
@@ -157,35 +157,12 @@ impl crate::WithChildren for DecoratedBox {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "DecoratedBox",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("DecoratedBox", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for DecoratedBox {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

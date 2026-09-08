@@ -202,14 +202,20 @@ pub(crate) enum EnsureVisibleResult {
 #[allow(dead_code)]
 pub(crate) trait AnyView: 'static {
     /// Optional key for list reconciliation.
-    fn key(&self) -> Option<&Key>;
+    fn key(&self) -> Option<&Key> {
+        None
+    }
 
     /// The TypeId of the concrete implementation, used for reconciliation.
-    fn widget_type(&self) -> TypeId;
+    fn widget_type(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
 
     /// Computes the intrinsic size given layout constraints and Runtime-owned
-    /// text metrics.
-    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+    /// text metrics. Default: clamps `Size::ZERO` into constraints.
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
+        constraints.constrain(Size::ZERO)
+    }
 
     /// Metadata for the immediate layout parent; it never tunnels through views.
     fn parent_data(&self) -> ParentData {
@@ -441,10 +447,6 @@ impl View {
         }
     }
 
-    /// Defers building a component until reconciliation assigns it a Fiber.
-    ///
-    /// The concrete component TypeId is retained so deferred views reconcile
-    /// with the same identity as their eventual Fiber.
     /// Overrides this View's reconciliation key without changing its contents or
     /// introducing a wrapper View node.
     pub(crate) fn with_explicit_key(mut self, key: Key) -> Self {

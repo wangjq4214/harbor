@@ -2,7 +2,7 @@ use crate::input::event::{Key, KeyboardEvent, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// A container that manages Tab/Shift+Tab focus traversal within its subtree.
 ///
@@ -56,13 +56,6 @@ impl crate::WithChildren for FocusScope {
 }
 
 impl AnyView for FocusScope {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // FocusScope delegates to children — it's a passthrough container

@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Point, Size};
 use crate::signal::Signal;
 use crate::theme::Theme;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -64,16 +64,7 @@ impl crate::WithChildren for ThemeProvider {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut children = children.into_views();
-        let received = usize::from(self.child.is_some()) + children.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "ThemeProvider",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        self.child = children.pop();
+        children.into_single("ThemeProvider", &mut self.child)?;
         Ok(self)
     }
 }
@@ -84,22 +75,6 @@ struct ThemeProviderView {
 }
 
 impl AnyView for ThemeProviderView {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(
-        &self,
-        constraints: BoxConstraints,
-        _metrics: &crate::text::TextMetrics,
-    ) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

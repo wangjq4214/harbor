@@ -59,15 +59,7 @@ impl crate::WithChildren for Button {
         self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let received = children.len();
-        if received == 0 {
-            Ok(self)
-        } else {
-            Err(crate::ChildConstructionError::too_many(
-                "Button",
-                crate::ChildCardinality::Leaf,
-                received,
-            ))
-        }
+        children.ensure_leaf("Button")?;
+        Ok(self)
     }
 }

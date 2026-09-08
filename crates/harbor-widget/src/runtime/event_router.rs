@@ -61,24 +61,14 @@ impl EventRouter {
     /// Clears stale routing identities after reconciliation and resolves a pending
     /// public focus-handle request when its target has appeared.
     pub(crate) fn clear_dead_targets(&mut self, arena: &FiberArena, root: Option<FiberId>) {
-        let focused_became_invalid = self.input.focused.is_some_and(|focused| {
-            arena
-                .get(focused)
-                .and_then(|fiber| fiber.view.as_ref())
-                .and_then(|view| view.focus_metadata())
-                .map(|metadata| !metadata.enabled)
-                .unwrap_or(true)
-        });
         let focus_visible = self.input.focus_visible();
-        self.input.clear_focus_if_dead(arena);
-        self.input.clear_focus_if(|focused| {
+        let focused_became_invalid = self.input.clear_focus_if(|focused| {
             arena
                 .get(focused)
                 .and_then(|fiber| fiber.view.as_ref())
                 .and_then(|view| view.focus_metadata())
                 .is_none_or(|metadata| !metadata.enabled)
         });
-        self.input.clear_capture_if_dead(arena);
         self.hover_path.retain(|id| arena.contains(*id));
         self.input.clear_capture_if(|id| {
             arena
@@ -213,10 +203,11 @@ impl EventRouter {
         } else {
             Self::build_ancestor_path(arena, target)
         };
+        let ancestors = &path[..path.len().saturating_sub(1)];
         let mut ctx = EventCtx::new();
 
         ctx.set_phase(EventPhase::Capture);
-        for &ancestor_id in path.iter().take(path.len().saturating_sub(1)) {
+        for &ancestor_id in ancestors {
             if Self::is_modal_block(arena, ancestor_id, target) {
                 return self.finish_event(arena, ctx);
             }
@@ -235,7 +226,7 @@ impl EventRouter {
         }
 
         ctx.set_phase(EventPhase::Bubble);
-        for &ancestor_id in path.iter().take(path.len().saturating_sub(1)).rev() {
+        for &ancestor_id in ancestors.iter().rev() {
             Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
             if ctx.is_propagation_stopped() {
                 return self.finish_event(arena, ctx);
@@ -264,23 +255,13 @@ impl EventRouter {
         let needs_paint = self.input.apply(ctx.take_commands(), arena);
         let next_focus = self.input.focused;
         let next_visible = self.input.focus_visible;
-        if previous_focus != next_focus {
-            self.last_focus_scope =
-                next_focus.and_then(|target| Self::focus_scope_for(arena, target));
-        }
-        let focus_needs_paint = if previous_focus != next_focus {
-            let notified =
-                self.notify_focus_transition(arena, previous_focus, next_focus, next_visible);
-            notified | self.ensure_focus_visible(arena)
-        } else if previous_visible != next_visible {
-            next_focus
-                .map(|fiber| {
-                    self.notify_focus(arena, fiber, FocusEvent::VisibilityChanged(next_visible))
-                })
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        let focus_needs_paint = self.apply_focus_transition(
+            arena,
+            previous_focus,
+            previous_visible,
+            next_focus,
+            next_visible,
+        );
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
@@ -296,17 +277,28 @@ impl EventRouter {
     ) -> bool {
         let previous = self.input.focused;
         let previous_visible = self.input.focus_visible;
-        if previous == next && previous_visible == focus_visible {
+        self.apply_focus_transition(arena, previous, previous_visible, next, focus_visible)
+    }
+
+    fn apply_focus_transition(
+        &mut self,
+        arena: &FiberArena,
+        previous: Option<FiberId>,
+        previous_visible: bool,
+        next: Option<FiberId>,
+        next_visible: bool,
+    ) -> bool {
+        if previous == next && previous_visible == next_visible {
             return false;
         }
         self.input.focused = next;
-        self.input.focus_visible = focus_visible;
-        self.last_focus_scope = next.and_then(|target| Self::focus_scope_for(arena, target));
+        self.input.focus_visible = next_visible;
         if previous != next {
-            let notified = self.notify_focus_transition(arena, previous, next, focus_visible);
+            self.last_focus_scope = next.and_then(|target| Self::focus_scope_for(arena, target));
+            let notified = self.notify_focus_transition(arena, previous, next, next_visible);
             notified | self.ensure_focus_visible(arena)
         } else if let Some(fiber) = next {
-            self.notify_focus(arena, fiber, FocusEvent::VisibilityChanged(focus_visible))
+            self.notify_focus(arena, fiber, FocusEvent::VisibilityChanged(next_visible))
         } else {
             false
         }
@@ -636,8 +628,10 @@ impl EventRouter {
     }
 
     pub(crate) fn find_first_focusable(arena: &FiberArena, fiber: FiberId) -> Option<FiberId> {
-        let view = arena.get(fiber)?.view.as_ref()?;
-        if let Some(metadata) = view.focus_metadata() {
+        let entry = arena.get(fiber)?;
+        if let Some(view) = entry.view.as_ref()
+            && let Some(metadata) = view.focus_metadata()
+        {
             if metadata.enabled {
                 return Some(fiber);
             }
@@ -645,7 +639,7 @@ impl EventRouter {
                 return None;
             }
         }
-        for child in &arena.get(fiber)?.children {
+        for child in &entry.children {
             if let Some(found) = Self::find_first_focusable(arena, *child) {
                 return Some(found);
             }

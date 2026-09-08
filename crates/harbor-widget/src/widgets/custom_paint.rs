@@ -3,7 +3,7 @@ use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 use std::sync::Arc;
 
 /// Optional in-tree input adapter for a focusable external-paint leaf.
@@ -86,13 +86,6 @@ impl crate::WithChildren for CustomPaint {
 }
 
 impl AnyView for CustomPaint {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no viewport to fill.
@@ -183,15 +176,6 @@ mod tests {
     }
 
     impl AnyView for ConstraintParent {
-        fn key(&self) -> Option<&ViewKey> {
-            None
-        }
-        fn widget_type(&self) -> std::any::TypeId {
-            std::any::TypeId::of::<Self>()
-        }
-        fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-            constraints.constrain(Size::ZERO)
-        }
         fn child_constraints(&self, _constraints: BoxConstraints) -> BoxConstraints {
             self.constraints
         }

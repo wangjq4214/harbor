@@ -7,7 +7,7 @@ use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::Primitive;
 use crate::signal::Signal;
 use crate::theme::ControlStyle;
-use crate::view::{AnyView, BuildCx, Component, FocusMetadata, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use std::sync::Arc;
 
 /// Orthogonal state exposed by interactive desktop controls.
@@ -143,16 +143,7 @@ impl crate::WithChildren for InteractiveRegion {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut children = children.into_views();
-        let received = usize::from(self.child.is_some()) + children.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "InteractiveRegion",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        self.child = children.pop();
+        children.into_single("InteractiveRegion", &mut self.child)?;
         Ok(self)
     }
 }
@@ -187,14 +178,6 @@ impl InteractiveRegionView {
 }
 
 impl AnyView for InteractiveRegionView {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(
         &self,
         constraints: BoxConstraints,

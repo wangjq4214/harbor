@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use crate::layout::{BoxConstraints, FlexFit, FlexParentData, ParentData, Point, Size};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Transparent flexible child metadata for an immediate Flex, Row or Column.
 ///
@@ -59,35 +59,12 @@ impl crate::WithChildren for Flexible {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "Flexible",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("Flexible", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for Flexible {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn parent_data(&self) -> ParentData {
         ParentData {
             flex: Some(FlexParentData {
@@ -161,18 +138,6 @@ impl crate::WithChildren for Expanded {
 }
 
 impl AnyView for Expanded {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
-        self.inner.intrinsic_size(constraints, metrics)
-    }
-
     fn parent_data(&self) -> ParentData {
         self.inner.parent_data()
     }
@@ -223,15 +188,7 @@ impl crate::WithChildren for Spacer {
         self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let received = children.len();
-        if received == 0 {
-            Ok(self)
-        } else {
-            Err(crate::ChildConstructionError::too_many(
-                "Spacer",
-                crate::ChildCardinality::Leaf,
-                received,
-            ))
-        }
+        children.ensure_leaf("Spacer")?;
+        Ok(self)
     }
 }

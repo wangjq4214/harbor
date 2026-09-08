@@ -74,6 +74,40 @@ impl Children {
     pub fn into_views(self) -> Vec<View> {
         self.views
     }
+    /// Validates that this collection is empty for a leaf widget.
+    pub fn ensure_leaf(self, widget: &'static str) -> Result<(), ChildConstructionError> {
+        let received = self.len();
+        if received == 0 {
+            Ok(())
+        } else {
+            Err(ChildConstructionError::too_many(
+                widget,
+                ChildCardinality::Leaf,
+                received,
+            ))
+        }
+    }
+
+    /// Attaches at most one child from this collection to a single-child slot.
+    pub fn into_single(
+        self,
+        widget: &'static str,
+        existing_child: &mut Option<View>,
+    ) -> Result<(), ChildConstructionError> {
+        let mut incoming = self.into_views();
+        let received = usize::from(existing_child.is_some()) + incoming.len();
+        if received > 1 {
+            return Err(ChildConstructionError::too_many(
+                widget,
+                ChildCardinality::Single,
+                received,
+            ));
+        }
+        if let Some(child) = incoming.pop() {
+            *existing_child = Some(child);
+        }
+        Ok(())
+    }
 }
 
 /// Normalizes one deferred child or an existing [`Children`] collection for

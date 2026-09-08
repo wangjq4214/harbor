@@ -1,6 +1,6 @@
 use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Size};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Single-child bounds enforced inside the parent's authoritative interval.
 ///
@@ -65,30 +65,12 @@ impl crate::WithChildren for ConstrainedBox {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "ConstrainedBox",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("ConstrainedBox", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for ConstrainedBox {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         self.bounds

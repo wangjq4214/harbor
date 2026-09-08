@@ -3,7 +3,7 @@ use super::sized_box::SizedBox;
 use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// A line painted using the existing box widget, defaulting to one logical pixel.
 ///
@@ -73,27 +73,12 @@ impl crate::WithChildren for Separator {
         self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let received = children.len();
-        if received == 0 {
-            Ok(self)
-        } else {
-            Err(crate::ChildConstructionError::too_many(
-                "Separator",
-                crate::ChildCardinality::Leaf,
-                received,
-            ))
-        }
+        children.ensure_leaf("Separator")?;
+        Ok(self)
     }
 }
 
 impl AnyView for Separator {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         self.size(constraints)

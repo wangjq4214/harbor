@@ -100,6 +100,7 @@ impl InputState {
     }
 
     /// Clears the focused fiber if it is no longer present in the arena.
+    #[cfg(test)]
     pub(crate) fn clear_focus_if_dead(&mut self, arena: &FiberArena) {
         if let Some(fid) = self.focused
             && !arena.contains(fid)
@@ -121,6 +122,7 @@ impl InputState {
     }
 
     /// Removes pointer captures for fibers that are no longer in the arena.
+    #[cfg(test)]
     pub(crate) fn clear_capture_if_dead(&mut self, arena: &FiberArena) {
         self.pointer_captures.retain(|_, fid| arena.contains(*fid));
     }

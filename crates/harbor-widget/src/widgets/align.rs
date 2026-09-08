@@ -1,7 +1,7 @@
 use crate::layout::{Alignment, BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Single-child positioner within parent bounds according to Alignment.
 #[derive(Clone)]
@@ -49,13 +49,6 @@ impl crate::WithChildren for Align {
 }
 
 impl AnyView for Align {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no space to fill.

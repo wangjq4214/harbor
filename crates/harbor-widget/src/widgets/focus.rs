@@ -1,5 +1,5 @@
 use crate::layout::{BoxConstraints, Point, Size};
-use crate::view::{AnyView, BuildCx, Component, FocusMetadata, Key, View};
+use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Stable public identity used to restore focus without exposing a FiberId.
@@ -65,37 +65,12 @@ impl crate::WithChildren for Focus {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut children = children.into_views();
-        let received = usize::from(self.child.is_some()) + children.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "Focus",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        self.child = children.pop();
+        children.into_single("Focus", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for Focus {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(
-        &self,
-        constraints: BoxConstraints,
-        _metrics: &crate::text::TextMetrics,
-    ) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

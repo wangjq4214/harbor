@@ -4,7 +4,7 @@ use crate::layout::{
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// The direction in which a flex container allocates its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,13 +140,6 @@ impl crate::WithChildren for Flex {
 }
 
 impl AnyView for Flex {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         finite_fill(constraints)
@@ -456,12 +449,6 @@ mod tests {
     }
 
     impl AnyView for CorrectionLeaf {
-        fn key(&self) -> Option<&Key> {
-            None
-        }
-        fn widget_type(&self) -> std::any::TypeId {
-            std::any::TypeId::of::<Self>()
-        }
         fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
             self.measurements.set(self.measurements.get() + 1);
             let main = if self.axis.cross(constraints.min) >= 20.0 {

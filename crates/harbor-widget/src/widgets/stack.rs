@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Overlay container. Positions all children at the same origin (0,0).
 #[derive(Clone)]
@@ -52,17 +52,6 @@ impl crate::WithChildren for Stack {
 }
 
 impl AnyView for Stack {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
 
     fn layout_children(
         &self,

@@ -1,6 +1,6 @@
 use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 use std::sync::Arc;
 
 /// Callback invoked after a distinct, non-empty allocation is committed.
@@ -53,35 +53,12 @@ impl crate::WithChildren for LayoutObserver {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "LayoutObserver",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("LayoutObserver", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for LayoutObserver {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout(
         &self,
         constraints: BoxConstraints,

@@ -1,6 +1,6 @@
 use crate::input::event::{Key, Modifiers};
 use crate::layout::{BoxConstraints, Point, Size};
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 use std::any::Any;
 
 /// A keyboard key plus its complete modifier set.
@@ -48,37 +48,12 @@ impl<A: Clone + 'static> crate::WithChildren for Shortcuts<A> {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut children = children.into_views();
-        let received = usize::from(self.child.is_some()) + children.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "Shortcuts",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        self.child = children.pop();
+        children.into_single("Shortcuts", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl<A: Clone + 'static> AnyView for Shortcuts<A> {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(
-        &self,
-        constraints: BoxConstraints,
-        _metrics: &crate::text::TextMetrics,
-    ) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

@@ -4,7 +4,7 @@ use crate::layout::{
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Vertical flex container. Stacks children top-to-bottom.
 #[derive(Clone)]
@@ -86,13 +86,6 @@ impl crate::WithChildren for Column {
 }
 
 impl AnyView for Column {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         finite_fill(constraints)

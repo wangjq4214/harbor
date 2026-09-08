@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Insets a single child by padding and optionally draws a background.
 #[derive(Clone)]
@@ -53,30 +53,12 @@ impl crate::WithChildren for Padding {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "Padding",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("Padding", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for Padding {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
 
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // layout_fiber measures descendants before calling layout_children.

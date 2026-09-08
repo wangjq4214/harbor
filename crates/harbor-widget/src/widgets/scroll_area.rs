@@ -5,7 +5,7 @@ use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Po
 use crate::scene::clip::RoundedClip;
 use crate::signal::Signal;
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, EnsureVisibleResult, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, EnsureVisibleResult, View};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -231,18 +231,7 @@ impl crate::WithChildren for ScrollArea {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        let mut incoming = children.into_views();
-        let received = usize::from(self.child.is_some()) + incoming.len();
-        if received > 1 {
-            return Err(crate::ChildConstructionError::too_many(
-                "ScrollArea",
-                crate::ChildCardinality::Single,
-                received,
-            ));
-        }
-        if let Some(child) = incoming.pop() {
-            self.child = Some(child);
-        }
+        children.into_single("ScrollArea", &mut self.child)?;
         Ok(self)
     }
 }
@@ -254,14 +243,6 @@ struct ScrollAreaView {
 }
 
 impl AnyView for ScrollAreaView {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.fill_bounded(Size::ZERO)
     }
