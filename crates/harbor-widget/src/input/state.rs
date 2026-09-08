@@ -56,11 +56,18 @@ impl InputState {
         self.pointer_captures.keys().copied().collect()
     }
 
+    pub(crate) fn capture_pointer(&mut self, pointer_id: u64, captor: FiberId) {
+        self.pointer_captures.insert(pointer_id, captor);
+    }
+
+    pub(crate) fn release_pointer(&mut self, pointer_id: u64) {
+        self.pointer_captures.remove(&pointer_id);
+    }
+
     /// Applies accumulated EventCtx commands after the event walk.
     /// Returns true if a paint invalidation was requested.
-    pub(crate) fn apply(&mut self, commands: Vec<EventCommand>, arena: &FiberArena) -> bool {
+    pub(crate) fn apply(&mut self, commands: Vec<EventCommand>, _arena: &FiberArena) -> bool {
         let mut needs_paint = false;
-        let mut navigated_scopes = Vec::new();
         for cmd in commands {
             match cmd {
                 EventCommand::RequestFocus(id) => {
@@ -74,22 +81,13 @@ impl InputState {
                     self.focus_visible = focus_visible;
                 }
                 EventCommand::CapturePointer { pointer_id, captor } => {
-                    self.pointer_captures.insert(pointer_id, captor);
+                    self.capture_pointer(pointer_id, captor);
                 }
                 EventCommand::ReleasePointer(pointer_id) => {
-                    self.pointer_captures.remove(&pointer_id);
+                    self.release_pointer(pointer_id);
                 }
-                EventCommand::NavigateFocus { scope, forward } => {
-                    // A FocusScope can see one key event in both capture and
-                    // bubble phases. Apply one navigation per scope/dir for
-                    // that event rather than immediately wrapping back.
-                    if navigated_scopes.contains(&(scope, forward)) {
-                        continue;
-                    }
-                    navigated_scopes.push((scope, forward));
-                    let next = Self::find_next_focusable(arena, scope, self.focused, forward);
-                    self.focused = next;
-                    self.focus_visible = true;
+                EventCommand::NavigateFocus { .. } => {
+                    // Focus navigation over the fiber hierarchy is handled by EventRouter.
                 }
                 EventCommand::InvalidatePaint => {
                     needs_paint = true;
@@ -132,64 +130,6 @@ impl InputState {
         self.pointer_captures.retain(|_, fid| retains(*fid));
     }
 
-    /// DFS walk to collect all focusable fibers in a subtree, then return
-    /// the next (or previous) focusable relative to `current`.
-    fn find_next_focusable(
-        arena: &FiberArena,
-        scope: FiberId,
-        current: Option<FiberId>,
-        forward: bool,
-    ) -> Option<FiberId> {
-        let mut focusable = Vec::new();
-        Self::collect_focusable(arena, scope, &mut focusable);
-
-        if focusable.is_empty() {
-            return None;
-        }
-
-        let current_idx = current.and_then(|cid| focusable.iter().position(|&id| id == cid));
-
-        let next_idx = match current_idx {
-            Some(idx) => {
-                if forward {
-                    (idx + 1) % focusable.len()
-                } else {
-                    (idx + focusable.len() - 1) % focusable.len()
-                }
-            }
-            None => {
-                if forward {
-                    0
-                } else {
-                    focusable.len() - 1
-                }
-            }
-        };
-
-        Some(focusable[next_idx])
-    }
-
-    /// DFS traversal collecting focusable fibers within a subtree.
-    fn collect_focusable(arena: &FiberArena, fiber_id: FiberId, out: &mut Vec<FiberId>) {
-        let fiber = match arena.get(fiber_id) {
-            Some(f) => f,
-            None => return,
-        };
-
-        // Check self (exclude FocusScope containers themselves)
-        if let Some(ref view) = fiber.view
-            && view.is_focusable()
-        {
-            out.push(fiber_id);
-        }
-
-        // Recurse children in DFS order.
-        // Clone necessary to release the immutable borrow before recursing.
-        let children = fiber.children.clone();
-        for &child_id in &children {
-            Self::collect_focusable(arena, child_id, out);
-        }
-    }
 }
 
 #[cfg(test)]

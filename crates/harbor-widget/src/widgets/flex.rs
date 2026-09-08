@@ -70,8 +70,8 @@ pub struct Flex {
     pub main_axis_alignment: MainAxisAlignment,
     pub cross_axis_alignment: Alignment,
     pub background: Option<Color>,
-    gap: f32,
-    children: Vec<View>,
+    pub(crate) gap: f32,
+    pub(crate) children: Vec<View>,
 }
 
 impl Flex {

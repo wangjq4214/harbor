@@ -348,17 +348,7 @@ pub(crate) trait AnyView: 'static {
 
     /// Metadata for focus traversal. Disabled nodes are omitted by the router.
     fn focus_metadata(&self) -> Option<FocusMetadata> {
-        self.is_focusable().then_some(FocusMetadata {
-            enabled: true,
-            order: 0,
-            handle: None,
-        })
-    }
-
-    /// Whether this widget can receive focus via Tab navigation.
-    /// Kept as a compatibility shim for existing widget implementations.
-    fn is_focusable(&self) -> bool {
-        false
+        None
     }
 
     /// Whether keyboard and logical focus notifications target this wrapper's

@@ -3,7 +3,7 @@ use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, View};
+use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use std::sync::Arc;
 
 /// Optional in-tree input adapter for a focusable external-paint leaf.
@@ -61,6 +61,11 @@ impl CustomPaint {
         self.children.push(child.into_child_view());
         self
     }
+
+    /// Returns whether this custom paint widget can receive focus.
+    pub fn is_focusable(&self) -> bool {
+        true
+    }
 }
 
 impl Component for CustomPaint {
@@ -115,8 +120,12 @@ impl AnyView for CustomPaint {
         }]
     }
 
-    fn is_focusable(&self) -> bool {
-        true
+    fn focus_metadata(&self) -> Option<FocusMetadata> {
+        Some(FocusMetadata {
+            enabled: true,
+            order: 0,
+            handle: None,
+        })
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
@@ -131,7 +140,7 @@ impl AnyView for CustomPaint {
         }
 
         // Queue for deferred delivery to the App via Runtime.
-        crate::runtime::queue_external_input(self.draw_id, event.clone());
+        ctx.queue_external_input(self.draw_id, event.clone());
         EventHandled::Handled
     }
 }

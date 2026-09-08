@@ -148,7 +148,10 @@ impl Fiber {
 
     /// Whether the view reports itself as focusable.
     pub fn is_focusable(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| v.is_focusable())
+        self.view
+            .as_ref()
+            .and_then(|v| v.focus_metadata())
+            .is_some_and(|m| m.enabled)
     }
 }
 

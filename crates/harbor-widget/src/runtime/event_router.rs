@@ -6,12 +6,14 @@ use crate::fiber::{FiberArena, FiberId};
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerPhase, UiEvent,
 };
-use crate::input::event_ctx::{EventCtx, EventPhase};
+use crate::input::event_ctx::{EventCommand, EventCtx, EventPhase};
 use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
 use crate::view::EnsureVisibleResult;
 use crate::widgets::shortcuts::KeyChord;
+use crate::scene::primitive::ExternalDrawId;
 use std::any::Any;
+use std::cell::RefCell;
 
 /// Owns input state and routes UI events through capture → target → bubble.
 pub(crate) struct EventRouter {
@@ -24,6 +26,7 @@ pub(crate) struct EventRouter {
     pending_reveal: Option<FiberId>,
     layout_available: bool,
     last_focus_scope: Option<FiberId>,
+    pending_external_input: RefCell<Vec<(ExternalDrawId, UiEvent)>>,
 }
 
 impl EventRouter {
@@ -38,6 +41,7 @@ impl EventRouter {
             pending_reveal: None,
             layout_available: false,
             last_focus_scope: None,
+            pending_external_input: RefCell::new(Vec::new()),
         }
     }
 
@@ -56,6 +60,10 @@ impl EventRouter {
 
     pub(crate) fn take_cursor(&mut self) -> Option<CursorEffect> {
         self.pending_cursor.take()
+    }
+
+    pub(crate) fn drain_external_input(&self) -> Vec<(ExternalDrawId, UiEvent)> {
+        std::mem::take(&mut *self.pending_external_input.borrow_mut())
     }
 
     /// Clears stale routing identities after reconciliation and resolves a pending
@@ -171,12 +179,7 @@ impl EventRouter {
             UiEvent::Pointer(pointer) => {
                 if pointer.phase == PointerPhase::Cancel {
                     if let Some(captor) = self.input.captor(pointer.pointer_id) {
-                        self.input.apply(
-                            vec![crate::input::event_ctx::EventCommand::ReleasePointer(
-                                pointer.pointer_id,
-                            )],
-                            arena,
-                        );
+                        self.input.release_pointer(pointer.pointer_id);
                         if arena.contains(captor) {
                             return self.route_to_single(arena, captor, event);
                         }
@@ -250,17 +253,55 @@ impl EventRouter {
         if let Some(text) = ctx.take_clipboard_write() {
             self.pending_clipboard = Some(text);
         }
+        let external = ctx.take_external_input();
+        if !external.is_empty() {
+            self.pending_external_input.borrow_mut().extend(external);
+        }
         let previous_focus = self.input.focused;
         let previous_visible = self.input.focus_visible;
-        let needs_paint = self.input.apply(ctx.take_commands(), arena);
-        let next_focus = self.input.focused;
-        let next_visible = self.input.focus_visible;
+        let mut target_focus = previous_focus;
+        let mut target_visible = previous_visible;
+        let mut needs_paint = false;
+        let mut navigated_scopes = Vec::new();
+
+        let commands = ctx.take_commands();
+        for cmd in commands {
+            match cmd {
+                EventCommand::RequestFocus(id) => {
+                    if target_focus != Some(id) {
+                        target_focus = Some(id);
+                        target_visible = true;
+                    }
+                }
+                EventCommand::RequestFocusWithVisibility { id, focus_visible } => {
+                    target_focus = Some(id);
+                    target_visible = focus_visible;
+                }
+                EventCommand::NavigateFocus { scope, forward } => {
+                    if !navigated_scopes.contains(&(scope, forward)) {
+                        navigated_scopes.push((scope, forward));
+                        target_focus = Self::find_next_focusable(arena, scope, target_focus, forward);
+                        target_visible = true;
+                    }
+                }
+                EventCommand::CapturePointer { pointer_id, captor } => {
+                    self.input.capture_pointer(pointer_id, captor);
+                }
+                EventCommand::ReleasePointer(pointer_id) => {
+                    self.input.release_pointer(pointer_id);
+                }
+                EventCommand::InvalidatePaint => {
+                    needs_paint = true;
+                }
+            }
+        }
+
         let focus_needs_paint = self.apply_focus_transition(
             arena,
             previous_focus,
             previous_visible,
-            next_focus,
-            next_visible,
+            target_focus,
+            target_visible,
         );
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
@@ -395,6 +436,10 @@ impl EventRouter {
                     .layout_rect
                     .unwrap_or_else(|| Rect::from_min_size(Point::ZERO, crate::layout::Size::ZERO)),
             );
+            let external = ctx.take_external_input();
+            if !external.is_empty() {
+                self.pending_external_input.borrow_mut().extend(external);
+            }
         }
         self.input.apply(ctx.take_commands(), arena) || ctx.needs_paint()
     }

@@ -1,4 +1,6 @@
 use crate::fiber::FiberId;
+use crate::input::event::UiEvent;
+use crate::scene::primitive::ExternalDrawId;
 
 // ── EventHandled ────────────────────────────────────────────────────────────
 
@@ -42,6 +44,7 @@ pub struct EventCtx {
     clipboard_write: Option<String>,
     current_fiber: Option<FiberId>,
     phase: EventPhase,
+    external_input: Vec<(ExternalDrawId, UiEvent)>,
 }
 
 impl EventCtx {
@@ -53,6 +56,7 @@ impl EventCtx {
             clipboard_write: None,
             current_fiber: None,
             phase: EventPhase::Direct,
+            external_input: Vec::new(),
         }
     }
 
@@ -152,6 +156,15 @@ impl EventCtx {
     /// Whether any handler requested a paint invalidation.
     pub(crate) fn needs_paint(&self) -> bool {
         self.needs_paint
+    }
+
+    /// Queues an input event targeting an external draw handler for deferred delivery.
+    pub fn queue_external_input(&mut self, id: ExternalDrawId, event: UiEvent) {
+        self.external_input.push((id, event));
+    }
+
+    pub(crate) fn take_external_input(&mut self) -> Vec<(ExternalDrawId, UiEvent)> {
+        std::mem::take(&mut self.external_input)
     }
 }
 

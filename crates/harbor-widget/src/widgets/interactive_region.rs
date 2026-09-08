@@ -233,9 +233,7 @@ impl AnyView for InteractiveRegionView {
 
     fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
         let state = self.runtime.read().visual;
-        let colors =
-            self.style
-                .resolve(state.disabled, state.selected, state.hovered, state.pressed);
+        let colors = self.style.resolve_state(&state);
         vec![
             Primitive::Quad {
                 rect,
@@ -259,9 +257,7 @@ impl AnyView for InteractiveRegionView {
     ) -> Vec<Primitive> {
         if phase == crate::view::PaintPhase::AfterChildren {
             let state = self.runtime.read().visual;
-            let colors =
-                self.style
-                    .resolve(state.disabled, state.selected, state.hovered, state.pressed);
+            let colors = self.style.resolve_state(&state);
             let mut primitives = Vec::new();
             if let Some(label) = &self.label {
                 let text_width = label.chars().count() as f32 * metrics.cell_width;
@@ -395,9 +391,6 @@ impl AnyView for InteractiveRegionView {
         })
     }
 
-    fn is_focusable(&self) -> bool {
-        !self.runtime.read().visual.disabled
-    }
 
     fn permits_pointer_capture(&self) -> bool {
         !self.runtime.read().visual.disabled

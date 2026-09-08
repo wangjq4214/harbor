@@ -16,59 +16,13 @@ use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
 use crate::scene::{SceneDelta, SceneGraph};
-use crate::signal::{
-    RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
-};
+use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
 use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-
-// ── External input trampoline ──────────────────────────────────────────────
-
-// Thread-local queues for external input events, grouped by owning Runtime.
-//
-// Written by `CustomPaint::handle_event` during the event walk and drained
-// by `Runtime::drain_external_input` after the walk completes. The active
-// Runtime scope is required so two window runtimes on the same thread cannot
-// consume each other's deferred input.
-thread_local! {
-    static PENDING_EXTERNAL_INPUT: std::cell::RefCell<
-        HashMap<
-            RuntimeId,
-            Vec<(crate::scene::primitive::ExternalDrawId, crate::input::event::UiEvent)>,
-        >,
-    > = std::cell::RefCell::new(HashMap::new());
-}
-
-/// Called by CustomPaint::handle_event during event routing.
-/// Queues an event for deferred delivery to the active Runtime's host.
-///
-/// Calls outside a Runtime dispatch are ignored because there is no safe
-/// owner for the event; CustomPaint always runs inside `Runtime::dispatch`.
-pub(crate) fn queue_external_input(
-    id: crate::scene::primitive::ExternalDrawId,
-    event: crate::input::event::UiEvent,
-) {
-    let Some(runtime_id) = active_runtime_id() else {
-        return;
-    };
-    PENDING_EXTERNAL_INPUT.with(|queues| {
-        queues
-            .borrow_mut()
-            .entry(runtime_id)
-            .or_default()
-            .push((id, event));
-    });
-}
-
-fn remove_external_input(runtime_id: RuntimeId) {
-    PENDING_EXTERNAL_INPUT.with(|queues| {
-        queues.borrow_mut().remove(&runtime_id);
-    });
-}
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
@@ -635,12 +589,7 @@ impl Runtime {
         crate::scene::primitive::ExternalDrawId,
         crate::input::event::UiEvent,
     )> {
-        PENDING_EXTERNAL_INPUT.with(|queues| {
-            queues
-                .borrow_mut()
-                .remove(&self.runtime_id)
-                .unwrap_or_default()
-        })
+        self.events.drain_external_input()
     }
 
     /// Returns a reference to the InputState.
@@ -765,7 +714,6 @@ impl Drop for Runtime {
             unmount_fiber(&mut self.arena, root_id);
         }
         remove_runtime(self.runtime_id);
-        remove_external_input(self.runtime_id);
     }
 }
 
@@ -1815,7 +1763,7 @@ mod tests {
         let focused_id = rt.input().focused.expect("focused widget should be set");
         let fiber = rt.arena().get(focused_id).unwrap();
         assert!(
-            fiber.view.as_ref().unwrap().is_focusable(),
+            fiber.is_focusable(),
             "focused widget should be focusable (the Button, not the SizedBox)"
         );
     }

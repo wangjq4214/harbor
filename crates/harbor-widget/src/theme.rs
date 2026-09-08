@@ -1,6 +1,7 @@
 //! Semantic desktop theme tokens shared by widget controls.
 
 use crate::scene::primitive::Color;
+use crate::widgets::InteractionState;
 
 /// The colors used to draw one control state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,8 +27,54 @@ pub struct ControlStyle {
     pub focus_ring: Color,
 }
 
+/// The resolved visual state category for a control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ControlVisualState {
+    #[default]
+    Normal,
+    Hovered,
+    Selected,
+    Pressed,
+    Disabled,
+}
+
+impl From<&InteractionState> for ControlVisualState {
+    fn from(state: &InteractionState) -> Self {
+        if state.disabled {
+            Self::Disabled
+        } else if state.pressed {
+            Self::Pressed
+        } else if state.selected {
+            Self::Selected
+        } else if state.hovered {
+            Self::Hovered
+        } else {
+            Self::Normal
+        }
+    }
+}
+
 impl ControlStyle {
+    /// Resolves colors for a discrete control visual state.
+    pub fn resolve_visual_state(&self, state: ControlVisualState) -> ControlColors {
+        match state {
+            ControlVisualState::Disabled => self.disabled,
+            ControlVisualState::Pressed => self.pressed,
+            ControlVisualState::Selected => self.selected,
+            ControlVisualState::Hovered => self.hovered,
+            ControlVisualState::Normal => self.normal,
+        }
+    }
+
+    /// Resolves the visual state for an interaction state snapshot.
+    pub fn resolve_state(&self, state: &InteractionState) -> ControlColors {
+        self.resolve_visual_state(ControlVisualState::from(state))
+    }
+
     /// Resolves the stable visual state precedence for a control.
+    ///
+    /// Prefer [`resolve_state`](Self::resolve_state) or [`resolve_visual_state`](Self::resolve_visual_state)
+    /// to avoid positional boolean arguments.
     pub fn resolve(
         &self,
         disabled: bool,
@@ -153,5 +200,41 @@ impl Default for Theme {
             icon_button,
             spacing: 8.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_visual_state_precedence() {
+        let theme = Theme::default();
+        let style = &theme.button;
+
+        // Normal when idle
+        let idle = InteractionState::default();
+        assert_eq!(style.resolve_state(&idle), style.normal);
+        assert_eq!(ControlVisualState::from(&idle), ControlVisualState::Normal);
+
+        // Hovered
+        let hovered = InteractionState { hovered: true, ..idle };
+        assert_eq!(style.resolve_state(&hovered), style.hovered);
+        assert_eq!(ControlVisualState::from(&hovered), ControlVisualState::Hovered);
+
+        // Selected beats hovered
+        let selected = InteractionState { selected: true, hovered: true, ..idle };
+        assert_eq!(style.resolve_state(&selected), style.selected);
+        assert_eq!(ControlVisualState::from(&selected), ControlVisualState::Selected);
+
+        // Pressed beats selected and hovered
+        let pressed = InteractionState { pressed: true, selected: true, hovered: true, ..idle };
+        assert_eq!(style.resolve_state(&pressed), style.pressed);
+        assert_eq!(ControlVisualState::from(&pressed), ControlVisualState::Pressed);
+
+        // Disabled beats all
+        let disabled = InteractionState { disabled: true, pressed: true, selected: true, hovered: true, ..idle };
+        assert_eq!(style.resolve_state(&disabled), style.disabled);
+        assert_eq!(ControlVisualState::from(&disabled), ControlVisualState::Disabled);
     }
 }

@@ -1,4 +1,4 @@
-use super::flex::{Axis, FlexLayout, MainAxisAlignment, finite_fill};
+use super::flex::{Axis, Flex, MainAxisAlignment};
 use crate::layout::{
     Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
 };
@@ -9,11 +9,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 /// Vertical flex container. Stacks children top-to-bottom.
 #[derive(Clone)]
 pub struct Column {
-    pub cross_axis_alignment: Alignment,
-    pub background: Option<Color>,
-    pub main_axis_alignment: MainAxisAlignment,
-    gap: f32,
-    children: Vec<View>,
+    inner: Flex,
 }
 
 impl Default for Column {
@@ -25,53 +21,40 @@ impl Default for Column {
 impl Column {
     pub fn new() -> Self {
         Column {
-            cross_axis_alignment: Alignment::Start,
-            background: None,
-            main_axis_alignment: MainAxisAlignment::Start,
-            gap: 0.0,
-            children: vec![],
+            inner: Flex::new(Axis::Vertical),
         }
     }
 
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
-        self.cross_axis_alignment = alignment;
+        self.inner = self.inner.cross_axis_alignment(alignment);
         self
     }
 
     /// Sets a finite, nonnegative minimum gap in logical pixels.
     pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap;
+        self.inner = self.inner.gap(gap);
         self
     }
 
     pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
-        self.main_axis_alignment = alignment;
+        self.inner = self.inner.main_axis_alignment(alignment);
         self
     }
 
-    fn engine(&self) -> FlexLayout {
-        FlexLayout {
-            axis: Axis::Vertical,
-            gap: self.gap,
-            main_axis_alignment: self.main_axis_alignment,
-            cross_axis_alignment: self.cross_axis_alignment,
-        }
-    }
-
     pub fn background(mut self, color: Color) -> Self {
-        self.background = Some(color);
+        self.inner = self.inner.background(color);
         self
     }
 
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
-        self.children.push(child.into_child_view());
+        self.inner = self.inner.child(child);
         self
     }
 }
 
 impl Component for Column {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.inner.children.clone(), None)
     }
 }
 
@@ -80,48 +63,40 @@ impl crate::WithChildren for Column {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        self.inner = self.inner.with_children(children)?;
         Ok(self)
     }
 }
 
 impl AnyView for Column {
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        finite_fill(constraints)
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        self.inner.intrinsic_size(constraints, metrics)
     }
 
     fn accepts_flex_children(&self) -> bool {
-        true
+        self.inner.accepts_flex_children()
     }
 
     fn layout(
         &self,
         constraints: BoxConstraints,
         children: &mut dyn ChildMeasurer,
-        _metrics: &TextMetrics,
+        metrics: &TextMetrics,
     ) -> Result<ParentLayout, LayoutError> {
-        self.engine().layout(constraints, children)
+        self.inner.layout(constraints, children, metrics)
     }
 
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
-        _metrics: &TextMetrics,
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        self.engine().layout_children(constraints, child_sizes)
+        self.inner.layout_children(constraints, child_sizes, metrics)
     }
 
-    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
-        self.background
-            .map(|c| Primitive::Quad {
-                rect,
-                color: c,
-                corner_radius: 0.0,
-            })
-            .into_iter()
-            .collect()
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        self.inner.paint_primitives(rect, metrics)
     }
 }
 
