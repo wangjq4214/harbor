@@ -1,6 +1,7 @@
 use super::reconcile::ReconcileDiagnostic;
 use crate::layout::{LayoutDiagnostic, LayoutError, Rect};
 use crate::signal::Hook;
+use crate::theme::Theme;
 use crate::view::{AnyView, Key};
 use slotmap::SlotMap;
 use std::any::TypeId;
@@ -66,6 +67,8 @@ pub struct Fiber {
     pub(crate) widget_type: TypeId,
     #[allow(private_interfaces)]
     pub(crate) hooks: Vec<Box<dyn Hook>>,
+    #[allow(private_interfaces)]
+    pub(crate) subscriptions: Vec<Box<dyn Hook>>,
     pub(crate) children: Vec<FiberId>,
     pub(crate) parent: Option<FiberId>,
     pub(crate) flags: DirtyFlags,
@@ -76,6 +79,8 @@ pub struct Fiber {
     pub(crate) reconcile_diagnostics: Vec<ReconcileDiagnostic>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
+    /// Effective theme inherited during reconciliation.
+    pub(crate) theme: Arc<Theme>,
     /// Primitive-slot keys keep filtered shadows from renumbering later items.
     pub(crate) scene_item_slots: Vec<(u32, u64)>,
     /// Primitive-slot keys for this fiber's after-child primitive slots.
@@ -93,6 +98,7 @@ impl Fiber {
             key,
             widget_type,
             hooks: Vec::new(),
+            subscriptions: Vec::new(),
             children: Vec::new(),
             parent: None,
             flags: DirtyFlags::NONE,
@@ -101,6 +107,7 @@ impl Fiber {
             layout_error: None,
             reconcile_diagnostics: Vec::new(),
             view,
+            theme: Arc::new(Theme::default()),
             scene_item_slots: Vec::new(),
             after_scene_item_slots: Vec::new(),
         }

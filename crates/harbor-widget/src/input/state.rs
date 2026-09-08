@@ -11,6 +11,7 @@ use std::collections::HashMap;
 pub struct InputState {
     pub(crate) focused: Option<FiberId>,
     pub(crate) hovered: Option<FiberId>,
+    pub(crate) focus_visible: bool,
     pointer_captures: HashMap<u64, FiberId>,
 }
 
@@ -25,6 +26,7 @@ impl InputState {
         InputState {
             focused: None,
             hovered: None,
+            focus_visible: false,
             pointer_captures: HashMap::new(),
         }
     }
@@ -32,6 +34,11 @@ impl InputState {
     /// Fiber currently receiving keyboard / focus events, if any.
     pub fn focused(&self) -> Option<FiberId> {
         self.focused
+    }
+
+    /// Whether the current focus target should render a keyboard focus affordance.
+    pub(crate) fn focus_visible(&self) -> bool {
+        self.focus_visible
     }
 
     /// Fiber currently under the pointer, if tracked.
@@ -57,7 +64,14 @@ impl InputState {
         for cmd in commands {
             match cmd {
                 EventCommand::RequestFocus(id) => {
+                    if self.focused != Some(id) {
+                        self.focused = Some(id);
+                        self.focus_visible = true;
+                    }
+                }
+                EventCommand::RequestFocusWithVisibility { id, focus_visible } => {
                     self.focused = Some(id);
+                    self.focus_visible = focus_visible;
                 }
                 EventCommand::CapturePointer { pointer_id, captor } => {
                     self.pointer_captures.insert(pointer_id, captor);
@@ -75,6 +89,7 @@ impl InputState {
                     navigated_scopes.push((scope, forward));
                     let next = Self::find_next_focusable(arena, scope, self.focused, forward);
                     self.focused = next;
+                    self.focus_visible = true;
                 }
                 EventCommand::InvalidatePaint => {
                     needs_paint = true;
@@ -90,12 +105,29 @@ impl InputState {
             && !arena.contains(fid)
         {
             self.focused = None;
+            self.focus_visible = false;
+        }
+    }
+
+    /// Clears focus when the current live target no longer satisfies its contract.
+    pub(crate) fn clear_focus_if(&mut self, should_clear: impl FnOnce(FiberId) -> bool) -> bool {
+        if self.focused.is_some_and(should_clear) {
+            self.focused = None;
+            self.focus_visible = false;
+            true
+        } else {
+            false
         }
     }
 
     /// Removes pointer captures for fibers that are no longer in the arena.
     pub(crate) fn clear_capture_if_dead(&mut self, arena: &FiberArena) {
         self.pointer_captures.retain(|_, fid| arena.contains(*fid));
+    }
+
+    /// Removes captures whose still-live targets have become ineligible.
+    pub(crate) fn clear_capture_if(&mut self, mut retains: impl FnMut(FiberId) -> bool) {
+        self.pointer_captures.retain(|_, fid| retains(*fid));
     }
 
     /// DFS walk to collect all focusable fibers in a subtree, then return

@@ -15,6 +15,7 @@ pub enum EventHandled {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EventCommand {
     RequestFocus(FiberId),
+    RequestFocusWithVisibility { id: FiberId, focus_visible: bool },
     CapturePointer { pointer_id: u64, captor: FiberId },
     ReleasePointer(u64),
     NavigateFocus { scope: FiberId, forward: bool },
@@ -53,6 +54,17 @@ impl EventCtx {
     /// Request that focus be moved to the given fiber after the event walk.
     pub fn request_focus(&mut self, id: FiberId) {
         self.commands.push(EventCommand::RequestFocus(id));
+    }
+
+    /// Request focus without showing a keyboard focus ring, used by pointer activation.
+    pub(crate) fn request_focus_from_pointer(&mut self) {
+        if let Some(id) = self.current_fiber {
+            self.commands
+                .push(EventCommand::RequestFocusWithVisibility {
+                    id,
+                    focus_visible: false,
+                });
+        }
     }
 
     /// Returns the fiber whose handler is currently running.

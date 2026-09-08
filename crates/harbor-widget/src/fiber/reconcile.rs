@@ -1,4 +1,5 @@
 use super::{DirtyFlags, Fiber, FiberArena, FiberId};
+use crate::theme::Theme;
 use crate::view::{BuildCx, ExternalRegistrations, Key, View, ViewContents};
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
@@ -46,6 +47,9 @@ pub(crate) fn unmount_fiber(arena: &mut FiberArena, id: FiberId) {
         for hook in &fiber.hooks {
             hook.unsubscribe_all(id);
         }
+        for subscription in &fiber.subscriptions {
+            subscription.unsubscribe_all(id);
+        }
     }
 }
 
@@ -62,6 +66,7 @@ pub(crate) fn create_fiber_from_view(
         parent_id,
         view,
         &mut ExternalRegistrations::default(),
+        Arc::new(Theme::default()),
     )
 }
 
@@ -70,12 +75,14 @@ fn create_fiber_from_view_with_externals(
     parent_id: Option<FiberId>,
     view: View,
     externals: &mut ExternalRegistrations,
+    inherited_theme: Arc<Theme>,
 ) -> FiberId {
     let key = view.key().cloned();
     let widget_type = view.widget_type();
 
     let mut fiber = Fiber::new(key, widget_type, None);
     fiber.parent = parent_id;
+    fiber.theme = inherited_theme;
     fiber.flags.insert(DirtyFlags::BUILD_DIRTY);
     fiber.flags.insert(DirtyFlags::LAYOUT_DIRTY);
     let id = arena.insert(fiber);
@@ -99,16 +106,24 @@ fn reconcile_fiber(
             reconcile_concrete_fiber(arena, id, inner, children, None, externals);
         }
         ViewContents::Deferred { component, .. } => {
+            let theme = arena.get(id).unwrap().theme.clone();
             let hooks = std::mem::take(&mut arena.get_mut(id).unwrap().hooks);
+            let subscriptions = std::mem::take(&mut arena.get_mut(id).unwrap().subscriptions);
+            for subscription in subscriptions {
+                subscription.unsubscribe_all(id);
+            }
             let mut cx = BuildCx {
                 current_fiber: Some(id),
                 hooks,
+                subscriptions: Vec::new(),
                 hook_index: 0,
                 externals: ExternalRegistrations::default(),
+                theme,
             };
             let materialized = component.build(&mut cx);
             externals.append(&mut cx.externals);
             let hooks = cx.hooks;
+            let subscriptions = cx.subscriptions;
             let (inner, materialized_children, _key) = materialized.decompose();
             reconcile_concrete_fiber(
                 arena,
@@ -118,6 +133,7 @@ fn reconcile_fiber(
                 Some(hooks),
                 externals,
             );
+            arena.get_mut(id).unwrap().subscriptions = subscriptions;
         }
     }
 }
@@ -135,8 +151,14 @@ fn reconcile_concrete_fiber(
         .map(|fiber| fiber.children.clone())
         .unwrap_or_default();
 
+    let inherited_theme = arena
+        .get(id)
+        .map(|fiber| fiber.theme.clone())
+        .unwrap_or_else(|| Arc::new(Theme::default()));
+    let effective_theme = inner.theme_override().unwrap_or(inherited_theme);
     if let Some(fiber) = arena.get_mut(id) {
         fiber.view = Some(inner);
+        fiber.theme = effective_theme;
         if let Some(hooks) = hooks {
             fiber.hooks = hooks;
         }
@@ -224,6 +246,10 @@ pub(crate) fn reconcile_children_with_externals(
     new_views: Vec<View>,
     externals: &mut ExternalRegistrations,
 ) -> Vec<FiberId> {
+    let parent_theme = arena
+        .get(parent_id)
+        .map(|fiber| fiber.theme.clone())
+        .unwrap_or_else(|| Arc::new(Theme::default()));
     let old_keys: Vec<Option<Key>> = old_children
         .iter()
         .map(|&id| arena.get(id).and_then(|fiber| fiber.key.clone()))
@@ -281,6 +307,9 @@ pub(crate) fn reconcile_children_with_externals(
 
         if let Some(old_id) = reusable {
             consumed.insert(old_id);
+            if let Some(fiber) = arena.get_mut(old_id) {
+                fiber.theme = parent_theme.clone();
+            }
             reconcile_fiber(arena, old_id, view, externals);
             new_child_ids.push(old_id);
         } else {
@@ -289,6 +318,7 @@ pub(crate) fn reconcile_children_with_externals(
                 Some(parent_id),
                 view,
                 externals,
+                parent_theme.clone(),
             ));
         }
     }

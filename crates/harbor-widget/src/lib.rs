@@ -36,13 +36,16 @@ pub mod scene;
 mod scheduler;
 pub mod signal;
 pub mod text;
+pub mod theme;
 pub mod view;
 pub mod widgets;
 pub use layout::{Alignment, FlexFit};
+pub use theme::{ControlColors, ControlStyle, Theme};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
-    Axis, Column, ConstrainedBox, Expanded, Flex, Flexible, MainAxisAlignment, Row, Separator,
-    Spacer,
+    Actions, Axis, Button, Column, ConstrainedBox, Expanded, Flex, Flexible, Focus, FocusHandle,
+    FocusScope, IconButton, InteractionState, InteractiveRegion, KeyChord, MainAxisAlignment,
+    MouseRegion, Row, Separator, Shortcuts, Spacer, ThemeProvider,
 };
 
 #[cfg(test)]

@@ -263,7 +263,7 @@ fn keyed_children_middle_removal_preserves_later_fiber_hook_and_focus() {
 }
 
 #[test]
-fn closing_focused_keyed_child_clears_focus_deterministically() {
+fn closing_focused_keyed_child_uses_a_deterministic_scope_fallback() {
     let sig_a = Rc::new(RefCell::new(None));
     let obs_a = Rc::new(RefCell::new(Vec::new()));
     let child_a = StatefulButton::new("A", 10, sig_a, obs_a);
@@ -289,6 +289,7 @@ fn closing_focused_keyed_child_clears_focus_deterministically() {
     let root_id = rt.root_id().unwrap();
     let initial_child_ids = rt.arena().get(root_id).unwrap().children().to_vec();
     let fiber_b = initial_child_ids[1];
+    let fiber_a = initial_child_ids[0];
 
     rt.set_focus(fiber_b);
     assert_eq!(rt.input().focused(), Some(fiber_b));
@@ -307,8 +308,8 @@ fn closing_focused_keyed_child_clears_focus_deterministically() {
     );
     assert_eq!(
         rt.input().focused(),
-        None,
-        "focus pointing to unmounted fiber B must be cleared, not routed to sibling"
+        Some(fiber_a),
+        "focus falls back to the first live target in the same implicit root scope"
     );
 }
 

@@ -93,24 +93,27 @@ pub(crate) fn dispatch_matched_draw(
 }
 
 /// Maps a widget [`UiEvent`] onto the terminal-owned [`TerminalEvent`] vocabulary.
-pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> TerminalEvent {
+///
+/// Pointer-boundary events are consumed by widget-level mouse regions and have no terminal
+/// equivalent, so they are deliberately not bridged to the terminal engine.
+pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> Option<TerminalEvent> {
     match event {
         UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
                 key: map_key(key),
                 modifiers: map_modifiers(modifiers),
-            })
+            }))
         }
         UiEvent::Keyboard(KeyboardEvent::KeyUp { key, modifiers }) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
                 key: map_key(key),
                 modifiers: map_modifiers(modifiers),
-            })
+            }))
         }
         UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text))
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)))
         }
-        UiEvent::Pointer(pointer) => TerminalEvent::Pointer(
+        UiEvent::Pointer(pointer) => Some(TerminalEvent::Pointer(
             TerminalPointerEvent::new(
                 (pointer.position.x, pointer.position.y),
                 map_pointer_phase(pointer.phase),
@@ -118,9 +121,13 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> TerminalEvent {
                 pointer.pointer_id,
             )
             .with_modifiers(map_modifiers(pointer.modifiers)),
-        ),
-        UiEvent::Focus(FocusEvent::Gained) => TerminalEvent::Focus(TerminalFocusEvent::Gained),
-        UiEvent::Focus(FocusEvent::Lost) => TerminalEvent::Focus(TerminalFocusEvent::Lost),
+        )),
+        UiEvent::PointerBoundary(_) => None,
+        UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        }
+        UiEvent::Focus(FocusEvent::Lost) => Some(TerminalEvent::Focus(TerminalFocusEvent::Lost)),
+        UiEvent::Focus(FocusEvent::VisibilityChanged(_)) => None,
     }
 }
 
@@ -251,7 +258,9 @@ impl TerminalWidgetBridge {
 
             let wheel = is_terminal_wheel(event);
             let key_wakes = wakes_redraw_for_routed_input(event);
-            let mapped = terminal_event_from_ui_event(event.clone());
+            let Some(mapped) = terminal_event_from_ui_event(event.clone()) else {
+                return EventHandled::Ignored;
+            };
 
             let mut offset_before = None;
             if let Ok(mut term) = input_terminal.lock() {
@@ -608,13 +617,13 @@ mod tests {
         // Assert
         assert_eq!(
             mapped,
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
                 key: TerminalKey::Enter,
                 modifiers: TerminalModifiers {
                     ctrl: true,
                     ..TerminalModifiers::default()
                 },
-            })
+            }))
         );
     }
 
@@ -623,11 +632,13 @@ mod tests {
         // Arrange / Act / Assert
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Keyboard(KeyboardEvent::Ime("你好".into()))),
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime("你好".into()))
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(
+                "你好".into()
+            )))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Gained)),
-            TerminalEvent::Focus(TerminalFocusEvent::Gained)
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Pointer(PointerEvent::new(
@@ -636,12 +647,12 @@ mod tests {
                 PointerButton::Left,
                 3,
             ))),
-            TerminalEvent::Pointer(TerminalPointerEvent::new(
+            Some(TerminalEvent::Pointer(TerminalPointerEvent::new(
                 (1.0, 2.0),
                 TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
                 TerminalPointerButton::Left,
                 3,
-            ))
+            )))
         );
     }
 
@@ -681,17 +692,17 @@ mod tests {
                     ..Modifiers::default()
                 },
             })),
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
                 key: TerminalKey::Escape,
                 modifiers: TerminalModifiers {
                     alt: true,
                     ..TerminalModifiers::default()
                 },
-            })
+            }))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Lost)),
-            TerminalEvent::Focus(TerminalFocusEvent::Lost)
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Lost))
         );
     }
 

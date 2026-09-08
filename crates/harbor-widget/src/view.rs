@@ -7,6 +7,7 @@ use crate::layout::{
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
+use crate::theme::Theme;
 use std::any::TypeId;
 use std::sync::Arc;
 
@@ -35,6 +36,13 @@ impl From<&str> for Key {
     }
 }
 
+/// Crate-private focus metadata stored on a view, never exposing Fiber identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FocusMetadata {
+    pub(crate) enabled: bool,
+    pub(crate) order: i32,
+    pub(crate) handle: Option<u64>,
+}
 // ── ExternalRegistrations ───────────────────────────────────────────────────
 
 /// Side-channel registrations collected while building a View subtree.
@@ -60,8 +68,10 @@ impl ExternalRegistrations {
 pub struct BuildCx {
     pub(crate) current_fiber: Option<FiberId>,
     pub(crate) hooks: Vec<Box<dyn Hook>>,
+    pub(crate) subscriptions: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
     pub(crate) externals: ExternalRegistrations,
+    pub(crate) theme: Arc<Theme>,
 }
 
 impl BuildCx {
@@ -72,8 +82,10 @@ impl BuildCx {
         BuildCx {
             current_fiber: None,
             hooks: Vec::new(),
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         }
     }
 
@@ -128,6 +140,19 @@ impl BuildCx {
             signal.subscribe(fid);
         }
         signal
+    }
+
+    /// Reads the effective theme inherited from the nearest ThemeProvider.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Subscribes the current component fiber to an external signal.
+    pub fn track<T: 'static>(&mut self, signal: &Signal<T>) {
+        if let Some(fiber) = self.current_fiber {
+            signal.subscribe(fiber);
+            self.subscriptions.push(Box::new(signal.clone()));
+        }
     }
 }
 
@@ -288,12 +313,63 @@ pub(crate) trait AnyView: 'static {
         EventHandled::Ignored
     }
 
+    /// Metadata for focus traversal. Disabled nodes are omitted by the router.
+    fn focus_metadata(&self) -> Option<FocusMetadata> {
+        self.is_focusable().then_some(FocusMetadata {
+            enabled: true,
+            order: 0,
+            handle: None,
+        })
+    }
+
     /// Whether this widget can receive focus via Tab navigation.
-    /// Default: false.
+    /// Kept as a compatibility shim for existing widget implementations.
     fn is_focusable(&self) -> bool {
         false
     }
 
+    /// Whether keyboard and logical focus notifications target this wrapper's
+    /// single child while the wrapper retains focus identity and metadata.
+    fn delegates_focused_events(&self) -> bool {
+        false
+    }
+
+    /// Whether this view establishes a focus traversal scope.
+    fn is_focus_scope(&self) -> bool {
+        false
+    }
+
+    /// Declarative cursor requested while this view is in the hover path.
+    fn pointer_cursor(&self) -> Option<crate::effects::CursorShape> {
+        None
+    }
+
+    /// Opt-in for synthetic pointer-boundary delivery from the router.
+    fn accepts_pointer_boundaries(&self) -> bool {
+        false
+    }
+
+    /// Whether a live capture targeting this view remains valid.
+    fn permits_pointer_capture(&self) -> bool {
+        true
+    }
+    /// Replaces the inherited theme for descendants during reconciliation.
+    fn theme_override(&self) -> Option<Arc<Theme>> {
+        None
+    }
+
+    /// Returns the typed action bound to this exact chord, if any.
+    fn shortcut_action(
+        &self,
+        _chord: crate::widgets::shortcuts::KeyChord,
+    ) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    /// Delivers a pending action to a compatible typed provider.
+    fn invoke_action(&self, _action: &dyn std::any::Any) -> bool {
+        false
+    }
     /// Whether this widget is a modal scope — events targeting widgets outside
     /// its subtree should be blocked.
     /// Default: false.
@@ -495,8 +571,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         // First build: creates a new signal
@@ -508,8 +586,10 @@ mod tests {
         let mut cx2 = BuildCx {
             current_fiber: None,
             hooks: cx.hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -521,8 +601,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks: vec![],
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -538,8 +620,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks: vec![],
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         // First build with u32
@@ -549,8 +633,10 @@ mod tests {
         let mut cx2 = BuildCx {
             current_fiber: None,
             hooks: cx.hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }

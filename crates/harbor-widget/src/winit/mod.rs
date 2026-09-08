@@ -10,7 +10,8 @@ mod surface;
 
 use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::input::event::{
-    FocusEvent, KeyboardEvent, PointerButton, PointerEvent, PointerPhase, UiEvent,
+    FocusEvent, KeyboardEvent, PointerBoundaryEvent, PointerBoundaryKind, PointerButton,
+    PointerEvent, PointerPhase, UiEvent,
 };
 use crate::layout::Point;
 use crate::renderer::Viewport;
@@ -252,7 +253,7 @@ impl WinitAdapter {
             event,
             WindowEvent::ModifiersChanged(_) | WindowEvent::Ime(_)
         );
-        let Some(ui_event) = self.convert_event(event) else {
+        let Some(mut ui_event) = self.convert_event(event) else {
             return if state_only {
                 WinitEventOutcome::handled(RuntimeEffects::default())
             } else {
@@ -260,9 +261,18 @@ impl WinitAdapter {
             };
         };
 
+        if matches!(event, WindowEvent::Focused(true)) && runtime.input().focus_visible() {
+            ui_event = UiEvent::Focus(FocusEvent::GainedVisible);
+        }
+
         let mut effects = runtime.dispatch(ui_event);
-        if matches!(event, WindowEvent::Focused(false)) {
+        if matches!(
+            event,
+            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
+        ) {
             effects.merge(runtime.cancel_pointer_captures(self.logical_pointer_position()));
+        }
+        if matches!(event, WindowEvent::Focused(false)) {
             self.modifiers = ModifiersState::empty();
             // Focus loss ends the current composition so a later focus
             // session cannot inherit IME suppression.
@@ -300,6 +310,14 @@ impl WinitAdapter {
                 };
                 Some(self.handle_surface_transition(runtime, width, height, self.scale_factor))
             }
+            WindowEvent::CloseRequested => {
+                self.quarantine_active_pointers();
+                let effects = runtime.cancel_pointer_captures(self.logical_pointer_position());
+                Some(WinitEventOutcome {
+                    handled: false,
+                    effects: self.fold_effects(effects),
+                })
+            }
             _ => None,
         }
     }
@@ -311,9 +329,15 @@ impl WinitAdapter {
         height: u32,
         scale: f32,
     ) -> WinitEventOutcome {
+        let was_drawable = self.surface_state.can_acquire();
         let changed = self.surface_state.update(width, height, scale);
         runtime.set_viewport(self.surface_state.viewport().clone());
         let mut effects = self.set_drawable(self.surface_state.can_acquire());
+        if was_drawable && !self.surface_state.can_acquire() {
+            self.quarantine_active_pointers();
+            let canceled = runtime.cancel_pointer_captures(self.logical_pointer_position());
+            effects.merge(self.fold_effects(canceled));
+        }
         self.surface_state.reset_recovery_budget();
 
         if changed && self.surface_state.can_acquire() {
@@ -322,23 +346,29 @@ impl WinitAdapter {
         }
         WinitEventOutcome::handled(effects)
     }
+    fn quarantine_active_pointers(&mut self) {
+        for index in 0..self.active_mouse_buttons.len() {
+            self.mouse_release_quarantine[index] |= self.active_mouse_buttons[index];
+            self.active_mouse_buttons[index] = false;
+        }
+        let active_touches: Vec<_> = self
+            .touch_contacts
+            .iter()
+            .map(|contact| (contact.device_id, contact.source_id))
+            .collect();
+        for identity in active_touches {
+            if !self.quarantined_touches.contains(&identity) {
+                self.quarantined_touches.push(identity);
+            }
+        }
+    }
 
     fn quarantine_pointer_event(&mut self, event: &WindowEvent) -> bool {
-        if matches!(event, WindowEvent::Focused(false)) {
-            for index in 0..self.active_mouse_buttons.len() {
-                self.mouse_release_quarantine[index] |= self.active_mouse_buttons[index];
-                self.active_mouse_buttons[index] = false;
-            }
-            let active_touches: Vec<_> = self
-                .touch_contacts
-                .iter()
-                .map(|contact| (contact.device_id, contact.source_id))
-                .collect();
-            for identity in active_touches {
-                if !self.quarantined_touches.contains(&identity) {
-                    self.quarantined_touches.push(identity);
-                }
-            }
+        if matches!(
+            event,
+            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
+        ) {
+            self.quarantine_active_pointers();
             return false;
         }
 
@@ -431,6 +461,20 @@ impl WinitAdapter {
                 None
             }
             WindowEvent::Ime(ime) => self.convert_ime(ime),
+            WindowEvent::CursorEntered { .. } => {
+                Some(UiEvent::PointerBoundary(PointerBoundaryEvent {
+                    pointer_id: 0,
+                    position: Some(self.logical_pointer_position()),
+                    kind: PointerBoundaryKind::Enter,
+                }))
+            }
+            WindowEvent::CursorLeft { .. } => {
+                Some(UiEvent::PointerBoundary(PointerBoundaryEvent {
+                    pointer_id: 0,
+                    position: None,
+                    kind: PointerBoundaryKind::Leave,
+                }))
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = Point::new(position.x as f32, position.y as f32);
                 Some(UiEvent::Pointer(
@@ -1746,12 +1790,21 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.set_root(crate::widgets::button::Button::new("OK"));
         runtime.update(Instant::now());
-        assert!(runtime.focus_first_focusable());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: crate::input::event::Key::Tab,
+            modifiers: Default::default(),
+        }));
+        assert!(runtime.input().focus_visible());
 
         let mut adapter = WinitAdapter::new();
-        let outcome = adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
-        assert!(outcome.handled);
-        assert!(outcome.effects.request_redraw);
+        let lost = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+        assert!(lost.handled);
+        assert!(lost.effects.request_redraw);
+        adapter.redraw_requested(&mut runtime, Instant::now());
+
+        let gained = adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+        assert!(gained.handled);
+        assert!(gained.effects.request_redraw);
     }
 
     #[test]
@@ -1883,6 +1936,54 @@ mod tests {
             },
         );
         assert!(!clicked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn pointer_leave_and_surface_suspend_cancel_button_capture() {
+        fn press(runtime: &mut Runtime, adapter: &mut WinitAdapter) {
+            adapter.handle_event(
+                runtime,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: PhysicalPosition::new(4.0, 4.0),
+                },
+            );
+            adapter.handle_event(
+                runtime,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert!(runtime.input().captor(0).is_some());
+        }
+
+        let mut runtime = Runtime::new();
+        runtime.set_root(Button::new("OK"));
+        runtime.update(Instant::now());
+        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        press(&mut runtime, &mut adapter);
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+        );
+        assert!(runtime.input().captor(0).is_none());
+
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::CursorEntered {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+        );
+        press(&mut runtime, &mut adapter);
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
+        );
+        assert!(runtime.input().captor(0).is_none());
     }
 
     #[test]

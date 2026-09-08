@@ -6,8 +6,24 @@ use crate::layout::Point;
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEvent {
     Pointer(PointerEvent),
+    /// Synthetic boundary event derived from hit-test path changes.
+    PointerBoundary(PointerBoundaryEvent),
     Keyboard(KeyboardEvent),
     Focus(FocusEvent),
+}
+
+/// Pointer enter/leave information delivered independently from pointer buttons.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointerBoundaryEvent {
+    pub pointer_id: u64,
+    pub position: Option<Point>,
+    pub kind: PointerBoundaryKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerBoundaryKind {
+    Enter,
+    Leave,
 }
 
 // ── PointerEvent ────────────────────────────────────────────────────────────
@@ -47,7 +63,7 @@ pub enum KeyboardEvent {
     Ime(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Tab,
     Enter,
@@ -83,7 +99,7 @@ pub enum Key {
     Character(char),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
@@ -95,7 +111,12 @@ pub struct Modifiers {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusEvent {
+    /// Focus gained with the default keyboard-visible treatment.
     Gained,
+    /// Focus gained via keyboard traversal or a shortcut.
+    GainedVisible,
+    /// The focus target stayed the same but its visible affordance changed.
+    VisibilityChanged(bool),
     Lost,
 }
 

@@ -93,7 +93,7 @@ impl AnyView for FocusScope {
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: Key::Tab,
                 modifiers,
-            }) => {
+            }) if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => {
                 ctx.navigate_focus(!modifiers.shift);
                 EventHandled::Handled
             }
@@ -103,6 +103,10 @@ impl AnyView for FocusScope {
 
     fn is_modal_scope(&self) -> bool {
         self.modal
+    }
+
+    fn is_focus_scope(&self) -> bool {
+        true
     }
 }
 

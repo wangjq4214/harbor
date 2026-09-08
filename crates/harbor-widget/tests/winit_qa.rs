@@ -128,8 +128,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
     );
     adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
 
-    // A new right-button capture must not make the canceled left-button
-    // release eligible for the shared widget pointer capture.
+    // Non-primary presses remain ignored after focus-loss quarantine.
     adapter.handle_event(
         &mut runtime,
         &mouse_input(ElementState::Pressed, MouseButton::Right),
@@ -145,7 +144,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
         &mut runtime,
         &mouse_input(ElementState::Released, MouseButton::Right),
     );
-    assert!(clicked.load(Ordering::SeqCst));
+    assert!(!clicked.load(Ordering::SeqCst));
 }
 
 #[test]

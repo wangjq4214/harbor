@@ -180,8 +180,12 @@ fn should_deliver_events_to_captor_regardless_of_position() {
         1,
     ));
     assert!(
-        clicked.load(Ordering::SeqCst),
-        "captured button should receive Up even when pointer moved outside"
+        !clicked.load(Ordering::SeqCst),
+        "release outside the allocation must cancel activation",
+    );
+    assert!(
+        rt.input().captor(1).is_none(),
+        "capture is released after Up"
     );
 }
 
@@ -438,7 +442,7 @@ fn should_honor_pointer_id_isolation() {
         0,
     ));
 
-    // Pointer 1: Down+Up in same position → fires onClick (separate capture context)
+    // A second pointer cannot steal an existing region's active press.
     rt.dispatch(pointer_event(
         Point::new(46.0, 16.0),
         PointerPhase::Down,
@@ -452,8 +456,7 @@ fn should_honor_pointer_id_isolation() {
         1,
     ));
 
-    // Pointer 1's onClick fired; pointer 0 is still captured
-    assert!(clicked.load(Ordering::SeqCst));
+    assert!(!clicked.load(Ordering::SeqCst));
     assert!(rt.input().captor(0).is_some());
     assert!(rt.input().captor(1).is_none());
 }
@@ -612,7 +615,7 @@ fn should_handle_pointer_cancel_and_release_capture() {
 // ── Right/Middle click ignored ──────────────────────────────────────────────
 
 #[test]
-fn should_fire_onclick_on_right_click_since_button_does_not_filter_by_button_type() {
+fn should_ignore_right_click_activation() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
@@ -630,10 +633,9 @@ fn should_fire_onclick_on_right_click_since_button_does_not_filter_by_button_typ
         PointerButton::Right,
         0,
     ));
-    // Current behavior: Button fires onClick for any button type
     assert!(
-        clicked.load(Ordering::SeqCst),
-        "Right click currently fires onClick (Button does not filter by button type)"
+        !clicked.load(Ordering::SeqCst),
+        "right click must not activate controls"
     );
 }
 
@@ -682,15 +684,15 @@ fn should_route_move_event_to_button_without_crashing() {
 // ── Keyboard dispatch with no focused widget ────────────────────────────────
 
 #[test]
-fn should_not_crash_on_keyboard_with_no_focused_widget() {
+fn should_start_root_focus_traversal_when_unfocused() {
     let mut rt = Runtime::new();
     rt.set_root(Button::new("OK"));
     rt.update(now());
 
-    // No focus set — keyboard events go to root via keyboard path
+    // Root-level traversal is available even before a node is focused.
     let req = rt.dispatch(key_down(Key::Tab));
-    // Tab on Button (not FocusScope) is ignored
-    assert!(!req.request_redraw);
+    assert!(req.request_redraw);
+    assert!(rt.input().focused().is_some());
 }
 
 // ── Viewport change triggers re-layout ──────────────────────────────────────

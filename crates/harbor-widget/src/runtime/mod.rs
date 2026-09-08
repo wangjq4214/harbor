@@ -20,6 +20,7 @@ use crate::signal::{
     RuntimeId, RuntimeScope, active_runtime_id, mark_dirty_for, remove_runtime, take_dirty,
 };
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
+use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
 use std::sync::Arc;
@@ -191,6 +192,9 @@ impl Runtime {
     pub fn update(&mut self, now: Instant) -> RuntimeEffects {
         let mut effects = std::mem::take(&mut self.pending_effects);
         effects.merge(self.flush_pending_work());
+        if let Some(cursor) = self.events.take_cursor() {
+            effects.cursor = Some(cursor);
+        }
         effects.merge(self.collect_external_schedule(now));
         effects
     }
@@ -287,24 +291,35 @@ impl Runtime {
     fn rebuild_root(&mut self, root_id: FiberId, old_children: &[FiberId]) {
         let _scope = RuntimeScope::enter(self.runtime_id);
         let hooks = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().hooks);
+        let subscriptions = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().subscriptions);
+        for subscription in subscriptions {
+            subscription.unsubscribe_all(root_id);
+        }
         let mut cx = BuildCx {
             current_fiber: Some(root_id),
             hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         let view = self.root_component.as_ref().unwrap().build(&mut cx);
         let widget_type = view.widget_type();
         let key = view.key().cloned();
         let (inner, children, _explicit_key) = view.decompose();
+        let effective_theme = inner
+            .theme_override()
+            .unwrap_or_else(|| Arc::new(Theme::default()));
 
         // Update root fiber
         if let Some(fiber) = self.arena.get_mut(root_id) {
             fiber.hooks = cx.hooks;
+            fiber.subscriptions = std::mem::take(&mut cx.subscriptions);
             fiber.key = key;
             fiber.widget_type = widget_type;
             fiber.view = Some(inner);
+            fiber.theme = effective_theme;
             fiber.flags.remove(DirtyFlags::BUILD_DIRTY);
         }
 
@@ -321,10 +336,11 @@ impl Runtime {
         }
         self.install_externals(&mut cx.externals);
 
-        self.layout_and_paint(root_id);
+        // Resolve stale input identities before painting so fallback focus and
+        // cursor state are reflected in the same frame.
+        self.events.clear_dead_targets(&self.arena, self.root_id);
 
-        // Clean input state
-        self.events.clear_dead_targets(&self.arena);
+        self.layout_and_paint(root_id);
     }
 
     fn layout_and_paint(&mut self, root_id: FiberId) {
@@ -457,6 +473,9 @@ impl Runtime {
         if let Some(text) = self.events.take_clipboard() {
             effects.clipboard = Some(ClipboardEffect::write(text));
         }
+        if let Some(cursor) = self.events.take_cursor() {
+            effects.cursor = Some(cursor);
+        }
         effects
     }
 
@@ -553,6 +572,23 @@ impl Runtime {
     /// Returns a reference to the InputState.
     pub fn input(&self) -> &InputState {
         self.events.input()
+    }
+
+    /// Requests focus by stable public handle. An absent target is retained until
+    /// reconciliation creates a matching enabled Focus wrapper.
+    pub fn request_focus(&mut self, handle: &crate::widgets::FocusHandle) -> RuntimeEffects {
+        let _scope = RuntimeScope::enter(self.runtime_id);
+        let changed = self
+            .events
+            .request_focus_handle(&self.arena, self.root_id, handle.0);
+        if changed {
+            if let Some(root_id) = self.root_id {
+                mark_dirty_for(self.runtime_id, root_id);
+            }
+            RuntimeEffects::request_redraw()
+        } else {
+            RuntimeEffects::default()
+        }
     }
 
     /// Returns a mutable reference to the TextRunCache.
@@ -1521,7 +1557,7 @@ mod tests {
         )));
         assert!(focus_events.iter().any(|(_, event)| matches!(
             event,
-            UiEvent::Focus(crate::input::event::FocusEvent::Gained)
+            UiEvent::Focus(crate::input::event::FocusEvent::GainedVisible)
         )));
     }
 

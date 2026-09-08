@@ -5,6 +5,7 @@ error[E0277]: the trait bound `usize: IntoChildren` is not satisfied
   |                                                 ^^^^^^^ the trait `harbor_widget::view::Component` is not implemented for `usize`
   |
   = help: the following other types implement trait `harbor_widget::view::Component`:
+            Actions<A>
             Align
             Button
             Column
@@ -12,7 +13,6 @@ error[E0277]: the trait bound `usize: IntoChildren` is not satisfied
             CustomPaint
             DecoratedBox
             Expanded
-            Flex
           and $N others
   = note: required for `usize` to implement `IntoChildView`
   = note: required for `usize` to implement `IntoChildren`

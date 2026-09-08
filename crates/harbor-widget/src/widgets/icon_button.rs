@@ -4,18 +4,20 @@ use crate::widgets::interactive_region::InteractiveRegion;
 use std::sync::Arc;
 
 type ClickCallback = Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
-/// Compatibility button built on the reusable desktop interaction state machine.
+/// Compact text-glyph control with the same semantics as [`crate::widgets::Button`].
 #[derive(Clone)]
-pub struct Button {
+pub struct IconButton {
+    glyph: String,
     label: String,
     on_click: Option<ClickCallback>,
     disabled: bool,
     selected: bool,
 }
 
-impl Button {
-    pub fn new(label: impl Into<String>) -> Self {
+impl IconButton {
+    pub fn new(glyph: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
+            glyph: glyph.into(),
             label: label.into(),
             on_click: None,
             disabled: false,
@@ -23,7 +25,6 @@ impl Button {
         }
     }
 
-    /// Preserves the established callback signature and dispatch timing.
     pub fn on_click(mut self, handler: impl Fn(&mut EventCtx) + Send + Sync + 'static) -> Self {
         self.on_click = Some(Arc::new(handler));
         self
@@ -38,14 +39,25 @@ impl Button {
         self.selected = selected;
         self
     }
+
+    /// Text label retained for accessibility integrations and test inspection.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
 }
 
-impl Component for Button {
+impl Component for IconButton {
     fn build(&self, cx: &mut BuildCx) -> View {
+        let glyph = if self.glyph.is_empty() {
+            self.label.clone()
+        } else {
+            self.glyph.clone()
+        };
         let mut region = InteractiveRegion::new()
+            .compact()
             .disabled(self.disabled)
             .selected(self.selected)
-            .label(self.label.clone());
+            .label(glyph);
         if let Some(callback) = &self.on_click {
             let callback = callback.clone();
             region = region.on_activate(move |ctx| callback(ctx));
@@ -54,7 +66,7 @@ impl Component for Button {
     }
 }
 
-impl crate::WithChildren for Button {
+impl crate::WithChildren for IconButton {
     fn with_children(
         self,
         children: crate::Children,
@@ -64,7 +76,7 @@ impl crate::WithChildren for Button {
             Ok(self)
         } else {
             Err(crate::ChildConstructionError::too_many(
-                "Button",
+                "IconButton",
                 crate::ChildCardinality::Leaf,
                 received,
             ))

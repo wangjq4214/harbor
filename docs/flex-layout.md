@@ -104,7 +104,9 @@ PTY resizing, post-layout observation, Positioned, or a production root redesign
 ## Verification
 
 See [T0001](../.grimoire/ticket/0010-desktop-terminal-tabs-and-view-macro/T0001-parent-directed-flex-layout.md)
-and the [plan 0020 execution evidence](../.grimoire/plans/0020-parent-directed-flex-layout-evidence.md).
+and the executable evidence in `crates/harbor-widget/tests/flex_layout.rs`,
+`crates/harbor-widget/tests/flex_runtime.rs`, and
+`crates/harbor-widget/src/runtime/layout_resources_tests.rs`.
 The GPU retention test compares actual pipeline, buffer and atlas-binding handles
 through resize, fractional DPI, zero viewport and restore. Run it with
 `HARBOR_REQUIRE_LAYOUT_GPU=1` to turn an unavailable adapter into a failure rather

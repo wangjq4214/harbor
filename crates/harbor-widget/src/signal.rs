@@ -103,6 +103,7 @@ struct SignalData<T> {
     value: T,
     version: u64,
     subscribers: Vec<Subscriber>,
+    equals: Option<fn(&T, &T) -> bool>,
 }
 
 /// A fine-grained pull-based reactive state cell.
@@ -142,8 +143,22 @@ impl<T> Signal<T> {
                 value,
                 version: 0,
                 subscribers: Vec::new(),
+                equals: None,
             })),
         }
+    }
+
+    /// Creates a signal that ignores writes equal to its current value.
+    ///
+    /// This is useful for value-style state such as themes, where rebuilding on
+    /// an unchanged replacement would only schedule redundant work.
+    pub fn new_distinct(value: T) -> Self
+    where
+        T: PartialEq,
+    {
+        let signal = Self::new(value);
+        signal.data.borrow_mut().equals = Some(|left, right| left == right);
+        signal
     }
 
     /// Reads the current value, returning a borrowed reference.
@@ -156,6 +171,12 @@ impl<T> Signal<T> {
     /// Updates the value, increments the version, and marks subscribers dirty.
     pub fn set(&self, value: T) {
         let mut data = self.data.borrow_mut();
+        if data
+            .equals
+            .is_some_and(|equals| equals(&data.value, &value))
+        {
+            return;
+        }
         data.value = value;
         data.version += 1;
         for subscriber in &data.subscribers {
@@ -284,6 +305,25 @@ mod tests {
         assert_eq!(*signal.read(), 100);
     }
 
+    #[test]
+    fn distinct_signal_ignores_equal_writes() {
+        clear_dirty_queue();
+        let signal = Signal::new_distinct(7u32);
+        let fid = dummy_fiber_id();
+        signal.subscribe(fid);
+
+        signal.set(7);
+
+        assert_eq!(signal.version(), 0);
+        let dirty = PENDING_DIRTY.with(|queues| {
+            queues
+                .borrow()
+                .get(&DEFAULT_RUNTIME_ID)
+                .cloned()
+                .unwrap_or_default()
+        });
+        assert!(dirty.is_empty());
+    }
     #[test]
     fn clone_shares_state() {
         let s1 = Signal::new(10u32);

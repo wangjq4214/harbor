@@ -615,7 +615,7 @@ fn unsupported_keyboard_keys_are_unhandled_without_external_input() {
 
 #[test]
 fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
-    // Arrange: two independent touch contacts press the same button.
+    // A control owns one active pointer; subsequent touch starts are ignored.
     let clicks = Arc::new(AtomicUsize::new(0));
     let clicks_clone = Arc::clone(&clicks);
     let mut runtime = Runtime::new();
@@ -626,7 +626,7 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
     let mut adapter = WinitAdapter::new();
 
     for (index, source_id) in [31, 47].into_iter().enumerate() {
-        let outcome = adapter.handle_event(
+        let _outcome = adapter.handle_event(
             &mut runtime,
             &WindowEvent::Touch(Touch {
                 device_id: winit::event::DeviceId::dummy(),
@@ -636,12 +636,12 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
                 id: source_id,
             }),
         );
-        assert!(outcome.is_handled());
-        assert!(
+        assert_eq!(
             runtime
                 .input()
                 .captor((1 << 63) | (index as u64 + 1))
-                .is_some()
+                .is_some(),
+            index == 0,
         );
     }
 
