@@ -184,6 +184,17 @@ pub(crate) enum PaintPhase {
     AfterChildren,
 }
 
+/// Result of asking an ancestor to reveal a descendant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnsureVisibleResult {
+    /// This view does not own visibility policy.
+    NotApplicable,
+    /// Geometry was usable; the value reports whether retained state changed.
+    Resolved(bool),
+    /// Geometry is not currently usable, so the request must be retried.
+    Unavailable,
+}
+
 /// Internal type-erased View capability.
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
@@ -296,6 +307,22 @@ pub(crate) trait AnyView: 'static {
     /// intentionally painted before this clip is appended.
     fn descendant_clip(&self, _rect: Rect) -> Option<crate::scene::clip::RoundedClip> {
         None
+    }
+
+    /// Applies internal bookkeeping after a successful atomic layout commit.
+    /// External user code must not be invoked from this hook.
+    fn post_layout(&self, _rect: Rect, _child_rects: &[Rect]) {}
+
+    /// Returns an external allocation callback to stage after commit and paint.
+    fn layout_changed_callback(&self) -> Option<std::sync::Arc<dyn Fn(Rect) + 'static>> {
+        None
+    }
+
+    /// Requests the minimum movement needed to reveal an absolute target rect.
+    /// Implementations adjust `target` by the accepted movement so outer
+    /// ancestors coordinate against its eventual position.
+    fn ensure_visible(&self, _rect: Rect, _target: &mut Rect) -> EnsureVisibleResult {
+        EnsureVisibleResult::NotApplicable
     }
 
     /// Returns true if the point (in widget-local coordinates) is inside

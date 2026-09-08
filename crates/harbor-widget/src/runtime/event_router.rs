@@ -6,9 +6,10 @@ use crate::fiber::{FiberArena, FiberId};
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerPhase, UiEvent,
 };
-use crate::input::event_ctx::EventCtx;
+use crate::input::event_ctx::{EventCtx, EventPhase};
 use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
+use crate::view::EnsureVisibleResult;
 use crate::widgets::shortcuts::KeyChord;
 use std::any::Any;
 
@@ -20,6 +21,8 @@ pub(crate) struct EventRouter {
     hover_path: Vec<FiberId>,
     last_cursor: Option<CursorShape>,
     pending_focus_handle: Option<u64>,
+    pending_reveal: Option<FiberId>,
+    layout_available: bool,
     last_focus_scope: Option<FiberId>,
 }
 
@@ -32,8 +35,15 @@ impl EventRouter {
             hover_path: Vec::new(),
             last_cursor: None,
             pending_focus_handle: None,
+            pending_reveal: None,
+            layout_available: false,
             last_focus_scope: None,
         }
+    }
+
+    /// Gates visibility requests on geometry from the latest layout attempt.
+    pub(crate) fn set_layout_available(&mut self, available: bool) {
+        self.layout_available = available;
     }
 
     pub(crate) fn input(&self) -> &InputState {
@@ -205,6 +215,7 @@ impl EventRouter {
         };
         let mut ctx = EventCtx::new();
 
+        ctx.set_phase(EventPhase::Capture);
         for &ancestor_id in path.iter().take(path.len().saturating_sub(1)) {
             if Self::is_modal_block(arena, ancestor_id, target) {
                 return self.finish_event(arena, ctx);
@@ -215,6 +226,7 @@ impl EventRouter {
             }
         }
 
+        ctx.set_phase(EventPhase::Target);
         if let Some(target) = target {
             Self::invoke_handler(arena, target, event, &mut ctx);
             if ctx.is_propagation_stopped() {
@@ -222,6 +234,7 @@ impl EventRouter {
             }
         }
 
+        ctx.set_phase(EventPhase::Bubble);
         for &ancestor_id in path.iter().take(path.len().saturating_sub(1)).rev() {
             Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
             if ctx.is_propagation_stopped() {
@@ -256,7 +269,9 @@ impl EventRouter {
                 next_focus.and_then(|target| Self::focus_scope_for(arena, target));
         }
         let focus_needs_paint = if previous_focus != next_focus {
-            self.notify_focus_transition(arena, previous_focus, next_focus, next_visible)
+            let notified =
+                self.notify_focus_transition(arena, previous_focus, next_focus, next_visible);
+            notified | self.ensure_focus_visible(arena)
         } else if previous_visible != next_visible {
             next_focus
                 .map(|fiber| {
@@ -288,12 +303,68 @@ impl EventRouter {
         self.input.focus_visible = focus_visible;
         self.last_focus_scope = next.and_then(|target| Self::focus_scope_for(arena, target));
         if previous != next {
-            self.notify_focus_transition(arena, previous, next, focus_visible)
+            let notified = self.notify_focus_transition(arena, previous, next, focus_visible);
+            notified | self.ensure_focus_visible(arena)
         } else if let Some(fiber) = next {
             self.notify_focus(arena, fiber, FocusEvent::VisibilityChanged(focus_visible))
         } else {
             false
         }
+    }
+
+    /// Retries a reveal that was requested before committed target geometry existed.
+    pub(crate) fn retry_pending_focus_visibility(&mut self, arena: &FiberArena) -> bool {
+        let Some(pending) = self.pending_reveal else {
+            return false;
+        };
+        if self.input.focused != Some(pending) || !arena.contains(pending) {
+            self.pending_reveal = None;
+            return false;
+        }
+        self.ensure_focus_visible(arena)
+    }
+
+    fn ensure_focus_visible(&mut self, arena: &FiberArena) -> bool {
+        let Some(target) = self.input.focused else {
+            self.pending_reveal = None;
+            return false;
+        };
+        if !self.layout_available {
+            self.pending_reveal = Some(target);
+            return false;
+        }
+        let Some(mut target_rect) = arena.get(target).and_then(|fiber| fiber.layout_rect) else {
+            self.pending_reveal = Some(target);
+            return false;
+        };
+        if !valid_non_empty_rect(target_rect) {
+            self.pending_reveal = Some(target);
+            return false;
+        }
+
+        let path = Self::build_ancestor_path(arena, Some(target));
+        let mut changed = false;
+        let mut unavailable = false;
+        for ancestor in path.iter().take(path.len().saturating_sub(1)).rev() {
+            let Some(entry) = arena.get(*ancestor) else {
+                unavailable = true;
+                break;
+            };
+            let Some(view) = entry.view.as_ref() else {
+                continue;
+            };
+            let Some(rect) = entry.layout_rect else {
+                unavailable = true;
+                continue;
+            };
+            match view.ensure_visible(rect, &mut target_rect) {
+                EnsureVisibleResult::NotApplicable => {}
+                EnsureVisibleResult::Resolved(moved) => changed |= moved,
+                EnsureVisibleResult::Unavailable => unavailable = true,
+            }
+        }
+        self.pending_reveal = unavailable.then_some(target);
+        changed
     }
 
     fn notify_focus_transition(
@@ -703,4 +774,13 @@ impl EventRouter {
             view.handle_event(event, ctx, rect);
         }
     }
+}
+
+fn valid_non_empty_rect(rect: Rect) -> bool {
+    rect.min.x.is_finite()
+        && rect.min.y.is_finite()
+        && rect.max.x.is_finite()
+        && rect.max.y.is_finite()
+        && rect.max.x > rect.min.x
+        && rect.max.y > rect.min.y
 }

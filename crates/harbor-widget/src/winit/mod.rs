@@ -502,8 +502,8 @@ impl WinitAdapter {
                 let phase = match delta {
                     MouseScrollDelta::LineDelta(x, y) => PointerPhase::WheelLine { dx: *x, dy: *y },
                     MouseScrollDelta::PixelDelta(position) => PointerPhase::WheelPixel {
-                        dx: position.x as f32,
-                        dy: position.y as f32,
+                        dx: position.x as f32 / self.scale_factor,
+                        dy: position.y as f32 / self.scale_factor,
                     },
                 };
                 Some(UiEvent::Pointer(
@@ -1618,6 +1618,7 @@ mod tests {
             ))
         );
 
+        adapter.set_scale_factor(2.0);
         let pixel = adapter
             .convert_event(&WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -1628,8 +1629,8 @@ mod tests {
         assert_eq!(
             pixel,
             UiEvent::Pointer(PointerEvent::new(
-                Point::new(12.0, 18.0),
-                PointerPhase::WheelPixel { dx: 3.0, dy: 4.0 },
+                Point::new(6.0, 9.0),
+                PointerPhase::WheelPixel { dx: 1.5, dy: 2.0 },
                 PointerButton::Left,
                 0,
             ))

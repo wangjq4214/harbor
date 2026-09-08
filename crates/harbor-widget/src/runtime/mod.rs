@@ -3,14 +3,14 @@ mod frame_encoder;
 
 use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::fiber::{
-    DirtyFlags, Fiber, FiberArena, FiberId, layout_fiber, paint_fiber,
+    DirtyFlags, Fiber, FiberArena, FiberId, LayoutOutcome, layout_fiber, paint_fiber,
     reconcile_children_with_externals, unmount_fiber,
 };
 use crate::input::event::{PointerPhase, UiEvent};
 #[cfg(test)]
 use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
-use crate::layout::{BoxConstraints, Point, Size};
+use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
@@ -72,6 +72,12 @@ fn remove_external_input(runtime_id: RuntimeId) {
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
+struct PendingLayoutNotification {
+    fiber: FiberId,
+    rect: Rect,
+    callback: Arc<dyn Fn(Rect) + 'static>,
+}
+
 /// Documented fallback metrics used by [`Runtime::new`].
 pub const DEFAULT_TEXT_METRICS: TextMetrics = TextMetrics {
     cell_width: 10.0,
@@ -105,6 +111,7 @@ pub struct Runtime {
     events: EventRouter,
     encoder: FrameEncoder,
     pending_effects: RuntimeEffects,
+    pending_layout_notifications: Vec<PendingLayoutNotification>,
 }
 
 impl Default for Runtime {
@@ -137,6 +144,7 @@ impl Runtime {
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
             pending_effects: RuntimeEffects::default(),
+            pending_layout_notifications: Vec::new(),
         }
     }
 
@@ -213,28 +221,32 @@ impl Runtime {
     /// Schedule providers are deliberately only polled by `update`, not here.
     fn flush_pending_work(&mut self) -> RuntimeEffects {
         let dirty = take_dirty(self.runtime_id);
-        let Some(root_id) = self.root_id else {
-            return RuntimeEffects::default();
-        };
-        if !dirty.is_empty() {
-            // Signals only enqueue fibers (without setting flags). Rebuild the
-            // full root conservatively: changed content/factors affect siblings.
-            let old_children = self
+        let mut did_tree_work = false;
+        if let Some(root_id) = self.root_id {
+            if !dirty.is_empty() {
+                // Signals only enqueue fibers (without setting flags). Rebuild the
+                // full root conservatively: changed content/factors affect siblings.
+                let old_children = self
+                    .arena
+                    .get(root_id)
+                    .map(|fiber| fiber.children.clone())
+                    .unwrap_or_default();
+                self.rebuild_root(root_id, &old_children);
+                did_tree_work = true;
+            } else if self
                 .arena
                 .get(root_id)
-                .map(|fiber| fiber.children.clone())
-                .unwrap_or_default();
-            self.rebuild_root(root_id, &old_children);
-        } else if self
-            .arena
-            .get(root_id)
-            .is_some_and(|fiber| fiber.flags.contains(DirtyFlags::LAYOUT_DIRTY))
-        {
-            self.layout_and_paint(root_id);
-        } else {
-            return RuntimeEffects::default();
+                .is_some_and(|fiber| fiber.flags.contains(DirtyFlags::LAYOUT_DIRTY))
+            {
+                self.layout_and_paint(root_id);
+                did_tree_work = true;
+            }
         }
-        RuntimeEffects::request_redraw()
+
+        // User callbacks run only after paint and dirty settlement. Signal writes
+        // performed here remain queued for the next Runtime turn.
+        self.drain_layout_notifications();
+        RuntimeEffects::from_redraw(did_tree_work)
     }
 
     /// Queries registered external schedule providers and folds their demands.
@@ -289,6 +301,7 @@ impl Runtime {
 
     /// Shared rebuild → reconcile → layout → paint sequence.
     fn rebuild_root(&mut self, root_id: FiberId, old_children: &[FiberId]) {
+        self.events.set_layout_available(false);
         let _scope = RuntimeScope::enter(self.runtime_id);
         let hooks = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().hooks);
         let subscriptions = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().subscriptions);
@@ -343,20 +356,26 @@ impl Runtime {
         self.layout_and_paint(root_id);
     }
 
-    fn layout_and_paint(&mut self, root_id: FiberId) {
+    fn layout_and_paint(&mut self, root_id: FiberId) -> LayoutOutcome {
+        self.events.set_layout_available(false);
         let viewport_size = self
             .current_viewport
             .as_ref()
             .map(|v| v.logical_size)
             .unwrap_or(Size::new(800.0, 600.0));
         let constraints = BoxConstraints::loose(viewport_size);
-        layout_fiber(
+        let outcome = layout_fiber(
             &mut self.arena,
             root_id,
             constraints,
             Point::ZERO,
             &self.text_metrics,
         );
+        if outcome.committed {
+            self.events.set_layout_available(true);
+            self.collect_post_layout(root_id);
+            self.events.retry_pending_focus_visibility(&self.arena);
+        }
         self.run_paint_pass();
 
         // The layout transaction retains prior/fallback geometry on failure.
@@ -367,6 +386,61 @@ impl Runtime {
             if let Some(fiber) = self.arena.get_mut(id) {
                 fiber.flags = DirtyFlags::NONE;
                 pending.extend_from_slice(&fiber.children);
+            }
+        }
+        outcome
+    }
+
+    fn collect_post_layout(&mut self, root_id: FiberId) {
+        let mut pending = vec![root_id];
+        while let Some(id) = pending.pop() {
+            let Some(fiber) = self.arena.get(id) else {
+                continue;
+            };
+            let children = fiber.children.clone();
+            let rect = fiber.layout_rect;
+            let view = fiber.view.clone();
+            pending.extend_from_slice(&children);
+            let (Some(rect), Some(view)) = (rect, view) else {
+                continue;
+            };
+            let child_rects = children
+                .iter()
+                .filter_map(|child| self.arena.get(*child).and_then(|fiber| fiber.layout_rect))
+                .collect::<Vec<_>>();
+            view.post_layout(rect, &child_rects);
+
+            if !valid_layout_notification_rect(rect) {
+                continue;
+            }
+            let Some(callback) = view.layout_changed_callback() else {
+                continue;
+            };
+            let Some(fiber) = self.arena.get_mut(id) else {
+                continue;
+            };
+            if fiber.last_layout_notification == Some(rect) {
+                continue;
+            }
+            fiber.last_layout_notification = Some(rect);
+            self.pending_layout_notifications
+                .push(PendingLayoutNotification {
+                    fiber: id,
+                    rect,
+                    callback,
+                });
+        }
+    }
+
+    fn drain_layout_notifications(&mut self) {
+        let notifications = std::mem::take(&mut self.pending_layout_notifications);
+        for notification in notifications {
+            let still_current = self
+                .arena
+                .get(notification.fiber)
+                .is_some_and(|fiber| fiber.last_layout_notification == Some(notification.rect));
+            if still_current {
+                (notification.callback)(notification.rect);
             }
         }
     }
@@ -673,6 +747,15 @@ impl Runtime {
     fn tree_has_modal(&self, fiber_id: FiberId) -> bool {
         EventRouter::tree_has_modal(&self.arena, fiber_id)
     }
+}
+
+fn valid_layout_notification_rect(rect: Rect) -> bool {
+    rect.min.x.is_finite()
+        && rect.min.y.is_finite()
+        && rect.max.x.is_finite()
+        && rect.max.y.is_finite()
+        && rect.max.x > rect.min.x
+        && rect.max.y > rect.min.y
 }
 
 impl Drop for Runtime {

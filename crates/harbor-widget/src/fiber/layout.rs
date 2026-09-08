@@ -329,19 +329,25 @@ fn prepare_commit<'a>(
     Ok(commits)
 }
 
+/// Whether the selected candidate completed its atomic geometry commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutOutcome {
+    pub committed: bool,
+}
+
 /// Bounded parent-directed measurement followed by one atomic geometry commit.
 /// Each actual node measurement consumes the shared 8 × reachable-node budget.
 /// Failure retains committed geometry/diagnostics; first-layout fallback is zero
-/// and non-hit-testable. A stale top-level id remains a no-op.
+/// and non-hit-testable. A stale top-level id remains a failed/no-op outcome.
 pub(crate) fn layout_fiber(
     arena: &mut FiberArena,
     id: FiberId,
     constraints: BoxConstraints,
     origin: Point,
     metrics: &TextMetrics,
-) {
+) -> LayoutOutcome {
     if !arena.contains(id) {
-        return;
+        return LayoutOutcome { committed: false };
     }
     let nodes = reachable_nodes(arena, id);
     let mut pass = LayoutPass {
@@ -372,6 +378,7 @@ pub(crate) fn layout_fiber(
         }
         Ok(())
     });
+    let committed = result.is_ok();
     if let Err(failure) = result {
         for node in nodes {
             let fiber = arena.get_mut(node).expect("reachable live fiber");
@@ -384,6 +391,7 @@ pub(crate) fn layout_fiber(
             fiber.layout_error = Some(failure.error);
         }
     }
+    LayoutOutcome { committed }
 }
 
 #[cfg(test)]

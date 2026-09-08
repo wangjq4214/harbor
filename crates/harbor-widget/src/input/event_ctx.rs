@@ -11,6 +11,15 @@ pub enum EventHandled {
 
 // ── EventCommand ────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum EventPhase {
+    Capture,
+    Target,
+    Bubble,
+    #[default]
+    Direct,
+}
+
 /// Commands that event handlers can emit to be applied after the event walk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EventCommand {
@@ -32,6 +41,7 @@ pub struct EventCtx {
     needs_paint: bool,
     clipboard_write: Option<String>,
     current_fiber: Option<FiberId>,
+    phase: EventPhase,
 }
 
 impl EventCtx {
@@ -42,6 +52,7 @@ impl EventCtx {
             needs_paint: false,
             clipboard_write: None,
             current_fiber: None,
+            phase: EventPhase::Direct,
         }
     }
 
@@ -49,6 +60,14 @@ impl EventCtx {
     /// which fiber is the captor.
     pub(crate) fn set_current_fiber(&mut self, id: FiberId) {
         self.current_fiber = Some(id);
+    }
+
+    pub(crate) fn set_phase(&mut self, phase: EventPhase) {
+        self.phase = phase;
+    }
+
+    pub(crate) fn is_capture_phase(&self) -> bool {
+        self.phase == EventPhase::Capture
     }
 
     /// Request that focus be moved to the given fiber after the event walk.

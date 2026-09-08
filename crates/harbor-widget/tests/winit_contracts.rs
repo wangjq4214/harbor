@@ -258,7 +258,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
                 11,
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
-                    PointerPhase::WheelPixel { dx: 3.0, dy: -4.0 },
+                    PointerPhase::WheelPixel { dx: 1.5, dy: -2.0 },
                     PointerButton::Left,
                     0,
                 ))

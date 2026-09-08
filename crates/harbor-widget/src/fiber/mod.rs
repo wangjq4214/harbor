@@ -8,7 +8,7 @@ mod reconcile;
 pub use arena::{DirtyFlags, Fiber, FiberArena, FiberId};
 pub use reconcile::{ReconcileDiagnostic, ReconcileSiblingList};
 
-pub(crate) use layout::layout_fiber;
+pub(crate) use layout::{LayoutOutcome, layout_fiber};
 pub(crate) use paint::paint_fiber;
 pub(crate) use reconcile::{reconcile_children_with_externals, unmount_fiber};
 

@@ -73,6 +73,8 @@ pub struct Fiber {
     pub(crate) parent: Option<FiberId>,
     pub(crate) flags: DirtyFlags,
     pub(crate) layout_rect: Option<Rect>,
+    /// Last valid allocation delivered for this reconciliation identity.
+    pub(crate) last_layout_notification: Option<Rect>,
     pub(crate) layout_diagnostics: Vec<LayoutDiagnostic>,
     pub(crate) layout_error: Option<LayoutError>,
     /// Diagnostics from the most recent child reconciliation.
@@ -103,6 +105,7 @@ impl Fiber {
             parent: None,
             flags: DirtyFlags::NONE,
             layout_rect: None,
+            last_layout_notification: None,
             layout_diagnostics: Vec::new(),
             layout_error: None,
             reconcile_diagnostics: Vec::new(),
