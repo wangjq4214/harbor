@@ -29,8 +29,9 @@ use crate::dialog::{
 use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources};
+use crate::tab_view::{TabCommand, TabFocusPolicy, TabUiController, TabWorkspace};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
-use crate::terminal_view::{TerminalWidgetBridge, build_main_terminal_root, with_current_gpu};
+use crate::terminal_view::{TerminalWidgetBridge, with_current_gpu};
 use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{
     GpuContext, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,
@@ -50,6 +51,8 @@ pub(crate) struct ActiveSession {
     appearance: TerminalAppearance,
     event_proxy: EventLoopProxy<AppEvent>,
     input_gate: Arc<AtomicBool>,
+    /// Persistent declarative projection of the Host-owned tab model.
+    tab_ui: TabUiController,
     /// Widget framework runtime.
     widget_runtime: harbor_widget::runtime::Runtime,
     /// Main-window input adapter, sharing the runtime's window lifecycle.
@@ -130,6 +133,12 @@ impl ActiveSession {
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::TerminalOutputReady(tab_id) = event;
         let outcome = self.tabs.process_output(tab_id);
+        if outcome.unread_changed {
+            self.sync_tab_ui();
+            let effects = self.widget_runtime.update(Instant::now());
+            let effects = self.winit_adapter.fold_effects(effects);
+            apply_effects(&self.window, &effects, event_loop);
+        }
         if !outcome.request_active_invalidation {
             return;
         }
@@ -228,8 +237,19 @@ impl ActiveSession {
             return;
         }
 
-        if gate_active && matches!(&event, WindowEvent::KeyboardInput { .. }) {
-            return;
+        // Reject activations before Runtime can move focus or capture a pointer. Wheel events
+        // still reach the terminal bridge, whose paste gate intentionally permits scrolling.
+        if gate_active {
+            if matches!(&event, WindowEvent::KeyboardInput { .. }) {
+                return;
+            }
+            if matches!(
+                &event,
+                WindowEvent::MouseInput { .. } | WindowEvent::Touch(_)
+            ) {
+                self.winit_adapter.quarantine_blocked_pointer_event(&event);
+                return;
+            }
         }
 
         if matches!(&event, WindowEvent::CloseRequested) {
@@ -243,6 +263,14 @@ impl ActiveSession {
             return;
         }
 
+        if self
+            .tab_ui
+            .update_presentation(logical_window_width(&self.window))
+        {
+            let effects = self.widget_runtime.update(Instant::now());
+            let effects = self.winit_adapter.fold_effects(effects);
+            apply_effects(&self.window, &effects, event_loop);
+        }
         let size = self.window.inner_size();
         let outcome = self.winit_adapter.handle_event_with_size(
             &mut self.widget_runtime,
@@ -251,6 +279,7 @@ impl ActiveSession {
         );
         if outcome.handled {
             apply_effects(&self.window, &outcome.effects, event_loop);
+            self.drain_tab_commands(event_loop);
         }
 
         if let WindowEvent::RedrawRequested = event {
@@ -321,6 +350,12 @@ impl ActiveSession {
 
         self.dialog.open(confirmation);
         self.input_gate.store(true, Ordering::Release);
+        self.winit_adapter.quarantine_active_pointers();
+        let effects = self
+            .widget_runtime
+            .cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
+        let effects = self.winit_adapter.fold_effects(effects);
+        apply_effects(&self.window, &effects, event_loop);
     }
 
     #[allow(dead_code)] // T0007 invokes this from the tab command layer.
@@ -351,45 +386,107 @@ impl ActiveSession {
         })
     }
 
-    #[allow(dead_code)] // T0007 invokes this after create/activate/close transitions.
-    fn apply_tab_outcome(&mut self, event_loop: &ActiveEventLoop, outcome: TabActionOutcome) {
+    fn apply_tab_outcome(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        outcome: TabActionOutcome,
+        focus: TabFocusPolicy,
+    ) {
         if outcome.close_window {
-            let mut effects =
-                self.widget_runtime
-                    .dispatch(harbor_widget::input::event::UiEvent::Focus(
-                        harbor_widget::input::event::FocusEvent::Lost,
-                    ));
             self.widget_runtime
                 .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
                     harbor_widget::layout::Size::ZERO,
                 ));
-            effects.merge(self.widget_runtime.update(Instant::now()));
-            let _ = self.widget_runtime.drain_external_input();
-            let effects = self.winit_adapter.fold_effects(effects);
+            let effects = self
+                .winit_adapter
+                .fold_effects(self.widget_runtime.update(Instant::now()));
             apply_effects(&self.window, &effects, event_loop);
             event_loop.exit();
             return;
         }
+        let model_changed =
+            outcome.active_bridge_changed || outcome.unread_changed || outcome.request_redraw;
+        let focus_requested = focus != TabFocusPolicy::PreserveRail;
+        if !model_changed && !focus_requested {
+            return;
+        }
 
+        let mut effects = RuntimeEffects::default();
         if outcome.active_bridge_changed {
-            let Some(bridge) = self.tabs.active_bridge() else {
-                return;
-            };
-            let mut effects =
+            self.winit_adapter.quarantine_active_pointers();
+            effects.merge(
                 self.widget_runtime
-                    .dispatch(harbor_widget::input::event::UiEvent::Focus(
-                        harbor_widget::input::event::FocusEvent::Lost,
-                    ));
-            self.widget_runtime
-                .set_root(build_main_terminal_root(self.backdrop_available, bridge));
+                    .cancel_pointer_captures(harbor_widget::layout::Point::ZERO),
+            );
+        }
+        if focus_requested {
+            self.widget_runtime.clear_focus();
+        }
+        if model_changed {
+            self.sync_tab_ui();
             effects.merge(self.widget_runtime.update(Instant::now()));
-            self.widget_runtime.focus_first_focusable();
-            let _ = self.widget_runtime.drain_external_input();
-            effects.merge(self.widget_runtime.take_pending_effects());
-            let effects = self.winit_adapter.fold_effects(effects);
-            apply_effects(&self.window, &effects, event_loop);
-        } else if outcome.request_redraw {
-            self.request_main_frame(event_loop);
+        }
+        let focus_effects = match focus {
+            TabFocusPolicy::PreserveRail => RuntimeEffects::default(),
+            TabFocusPolicy::RailTab(id) => self
+                .tab_ui
+                .tab_focus(id)
+                .map(|handle| self.widget_runtime.request_focus(&handle))
+                .unwrap_or_default(),
+            TabFocusPolicy::Terminal => self
+                .widget_runtime
+                .request_focus(&self.tab_ui.terminal_focus()),
+        };
+        effects.merge(focus_effects);
+        effects.merge(self.widget_runtime.take_pending_effects());
+        let effects = self.winit_adapter.fold_effects(effects);
+        apply_effects(&self.window, &effects, event_loop);
+    }
+
+    fn sync_tab_ui(&self) {
+        self.tab_ui.sync(
+            self.tabs.snapshots(),
+            self.tabs.active_bridge(),
+            logical_window_width(&self.window),
+        );
+    }
+
+    fn drain_tab_commands(&mut self, event_loop: &ActiveEventLoop) {
+        for request in self.tab_ui.drain_commands() {
+            if self.input_gate.load(Ordering::Acquire) {
+                return;
+            }
+            let focus = match (request.focus, request.command) {
+                (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
+                    .tabs
+                    .neighbor_for_close(id)
+                    .map(TabFocusPolicy::RailTab)
+                    .unwrap_or(TabFocusPolicy::PreserveRail),
+                (focus, _) => focus,
+            };
+            let outcome = match request.command {
+                TabCommand::New => match self.create_terminal_tab() {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
+                        continue;
+                    }
+                },
+                TabCommand::Close(id) => self.tabs.close(id),
+                TabCommand::CloseActive => match self.tabs.active_id() {
+                    Some(id) => self.tabs.close(id),
+                    None => TabActionOutcome::default(),
+                },
+                TabCommand::Activate(id) => self.tabs.activate(id),
+                TabCommand::Next => self.tabs.activate_next(),
+                TabCommand::Previous => self.tabs.activate_previous(),
+                TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
+            };
+            let close_window = outcome.close_window;
+            self.apply_tab_outcome(event_loop, outcome, focus);
+            if close_window {
+                return;
+            }
         }
     }
 
@@ -433,11 +530,22 @@ impl ActiveSession {
     }
 }
 
-/// Initializes the widget runtime with the active terminal bridge root.
+fn logical_window_width(window: &Window) -> f64 {
+    logical_width_from_physical(window.inner_size().width, window.scale_factor())
+}
+
+fn logical_width_from_physical(width: u32, scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        f64::from(width) / scale
+    } else {
+        0.0
+    }
+}
+/// Initializes the persistent tab workspace once; subsequent model changes use its Signal.
 fn init_widget_runtime(
     window: &Arc<Window>,
     gpu: &GpuContext,
-    bridge: TerminalWidgetBridge,
+    tab_ui: TabUiController,
     backdrop_available: bool,
 ) -> (harbor_widget::runtime::Runtime, RuntimeEffects) {
     let initial_size = window.inner_size();
@@ -447,12 +555,11 @@ fn init_widget_runtime(
         window.scale_factor() as f32,
     );
     let mut runtime = harbor_widget::runtime::Runtime::new();
-    runtime.set_root(build_main_terminal_root(backdrop_available, bridge));
+    runtime.set_root(TabWorkspace::new(tab_ui.clone(), backdrop_available));
     runtime.init_renderer(gpu.device(), gpu.format());
     runtime.set_viewport(initial_viewport);
     let mut initial_effects = runtime.update(Instant::now());
-    runtime.focus_first_focusable();
-    runtime.drain_external_input();
+    initial_effects.merge(runtime.request_focus(&tab_ui.terminal_focus()));
     initial_effects.merge(runtime.take_pending_effects());
     (runtime, initial_effects)
 }
@@ -605,13 +712,20 @@ impl Shell {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         let mut winit_adapter = WinitAdapter::from_window(&window);
         winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
-
         let active_bridge = tabs
             .active_bridge()
             .expect("initial tab creation establishes an active bridge");
-        let (widget_runtime, initial_effects) =
-            init_widget_runtime(&window, &gpu, active_bridge, main_window_backdrop_available);
-
+        let tab_ui = TabUiController::new(
+            tabs.snapshots(),
+            active_bridge,
+            logical_window_width(&window),
+        );
+        let (widget_runtime, initial_effects) = init_widget_runtime(
+            &window,
+            &gpu,
+            tab_ui.clone(),
+            main_window_backdrop_available,
+        );
         let mut session = ActiveSession {
             window,
             gpu,
@@ -622,6 +736,7 @@ impl Shell {
             appearance,
             event_proxy,
             input_gate,
+            tab_ui,
             widget_runtime,
             winit_adapter,
             _backdrop: backdrop,
@@ -680,5 +795,14 @@ mod tests {
         );
         let outcome: FrameOutcome = adapter.render(&mut runtime, target);
         let _ = outcome;
+    }
+
+    #[test]
+    fn logical_width_conversion_handles_dpi_zero_and_invalid_scale() {
+        assert_eq!(logical_width_from_physical(1_350, 1.5), 900.0);
+        assert_eq!(logical_width_from_physical(0, 2.0), 0.0);
+        assert_eq!(logical_width_from_physical(900, 0.0), 0.0);
+        assert_eq!(logical_width_from_physical(900, f64::NAN), 0.0);
+        assert_eq!(logical_width_from_physical(900, f64::INFINITY), 0.0);
     }
 }

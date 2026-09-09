@@ -346,7 +346,9 @@ impl WinitAdapter {
         }
         WinitEventOutcome::handled(effects)
     }
-    fn quarantine_active_pointers(&mut self) {
+    /// Quarantines releases for every pointer source currently held by the native window.
+    /// Hosts use this before replacing an input-owning subtree.
+    pub fn quarantine_active_pointers(&mut self) {
         for index in 0..self.active_mouse_buttons.len() {
             self.mouse_release_quarantine[index] |= self.active_mouse_buttons[index];
             self.active_mouse_buttons[index] = false;
@@ -360,6 +362,43 @@ impl WinitAdapter {
             if !self.quarantined_touches.contains(&identity) {
                 self.quarantined_touches.push(identity);
             }
+        }
+    }
+
+    /// Records a pointer event rejected by a host modal gate without dispatching it.
+    /// Matching releases remain quarantined after the gate opens.
+    pub fn quarantine_blocked_pointer_event(&mut self, event: &WindowEvent) {
+        self.quarantine_active_pointers();
+        match event {
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some((index, _)) = mouse_button(*button) else {
+                    return;
+                };
+                self.active_mouse_buttons[index] = false;
+                self.mouse_release_quarantine[index] = *state == ElementState::Pressed;
+            }
+            WindowEvent::Touch(winit::event::Touch {
+                phase,
+                device_id,
+                id,
+                ..
+            }) => {
+                let identity = (*device_id, *id);
+                match phase {
+                    TouchPhase::Started => {
+                        if !self.quarantined_touches.contains(&identity) {
+                            self.quarantined_touches.push(identity);
+                        }
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        self.quarantined_touches.retain(|entry| entry != &identity);
+                        self.touch_contacts
+                            .retain(|contact| (contact.device_id, contact.source_id) != identity);
+                    }
+                    TouchPhase::Moved => {}
+                }
+            }
+            _ => {}
         }
     }
 

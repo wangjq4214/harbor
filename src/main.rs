@@ -10,6 +10,7 @@ mod effects;
 mod event;
 mod shell;
 mod tab_manager;
+mod tab_view;
 mod telemetry;
 mod terminal_view;
 

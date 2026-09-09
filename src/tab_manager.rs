@@ -139,6 +139,15 @@ impl TabManager {
         self.active
     }
 
+    /// Selects the right neighbor, then the left, for rail focus after a close.
+    pub(crate) fn neighbor_for_close(&self, id: TabId) -> Option<TabId> {
+        let index = self.tabs.iter().position(|tab| tab.id == id)?;
+        self.tabs
+            .get(index + 1)
+            .or_else(|| index.checked_sub(1).and_then(|index| self.tabs.get(index)))
+            .map(|tab| tab.id)
+    }
+
     pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         let id = self.active?;
         self.tabs
@@ -426,10 +435,14 @@ mod tests {
         let (c, _) = create(&mut manager);
         manager.activate(b);
 
+        assert_eq!(manager.neighbor_for_close(b), Some(c));
         assert!(manager.close(b).active_bridge_changed);
         assert_eq!(manager.active_id(), Some(c));
+        assert_eq!(manager.neighbor_for_close(c), Some(a));
         assert!(manager.close(c).active_bridge_changed);
         assert_eq!(manager.active_id(), Some(a));
+        assert_eq!(manager.neighbor_for_close(a), None);
+        assert_eq!(manager.neighbor_for_close(TabId(u64::MAX)), None);
         let final_outcome = manager.close(a);
         assert!(final_outcome.close_window);
         assert_eq!(manager.active_id(), None);

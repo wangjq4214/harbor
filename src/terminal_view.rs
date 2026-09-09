@@ -371,12 +371,8 @@ impl TerminalDecorationPreset {
     }
 }
 
-/// Main-window root: a 4dp inset around the product decoration.
-///
-/// With a compositor backdrop the root paints nothing so the unified window
-/// tint (ADR 0026) shows through; without one it paints the opaque fallback
-/// so the transparent frame clear never shows through as black.
-pub(crate) fn build_main_terminal_root(
+/// Main-window root: a 4dp backdrop-aware inset around product content.
+pub(crate) fn build_main_root(
     backdrop_available: bool,
     child: impl Component + 'static,
 ) -> Padding {
@@ -401,7 +397,16 @@ pub(crate) fn build_main_terminal_root(
             a: 1.0,
         })
     };
-    root.child(TerminalDecorationPreset::wrap(child))
+    root.child(child)
+}
+
+/// Compatibility composition for callers that render just one terminal panel.
+#[allow(dead_code)]
+pub(crate) fn build_main_terminal_root(
+    backdrop_available: bool,
+    child: impl Component + 'static,
+) -> Padding {
+    build_main_root(backdrop_available, TerminalDecorationPreset::wrap(child))
 }
 
 #[cfg(test)]
