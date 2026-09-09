@@ -65,9 +65,6 @@ fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
     })
 }
 
-/// Default external-draw identifier matching the previous terminal-owned constant.
-const DEFAULT_DRAW_ID: ExternalDrawId = 1;
-
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
 pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> RenderTarget {
     let (origin_x, origin_y, alloc_w, alloc_h) = context.physical_allocation();
@@ -213,8 +210,8 @@ pub(crate) fn gate_suppresses_event(gate_active: bool, event: &UiEvent) -> bool 
 fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
     matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
 }
-
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`CustomPaint`].
+#[derive(Clone)]
 pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -223,9 +220,12 @@ pub struct TerminalWidgetBridge {
 }
 
 impl TerminalWidgetBridge {
-    /// Creates a bridge that paints and receives input for `terminal`.
-    pub fn new(terminal: Arc<Mutex<Terminal>>, gate_active: Arc<AtomicBool>) -> Self {
-        let draw_id = DEFAULT_DRAW_ID;
+    /// Creates a stable bridge that paints and receives input for `terminal`.
+    pub fn new(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
@@ -518,23 +518,20 @@ mod tests {
     }
 
     #[test]
-    fn should_expose_default_draw_id() {
-        // Arrange
+    fn should_use_caller_provided_draw_id() {
         let terminal = headless_terminal(24, 80);
         let gate = Arc::new(AtomicBool::new(false));
 
-        // Act
-        let bridge = TerminalWidgetBridge::new(terminal, gate);
+        let bridge = TerminalWidgetBridge::new(41, terminal, gate);
 
-        // Assert
-        assert_eq!(bridge.draw_id(), DEFAULT_DRAW_ID);
+        assert_eq!(bridge.draw_id(), 41);
     }
 
     #[test]
     fn should_reuse_cached_handler_arc_when_built_multiple_times() {
         // Arrange: handler is created once in `new` and cloned into each build.
         let terminal = headless_terminal(24, 80);
-        let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
+        let bridge = TerminalWidgetBridge::new(42, terminal, Arc::new(AtomicBool::new(false)));
         let cached = Arc::clone(&bridge.handler);
         assert_eq!(Arc::strong_count(&cached), 2);
 
@@ -570,7 +567,7 @@ mod tests {
         let called = Cell::new(false);
 
         // Act
-        dispatch_matched_draw(DEFAULT_DRAW_ID, DEFAULT_DRAW_ID + 1, &ctx, |_| {
+        dispatch_matched_draw(41, 42, &ctx, |_| {
             called.set(true);
         });
 
@@ -589,10 +586,9 @@ mod tests {
         let drawn = Cell::new(None);
 
         // Act
-        dispatch_matched_draw(DEFAULT_DRAW_ID, DEFAULT_DRAW_ID, &ctx, |target| {
+        dispatch_matched_draw(41, 41, &ctx, |target| {
             drawn.set(Some(target));
         });
-
         // Assert
         let target = drawn.get().expect("draw invoked");
         assert_eq!(target.allocation_origin, (10.0, 5.0));
@@ -716,7 +712,7 @@ mod tests {
         terminal: Arc<Mutex<Terminal>>,
         gate: Arc<AtomicBool>,
     ) -> harbor_widget::runtime::Runtime {
-        let bridge = TerminalWidgetBridge::new(terminal, gate);
+        let bridge = TerminalWidgetBridge::new(1, terminal, gate);
         let mut rt = harbor_widget::runtime::Runtime::new();
         rt.set_root(bridge);
         rt.update(std::time::Instant::now());

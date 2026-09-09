@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec: 0010-desktop-terminal-tabs-and-view-macro](../../spec/0010-desktop-terminal-tabs-and-view-macro.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -10,11 +10,11 @@ The Runtime Host owns multiple independent terminal/PTY sessions with stable Tab
 
 ## Layers
 
-- [ ] **Widget API:** No tab-domain types enter `harbor-widget`; allow TerminalWidgetBridge construction with an explicit stable ExternalDrawId.
-- [ ] **Terminal/PTY:** Each TerminalTab owns one independent Terminal and PTY lifecycle and can receive broadcast resize safely.
-- [ ] **Runtime Host:** Add `TabId`, `TerminalTab`, `TabManager`, tab-qualified AppEvent routing, active selection, unread state, and final-tab close outcome.
-- [ ] **Runtime Registration:** Mount/schedule only the active terminal bridge and ignore stale events for closed IDs.
-- [ ] **Verification:** Model transitions, independent I/O/state, explicit IDs, cleanup, stale events, focus target selection, and inactive scheduling.
+- [x] **Widget API:** No tab-domain types enter `harbor-widget`; allow TerminalWidgetBridge construction with an explicit stable ExternalDrawId.
+- [x] **Terminal/PTY:** Each TerminalTab owns one independent Terminal and PTY lifecycle and can receive broadcast resize safely.
+- [x] **Runtime Host:** Add `TabId`, `TerminalTab`, `TabManager`, tab-qualified AppEvent routing, active selection, unread state, and final-tab close outcome.
+- [x] **Runtime Registration:** Mount/schedule only the active terminal bridge and ignore stale events for closed IDs.
+- [x] **Verification:** Model transitions, independent I/O/state, explicit IDs, cleanup, stale events, focus target selection, and inactive scheduling.
 
 ## Approach
 
@@ -36,13 +36,13 @@ The Runtime Host owns multiple independent terminal/PTY sessions with stable Tab
 
 ## Acceptance
 
-- [ ] Two tabs run independent shells and preserve independent screen, scrollback, selection, cursor, and PTY state across switches.
-- [ ] IDs are stable and never reused during one application session; every bridge has a distinct ExternalDrawId.
-- [ ] Input and paste target only the active tab.
-- [ ] Background events identify their tab, stale closed-tab events are ignored, and inactive output can mark unread state without hidden terminal paint.
-- [ ] Closing B in A/B/C activates C; closing C in A/C activates A.
-- [ ] Closing the final tab shuts down its resources and closes the main window.
-- [ ] Closing a tab releases reader/PTY control, Terminal ownership, external draw registration, and schedule provider without leaks or stale callbacks.
+- [x] Two tabs run independent shells and preserve independent screen, scrollback, selection, cursor, and PTY state across switches.
+- [x] IDs are stable and never reused during one application session; every bridge has a distinct ExternalDrawId.
+- [x] Input and paste target only the active tab.
+- [x] Background events identify their tab, stale closed-tab events are ignored, and inactive output can mark unread state without hidden terminal paint.
+- [x] Closing B in A/B/C activates C; closing C in A/C activates A.
+- [x] Closing the final tab shuts down its resources and closes the main window.
+- [x] Closing a tab releases reader/PTY control, Terminal ownership, external draw registration, and schedule provider without leaks or stale callbacks.
 
 ## Out of Scope
 

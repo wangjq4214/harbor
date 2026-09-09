@@ -15,7 +15,7 @@ mod types;
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
 pub use harbor_config::Color;
-use harbor_pty::PtyControl;
+use harbor_pty::{PtyControl, PtyEndpoints};
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 use io::TerminalIo;
 pub use model::should_confirm_multiline;
@@ -133,6 +133,37 @@ impl Terminal {
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
         terminal
+    }
+
+    /// Fallibly creates a rendered terminal while preserving pre-reader PTY teardown on error.
+    ///
+    /// Renderer construction happens before [`PtyEndpoints::into_parts`], so a renderer error
+    /// drops the intact endpoint bundle through its safe unstarted-session shutdown path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new_with_appearance_from_endpoints(
+        size: TerminalSize,
+        endpoints: PtyEndpoints,
+        gpu: &GpuContext,
+        font_book: FontBook,
+        metrics: TextMetrics,
+        appearance: TerminalAppearance,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> anyhow::Result<Self> {
+        let mut terminal = Self::new_headless(size.rows, size.cols);
+        terminal.appearance = appearance;
+        let snap = terminal.screen.terminal_snapshot();
+        let renderer = TerminalRenderPipeline::new(
+            gpu,
+            font_book,
+            metrics,
+            &snap,
+            appearance.clear_rgba(false),
+            appearance.palette(),
+        )?;
+        let (pty_read, pty_write, pty_control) = endpoints.into_parts();
+        terminal.renderer = Some(renderer);
+        terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
+        Ok(terminal)
     }
 
     /// Calculates the grid dimensions used by a rendered terminal at the current surface size.

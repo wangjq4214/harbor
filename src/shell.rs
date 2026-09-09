@@ -28,6 +28,7 @@ use crate::dialog::{
 };
 use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
+use crate::tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use crate::terminal_view::{TerminalWidgetBridge, build_main_terminal_root, with_current_gpu};
 use harbor_pty::{PtyEndpoints, ShellCommand};
@@ -42,8 +43,12 @@ use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
 pub(crate) struct ActiveSession {
     window: Arc<Window>,
     gpu: GpuContext,
-    terminal: Arc<Mutex<Terminal>>,
-    /// Host-owned gate mirrored into the terminal bridge for in-tree input suppression.
+    tabs: TabManager,
+    shell_command: ShellCommand,
+    font_settings: harbor_config::FontSettings,
+    metrics: TextMetrics,
+    appearance: TerminalAppearance,
+    event_proxy: EventLoopProxy<AppEvent>,
     input_gate: Arc<AtomicBool>,
     /// Widget framework runtime.
     widget_runtime: harbor_widget::runtime::Runtime,
@@ -72,10 +77,10 @@ pub(crate) struct Shell {
 pub(crate) enum ShellError {
     #[error("failed to create window")]
     Window(#[from] winit::error::OsError),
-    #[error("failed to create pty endpoints")]
-    Pty(#[source] anyhow::Error),
     #[error("failed to create renderer")]
     Renderer(#[source] anyhow::Error),
+    #[error("failed to create terminal tab")]
+    Tab(#[source] anyhow::Error),
 }
 
 // ── ApplicationHandler (winit lifecycle) ──────────────────────────────────
@@ -91,13 +96,10 @@ impl ApplicationHandler<AppEvent> for Shell {
 
     /// Handles redraw wakes posted by the terminal reader thread.
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        let Some(invalidation) = external_invalidation_for_app_event(event) else {
-            return;
-        };
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        session.handle_user_event(event_loop, invalidation);
+        session.handle_user_event(event_loop, event);
     }
 
     /// Called when the event loop is about to block.
@@ -125,11 +127,15 @@ impl ApplicationHandler<AppEvent> for Shell {
 
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
 impl ActiveSession {
-    fn handle_user_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        invalidation: harbor_widget::effects::ExternalInvalidation,
-    ) {
+    fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        let AppEvent::TerminalOutputReady(tab_id) = event;
+        let outcome = self.tabs.process_output(tab_id);
+        if !outcome.request_active_invalidation {
+            return;
+        }
+        let Some(invalidation) = external_invalidation_for_app_event(event) else {
+            return;
+        };
         let effects = self
             .winit_adapter
             .invalidate_external(&mut self.widget_runtime, invalidation);
@@ -173,7 +179,10 @@ impl ActiveSession {
                 let dialog = &mut self.dialog;
                 let gpu = &self.gpu;
                 if matches!(event, WindowEvent::RedrawRequested) {
-                    let term_guard = self.terminal.lock().ok();
+                    let active_terminal = self.tabs.active_terminal();
+                    let term_guard = active_terminal
+                        .as_ref()
+                        .and_then(|terminal| terminal.lock().ok());
                     match term_guard.as_ref() {
                         Some(terminal) => {
                             let glyph_fn = |ch| terminal.text_glyph(ch).copied();
@@ -188,7 +197,8 @@ impl ActiveSession {
             match &result {
                 DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
                     if let DialogOutcome::Confirmed(_) = &result
-                        && let Ok(mut terminal) = self.terminal.lock()
+                        && let Some(active_terminal) = self.tabs.active_terminal()
+                        && let Ok(mut terminal) = active_terminal.lock()
                     {
                         let input_modes = terminal.drain_and_snapshot().input_modes;
                         if let Err(error) =
@@ -265,7 +275,11 @@ impl ActiveSession {
             };
 
         let confirmation = {
-            let Ok(mut terminal) = self.terminal.lock() else {
+            let Some(active_terminal) = self.tabs.active_terminal() else {
+                tracing::warn!("no active terminal for clipboard paste");
+                return;
+            };
+            let Ok(mut terminal) = active_terminal.lock() else {
                 tracing::warn!("terminal lock unavailable for clipboard paste");
                 return;
             };
@@ -309,6 +323,76 @@ impl ActiveSession {
         self.input_gate.store(true, Ordering::Release);
     }
 
+    #[allow(dead_code)] // T0007 invokes this from the tab command layer.
+    fn create_terminal_tab(&mut self) -> anyhow::Result<TabActionOutcome> {
+        let size = Terminal::terminal_size_for(&self.gpu, &self.metrics);
+        let fonts = load_system_fonts(&self.font_settings)?;
+        let metrics = self.metrics;
+        let shell_command = &self.shell_command;
+        let gpu = &self.gpu;
+        let appearance = self.appearance;
+        let backdrop_available = self.backdrop_available;
+        let event_proxy = self.event_proxy.clone();
+        let input_gate = Arc::clone(&self.input_gate);
+        self.tabs.create_tab(|tab_id, draw_id| {
+            create_terminal_tab_resources(
+                tab_id,
+                draw_id,
+                size,
+                shell_command,
+                gpu,
+                fonts,
+                metrics,
+                appearance,
+                backdrop_available,
+                event_proxy,
+                input_gate,
+            )
+        })
+    }
+
+    #[allow(dead_code)] // T0007 invokes this after create/activate/close transitions.
+    fn apply_tab_outcome(&mut self, event_loop: &ActiveEventLoop, outcome: TabActionOutcome) {
+        if outcome.close_window {
+            let mut effects =
+                self.widget_runtime
+                    .dispatch(harbor_widget::input::event::UiEvent::Focus(
+                        harbor_widget::input::event::FocusEvent::Lost,
+                    ));
+            self.widget_runtime
+                .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
+                    harbor_widget::layout::Size::ZERO,
+                ));
+            effects.merge(self.widget_runtime.update(Instant::now()));
+            let _ = self.widget_runtime.drain_external_input();
+            let effects = self.winit_adapter.fold_effects(effects);
+            apply_effects(&self.window, &effects, event_loop);
+            event_loop.exit();
+            return;
+        }
+
+        if outcome.active_bridge_changed {
+            let Some(bridge) = self.tabs.active_bridge() else {
+                return;
+            };
+            let mut effects =
+                self.widget_runtime
+                    .dispatch(harbor_widget::input::event::UiEvent::Focus(
+                        harbor_widget::input::event::FocusEvent::Lost,
+                    ));
+            self.widget_runtime
+                .set_root(build_main_terminal_root(self.backdrop_available, bridge));
+            effects.merge(self.widget_runtime.update(Instant::now()));
+            self.widget_runtime.focus_first_focusable();
+            let _ = self.widget_runtime.drain_external_input();
+            effects.merge(self.widget_runtime.take_pending_effects());
+            let effects = self.winit_adapter.fold_effects(effects);
+            apply_effects(&self.window, &effects, event_loop);
+        } else if outcome.request_redraw {
+            self.request_main_frame(event_loop);
+        }
+    }
+
     fn render_frame(&mut self, event_loop: &ActiveEventLoop, frame: &mut FrameState) -> bool {
         let outcome = with_current_gpu(&self.gpu, || {
             let mut configure = |width, height| self.gpu.configure_size(width, height);
@@ -349,15 +433,13 @@ impl ActiveSession {
     }
 }
 
-/// Initializes the widget runtime with a terminal bridge root.
+/// Initializes the widget runtime with the active terminal bridge root.
 fn init_widget_runtime(
     window: &Arc<Window>,
     gpu: &GpuContext,
-    terminal: &Arc<Mutex<Terminal>>,
-    input_gate: &Arc<AtomicBool>,
+    bridge: TerminalWidgetBridge,
     backdrop_available: bool,
 ) -> (harbor_widget::runtime::Runtime, RuntimeEffects) {
-    let bridge = TerminalWidgetBridge::new(Arc::clone(terminal), Arc::clone(input_gate));
     let initial_size = window.inner_size();
     let initial_viewport = harbor_widget::renderer::Viewport::new(
         initial_size.width,
@@ -373,6 +455,47 @@ fn init_widget_runtime(
     runtime.drain_external_input();
     initial_effects.merge(runtime.take_pending_effects());
     (runtime, initial_effects)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_terminal_tab_resources(
+    tab_id: TabId,
+    draw_id: harbor_widget::scene::primitive::ExternalDrawId,
+    size: harbor_terminal::TerminalSize,
+    shell_command: &ShellCommand,
+    gpu: &GpuContext,
+    fonts: harbor_terminal::FontBook,
+    metrics: TextMetrics,
+    appearance: TerminalAppearance,
+    backdrop_available: bool,
+    event_proxy: EventLoopProxy<AppEvent>,
+    input_gate: Arc<AtomicBool>,
+) -> anyhow::Result<TerminalTabResources> {
+    let endpoints = PtyEndpoints::spawn_shell(
+        harbor_pty::TerminalSize {
+            rows: size.rows,
+            cols: size.cols,
+        },
+        shell_command,
+    )?;
+    let mut terminal = Terminal::try_new_with_appearance_from_endpoints(
+        size,
+        endpoints,
+        gpu,
+        fonts,
+        metrics,
+        appearance,
+        move || {
+            event_proxy
+                .send_event(AppEvent::TerminalOutputReady(tab_id))
+                .is_ok()
+        },
+    )?;
+    terminal.set_backdrop_available(backdrop_available);
+    #[allow(clippy::arc_with_non_send_sync)]
+    let terminal = Arc::new(Mutex::new(terminal));
+    let bridge = TerminalWidgetBridge::new(draw_id, Arc::clone(&terminal), input_gate);
+    Ok(TerminalTabResources::new(terminal, bridge))
 }
 
 // ── Shell (own methods) ───────────────────────────────────────────────────
@@ -454,59 +577,50 @@ impl Shell {
         );
 
         // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
-        let fonts = load_system_fonts(&settings.font).map_err(ShellError::Renderer)?;
+        let font_settings = settings.font.clone();
+        let fonts = load_system_fonts(&font_settings).map_err(ShellError::Renderer)?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
-
         let size = Terminal::terminal_size_for(&gpu, &metrics);
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
-        let (pty_read, pty_write, pty_control) = PtyEndpoints::spawn_shell(
-            harbor_pty::TerminalSize {
-                rows: size.rows,
-                cols: size.cols,
-            },
-            &shell_command,
-        )
-        .map_err(ShellError::Pty)?
-        .into_parts();
+        let input_gate = Arc::new(AtomicBool::new(false));
         let event_proxy = self.event_proxy.clone();
-        let mut terminal = Terminal::new_with_appearance(
-            size,
-            pty_read,
-            pty_write,
-            pty_control,
-            &gpu,
-            fonts,
-            metrics,
-            appearance,
-            move || {
-                event_proxy
-                    .send_event(AppEvent::TerminalOutputReady)
-                    .is_ok()
-            },
-        );
-        terminal.set_backdrop_available(main_window_backdrop_available);
-        // Terminal is UI-thread-only (not Send/Sync); Arc is required so the
-        // CustomPaint ExternalDrawFn can share ownership with ActiveSession.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let terminal = Arc::new(Mutex::new(terminal));
+        let mut tabs = TabManager::new();
+        tabs.create_tab(|tab_id, draw_id| {
+            create_terminal_tab_resources(
+                tab_id,
+                draw_id,
+                size,
+                &shell_command,
+                &gpu,
+                fonts,
+                metrics,
+                appearance,
+                main_window_backdrop_available,
+                event_proxy.clone(),
+                Arc::clone(&input_gate),
+            )
+        })
+        .map_err(ShellError::Tab)?;
 
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         let mut winit_adapter = WinitAdapter::from_window(&window);
         winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
 
-        let input_gate = Arc::new(AtomicBool::new(false));
-        let (widget_runtime, initial_effects) = init_widget_runtime(
-            &window,
-            &gpu,
-            &terminal,
-            &input_gate,
-            main_window_backdrop_available,
-        );
+        let active_bridge = tabs
+            .active_bridge()
+            .expect("initial tab creation establishes an active bridge");
+        let (widget_runtime, initial_effects) =
+            init_widget_runtime(&window, &gpu, active_bridge, main_window_backdrop_available);
 
         let mut session = ActiveSession {
             window,
             gpu,
-            terminal,
+            tabs,
+            shell_command,
+            font_settings,
+            metrics,
+            appearance,
+            event_proxy,
             input_gate,
             widget_runtime,
             winit_adapter,
