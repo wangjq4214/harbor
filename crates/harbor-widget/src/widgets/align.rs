@@ -49,7 +49,6 @@ impl crate::WithChildren for Align {
 }
 
 impl AnyView for Align {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no space to fill.
         constraints.fill_bounded(Size::ZERO)

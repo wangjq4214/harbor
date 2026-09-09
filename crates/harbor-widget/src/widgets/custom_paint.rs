@@ -91,7 +91,6 @@ impl crate::WithChildren for CustomPaint {
 }
 
 impl AnyView for CustomPaint {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no viewport to fill.
         constraints.fill_bounded(Size::ZERO)

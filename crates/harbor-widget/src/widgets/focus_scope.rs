@@ -56,7 +56,6 @@ impl crate::WithChildren for FocusScope {
 }
 
 impl AnyView for FocusScope {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // FocusScope delegates to children — it's a passthrough container
         let child_size = if self.children.is_empty() {

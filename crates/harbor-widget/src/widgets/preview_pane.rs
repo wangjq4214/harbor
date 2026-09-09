@@ -64,7 +64,6 @@ impl crate::WithChildren for PreviewPane {
 }
 
 impl AnyView for PreviewPane {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let cell_width = metrics.cell_width;
         let max_line_chars = self

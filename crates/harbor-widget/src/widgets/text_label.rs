@@ -47,7 +47,6 @@ impl crate::WithChildren for TextLabel {
 }
 
 impl AnyView for TextLabel {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let width = self.text.len() as f32 * metrics.cell_width + 4.0;
         let height = metrics.line_height;

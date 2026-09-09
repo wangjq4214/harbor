@@ -129,7 +129,6 @@ impl InputState {
     pub(crate) fn clear_capture_if(&mut self, mut retains: impl FnMut(FiberId) -> bool) {
         self.pointer_captures.retain(|_, fid| retains(*fid));
     }
-
 }
 
 #[cfg(test)]

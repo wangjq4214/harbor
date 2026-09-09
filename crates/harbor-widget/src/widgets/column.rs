@@ -92,7 +92,8 @@ impl AnyView for Column {
         child_sizes: &[Size],
         metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        self.inner.layout_children(constraints, child_sizes, metrics)
+        self.inner
+            .layout_children(constraints, child_sizes, metrics)
     }
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {

@@ -140,7 +140,6 @@ impl crate::WithChildren for Flex {
 }
 
 impl AnyView for Flex {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         finite_fill(constraints)
     }

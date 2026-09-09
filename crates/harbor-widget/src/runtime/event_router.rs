@@ -9,9 +9,9 @@ use crate::input::event::{
 use crate::input::event_ctx::{EventCommand, EventCtx, EventPhase};
 use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
+use crate::scene::primitive::ExternalDrawId;
 use crate::view::EnsureVisibleResult;
 use crate::widgets::shortcuts::KeyChord;
-use crate::scene::primitive::ExternalDrawId;
 use std::any::Any;
 use std::cell::RefCell;
 
@@ -280,7 +280,8 @@ impl EventRouter {
                 EventCommand::NavigateFocus { scope, forward } => {
                     if !navigated_scopes.contains(&(scope, forward)) {
                         navigated_scopes.push((scope, forward));
-                        target_focus = Self::find_next_focusable(arena, scope, target_focus, forward);
+                        target_focus =
+                            Self::find_next_focusable(arena, scope, target_focus, forward);
                         target_visible = true;
                     }
                 }

@@ -41,7 +41,6 @@ impl crate::WithChildren for SizedBox {
 }
 
 impl AnyView for SizedBox {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(self.size)
     }

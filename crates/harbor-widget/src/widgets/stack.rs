@@ -52,7 +52,6 @@ impl crate::WithChildren for Stack {
 }
 
 impl AnyView for Stack {
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

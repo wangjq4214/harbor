@@ -59,7 +59,6 @@ impl crate::WithChildren for Padding {
 }
 
 impl AnyView for Padding {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // layout_fiber measures descendants before calling layout_children.
         // This intrinsic fallback therefore represents the child-free case.

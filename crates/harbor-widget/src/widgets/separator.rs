@@ -79,7 +79,6 @@ impl crate::WithChildren for Separator {
 }
 
 impl AnyView for Separator {
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         self.size(constraints)
     }

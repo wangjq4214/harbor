@@ -218,23 +218,53 @@ mod tests {
         assert_eq!(ControlVisualState::from(&idle), ControlVisualState::Normal);
 
         // Hovered
-        let hovered = InteractionState { hovered: true, ..idle };
+        let hovered = InteractionState {
+            hovered: true,
+            ..idle
+        };
         assert_eq!(style.resolve_state(&hovered), style.hovered);
-        assert_eq!(ControlVisualState::from(&hovered), ControlVisualState::Hovered);
+        assert_eq!(
+            ControlVisualState::from(&hovered),
+            ControlVisualState::Hovered
+        );
 
         // Selected beats hovered
-        let selected = InteractionState { selected: true, hovered: true, ..idle };
+        let selected = InteractionState {
+            selected: true,
+            hovered: true,
+            ..idle
+        };
         assert_eq!(style.resolve_state(&selected), style.selected);
-        assert_eq!(ControlVisualState::from(&selected), ControlVisualState::Selected);
+        assert_eq!(
+            ControlVisualState::from(&selected),
+            ControlVisualState::Selected
+        );
 
         // Pressed beats selected and hovered
-        let pressed = InteractionState { pressed: true, selected: true, hovered: true, ..idle };
+        let pressed = InteractionState {
+            pressed: true,
+            selected: true,
+            hovered: true,
+            ..idle
+        };
         assert_eq!(style.resolve_state(&pressed), style.pressed);
-        assert_eq!(ControlVisualState::from(&pressed), ControlVisualState::Pressed);
+        assert_eq!(
+            ControlVisualState::from(&pressed),
+            ControlVisualState::Pressed
+        );
 
         // Disabled beats all
-        let disabled = InteractionState { disabled: true, pressed: true, selected: true, hovered: true, ..idle };
+        let disabled = InteractionState {
+            disabled: true,
+            pressed: true,
+            selected: true,
+            hovered: true,
+            ..idle
+        };
         assert_eq!(style.resolve_state(&disabled), style.disabled);
-        assert_eq!(ControlVisualState::from(&disabled), ControlVisualState::Disabled);
+        assert_eq!(
+            ControlVisualState::from(&disabled),
+            ControlVisualState::Disabled
+        );
     }
 }

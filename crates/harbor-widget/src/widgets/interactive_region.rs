@@ -391,7 +391,6 @@ impl AnyView for InteractiveRegionView {
         })
     }
 
-
     fn permits_pointer_capture(&self) -> bool {
         !self.runtime.read().visual.disabled
     }
