@@ -150,20 +150,17 @@ impl TabManager {
             .map(|tab| tab.id)
     }
 
-    pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
+    fn active_tab(&self) -> Option<&TerminalTab> {
         let id = self.active?;
-        self.tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .map(|tab| Arc::clone(&tab.terminal))
+        self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
+        self.active_tab().map(|tab| Arc::clone(&tab.terminal))
     }
 
     pub(crate) fn active_bridge(&self) -> Option<TerminalWidgetBridge> {
-        let id = self.active?;
-        self.tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .map(|tab| tab.bridge.clone())
+        self.active_tab().map(|tab| tab.bridge.clone())
     }
 
     pub(crate) fn snapshots(&self) -> Vec<TabSnapshot> {
@@ -180,15 +177,14 @@ impl TabManager {
     }
 
     pub(crate) fn activate(&mut self, id: TabId) -> TabActionOutcome {
-        if self.active == Some(id) || !self.tabs.iter().any(|tab| tab.id == id) {
+        if self.active == Some(id) {
             return TabActionOutcome::unchanged();
         }
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return TabActionOutcome::unchanged();
+        };
         self.active = Some(id);
-        let unread_changed = self
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.id == id)
-            .is_some_and(|tab| std::mem::take(&mut tab.unread));
+        let unread_changed = std::mem::take(&mut tab.unread);
         TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -215,11 +211,7 @@ impl TabManager {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == active) else {
             return TabActionOutcome::unchanged();
         };
-        let previous = if index == 0 {
-            self.tabs.len() - 1
-        } else {
-            index - 1
-        };
+        let previous = index.checked_sub(1).unwrap_or(self.tabs.len() - 1);
         self.activate(self.tabs[previous].id)
     }
 
@@ -257,18 +249,22 @@ impl TabManager {
         }
 
         // The old right neighbor moves into `index`; when there was none, use the new last item.
-        let replacement = self.tabs[index.min(self.tabs.len() - 1)].id;
-        self.active = Some(replacement);
-        let unread_changed = self
-            .tabs
-            .iter_mut()
-            .find(|tab| tab.id == replacement)
-            .is_some_and(|tab| std::mem::take(&mut tab.unread));
+        let replacement_index = index.min(self.tabs.len() - 1);
+        let replacement = &mut self.tabs[replacement_index];
+        self.active = Some(replacement.id);
+        let unread_changed = std::mem::take(&mut replacement.unread);
         TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
             unread_changed,
             close_window: false,
+        }
+    }
+
+    pub(crate) fn close_active(&mut self) -> TabActionOutcome {
+        match self.active {
+            Some(id) => self.close(id),
+            None => TabActionOutcome::unchanged(),
         }
     }
 

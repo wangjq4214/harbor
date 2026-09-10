@@ -205,24 +205,16 @@ impl ActiveSession {
     ) {
         let dialog_window_id = self.dialog.window_id();
         if dialog_window_id == Some(window_id) {
-            let result = {
-                let dialog = &mut self.dialog;
-                let gpu = &self.gpu;
-                if matches!(event, WindowEvent::RedrawRequested) {
-                    let active_terminal = self.tabs.active_terminal();
-                    let term_guard = active_terminal
-                        .as_ref()
-                        .and_then(|terminal| terminal.lock().ok());
-                    match term_guard.as_ref() {
-                        Some(terminal) => {
-                            let glyph_fn = |ch| terminal.text_glyph(ch).copied();
-                            dialog.handle_event(&event, event_loop, Some(gpu), Some(&glyph_fn))
-                        }
-                        None => dialog.handle_event(&event, event_loop, Some(gpu), None),
-                    }
-                } else {
-                    dialog.handle_event(&event, event_loop, Some(gpu), None)
-                }
+            let result = if matches!(event, WindowEvent::RedrawRequested)
+                && let Some(active_terminal) = self.tabs.active_terminal()
+                && let Ok(terminal) = active_terminal.lock()
+            {
+                let glyph_fn = |ch| terminal.text_glyph(ch).copied();
+                self.dialog
+                    .handle_event(&event, event_loop, Some(&self.gpu), Some(&glyph_fn))
+            } else {
+                self.dialog
+                    .handle_event(&event, event_loop, Some(&self.gpu), None)
             };
             match &result {
                 DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
@@ -500,10 +492,7 @@ impl ActiveSession {
                     }
                 },
                 TabCommand::Close(id) => self.tabs.close(id),
-                TabCommand::CloseActive => match self.tabs.active_id() {
-                    Some(id) => self.tabs.close(id),
-                    None => TabActionOutcome::default(),
-                },
+                TabCommand::CloseActive => self.tabs.close_active(),
                 TabCommand::Activate(id) => self.tabs.activate(id),
                 TabCommand::Next => self.tabs.activate_next(),
                 TabCommand::Previous => self.tabs.activate_previous(),
