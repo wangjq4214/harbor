@@ -1,7 +1,7 @@
 //! Secondary winit window for paste confirmation rendered by Widget Runtime.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use winit::{
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
@@ -16,8 +16,8 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_terminal::safe_preview_line;
-use harbor_terminal::{GpuContext, InputModes, TextMetrics};
-use harbor_widget::effects::ControlFlowEffect;
+use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal, TextMetrics};
+use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::text::GlyphFn;
 use harbor_widget::widgets::button::Button;
@@ -156,14 +156,25 @@ pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) 
     )
 }
 
-/// Owns the optional paste-confirmation dialog and mediates its lifecycle.
-pub(crate) struct DialogOverlay {
-    window: Option<ConfirmationWindow>,
+/// Outcome of a paste confirmation event dispatch.
+#[derive(Debug)]
+pub(crate) enum PasteEventOutcome {
+    Handled { request_redraw: bool },
+    Fatal(FrameError),
 }
 
-impl DialogOverlay {
-    pub(crate) fn new() -> Self {
-        Self { window: None }
+/// Controller encapsulating modal paste confirmation and clipboard interaction.
+pub(crate) struct PasteController {
+    window: Option<ConfirmationWindow>,
+    input_gate: Arc<AtomicBool>,
+}
+
+impl PasteController {
+    pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
+        Self {
+            window: None,
+            input_gate,
+        }
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -178,8 +189,54 @@ impl DialogOverlay {
         self.window.as_mut().map(|window| window.about_to_wait(now))
     }
 
-    /// Dispatches a window event to the active confirmation dialog.
-    pub(crate) fn handle_event(
+    #[allow(dead_code)]
+    pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+        is_paste_shortcut(event, modifiers)
+    }
+
+    pub(crate) fn handle_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        event_loop: &ActiveEventLoop,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    ) -> PasteEventOutcome {
+        let result = if matches!(event, WindowEvent::RedrawRequested)
+            && let Some(active_terminal) = active_terminal
+            && let Ok(terminal) = active_terminal.lock()
+        {
+            let glyph_fn = |ch| terminal.text_glyph(ch).copied();
+            self.handle_event(event, event_loop, Some(gpu), Some(&glyph_fn))
+        } else {
+            self.handle_event(event, event_loop, Some(gpu), None)
+        };
+
+        match &result {
+            DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
+                if let DialogOutcome::Confirmed(_) = &result
+                    && let Some(active_terminal) = active_terminal
+                    && let Ok(mut terminal) = active_terminal.lock()
+                {
+                    let input_modes = terminal.drain_and_snapshot().input_modes;
+                    if let Err(error) = write_confirmation_outcome(&result, input_modes, |bytes| {
+                        terminal.write_pty(bytes)
+                    }) {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+                    }
+                }
+                self.input_gate.store(false, Ordering::Release);
+                PasteEventOutcome::Handled {
+                    request_redraw: true,
+                }
+            }
+            DialogOutcome::Fatal(error) => PasteEventOutcome::Fatal(error.clone()),
+            DialogOutcome::None => PasteEventOutcome::Handled {
+                request_redraw: false,
+            },
+        }
+    }
+
+    fn handle_event(
         &mut self,
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
@@ -211,9 +268,74 @@ impl DialogOverlay {
         }
     }
 
-    /// Installs a new confirmation dialog, replacing any existing one.
-    pub(crate) fn open(&mut self, confirmation: ConfirmationWindow) {
+    pub(crate) fn paste_from_clipboard(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        runtime: &mut Runtime,
+        adapter: &mut WinitAdapter,
+    ) -> RuntimeEffects {
+        let raw_text =
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to read clipboard text");
+                    return RuntimeEffects::default();
+                }
+            };
+
+        let confirmation = {
+            let Some(active_terminal) = active_terminal else {
+                tracing::warn!("no active terminal for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let Ok(mut terminal) = active_terminal.lock() else {
+                tracing::warn!("terminal lock unavailable for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let input_modes = terminal.drain_and_snapshot().input_modes;
+
+            match PasteDisposition::decide(input_modes, &raw_text) {
+                PasteDisposition::SendDirect => {
+                    if let Err(error) =
+                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
+                    {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+                    }
+                    return RuntimeEffects::default();
+                }
+                PasteDisposition::Confirm { raw_text } => {
+                    terminal.ensure_glyphs(&raw_text, gpu);
+                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
+                        terminal.text_metrics().copied(),
+                        terminal.text_bind_group_layout(),
+                        terminal.text_bind_group(),
+                    ) else {
+                        tracing::warn!(
+                            "terminal text resources unavailable for paste confirmation"
+                        );
+                        return RuntimeEffects::default();
+                    };
+                    ConfirmationWindow::new(
+                        raw_text,
+                        event_loop,
+                        gpu,
+                        metrics,
+                        text_bind_group_layout,
+                        text_bind_group,
+                        Some(window),
+                    )
+                }
+            }
+        };
+
         self.window = Some(confirmation);
+        self.input_gate.store(true, Ordering::Release);
+        adapter.quarantine_active_pointers();
+        let effects = runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
+        adapter.fold_effects(effects)
     }
 }
 

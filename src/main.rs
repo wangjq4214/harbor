@@ -9,6 +9,7 @@ mod dialog;
 mod effects;
 mod event;
 mod shell;
+mod tab_coordinator;
 mod tab_manager;
 mod tab_view;
 mod telemetry;

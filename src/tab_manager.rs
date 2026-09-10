@@ -6,7 +6,6 @@ use anyhow::{Context as _, Result, anyhow};
 use harbor_terminal::{Terminal, TerminalSize};
 use harbor_widget::scene::primitive::ExternalDrawId;
 
-use crate::tab_view::TabIndex;
 use crate::terminal_view::TerminalWidgetBridge;
 
 /// Stable terminal-session identity. Values are monotonic and never reused.
@@ -14,8 +13,50 @@ use crate::terminal_view::TerminalWidgetBridge;
 pub(crate) struct TabId(pub(crate) u64);
 
 impl TabId {
-    #[cfg(test)]
-    const fn get(self) -> u64 {
+    #[inline]
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for TabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Strongly-typed 1-based index for tab rail navigation (1..=9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct TabIndex(u8);
+
+impl TabIndex {
+    #[allow(dead_code)]
+    /// Creates a `TabIndex` if `index` is within the valid range 1..=9.
+    pub(crate) const fn new(index: u8) -> Option<Self> {
+        if index >= 1 && index <= 9 {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
+    /// Creates a `TabIndex` for a known-valid digit in 1..=9.
+    #[inline]
+    pub(crate) const fn from_valid_u8(index: u8) -> Self {
+        debug_assert!(index >= 1 && index <= 9);
+        Self(index)
+    }
+
+    /// Returns the 0-based index suitable for array/slice indexing.
+    #[inline]
+    pub(crate) const fn to_zero_based(self) -> usize {
+        (self.0 - 1) as usize
+    }
+
+    #[allow(dead_code)]
+    /// Returns the 1-based index (1..=9).
+    #[inline]
+    pub(crate) const fn get(self) -> u8 {
         self.0
     }
 }
@@ -120,7 +161,7 @@ impl TabManager {
             ));
         }
 
-        let title = format!("Terminal {}", id.0);
+        let title = format!("Terminal {id}");
         self.tabs.push(TerminalTab {
             id,
             title,
@@ -306,7 +347,7 @@ impl TabManager {
                     if let Err(error) = terminal.try_resize_if_changed(size) {
                         all_succeeded = false;
                         tracing::warn!(
-                            tab_id = tab.id.0,
+                            tab_id = tab.id.get(),
                             error = %format_args!("{error:#}"),
                             "failed to resize terminal"
                         );
@@ -314,7 +355,10 @@ impl TabManager {
                 }
                 Err(_) => {
                     all_succeeded = false;
-                    tracing::warn!(tab_id = tab.id.0, "terminal lock unavailable during resize");
+                    tracing::warn!(
+                        tab_id = tab.id.get(),
+                        "terminal lock unavailable during resize"
+                    );
                 }
             }
         }

@@ -23,7 +23,6 @@ use harbor_terminal::GpuContext;
 use harbor_widget::layout::{Point, Rect};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::scene::primitive::Color;
-use harbor_widget::widgets::padding::Padding;
 use harbor_widget::{BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
 
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
@@ -256,12 +255,13 @@ impl TerminalWidgetBridge {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
             dispatch_matched_draw(draw_id, id, context, |target| {
                 if let Some(gpu) = &draw_gpu
-                    && let Ok(mut term) = draw_terminal.lock() {
-                        match mode {
-                            ExternalDrawMode::Live => term.render(target, pass, gpu),
-                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
-                        }
+                    && let Ok(mut term) = draw_terminal.lock()
+                {
+                    match mode {
+                        ExternalDrawMode::Live => term.render(target, pass, gpu),
+                        ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
                     }
+                }
             });
         });
 
@@ -392,44 +392,6 @@ impl TerminalDecorationPreset {
             .clip_behavior(ClipBehavior::AntiAlias)
             .child(child)
     }
-}
-
-/// Main-window root: a 4dp backdrop-aware inset around product content.
-pub(crate) fn build_main_root(
-    backdrop_available: bool,
-    child: impl Component + 'static,
-) -> Padding {
-    // Product/native colors are sRGB; widget colors feed a linear-light shader.
-    let fallback = harbor_config::WindowBackdropStyle::default()
-        .fallback
-        .map(|channel| {
-            if channel <= 0.04045 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        });
-    let root = Padding::all(4.0);
-    let root = if backdrop_available {
-        root
-    } else {
-        root.background(Color {
-            r: fallback[0],
-            g: fallback[1],
-            b: fallback[2],
-            a: 1.0,
-        })
-    };
-    root.child(child)
-}
-
-/// Compatibility composition for callers that render just one terminal panel.
-#[allow(dead_code)]
-pub(crate) fn build_main_terminal_root(
-    backdrop_available: bool,
-    child: impl Component + 'static,
-) -> Padding {
-    build_main_root(backdrop_available, TerminalDecorationPreset::wrap(child))
 }
 
 #[cfg(test)]
@@ -1279,12 +1241,23 @@ mod decoration_tests {
     use std::any::TypeId;
     use std::time::Instant;
 
+    fn test_main_terminal_root(
+        backdrop_available: bool,
+        child: impl Component + 'static,
+    ) -> Padding {
+        crate::tab_view::build_main_root(
+            backdrop_available,
+            harbor_config::WindowBackdropStyle::default().fallback,
+            TerminalDecorationPreset::wrap(child),
+        )
+    }
+
     fn mounted_main_root(viewport: Option<Viewport>) -> (Runtime, RuntimeEffects) {
         let mut runtime = Runtime::new();
         if let Some(viewport) = viewport {
             runtime.set_viewport(viewport);
         }
-        runtime.set_root(build_main_terminal_root(false, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(false, CustomPaint::new(1)));
         let effects = runtime.update(Instant::now());
         (runtime, effects)
     }
@@ -1357,7 +1330,7 @@ mod decoration_tests {
 
     #[test]
     fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
-        let root = build_main_terminal_root(false, CustomPaint::new(1));
+        let root = test_main_terminal_root(false, CustomPaint::new(1));
         assert_eq!(root.top, 4.0);
         assert_eq!(root.right, 4.0);
         assert_eq!(root.bottom, 4.0);
@@ -1367,14 +1340,14 @@ mod decoration_tests {
 
     #[test]
     fn should_omit_root_background_when_backdrop_is_available() {
-        let root = build_main_terminal_root(true, CustomPaint::new(1));
+        let root = test_main_terminal_root(true, CustomPaint::new(1));
         assert_eq!(root.background, None);
     }
 
     #[test]
     fn should_emit_no_root_quad_and_keep_inset_when_backdrop_is_available() {
         let mut runtime = Runtime::new();
-        runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
         let _effects = runtime.update(Instant::now());
         let items = painted_items(&runtime);
 
@@ -1416,7 +1389,7 @@ mod decoration_tests {
         for (width, height) in [(800, 600), (40, 40)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
             runtime.update(Instant::now());
             let items = painted_items(&runtime);
 
@@ -1456,7 +1429,7 @@ mod decoration_tests {
         for (width, height) in [(0, 0), (4, 4), (8, 8)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
             let effects = runtime.update(Instant::now());
             let items = painted_items(&runtime);
 

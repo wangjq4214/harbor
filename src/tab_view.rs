@@ -13,14 +13,16 @@ use harbor_widget::{
 use harbor_widget::{
     input::event::{Key, Modifiers},
     layout::Rect,
+    scene::primitive::Color,
     signal::Signal,
     view::{BuildCx, Component, View},
     widgets::layout_observer::LayoutChangedCallback,
+    widgets::padding::Padding,
 };
 
 use crate::{
-    tab_manager::{TabId, TabSnapshot},
-    terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, build_main_root},
+    tab_manager::{TabId, TabIndex, TabSnapshot},
+    terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge},
 };
 
 pub(crate) const EXPANDED_BREAKPOINT_DP: f32 = 900.0;
@@ -48,42 +50,6 @@ impl RailPresentation {
             Self::Expanded => EXPANDED_RAIL_WIDTH,
             Self::Compact => COMPACT_RAIL_WIDTH,
         }
-    }
-}
-
-/// Strongly-typed 1-based index for tab rail navigation (1..=9).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(crate) struct TabIndex(u8);
-
-impl TabIndex {
-    #[allow(dead_code)]
-    /// Creates a `TabIndex` if `index` is within the valid range 1..=9.
-    pub(crate) const fn new(index: u8) -> Option<Self> {
-        if index >= 1 && index <= 9 {
-            Some(Self(index))
-        } else {
-            None
-        }
-    }
-
-    /// Creates a `TabIndex` for a known-valid digit in 1..=9.
-    #[inline]
-    pub(crate) const fn from_valid_u8(index: u8) -> Self {
-        debug_assert!(index >= 1 && index <= 9);
-        Self(index)
-    }
-
-    /// Returns the 0-based index suitable for array/slice indexing.
-    #[inline]
-    pub(crate) const fn to_zero_based(self) -> usize {
-        (self.0 - 1) as usize
-    }
-
-    #[allow(dead_code)]
-    /// Returns the 1-based index (1..=9).
-    #[inline]
-    pub(crate) const fn get(self) -> u8 {
-        self.0
     }
 }
 
@@ -254,15 +220,58 @@ impl TabUiController {
 pub(crate) struct TabWorkspace {
     controller: TabUiController,
     backdrop_available: bool,
+    backdrop_fallback: [f32; 3],
 }
 
 impl TabWorkspace {
+    #[allow(dead_code)]
     pub(crate) fn new(controller: TabUiController, backdrop_available: bool) -> Self {
+        Self::with_fallback(
+            controller,
+            backdrop_available,
+            harbor_config::WindowBackdropStyle::default().fallback,
+        )
+    }
+
+    pub(crate) fn with_fallback(
+        controller: TabUiController,
+        backdrop_available: bool,
+        backdrop_fallback: [f32; 3],
+    ) -> Self {
         Self {
             controller,
             backdrop_available,
+            backdrop_fallback,
         }
     }
+}
+
+/// Main-window root: a 4dp backdrop-aware inset around product content.
+pub(crate) fn build_main_root(
+    backdrop_available: bool,
+    fallback_rgb: [f32; 3],
+    child: impl Component + 'static,
+) -> Padding {
+    // Product/native colors are sRGB; widget colors feed a linear-light shader.
+    let fallback = fallback_rgb.map(|channel| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let root = Padding::all(4.0);
+    let root = if backdrop_available {
+        root
+    } else {
+        root.background(Color {
+            r: fallback[0],
+            g: fallback[1],
+            b: fallback[2],
+            a: 1.0,
+        })
+    };
+    root.child(child)
 }
 
 impl Component for TabWorkspace {
@@ -297,7 +306,7 @@ impl Component for TabWorkspace {
                                             .tab_focus(snapshot.id)
                                             .expect("live tab has a focus handle"),
                                     )
-                                    .keyed(format!("terminal-tab-{}", snapshot.id.0)) => {}
+                                    .keyed(format!("terminal-tab-{}", snapshot.id)) => {}
                                 }
                             }
                         }
@@ -342,6 +351,7 @@ impl Component for TabWorkspace {
         });
         build_main_root(
             self.backdrop_available,
+            self.backdrop_fallback,
             FocusScope::new().child(Actions::new(shortcuts, move |request| {
                 if let Ok(mut commands) = action_mailbox.lock() {
                     commands.push_back(request);
@@ -433,7 +443,7 @@ fn abbreviation(snapshot: &TabSnapshot) -> String {
     if snapshot.unread {
         "•".to_owned()
     } else {
-        (snapshot.id.0 % 10).to_string()
+        (snapshot.id.get() % 10).to_string()
     }
 }
 
@@ -606,6 +616,7 @@ mod tests {
             });
             build_main_root(
                 false,
+                harbor_config::WindowBackdropStyle::default().fallback,
                 FocusScope::new().child(Actions::new(shortcuts, move |request| {
                     if let Ok(mut commands) = action_mailbox.lock() {
                         commands.push_back(request);
