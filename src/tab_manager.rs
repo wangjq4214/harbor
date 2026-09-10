@@ -615,19 +615,25 @@ mod tests {
             .process_output(b"\x1b[?2026hhidden");
         let (b, draw_b) = create(&mut manager);
         let mut runtime = harbor_widget::runtime::Runtime::new();
-        runtime.set_root(manager.active_bridge().unwrap());
+        runtime.set_root(crate::terminal_view::terminal_widget(
+            manager.active_bridge().unwrap(),
+        ));
         let active_b = runtime.update(std::time::Instant::now());
         assert_eq!(mounted_external_ids(&runtime), [draw_b]);
         assert!(!active_b.has_deferred_externals);
 
         manager.activate(a);
-        runtime.set_root(manager.active_bridge().unwrap());
+        runtime.set_root(crate::terminal_view::terminal_widget(
+            manager.active_bridge().unwrap(),
+        ));
         let active_a = runtime.update(std::time::Instant::now());
         assert_eq!(mounted_external_ids(&runtime), [draw_a]);
         assert!(active_a.has_deferred_externals);
 
         assert!(manager.close(a).active_bridge_changed);
-        runtime.set_root(manager.active_bridge().unwrap());
+        runtime.set_root(crate::terminal_view::terminal_widget(
+            manager.active_bridge().unwrap(),
+        ));
         let back_to_b = runtime.update(std::time::Instant::now());
         assert_eq!(mounted_external_ids(&runtime), [draw_b]);
         assert!(!back_to_b.has_deferred_externals);

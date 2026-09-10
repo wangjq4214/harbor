@@ -2,17 +2,13 @@ error[E0277]: the trait bound `usize: IntoChildren` is not satisfied
  --> tests/ui/fail/non_component_interpolation.rs:7:49
   |
 7 |     let _ = view!(&mut cx, Column::new() => { { 42usize } });
-  |                                                 ^^^^^^^ the trait `harbor_widget::view::Component` is not implemented for `usize`
+  |                                                 ^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `usize`
   |
-  = help: the following other types implement trait `harbor_widget::view::Component`:
-            Actions<A>
-            Align
-            Button
-            Column
-            ConstrainedBox
-            CustomPaint
-            DecoratedBox
-            Expanded
-          and $N others
+help: the trait `IntoChildren` is implemented for `Children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl IntoChildren for Children {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: required for `usize` to implement `harbor_widget::view::Component`
   = note: required for `usize` to implement `IntoChildView`
   = note: required for `usize` to implement `IntoChildren`

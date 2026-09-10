@@ -248,7 +248,7 @@ mod tests {
     fn mount(controller: TabUiController, width: u32, height: u32) -> Runtime {
         let mut runtime = Runtime::new();
         runtime.set_viewport(Viewport::new(width, height, 1.0));
-        runtime.set_root(TabWorkspace::new(controller, false));
+        runtime.set_root(tab_workspace(controller, false));
         runtime.update(Instant::now());
         runtime
     }

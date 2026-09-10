@@ -20,113 +20,112 @@ use harbor_widget::{
 use super::{RailPresentation, TabCommand, TabCommandRequest, TabUiController};
 use crate::{
     tab_manager::{TabIndex, TabSnapshot},
-    terminal_view::TerminalDecorationPreset,
+    terminal_view::{TerminalDecorationPreset, terminal_widget},
 };
 
 pub(crate) const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
 
-#[derive(Clone)]
-pub(crate) struct TabWorkspace {
+struct TabWorkspaceProps {
     controller: TabUiController,
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
 }
 
-impl TabWorkspace {
-    #[allow(dead_code)]
-    pub(crate) fn new(controller: TabUiController, backdrop_available: bool) -> Self {
-        Self::with_fallback(
-            controller,
-            backdrop_available,
-            harbor_config::WindowBackdropStyle::default().fallback,
-        )
-    }
-
-    pub(crate) fn with_fallback(
-        controller: TabUiController,
-        backdrop_available: bool,
-        backdrop_fallback: [f32; 3],
-    ) -> Self {
-        Self {
-            controller,
-            backdrop_available,
-            backdrop_fallback,
-        }
-    }
+#[allow(dead_code)]
+pub(crate) fn tab_workspace(
+    controller: TabUiController,
+    backdrop_available: bool,
+) -> impl Component {
+    tab_workspace_with_fallback(
+        controller,
+        backdrop_available,
+        harbor_config::WindowBackdropStyle::default().fallback,
+    )
 }
 
-impl Component for TabWorkspace {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        let state = self.controller.store.watch(cx).clone();
-        let dispatcher = self.controller.store.dispatcher();
-        let action_dispatcher = dispatcher.clone();
-        let new_dispatcher = dispatcher.clone();
-        let active_bridge = state
-            .active_bridge
-            .expect("workspace has an active terminal until window exit");
-        let root = root_padding(self.backdrop_available, self.backdrop_fallback);
-        let shortcuts = shortcuts();
-        let actions = Actions::handler(move |request| action_dispatcher.dispatch(request));
+pub(crate) fn tab_workspace_with_fallback(
+    controller: TabUiController,
+    backdrop_available: bool,
+    backdrop_fallback: [f32; 3],
+) -> impl Component {
+    let props = TabWorkspaceProps {
+        controller,
+        backdrop_available,
+        backdrop_fallback,
+    };
+    move |cx: &mut BuildCx| render_tab_workspace(cx, &props)
+}
 
-        harbor_widget::view!(cx, root => {
-            FocusScope::new() => {
-                actions => {
-                    shortcuts => {
-                        Row::new() => {
-                            ConstrainedBox::new()
-                                .min_width(state.presentation.width())
-                                .max_width(state.presentation.width()) => {
-                                Column::new() => {
-                                    Expanded::new() => {
-                                        ScrollArea::new()
-                                            .controller(self.controller.scroll.clone()) => {
-                                            Column::new() => {
-                                                for snapshot in state.snapshots.iter() {
-                                                    Row::new()
-                                                        .keyed(format!("terminal-tab-{}", snapshot.id)) => {
-                                                        Expanded::new() => {
-                                                            Focus::empty()
-                                                                .handle(self.controller
-                                                                    .tab_focus(snapshot.id)
-                                                                    .expect("live tab has a focus handle")) => {
-                                                                select_tab_button(
-                                                                    snapshot,
-                                                                    state.presentation,
-                                                                    dispatcher.clone(),
-                                                                ) => {}
-                                                            }
+fn render_tab_workspace(cx: &mut BuildCx, props: &TabWorkspaceProps) -> View {
+    let state = props.controller.store.watch(cx).clone();
+    let dispatcher = props.controller.store.dispatcher();
+    let action_dispatcher = dispatcher.clone();
+    let new_dispatcher = dispatcher.clone();
+    let active_bridge = state
+        .active_bridge
+        .expect("workspace has an active terminal until window exit");
+    let root = root_padding(props.backdrop_available, props.backdrop_fallback);
+    let shortcuts = shortcuts();
+    let actions = Actions::handler(move |request| action_dispatcher.dispatch(request));
+
+    harbor_widget::view!(cx, root => {
+        FocusScope::new() => {
+            actions => {
+                shortcuts => {
+                    Row::new() => {
+                        ConstrainedBox::new()
+                            .min_width(state.presentation.width())
+                            .max_width(state.presentation.width()) => {
+                            Column::new() => {
+                                Expanded::new() => {
+                                    ScrollArea::new()
+                                        .controller(props.controller.scroll.clone()) => {
+                                        Column::new() => {
+                                            for snapshot in state.snapshots.iter() {
+                                                Row::new()
+                                                    .keyed(format!("terminal-tab-{}", snapshot.id)) => {
+                                                    Expanded::new() => {
+                                                        Focus::empty()
+                                                            .handle(props.controller
+                                                                .tab_focus(snapshot.id)
+                                                                .expect("live tab has a focus handle")) => {
+                                                            select_tab_button(
+                                                                snapshot,
+                                                                state.presentation,
+                                                                dispatcher.clone(),
+                                                            ) => {}
                                                         }
-                                                        close_tab_button(snapshot, dispatcher.clone()) => {}
                                                     }
+                                                    close_tab_button(snapshot, dispatcher.clone()) => {}
                                                 }
                                             }
                                         }
                                     }
-                                    match state.presentation {
-                                        RailPresentation::Expanded => {
-                                            Button::new("New terminal").on_click(move |_| {
-                                                new_dispatcher.dispatch(
-                                                    TabCommandRequest::rail(TabCommand::New)
-                                                );
-                                            }) => {}
-                                        },
-                                        RailPresentation::Compact => {
-                                            IconButton::new("+", "New terminal").on_click(move |_| {
-                                                new_dispatcher.dispatch(
-                                                    TabCommandRequest::rail(TabCommand::New)
-                                                );
-                                            }) => {}
-                                        }
+                                }
+                                match state.presentation {
+                                    RailPresentation::Expanded => {
+                                        Button::new("New terminal").on_click(move |_| {
+                                            new_dispatcher.dispatch(
+                                                TabCommandRequest::rail(TabCommand::New)
+                                            );
+                                        }) => {}
+                                    },
+                                    RailPresentation::Compact => {
+                                        IconButton::new("+", "New terminal").on_click(move |_| {
+                                            new_dispatcher.dispatch(
+                                                TabCommandRequest::rail(TabCommand::New)
+                                            );
+                                        }) => {}
                                     }
                                 }
                             }
-                            Separator::vertical() => {}
-                            Expanded::new() => {
-                                self.controller.allocation.observer() => {
-                                    Focus::empty().handle(self.controller.terminal_focus) => {
-                                        TerminalDecorationPreset::container() => {
-                                            { active_bridge }
-                                        }
+                        }
+                        Separator::vertical() => {}
+                        Expanded::new() => {
+                            props.controller.allocation.observer() => {
+                                Focus::empty().handle(props.controller.terminal_focus) => {
+                                    TerminalDecorationPreset::container() => {
+                                        { terminal_widget(active_bridge) }
                                     }
                                 }
                             }
@@ -134,8 +133,8 @@ impl Component for TabWorkspace {
                     }
                 }
             }
-        })
-    }
+        }
+    })
 }
 
 /// Main-window root styling without attaching widget children by hand.
@@ -161,7 +160,7 @@ pub(crate) fn root_padding(backdrop_available: bool, fallback_rgb: [f32; 3]) -> 
 }
 
 #[derive(Clone)]
-pub(crate) struct ConfirmationDialog {
+struct ConfirmationDialogProps {
     header_text: String,
     wrapped_lines: Vec<String>,
     scroll_offset: Arc<AtomicUsize>,
@@ -170,35 +169,33 @@ pub(crate) struct ConfirmationDialog {
     line_height: f32,
 }
 
-impl Component for ConfirmationDialog {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        let cancelled = Arc::clone(&self.cancelled);
-        let confirmed = Arc::clone(&self.confirmed);
-        harbor_widget::view!(cx, FocusScope::new() => {
-            Padding::new(24.0, 16.0, 24.0, 16.0) => {
-                Column::new() => {
-                    TextLabel::new(self.header_text.clone()) => {}
-                    SizedBox::new(Size::new(0.0, 8.0)) => {}
-                    PreviewPane::new(
-                        self.wrapped_lines.clone(),
-                        Arc::clone(&self.scroll_offset),
-                        self.line_height,
-                        CONFIRMATION_PREVIEW_VISIBLE_LINES,
-                    ) => {}
-                    SizedBox::new(Size::new(0.0, 12.0)) => {}
-                    Row::new() => {
-                        Button::new("Cancel").on_click(move |_| {
-                            cancelled.store(true, Ordering::SeqCst);
-                        }) => {}
-                        SizedBox::new(Size::new(12.0, 0.0)) => {}
-                        Button::new("Paste").on_click(move |_| {
-                            confirmed.store(true, Ordering::SeqCst);
-                        }) => {}
-                    }
+fn confirmation_dialog(cx: &mut BuildCx, props: &ConfirmationDialogProps) -> View {
+    let cancelled = Arc::clone(&props.cancelled);
+    let confirmed = Arc::clone(&props.confirmed);
+    harbor_widget::view!(cx, FocusScope::new() => {
+        Padding::new(24.0, 16.0, 24.0, 16.0) => {
+            Column::new() => {
+                TextLabel::new(props.header_text.clone()) => {}
+                SizedBox::new(Size::new(0.0, 8.0)) => {}
+                PreviewPane::new(
+                    props.wrapped_lines.clone(),
+                    Arc::clone(&props.scroll_offset),
+                    props.line_height,
+                    CONFIRMATION_PREVIEW_VISIBLE_LINES,
+                ) => {}
+                SizedBox::new(Size::new(0.0, 12.0)) => {}
+                Row::new() => {
+                    Button::new("Cancel").on_click(move |_| {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }) => {}
+                    SizedBox::new(Size::new(12.0, 0.0)) => {}
+                    Button::new("Paste").on_click(move |_| {
+                        confirmed.store(true, Ordering::SeqCst);
+                    }) => {}
                 }
             }
-        })
-    }
+        }
+    })
 }
 
 pub(crate) fn build_confirmation_root(
@@ -208,15 +205,16 @@ pub(crate) fn build_confirmation_root(
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
     line_height: f32,
-) -> ConfirmationDialog {
-    ConfirmationDialog {
+) -> impl Component {
+    let props = ConfirmationDialogProps {
         header_text: format!("Paste {line_count} lines?"),
         wrapped_lines,
         scroll_offset,
         cancelled,
         confirmed,
         line_height,
-    }
+    };
+    move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
 }
 
 fn shortcuts() -> Shortcuts<TabCommandRequest> {

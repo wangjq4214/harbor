@@ -332,13 +332,16 @@ impl TerminalWidgetBridge {
     }
 }
 
-impl Component for TerminalWidgetBridge {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        harbor_widget::view!(cx, CustomPaint::new(self.draw_id())
-            .handler(Arc::clone(&self.handler))
-            .schedule(Arc::clone(&self.schedule))
-            .on_input(Arc::clone(&self.on_input)) => {})
-    }
+/// Creates the UI component that renders a terminal bridge.
+pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> impl Component {
+    move |cx: &mut BuildCx| render_terminal_widget(cx, &bridge)
+}
+
+fn render_terminal_widget(cx: &mut BuildCx, bridge: &TerminalWidgetBridge) -> View {
+    harbor_widget::view!(cx, CustomPaint::new(bridge.draw_id())
+        .handler(Arc::clone(&bridge.handler))
+        .schedule(Arc::clone(&bridge.schedule))
+        .on_input(Arc::clone(&bridge.on_input)) => {})
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
@@ -577,11 +580,11 @@ mod tests {
 
         // Act
         let mut cx_a = BuildCx::stub();
-        let view_a = bridge.build(&mut cx_a);
+        let view_a = render_terminal_widget(&mut cx_a, &bridge);
         let count_after_first = Arc::strong_count(&cached);
 
         let mut cx_b = BuildCx::stub();
-        let view_b = bridge.build(&mut cx_b);
+        let view_b = render_terminal_widget(&mut cx_b, &bridge);
         let count_after_second = Arc::strong_count(&cached);
 
         // Assert: each build clones the same Arc (not a freshly allocated handler).
@@ -754,7 +757,7 @@ mod tests {
     ) -> harbor_widget::runtime::Runtime {
         let bridge = TerminalWidgetBridge::new(1, terminal, gate);
         let mut rt = harbor_widget::runtime::Runtime::new();
-        rt.set_root(bridge);
+        rt.set_root(terminal_widget(bridge));
         rt.update(std::time::Instant::now());
         assert!(rt.focus_first_focusable());
         let _ = rt.drain_external_input();

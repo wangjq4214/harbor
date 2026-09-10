@@ -25,7 +25,7 @@ use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{TabCoordinator, TerminalTabFactory, logical_window_width};
 use crate::tab_manager::TabManager;
-use crate::tab_view::{TabUiController, ui::TabWorkspace};
+use crate::tab_view::{TabUiController, ui::tab_workspace_with_fallback};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
@@ -325,7 +325,7 @@ fn init_widget_runtime(
         window.scale_factor() as f32,
     );
     let mut runtime = harbor_widget::runtime::Runtime::new();
-    runtime.set_root(TabWorkspace::with_fallback(
+    runtime.set_root(tab_workspace_with_fallback(
         tab_ui.clone(),
         backdrop_available,
         backdrop_fallback,

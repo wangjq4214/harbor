@@ -175,6 +175,19 @@ pub trait Component {
     }
 }
 
+/// Plain functions and closures can be mounted directly as components.
+///
+/// Captured values act as props, while mutable UI state remains in the
+/// component Fiber through [`BuildCx::use_state`].
+impl<F> Component for F
+where
+    F: Fn(&mut BuildCx) -> View + 'static,
+{
+    fn build(&self, cx: &mut BuildCx) -> View {
+        self(cx)
+    }
+}
+
 // ── AnyView ─────────────────────────────────────────────────────────────────
 
 /// A widget's paint position relative to the recursive paint of its children.
