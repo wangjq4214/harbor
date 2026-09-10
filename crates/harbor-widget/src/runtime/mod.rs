@@ -12,6 +12,7 @@ use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
+use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
@@ -20,9 +21,10 @@ use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, tak
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
 use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
+use harbor_text::FontBook;
 use hashbrown::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +56,7 @@ pub struct Runtime {
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
     text_metrics: TextMetrics,
+    text_atlas: Option<Rc<RefCell<WidgetTextAtlas>>>,
     scene_graph: SceneGraph,
     next_scene_item_id: u64,
     pending_delta: Option<SceneDelta>,
@@ -88,6 +91,7 @@ impl Runtime {
             root_id: None,
             root_component: None,
             text_metrics,
+            text_atlas: None,
             scene_graph: SceneGraph::new(),
             next_scene_item_id: 1,
             pending_delta: None,
@@ -419,10 +423,48 @@ impl Runtime {
         self.encoder.init_renderer(device, format);
     }
 
-    /// Initializes the text renderer with the shared glyph atlas.
-    /// Must be called after `init_renderer`. If not called, text primitives
-    /// are silently skipped during encode.
+    /// Initializes Runtime-owned Widget text resources and renderer.
     pub fn init_text_renderer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        fonts: FontBook,
+    ) {
+        let atlas = Rc::new(RefCell::new(WidgetTextAtlas::new(device, queue, fonts)));
+        {
+            let atlas_ref = atlas.borrow();
+            self.encoder.init_text_renderer(
+                device,
+                format,
+                atlas_ref.bind_group_layout(),
+                atlas_ref.bind_group(),
+            );
+        }
+        self.text_atlas = Some(atlas);
+    }
+
+    /// Creates another Runtime with independent render buffers and shared text resources.
+    pub fn create_child_runtime(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let mut runtime = Self::with_text_metrics(self.text_metrics);
+        runtime.init_renderer(device, format);
+        if let Some(atlas) = &self.text_atlas {
+            {
+                let atlas_ref = atlas.borrow();
+                runtime.encoder.init_text_renderer(
+                    device,
+                    format,
+                    atlas_ref.bind_group_layout(),
+                    atlas_ref.bind_group(),
+                );
+            }
+            runtime.text_atlas = Some(Rc::clone(atlas));
+        }
+        runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn init_text_renderer_with_bind_group(
         &mut self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -548,13 +590,33 @@ impl Runtime {
         }
     }
 
-    /// Prepares cached glyph layouts from the current retained scene.
+    /// Ensures glyphs and prepares cached text runs using Runtime-owned resources.
     ///
-    /// Call after the paint pass and before encoding with the glyph lookup that
-    /// matches the active atlas.
-    pub fn prepare_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
+    /// Call after Runtime update/paint and before encoding the frame.
+    pub fn prepare_text(&mut self, queue: &wgpu::Queue) {
+        let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
+            return;
+        };
+        let mut atlas = atlas.borrow_mut();
+        let revision = atlas.ensure_scene_text(
+            self.scene_graph.items().iter().filter_map(|item| {
+                if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
+                    Some(text.as_ref())
+                } else {
+                    None
+                }
+            }),
+            queue,
+        );
+        let glyph_fn = |ch| atlas.glyph(ch).copied();
         self.encoder
-            .prepare_text_runs(&self.scene_graph, &self.text_metrics, glyph_fn);
+            .prepare_text_runs(&self.scene_graph, &self.text_metrics, revision, &glyph_fn);
+    }
+
+    #[cfg(test)]
+    fn prepare_text_runs(&mut self, glyph_fn: &crate::text::GlyphFn<'_>) {
+        self.encoder
+            .prepare_text_runs(&self.scene_graph, &self.text_metrics, 0, glyph_fn);
     }
 
     // ── Accessors ──────────────────────────────────────────────────────
@@ -1815,6 +1877,77 @@ mod tests {
         rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
         rt.prepare_text_runs(&|_ch| None);
         assert!(rt.text_run_cache().is_empty());
+    }
+
+    #[test]
+    fn button_text_rebuilds_and_marks_instances_dirty_when_atlas_revision_changes() {
+        let mut rt = Runtime::new();
+        rt.set_root(Button::new("OK"));
+        let glyph = |_ch| {
+            Some(crate::text::AtlasGlyph {
+                key: harbor_text::GlyphKey::new(
+                    harbor_text::FaceId::PRIMARY,
+                    harbor_text::GlyphId::new(1),
+                    harbor_text::FontSize::new(12.0).unwrap(),
+                    harbor_text::FontStyle::REGULAR,
+                ),
+                uv: crate::text::AtlasUv {
+                    left: 0.0,
+                    top: 0.0,
+                    right: 0.5,
+                    bottom: 0.5,
+                },
+                width: 8,
+                height: 16,
+                bearing_x: 0,
+                bearing_y: 12,
+                atlas_x: 0,
+                atlas_y: 0,
+            })
+        };
+        let text_id = rt
+            .scene_graph
+            .items()
+            .iter()
+            .find(|item| {
+                matches!(
+                    item.primitive,
+                    crate::scene::primitive::Primitive::Text { .. }
+                )
+            })
+            .expect("button label text primitive")
+            .id;
+
+        rt.encoder
+            .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 1, &glyph);
+        assert_eq!(
+            rt.encoder
+                .text_run_cache()
+                .get(text_id)
+                .unwrap()
+                .glyphs
+                .len(),
+            2
+        );
+        assert!(rt.encoder.text_instances_dirty());
+
+        rt.encoder.mark_text_instances_uploaded();
+        rt.encoder
+            .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 1, &glyph);
+        assert!(!rt.encoder.text_instances_dirty());
+
+        rt.encoder
+            .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 2, &glyph);
+        assert!(rt.encoder.text_instances_dirty());
+        assert_eq!(
+            rt.encoder
+                .text_run_cache()
+                .get(text_id)
+                .unwrap()
+                .glyphs
+                .len(),
+            2
+        );
     }
 
     #[test]

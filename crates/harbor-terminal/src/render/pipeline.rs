@@ -4,7 +4,7 @@ use crate::render::{
     Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection, Text,
 };
 use harbor_config::Palette;
-use harbor_text::{AtlasGlyph, FontBook, TextMetrics};
+use harbor_text::{FontBook, TextMetrics};
 use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
@@ -129,21 +129,5 @@ impl TerminalRenderPipeline {
 
     pub fn metrics(&self) -> &TextMetrics {
         self.text.metrics()
-    }
-
-    pub fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.text.glyph(ch)
-    }
-
-    pub fn text_bind_group(&self) -> &wgpu::BindGroup {
-        self.text.text_bind_group()
-    }
-
-    pub fn text_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        self.text.text_bind_group_layout()
-    }
-
-    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        self.text.ensure_glyphs(text, gpu);
     }
 }

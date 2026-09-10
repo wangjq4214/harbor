@@ -1516,15 +1516,12 @@ fn should_initialize_headless_terminal_with_given_dimensions() {
 }
 
 #[test]
-fn should_return_none_for_render_component_getters_when_headless() {
+fn should_return_none_for_text_metrics_when_headless() {
     // Arrange
     let terminal = Terminal::new_headless(24, 80);
 
     // Act & Assert
     assert!(terminal.text_metrics().is_none());
-    assert!(terminal.text_glyph('A').is_none());
-    assert!(terminal.text_bind_group().is_none());
-    assert!(terminal.text_bind_group_layout().is_none());
 }
 
 #[test]

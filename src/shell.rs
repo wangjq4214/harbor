@@ -29,8 +29,8 @@ use crate::tab_view::{TabUiController, ui::tab_workspace_with_fallback};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    GpuContext, Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency,
-    load_system_fonts,
+    FontBook, GpuContext, Terminal, TerminalAppearance, TextMetrics,
+    alpha_mode_supports_transparency, load_system_fonts,
 };
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
@@ -282,7 +282,10 @@ impl ActiveSession {
                 self.backdrop_available,
                 self.gpu.alpha_mode(),
             );
-            self.winit_adapter.render(&mut self.widget_runtime, target)
+            self.winit_adapter
+                .render_with_prepare(&mut self.widget_runtime, target, |runtime| {
+                    runtime.prepare_text(queue);
+                })
         };
         self.sync_terminal_allocation(event_loop);
 
@@ -315,6 +318,8 @@ fn init_widget_runtime(
     window: &Arc<Window>,
     gpu: &GpuContext,
     tab_ui: TabUiController,
+    text_metrics: TextMetrics,
+    fonts: FontBook,
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
 ) -> (harbor_widget::runtime::Runtime, RuntimeEffects) {
@@ -324,13 +329,14 @@ fn init_widget_runtime(
         initial_size.height,
         window.scale_factor() as f32,
     );
-    let mut runtime = harbor_widget::runtime::Runtime::new();
+    let mut runtime = harbor_widget::runtime::Runtime::with_text_metrics(text_metrics);
     runtime.set_root(tab_workspace_with_fallback(
         tab_ui.clone(),
         backdrop_available,
         backdrop_fallback,
     ));
     runtime.init_renderer(gpu.device(), gpu.format());
+    runtime.init_text_renderer(gpu.device(), gpu.queue(), gpu.format(), fonts);
     runtime.set_viewport(initial_viewport);
     let mut initial_effects = runtime.update(Instant::now());
     initial_effects.merge(runtime.request_focus(&tab_ui.terminal_focus()));
@@ -455,6 +461,8 @@ impl Shell {
             &window,
             &gpu,
             tab_ui.clone(),
+            metrics,
+            fonts,
             main_window_backdrop_available,
             backdrop_style.fallback,
         );

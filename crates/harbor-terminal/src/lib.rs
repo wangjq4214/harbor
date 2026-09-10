@@ -361,24 +361,6 @@ impl Terminal {
         self.renderer.as_ref().map(|r| r.metrics())
     }
 
-    pub fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.renderer.as_ref().and_then(|r| r.glyph(ch))
-    }
-
-    pub fn text_bind_group(&self) -> Option<&wgpu::BindGroup> {
-        self.renderer.as_ref().map(|r| r.text_bind_group())
-    }
-
-    pub fn text_bind_group_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.renderer.as_ref().map(|r| r.text_bind_group_layout())
-    }
-
-    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        if let Some(r) = &mut self.renderer {
-            r.ensure_glyphs(text, gpu);
-        }
-    }
-
     // ── I/O delegation ────────────────────────────────────────────────
 
     pub fn put_str(&mut self, text: &str) {

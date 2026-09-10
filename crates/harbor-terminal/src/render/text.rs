@@ -10,7 +10,7 @@ use crate::{CellAttrs, Color, DirtyRange};
 #[cfg(test)]
 use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
-use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, TextMetrics};
+use harbor_text::{FontBook, GlyphAtlas, TextMetrics};
 
 const SHADER: &str = r#"
 struct VertexInput {
@@ -215,7 +215,6 @@ pub struct Text {
     fonts: FontBook,
     metrics: TextMetrics,
     pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
     atlas: GlyphAtlas,
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
@@ -228,28 +227,6 @@ pub struct Text {
 impl Text {
     pub fn is_dirty(&self) -> bool {
         self.dirty
-    }
-
-    pub fn text_bind_group(&self) -> &wgpu::BindGroup {
-        &self.gpu_atlas.bind_group
-    }
-
-    pub fn text_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.bind_group_layout
-    }
-
-    /// Looks up a glyph in the CPU-side atlas.
-    pub fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.atlas.glyph_by_char(ch)
-    }
-
-    /// Ensures dialog text characters are rasterized into the atlas.
-    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        let mut chars: Vec<char> = text.chars().filter(|&c| c != ' ').collect();
-        chars.sort_unstable();
-        chars.dedup();
-        let result = self.atlas.rasterize_new(&self.fonts, &chars);
-        self.apply_rasterize_result(gpu, result);
     }
 
     /// Apply CPU atlas changes to the GPU atlas / vertex dirty state.
@@ -302,7 +279,6 @@ impl Text {
             fonts,
             metrics,
             pipeline,
-            bind_group_layout,
             atlas,
             gpu_atlas,
             vertex_buffer,

@@ -162,6 +162,8 @@ pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
     text_renderer: Option<TextRenderer>,
     text_run_cache: TextRunCache,
+    prepared_atlas_revision: Option<u64>,
+    text_instances_dirty: bool,
     encoded_viewport: Option<Viewport>,
 }
 
@@ -171,6 +173,8 @@ impl FrameEncoder {
             renderer: None,
             text_renderer: None,
             text_run_cache: TextRunCache::new(),
+            prepared_atlas_revision: None,
+            text_instances_dirty: false,
             encoded_viewport: None,
         }
     }
@@ -198,24 +202,46 @@ impl FrameEncoder {
         &mut self.text_run_cache
     }
 
+    #[cfg(test)]
+    pub(crate) fn text_instances_dirty(&self) -> bool {
+        self.text_instances_dirty
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_text_instances_uploaded(&mut self) {
+        self.text_instances_dirty = false;
+    }
+
     /// Prepares cached glyph layouts from the current retained scene.
     ///
-    /// Scene item IDs are the cache keys, so a repeated preparation pass leaves
-    /// unchanged text in place and releases entries for removed text items.
+    /// Scene item IDs are cache keys. A changed atlas revision invalidates every
+    /// run because a repack may have changed all previously cached UVs.
     pub(crate) fn prepare_text_runs(
         &mut self,
         scene_graph: &SceneGraph,
         metrics: &TextMetrics,
+        atlas_revision: u64,
         glyph_fn: &GlyphFn<'_>,
     ) {
+        let revision_changed = self.prepared_atlas_revision != Some(atlas_revision);
+        if revision_changed {
+            self.text_run_cache.clear();
+        }
+
+        let mut changed = revision_changed;
         let mut live_ids = Vec::new();
         for item in scene_graph.items() {
             if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
-                self.text_run_cache.upsert(item.id, text, metrics, glyph_fn);
+                changed |= self.text_run_cache.upsert(item.id, text, metrics, glyph_fn);
                 live_ids.push(item.id);
             }
         }
+        let previous_len = self.text_run_cache.len();
         self.text_run_cache.retain_live_ids(live_ids);
+        changed |= self.text_run_cache.len() != previous_len;
+
+        self.prepared_atlas_revision = Some(atlas_revision);
+        self.text_instances_dirty |= changed;
     }
 
     /// Applies a pending SceneDelta and encodes draw calls in paint order.
@@ -240,10 +266,11 @@ impl FrameEncoder {
         if viewport_changed {
             renderer.refresh_viewport(queue, raw_items, &viewport);
         }
-        if (delta.is_some() || viewport_changed)
+        if (delta.is_some() || viewport_changed || self.text_instances_dirty)
             && let Some(ref mut tr) = self.text_renderer
         {
             tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
+            self.text_instances_dirty = false;
         }
         self.encoded_viewport = Some(viewport.clone());
 

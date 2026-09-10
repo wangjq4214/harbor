@@ -17,10 +17,9 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::effects::{apply_control_flow, apply_window_effects};
 use crate::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
-use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal, TextMetrics};
+use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::runtime::Runtime;
-use harbor_widget::text::GlyphFn;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -193,15 +192,7 @@ impl PasteController {
         gpu: &GpuContext,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> PasteEventOutcome {
-        let result = if matches!(event, WindowEvent::RedrawRequested)
-            && let Some(active_terminal) = active_terminal
-            && let Ok(terminal) = active_terminal.lock()
-        {
-            let glyph_fn = |ch| terminal.text_glyph(ch).copied();
-            self.handle_event(event, event_loop, Some(gpu), Some(&glyph_fn))
-        } else {
-            self.handle_event(event, event_loop, Some(gpu), None)
-        };
+        let result = self.handle_event(event, event_loop, Some(gpu));
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
@@ -233,7 +224,6 @@ impl PasteController {
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
-        glyph_fn: Option<&GlyphFn>,
     ) -> DialogOutcome {
         let Some(mut confirmation) = self.window.take() else {
             return DialogOutcome::None;
@@ -246,9 +236,9 @@ impl PasteController {
             }
             ConfirmationResult::None => {
                 if matches!(event, WindowEvent::RedrawRequested)
-                    && let (Some(gpu), Some(glyph_fn)) = (gpu, glyph_fn)
+                    && let Some(gpu) = gpu
                 {
-                    let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_fn);
+                    let frame = confirmation.render(gpu.device(), gpu.queue());
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
                         return DialogOutcome::Fatal(error);
@@ -299,26 +289,7 @@ impl PasteController {
                     return RuntimeEffects::default();
                 }
                 PasteDisposition::Confirm { raw_text } => {
-                    terminal.ensure_glyphs(&raw_text, gpu);
-                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
-                        terminal.text_metrics().copied(),
-                        terminal.text_bind_group_layout(),
-                        terminal.text_bind_group(),
-                    ) else {
-                        tracing::warn!(
-                            "terminal text resources unavailable for paste confirmation"
-                        );
-                        return RuntimeEffects::default();
-                    };
-                    ConfirmationWindow::new(
-                        raw_text,
-                        event_loop,
-                        gpu,
-                        metrics,
-                        text_bind_group_layout,
-                        text_bind_group,
-                        Some(window),
-                    )
+                    ConfirmationWindow::new(raw_text, event_loop, gpu, runtime, Some(window))
                 }
             }
         };
@@ -358,12 +329,11 @@ impl ConfirmationWindow {
         raw_text: String,
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
-        metrics: TextMetrics,
-        text_bind_group_layout: &wgpu::BindGroupLayout,
-        text_bind_group: &wgpu::BindGroup,
+        source_runtime: &Runtime,
         main_window: Option<&Window>,
     ) -> Self {
         let line_count = raw_text.lines().count();
+        let metrics = *source_runtime.text_metrics();
 
         let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
             .floor() as usize;
@@ -442,7 +412,7 @@ impl ConfirmationWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
 
-        let mut runtime = Runtime::with_text_metrics(metrics);
+        let mut runtime = source_runtime.create_child_runtime(gpu.device(), format);
 
         let confirm_root = crate::tab_view::ui::build_confirmation_root(
             line_count,
@@ -453,17 +423,6 @@ impl ConfirmationWindow {
             metrics.line_height,
         );
         runtime.set_root(confirm_root);
-
-        // Init quad renderer (needed for button backgrounds/borders).
-        runtime.init_renderer(gpu.device(), gpu.format());
-
-        // Init text renderer with the shared glyph atlas.
-        runtime.init_text_renderer(
-            gpu.device(),
-            gpu.format(),
-            text_bind_group_layout,
-            text_bind_group,
-        );
 
         // Each native window has an independent adapter, including its viewport,
         // input state, scheduler, and surface-recovery budget.
@@ -577,12 +536,7 @@ impl ConfirmationWindow {
 
     /// Presents one frame through the shared winit integration using borrowed
     /// confirmation resources and shared Device, Queue, and text atlas data.
-    pub(crate) fn render(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        glyph_fn: &GlyphFn,
-    ) -> FrameOutcome {
+    pub(crate) fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> FrameOutcome {
         let ConfirmationWindow {
             window,
             surface,
@@ -607,7 +561,7 @@ impl ConfirmationWindow {
             alpha_mode,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text_runs(glyph_fn);
+            runtime.prepare_text(queue);
         })
     }
 

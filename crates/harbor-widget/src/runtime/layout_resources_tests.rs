@@ -179,7 +179,12 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
             ),
     );
     rt.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    rt.init_text_renderer(&device, wgpu::TextureFormat::Bgra8Unorm, &layout, &group);
+    rt.init_text_renderer_with_bind_group(
+        &device,
+        wgpu::TextureFormat::Bgra8Unorm,
+        &layout,
+        &group,
+    );
     rt.update(Instant::now());
     rt.prepare_text_runs(&glyph);
     encode(&mut rt, &device, &queue, Viewport::new(1000, 600, 1.0));
