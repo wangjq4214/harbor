@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, anyhow};
 use harbor_terminal::{Terminal, TerminalSize};
 use harbor_widget::scene::primitive::ExternalDrawId;
 
+use crate::tab_view::TabIndex;
 use crate::terminal_view::TerminalWidgetBridge;
 
 /// Stable terminal-session identity. Values are monotonic and never reused.
@@ -215,11 +216,8 @@ impl TabManager {
         self.activate(self.tabs[previous].id)
     }
 
-    pub(crate) fn activate_numeric(&mut self, one_based: usize) -> TabActionOutcome {
-        let Some(index) = one_based.checked_sub(1) else {
-            return TabActionOutcome::unchanged();
-        };
-        let Some(tab) = self.tabs.get(index) else {
+    pub(crate) fn activate_numeric(&mut self, index: TabIndex) -> TabActionOutcome {
+        let Some(tab) = self.tabs.get(index.to_zero_based()) else {
             return TabActionOutcome::unchanged();
         };
         self.activate(tab.id)
@@ -405,9 +403,16 @@ mod tests {
         assert!(!manager.snapshots()[0].unread);
         assert!(manager.activate_previous().active_bridge_changed);
         assert_eq!(manager.active_id(), Some(c));
-        assert!(manager.activate_numeric(2).active_bridge_changed);
+        assert!(
+            manager
+                .activate_numeric(TabIndex::from_valid_u8(2))
+                .active_bridge_changed
+        );
         assert_eq!(manager.active_id(), Some(b));
-        assert_eq!(manager.activate_numeric(9), TabActionOutcome::unchanged());
+        assert_eq!(
+            manager.activate_numeric(TabIndex::from_valid_u8(9)),
+            TabActionOutcome::unchanged()
+        );
     }
 
     #[test]

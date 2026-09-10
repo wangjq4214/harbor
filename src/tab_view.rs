@@ -51,6 +51,42 @@ impl RailPresentation {
     }
 }
 
+/// Strongly-typed 1-based index for tab rail navigation (1..=9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct TabIndex(u8);
+
+impl TabIndex {
+    #[allow(dead_code)]
+    /// Creates a `TabIndex` if `index` is within the valid range 1..=9.
+    pub(crate) const fn new(index: u8) -> Option<Self> {
+        if index >= 1 && index <= 9 {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
+    /// Creates a `TabIndex` for a known-valid digit in 1..=9.
+    #[inline]
+    pub(crate) const fn from_valid_u8(index: u8) -> Self {
+        debug_assert!(index >= 1 && index <= 9);
+        Self(index)
+    }
+
+    /// Returns the 0-based index suitable for array/slice indexing.
+    #[inline]
+    pub(crate) const fn to_zero_based(self) -> usize {
+        (self.0 - 1) as usize
+    }
+
+    #[allow(dead_code)]
+    /// Returns the 1-based index (1..=9).
+    #[inline]
+    pub(crate) const fn get(self) -> u8 {
+        self.0
+    }
+}
+
 /// Requests are queued during widget event routing and reduced by the Host afterward.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TabCommand {
@@ -60,7 +96,7 @@ pub(crate) enum TabCommand {
     Activate(TabId),
     Next,
     Previous,
-    Numeric(usize),
+    Numeric(TabIndex),
 }
 
 /// Focus disposition attached at the event source.
@@ -298,9 +334,10 @@ impl Component for TabWorkspace {
             );
         let shortcuts = (1..=9).fold(shortcuts, |shortcuts, index| {
             let digit = char::from_digit(index as u32, 10).expect("numeric shortcut is a digit");
+            let tab_index = TabIndex::from_valid_u8(index as u8);
             shortcuts.bind(
                 KeyChord::new(Key::Character(digit), ctrl()),
-                TabCommandRequest::shortcut(TabCommand::Numeric(index)),
+                TabCommandRequest::shortcut(TabCommand::Numeric(tab_index)),
             )
         });
         build_main_root(
@@ -561,9 +598,10 @@ mod tests {
             let shortcuts = (1..=9).fold(shortcuts, |shortcuts, index| {
                 let digit =
                     char::from_digit(index as u32, 10).expect("numeric shortcut is a digit");
+                let tab_index = TabIndex::from_valid_u8(index as u8);
                 shortcuts.bind(
                     KeyChord::new(Key::Character(digit), ctrl()),
-                    TabCommandRequest::shortcut(TabCommand::Numeric(index)),
+                    TabCommandRequest::shortcut(TabCommand::Numeric(tab_index)),
                 )
             });
             build_main_root(
@@ -756,7 +794,7 @@ mod tests {
                 (
                     Key::Character(char::from_digit(index as u32, 10).unwrap()),
                     ctrl(),
-                    TabCommand::Numeric(index),
+                    TabCommand::Numeric(TabIndex::from_valid_u8(index as u8)),
                 )
             }));
             for (key, modifiers, command) in shortcuts {
@@ -1009,5 +1047,20 @@ mod tests {
 
         assert!(weak.upgrade().is_none());
         assert!(!runtime.has_external_draws());
+    }
+
+    #[test]
+    fn tab_index_domain_type_validates_range() {
+        assert_eq!(TabIndex::new(0), None);
+        assert_eq!(TabIndex::new(10), None);
+        assert_eq!(TabIndex::new(255), None);
+
+        let first = TabIndex::new(1).unwrap();
+        assert_eq!(first.get(), 1);
+        assert_eq!(first.to_zero_based(), 0);
+
+        let ninth = TabIndex::new(9).unwrap();
+        assert_eq!(ninth.get(), 9);
+        assert_eq!(ninth.to_zero_based(), 8);
     }
 }

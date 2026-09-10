@@ -31,7 +31,7 @@ use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources};
 use crate::tab_view::{TabCommand, TabFocusPolicy, TabUiController, TabWorkspace};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
-use crate::terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation, with_current_gpu};
+use crate::terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation};
 use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{
     GpuContext, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,
@@ -40,32 +40,379 @@ use harbor_terminal::{
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
 
-/// Active session resources that exist while the window and renderer are alive.
-pub(crate) struct ActiveSession {
-    window: Arc<Window>,
-    gpu: GpuContext,
+/// Outcome of a paste confirmation event dispatch.
+#[derive(Debug)]
+pub(crate) enum PasteEventOutcome {
+    Handled { request_redraw: bool },
+    Fatal(harbor_widget::winit::FrameError),
+}
+
+/// Controller encapsulating modal paste confirmation and clipboard interaction.
+pub(crate) struct PasteController {
+    dialog: DialogOverlay,
+    input_gate: Arc<AtomicBool>,
+}
+
+impl PasteController {
+    pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
+        Self {
+            dialog: DialogOverlay::new(),
+            input_gate,
+        }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.dialog.is_active()
+    }
+
+    pub(crate) fn window_id(&self) -> Option<WindowId> {
+        self.dialog.window_id()
+    }
+
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
+        self.dialog.about_to_wait(now)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_paste_shortcut(
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
+        is_paste_shortcut(event, modifiers)
+    }
+
+    pub(crate) fn handle_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        event_loop: &ActiveEventLoop,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    ) -> PasteEventOutcome {
+        let result = if matches!(event, WindowEvent::RedrawRequested)
+            && let Some(active_terminal) = active_terminal
+            && let Ok(terminal) = active_terminal.lock()
+        {
+            let glyph_fn = |ch| terminal.text_glyph(ch).copied();
+            self.dialog
+                .handle_event(event, event_loop, Some(gpu), Some(&glyph_fn))
+        } else {
+            self.dialog.handle_event(event, event_loop, Some(gpu), None)
+        };
+
+        match &result {
+            DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
+                if let DialogOutcome::Confirmed(_) = &result
+                    && let Some(active_terminal) = active_terminal
+                    && let Ok(mut terminal) = active_terminal.lock()
+                {
+                    let input_modes = terminal.drain_and_snapshot().input_modes;
+                    if let Err(error) = write_confirmation_outcome(&result, input_modes, |bytes| {
+                        terminal.write_pty(bytes)
+                    }) {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+                    }
+                }
+                self.input_gate.store(false, Ordering::Release);
+                PasteEventOutcome::Handled {
+                    request_redraw: true,
+                }
+            }
+            DialogOutcome::Fatal(error) => PasteEventOutcome::Fatal(error.clone()),
+            DialogOutcome::None => PasteEventOutcome::Handled {
+                request_redraw: false,
+            },
+        }
+    }
+
+    pub(crate) fn paste_from_clipboard(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        runtime: &mut harbor_widget::runtime::Runtime,
+        adapter: &mut WinitAdapter,
+    ) -> RuntimeEffects {
+        let raw_text =
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to read clipboard text");
+                    return RuntimeEffects::default();
+                }
+            };
+
+        let confirmation = {
+            let Some(active_terminal) = active_terminal else {
+                tracing::warn!("no active terminal for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let Ok(mut terminal) = active_terminal.lock() else {
+                tracing::warn!("terminal lock unavailable for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let input_modes = terminal.drain_and_snapshot().input_modes;
+
+            match PasteDisposition::decide(input_modes, &raw_text) {
+                PasteDisposition::SendDirect => {
+                    if let Err(error) =
+                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
+                    {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+                    }
+                    return RuntimeEffects::default();
+                }
+                PasteDisposition::Confirm { raw_text } => {
+                    terminal.ensure_glyphs(&raw_text, gpu);
+                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
+                        terminal.text_metrics().copied(),
+                        terminal.text_bind_group_layout(),
+                        terminal.text_bind_group(),
+                    ) else {
+                        tracing::warn!(
+                            "terminal text resources unavailable for paste confirmation"
+                        );
+                        return RuntimeEffects::default();
+                    };
+                    ConfirmationWindow::new(
+                        raw_text,
+                        event_loop,
+                        gpu,
+                        metrics,
+                        text_bind_group_layout,
+                        text_bind_group,
+                        Some(window),
+                    )
+                }
+            }
+        };
+
+        self.dialog.open(confirmation);
+        self.input_gate.store(true, Ordering::Release);
+        adapter.quarantine_active_pointers();
+        let effects = runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
+        adapter.fold_effects(effects)
+    }
+}
+
+/// Coordinator managing Host-owned terminal tab models and their declarative UI projection.
+pub(crate) struct TabCoordinator {
     tabs: TabManager,
+    tab_ui: TabUiController,
     shell_command: ShellCommand,
     font_settings: harbor_config::FontSettings,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
+    gpu: Arc<GpuContext>,
+    backdrop_available: bool,
     event_proxy: EventLoopProxy<AppEvent>,
     input_gate: Arc<AtomicBool>,
-    /// Persistent declarative projection of the Host-owned tab model.
-    tab_ui: TabUiController,
-    /// Widget framework runtime.
+}
+
+impl TabCoordinator {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        tabs: TabManager,
+        tab_ui: TabUiController,
+        shell_command: ShellCommand,
+        font_settings: harbor_config::FontSettings,
+        metrics: TextMetrics,
+        appearance: TerminalAppearance,
+        gpu: Arc<GpuContext>,
+        backdrop_available: bool,
+        event_proxy: EventLoopProxy<AppEvent>,
+        input_gate: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            tabs,
+            tab_ui,
+            shell_command,
+            font_settings,
+            metrics,
+            appearance,
+            gpu,
+            backdrop_available,
+            event_proxy,
+            input_gate,
+        }
+    }
+
+    pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
+        self.tabs.active_terminal()
+    }
+
+    pub(crate) fn sync_ui(&self, window: &Window) {
+        self.tab_ui.sync(
+            self.tabs.snapshots(),
+            self.tabs.active_bridge(),
+            logical_window_width(window),
+        );
+    }
+
+    pub(crate) fn update_presentation(&self, window: &Window) -> bool {
+        self.tab_ui
+            .update_presentation(logical_window_width(window))
+    }
+
+    pub(crate) fn process_output(&mut self, tab_id: TabId) -> crate::tab_manager::TabOutputOutcome {
+        self.tabs.process_output(tab_id)
+    }
+
+    pub(crate) fn apply_pending_allocation(
+        &mut self,
+        scale_factor: f32,
+        physical_size: (u32, u32),
+    ) -> bool {
+        let Some(rect) = self.tab_ui.latest_terminal_allocation() else {
+            return false;
+        };
+        let Some(size) =
+            terminal_size_from_allocation(rect, scale_factor, physical_size, &self.metrics)
+        else {
+            return false;
+        };
+        self.tabs.resize_all_if_changed(size)
+    }
+
+    pub(crate) fn create_terminal_tab(&mut self) -> anyhow::Result<TabActionOutcome> {
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| Terminal::terminal_size_for(&self.gpu, &self.metrics));
+        let fonts = load_system_fonts(&self.font_settings)?;
+        let metrics = self.metrics;
+        let shell_command = &self.shell_command;
+        let gpu = &self.gpu;
+        let appearance = self.appearance;
+        let backdrop_available = self.backdrop_available;
+        let event_proxy = self.event_proxy.clone();
+        let input_gate = Arc::clone(&self.input_gate);
+        self.tabs.create_tab(|tab_id, draw_id| {
+            create_terminal_tab_resources(
+                tab_id,
+                draw_id,
+                size,
+                shell_command,
+                gpu,
+                fonts,
+                metrics,
+                appearance,
+                backdrop_available,
+                event_proxy,
+                input_gate,
+            )
+        })
+    }
+
+    pub(crate) fn apply_tab_outcome(
+        &mut self,
+        window: &Window,
+        runtime: &mut harbor_widget::runtime::Runtime,
+        adapter: &mut WinitAdapter,
+        outcome: TabActionOutcome,
+        focus: TabFocusPolicy,
+    ) -> (RuntimeEffects, bool) {
+        if outcome.close_window {
+            self.sync_ui(window);
+            runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
+                harbor_widget::layout::Size::ZERO,
+            ));
+            let effects = adapter.fold_effects(runtime.update(Instant::now()));
+            return (effects, true);
+        }
+        let model_changed =
+            outcome.active_bridge_changed || outcome.unread_changed || outcome.request_redraw;
+        let focus_requested = focus != TabFocusPolicy::PreserveRail;
+        if !model_changed && !focus_requested {
+            return (RuntimeEffects::default(), false);
+        }
+
+        let mut effects = RuntimeEffects::default();
+        if outcome.active_bridge_changed {
+            adapter.quarantine_active_pointers();
+            effects.merge(runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO));
+        }
+        if focus_requested {
+            runtime.clear_focus();
+        }
+        if model_changed {
+            self.sync_ui(window);
+            effects.merge(runtime.update(Instant::now()));
+        }
+        let viewport = adapter.viewport();
+        self.apply_pending_allocation(viewport.scale_factor, viewport.physical_size);
+        let focus_effects = match focus {
+            TabFocusPolicy::PreserveRail => RuntimeEffects::default(),
+            TabFocusPolicy::RailTab(id) => self
+                .tab_ui
+                .tab_focus(id)
+                .map(|handle| runtime.request_focus(&handle))
+                .unwrap_or_default(),
+            TabFocusPolicy::Terminal => runtime.request_focus(&self.tab_ui.terminal_focus()),
+        };
+        effects.merge(focus_effects);
+        effects.merge(runtime.take_pending_effects());
+        let effects = adapter.fold_effects(effects);
+        (effects, false)
+    }
+
+    pub(crate) fn drain_tab_commands(
+        &mut self,
+        window: &Window,
+        runtime: &mut harbor_widget::runtime::Runtime,
+        adapter: &mut WinitAdapter,
+        event_loop: &ActiveEventLoop,
+    ) {
+        for request in self.tab_ui.drain_commands() {
+            if self.input_gate.load(Ordering::Acquire) {
+                return;
+            }
+            let focus = match (request.focus, request.command) {
+                (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
+                    .tabs
+                    .neighbor_for_close(id)
+                    .map(TabFocusPolicy::RailTab)
+                    .unwrap_or(TabFocusPolicy::PreserveRail),
+                (focus, _) => focus,
+            };
+            let outcome = match request.command {
+                TabCommand::New => match self.create_terminal_tab() {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
+                        continue;
+                    }
+                },
+                TabCommand::Close(id) => self.tabs.close(id),
+                TabCommand::CloseActive => self.tabs.close_active(),
+                TabCommand::Activate(id) => self.tabs.activate(id),
+                TabCommand::Next => self.tabs.activate_next(),
+                TabCommand::Previous => self.tabs.activate_previous(),
+                TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
+            };
+            let (effects, close_window) =
+                self.apply_tab_outcome(window, runtime, adapter, outcome, focus);
+            apply_effects(window, &effects, event_loop);
+            if close_window {
+                event_loop.exit();
+                return;
+            }
+        }
+    }
+}
+
+/// Active session resources that exist while the window and renderer are alive.
+pub(crate) struct ActiveSession {
+    window: Arc<Window>,
+    gpu: Arc<GpuContext>,
+    tabs: TabCoordinator,
+    paste: PasteController,
     widget_runtime: harbor_widget::runtime::Runtime,
-    /// Main-window input adapter, sharing the runtime's window lifecycle.
     winit_adapter: WinitAdapter,
-    /// Selected window backdrop backend, held for the window lifetime.
     _backdrop: Box<dyn WindowBackdropBackend>,
-    /// Host fact injected into the Widget presenter for terminal clear policy.
     backdrop_available: bool,
-    /// Keeps a newly-created window hidden until its first frame is presented.
     show_pending: bool,
-    /// Delays retries after a skipped hidden-startup acquisition.
     startup_retry_deadline: Option<Instant>,
-    dialog: DialogOverlay,
 }
 
 /// Winit coordinator managing the application lifecycle and active session state.
@@ -130,14 +477,25 @@ impl ApplicationHandler<AppEvent> for Shell {
 
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
 impl ActiveSession {
+    fn sync_terminal_allocation(&mut self, event_loop: &ActiveEventLoop) {
+        let viewport = self.winit_adapter.viewport();
+        if self
+            .tabs
+            .apply_pending_allocation(viewport.scale_factor, viewport.physical_size)
+        {
+            let effects = self.winit_adapter.request_frame();
+            apply_effects(&self.window, &effects, event_loop);
+        }
+    }
+
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::TerminalOutputReady(tab_id) = event;
         let outcome = self.tabs.process_output(tab_id);
         if outcome.unread_changed {
-            self.sync_tab_ui();
+            self.tabs.sync_ui(&self.window);
             let effects = self.widget_runtime.update(Instant::now());
             let effects = self.winit_adapter.fold_effects(effects);
-            self.apply_pending_terminal_allocation(event_loop);
+            self.sync_terminal_allocation(event_loop);
             apply_effects(&self.window, &effects, event_loop);
         }
         if !outcome.request_active_invalidation {
@@ -152,35 +510,16 @@ impl ActiveSession {
         apply_effects(&self.window, &effects, event_loop);
     }
 
-    fn apply_pending_terminal_allocation(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(rect) = self.tab_ui.latest_terminal_allocation() else {
-            return;
-        };
-        let viewport = self.winit_adapter.viewport();
-        let Some(size) = terminal_size_from_allocation(
-            rect,
-            viewport.scale_factor,
-            viewport.physical_size,
-            &self.metrics,
-        ) else {
-            return;
-        };
-        if self.tabs.resize_all_if_changed(size) {
-            let effects = self.winit_adapter.request_frame();
-            apply_effects(&self.window, &effects, event_loop);
-        }
-    }
-
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
         let now = Instant::now();
         let main_effects =
             self.winit_adapter
                 .about_to_wait(&mut self.widget_runtime, now, host_deadline);
-        self.apply_pending_terminal_allocation(event_loop);
+        self.sync_terminal_allocation(event_loop);
         apply_window_effects(&self.window, &main_effects);
         let mut combined_flow = main_effects.control_flow.unwrap_or(ControlFlowEffect::Wait);
 
-        if let Some(confirmation_flow) = self.dialog.about_to_wait(now) {
+        if let Some(confirmation_flow) = self.paste.about_to_wait(now) {
             combined_flow = combined_flow.arbitrate(confirmation_flow);
         }
 
@@ -203,48 +542,27 @@ impl ActiveSession {
         event: WindowEvent,
         frame: &mut FrameState,
     ) {
-        let dialog_window_id = self.dialog.window_id();
-        if dialog_window_id == Some(window_id) {
-            let result = if matches!(event, WindowEvent::RedrawRequested)
-                && let Some(active_terminal) = self.tabs.active_terminal()
-                && let Ok(terminal) = active_terminal.lock()
-            {
-                let glyph_fn = |ch| terminal.text_glyph(ch).copied();
-                self.dialog
-                    .handle_event(&event, event_loop, Some(&self.gpu), Some(&glyph_fn))
-            } else {
-                self.dialog
-                    .handle_event(&event, event_loop, Some(&self.gpu), None)
-            };
-            match &result {
-                DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
-                    if let DialogOutcome::Confirmed(_) = &result
-                        && let Some(active_terminal) = self.tabs.active_terminal()
-                        && let Ok(mut terminal) = active_terminal.lock()
-                    {
-                        let input_modes = terminal.drain_and_snapshot().input_modes;
-                        if let Err(error) =
-                            write_confirmation_outcome(&result, input_modes, |bytes| {
-                                terminal.write_pty(bytes)
-                            })
-                        {
-                            tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
-                        }
+        if self.paste.window_id() == Some(window_id) {
+            match self.paste.handle_dialog_event(
+                &event,
+                event_loop,
+                &self.gpu,
+                self.tabs.active_terminal().as_ref(),
+            ) {
+                PasteEventOutcome::Handled { request_redraw } => {
+                    if request_redraw {
+                        self.request_main_frame(event_loop);
                     }
-                    self.input_gate.store(false, Ordering::Release);
-                    self.request_main_frame(event_loop);
-                    return;
                 }
-                DialogOutcome::Fatal(error) => {
+                PasteEventOutcome::Fatal(error) => {
                     tracing::error!(?error, "fatal confirmation-window frame error");
                     event_loop.exit();
-                    return;
                 }
-                DialogOutcome::None => {}
             }
+            return;
         }
 
-        let gate_active = self.dialog.is_active();
+        let gate_active = self.paste.is_active();
 
         if self.window.id() != window_id {
             return;
@@ -272,14 +590,19 @@ impl ActiveSession {
         }
 
         if is_paste_shortcut(&event, self.winit_adapter.modifiers()) {
-            self.paste_from_clipboard(event_loop);
+            let effects = self.paste.paste_from_clipboard(
+                event_loop,
+                &self.window,
+                &self.gpu,
+                self.tabs.active_terminal().as_ref(),
+                &mut self.widget_runtime,
+                &mut self.winit_adapter,
+            );
+            apply_effects(&self.window, &effects, event_loop);
             return;
         }
 
-        if self
-            .tab_ui
-            .update_presentation(logical_window_width(&self.window))
-        {
+        if self.tabs.update_presentation(&self.window) {
             let effects = self.widget_runtime.update(Instant::now());
             let effects = self.winit_adapter.fold_effects(effects);
             apply_effects(&self.window, &effects, event_loop);
@@ -290,10 +613,15 @@ impl ActiveSession {
             &event,
             Some((size.width, size.height)),
         );
-        self.apply_pending_terminal_allocation(event_loop);
+        self.sync_terminal_allocation(event_loop);
         if outcome.handled {
             apply_effects(&self.window, &outcome.effects, event_loop);
-            self.drain_tab_commands(event_loop);
+            self.tabs.drain_tab_commands(
+                &self.window,
+                &mut self.widget_runtime,
+                &mut self.winit_adapter,
+                event_loop,
+            );
         }
 
         if let WindowEvent::RedrawRequested = event {
@@ -307,207 +635,8 @@ impl ActiveSession {
         apply_effects(&self.window, &effects, event_loop);
     }
 
-    fn paste_from_clipboard(&mut self, event_loop: &ActiveEventLoop) {
-        let raw_text =
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                Ok(text) => text,
-                Err(error) => {
-                    tracing::warn!(error = %error, "failed to read clipboard text");
-                    return;
-                }
-            };
-
-        let confirmation = {
-            let Some(active_terminal) = self.tabs.active_terminal() else {
-                tracing::warn!("no active terminal for clipboard paste");
-                return;
-            };
-            let Ok(mut terminal) = active_terminal.lock() else {
-                tracing::warn!("terminal lock unavailable for clipboard paste");
-                return;
-            };
-            let input_modes = terminal.drain_and_snapshot().input_modes;
-
-            match PasteDisposition::decide(input_modes, &raw_text) {
-                PasteDisposition::SendDirect => {
-                    if let Err(error) =
-                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
-                    {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
-                    }
-                    return;
-                }
-                PasteDisposition::Confirm { raw_text } => {
-                    terminal.ensure_glyphs(&raw_text, &self.gpu);
-                    let (Some(metrics), Some(text_bind_group_layout), Some(text_bind_group)) = (
-                        terminal.text_metrics().copied(),
-                        terminal.text_bind_group_layout(),
-                        terminal.text_bind_group(),
-                    ) else {
-                        tracing::warn!(
-                            "terminal text resources unavailable for paste confirmation"
-                        );
-                        return;
-                    };
-                    ConfirmationWindow::new(
-                        raw_text,
-                        event_loop,
-                        &self.gpu,
-                        metrics,
-                        text_bind_group_layout,
-                        text_bind_group,
-                        Some(&self.window),
-                    )
-                }
-            }
-        };
-
-        self.dialog.open(confirmation);
-        self.input_gate.store(true, Ordering::Release);
-        self.winit_adapter.quarantine_active_pointers();
-        let effects = self
-            .widget_runtime
-            .cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
-        let effects = self.winit_adapter.fold_effects(effects);
-        apply_effects(&self.window, &effects, event_loop);
-    }
-
-    #[allow(dead_code)] // T0007 invokes this from the tab command layer.
-    fn create_terminal_tab(&mut self) -> anyhow::Result<TabActionOutcome> {
-        let size = self
-            .tabs
-            .last_broadcast_size()
-            .unwrap_or_else(|| Terminal::terminal_size_for(&self.gpu, &self.metrics));
-        let fonts = load_system_fonts(&self.font_settings)?;
-        let metrics = self.metrics;
-        let shell_command = &self.shell_command;
-        let gpu = &self.gpu;
-        let appearance = self.appearance;
-        let backdrop_available = self.backdrop_available;
-        let event_proxy = self.event_proxy.clone();
-        let input_gate = Arc::clone(&self.input_gate);
-        self.tabs.create_tab(|tab_id, draw_id| {
-            create_terminal_tab_resources(
-                tab_id,
-                draw_id,
-                size,
-                shell_command,
-                gpu,
-                fonts,
-                metrics,
-                appearance,
-                backdrop_available,
-                event_proxy,
-                input_gate,
-            )
-        })
-    }
-
-    fn apply_tab_outcome(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        outcome: TabActionOutcome,
-        focus: TabFocusPolicy,
-    ) {
-        if outcome.close_window {
-            self.sync_tab_ui();
-            self.widget_runtime
-                .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-                    harbor_widget::layout::Size::ZERO,
-                ));
-            let effects = self
-                .winit_adapter
-                .fold_effects(self.widget_runtime.update(Instant::now()));
-            apply_effects(&self.window, &effects, event_loop);
-            event_loop.exit();
-            return;
-        }
-        let model_changed =
-            outcome.active_bridge_changed || outcome.unread_changed || outcome.request_redraw;
-        let focus_requested = focus != TabFocusPolicy::PreserveRail;
-        if !model_changed && !focus_requested {
-            return;
-        }
-
-        let mut effects = RuntimeEffects::default();
-        if outcome.active_bridge_changed {
-            self.winit_adapter.quarantine_active_pointers();
-            effects.merge(
-                self.widget_runtime
-                    .cancel_pointer_captures(harbor_widget::layout::Point::ZERO),
-            );
-        }
-        if focus_requested {
-            self.widget_runtime.clear_focus();
-        }
-        if model_changed {
-            self.sync_tab_ui();
-            effects.merge(self.widget_runtime.update(Instant::now()));
-        }
-        self.apply_pending_terminal_allocation(event_loop);
-        let focus_effects = match focus {
-            TabFocusPolicy::PreserveRail => RuntimeEffects::default(),
-            TabFocusPolicy::RailTab(id) => self
-                .tab_ui
-                .tab_focus(id)
-                .map(|handle| self.widget_runtime.request_focus(&handle))
-                .unwrap_or_default(),
-            TabFocusPolicy::Terminal => self
-                .widget_runtime
-                .request_focus(&self.tab_ui.terminal_focus()),
-        };
-        effects.merge(focus_effects);
-        effects.merge(self.widget_runtime.take_pending_effects());
-        let effects = self.winit_adapter.fold_effects(effects);
-        apply_effects(&self.window, &effects, event_loop);
-    }
-
-    fn sync_tab_ui(&self) {
-        self.tab_ui.sync(
-            self.tabs.snapshots(),
-            self.tabs.active_bridge(),
-            logical_window_width(&self.window),
-        );
-    }
-
-    fn drain_tab_commands(&mut self, event_loop: &ActiveEventLoop) {
-        for request in self.tab_ui.drain_commands() {
-            if self.input_gate.load(Ordering::Acquire) {
-                return;
-            }
-            let focus = match (request.focus, request.command) {
-                (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
-                    .tabs
-                    .neighbor_for_close(id)
-                    .map(TabFocusPolicy::RailTab)
-                    .unwrap_or(TabFocusPolicy::PreserveRail),
-                (focus, _) => focus,
-            };
-            let outcome = match request.command {
-                TabCommand::New => match self.create_terminal_tab() {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
-                        continue;
-                    }
-                },
-                TabCommand::Close(id) => self.tabs.close(id),
-                TabCommand::CloseActive => self.tabs.close_active(),
-                TabCommand::Activate(id) => self.tabs.activate(id),
-                TabCommand::Next => self.tabs.activate_next(),
-                TabCommand::Previous => self.tabs.activate_previous(),
-                TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
-            };
-            let close_window = outcome.close_window;
-            self.apply_tab_outcome(event_loop, outcome, focus);
-            if close_window {
-                return;
-            }
-        }
-    }
-
     fn render_frame(&mut self, event_loop: &ActiveEventLoop, frame: &mut FrameState) -> bool {
-        let outcome = with_current_gpu(&self.gpu, || {
+        let outcome = {
             let mut configure = |width, height| self.gpu.configure_size(width, height);
             let (surface, device, queue) = self.gpu.borrow_frame();
             let target = WinitFrameTarget::new(
@@ -520,8 +649,8 @@ impl ActiveSession {
                 self.gpu.alpha_mode(),
             );
             self.winit_adapter.render(&mut self.widget_runtime, target)
-        });
-        self.apply_pending_terminal_allocation(event_loop);
+        };
+        self.sync_terminal_allocation(event_loop);
 
         let effects = outcome.effects().clone();
         apply_effects(&self.window, &effects, event_loop);
@@ -587,7 +716,7 @@ fn create_terminal_tab_resources(
     draw_id: harbor_widget::scene::primitive::ExternalDrawId,
     size: harbor_terminal::TerminalSize,
     shell_command: &ShellCommand,
-    gpu: &GpuContext,
+    gpu: &Arc<GpuContext>,
     fonts: harbor_terminal::FontBook,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
@@ -618,7 +747,8 @@ fn create_terminal_tab_resources(
     terminal.set_backdrop_available(backdrop_available);
     #[allow(clippy::arc_with_non_send_sync)]
     let terminal = Arc::new(Mutex::new(terminal));
-    let bridge = TerminalWidgetBridge::new(draw_id, Arc::clone(&terminal), input_gate);
+    let bridge =
+        TerminalWidgetBridge::with_gpu(draw_id, Arc::clone(&terminal), Arc::clone(gpu), input_gate);
     Ok(TerminalTabResources::new(terminal, bridge))
 }
 
@@ -683,8 +813,9 @@ impl Shell {
             backdrop_available: backdrop_applied,
         } = backdrop.apply(&window, &backdrop_style);
 
-        let gpu =
-            pollster::block_on(GpuContext::new(window.clone())).map_err(ShellError::Renderer)?;
+        let gpu = Arc::new(
+            pollster::block_on(GpuContext::new(window.clone())).map_err(ShellError::Renderer)?,
+        );
         let main_window_backdrop_available =
             backdrop_applied && alpha_mode_supports_transparency(gpu.alpha_mode());
         #[cfg(target_os = "windows")]
@@ -743,27 +874,33 @@ impl Shell {
             tab_ui.clone(),
             main_window_backdrop_available,
         );
-        let mut session = ActiveSession {
-            window,
-            gpu,
+        let tabs = TabCoordinator::new(
             tabs,
+            tab_ui,
             shell_command,
             font_settings,
             metrics,
             appearance,
+            Arc::clone(&gpu),
+            main_window_backdrop_available,
             event_proxy,
-            input_gate,
-            tab_ui,
+            Arc::clone(&input_gate),
+        );
+        let paste = PasteController::new(input_gate);
+        let mut session = ActiveSession {
+            window,
+            gpu,
+            tabs,
+            paste,
             widget_runtime,
             winit_adapter,
             _backdrop: backdrop,
             backdrop_available: main_window_backdrop_available,
             show_pending: true,
             startup_retry_deadline: None,
-            dialog: DialogOverlay::new(),
         };
 
-        session.apply_pending_terminal_allocation(event_loop);
+        session.sync_terminal_allocation(event_loop);
         let mut effects = session.winit_adapter.fold_effects(initial_effects);
         effects.merge(session.winit_adapter.request_frame());
         apply_effects(&session.window, &effects, event_loop);
