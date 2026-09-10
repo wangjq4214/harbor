@@ -1,20 +1,19 @@
 //! Product-owned responsive terminal tab workspace.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
 use harbor_widget::{
-    Actions, Button, Column, ComponentExt as _, ConstrainedBox, Expanded, Focus, FocusHandle,
-    FocusScope, IconButton, KeyChord, LayoutObserver, Row, ScrollArea, ScrollController, Separator,
-    Shortcuts,
+    Actions, Button, Column, ComponentExt as _, ConstrainedBox, Dispatcher, Expanded, Focus,
+    FocusHandle, FocusScope, IconButton, KeyChord, LayoutObserver, Row, ScrollArea,
+    ScrollController, Separator, Shortcuts, Store,
 };
 use harbor_widget::{
     input::event::{Key, Modifiers},
     layout::Rect,
     scene::primitive::Color,
-    signal::Signal,
     view::{BuildCx, Component, View},
     widgets::layout_observer::LayoutChangedCallback,
     widgets::padding::Padding,
@@ -132,8 +131,7 @@ impl TerminalAllocationMailbox {
 /// Stable boundary between the Host-owned tab model and the declarative widget tree.
 #[derive(Clone)]
 pub(crate) struct TabUiController {
-    state: Signal<TabUiState>,
-    commands: Arc<Mutex<VecDeque<TabCommandRequest>>>,
+    store: Store<TabUiState, TabCommandRequest>,
     tab_focus: Arc<Mutex<HashMap<TabId, FocusHandle>>>,
     scroll: ScrollController,
     terminal_focus: FocusHandle,
@@ -151,12 +149,11 @@ impl TabUiController {
             .map(|snapshot| (snapshot.id, FocusHandle::new()))
             .collect();
         Self {
-            state: Signal::new(TabUiState {
+            store: Store::new(TabUiState {
                 snapshots,
                 active_bridge: Some(active_bridge),
                 presentation: RailPresentation::for_logical_width(logical_width),
             }),
-            commands: Arc::new(Mutex::new(VecDeque::new())),
             tab_focus: Arc::new(Mutex::new(tab_focus)),
             scroll: ScrollController::new(),
             terminal_focus: FocusHandle::new(),
@@ -176,7 +173,7 @@ impl TabUiController {
                 handles.entry(snapshot.id).or_insert_with(FocusHandle::new);
             }
         }
-        self.state.set(TabUiState {
+        self.store.set_state(TabUiState {
             snapshots,
             active_bridge,
             presentation: RailPresentation::for_logical_width(logical_width),
@@ -184,23 +181,20 @@ impl TabUiController {
     }
 
     pub(crate) fn update_presentation(&self, logical_width: f64) -> bool {
-        let current = self.state.read().clone();
+        let current = self.store.state().read().clone();
         let presentation = RailPresentation::for_logical_width(logical_width);
         if current.presentation == presentation {
             return false;
         }
-        self.state.set(TabUiState {
+        self.store.set_state(TabUiState {
             presentation,
             ..current
         });
         true
     }
 
-    pub(crate) fn drain_commands(&self) -> Vec<TabCommandRequest> {
-        let Ok(mut commands) = self.commands.lock() else {
-            return Vec::new();
-        };
-        commands.drain(..).collect()
+    pub(crate) fn drain_actions(&self) -> Vec<TabCommandRequest> {
+        self.store.drain_actions()
     }
 
     pub(crate) fn terminal_focus(&self) -> FocusHandle {
@@ -276,11 +270,10 @@ pub(crate) fn build_main_root(
 
 impl Component for TabWorkspace {
     fn build(&self, cx: &mut BuildCx) -> View {
-        cx.track(&self.controller.state);
-        let state = self.controller.state.read().clone();
-        let mailbox = Arc::clone(&self.controller.commands);
-        let action_mailbox = Arc::clone(&mailbox);
-        let new_mailbox = Arc::clone(&mailbox);
+        let state = self.controller.store.watch(cx).clone();
+        let dispatcher = self.controller.store.dispatcher();
+        let action_dispatcher = dispatcher.clone();
+        let new_dispatcher = dispatcher.clone();
         let terminal = self.controller.allocation.observer().child(
             Focus::new(TerminalDecorationPreset::wrap(
                 state
@@ -301,7 +294,7 @@ impl Component for TabWorkspace {
                                     tab_item(
                                         snapshot,
                                         state.presentation,
-                                        Arc::clone(&mailbox),
+                                        dispatcher.clone(),
                                         self.controller
                                             .tab_focus(snapshot.id)
                                             .expect("live tab has a focus handle"),
@@ -311,7 +304,7 @@ impl Component for TabWorkspace {
                             }
                         }
                     }
-                    { new_tab_button(state.presentation, new_mailbox) }
+                    { new_tab_button(state.presentation, new_dispatcher) }
                 }
             }
             Separator::vertical() => {}
@@ -353,9 +346,7 @@ impl Component for TabWorkspace {
             self.backdrop_available,
             self.backdrop_fallback,
             FocusScope::new().child(Actions::new(shortcuts, move |request| {
-                if let Ok(mut commands) = action_mailbox.lock() {
-                    commands.push_back(request);
-                }
+                action_dispatcher.dispatch(request);
             })),
         )
         .build(cx)
@@ -371,21 +362,17 @@ fn ctrl() -> Modifiers {
 
 fn new_tab_button(
     presentation: RailPresentation,
-    mailbox: Arc<Mutex<VecDeque<TabCommandRequest>>>,
+    dispatcher: Dispatcher<TabCommandRequest>,
 ) -> View {
     match presentation {
         RailPresentation::Expanded => {
             View::deferred(Button::new("New terminal").on_click(move |_| {
-                if let Ok(mut commands) = mailbox.lock() {
-                    commands.push_back(TabCommandRequest::rail(TabCommand::New));
-                }
+                dispatcher.dispatch(TabCommandRequest::rail(TabCommand::New));
             }))
         }
         RailPresentation::Compact => {
             View::deferred(IconButton::new("+", "New terminal").on_click(move |_| {
-                if let Ok(mut commands) = mailbox.lock() {
-                    commands.push_back(TabCommandRequest::rail(TabCommand::New));
-                }
+                dispatcher.dispatch(TabCommandRequest::rail(TabCommand::New));
             }))
         }
     }
@@ -394,13 +381,13 @@ fn new_tab_button(
 fn tab_item(
     snapshot: &TabSnapshot,
     presentation: RailPresentation,
-    mailbox: Arc<Mutex<VecDeque<TabCommandRequest>>>,
+    dispatcher: Dispatcher<TabCommandRequest>,
     focus: FocusHandle,
 ) -> Row {
     let id = snapshot.id;
     let active = snapshot.active;
-    let select_mailbox = Arc::clone(&mailbox);
-    let close_mailbox = mailbox;
+    let select_dispatcher = dispatcher.clone();
+    let close_dispatcher = dispatcher;
     let label = tab_label(snapshot);
     let glyph = match presentation {
         RailPresentation::Expanded => label.clone(),
@@ -413,10 +400,8 @@ fn tab_item(
                     IconButton::new(glyph, label)
                         .selected(active)
                         .on_click(move |_| {
-                            if let Ok(mut commands) = select_mailbox.lock() {
-                                commands
-                                    .push_back(TabCommandRequest::rail(TabCommand::Activate(id)));
-                            }
+                            select_dispatcher
+                                .dispatch(TabCommandRequest::rail(TabCommand::Activate(id)));
                         }),
                 )
                 .handle(focus),
@@ -424,9 +409,7 @@ fn tab_item(
         )
         .child(
             IconButton::new("×", format!("Close {}", snapshot.title)).on_click(move |_| {
-                if let Ok(mut commands) = close_mailbox.lock() {
-                    commands.push_back(TabCommandRequest::rail(TabCommand::Close(id)));
-                }
+                close_dispatcher.dispatch(TabCommandRequest::rail(TabCommand::Close(id)));
             }),
         )
 }
@@ -541,23 +524,22 @@ mod tests {
 
     impl Component for HandwrittenWorkspace {
         fn build(&self, cx: &mut BuildCx) -> View {
-            cx.track(&self.controller.state);
-            let state = self.controller.state.read().clone();
-            let mailbox = Arc::clone(&self.controller.commands);
-            let action_mailbox = Arc::clone(&mailbox);
+            let state = self.controller.store.watch(cx).clone();
+            let dispatcher = self.controller.store.dispatcher();
+            let action_dispatcher = dispatcher.clone();
             let mut items = Column::new();
             for snapshot in &state.snapshots {
                 items = items.child(
                     tab_item(
                         snapshot,
                         state.presentation,
-                        Arc::clone(&mailbox),
+                        dispatcher.clone(),
                         self.controller.tab_focus(snapshot.id).unwrap(),
                     )
                     .keyed(format!("terminal-tab-{}", snapshot.id.0)),
                 );
             }
-            let new_mailbox = Arc::clone(&mailbox);
+            let new_dispatcher = dispatcher.clone();
             let rail = Column::new().child(
                 Expanded::new().child(
                     ScrollArea::new()
@@ -565,7 +547,7 @@ mod tests {
                         .child(items),
                 ),
             );
-            let rail = rail.child(new_tab_button(state.presentation, new_mailbox));
+            let rail = rail.child(new_tab_button(state.presentation, new_dispatcher));
             let terminal = self.controller.allocation.observer().child(
                 Focus::new(TerminalDecorationPreset::wrap(
                     state.active_bridge.expect("handwritten active bridge"),
@@ -618,9 +600,7 @@ mod tests {
                 false,
                 harbor_config::WindowBackdropStyle::default().fallback,
                 FocusScope::new().child(Actions::new(shortcuts, move |request| {
-                    if let Ok(mut commands) = action_mailbox.lock() {
-                        commands.push_back(request);
-                    }
+                    action_dispatcher.dispatch(request);
                 })),
             )
             .build(cx)
@@ -724,8 +704,8 @@ mod tests {
                     )));
                 }
             }
-            let macro_request = macro_controller.drain_commands();
-            let handwritten_request = handwritten_controller.drain_commands();
+            let macro_request = macro_controller.drain_actions();
+            let handwritten_request = handwritten_controller.drain_actions();
             assert_eq!(
                 macro_request,
                 [TabCommandRequest::rail(TabCommand::Activate(TabId(1)))]
@@ -743,8 +723,8 @@ mod tests {
                     )));
                 }
             }
-            let macro_request = macro_controller.drain_commands();
-            let handwritten_request = handwritten_controller.drain_commands();
+            let macro_request = macro_controller.drain_actions();
+            let handwritten_request = handwritten_controller.drain_actions();
             assert_eq!(
                 macro_request,
                 [TabCommandRequest::rail(TabCommand::Close(TabId(1)))]
@@ -782,8 +762,8 @@ mod tests {
                     )));
                 }
             }
-            let macro_request = macro_controller.drain_commands();
-            let handwritten_request = handwritten_controller.drain_commands();
+            let macro_request = macro_controller.drain_actions();
+            let handwritten_request = handwritten_controller.drain_actions();
             assert_eq!(macro_request, [TabCommandRequest::rail(TabCommand::New)]);
             assert_eq!(macro_request, handwritten_request);
 
@@ -812,8 +792,8 @@ mod tests {
                 for runtime in [&mut macro_runtime, &mut handwritten_runtime] {
                     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }));
                 }
-                let macro_request = macro_controller.drain_commands();
-                let handwritten_request = handwritten_controller.drain_commands();
+                let macro_request = macro_controller.drain_actions();
+                let handwritten_request = handwritten_controller.drain_actions();
                 assert_eq!(macro_request, [TabCommandRequest::shortcut(command)]);
                 assert_eq!(macro_request, handwritten_request);
             }
@@ -923,7 +903,7 @@ mod tests {
             modifiers: ctrl(),
         }));
         assert_eq!(
-            controller.drain_commands(),
+            controller.drain_actions(),
             [TabCommandRequest::shortcut(TabCommand::New)]
         );
 
@@ -939,7 +919,7 @@ mod tests {
             )));
         }
         assert_eq!(
-            controller.drain_commands(),
+            controller.drain_actions(),
             [TabCommandRequest::rail(TabCommand::Activate(TabId(1)))]
         );
     }

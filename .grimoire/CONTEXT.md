@@ -688,6 +688,29 @@ Project domain concepts and terminology.
   - configures Window Backdrop Tint
 
 
+### Widget Store
+- **Definition:** A reusable `harbor-widget` boundary that combines a UI-thread `Signal<S>` for Host-published declarative state with a private FIFO inbox for one-shot widget actions. It owns neither reducers nor side effects and does not automatically wake a Runtime.
+- **Relationships:**
+  - contains Signal
+  - produces Dispatcher
+  - communicates with Runtime Host
+  - implements Event-Turn Action Transport
+
+### Dispatcher
+- **Definition:** A cloneable, write-only capability obtained from a Widget Store; `dispatch(A)` enqueues typed user intent in FIFO order without reading state, reducing actions, executing effects, or waking the Runtime.
+- **Relationships:**
+  - produced by Widget Store
+  - submits actions through Event-Turn Action Transport
+  - consumed by Runtime Host
+
+### Event-Turn Action Transport
+- **Definition:** The Host-owned sequencing rule in which widgets dispatch one-shot actions during event routing, then the Runtime Host drains and reduces the FIFO batch after widget effects are applied while retaining ownership of application models and platform effects.
+- **Relationships:**
+  - implemented by Widget Store
+  - consumed by Runtime Host
+  - preserves RuntimeEffects ordering
+  - keeps reducers and effects outside Harbor Widget Runtime
+
 ### Terminal Tab
 - **Definition:** An application-owned terminal session identified by a stable TabId, retaining its Terminal and PTY resources independently of whether its side-rail item is active.
 - **Relationships:**

@@ -33,6 +33,18 @@ pub(crate) struct TabOutcomeEffects {
     pub(crate) close_window: bool,
 }
 
+fn process_ungated_action_batch<A>(
+    actions: impl IntoIterator<Item = A>,
+    input_gate: &std::sync::atomic::AtomicBool,
+    mut process: impl FnMut(A) -> bool,
+) {
+    for action in actions {
+        if input_gate.load(Ordering::Acquire) || !process(action) {
+            return;
+        }
+    }
+}
+
 /// Factory configuration for spawning new Host-owned terminal tabs.
 pub(crate) struct TerminalTabFactory {
     gpu: Arc<GpuContext>,
@@ -75,10 +87,6 @@ impl TerminalTabFactory {
 
     pub(crate) fn default_terminal_size(&self) -> TerminalSize {
         Terminal::terminal_size_for(&self.gpu, &self.metrics)
-    }
-
-    pub(crate) fn is_input_gated(&self) -> bool {
-        self.input_gate.load(Ordering::Acquire)
     }
 
     pub(crate) fn create_resources(
@@ -256,10 +264,8 @@ impl TabCoordinator {
         adapter: &mut WinitAdapter,
         event_loop: &ActiveEventLoop,
     ) {
-        for request in self.tab_ui.drain_commands() {
-            if self.factory.is_input_gated() {
-                return;
-            }
+        let input_gate = Arc::clone(&self.factory.input_gate);
+        process_ungated_action_batch(self.tab_ui.drain_actions(), &input_gate, |request| {
             let focus = match (request.focus, request.command) {
                 (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
                     .tabs
@@ -273,7 +279,7 @@ impl TabCoordinator {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
-                        continue;
+                        return true;
                     }
                 },
                 TabCommand::Close(id) => self.tabs.close(id),
@@ -287,9 +293,10 @@ impl TabCoordinator {
             apply_effects(window, &outcome_effects.effects, event_loop);
             if outcome_effects.close_window {
                 event_loop.exit();
-                return;
+                return false;
             }
-        }
+            true
+        });
     }
 }
 
@@ -308,6 +315,47 @@ pub(crate) fn logical_width_from_physical(width: u32, scale: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use harbor_widget::Store;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn gated_action_batch_applies_no_actions_and_is_not_replayed() {
+        let store = Store::<(), u8>::new(());
+        let dispatcher = store.dispatcher();
+        dispatcher.dispatch(1);
+        dispatcher.dispatch(2);
+        let input_gate = AtomicBool::new(true);
+        let mut processed = Vec::new();
+
+        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
+            processed.push(action);
+            true
+        });
+
+        assert!(processed.is_empty());
+        assert!(store.drain_actions().is_empty());
+    }
+
+    #[test]
+    fn gate_raised_mid_batch_discards_the_unprocessed_remainder() {
+        let store = Store::<(), u8>::new(());
+        let dispatcher = store.dispatcher();
+        dispatcher.dispatch(1);
+        dispatcher.dispatch(2);
+        dispatcher.dispatch(3);
+        let input_gate = AtomicBool::new(false);
+        let mut processed = Vec::new();
+
+        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
+            processed.push(action);
+            input_gate.store(true, Ordering::Release);
+            true
+        });
+
+        assert_eq!(processed, [1]);
+        assert!(store.drain_actions().is_empty());
+    }
 
     #[test]
     fn logical_width_conversion_handles_dpi_zero_and_invalid_scale() {
