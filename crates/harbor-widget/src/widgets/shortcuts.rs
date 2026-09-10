@@ -24,6 +24,14 @@ pub struct Shortcuts<A: Clone + 'static> {
 }
 
 impl<A: Clone + 'static> Shortcuts<A> {
+    /// Creates an empty shortcut map for declarative `view!` composition.
+    pub fn empty() -> Self {
+        Self {
+            bindings: Vec::new(),
+            child: None,
+        }
+    }
+
     pub fn new(child: impl crate::IntoChildView) -> Self {
         Self {
             bindings: Vec::new(),

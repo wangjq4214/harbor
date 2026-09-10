@@ -29,6 +29,16 @@ pub struct Focus {
 }
 
 impl Focus {
+    /// Creates a focus wrapper without a child for declarative `view!` composition.
+    pub fn empty() -> Self {
+        Self {
+            enabled: true,
+            order: 0,
+            handle: None,
+            child: None,
+        }
+    }
+
     pub fn new(child: impl crate::IntoChildView) -> Self {
         Self {
             enabled: true,

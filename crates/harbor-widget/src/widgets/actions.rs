@@ -11,6 +11,14 @@ pub struct Actions<A: Clone + 'static> {
 }
 
 impl<A: Clone + 'static> Actions<A> {
+    /// Creates an action provider without a child for declarative `view!` composition.
+    pub fn handler(handler: impl Fn(A) + Send + Sync + 'static) -> Self {
+        Self {
+            handler: Arc::new(handler),
+            child: None,
+        }
+    }
+
     pub fn new(
         child: impl crate::IntoChildView,
         handler: impl Fn(A) + Send + Sync + 'static,

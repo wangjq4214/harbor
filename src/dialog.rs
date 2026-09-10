@@ -15,19 +15,12 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
+use crate::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal, TextMetrics};
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::text::GlyphFn;
-use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::column::Column;
-use harbor_widget::widgets::focus_scope::FocusScope;
-use harbor_widget::widgets::padding::Padding;
-use harbor_widget::widgets::preview_pane::PreviewPane;
-use harbor_widget::widgets::row::Row;
-use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -35,7 +28,6 @@ use unicode_width::UnicodeWidthChar;
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;
 pub(crate) const DIALOG_HORIZONTAL_PADDING: u32 = 48;
-const PREVIEW_VISIBLE_LINES: usize = 12;
 
 fn centered_dialog_position(
     main_position: winit::dpi::PhysicalPosition<i32>,
@@ -452,7 +444,7 @@ impl ConfirmationWindow {
 
         let mut runtime = Runtime::with_text_metrics(metrics);
 
-        let confirm_root = build_confirmation_root(
+        let confirm_root = crate::tab_view::ui::build_confirmation_root(
             line_count,
             wrapped_lines.clone(),
             Arc::clone(&preview_scroll_offset),
@@ -638,47 +630,12 @@ impl ConfirmationWindow {
     }
 }
 
-fn build_confirmation_root(
-    line_count: usize,
-    wrapped_lines: Vec<String>,
-    scroll_offset: Arc<AtomicUsize>,
-    cancelled: Arc<AtomicBool>,
-    confirmed: Arc<AtomicBool>,
-    line_height: f32,
-) -> impl harbor_widget::view::Component {
-    let header_text = format!("Paste {} lines?", line_count);
-
-    FocusScope::new().child(
-        Padding::new(24.0, 16.0, 24.0, 16.0).child(
-            Column::new()
-                .child(TextLabel::new(header_text))
-                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 8.0)))
-                .child(PreviewPane::new(
-                    wrapped_lines,
-                    scroll_offset,
-                    line_height,
-                    PREVIEW_VISIBLE_LINES,
-                ))
-                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 12.0)))
-                .child(
-                    Row::new()
-                        .child(Button::new("Cancel").on_click(move |_ctx| {
-                            cancelled.store(true, Ordering::SeqCst);
-                        }))
-                        .child(SizedBox::new(harbor_widget::layout::Size::new(12.0, 0.0)))
-                        .child(Button::new("Paste").on_click(move |_ctx| {
-                            confirmed.store(true, Ordering::SeqCst);
-                        })),
-                ),
-        ),
-    )
-}
-
 // ── Confirmation widget tree ────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tab_view::ui::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
 
     #[test]

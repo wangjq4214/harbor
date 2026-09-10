@@ -334,11 +334,10 @@ impl TerminalWidgetBridge {
 
 impl Component for TerminalWidgetBridge {
     fn build(&self, cx: &mut BuildCx) -> View {
-        CustomPaint::new(self.draw_id())
+        harbor_widget::view!(cx, CustomPaint::new(self.draw_id())
             .handler(Arc::clone(&self.handler))
             .schedule(Arc::clone(&self.schedule))
-            .on_input(Arc::clone(&self.on_input))
-            .build(cx)
+            .on_input(Arc::clone(&self.on_input)) => {})
     }
 }
 
@@ -387,10 +386,8 @@ impl TerminalDecorationPreset {
             .shadow(shadow)
     }
 
-    pub(crate) fn wrap(child: impl Component + 'static) -> DecoratedBox {
-        DecoratedBox::new(Self::decoration())
-            .clip_behavior(ClipBehavior::AntiAlias)
-            .child(child)
+    pub(crate) fn container() -> DecoratedBox {
+        DecoratedBox::new(Self::decoration()).clip_behavior(ClipBehavior::AntiAlias)
     }
 }
 
@@ -1234,22 +1231,39 @@ mod decoration_tests {
     use harbor_widget::scene::primitive::{Color, Primitive};
     use harbor_widget::widgets::custom_paint::CustomPaint;
     use harbor_widget::widgets::padding::Padding;
-    use harbor_widget::widgets::sized_box::SizedBox;
     use harbor_widget::{
         BorderRadius, ClipBehavior, ControlFlowEffect, DecoratedBox, RuntimeEffects,
     };
     use std::any::TypeId;
     use std::time::Instant;
 
+    #[derive(Clone)]
+    struct TestMainTerminalRoot<C: Clone> {
+        root: Padding,
+        child: C,
+    }
+
+    impl<C: Component + Clone + 'static> Component for TestMainTerminalRoot<C> {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            harbor_widget::view!(cx, self.root.clone() => {
+                TerminalDecorationPreset::container() => {
+                    { self.child.clone() }
+                }
+            })
+        }
+    }
+
     fn test_main_terminal_root(
         backdrop_available: bool,
-        child: impl Component + 'static,
-    ) -> Padding {
-        crate::tab_view::build_main_root(
-            backdrop_available,
-            harbor_config::WindowBackdropStyle::default().fallback,
-            TerminalDecorationPreset::wrap(child),
-        )
+        child: impl Component + Clone + 'static,
+    ) -> impl Component {
+        TestMainTerminalRoot {
+            root: crate::tab_view::ui::root_padding(
+                backdrop_available,
+                harbor_config::WindowBackdropStyle::default().fallback,
+            ),
+            child,
+        }
     }
 
     fn mounted_main_root(viewport: Option<Viewport>) -> (Runtime, RuntimeEffects) {
@@ -1306,9 +1320,8 @@ mod decoration_tests {
     }
 
     #[test]
-    fn should_expose_product_decoration_values_when_wrapping() {
-        let child = SizedBox::new(Size::new(10.0, 10.0));
-        let wrapped = TerminalDecorationPreset::wrap(child);
+    fn should_expose_product_decoration_values() {
+        let wrapped = TerminalDecorationPreset::container();
 
         assert_eq!(wrapped.clip_behavior_value(), ClipBehavior::AntiAlias);
         let decoration = wrapped.decoration();
@@ -1330,7 +1343,10 @@ mod decoration_tests {
 
     #[test]
     fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
-        let root = test_main_terminal_root(false, CustomPaint::new(1));
+        let root = crate::tab_view::ui::root_padding(
+            false,
+            harbor_config::WindowBackdropStyle::default().fallback,
+        );
         assert_eq!(root.top, 4.0);
         assert_eq!(root.right, 4.0);
         assert_eq!(root.bottom, 4.0);
@@ -1340,7 +1356,10 @@ mod decoration_tests {
 
     #[test]
     fn should_omit_root_background_when_backdrop_is_available() {
-        let root = test_main_terminal_root(true, CustomPaint::new(1));
+        let root = crate::tab_view::ui::root_padding(
+            true,
+            harbor_config::WindowBackdropStyle::default().fallback,
+        );
         assert_eq!(root.background, None);
     }
 
