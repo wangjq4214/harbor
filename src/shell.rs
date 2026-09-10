@@ -31,7 +31,7 @@ use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources};
 use crate::tab_view::{TabCommand, TabFocusPolicy, TabUiController, TabWorkspace};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
-use crate::terminal_view::{TerminalWidgetBridge, with_current_gpu};
+use crate::terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation, with_current_gpu};
 use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{
     GpuContext, PasteDisposition, Terminal, TerminalAppearance, TextMetrics,
@@ -137,6 +137,7 @@ impl ActiveSession {
             self.sync_tab_ui();
             let effects = self.widget_runtime.update(Instant::now());
             let effects = self.winit_adapter.fold_effects(effects);
+            self.apply_pending_terminal_allocation(event_loop);
             apply_effects(&self.window, &effects, event_loop);
         }
         if !outcome.request_active_invalidation {
@@ -151,11 +152,31 @@ impl ActiveSession {
         apply_effects(&self.window, &effects, event_loop);
     }
 
+    fn apply_pending_terminal_allocation(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(rect) = self.tab_ui.latest_terminal_allocation() else {
+            return;
+        };
+        let viewport = self.winit_adapter.viewport();
+        let Some(size) = terminal_size_from_allocation(
+            rect,
+            viewport.scale_factor,
+            viewport.physical_size,
+            &self.metrics,
+        ) else {
+            return;
+        };
+        if self.tabs.resize_all_if_changed(size) {
+            let effects = self.winit_adapter.request_frame();
+            apply_effects(&self.window, &effects, event_loop);
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
         let now = Instant::now();
         let main_effects =
             self.winit_adapter
                 .about_to_wait(&mut self.widget_runtime, now, host_deadline);
+        self.apply_pending_terminal_allocation(event_loop);
         apply_window_effects(&self.window, &main_effects);
         let mut combined_flow = main_effects.control_flow.unwrap_or(ControlFlowEffect::Wait);
 
@@ -277,6 +298,7 @@ impl ActiveSession {
             &event,
             Some((size.width, size.height)),
         );
+        self.apply_pending_terminal_allocation(event_loop);
         if outcome.handled {
             apply_effects(&self.window, &outcome.effects, event_loop);
             self.drain_tab_commands(event_loop);
@@ -360,7 +382,10 @@ impl ActiveSession {
 
     #[allow(dead_code)] // T0007 invokes this from the tab command layer.
     fn create_terminal_tab(&mut self) -> anyhow::Result<TabActionOutcome> {
-        let size = Terminal::terminal_size_for(&self.gpu, &self.metrics);
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| Terminal::terminal_size_for(&self.gpu, &self.metrics));
         let fonts = load_system_fonts(&self.font_settings)?;
         let metrics = self.metrics;
         let shell_command = &self.shell_command;
@@ -393,6 +418,7 @@ impl ActiveSession {
         focus: TabFocusPolicy,
     ) {
         if outcome.close_window {
+            self.sync_tab_ui();
             self.widget_runtime
                 .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
                     harbor_widget::layout::Size::ZERO,
@@ -426,6 +452,7 @@ impl ActiveSession {
             self.sync_tab_ui();
             effects.merge(self.widget_runtime.update(Instant::now()));
         }
+        self.apply_pending_terminal_allocation(event_loop);
         let focus_effects = match focus {
             TabFocusPolicy::PreserveRail => RuntimeEffects::default(),
             TabFocusPolicy::RailTab(id) => self
@@ -505,6 +532,7 @@ impl ActiveSession {
             );
             self.winit_adapter.render(&mut self.widget_runtime, target)
         });
+        self.apply_pending_terminal_allocation(event_loop);
 
         let effects = outcome.effects().clone();
         apply_effects(&self.window, &effects, event_loop);
@@ -746,6 +774,7 @@ impl Shell {
             dialog: DialogOverlay::new(),
         };
 
+        session.apply_pending_terminal_allocation(event_loop);
         let mut effects = session.winit_adapter.fold_effects(initial_effects);
         effects.merge(session.winit_adapter.request_frame());
         apply_effects(&session.window, &effects, event_loop);

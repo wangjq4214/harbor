@@ -256,16 +256,16 @@ impl TerminalIo {
     }
 
     /// Resizes the PTY to the given terminal dimensions.
-    pub(crate) fn resize_pty(&mut self, size: TerminalSize) {
+    pub(crate) fn resize_pty(&mut self, size: TerminalSize) -> anyhow::Result<()> {
         if let Some(pty) = self.pty.as_mut()
             && let Some(control) = pty.control.as_mut()
-            && let Err(error) = control.resize(harbor_pty::TerminalSize {
+        {
+            control.resize(harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
-            })
-        {
-            tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
+            })?;
         }
+        Ok(())
     }
 
     // ── event handling ────────────────────────────────────────────────

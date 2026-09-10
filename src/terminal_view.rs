@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use harbor_terminal::{
-    RenderTarget, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey,
+    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, TerminalSize, TextMetrics,
 };
 use harbor_widget::input::event::{
     FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerPhase, UiEvent,
@@ -19,7 +20,8 @@ use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
 use harbor_terminal::GpuContext;
-use harbor_widget::layout::Point;
+use harbor_widget::layout::{Point, Rect};
+use harbor_widget::renderer::Viewport;
 use harbor_widget::scene::primitive::Color;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::{BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
@@ -74,6 +76,48 @@ pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> Rende
         context.surface_size(),
         context.scale_factor(),
     )
+}
+
+/// Converts a final logical terminal-panel allocation into its PTY grid.
+///
+/// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
+/// one-cell clamp, so minimizing a window cannot emit a synthetic 1×1 resize.
+pub(crate) fn terminal_size_from_allocation(
+    logical_rect: Rect,
+    scale_factor: f32,
+    surface_size: (u32, u32),
+    metrics: &TextMetrics,
+) -> Option<TerminalSize> {
+    let coordinates = [
+        logical_rect.min.x,
+        logical_rect.min.y,
+        logical_rect.max.x,
+        logical_rect.max.y,
+    ];
+    if !coordinates.into_iter().all(f32::is_finite)
+        || logical_rect.max.x <= logical_rect.min.x
+        || logical_rect.max.y <= logical_rect.min.y
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || surface_size.0 == 0
+        || surface_size.1 == 0
+        || !metrics.cell_width.is_finite()
+        || metrics.cell_width <= 0.0
+        || !metrics.line_height.is_finite()
+        || metrics.line_height <= 0.0
+    {
+        return None;
+    }
+
+    let context = ExternalDrawContext::new(
+        logical_rect,
+        Viewport::new(surface_size.0, surface_size.1, scale_factor),
+    );
+    let target = render_target_from_context(&context);
+    if target.allocation_size.0 == 0 || target.allocation_size.1 == 0 {
+        return None;
+    }
+    Some(RenderViewport::from_target(target, metrics).compute_grid_size())
 }
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
@@ -427,6 +471,18 @@ mod tests {
         ExternalDrawContext::new(logical, Viewport::new(physical.0, physical.1, scale))
     }
 
+    fn metrics() -> TextMetrics {
+        TextMetrics {
+            cell_width: 10.0,
+            line_height: 20.0,
+            ascent: 16.0,
+            underline_position: 16.0,
+            underline_thickness: 2.0,
+            strikethrough_position: 10.0,
+            strikethrough_thickness: 2.0,
+        }
+    }
+
     #[allow(clippy::arc_with_non_send_sync)]
     fn headless_terminal(rows: usize, cols: usize) -> Arc<Mutex<Terminal>> {
         Arc::new(Mutex::new(Terminal::new_headless(rows, cols)))
@@ -520,6 +576,47 @@ mod tests {
         assert_eq!(target.allocation_origin, (0.0, 1.0));
         assert_eq!(target.allocation_size, (202, 101));
         assert_eq!(target.surface_size, (1600, 1200));
+    }
+
+    #[test]
+    fn terminal_size_uses_external_rounding_and_shared_grid_rules() {
+        let metrics = metrics();
+        let rect = Rect::from_min_size(Point::new(0.4, 0.6), Size::new(100.2, 50.4));
+        let size = terminal_size_from_allocation(rect, 1.5, (1200, 900), &metrics).unwrap();
+        let physical_width = 151.0_f32;
+        let physical_height = 77.0_f32;
+        let padding = 2.0 * harbor_config::TEXT_PADDING;
+        assert_eq!(
+            size.cols,
+            ((physical_width - padding) / 10.0).floor() as usize
+        );
+        assert_eq!(
+            size.rows,
+            ((physical_height - padding) / 20.0).floor() as usize
+        );
+    }
+
+    #[test]
+    fn terminal_size_rejects_non_drawable_and_invalid_geometry() {
+        let metrics = metrics();
+        let valid = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
+        assert_eq!(
+            terminal_size_from_allocation(valid, 1.0, (0, 600), &metrics),
+            None
+        );
+        assert_eq!(
+            terminal_size_from_allocation(
+                Rect::from_min_size(Point::ZERO, Size::ZERO),
+                1.0,
+                (800, 600),
+                &metrics,
+            ),
+            None
+        );
+        assert_eq!(
+            terminal_size_from_allocation(valid, f32::NAN, (800, 600), &metrics),
+            None
+        );
     }
 
     #[test]

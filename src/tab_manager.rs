@@ -83,6 +83,7 @@ pub(crate) struct TabManager {
     active: Option<TabId>,
     next_tab_id: u64,
     next_draw_id: ExternalDrawId,
+    last_broadcast_size: Option<TerminalSize>,
 }
 
 impl Default for TabManager {
@@ -99,6 +100,7 @@ impl TabManager {
             active: None,
             next_tab_id: 1,
             next_draw_id: 1,
+            last_broadcast_size: None,
         }
     }
 
@@ -294,16 +296,44 @@ impl TabManager {
         }
     }
 
-    /// Provides the safe live-tab resize point consumed by T0008.
-    pub(crate) fn resize_all(&mut self, size: TerminalSize) {
-        if size.rows == 0 || size.cols == 0 {
-            return;
+    /// Broadcasts a distinct valid grid to every live terminal.
+    ///
+    /// The cache advances only if every terminal lock succeeds. A partial broadcast is retried on
+    /// the next Host turn; terminals already at the requested size make that retry a local no-op.
+    pub(crate) fn resize_all_if_changed(&mut self, size: TerminalSize) -> bool {
+        if size.rows == 0 || size.cols == 0 || self.last_broadcast_size == Some(size) {
+            return false;
         }
+
+        let mut all_succeeded = true;
         for tab in &mut self.tabs {
-            if let Ok(mut terminal) = tab.terminal.lock() {
-                terminal.resize(size.rows, size.cols);
+            match tab.terminal.lock() {
+                Ok(mut terminal) => {
+                    if let Err(error) = terminal.try_resize_if_changed(size) {
+                        all_succeeded = false;
+                        tracing::warn!(
+                            tab_id = tab.id.0,
+                            error = %format_args!("{error:#}"),
+                            "failed to resize terminal"
+                        );
+                    }
+                }
+                Err(_) => {
+                    all_succeeded = false;
+                    tracing::warn!(tab_id = tab.id.0, "terminal lock unavailable during resize");
+                }
             }
         }
+        if all_succeeded && !self.tabs.is_empty() {
+            self.last_broadcast_size = Some(size);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) const fn last_broadcast_size(&self) -> Option<TerminalSize> {
+        self.last_broadcast_size
     }
 
     fn reserve_ids(&mut self) -> Result<(TabId, ExternalDrawId)> {
@@ -561,6 +591,24 @@ mod tests {
         runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
         runtime.update(std::time::Instant::now());
         assert!(!runtime.has_external_draws());
+    }
+
+    #[test]
+    fn resize_broadcast_updates_all_live_tabs_and_deduplicates_grid() {
+        let mut manager = TabManager::new();
+        create(&mut manager);
+        create(&mut manager);
+        let requested = TerminalSize { rows: 12, cols: 42 };
+
+        assert!(manager.resize_all_if_changed(requested));
+        assert_eq!(manager.last_broadcast_size(), Some(requested));
+        for tab in &manager.tabs {
+            let snapshot = tab.terminal.lock().unwrap().drain_and_snapshot();
+            assert_eq!((snapshot.rows, snapshot.cols), (12, 42));
+        }
+        assert!(!manager.resize_all_if_changed(requested));
+        assert!(!manager.resize_all_if_changed(TerminalSize { rows: 0, cols: 42 }));
+        assert_eq!(manager.last_broadcast_size(), Some(requested));
     }
 
     #[test]

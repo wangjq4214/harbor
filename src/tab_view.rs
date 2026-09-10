@@ -7,12 +7,15 @@ use std::{
 
 use harbor_widget::{
     Actions, Button, Column, ComponentExt as _, ConstrainedBox, Expanded, Focus, FocusHandle,
-    FocusScope, IconButton, KeyChord, Row, ScrollArea, ScrollController, Separator, Shortcuts,
+    FocusScope, IconButton, KeyChord, LayoutObserver, Row, ScrollArea, ScrollController, Separator,
+    Shortcuts,
 };
 use harbor_widget::{
     input::event::{Key, Modifiers},
+    layout::Rect,
     signal::Signal,
     view::{BuildCx, Component, View},
+    widgets::layout_observer::LayoutChangedCallback,
 };
 
 use crate::{
@@ -97,6 +100,33 @@ pub(crate) struct TabUiState {
     presentation: RailPresentation,
 }
 
+#[derive(Clone)]
+pub(crate) struct TerminalAllocationMailbox {
+    latest: Arc<Mutex<Option<Rect>>>,
+    callback: LayoutChangedCallback,
+}
+
+impl TerminalAllocationMailbox {
+    fn new() -> Self {
+        let latest = Arc::new(Mutex::new(None));
+        let published = Arc::clone(&latest);
+        let callback: LayoutChangedCallback = Arc::new(move |rect| {
+            if let Ok(mut latest) = published.lock() {
+                *latest = Some(rect);
+            }
+        });
+        Self { latest, callback }
+    }
+
+    pub(crate) fn latest(&self) -> Option<Rect> {
+        *self.latest.lock().ok()?
+    }
+
+    fn observer(&self) -> LayoutObserver {
+        LayoutObserver::from_callback(Arc::clone(&self.callback))
+    }
+}
+
 /// Stable boundary between the Host-owned tab model and the declarative widget tree.
 #[derive(Clone)]
 pub(crate) struct TabUiController {
@@ -105,6 +135,7 @@ pub(crate) struct TabUiController {
     tab_focus: Arc<Mutex<HashMap<TabId, FocusHandle>>>,
     scroll: ScrollController,
     terminal_focus: FocusHandle,
+    allocation: TerminalAllocationMailbox,
 }
 
 impl TabUiController {
@@ -127,6 +158,7 @@ impl TabUiController {
             tab_focus: Arc::new(Mutex::new(tab_focus)),
             scroll: ScrollController::new(),
             terminal_focus: FocusHandle::new(),
+            allocation: TerminalAllocationMailbox::new(),
         }
     }
 
@@ -173,6 +205,10 @@ impl TabUiController {
         self.terminal_focus
     }
 
+    pub(crate) fn latest_terminal_allocation(&self) -> Option<Rect> {
+        self.allocation.latest()
+    }
+
     pub(crate) fn tab_focus(&self, id: TabId) -> Option<FocusHandle> {
         self.tab_focus.lock().ok()?.get(&id).copied()
     }
@@ -200,12 +236,14 @@ impl Component for TabWorkspace {
         let mailbox = Arc::clone(&self.controller.commands);
         let action_mailbox = Arc::clone(&mailbox);
         let new_mailbox = Arc::clone(&mailbox);
-        let terminal = Focus::new(TerminalDecorationPreset::wrap(
-            state
-                .active_bridge
-                .expect("workspace has an active terminal until window exit"),
-        ))
-        .handle(self.controller.terminal_focus);
+        let terminal = self.controller.allocation.observer().child(
+            Focus::new(TerminalDecorationPreset::wrap(
+                state
+                    .active_bridge
+                    .expect("workspace has an active terminal until window exit"),
+            ))
+            .handle(self.controller.terminal_focus),
+        );
         let workspace = harbor_widget::view!(&mut *cx, Row::new() => {
             ConstrainedBox::new()
                 .min_width(state.presentation.width())
@@ -481,10 +519,12 @@ mod tests {
                 ),
             );
             let rail = rail.child(new_tab_button(state.presentation, new_mailbox));
-            let terminal = Focus::new(TerminalDecorationPreset::wrap(
-                state.active_bridge.expect("handwritten active bridge"),
-            ))
-            .handle(self.controller.terminal_focus);
+            let terminal = self.controller.allocation.observer().child(
+                Focus::new(TerminalDecorationPreset::wrap(
+                    state.active_bridge.expect("handwritten active bridge"),
+                ))
+                .handle(self.controller.terminal_focus),
+            );
             let workspace = Row::new()
                 .child(
                     ConstrainedBox::new()
@@ -732,6 +772,26 @@ mod tests {
     }
 
     #[test]
+    fn workspace_publishes_the_final_terminal_panel_allocation() {
+        let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        let external_rect = runtime
+            .pending_delta()
+            .unwrap()
+            .added
+            .iter()
+            .find_map(|item| match item.primitive {
+                Primitive::External { rect, draw: 1 } => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(controller.latest_terminal_allocation(), Some(external_rect));
+
+        runtime.update(Instant::now());
+        assert_eq!(controller.latest_terminal_allocation(), Some(external_rect));
+    }
+
+    #[test]
     fn presentation_changes_only_when_crossing_the_breakpoint() {
         let controller = controller(899.0, vec![snapshot(1, true, false)], 1);
         assert!(!controller.update_presentation(100.0));
@@ -926,5 +986,28 @@ mod tests {
         assert_eq!(abbreviation(&snapshot(123, false, false)), "3");
         let button = IconButton::new(abbreviation(&unread), tab_label(&unread));
         assert_eq!(button.label(), "• Terminal 123");
+    }
+
+    #[test]
+    fn clearing_workspace_releases_the_last_terminal_bridge() {
+        use harbor_widget::widgets::sized_box::SizedBox;
+
+        #[allow(clippy::arc_with_non_send_sync)]
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
+        let weak = Arc::downgrade(&terminal);
+        let controller = TabUiController::new(
+            vec![snapshot(1, true, false)],
+            TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false))),
+            1000.0,
+        );
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        drop(terminal);
+
+        controller.sync(Vec::new(), None, 1000.0);
+        runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+        runtime.update(Instant::now());
+
+        assert!(weak.upgrade().is_none());
+        assert!(!runtime.has_external_draws());
     }
 }

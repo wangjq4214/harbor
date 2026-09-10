@@ -556,7 +556,22 @@ impl Terminal {
     }
 
     /// Resizes the terminal grid without GPU resources. Returns true if size changed.
+    ///
+    /// PTY failures are logged and leave the screen unchanged so a later caller can retry.
     pub fn resize_if_changed(&mut self, new_size: TerminalSize) -> bool {
+        match self.try_resize_if_changed(new_size) {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
+                false
+            }
+        }
+    }
+
+    /// Resizes the PTY and terminal grid atomically from the caller's perspective.
+    ///
+    /// The PTY is resized first; if that fails, in-memory geometry remains unchanged.
+    pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
         let new_size = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(1),
@@ -567,14 +582,14 @@ impl Terminal {
         };
 
         if new_size == current {
-            return false;
+            return Ok(false);
         }
 
+        self.io.resize_pty(new_size)?;
         self.screen.resize(new_size.rows, new_size.cols);
         self.pointer.clear();
         self.io.reset_scroll_snap();
-        self.io.resize_pty(new_size);
-        true
+        Ok(true)
     }
 
     // ── viewport scroll ───────────────────────────────────────────────
