@@ -301,6 +301,30 @@ impl DwriteState {
         ))
     }
 
+    /// Open the system default UI primary face (e.g. Segoe UI) at the requested size.
+    pub(crate) fn open_system_ui_primary_with_sink(
+        size: f32,
+        lifecycle: Rc<dyn FontLifecycleSink>,
+    ) -> Result<Self> {
+        let (factory, fallback, locale) = open_factory_fallback_locale()?;
+        let (primary_face, descriptor) = select_system_ui_primary(&factory)?;
+        let primary_metrics = font_metrics_from_face(&primary_face, size)
+            .context("measure DirectWrite system UI primary face")?;
+        let faces = NativeFaceRegistry::with_primary(primary_face)
+            .context("register DirectWrite system UI primary face")?;
+        Ok(Self::from_session(
+            DirectWriteSession {
+                factory,
+                fallback,
+                descriptor,
+                faces: Rc::new(RefCell::new(faces)),
+                locale,
+                lifecycle,
+            },
+            primary_metrics,
+        ))
+    }
+
     /// Select a system monospace/fixed-pitch primary face and retain it.
     #[cfg(test)]
     pub(crate) fn open_system_primary() -> Result<Self> {
@@ -819,6 +843,14 @@ fn select_family_primary(
     factory: &IDWriteFactory2,
     requested: &str,
 ) -> Result<(IDWriteFontFace, PrimaryDescriptor)> {
+    select_family_primary_inner(factory, requested, true)
+}
+
+fn select_family_primary_inner(
+    factory: &IDWriteFactory2,
+    requested: &str,
+    require_monospaced: bool,
+) -> Result<(IDWriteFontFace, PrimaryDescriptor)> {
     let base: IDWriteFactory = factory.cast()?;
     let mut collection: Option<IDWriteFontCollection> = None;
     unsafe {
@@ -856,11 +888,13 @@ fn select_family_primary(
         bail!("font family `{requested}` is a symbol font");
     }
     let face = unsafe { font.CreateFontFace() }?;
-    let face1: IDWriteFontFace1 = face
-        .cast()
-        .context("configured font does not expose IDWriteFontFace1")?;
-    if !unsafe { face1.IsMonospacedFont() }.as_bool() {
-        bail!("font family `{requested}` is not monospaced");
+    if require_monospaced {
+        let face1: IDWriteFontFace1 = face
+            .cast()
+            .context("configured font does not expose IDWriteFontFace1")?;
+        if !unsafe { face1.IsMonospacedFont() }.as_bool() {
+            bail!("font family `{requested}` is not monospaced");
+        }
     }
     let mut glyphs = [0u16; 1];
     let codepoints = [u32::from('M')];
@@ -876,6 +910,78 @@ fn select_family_primary(
         stretch: unsafe { font.GetStretch() },
     };
     Ok((face, descriptor))
+}
+
+fn select_system_ui_primary(
+    factory: &IDWriteFactory2,
+) -> Result<(IDWriteFontFace, PrimaryDescriptor)> {
+    const CANDIDATES: &[&str] = &["Segoe UI", "Segoe UI Variable Text"];
+    for &candidate in CANDIDATES {
+        if let Ok(primary) = select_family_primary_inner(factory, candidate, false) {
+            return Ok(primary);
+        }
+    }
+    select_system_fallback_ui_primary(factory)
+}
+
+fn select_system_fallback_ui_primary(
+    factory: &IDWriteFactory2,
+) -> Result<(IDWriteFontFace, PrimaryDescriptor)> {
+    let base: IDWriteFactory = factory.cast()?;
+    let mut collection: Option<IDWriteFontCollection> = None;
+    unsafe {
+        base.GetSystemFontCollection(&mut collection, false)
+            .context("GetSystemFontCollection")?;
+    }
+    let collection = collection.ok_or_else(|| anyhow!("system font collection was null"))?;
+
+    let family_count = unsafe { collection.GetFontFamilyCount() };
+    let mut selected: Option<(IDWriteFontFace, PrimaryDescriptor)> = None;
+
+    for family_index in 0..family_count {
+        let family = unsafe { collection.GetFontFamily(family_index) }
+            .with_context(|| format!("GetFontFamily({family_index})"))?;
+        let font = match unsafe {
+            family.GetFirstMatchingFont(
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+            )
+        } {
+            Ok(font) => font,
+            Err(_) => continue,
+        };
+        if unsafe { font.IsSymbolFont() }.as_bool() {
+            continue;
+        }
+        let face = match unsafe { font.CreateFontFace() } {
+            Ok(face) => face,
+            Err(_) => continue,
+        };
+        let mut glyphs = [0u16; 1];
+        let codepoints = [u32::from('M')];
+        if unsafe { face.GetGlyphIndices(codepoints.as_ptr(), 1, glyphs.as_mut_ptr()) }.is_err()
+            || glyphs[0] == 0
+        {
+            continue;
+        }
+        let family_name = match localized_family_name_from_family(&family) {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+        let descriptor = PrimaryDescriptor {
+            face_id: PRIMARY_FACE_ID,
+            family_name,
+            weight: unsafe { font.GetWeight() },
+            style: unsafe { font.GetStyle() },
+            stretch: unsafe { font.GetStretch() },
+        };
+        selected = Some((face, descriptor));
+        break;
+    }
+
+    drop(collection);
+    selected.ok_or_else(|| anyhow!("no usable system UI face"))
 }
 
 #[cfg(test)]

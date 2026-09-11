@@ -3,7 +3,7 @@ use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::Primitive;
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, PaintPhase, View};
+use crate::view::{AnyView, BuildCx, Component, PaintPhase, View};
 
 /// A layout-neutral single-child wrapper that paints a box decoration.
 #[derive(Clone)]
@@ -122,8 +122,8 @@ impl DecoratedBox {
     }
 
     /// Replaces the staged child. A DecoratedBox always owns at most one child.
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.child = Some(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 
@@ -152,19 +152,17 @@ impl Component for DecoratedBox {
     }
 }
 
+impl crate::WithChildren for DecoratedBox {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        children.into_single("DecoratedBox", &mut self.child)?;
+        Ok(self)
+    }
+}
+
 impl AnyView for DecoratedBox {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        constraints.constrain(Size::ZERO)
-    }
-
     fn layout_children(
         &self,
         constraints: BoxConstraints,

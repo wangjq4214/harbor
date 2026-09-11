@@ -14,5 +14,5 @@ pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, RasterizeRes
 pub use contracts::{
     FaceId, FontSize, FontStyle, GlyphId, GlyphKey, GlyphResolution, ResolutionKey,
 };
-pub use font::{FontBook, load_system_fonts};
+pub use font::{FontBook, load_system_fonts, load_system_ui_fonts};
 pub use metrics::{FontMetrics, TextMetrics};

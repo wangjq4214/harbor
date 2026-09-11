@@ -1,0 +1,25 @@
+error: expected curly braces
+ --> tests/ui/fail/non_block_children.rs:9:45
+  |
+9 |     let _ = view!(&mut cx, Column::new() => SizedBox::new(Size::new(1.0, 1.0)));
+  |                                             ^^^^^^^^
+
+warning: unused import: `harbor_widget::layout::Size`
+ --> tests/ui/fail/non_block_children.rs:1:5
+  |
+1 | use harbor_widget::layout::Size;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/non_block_children.rs:3:5
+  |
+3 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `harbor_widget::widgets::sized_box::SizedBox`
+ --> tests/ui/fail/non_block_children.rs:4:5
+  |
+4 | use harbor_widget::widgets::sized_box::SizedBox;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 use std::sync::Arc;
 
 // ── TextLabel ───────────────────────────────────────────────────────────────
@@ -36,15 +36,17 @@ impl Component for TextLabel {
     }
 }
 
+impl crate::WithChildren for TextLabel {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        children.ensure_leaf("TextLabel")?;
+        Ok(self)
+    }
+}
+
 impl AnyView for TextLabel {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let width = self.text.len() as f32 * metrics.cell_width + 4.0;
         let height = metrics.line_height;

@@ -6,7 +6,7 @@ use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// A read-only monospace text preview widget.
 ///
@@ -53,15 +53,17 @@ impl Component for PreviewPane {
     }
 }
 
+impl crate::WithChildren for PreviewPane {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        children.ensure_leaf("PreviewPane")?;
+        Ok(self)
+    }
+}
+
 impl AnyView for PreviewPane {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let cell_width = metrics.cell_width;
         let max_line_chars = self

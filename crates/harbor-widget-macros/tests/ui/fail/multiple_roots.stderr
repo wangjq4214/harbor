@@ -1,0 +1,13 @@
+error: view! accepts exactly one root node
+ --> tests/ui/fail/multiple_roots.rs:7:48
+  |
+7 |     let _ = view!(&mut cx, Column::new() => {} Column::new() => {});
+  |                                                ^^^^^^
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/multiple_roots.rs:2:5
+  |
+2 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

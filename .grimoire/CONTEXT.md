@@ -71,9 +71,11 @@ Project domain concepts and terminology.
   - produces Fiber Tree
 
 ### BoxConstraints
-- **Definition:** A layout primitive expressing the minimum and maximum size a parent imposes on a child, driving the single-pass layout algorithm.
+- **Definition:** A layout primitive expressing parent-imposed minimum and maximum child size, consumed by bounded parent-directed measurement followed by an atomic final-geometry commit. Positive infinity denotes an unbounded maximum, never a measured extent.
 - **Relationships:**
-  - consumed by RenderNode layout
+  - consumed by Fiber layout through indexed child measurement
+  - preserves legacy min-wins constrain semantics; ConstrainedBox separately enforces local bounds within the authoritative parent interval
+  - see [Parent-Directed Flex Layout](../docs/flex-layout.md) for allocation, overflow and measurement limits
 
 ### Generation Arena
 - **Definition:** A slotmap-based array where each slot has a generation counter; stale references (FiberId) are detected by generation mismatch on access.
@@ -685,6 +687,51 @@ Project domain concepts and terminology.
   - configures System Default Font Selection
   - configures Window Backdrop Tint
 
+
+### Widget Store
+- **Definition:** A reusable `harbor-widget` boundary that combines a UI-thread `Signal<S>` for Host-published declarative state with a private FIFO inbox for one-shot widget actions. It owns neither reducers nor side effects and does not automatically wake a Runtime.
+- **Relationships:**
+  - contains Signal
+  - produces Dispatcher
+  - communicates with Runtime Host
+  - implements Event-Turn Action Transport
+
+### Dispatcher
+- **Definition:** A cloneable, write-only capability obtained from a Widget Store; `dispatch(A)` enqueues typed user intent in FIFO order without reading state, reducing actions, executing effects, or waking the Runtime.
+- **Relationships:**
+  - produced by Widget Store
+  - submits actions through Event-Turn Action Transport
+  - consumed by Runtime Host
+
+### Event-Turn Action Transport
+- **Definition:** The Host-owned sequencing rule in which widgets dispatch one-shot actions during event routing, then the Runtime Host drains and reduces the FIFO batch after widget effects are applied while retaining ownership of application models and platform effects.
+- **Relationships:**
+  - implemented by Widget Store
+  - consumed by Runtime Host
+  - preserves RuntimeEffects ordering
+  - keeps reducers and effects outside Harbor Widget Runtime
+
+### Terminal Tab
+- **Definition:** An application-owned terminal session identified by a stable TabId, retaining its Terminal and PTY resources independently of whether its side-rail item is active.
+- **Relationships:**
+  - contains Terminal
+  - referenced by Terminal Tab Manager
+  - communicates with Terminal Widget Bridge
+
+### Terminal Tab Manager
+- **Definition:** The Runtime Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
+- **Relationships:**
+  - contains Terminal Tab
+  - belongs to Runtime Host
+  - communicates with Harbor Widget Runtime
+
+### Widget View Macro
+- **Definition:** An internal experimental Rust-style `view!(cx, {...})` function-like procedural macro that expands ordinary widget constructor expressions and declarative child nesting into the existing Component/View build model without adding runtime semantics.
+- **Synonyms:** view! DSL
+- **Relationships:**
+  - produces View
+  - references BuildCx
+  - belongs to Harbor Widget Runtime
 ### Hex Color Setting
 - **Definition:** A TOML color string in `#RRGGBB` or `#RRGGBBAA` form, where omitted alpha means opaque and eight-digit colors preserve alpha for terminal backgrounds.
 - **Relationships:**

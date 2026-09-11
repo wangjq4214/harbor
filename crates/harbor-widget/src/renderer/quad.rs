@@ -92,6 +92,15 @@ fn rounded_box_distance(point: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> 
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+fn stable_distance_aa(distance: f32, point: vec2<f32>) -> f32 {
+    // `fwidth(distance)` is undefined at the two-triangle quad's internal
+    // primitive boundary on some backends. A signed-distance field is
+    // 1-Lipschitz, so its filter width cannot legitimately exceed the summed
+    // derivatives of its linearly interpolated coordinates.
+    let coordinate_width = max(fwidth(point.x) + fwidth(point.y), 0.001);
+    return clamp(fwidth(distance), 0.001, coordinate_width);
+}
+
 fn rounded_clip_coverage(
     point: vec2<f32>,
     rect: vec4<f32>,
@@ -108,7 +117,7 @@ fn rounded_clip_coverage(
     if behavior == 1u {
         return select(1.0, 0.0, distance > 0.0);
     }
-    let aa = max(fwidth(distance), 0.001);
+    let aa = stable_distance_aa(distance, point);
     return 1.0 - smoothstep(-aa, aa, distance);
 }
 
@@ -138,7 +147,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         var coverage = 1.0;
         if in.blur_radius <= 0.0 {
-            let aa = max(fwidth(distance), 0.001);
+            let aa = stable_distance_aa(distance, in.local);
             coverage = 1.0 - smoothstep(-aa, aa, distance);
         } else {
             let blur_extent = max(in.blur_radius * 3.0, 0.001);
@@ -149,7 +158,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             in.occluder_rect.zw,
             in.occluder_radii,
         );
-        let occluder_aa = max(fwidth(occluder_distance), 0.001);
+        let occluder_aa = stable_distance_aa(occluder_distance, in.local);
         let exterior = smoothstep(-occluder_aa, occluder_aa, occluder_distance);
         coverage = min(coverage, exterior);
         if coverage <= 0.0 {
@@ -161,7 +170,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let outer_distance = rounded_box_distance(in.local, in.size, in.radii);
     // Derivatives express the signed-distance transition in framebuffer
     // pixels, so the antialiasing width follows both DPI and perspective.
-    let outer_aa = max(fwidth(outer_distance), 0.001);
+    let outer_aa = stable_distance_aa(outer_distance, in.local);
     let outer_alpha = 1.0 - smoothstep(-outer_aa, outer_aa, outer_distance);
     if in.border_width <= 0.0 {
         return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * clip_alpha);
@@ -177,7 +186,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         inset_size,
         inner_radii,
     );
-    let inner_aa = max(fwidth(inner_distance), 0.001);
+    let inner_aa = stable_distance_aa(inner_distance, in.local);
     let inner_alpha = 1.0 - smoothstep(-inner_aa, inner_aa, inner_distance);
     return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * (1.0 - inner_alpha) * clip_alpha);
 }
@@ -236,6 +245,20 @@ pub struct QuadRenderer {
 }
 
 impl QuadRenderer {
+    /// Test-only handle snapshots prove retention, not just stable scene IDs.
+    #[cfg(test)]
+    pub(crate) fn resource_handles(&self) -> ([wgpu::RenderPipeline; 2], [wgpu::Buffer; 4]) {
+        (
+            [self.pipeline.clone(), self.clip_mask_pipeline.clone()],
+            [
+                self.vertex_buffer.clone(),
+                self.index_buffer.clone(),
+                self.instance_buffer.clone(),
+                self.clip_mask_instance_buffer.clone(),
+            ],
+        )
+    }
+
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let vertices: [[f32; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
         let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];

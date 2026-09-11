@@ -15,8 +15,8 @@ mod types;
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
 pub use harbor_config::Color;
-use harbor_pty::PtyControl;
-pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
+use harbor_pty::{PtyControl, PtyEndpoints};
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
 pub use model::should_confirm_multiline;
 pub use model::{
@@ -133,6 +133,37 @@ impl Terminal {
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
         terminal
+    }
+
+    /// Fallibly creates a rendered terminal while preserving pre-reader PTY teardown on error.
+    ///
+    /// Renderer construction happens before [`PtyEndpoints::into_parts`], so a renderer error
+    /// drops the intact endpoint bundle through its safe unstarted-session shutdown path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new_with_appearance_from_endpoints(
+        size: TerminalSize,
+        endpoints: PtyEndpoints,
+        gpu: &GpuContext,
+        font_book: FontBook,
+        metrics: TextMetrics,
+        appearance: TerminalAppearance,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> anyhow::Result<Self> {
+        let mut terminal = Self::new_headless(size.rows, size.cols);
+        terminal.appearance = appearance;
+        let snap = terminal.screen.terminal_snapshot();
+        let renderer = TerminalRenderPipeline::new(
+            gpu,
+            font_book,
+            metrics,
+            &snap,
+            appearance.clear_rgba(false),
+            appearance.palette(),
+        )?;
+        let (pty_read, pty_write, pty_control) = endpoints.into_parts();
+        terminal.renderer = Some(renderer);
+        terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
+        Ok(terminal)
     }
 
     /// Calculates the grid dimensions used by a rendered terminal at the current surface size.
@@ -330,24 +361,6 @@ impl Terminal {
         self.renderer.as_ref().map(|r| r.metrics())
     }
 
-    pub fn text_glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.renderer.as_ref().and_then(|r| r.glyph(ch))
-    }
-
-    pub fn text_bind_group(&self) -> Option<&wgpu::BindGroup> {
-        self.renderer.as_ref().map(|r| r.text_bind_group())
-    }
-
-    pub fn text_bind_group_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.renderer.as_ref().map(|r| r.text_bind_group_layout())
-    }
-
-    pub fn ensure_glyphs(&mut self, text: &str, gpu: &GpuContext) {
-        if let Some(r) = &mut self.renderer {
-            r.ensure_glyphs(text, gpu);
-        }
-    }
-
     // ── I/O delegation ────────────────────────────────────────────────
 
     pub fn put_str(&mut self, text: &str) {
@@ -525,7 +538,22 @@ impl Terminal {
     }
 
     /// Resizes the terminal grid without GPU resources. Returns true if size changed.
+    ///
+    /// PTY failures are logged and leave the screen unchanged so a later caller can retry.
     pub fn resize_if_changed(&mut self, new_size: TerminalSize) -> bool {
+        match self.try_resize_if_changed(new_size) {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
+                false
+            }
+        }
+    }
+
+    /// Resizes the PTY and terminal grid atomically from the caller's perspective.
+    ///
+    /// The PTY is resized first; if that fails, in-memory geometry remains unchanged.
+    pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
         let new_size = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(1),
@@ -536,14 +564,14 @@ impl Terminal {
         };
 
         if new_size == current {
-            return false;
+            return Ok(false);
         }
 
+        self.io.resize_pty(new_size)?;
         self.screen.resize(new_size.rows, new_size.cols);
         self.pointer.clear();
         self.io.reset_scroll_snap();
-        self.io.resize_pty(new_size);
-        true
+        Ok(true)
     }
 
     // ── viewport scroll ───────────────────────────────────────────────

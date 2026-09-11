@@ -2,7 +2,7 @@ use crate::input::event::{Key, KeyboardEvent, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// A container that manages Tab/Shift+Tab focus traversal within its subtree.
 ///
@@ -33,8 +33,8 @@ impl FocusScope {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.children.push(child.into_child_view());
         self
     }
 }
@@ -45,21 +45,23 @@ impl Component for FocusScope {
     }
 }
 
+impl crate::WithChildren for FocusScope {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.children.extend(children.into_views());
+        Ok(self)
+    }
+}
+
 impl AnyView for FocusScope {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // FocusScope delegates to children — it's a passthrough container
         let child_size = if self.children.is_empty() {
             Size::ZERO
         } else {
-            constraints.max
+            constraints.fill_bounded(Size::ZERO)
         };
         constraints.constrain(child_size)
     }
@@ -70,7 +72,10 @@ impl AnyView for FocusScope {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = constraints.constrain(Size::new(constraints.max.width, constraints.max.height));
+        let natural = child_sizes.iter().fold(Size::ZERO, |size, child| {
+            Size::new(size.width.max(child.width), size.height.max(child.height))
+        });
+        let own = constraints.fill_bounded(natural);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
@@ -80,7 +85,7 @@ impl AnyView for FocusScope {
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: Key::Tab,
                 modifiers,
-            }) => {
+            }) if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => {
                 ctx.navigate_focus(!modifiers.shift);
                 EventHandled::Handled
             }
@@ -91,6 +96,10 @@ impl AnyView for FocusScope {
     fn is_modal_scope(&self) -> bool {
         self.modal
     }
+
+    fn is_focus_scope(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +107,32 @@ mod tests {
     use crate::input::event::Modifiers;
 
     use super::*;
+
+    #[test]
+    fn should_use_finite_child_extent_under_unbounded_constraints() {
+        let scope = FocusScope::new();
+        let metrics = &crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints {
+            min: Size::new(10.0, 40.0),
+            max: Size::new(f32::INFINITY, f32::INFINITY),
+        };
+        let (size, origins) = scope.layout_children(
+            constraints,
+            &[Size::new(30.0, 20.0), Size::new(20.0, 60.0)],
+            metrics,
+        );
+        assert_eq!(size, Size::new(30.0, 60.0));
+        assert_eq!(origins, vec![Point::ZERO; 2]);
+        assert_eq!(
+            scope.layout_children(constraints, &[], metrics).0,
+            constraints.min
+        );
+        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO));
+        assert_eq!(
+            with_child.intrinsic_size(constraints, metrics),
+            constraints.min
+        );
+    }
 
     #[test]
     fn focus_scope_not_modal_by_default() {

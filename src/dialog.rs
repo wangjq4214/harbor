@@ -1,7 +1,7 @@
 //! Secondary winit window for paste confirmation rendered by Widget Runtime.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use winit::{
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
@@ -15,19 +15,11 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
+use crate::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
-use harbor_terminal::{GpuContext, InputModes, TextMetrics};
-use harbor_widget::effects::ControlFlowEffect;
+use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal};
+use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::runtime::Runtime;
-use harbor_widget::text::GlyphFn;
-use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::column::Column;
-use harbor_widget::widgets::focus_scope::FocusScope;
-use harbor_widget::widgets::padding::Padding;
-use harbor_widget::widgets::preview_pane::PreviewPane;
-use harbor_widget::widgets::row::Row;
-use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -35,7 +27,6 @@ use unicode_width::UnicodeWidthChar;
 pub(crate) const DIALOG_WIDTH: u32 = 600;
 const DIALOG_HEIGHT: u32 = 500;
 pub(crate) const DIALOG_HORIZONTAL_PADDING: u32 = 48;
-const PREVIEW_VISIBLE_LINES: usize = 12;
 
 fn centered_dialog_position(
     main_position: winit::dpi::PhysicalPosition<i32>,
@@ -156,14 +147,25 @@ pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) 
     )
 }
 
-/// Owns the optional paste-confirmation dialog and mediates its lifecycle.
-pub(crate) struct DialogOverlay {
-    window: Option<ConfirmationWindow>,
+/// Outcome of a paste confirmation event dispatch.
+#[derive(Debug)]
+pub(crate) enum PasteEventOutcome {
+    Handled { request_redraw: bool },
+    Fatal(FrameError),
 }
 
-impl DialogOverlay {
-    pub(crate) fn new() -> Self {
-        Self { window: None }
+/// Controller encapsulating modal paste confirmation and clipboard interaction.
+pub(crate) struct PasteController {
+    window: Option<ConfirmationWindow>,
+    input_gate: Arc<AtomicBool>,
+}
+
+impl PasteController {
+    pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
+        Self {
+            window: None,
+            input_gate,
+        }
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -178,13 +180,50 @@ impl DialogOverlay {
         self.window.as_mut().map(|window| window.about_to_wait(now))
     }
 
-    /// Dispatches a window event to the active confirmation dialog.
-    pub(crate) fn handle_event(
+    #[allow(dead_code)]
+    pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+        is_paste_shortcut(event, modifiers)
+    }
+
+    pub(crate) fn handle_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        event_loop: &ActiveEventLoop,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    ) -> PasteEventOutcome {
+        let result = self.handle_event(event, event_loop, Some(gpu));
+
+        match &result {
+            DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
+                if let DialogOutcome::Confirmed(_) = &result
+                    && let Some(active_terminal) = active_terminal
+                    && let Ok(mut terminal) = active_terminal.lock()
+                {
+                    let input_modes = terminal.drain_and_snapshot().input_modes;
+                    if let Err(error) = write_confirmation_outcome(&result, input_modes, |bytes| {
+                        terminal.write_pty(bytes)
+                    }) {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+                    }
+                }
+                self.input_gate.store(false, Ordering::Release);
+                PasteEventOutcome::Handled {
+                    request_redraw: true,
+                }
+            }
+            DialogOutcome::Fatal(error) => PasteEventOutcome::Fatal(error.clone()),
+            DialogOutcome::None => PasteEventOutcome::Handled {
+                request_redraw: false,
+            },
+        }
+    }
+
+    fn handle_event(
         &mut self,
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
-        glyph_fn: Option<&GlyphFn>,
     ) -> DialogOutcome {
         let Some(mut confirmation) = self.window.take() else {
             return DialogOutcome::None;
@@ -197,9 +236,9 @@ impl DialogOverlay {
             }
             ConfirmationResult::None => {
                 if matches!(event, WindowEvent::RedrawRequested)
-                    && let (Some(gpu), Some(glyph_fn)) = (gpu, glyph_fn)
+                    && let Some(gpu) = gpu
                 {
-                    let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_fn);
+                    let frame = confirmation.render(gpu.device(), gpu.queue());
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
                         return DialogOutcome::Fatal(error);
@@ -211,9 +250,55 @@ impl DialogOverlay {
         }
     }
 
-    /// Installs a new confirmation dialog, replacing any existing one.
-    pub(crate) fn open(&mut self, confirmation: ConfirmationWindow) {
+    pub(crate) fn paste_from_clipboard(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        gpu: &GpuContext,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        runtime: &mut Runtime,
+        adapter: &mut WinitAdapter,
+    ) -> RuntimeEffects {
+        let raw_text =
+            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to read clipboard text");
+                    return RuntimeEffects::default();
+                }
+            };
+
+        let confirmation = {
+            let Some(active_terminal) = active_terminal else {
+                tracing::warn!("no active terminal for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let Ok(mut terminal) = active_terminal.lock() else {
+                tracing::warn!("terminal lock unavailable for clipboard paste");
+                return RuntimeEffects::default();
+            };
+            let input_modes = terminal.drain_and_snapshot().input_modes;
+
+            match PasteDisposition::decide(input_modes, &raw_text) {
+                PasteDisposition::SendDirect => {
+                    if let Err(error) =
+                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
+                    {
+                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+                    }
+                    return RuntimeEffects::default();
+                }
+                PasteDisposition::Confirm { raw_text } => {
+                    ConfirmationWindow::new(raw_text, event_loop, gpu, runtime, Some(window))
+                }
+            }
+        };
+
         self.window = Some(confirmation);
+        self.input_gate.store(true, Ordering::Release);
+        adapter.quarantine_active_pointers();
+        let effects = runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
+        adapter.fold_effects(effects)
     }
 }
 
@@ -244,12 +329,11 @@ impl ConfirmationWindow {
         raw_text: String,
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
-        metrics: TextMetrics,
-        text_bind_group_layout: &wgpu::BindGroupLayout,
-        text_bind_group: &wgpu::BindGroup,
+        source_runtime: &Runtime,
         main_window: Option<&Window>,
     ) -> Self {
         let line_count = raw_text.lines().count();
+        let metrics = *source_runtime.text_metrics();
 
         let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
             .floor() as usize;
@@ -328,9 +412,9 @@ impl ConfirmationWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
 
-        let mut runtime = Runtime::with_text_metrics(metrics);
+        let mut runtime = source_runtime.create_child_runtime(gpu.device(), format);
 
-        let confirm_root = build_confirmation_root(
+        let confirm_root = crate::tab_view::ui::build_confirmation_root(
             line_count,
             wrapped_lines.clone(),
             Arc::clone(&preview_scroll_offset),
@@ -339,17 +423,6 @@ impl ConfirmationWindow {
             metrics.line_height,
         );
         runtime.set_root(confirm_root);
-
-        // Init quad renderer (needed for button backgrounds/borders).
-        runtime.init_renderer(gpu.device(), gpu.format());
-
-        // Init text renderer with the shared glyph atlas.
-        runtime.init_text_renderer(
-            gpu.device(),
-            gpu.format(),
-            text_bind_group_layout,
-            text_bind_group,
-        );
 
         // Each native window has an independent adapter, including its viewport,
         // input state, scheduler, and surface-recovery budget.
@@ -463,12 +536,7 @@ impl ConfirmationWindow {
 
     /// Presents one frame through the shared winit integration using borrowed
     /// confirmation resources and shared Device, Queue, and text atlas data.
-    pub(crate) fn render(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        glyph_fn: &GlyphFn,
-    ) -> FrameOutcome {
+    pub(crate) fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> FrameOutcome {
         let ConfirmationWindow {
             window,
             surface,
@@ -493,7 +561,7 @@ impl ConfirmationWindow {
             alpha_mode,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text_runs(glyph_fn);
+            runtime.prepare_text(queue);
         })
     }
 
@@ -516,47 +584,12 @@ impl ConfirmationWindow {
     }
 }
 
-fn build_confirmation_root(
-    line_count: usize,
-    wrapped_lines: Vec<String>,
-    scroll_offset: Arc<AtomicUsize>,
-    cancelled: Arc<AtomicBool>,
-    confirmed: Arc<AtomicBool>,
-    line_height: f32,
-) -> impl harbor_widget::view::Component {
-    let header_text = format!("Paste {} lines?", line_count);
-
-    FocusScope::new().child(
-        Padding::new(24.0, 16.0, 24.0, 16.0).child(
-            Column::new()
-                .child(TextLabel::new(header_text))
-                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 8.0)))
-                .child(PreviewPane::new(
-                    wrapped_lines,
-                    scroll_offset,
-                    line_height,
-                    PREVIEW_VISIBLE_LINES,
-                ))
-                .child(SizedBox::new(harbor_widget::layout::Size::new(0.0, 12.0)))
-                .child(
-                    Row::new()
-                        .child(Button::new("Cancel").on_click(move |_ctx| {
-                            cancelled.store(true, Ordering::SeqCst);
-                        }))
-                        .child(SizedBox::new(harbor_widget::layout::Size::new(12.0, 0.0)))
-                        .child(Button::new("Paste").on_click(move |_ctx| {
-                            confirmed.store(true, Ordering::SeqCst);
-                        })),
-                ),
-        ),
-    )
-}
-
 // ── Confirmation widget tree ────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tab_view::ui::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
 
     #[test]

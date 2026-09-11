@@ -9,6 +9,8 @@ This directory contains current project documentation. Historical decisions, spe
 | What should be implemented next?             | [`roadmap.md`](roadmap.md)                                             |
 | Is a VT sequence or behavior supported?      | [`protocol/checklist.md`](protocol/checklist.md)                       |
 | How does the widget runtime work now?        | [`architecture/widget-runtime.md`](architecture/widget-runtime.md)     |
+| What desktop widget capabilities are planned? | [`widget-capability-plan.md`](widget-capability-plan.md)                         |
+| How does parent-directed Flex layout work?          | [`flex-layout.md`](flex-layout.md)                              |
 | Why was an architectural choice made?        | [`.grimoire/adr/`](../.grimoire/adr/)                                  |
 | What is the measured memory baseline?        | [`performance/memory-baseline.md`](performance/memory-baseline.md)     |
 | How should profiling be run?                 | [`performance/profiling-guide.md`](performance/profiling-guide.md)     |
@@ -20,6 +22,10 @@ This directory contains current project documentation. Historical decisions, spe
 ### Roadmap
 
 The roadmap owns priorities, dependencies, deliverables, and release gates. It does not duplicate protocol-level checklists, profiling captures, or completed implementation histories.
+
+### Widget Capability Plan
+
+The widget capability plan owns the desktop widget taxonomy, dependency order, exclusions, and capability-level acceptance gates. The roadmap still decides when a widget slice enters product delivery.
 
 ### Protocol Checklist
 

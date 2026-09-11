@@ -3,7 +3,7 @@ use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key as ViewKey, View};
+use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use std::sync::Arc;
 
 /// Optional in-tree input adapter for a focusable external-paint leaf.
@@ -57,9 +57,14 @@ impl CustomPaint {
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.children.push(child.into_child_view());
         self
+    }
+
+    /// Returns whether this custom paint widget can receive focus.
+    pub fn is_focusable(&self) -> bool {
+        true
     }
 }
 
@@ -75,18 +80,20 @@ impl Component for CustomPaint {
     }
 }
 
+impl crate::WithChildren for CustomPaint {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.children.extend(children.into_views());
+        Ok(self)
+    }
+}
+
 impl AnyView for CustomPaint {
-    fn key(&self) -> Option<&ViewKey> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // Fill available space so the terminal occupies the full viewport.
-        constraints.max
+        // Fill bounded axes; an unbounded axis has no viewport to fill.
+        constraints.fill_bounded(Size::ZERO)
     }
 
     fn layout_children(
@@ -95,7 +102,12 @@ impl AnyView for CustomPaint {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let own = constraints.max;
+        // Children overlap at the origin. On unbounded axes preserve their
+        // natural extent rather than publishing infinite external draw geometry.
+        let natural = child_sizes.iter().fold(Size::ZERO, |size, child| {
+            Size::new(size.width.max(child.width), size.height.max(child.height))
+        });
+        let own = constraints.fill_bounded(natural);
         let positions = vec![Point::ZERO; child_sizes.len()];
         (own, positions)
     }
@@ -107,8 +119,12 @@ impl AnyView for CustomPaint {
         }]
     }
 
-    fn is_focusable(&self) -> bool {
-        true
+    fn focus_metadata(&self) -> Option<FocusMetadata> {
+        Some(FocusMetadata {
+            enabled: true,
+            order: 0,
+            handle: None,
+        })
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
@@ -123,7 +139,7 @@ impl AnyView for CustomPaint {
         }
 
         // Queue for deferred delivery to the App via Runtime.
-        crate::runtime::queue_external_input(self.draw_id, event.clone());
+        ctx.queue_external_input(self.draw_id, event.clone());
         EventHandled::Handled
     }
 }
@@ -153,6 +169,122 @@ mod tests {
             }
             _ => panic!("expected External primitive"),
         }
+    }
+
+    #[derive(Clone)]
+    struct ConstraintParent {
+        constraints: BoxConstraints,
+        child: View,
+    }
+
+    impl Component for ConstraintParent {
+        fn build(&self, _cx: &mut BuildCx) -> View {
+            View::new(self.clone(), vec![self.child.clone()], None)
+        }
+    }
+
+    impl AnyView for ConstraintParent {
+        fn child_constraints(&self, _constraints: BoxConstraints) -> BoxConstraints {
+            self.constraints
+        }
+        fn layout_children(
+            &self,
+            constraints: BoxConstraints,
+            sizes: &[Size],
+            _metrics: &TextMetrics,
+        ) -> (Size, Vec<Point>) {
+            (constraints.constrain(sizes[0]), vec![Point::ZERO])
+        }
+    }
+
+    fn unbounded_runtime(
+        constraints: BoxConstraints,
+        child: impl Component + 'static,
+    ) -> crate::runtime::Runtime {
+        let mut runtime = crate::runtime::Runtime::new();
+        runtime.set_root(ConstraintParent {
+            constraints,
+            child: View::deferred(child),
+        });
+        runtime.update(std::time::Instant::now());
+        runtime
+    }
+
+    #[test]
+    fn custom_paint_has_finite_per_axis_unbounded_fallback_in_real_layout() {
+        use crate::runtime::DEFAULT_TEXT_METRICS;
+        use crate::widgets::sized_box::SizedBox;
+        for (max, expected) in [
+            (Size::new(f32::INFINITY, 90.0), Size::new(40.0, 90.0)),
+            (Size::new(80.0, f32::INFINITY), Size::new(80.0, 30.0)),
+            (
+                Size::new(f32::INFINITY, f32::INFINITY),
+                Size::new(40.0, 30.0),
+            ),
+        ] {
+            let constraints = BoxConstraints {
+                min: Size::new(7.0, 11.0),
+                max,
+            };
+            let runtime = unbounded_runtime(
+                constraints,
+                CustomPaint::new(1).child(SizedBox::new(Size::new(40.0, 30.0))),
+            );
+            let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+            let child = runtime.arena().get(root.children()[0]).unwrap();
+            assert_eq!(child.layout_rect().unwrap().size(), expected);
+            assert!(
+                matches!(runtime.pending_delta().unwrap().added[0].primitive,
+                Primitive::External { rect, draw: 1 } if rect.size() == expected)
+            );
+            let natural = CustomPaint::new(1).intrinsic_size(constraints, &DEFAULT_TEXT_METRICS);
+            assert_eq!(
+                natural.width,
+                if max.width.is_finite() {
+                    max.width
+                } else {
+                    7.0
+                }
+            );
+            assert_eq!(
+                natural.height,
+                if max.height.is_finite() {
+                    max.height
+                } else {
+                    11.0
+                }
+            );
+        }
+        let runtime = unbounded_runtime(
+            BoxConstraints {
+                min: Size::new(7.0, 11.0),
+                max: Size::new(f32::INFINITY, f32::INFINITY),
+            },
+            CustomPaint::new(1),
+        );
+        assert!(
+            matches!(runtime.pending_delta().unwrap().added[0].primitive,
+            Primitive::External { rect, draw: 1 } if rect.size() == Size::new(7.0, 11.0))
+        );
+    }
+
+    #[test]
+    fn unbounded_expanded_custom_paint_falls_back_to_finite_content() {
+        use crate::widgets::sized_box::SizedBox;
+        use crate::{Expanded, Row};
+        let runtime = unbounded_runtime(
+            BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+            Row::new().child(
+                Expanded::new()
+                    .child(CustomPaint::new(1).child(SizedBox::new(Size::new(33.0, 21.0)))),
+            ),
+        );
+        let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+        assert_eq!(root.layout_rect().unwrap().size(), Size::new(33.0, 21.0));
+        assert!(
+            matches!(runtime.pending_delta().unwrap().added[0].primitive,
+            Primitive::External { rect, draw: 1 } if rect.size() == Size::new(33.0, 21.0))
+        );
     }
 
     #[test]

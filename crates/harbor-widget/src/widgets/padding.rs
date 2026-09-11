@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Insets a single child by padding and optionally draws a background.
 #[derive(Clone)]
@@ -36,8 +36,8 @@ impl Padding {
     }
 
     /// Sets this padding's only child, replacing any previously staged child.
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.child = Some(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 }
@@ -48,15 +48,17 @@ impl Component for Padding {
     }
 }
 
+impl crate::WithChildren for Padding {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        children.into_single("Padding", &mut self.child)?;
+        Ok(self)
+    }
+}
+
 impl AnyView for Padding {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // layout_fiber measures descendants before calling layout_children.
         // This intrinsic fallback therefore represents the child-free case.

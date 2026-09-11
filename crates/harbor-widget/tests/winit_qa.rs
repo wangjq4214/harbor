@@ -102,6 +102,74 @@ fn should_quarantine_stale_release_until_a_fresh_pointer_down() {
 }
 
 #[test]
+fn host_quarantine_cancels_existing_capture_and_blocks_modal_pointer_sequences() {
+    let clicked = Arc::new(AtomicBool::new(false));
+    let clicked_clone = Arc::clone(&clicked);
+    let mut runtime = Runtime::new();
+    runtime.set_root(Button::new("OK").on_click(move |_| {
+        clicked_clone.store(true, Ordering::SeqCst);
+    }));
+    runtime.update(Instant::now());
+    let mut adapter = WinitAdapter::new();
+    let cursor = WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(4.0, 4.0),
+    };
+    let down = WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    let up = WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    };
+
+    adapter.handle_event(&mut runtime, &cursor);
+    adapter.quarantine_blocked_pointer_event(&down);
+    let stale_modal_up = adapter.handle_event(&mut runtime, &up);
+    assert!(stale_modal_up.is_handled());
+    assert!(!clicked.load(Ordering::SeqCst));
+
+    adapter.handle_event(&mut runtime, &down);
+    assert!(runtime.input().captor(0).is_some());
+    adapter.quarantine_active_pointers();
+    runtime.cancel_pointer_captures(Point::ZERO);
+    let stale_after_modal_open = adapter.handle_event(&mut runtime, &up);
+    assert!(stale_after_modal_open.is_handled());
+    assert!(runtime.input().captor(0).is_none());
+    assert!(!clicked.load(Ordering::SeqCst));
+}
+
+#[test]
+fn host_quarantine_blocks_touch_started_behind_a_modal_gate() {
+    let clicked = Arc::new(AtomicBool::new(false));
+    let clicked_clone = Arc::clone(&clicked);
+    let mut runtime = Runtime::new();
+    runtime.set_root(Button::new("OK").on_click(move |_| {
+        clicked_clone.store(true, Ordering::SeqCst);
+    }));
+    runtime.update(Instant::now());
+    let mut adapter = WinitAdapter::new();
+    let touch = |phase| {
+        WindowEvent::Touch(Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(4.0, 4.0),
+            force: None,
+            id: 7,
+        })
+    };
+
+    adapter.quarantine_blocked_pointer_event(&touch(TouchPhase::Started));
+    let stale_end = adapter.handle_event(&mut runtime, &touch(TouchPhase::Ended));
+    assert!(stale_end.is_handled());
+    assert!(runtime.input().focused().is_none());
+    assert!(!clicked.load(Ordering::SeqCst));
+}
+
+#[test]
 fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
@@ -128,8 +196,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
     );
     adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
 
-    // A new right-button capture must not make the canceled left-button
-    // release eligible for the shared widget pointer capture.
+    // Non-primary presses remain ignored after focus-loss quarantine.
     adapter.handle_event(
         &mut runtime,
         &mouse_input(ElementState::Pressed, MouseButton::Right),
@@ -145,7 +212,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
         &mut runtime,
         &mouse_input(ElementState::Released, MouseButton::Right),
     );
-    assert!(clicked.load(Ordering::SeqCst));
+    assert!(!clicked.load(Ordering::SeqCst));
 }
 
 #[test]

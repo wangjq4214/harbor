@@ -1,0 +1,13 @@
+error: expected `=>`
+ --> tests/ui/fail/missing_arrow.rs:7:42
+  |
+7 |     let _ = view!(&mut cx, Column::new() { });
+  |                                          ^
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/missing_arrow.rs:2:5
+  |
+2 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

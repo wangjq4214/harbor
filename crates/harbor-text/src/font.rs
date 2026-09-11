@@ -70,6 +70,24 @@ pub fn load_system_fonts(settings: &FontSettings) -> Result<FontBook> {
     load_system_fonts_with_sink(settings, Rc::new(TracingFontLifecycleSink))
 }
 
+/// Loads the system default UI fonts for widget and chrome rendering.
+///
+/// Uses the operating system's default UI font family (e.g. Segoe UI on Windows)
+/// and standard UI font size, completely independent of terminal font settings.
+pub fn load_system_ui_fonts() -> Result<FontBook> {
+    load_system_ui_fonts_with_sink(Rc::new(TracingFontLifecycleSink))
+}
+
+fn load_system_ui_fonts_with_sink(lifecycle: Rc<dyn FontLifecycleSink>) -> Result<FontBook> {
+    let started = std::time::Instant::now();
+    let size = harbor_config::DEFAULT_UI_FONT_SIZE;
+    let state = DwriteState::open_system_ui_primary_with_sink(size, Rc::clone(&lifecycle))
+        .context("load DirectWrite system UI primary face")?;
+    let fonts = FontBook::from_native(state, size);
+    emit_font_init(lifecycle.as_ref(), FontSource::System, started);
+    Ok(fonts)
+}
+
 fn load_system_fonts_with_sink(
     settings: &FontSettings,
     lifecycle: Rc<dyn FontLifecycleSink>,
@@ -142,6 +160,33 @@ mod tests {
             }]
         ));
         assert!(fonts.font_metrics().cell_width > 0.0);
+    }
+
+    #[test]
+    fn should_load_system_ui_fonts_with_standard_size() {
+        let fonts = load_system_ui_fonts().expect("load system ui font");
+        assert_eq!(fonts.size(), harbor_config::DEFAULT_UI_FONT_SIZE);
+        let metrics = fonts.font_metrics();
+        assert!(metrics.cell_width > 0.0);
+        assert!(metrics.line_height > 0.0);
+        assert!(metrics.ascent > 0.0);
+    }
+
+    #[test]
+    fn system_ui_fonts_are_isolated_from_terminal_font_settings() {
+        let terminal_settings = FontSettings {
+            family: Some("Consolas".to_string()),
+            size: 32.0,
+        };
+        let terminal_fonts = load_system_fonts(&terminal_settings).expect("terminal font");
+        let ui_fonts = load_system_ui_fonts().expect("ui font");
+
+        assert_eq!(terminal_fonts.size(), 32.0);
+        assert_eq!(ui_fonts.size(), harbor_config::DEFAULT_UI_FONT_SIZE);
+        assert_ne!(
+            terminal_fonts.font_metrics().line_height,
+            ui_fonts.font_metrics().line_height
+        );
     }
 
     #[test]

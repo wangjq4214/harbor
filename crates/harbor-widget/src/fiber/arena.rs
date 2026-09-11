@@ -1,5 +1,7 @@
-use crate::layout::Rect;
+use super::reconcile::ReconcileDiagnostic;
+use crate::layout::{LayoutDiagnostic, LayoutError, Rect};
 use crate::signal::Hook;
+use crate::theme::Theme;
 use crate::view::{AnyView, Key};
 use slotmap::SlotMap;
 use std::any::TypeId;
@@ -65,12 +67,22 @@ pub struct Fiber {
     pub(crate) widget_type: TypeId,
     #[allow(private_interfaces)]
     pub(crate) hooks: Vec<Box<dyn Hook>>,
+    #[allow(private_interfaces)]
+    pub(crate) subscriptions: Vec<Box<dyn Hook>>,
     pub(crate) children: Vec<FiberId>,
     pub(crate) parent: Option<FiberId>,
     pub(crate) flags: DirtyFlags,
     pub(crate) layout_rect: Option<Rect>,
+    /// Last valid allocation delivered for this reconciliation identity.
+    pub(crate) last_layout_notification: Option<Rect>,
+    pub(crate) layout_diagnostics: Vec<LayoutDiagnostic>,
+    pub(crate) layout_error: Option<LayoutError>,
+    /// Diagnostics from the most recent child reconciliation.
+    pub(crate) reconcile_diagnostics: Vec<ReconcileDiagnostic>,
     /// The type-erased widget data for layout and rebuild.
     pub(crate) view: Option<Arc<dyn AnyView>>,
+    /// Effective theme inherited during reconciliation.
+    pub(crate) theme: Arc<Theme>,
     /// Primitive-slot keys keep filtered shadows from renumbering later items.
     pub(crate) scene_item_slots: Vec<(u32, u64)>,
     /// Primitive-slot keys for this fiber's after-child primitive slots.
@@ -88,11 +100,17 @@ impl Fiber {
             key,
             widget_type,
             hooks: Vec::new(),
+            subscriptions: Vec::new(),
             children: Vec::new(),
             parent: None,
             flags: DirtyFlags::NONE,
             layout_rect: None,
+            last_layout_notification: None,
+            layout_diagnostics: Vec::new(),
+            layout_error: None,
+            reconcile_diagnostics: Vec::new(),
             view,
+            theme: Arc::new(Theme::default()),
             scene_item_slots: Vec::new(),
             after_scene_item_slots: Vec::new(),
         }
@@ -108,6 +126,21 @@ impl Fiber {
         self.layout_rect
     }
 
+    /// Diagnostics belonging to the last committed layout, not failed trials.
+    pub fn layout_diagnostics(&self) -> &[LayoutDiagnostic] {
+        &self.layout_diagnostics
+    }
+
+    /// The most recent failed layout attempt, cleared on a successful commit.
+    pub fn layout_error(&self) -> Option<LayoutError> {
+        self.layout_error
+    }
+
+    /// Diagnostics from the last child reconciliation, cleared on a clean pass.
+    pub fn reconcile_diagnostics(&self) -> &[ReconcileDiagnostic] {
+        &self.reconcile_diagnostics
+    }
+
     /// Child fiber ids in paint order.
     pub fn children(&self) -> &[FiberId] {
         &self.children
@@ -115,7 +148,10 @@ impl Fiber {
 
     /// Whether the view reports itself as focusable.
     pub fn is_focusable(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| v.is_focusable())
+        self.view
+            .as_ref()
+            .and_then(|v| v.focus_metadata())
+            .is_some_and(|m| m.enabled)
     }
 }
 

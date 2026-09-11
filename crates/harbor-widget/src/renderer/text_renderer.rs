@@ -146,6 +146,7 @@ struct TextInstanceBatch<'a> {
 /// Owns a textured-quad pipeline (sampling a glyph atlas), unit-quad
 /// vertex/index buffers, and a dynamic glyph instance buffer.
 pub struct TextRenderer {
+    device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
@@ -157,6 +158,21 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
+    #[cfg(test)]
+    pub(crate) fn resource_handles(
+        &self,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroup, [wgpu::Buffer; 3]) {
+        (
+            self.pipeline.clone(),
+            self.bind_group.clone(),
+            [
+                self.vertex_buffer.clone(),
+                self.index_buffer.clone(),
+                self.instance_buffer.clone(),
+            ],
+        )
+    }
+
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -294,6 +310,7 @@ impl TextRenderer {
         });
 
         TextRenderer {
+            device: device.clone(),
             pipeline,
             bind_group: bind_group.clone(),
             vertex_buffer,
@@ -315,14 +332,25 @@ impl TextRenderer {
         run_cache: &TextRunCache,
         viewport: &Viewport,
     ) {
+        let required = scene_graph
+            .items()
+            .iter()
+            .filter_map(|item| run_cache.get(item.id))
+            .try_fold(0u32, |total, run| {
+                let count = u32::try_from(run.glyphs.len()).ok()?;
+                total.checked_add(count)
+            })
+            .expect("widget text glyph count exceeds u32 capacity");
+        self.ensure_instance_capacity(required);
+
         self.id_to_offset.clear();
         let mut next_offset = 0;
-
         for item in scene_graph.items() {
             if let crate::scene::primitive::Primitive::Text { origin, color, .. } = &item.primitive
                 && let Some(run_data) = run_cache.get(item.id)
             {
-                let count = run_data.glyphs.len() as u32;
+                let count = u32::try_from(run_data.glyphs.len())
+                    .expect("widget text run glyph count exceeds u32 capacity");
                 if count == 0 {
                     continue;
                 }
@@ -363,6 +391,20 @@ impl TextRenderer {
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
+    fn ensure_instance_capacity(&mut self, required: u32) {
+        let new_capacity = grown_instance_capacity(self.instance_capacity, required);
+        if new_capacity == self.instance_capacity {
+            return;
+        }
+        self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("widget-text-instance"),
+            size: u64::from(new_capacity) * std::mem::size_of::<GlyphInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = new_capacity;
+    }
+
     fn write_instances(
         &self,
         queue: &wgpu::Queue,
@@ -397,14 +439,34 @@ impl TextRenderer {
         let offset = start as u64 * std::mem::size_of::<GlyphInstance>() as u64;
         let size = instances.len() as u64 * std::mem::size_of::<GlyphInstance>() as u64;
         let capacity = self.instance_capacity as u64 * std::mem::size_of::<GlyphInstance>() as u64;
-        if offset + size <= capacity {
-            queue.write_buffer(
-                &self.instance_buffer,
-                offset,
-                bytemuck::cast_slice(&instances),
-            );
-        }
-        // Capacity exceeded: instances silently dropped.
-        // 1024 glyph instances suffice for the current static widget tree.
+        debug_assert!(offset + size <= capacity);
+        queue.write_buffer(
+            &self.instance_buffer,
+            offset,
+            bytemuck::cast_slice(&instances),
+        );
+    }
+}
+
+fn grown_instance_capacity(current: u32, required: u32) -> u32 {
+    if required <= current {
+        current
+    } else {
+        required.checked_next_power_of_two().unwrap_or(required)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grown_instance_capacity;
+
+    #[test]
+    fn instance_capacity_grows_to_cover_large_text_scenes() {
+        assert_eq!(grown_instance_capacity(1024, 1024), 1024);
+        assert_eq!(grown_instance_capacity(1024, 1025), 2048);
+        assert_eq!(
+            grown_instance_capacity(1 << 31, (1 << 31) + 1),
+            (1 << 31) + 1
+        );
     }
 }

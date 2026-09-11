@@ -1,5 +1,6 @@
 pub mod quad;
 pub mod text_renderer;
+pub(crate) mod widget_text_atlas;
 
 use crate::decoration::ClipBehavior;
 use crate::layout::{Point, Rect, Size};

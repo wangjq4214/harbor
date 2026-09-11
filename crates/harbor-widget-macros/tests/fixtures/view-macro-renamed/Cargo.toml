@@ -1,0 +1,10 @@
+[package]
+name = "view-macro-renamed-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+widget_alias = { package = "harbor-widget", path = "../../../../harbor-widget" }

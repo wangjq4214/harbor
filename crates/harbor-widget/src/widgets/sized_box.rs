@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// A fixed-size widget with optional background color.
 ///
@@ -30,15 +30,17 @@ impl Component for SizedBox {
     }
 }
 
+impl crate::WithChildren for SizedBox {
+    fn with_children(
+        self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        children.ensure_leaf("SizedBox")?;
+        Ok(self)
+    }
+}
+
 impl AnyView for SizedBox {
-    fn key(&self) -> Option<&Key> {
-        None
-    }
-
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
-    }
-
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(self.size)
     }

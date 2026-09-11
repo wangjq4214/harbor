@@ -1,10 +1,13 @@
 use crate::fiber::FiberId;
 use crate::input::event::UiEvent;
 use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{
+    BoxConstraints, ChildMeasurer, LayoutError, ParentData, ParentLayout, Point, Rect, Size,
+};
 use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn, Primitive};
 use crate::signal::{Hook, Signal};
 use crate::text::TextMetrics;
+use crate::theme::Theme;
 use std::any::TypeId;
 use std::sync::Arc;
 
@@ -15,11 +18,31 @@ use std::sync::Arc;
 pub struct Key(String);
 
 impl Key {
+    /// Creates a key from a string-like value.
     pub fn new(s: impl Into<String>) -> Self {
-        Key(s.into())
+        Self(s.into())
     }
 }
 
+impl From<String> for Key {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for Key {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Crate-private focus metadata stored on a view, never exposing Fiber identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FocusMetadata {
+    pub(crate) enabled: bool,
+    pub(crate) order: i32,
+    pub(crate) handle: Option<u64>,
+}
 // ── ExternalRegistrations ───────────────────────────────────────────────────
 
 /// Side-channel registrations collected while building a View subtree.
@@ -45,8 +68,10 @@ impl ExternalRegistrations {
 pub struct BuildCx {
     pub(crate) current_fiber: Option<FiberId>,
     pub(crate) hooks: Vec<Box<dyn Hook>>,
+    pub(crate) subscriptions: Vec<Box<dyn Hook>>,
     pub(crate) hook_index: usize,
     pub(crate) externals: ExternalRegistrations,
+    pub(crate) theme: Arc<Theme>,
 }
 
 impl BuildCx {
@@ -57,8 +82,10 @@ impl BuildCx {
         BuildCx {
             current_fiber: None,
             hooks: Vec::new(),
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         }
     }
 
@@ -114,6 +141,19 @@ impl BuildCx {
         }
         signal
     }
+
+    /// Reads the effective theme inherited from the nearest ThemeProvider.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Subscribes the current component fiber to an external signal.
+    pub fn track<T: 'static>(&mut self, signal: &Signal<T>) {
+        if let Some(fiber) = self.current_fiber {
+            signal.subscribe(fiber);
+            self.subscriptions.push(Box::new(signal.clone()));
+        }
+    }
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -124,7 +164,28 @@ impl BuildCx {
 /// State is managed via `BuildCx::use_state` and stored in Fibers, not in
 /// the Component struct itself.
 pub trait Component {
+    /// Builds this component's opaque view tree.
     fn build(&self, cx: &mut BuildCx) -> View;
+
+    /// Returns this component's explicit, parent-local reconciliation key.
+    ///
+    /// Components without a key use positional sibling reconciliation.
+    fn key(&self) -> Option<Key> {
+        None
+    }
+}
+
+/// Plain functions and closures can be mounted directly as components.
+///
+/// Captured values act as props, while mutable UI state remains in the
+/// component Fiber through [`BuildCx::use_state`].
+impl<F> Component for F
+where
+    F: Fn(&mut BuildCx) -> View + 'static,
+{
+    fn build(&self, cx: &mut BuildCx) -> View {
+        self(cx)
+    }
 }
 
 // ── AnyView ─────────────────────────────────────────────────────────────────
@@ -136,6 +197,17 @@ pub(crate) enum PaintPhase {
     AfterChildren,
 }
 
+/// Result of asking an ancestor to reveal a descendant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnsureVisibleResult {
+    /// This view does not own visibility policy.
+    NotApplicable,
+    /// Geometry was usable; the value reports whether retained state changed.
+    Resolved(bool),
+    /// Geometry is not currently usable, so the request must be retried.
+    Unavailable,
+}
+
 /// Internal type-erased View capability.
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
@@ -143,14 +215,50 @@ pub(crate) enum PaintPhase {
 #[allow(dead_code)]
 pub(crate) trait AnyView: 'static {
     /// Optional key for list reconciliation.
-    fn key(&self) -> Option<&Key>;
+    fn key(&self) -> Option<&Key> {
+        None
+    }
 
     /// The TypeId of the concrete implementation, used for reconciliation.
-    fn widget_type(&self) -> TypeId;
+    fn widget_type(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
 
     /// Computes the intrinsic size given layout constraints and Runtime-owned
-    /// text metrics.
-    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+    /// text metrics. Default: clamps `Size::ZERO` into constraints.
+    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
+        constraints.constrain(Size::ZERO)
+    }
+
+    /// Metadata for the immediate layout parent; it never tunnels through views.
+    fn parent_data(&self) -> ParentData {
+        ParentData::default()
+    }
+
+    /// Whether this parent consumes flex metadata on its immediate children.
+    fn accepts_flex_children(&self) -> bool {
+        false
+    }
+
+    /// Measures and places immediate children without access to retained geometry.
+    /// The default adapter preserves the legacy single-constraint layout protocol.
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &mut dyn ChildMeasurer,
+        metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        let child_constraints = self.child_constraints(constraints);
+        let child_sizes = (0..children.len())
+            .map(|index| children.measure(index, child_constraints))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (size, origins) = self.layout_children(constraints, &child_sizes, metrics);
+        Ok(ParentLayout {
+            size,
+            placements: origins.into_iter().enumerate().collect(),
+            diagnostics: Vec::new(),
+        })
+    }
 
     /// Returns the constraints this view imposes on each child. Containers may
     /// override this to reserve space for their own layout; the default preserves
@@ -220,6 +328,22 @@ pub(crate) trait AnyView: 'static {
         None
     }
 
+    /// Applies internal bookkeeping after a successful atomic layout commit.
+    /// External user code must not be invoked from this hook.
+    fn post_layout(&self, _rect: Rect, _child_rects: &[Rect]) {}
+
+    /// Returns an external allocation callback to stage after commit and paint.
+    fn layout_changed_callback(&self) -> Option<std::sync::Arc<dyn Fn(Rect) + 'static>> {
+        None
+    }
+
+    /// Requests the minimum movement needed to reveal an absolute target rect.
+    /// Implementations adjust `target` by the accepted movement so outer
+    /// ancestors coordinate against its eventual position.
+    fn ensure_visible(&self, _rect: Rect, _target: &mut Rect) -> EnsureVisibleResult {
+        EnsureVisibleResult::NotApplicable
+    }
+
     /// Returns true if the point (in widget-local coordinates) is inside
     /// the widget's hit-testable region.
     /// Default: point-in-rect test.
@@ -235,12 +359,53 @@ pub(crate) trait AnyView: 'static {
         EventHandled::Ignored
     }
 
-    /// Whether this widget can receive focus via Tab navigation.
-    /// Default: false.
-    fn is_focusable(&self) -> bool {
+    /// Metadata for focus traversal. Disabled nodes are omitted by the router.
+    fn focus_metadata(&self) -> Option<FocusMetadata> {
+        None
+    }
+
+    /// Whether keyboard and logical focus notifications target this wrapper's
+    /// single child while the wrapper retains focus identity and metadata.
+    fn delegates_focused_events(&self) -> bool {
         false
     }
 
+    /// Whether this view establishes a focus traversal scope.
+    fn is_focus_scope(&self) -> bool {
+        false
+    }
+
+    /// Declarative cursor requested while this view is in the hover path.
+    fn pointer_cursor(&self) -> Option<crate::effects::CursorShape> {
+        None
+    }
+
+    /// Opt-in for synthetic pointer-boundary delivery from the router.
+    fn accepts_pointer_boundaries(&self) -> bool {
+        false
+    }
+
+    /// Whether a live capture targeting this view remains valid.
+    fn permits_pointer_capture(&self) -> bool {
+        true
+    }
+    /// Replaces the inherited theme for descendants during reconciliation.
+    fn theme_override(&self) -> Option<Arc<Theme>> {
+        None
+    }
+
+    /// Returns the typed action bound to this exact chord, if any.
+    fn shortcut_action(
+        &self,
+        _chord: crate::widgets::shortcuts::KeyChord,
+    ) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    /// Delivers a pending action to a compatible typed provider.
+    fn invoke_action(&self, _action: &dyn std::any::Any) -> bool {
+        false
+    }
     /// Whether this widget is a modal scope — events targeting widgets outside
     /// its subtree should be blocked.
     /// Default: false.
@@ -285,17 +450,25 @@ impl View {
         }
     }
 
+    /// Overrides this View's reconciliation key without changing its contents or
+    /// introducing a wrapper View node.
+    pub(crate) fn with_explicit_key(mut self, key: Key) -> Self {
+        self.explicit_key = Some(key);
+        self
+    }
+
     /// Defers building a component until reconciliation assigns it a Fiber.
     ///
-    /// The concrete component TypeId is retained so deferred views reconcile
-    /// with the same identity as their eventual Fiber.
+    /// The concrete component TypeId and explicit key are retained so deferred
+    /// views reconcile with the same identity as their eventual Fiber.
     pub fn deferred<C: Component + 'static>(component: C) -> Self {
+        let explicit_key = component.key();
         View {
             contents: ViewContents::Deferred {
                 component: Arc::new(component),
                 widget_type: TypeId::of::<C>(),
             },
-            explicit_key: None,
+            explicit_key,
             children: vec![],
         }
     }
@@ -430,8 +603,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         // First build: creates a new signal
@@ -443,8 +618,10 @@ mod tests {
         let mut cx2 = BuildCx {
             current_fiber: None,
             hooks: cx.hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -456,8 +633,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks: vec![],
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         let s1 = cx.use_state(|| "hello".to_string());
@@ -473,8 +652,10 @@ mod tests {
         let mut cx = BuildCx {
             current_fiber: None,
             hooks: vec![],
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
 
         // First build with u32
@@ -484,8 +665,10 @@ mod tests {
         let mut cx2 = BuildCx {
             current_fiber: None,
             hooks: cx.hooks,
+            subscriptions: Vec::new(),
             hook_index: 0,
             externals: ExternalRegistrations::default(),
+            theme: Arc::new(Theme::default()),
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }

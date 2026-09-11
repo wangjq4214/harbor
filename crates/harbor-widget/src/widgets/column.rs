@@ -1,14 +1,15 @@
-use crate::layout::{Alignment, BoxConstraints, Point, Rect, Size};
+use super::flex::{Axis, Flex, MainAxisAlignment};
+use crate::layout::{
+    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, Key, View};
+use crate::view::{AnyView, BuildCx, Component, View};
 
 /// Vertical flex container. Stacks children top-to-bottom.
 #[derive(Clone)]
 pub struct Column {
-    pub cross_axis_alignment: Alignment,
-    pub background: Option<Color>,
-    children: Vec<View>,
+    inner: Flex,
 }
 
 impl Default for Column {
@@ -20,80 +21,83 @@ impl Default for Column {
 impl Column {
     pub fn new() -> Self {
         Column {
-            cross_axis_alignment: Alignment::Start,
-            background: None,
-            children: vec![],
+            inner: Flex::new(Axis::Vertical),
         }
     }
 
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
-        self.cross_axis_alignment = alignment;
+        self.inner = self.inner.cross_axis_alignment(alignment);
+        self
+    }
+
+    /// Sets a finite, nonnegative minimum gap in logical pixels.
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.inner = self.inner.gap(gap);
+        self
+    }
+
+    pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
+        self.inner = self.inner.main_axis_alignment(alignment);
         self
     }
 
     pub fn background(mut self, color: Color) -> Self {
-        self.background = Some(color);
+        self.inner = self.inner.background(color);
         self
     }
 
-    pub fn child(mut self, child: impl Component + 'static) -> Self {
-        self.children.push(View::deferred(child));
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.inner = self.inner.child(child);
         self
     }
 }
 
 impl Component for Column {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.inner.children.clone(), None)
+    }
+}
+
+impl crate::WithChildren for Column {
+    fn with_children(
+        mut self,
+        children: crate::Children,
+    ) -> Result<Self, crate::ChildConstructionError> {
+        self.inner = self.inner.with_children(children)?;
+        Ok(self)
     }
 }
 
 impl AnyView for Column {
-    fn key(&self) -> Option<&Key> {
-        None
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        self.inner.intrinsic_size(constraints, metrics)
     }
 
-    fn widget_type(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<Self>()
+    fn accepts_flex_children(&self) -> bool {
+        self.inner.accepts_flex_children()
     }
 
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // Column fills available width; height is sum of children but unknown
-        // at intrinsic-time (children are laid out bottom-up by layout_fiber).
-        constraints.constrain(Size::new(constraints.max.width, constraints.max.height))
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &mut dyn ChildMeasurer,
+        metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        self.inner.layout(constraints, children, metrics)
     }
 
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
-        _metrics: &TextMetrics,
+        metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let max_width: f32 = child_sizes.iter().map(|s| s.width).fold(0.0, f32::max);
-        let total_height: f32 = child_sizes.iter().map(|s| s.height).sum();
-        let own = constraints.constrain(Size::new(max_width, total_height));
-        let mut y = 0.0;
-        let positions: Vec<Point> = child_sizes
-            .iter()
-            .map(|s| {
-                let x = self.cross_axis_alignment.position(s.width, own.width);
-                let pos = Point::new(x, y);
-                y += s.height;
-                pos
-            })
-            .collect();
-        (own, positions)
+        self.inner
+            .layout_children(constraints, child_sizes, metrics)
     }
 
-    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
-        self.background
-            .map(|c| Primitive::Quad {
-                rect,
-                color: c,
-                corner_radius: 0.0,
-            })
-            .into_iter()
-            .collect()
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        self.inner.paint_primitives(rect, metrics)
     }
 }
 

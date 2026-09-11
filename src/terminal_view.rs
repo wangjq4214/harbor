@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use harbor_terminal::{
-    RenderTarget, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey,
+    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, TerminalSize, TextMetrics,
 };
 use harbor_widget::input::event::{
     FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerPhase, UiEvent,
@@ -19,54 +20,10 @@ use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
 use harbor_terminal::GpuContext;
-use harbor_widget::layout::Point;
+use harbor_widget::layout::{Point, Rect};
+use harbor_widget::renderer::Viewport;
 use harbor_widget::scene::primitive::Color;
-use harbor_widget::widgets::padding::Padding;
 use harbor_widget::{BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
-use std::cell::Cell;
-
-thread_local! {
-    static CURRENT_GPU: Cell<Option<*const GpuContext>> = const { Cell::new(None) };
-}
-
-/// Scoped thread-local GPU context binding for widget render passes containing terminal custom paint.
-pub(crate) struct GpuDrawScope<'a> {
-    _marker: std::marker::PhantomData<&'a GpuContext>,
-}
-
-impl<'a> GpuDrawScope<'a> {
-    /// Binds `gpu` as the thread-local context for the duration of `f`.
-    /// Restores the previous context on return or unwind.
-    pub(crate) fn enter<R>(gpu: &'a GpuContext, f: impl FnOnce() -> R) -> R {
-        struct ResetGuard(Option<*const GpuContext>);
-        impl Drop for ResetGuard {
-            fn drop(&mut self) {
-                CURRENT_GPU.with(|c| c.set(self.0));
-            }
-        }
-        let prev = CURRENT_GPU.with(|c| c.replace(Some(gpu as *const GpuContext)));
-        let _guard = ResetGuard(prev);
-        f()
-    }
-}
-
-/// Executes a closure with `gpu` bound as the active GPU context.
-#[inline]
-pub(crate) fn with_current_gpu<R>(gpu: &GpuContext, f: impl FnOnce() -> R) -> R {
-    GpuDrawScope::enter(gpu, f)
-}
-
-/// Accesses the active GPU context from within a `GpuDrawScope`. Private to this module.
-fn current_gpu<R>(f: impl FnOnce(&GpuContext) -> R) -> Option<R> {
-    CURRENT_GPU.with(|c| {
-        let ptr = c.get()?;
-        let gpu = unsafe { &*ptr };
-        Some(f(gpu))
-    })
-}
-
-/// Default external-draw identifier matching the previous terminal-owned constant.
-const DEFAULT_DRAW_ID: ExternalDrawId = 1;
 
 /// Converts widget external-draw geometry into a terminal-owned [`RenderTarget`].
 pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> RenderTarget {
@@ -77,6 +34,48 @@ pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> Rende
         context.surface_size(),
         context.scale_factor(),
     )
+}
+
+/// Converts a final logical terminal-panel allocation into its PTY grid.
+///
+/// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
+/// one-cell clamp, so minimizing a window cannot emit a synthetic 1×1 resize.
+pub(crate) fn terminal_size_from_allocation(
+    logical_rect: Rect,
+    scale_factor: f32,
+    surface_size: (u32, u32),
+    metrics: &TextMetrics,
+) -> Option<TerminalSize> {
+    let coordinates = [
+        logical_rect.min.x,
+        logical_rect.min.y,
+        logical_rect.max.x,
+        logical_rect.max.y,
+    ];
+    if !coordinates.into_iter().all(f32::is_finite)
+        || logical_rect.max.x <= logical_rect.min.x
+        || logical_rect.max.y <= logical_rect.min.y
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || surface_size.0 == 0
+        || surface_size.1 == 0
+        || !metrics.cell_width.is_finite()
+        || metrics.cell_width <= 0.0
+        || !metrics.line_height.is_finite()
+        || metrics.line_height <= 0.0
+    {
+        return None;
+    }
+
+    let context = ExternalDrawContext::new(
+        logical_rect,
+        Viewport::new(surface_size.0, surface_size.1, scale_factor),
+    );
+    let target = render_target_from_context(&context);
+    if target.allocation_size.0 == 0 || target.allocation_size.1 == 0 {
+        return None;
+    }
+    Some(RenderViewport::from_target(target, metrics).compute_grid_size())
 }
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
@@ -93,24 +92,27 @@ pub(crate) fn dispatch_matched_draw(
 }
 
 /// Maps a widget [`UiEvent`] onto the terminal-owned [`TerminalEvent`] vocabulary.
-pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> TerminalEvent {
+///
+/// Pointer-boundary events are consumed by widget-level mouse regions and have no terminal
+/// equivalent, so they are deliberately not bridged to the terminal engine.
+pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> Option<TerminalEvent> {
     match event {
         UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
                 key: map_key(key),
                 modifiers: map_modifiers(modifiers),
-            })
+            }))
         }
         UiEvent::Keyboard(KeyboardEvent::KeyUp { key, modifiers }) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
                 key: map_key(key),
                 modifiers: map_modifiers(modifiers),
-            })
+            }))
         }
         UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text))
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)))
         }
-        UiEvent::Pointer(pointer) => TerminalEvent::Pointer(
+        UiEvent::Pointer(pointer) => Some(TerminalEvent::Pointer(
             TerminalPointerEvent::new(
                 (pointer.position.x, pointer.position.y),
                 map_pointer_phase(pointer.phase),
@@ -118,9 +120,13 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> TerminalEvent {
                 pointer.pointer_id,
             )
             .with_modifiers(map_modifiers(pointer.modifiers)),
-        ),
-        UiEvent::Focus(FocusEvent::Gained) => TerminalEvent::Focus(TerminalFocusEvent::Gained),
-        UiEvent::Focus(FocusEvent::Lost) => TerminalEvent::Focus(TerminalFocusEvent::Lost),
+        )),
+        UiEvent::PointerBoundary(_) => None,
+        UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        }
+        UiEvent::Focus(FocusEvent::Lost) => Some(TerminalEvent::Focus(TerminalFocusEvent::Lost)),
+        UiEvent::Focus(FocusEvent::VisibilityChanged(_)) => None,
     }
 }
 
@@ -206,8 +212,8 @@ pub(crate) fn gate_suppresses_event(gate_active: bool, event: &UiEvent) -> bool 
 fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
     matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
 }
-
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`CustomPaint`].
+#[derive(Clone)]
 pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -216,22 +222,46 @@ pub struct TerminalWidgetBridge {
 }
 
 impl TerminalWidgetBridge {
-    /// Creates a bridge that paints and receives input for `terminal`.
-    pub fn new(terminal: Arc<Mutex<Terminal>>, gate_active: Arc<AtomicBool>) -> Self {
-        let draw_id = DEFAULT_DRAW_ID;
+    #[allow(dead_code)]
+    /// Creates a stable bridge that paints and receives input for `terminal`.
+    pub fn new(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self::new_internal(draw_id, terminal, None, gate_active)
+    }
+
+    /// Creates a stable bridge bound to a shared GPU context for custom paint.
+    pub fn with_gpu(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gpu: Arc<GpuContext>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self::new_internal(draw_id, terminal, Some(gpu), gate_active)
+    }
+
+    fn new_internal(
+        draw_id: ExternalDrawId,
+        terminal: Arc<Mutex<Terminal>>,
+        gpu: Option<Arc<GpuContext>>,
+        gate_active: Arc<AtomicBool>,
+    ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
+        let draw_gpu = gpu;
         // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
             dispatch_matched_draw(draw_id, id, context, |target| {
-                current_gpu(|gpu| {
-                    if let Ok(mut term) = draw_terminal.lock() {
-                        match mode {
-                            ExternalDrawMode::Live => term.render(target, pass, gpu),
-                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
-                        }
+                if let Some(gpu) = &draw_gpu
+                    && let Ok(mut term) = draw_terminal.lock()
+                {
+                    match mode {
+                        ExternalDrawMode::Live => term.render(target, pass, gpu),
+                        ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
                     }
-                });
+                }
             });
         });
 
@@ -251,7 +281,9 @@ impl TerminalWidgetBridge {
 
             let wheel = is_terminal_wheel(event);
             let key_wakes = wakes_redraw_for_routed_input(event);
-            let mapped = terminal_event_from_ui_event(event.clone());
+            let Some(mapped) = terminal_event_from_ui_event(event.clone()) else {
+                return EventHandled::Ignored;
+            };
 
             let mut offset_before = None;
             if let Ok(mut term) = input_terminal.lock() {
@@ -300,14 +332,16 @@ impl TerminalWidgetBridge {
     }
 }
 
-impl Component for TerminalWidgetBridge {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        CustomPaint::new(self.draw_id())
-            .handler(Arc::clone(&self.handler))
-            .schedule(Arc::clone(&self.schedule))
-            .on_input(Arc::clone(&self.on_input))
-            .build(cx)
-    }
+/// Creates the UI component that renders a terminal bridge.
+pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> impl Component {
+    move |cx: &mut BuildCx| render_terminal_widget(cx, &bridge)
+}
+
+fn render_terminal_widget(cx: &mut BuildCx, bridge: &TerminalWidgetBridge) -> View {
+    harbor_widget::view!(cx, CustomPaint::new(bridge.draw_id())
+        .handler(Arc::clone(&bridge.handler))
+        .schedule(Arc::clone(&bridge.schedule))
+        .on_input(Arc::clone(&bridge.on_input)) => {})
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
@@ -355,44 +389,9 @@ impl TerminalDecorationPreset {
             .shadow(shadow)
     }
 
-    pub(crate) fn wrap(child: impl Component + 'static) -> DecoratedBox {
-        DecoratedBox::new(Self::decoration())
-            .clip_behavior(ClipBehavior::AntiAlias)
-            .child(child)
+    pub(crate) fn container() -> DecoratedBox {
+        DecoratedBox::new(Self::decoration()).clip_behavior(ClipBehavior::AntiAlias)
     }
-}
-
-/// Main-window root: a 4dp inset around the product decoration.
-///
-/// With a compositor backdrop the root paints nothing so the unified window
-/// tint (ADR 0026) shows through; without one it paints the opaque fallback
-/// so the transparent frame clear never shows through as black.
-pub(crate) fn build_main_terminal_root(
-    backdrop_available: bool,
-    child: impl Component + 'static,
-) -> Padding {
-    // Product/native colors are sRGB; widget colors feed a linear-light shader.
-    let fallback = harbor_config::WindowBackdropStyle::default()
-        .fallback
-        .map(|channel| {
-            if channel <= 0.04045 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        });
-    let root = Padding::all(4.0);
-    let root = if backdrop_available {
-        root
-    } else {
-        root.background(Color {
-            r: fallback[0],
-            g: fallback[1],
-            b: fallback[2],
-            a: 1.0,
-        })
-    };
-    root.child(TerminalDecorationPreset::wrap(child))
 }
 
 #[cfg(test)]
@@ -411,6 +410,18 @@ mod tests {
 
     fn context(logical: Rect, physical: (u32, u32), scale: f32) -> ExternalDrawContext {
         ExternalDrawContext::new(logical, Viewport::new(physical.0, physical.1, scale))
+    }
+
+    fn metrics() -> TextMetrics {
+        TextMetrics {
+            cell_width: 10.0,
+            line_height: 20.0,
+            ascent: 16.0,
+            underline_position: 16.0,
+            underline_thickness: 2.0,
+            strikethrough_position: 10.0,
+            strikethrough_thickness: 2.0,
+        }
     }
 
     #[allow(clippy::arc_with_non_send_sync)]
@@ -509,33 +520,71 @@ mod tests {
     }
 
     #[test]
-    fn should_expose_default_draw_id() {
-        // Arrange
+    fn terminal_size_uses_external_rounding_and_shared_grid_rules() {
+        let metrics = metrics();
+        let rect = Rect::from_min_size(Point::new(0.4, 0.6), Size::new(100.2, 50.4));
+        let size = terminal_size_from_allocation(rect, 1.5, (1200, 900), &metrics).unwrap();
+        let physical_width = 151.0_f32;
+        let physical_height = 77.0_f32;
+        let padding = 2.0 * harbor_config::TEXT_PADDING;
+        assert_eq!(
+            size.cols,
+            ((physical_width - padding) / 10.0).floor() as usize
+        );
+        assert_eq!(
+            size.rows,
+            ((physical_height - padding) / 20.0).floor() as usize
+        );
+    }
+
+    #[test]
+    fn terminal_size_rejects_non_drawable_and_invalid_geometry() {
+        let metrics = metrics();
+        let valid = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
+        assert_eq!(
+            terminal_size_from_allocation(valid, 1.0, (0, 600), &metrics),
+            None
+        );
+        assert_eq!(
+            terminal_size_from_allocation(
+                Rect::from_min_size(Point::ZERO, Size::ZERO),
+                1.0,
+                (800, 600),
+                &metrics,
+            ),
+            None
+        );
+        assert_eq!(
+            terminal_size_from_allocation(valid, f32::NAN, (800, 600), &metrics),
+            None
+        );
+    }
+
+    #[test]
+    fn should_use_caller_provided_draw_id() {
         let terminal = headless_terminal(24, 80);
         let gate = Arc::new(AtomicBool::new(false));
 
-        // Act
-        let bridge = TerminalWidgetBridge::new(terminal, gate);
+        let bridge = TerminalWidgetBridge::new(41, terminal, gate);
 
-        // Assert
-        assert_eq!(bridge.draw_id(), DEFAULT_DRAW_ID);
+        assert_eq!(bridge.draw_id(), 41);
     }
 
     #[test]
     fn should_reuse_cached_handler_arc_when_built_multiple_times() {
         // Arrange: handler is created once in `new` and cloned into each build.
         let terminal = headless_terminal(24, 80);
-        let bridge = TerminalWidgetBridge::new(terminal, Arc::new(AtomicBool::new(false)));
+        let bridge = TerminalWidgetBridge::new(42, terminal, Arc::new(AtomicBool::new(false)));
         let cached = Arc::clone(&bridge.handler);
         assert_eq!(Arc::strong_count(&cached), 2);
 
         // Act
         let mut cx_a = BuildCx::stub();
-        let view_a = bridge.build(&mut cx_a);
+        let view_a = render_terminal_widget(&mut cx_a, &bridge);
         let count_after_first = Arc::strong_count(&cached);
 
         let mut cx_b = BuildCx::stub();
-        let view_b = bridge.build(&mut cx_b);
+        let view_b = render_terminal_widget(&mut cx_b, &bridge);
         let count_after_second = Arc::strong_count(&cached);
 
         // Assert: each build clones the same Arc (not a freshly allocated handler).
@@ -561,7 +610,7 @@ mod tests {
         let called = Cell::new(false);
 
         // Act
-        dispatch_matched_draw(DEFAULT_DRAW_ID, DEFAULT_DRAW_ID + 1, &ctx, |_| {
+        dispatch_matched_draw(41, 42, &ctx, |_| {
             called.set(true);
         });
 
@@ -580,10 +629,9 @@ mod tests {
         let drawn = Cell::new(None);
 
         // Act
-        dispatch_matched_draw(DEFAULT_DRAW_ID, DEFAULT_DRAW_ID, &ctx, |target| {
+        dispatch_matched_draw(41, 41, &ctx, |target| {
             drawn.set(Some(target));
         });
-
         // Assert
         let target = drawn.get().expect("draw invoked");
         assert_eq!(target.allocation_origin, (10.0, 5.0));
@@ -608,13 +656,13 @@ mod tests {
         // Assert
         assert_eq!(
             mapped,
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
                 key: TerminalKey::Enter,
                 modifiers: TerminalModifiers {
                     ctrl: true,
                     ..TerminalModifiers::default()
                 },
-            })
+            }))
         );
     }
 
@@ -623,11 +671,13 @@ mod tests {
         // Arrange / Act / Assert
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Keyboard(KeyboardEvent::Ime("你好".into()))),
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime("你好".into()))
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(
+                "你好".into()
+            )))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Gained)),
-            TerminalEvent::Focus(TerminalFocusEvent::Gained)
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Pointer(PointerEvent::new(
@@ -636,12 +686,12 @@ mod tests {
                 PointerButton::Left,
                 3,
             ))),
-            TerminalEvent::Pointer(TerminalPointerEvent::new(
+            Some(TerminalEvent::Pointer(TerminalPointerEvent::new(
                 (1.0, 2.0),
                 TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
                 TerminalPointerButton::Left,
                 3,
-            ))
+            )))
         );
     }
 
@@ -681,17 +731,17 @@ mod tests {
                     ..Modifiers::default()
                 },
             })),
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+            Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
                 key: TerminalKey::Escape,
                 modifiers: TerminalModifiers {
                     alt: true,
                     ..TerminalModifiers::default()
                 },
-            })
+            }))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Lost)),
-            TerminalEvent::Focus(TerminalFocusEvent::Lost)
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Lost))
         );
     }
 
@@ -705,9 +755,9 @@ mod tests {
         terminal: Arc<Mutex<Terminal>>,
         gate: Arc<AtomicBool>,
     ) -> harbor_widget::runtime::Runtime {
-        let bridge = TerminalWidgetBridge::new(terminal, gate);
+        let bridge = TerminalWidgetBridge::new(1, terminal, gate);
         let mut rt = harbor_widget::runtime::Runtime::new();
-        rt.set_root(bridge);
+        rt.set_root(terminal_widget(bridge));
         rt.update(std::time::Instant::now());
         assert!(rt.focus_first_focusable());
         let _ = rt.drain_external_input();
@@ -1184,19 +1234,47 @@ mod decoration_tests {
     use harbor_widget::scene::primitive::{Color, Primitive};
     use harbor_widget::widgets::custom_paint::CustomPaint;
     use harbor_widget::widgets::padding::Padding;
-    use harbor_widget::widgets::sized_box::SizedBox;
     use harbor_widget::{
         BorderRadius, ClipBehavior, ControlFlowEffect, DecoratedBox, RuntimeEffects,
     };
     use std::any::TypeId;
     use std::time::Instant;
 
+    #[derive(Clone)]
+    struct TestMainTerminalRoot<C: Clone> {
+        root: Padding,
+        child: C,
+    }
+
+    impl<C: Component + Clone + 'static> Component for TestMainTerminalRoot<C> {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            harbor_widget::view!(cx, self.root.clone() => {
+                TerminalDecorationPreset::container() => {
+                    { self.child.clone() }
+                }
+            })
+        }
+    }
+
+    fn test_main_terminal_root(
+        backdrop_available: bool,
+        child: impl Component + Clone + 'static,
+    ) -> impl Component {
+        TestMainTerminalRoot {
+            root: crate::tab_view::ui::root_padding(
+                backdrop_available,
+                harbor_config::WindowBackdropStyle::default().fallback,
+            ),
+            child,
+        }
+    }
+
     fn mounted_main_root(viewport: Option<Viewport>) -> (Runtime, RuntimeEffects) {
         let mut runtime = Runtime::new();
         if let Some(viewport) = viewport {
             runtime.set_viewport(viewport);
         }
-        runtime.set_root(build_main_terminal_root(false, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(false, CustomPaint::new(1)));
         let effects = runtime.update(Instant::now());
         (runtime, effects)
     }
@@ -1245,9 +1323,8 @@ mod decoration_tests {
     }
 
     #[test]
-    fn should_expose_product_decoration_values_when_wrapping() {
-        let child = SizedBox::new(Size::new(10.0, 10.0));
-        let wrapped = TerminalDecorationPreset::wrap(child);
+    fn should_expose_product_decoration_values() {
+        let wrapped = TerminalDecorationPreset::container();
 
         assert_eq!(wrapped.clip_behavior_value(), ClipBehavior::AntiAlias);
         let decoration = wrapped.decoration();
@@ -1269,7 +1346,10 @@ mod decoration_tests {
 
     #[test]
     fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
-        let root = build_main_terminal_root(false, CustomPaint::new(1));
+        let root = crate::tab_view::ui::root_padding(
+            false,
+            harbor_config::WindowBackdropStyle::default().fallback,
+        );
         assert_eq!(root.top, 4.0);
         assert_eq!(root.right, 4.0);
         assert_eq!(root.bottom, 4.0);
@@ -1279,14 +1359,17 @@ mod decoration_tests {
 
     #[test]
     fn should_omit_root_background_when_backdrop_is_available() {
-        let root = build_main_terminal_root(true, CustomPaint::new(1));
+        let root = crate::tab_view::ui::root_padding(
+            true,
+            harbor_config::WindowBackdropStyle::default().fallback,
+        );
         assert_eq!(root.background, None);
     }
 
     #[test]
     fn should_emit_no_root_quad_and_keep_inset_when_backdrop_is_available() {
         let mut runtime = Runtime::new();
-        runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
         let _effects = runtime.update(Instant::now());
         let items = painted_items(&runtime);
 
@@ -1328,7 +1411,7 @@ mod decoration_tests {
         for (width, height) in [(800, 600), (40, 40)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
             runtime.update(Instant::now());
             let items = painted_items(&runtime);
 
@@ -1368,7 +1451,7 @@ mod decoration_tests {
         for (width, height) in [(0, 0), (4, 4), (8, 8)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(build_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
             let effects = runtime.update(Instant::now());
             let items = painted_items(&runtime);
 

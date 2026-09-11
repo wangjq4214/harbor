@@ -45,21 +45,15 @@ pub(crate) fn clipboard_log_metadata(effect: &ClipboardEffect) -> (&'static str,
     }
 }
 
-/// Logs a clipboard effect that remains deferred until a host result channel
-/// exists. In particular, a read is never performed and then discarded by this
-/// application shell.
-pub(crate) fn log_deferred_clipboard_effect(effect: &ClipboardEffect) {
+/// Handles an unfulfilled clipboard effect by logging that host channels are deferred.
+/// In particular, a read is never performed and then discarded by this application shell.
+pub(crate) fn apply_clipboard_effect(effect: &ClipboardEffect) {
     let (operation, byte_len) = clipboard_log_metadata(effect);
     tracing::warn!(
         operation,
         byte_len,
         "clipboard effect deferred: host result channel is not implemented"
     );
-}
-
-/// Handles an unfulfilled clipboard effect by logging that host channels are deferred.
-pub(crate) fn apply_clipboard_effect(effect: &ClipboardEffect) {
-    log_deferred_clipboard_effect(effect);
 }
 
 /// Applies adapter-authorized window effects without calculating wait policy.
@@ -76,7 +70,7 @@ pub(crate) fn apply_window_effects(window: &Window, effects: &RuntimeEffects) {
             window.set_ime_cursor_area(position, size);
         }
     }
-    if let Some(clipboard) = effects.clipboard.clone() {
+    if let Some(clipboard) = &effects.clipboard {
         match clipboard {
             ClipboardEffect::Write(contents) => {
                 if let Err(error) =
@@ -86,7 +80,7 @@ pub(crate) fn apply_window_effects(window: &Window, effects: &RuntimeEffects) {
                 }
             }
             ClipboardEffect::Read => {
-                apply_clipboard_effect(&ClipboardEffect::Read);
+                apply_clipboard_effect(clipboard);
             }
         }
     }
