@@ -29,8 +29,8 @@ use crate::tab_view::{TabUiController, ui::tab_workspace_with_fallback};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    GpuContext, Terminal, TerminalAppearance, TextMetrics,
-    alpha_mode_supports_transparency, load_system_fonts,
+    GpuContext, Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency,
+    load_system_fonts,
 };
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};

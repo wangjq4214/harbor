@@ -183,7 +183,10 @@ mod tests {
 
         assert_eq!(terminal_fonts.size(), 32.0);
         assert_eq!(ui_fonts.size(), harbor_config::DEFAULT_UI_FONT_SIZE);
-        assert_ne!(terminal_fonts.font_metrics().line_height, ui_fonts.font_metrics().line_height);
+        assert_ne!(
+            terminal_fonts.font_metrics().line_height,
+            ui_fonts.font_metrics().line_height
+        );
     }
 
     #[test]
