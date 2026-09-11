@@ -307,6 +307,7 @@ dependencies = [
 name = "harbor-widget"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "harbor-text",
  "harbor-widget-macros",

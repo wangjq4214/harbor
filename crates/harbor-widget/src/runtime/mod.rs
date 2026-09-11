@@ -21,7 +21,6 @@ use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, tak
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
 use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
-use harbor_text::FontBook;
 use hashbrown::HashMap;
 use std::time::Instant;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -423,14 +422,16 @@ impl Runtime {
         self.encoder.init_renderer(device, format);
     }
 
-    /// Initializes Runtime-owned Widget text resources and renderer.
+    /// Initializes Runtime-owned Widget text resources and renderer using system default UI fonts.
     pub fn init_text_renderer(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        fonts: FontBook,
-    ) {
+    ) -> anyhow::Result<()> {
+        let fonts = harbor_text::load_system_ui_fonts()?;
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        self.set_text_metrics(metrics);
         let atlas = Rc::new(RefCell::new(WidgetTextAtlas::new(device, queue, fonts)));
         {
             let atlas_ref = atlas.borrow();
@@ -442,6 +443,7 @@ impl Runtime {
             );
         }
         self.text_atlas = Some(atlas);
+        Ok(())
     }
 
     /// Creates another Runtime with independent render buffers and shared text resources.

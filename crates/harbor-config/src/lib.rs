@@ -15,6 +15,7 @@ pub use color::{Color, Palette, Rgba};
 use toml::{Table, Value};
 
 pub const FONT_SIZE: f32 = 24.0;
+pub const DEFAULT_UI_FONT_SIZE: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 16.0;
 pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 0.25];
 pub const SELECTION_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.4];

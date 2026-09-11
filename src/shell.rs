@@ -29,7 +29,7 @@ use crate::tab_view::{TabUiController, ui::tab_workspace_with_fallback};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    FontBook, GpuContext, Terminal, TerminalAppearance, TextMetrics,
+    GpuContext, Terminal, TerminalAppearance, TextMetrics,
     alpha_mode_supports_transparency, load_system_fonts,
 };
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
@@ -318,30 +318,30 @@ fn init_widget_runtime(
     window: &Arc<Window>,
     gpu: &GpuContext,
     tab_ui: TabUiController,
-    text_metrics: TextMetrics,
-    fonts: FontBook,
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
-) -> (harbor_widget::runtime::Runtime, RuntimeEffects) {
+) -> Result<(harbor_widget::runtime::Runtime, RuntimeEffects), ShellError> {
     let initial_size = window.inner_size();
     let initial_viewport = harbor_widget::renderer::Viewport::new(
         initial_size.width,
         initial_size.height,
         window.scale_factor() as f32,
     );
-    let mut runtime = harbor_widget::runtime::Runtime::with_text_metrics(text_metrics);
+    let mut runtime = harbor_widget::runtime::Runtime::new();
     runtime.set_root(tab_workspace_with_fallback(
         tab_ui.clone(),
         backdrop_available,
         backdrop_fallback,
     ));
     runtime.init_renderer(gpu.device(), gpu.format());
-    runtime.init_text_renderer(gpu.device(), gpu.queue(), gpu.format(), fonts);
+    runtime
+        .init_text_renderer(gpu.device(), gpu.queue(), gpu.format())
+        .map_err(ShellError::Renderer)?;
     runtime.set_viewport(initial_viewport);
     let mut initial_effects = runtime.update(Instant::now());
     initial_effects.merge(runtime.request_focus(&tab_ui.terminal_focus()));
     initial_effects.merge(runtime.take_pending_effects());
-    (runtime, initial_effects)
+    Ok((runtime, initial_effects))
 }
 
 // ── Shell (own methods) ───────────────────────────────────────────────────
@@ -461,11 +461,9 @@ impl Shell {
             &window,
             &gpu,
             tab_ui.clone(),
-            metrics,
-            fonts,
             main_window_backdrop_available,
             backdrop_style.fallback,
-        );
+        )?;
         let tabs = TabCoordinator::new(tabs, tab_ui, factory);
         let paste = PasteController::new(input_gate);
         let mut session = ActiveSession {

@@ -16,7 +16,7 @@ mod types;
 pub use damage::DirtyRange;
 pub use harbor_config::Color;
 use harbor_pty::{PtyControl, PtyEndpoints};
-pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
 pub use model::should_confirm_multiline;
 pub use model::{
