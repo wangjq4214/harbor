@@ -10,7 +10,7 @@ use crate::terminal_view::TerminalWidgetBridge;
 
 /// Stable terminal-session identity. Values are monotonic and never reused.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TabId(pub(crate) u64);
+pub struct TabId(pub u64);
 
 impl TabId {
     #[inline]
@@ -27,7 +27,7 @@ impl std::fmt::Display for TabId {
 
 /// Strongly-typed 1-based index for tab rail navigation (1..=9).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(crate) struct TabIndex(u8);
+pub struct TabIndex(u8);
 
 impl TabIndex {
     #[allow(dead_code)]
@@ -62,13 +62,13 @@ impl TabIndex {
 }
 
 /// Resources produced by the Host's per-tab factory.
-pub(crate) struct TerminalTabResources {
+pub struct TerminalTabResources {
     terminal: Arc<Mutex<Terminal>>,
     bridge: TerminalWidgetBridge,
 }
 
 impl TerminalTabResources {
-    pub(crate) fn new(terminal: Arc<Mutex<Terminal>>, bridge: TerminalWidgetBridge) -> Self {
+    pub fn new(terminal: Arc<Mutex<Terminal>>, bridge: TerminalWidgetBridge) -> Self {
         Self { terminal, bridge }
     }
 }
@@ -84,7 +84,7 @@ struct TerminalTab {
 
 /// Read-only product state for a tab rail or Host test.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TabSnapshot {
+pub struct TabSnapshot {
     pub(crate) id: TabId,
     pub(crate) title: String,
     pub(crate) unread: bool,
@@ -94,11 +94,11 @@ pub(crate) struct TabSnapshot {
 
 /// Effects the Host must apply after a model transition.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TabActionOutcome {
-    pub(crate) active_bridge_changed: bool,
-    pub(crate) request_redraw: bool,
-    pub(crate) unread_changed: bool,
-    pub(crate) close_window: bool,
+pub struct TabActionOutcome {
+    pub active_bridge_changed: bool,
+    pub request_redraw: bool,
+    pub unread_changed: bool,
+    pub close_window: bool,
 }
 
 impl TabActionOutcome {
@@ -114,13 +114,13 @@ impl TabActionOutcome {
 
 /// Classification of one tab-qualified PTY wake.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TabOutputOutcome {
-    pub(crate) request_active_invalidation: bool,
-    pub(crate) unread_changed: bool,
+pub struct TabOutputOutcome {
+    pub request_active_invalidation: bool,
+    pub unread_changed: bool,
 }
 
 /// Ordered Host-owned terminal sessions.
-pub(crate) struct TabManager {
+pub struct TabManager {
     tabs: Vec<TerminalTab>,
     active: Option<TabId>,
     next_tab_id: u64,
@@ -136,7 +136,7 @@ impl Default for TabManager {
 
 #[allow(dead_code)] // T0007 binds the transition API to product commands.
 impl TabManager {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             tabs: Vec::new(),
             active: None,
@@ -148,7 +148,7 @@ impl TabManager {
 
     /// Reserves identities before invoking the factory, so even a failed factory cannot allow a
     /// queued stale wake to target a later session.
-    pub(crate) fn create_tab(
+    pub fn create_tab(
         &mut self,
         factory: impl FnOnce(TabId, ExternalDrawId) -> Result<TerminalTabResources>,
     ) -> Result<TabActionOutcome> {
@@ -179,12 +179,12 @@ impl TabManager {
         })
     }
 
-    pub(crate) fn active_id(&self) -> Option<TabId> {
+    pub fn active_id(&self) -> Option<TabId> {
         self.active
     }
 
     /// Selects the right neighbor, then the left, for rail focus after a close.
-    pub(crate) fn neighbor_for_close(&self, id: TabId) -> Option<TabId> {
+    pub fn neighbor_for_close(&self, id: TabId) -> Option<TabId> {
         let index = self.tabs.iter().position(|tab| tab.id == id)?;
         self.tabs
             .get(index + 1)
@@ -197,15 +197,15 @@ impl TabManager {
         self.tabs.iter().find(|tab| tab.id == id)
     }
 
-    pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
+    pub fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.active_tab().map(|tab| Arc::clone(&tab.terminal))
     }
 
-    pub(crate) fn active_bridge(&self) -> Option<TerminalWidgetBridge> {
+    pub fn active_bridge(&self) -> Option<TerminalWidgetBridge> {
         self.active_tab().map(|tab| tab.bridge.clone())
     }
 
-    pub(crate) fn snapshots(&self) -> Vec<TabSnapshot> {
+    pub fn snapshots(&self) -> Vec<TabSnapshot> {
         self.tabs
             .iter()
             .map(|tab| TabSnapshot {
@@ -218,7 +218,7 @@ impl TabManager {
             .collect()
     }
 
-    pub(crate) fn activate(&mut self, id: TabId) -> TabActionOutcome {
+    pub fn activate(&mut self, id: TabId) -> TabActionOutcome {
         if self.active == Some(id) {
             return TabActionOutcome::unchanged();
         }
@@ -235,7 +235,7 @@ impl TabManager {
         }
     }
 
-    pub(crate) fn activate_next(&mut self) -> TabActionOutcome {
+    pub fn activate_next(&mut self) -> TabActionOutcome {
         let Some(active) = self.active else {
             return TabActionOutcome::unchanged();
         };
@@ -246,7 +246,7 @@ impl TabManager {
         self.activate(self.tabs[next].id)
     }
 
-    pub(crate) fn activate_previous(&mut self) -> TabActionOutcome {
+    pub fn activate_previous(&mut self) -> TabActionOutcome {
         let Some(active) = self.active else {
             return TabActionOutcome::unchanged();
         };
@@ -257,14 +257,14 @@ impl TabManager {
         self.activate(self.tabs[previous].id)
     }
 
-    pub(crate) fn activate_numeric(&mut self, index: TabIndex) -> TabActionOutcome {
+    pub fn activate_numeric(&mut self, index: TabIndex) -> TabActionOutcome {
         let Some(tab) = self.tabs.get(index.to_zero_based()) else {
             return TabActionOutcome::unchanged();
         };
         self.activate(tab.id)
     }
 
-    pub(crate) fn close(&mut self, id: TabId) -> TabActionOutcome {
+    pub fn close(&mut self, id: TabId) -> TabActionOutcome {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return TabActionOutcome::unchanged();
         };
@@ -300,7 +300,7 @@ impl TabManager {
         }
     }
 
-    pub(crate) fn close_active(&mut self) -> TabActionOutcome {
+    pub fn close_active(&mut self) -> TabActionOutcome {
         match self.active {
             Some(id) => self.close(id),
             None => TabActionOutcome::unchanged(),
@@ -309,7 +309,7 @@ impl TabManager {
 
     /// Drains output for a live tab. Only an active tab asks Runtime to invalidate its mounted
     /// external draw; inactive tabs update model state without exposing a schedule provider.
-    pub(crate) fn process_output(&mut self, id: TabId) -> TabOutputOutcome {
+    pub fn process_output(&mut self, id: TabId) -> TabOutputOutcome {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return TabOutputOutcome::default();
         };
@@ -335,7 +335,7 @@ impl TabManager {
     ///
     /// The cache advances only if every terminal lock succeeds. A partial broadcast is retried on
     /// the next Host turn; terminals already at the requested size make that retry a local no-op.
-    pub(crate) fn resize_all_if_changed(&mut self, size: TerminalSize) -> bool {
+    pub fn resize_all_if_changed(&mut self, size: TerminalSize) -> bool {
         if size.rows == 0 || size.cols == 0 || self.last_broadcast_size == Some(size) {
             return false;
         }
@@ -370,7 +370,7 @@ impl TabManager {
         }
     }
 
-    pub(crate) const fn last_broadcast_size(&self) -> Option<TerminalSize> {
+    pub const fn last_broadcast_size(&self) -> Option<TerminalSize> {
         self.last_broadcast_size
     }
 

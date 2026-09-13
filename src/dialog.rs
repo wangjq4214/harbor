@@ -15,7 +15,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::effects::{apply_control_flow, apply_window_effects};
-use crate::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
+use harbor_app::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
@@ -414,7 +414,7 @@ impl ConfirmationWindow {
 
         let mut runtime = source_runtime.create_child_runtime(gpu.device(), format);
 
-        let confirm_root = crate::tab_view::ui::build_confirmation_root(
+        let confirm_root = harbor_app::tab_view::ui::build_confirmation_root(
             line_count,
             wrapped_lines.clone(),
             Arc::clone(&preview_scroll_offset),
@@ -589,7 +589,7 @@ impl ConfirmationWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tab_view::ui::build_confirmation_root;
+    use harbor_app::tab_view::ui::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
 
     #[test]

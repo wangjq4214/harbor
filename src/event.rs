@@ -5,19 +5,29 @@
 
 use harbor_widget::effects::ExternalInvalidation;
 
-use crate::tab_manager::TabId;
+use harbor_app::tab_manager::TabId;
 
 /// Events posted back to the winit event loop from background workers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum AppEvent {
     /// The terminal reader queued output for one Host-owned session.
     TerminalOutputReady(TabId),
+    /// The old UI generation remains loaded until this blocker is dropped on the UI thread.
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    WidgetReloadAboutToStart(hot_lib_reloader::BlockReload),
+    /// A new UI library generation is active and can build a replacement root.
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    WidgetReloaded,
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
-pub(crate) fn external_invalidation_for_app_event(event: AppEvent) -> Option<ExternalInvalidation> {
+pub(crate) fn external_invalidation_for_app_event(
+    event: &AppEvent,
+) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        AppEvent::WidgetReloadAboutToStart(_) | AppEvent::WidgetReloaded => None,
     }
 }
 
@@ -29,8 +39,17 @@ mod tests {
     fn terminal_output_event_maps_only_to_generic_external_invalidation() {
         let event = AppEvent::TerminalOutputReady(TabId(7));
         assert_eq!(
-            external_invalidation_for_app_event(event),
+            external_invalidation_for_app_event(&event),
             Some(ExternalInvalidation::new())
+        );
+    }
+
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    #[test]
+    fn reload_lifecycle_events_do_not_masquerade_as_terminal_invalidation() {
+        assert_eq!(
+            external_invalidation_for_app_event(&AppEvent::WidgetReloaded),
+            None
         );
     }
 }

@@ -18,9 +18,8 @@ use winit::{
     window::Window,
 };
 
-use crate::{
-    effects::apply_effects,
-    event::AppEvent,
+use crate::{effects::apply_effects, event::AppEvent};
+use harbor_app::{
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
     tab_view::{TabCommand, TabFocusPolicy, TabUiController},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
@@ -154,6 +153,11 @@ impl TabCoordinator {
         self.tabs.active_terminal()
     }
 
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    pub(crate) fn ui_controller(&self) -> TabUiController {
+        self.tab_ui.clone()
+    }
+
     pub(crate) fn sync_ui(&self, window: &Window) {
         self.tab_ui.sync(
             self.tabs.snapshots(),
@@ -167,7 +171,10 @@ impl TabCoordinator {
             .update_presentation(logical_window_width(window))
     }
 
-    pub(crate) fn process_output(&mut self, tab_id: TabId) -> crate::tab_manager::TabOutputOutcome {
+    pub(crate) fn process_output(
+        &mut self,
+        tab_id: TabId,
+    ) -> harbor_app::tab_manager::TabOutputOutcome {
         self.tabs.process_output(tab_id)
     }
 
@@ -235,6 +242,9 @@ impl TabCoordinator {
         }
         if model_changed {
             self.sync_ui(window);
+            effects.merge(
+                runtime.invalidate_external(harbor_widget::effects::ExternalInvalidation::new()),
+            );
             effects.merge(runtime.update(Instant::now()));
         }
         let viewport = adapter.viewport();

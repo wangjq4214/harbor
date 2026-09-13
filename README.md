@@ -24,6 +24,24 @@ cargo run
 
 🪟 Harbor currently requires Windows for an operational PTY session.
 
+### Debug widget hot reload (Windows)
+
+Build the reloadable UI library first, then keep it rebuilding in one terminal:
+
+```bash
+cargo install cargo-watch
+cargo build -p harbor-app-ui
+cargo watch -w crates/harbor-app/src/ui.rs -w crates/harbor-app-ui/src -x "build -p harbor-app-ui"
+```
+
+Run the persistent Runtime Host in another terminal:
+
+```bash
+cargo run --features widget-hot-reload
+```
+
+This mode reloads application widget composition while retaining the Host window, GPU resources, tab model, terminals, and PTYs. Widget-local Fiber state resets. Changes to `harbor-widget`, shared `harbor-app` contract types, or exported function signatures require stopping and rebuilding the Host. Ordinary `cargo run` does not start a reload observer.
+
 ## ⚙️ Startup Configuration
 
 Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.

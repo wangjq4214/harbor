@@ -23,7 +23,7 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, terminal_widget},
 };
 
-pub(crate) const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
+pub const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
 
 struct TabWorkspaceProps {
     controller: TabUiController,
@@ -32,10 +32,7 @@ struct TabWorkspaceProps {
 }
 
 #[allow(dead_code)]
-pub(crate) fn tab_workspace(
-    controller: TabUiController,
-    backdrop_available: bool,
-) -> impl Component {
+pub fn tab_workspace(controller: TabUiController, backdrop_available: bool) -> impl Component {
     tab_workspace_with_fallback(
         controller,
         backdrop_available,
@@ -43,7 +40,7 @@ pub(crate) fn tab_workspace(
     )
 }
 
-pub(crate) fn tab_workspace_with_fallback(
+pub fn tab_workspace_with_fallback(
     controller: TabUiController,
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
@@ -198,7 +195,7 @@ fn confirmation_dialog(cx: &mut BuildCx, props: &ConfirmationDialogProps) -> Vie
     })
 }
 
-pub(crate) fn build_confirmation_root(
+pub fn build_confirmation_root(
     line_count: usize,
     wrapped_lines: Vec<String>,
     scroll_offset: Arc<AtomicUsize>,

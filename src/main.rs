@@ -8,12 +8,11 @@ mod chrome;
 mod dialog;
 mod effects;
 mod event;
+#[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+mod hot_reload;
 mod shell;
 mod tab_coordinator;
-mod tab_manager;
-mod tab_view;
 mod telemetry;
-mod terminal_view;
 
 use anyhow::{Context as _, Result};
 use event::AppEvent;
@@ -38,7 +37,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .context("create event loop")?;
-    let mut shell = Shell::new(event_loop.create_proxy());
+    let mut shell = Shell::new(event_loop.create_proxy()).context("create application shell")?;
     event_loop.run_app(&mut shell).context("run event loop")?;
 
     Ok(())

@@ -1,0 +1,11 @@
+[package]
+name = "harbor-app-ui"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+harbor-app = { path = "../harbor-app" }
+harbor-widget = { workspace = true }

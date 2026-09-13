@@ -40,7 +40,7 @@ pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> Rende
 ///
 /// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
 /// one-cell clamp, so minimizing a window cannot emit a synthetic 1×1 resize.
-pub(crate) fn terminal_size_from_allocation(
+pub fn terminal_size_from_allocation(
     logical_rect: Rect,
     scale_factor: f32,
     surface_size: (u32, u32),

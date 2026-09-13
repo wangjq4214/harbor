@@ -218,6 +218,14 @@ Project domain concepts and terminology.
   - provides WinitFrameTarget
   - implements Windows Acrylic Backdrop
 
+### Application-Layer Widget Hot Reload
+- **Definition:** A Windows debug-development mode using `hot-lib-reloader` to rebuild and reload Harbor's application-level widget composition while keeping the Runtime Host, window, GPU resources, terminal sessions, PTYs, and Host-owned models alive. Each reload replaces the Runtime root and rebuilds Widget/Fiber hook state rather than migrating it across the dynamic-library boundary.
+- **Synonyms:** Widget HMR, UI hot reload
+- **Relationships:**
+  - belongs to Runtime Host
+  - communicates with Harbor Widget Runtime
+  - uses Event-Turn Action Transport
+
 ### Winit Event Adapter
 - **Definition:** A feature-gated harbor-widget adapter that converts winit input and lifecycle events into platform-independent runtime input without exposing winit types to the core Runtime.
 - **Relationships:**

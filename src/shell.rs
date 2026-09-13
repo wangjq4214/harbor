@@ -24,15 +24,18 @@ use crate::dialog::{PasteController, PasteEventOutcome, is_paste_shortcut};
 use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{TabCoordinator, TerminalTabFactory, logical_window_width};
-use crate::tab_manager::TabManager;
-use crate::tab_view::{TabUiController, ui::tab_workspace_with_fallback};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
+use harbor_app::tab_manager::TabManager;
+use harbor_app::tab_view::TabUiController;
+#[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
+use harbor_app::tab_view::ui::tab_workspace_with_fallback;
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
     GpuContext, Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency,
     load_system_fonts,
 };
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
+use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
 
 /// Active session resources that exist while the window and renderer are alive.
@@ -45,6 +48,8 @@ pub(crate) struct ActiveSession {
     winit_adapter: WinitAdapter,
     _backdrop: Box<dyn WindowBackdropBackend>,
     backdrop_available: bool,
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    backdrop_fallback: [f32; 3],
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
 }
@@ -65,8 +70,81 @@ pub(crate) enum ShellError {
     Renderer(#[source] anyhow::Error),
     #[error("failed to create terminal tab")]
     Tab(#[source] anyhow::Error),
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    #[error("failed to load reloadable application UI: {0}")]
+    HotReload(String),
 }
 
+/// Type-erases static and dynamic application roots behind one Runtime-owned component.
+struct ApplicationRoot(Box<dyn Component>);
+
+impl Component for ApplicationRoot {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        self.0.build(cx)
+    }
+}
+
+fn build_application_root(
+    tab_ui: TabUiController,
+    backdrop_available: bool,
+    backdrop_fallback: [f32; 3],
+) -> Result<ApplicationRoot, ShellError> {
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::hot_reload::build_root(tab_ui, backdrop_available, backdrop_fallback)
+        }))
+        .map(ApplicationRoot)
+        .map_err(|panic| ShellError::HotReload(panic_message(panic)))
+    }
+
+    #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
+    {
+        Ok(ApplicationRoot(Box::new(tab_workspace_with_fallback(
+            tab_ui,
+            backdrop_available,
+            backdrop_fallback,
+        ))))
+    }
+}
+
+fn set_application_root(
+    runtime: &mut harbor_widget::runtime::Runtime,
+    root: ApplicationRoot,
+) -> Result<(), ShellError> {
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.set_root(root);
+        })) {
+            Ok(()) => Ok(()),
+            Err(panic) => {
+                // The current generation is still loaded here, so partial Views can be dropped safely.
+                runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
+                    harbor_widget::layout::Size::ZERO,
+                ));
+                Err(ShellError::HotReload(panic_message(panic)))
+            }
+        }
+    }
+
+    #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
+    {
+        runtime.set_root(root);
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "reloadable UI panicked".to_owned()
+    }
+}
 // ── ApplicationHandler (winit lifecycle) ──────────────────────────────────
 impl ApplicationHandler<AppEvent> for Shell {
     /// Called on start or wake from suspend. Bootstraps the window, GPU,
@@ -123,25 +201,89 @@ impl ActiveSession {
     }
 
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        let AppEvent::TerminalOutputReady(tab_id) = event;
-        let outcome = self.tabs.process_output(tab_id);
-        if outcome.unread_changed {
-            self.tabs.sync_ui(&self.window);
-            let effects = self.widget_runtime.update(Instant::now());
-            let effects = self.winit_adapter.fold_effects(effects);
-            self.sync_terminal_allocation(event_loop);
-            apply_effects(&self.window, &effects, event_loop);
+        match event {
+            AppEvent::TerminalOutputReady(tab_id) => {
+                let outcome = self.tabs.process_output(tab_id);
+                if outcome.unread_changed {
+                    self.tabs.sync_ui(&self.window);
+                    let mut effects = self
+                        .widget_runtime
+                        .invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
+                    effects.merge(self.widget_runtime.update(Instant::now()));
+                    let effects = self.winit_adapter.fold_effects(effects);
+                    self.sync_terminal_allocation(event_loop);
+                    apply_effects(&self.window, &effects, event_loop);
+                }
+                if !outcome.request_active_invalidation {
+                    return;
+                }
+                let Some(invalidation) =
+                    external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
+                else {
+                    return;
+                };
+                let effects = self
+                    .winit_adapter
+                    .invalidate_external(&mut self.widget_runtime, invalidation);
+                apply_effects(&self.window, &effects, event_loop);
+            }
+            #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+            AppEvent::WidgetReloadAboutToStart(blocker) => {
+                self.unmount_reloadable_root(event_loop);
+                // Releasing the loader only after Runtime teardown prevents stale callbacks.
+                drop(blocker);
+            }
+            #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+            AppEvent::WidgetReloaded => self.install_reloaded_root(event_loop),
         }
-        if !outcome.request_active_invalidation {
-            return;
-        }
-        let Some(invalidation) = external_invalidation_for_app_event(event) else {
-            return;
-        };
-        let effects = self
-            .winit_adapter
-            .invalidate_external(&mut self.widget_runtime, invalidation);
+    }
+
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    fn unmount_reloadable_root(&mut self, event_loop: &ActiveEventLoop) {
+        tracing::info!("unmounting application UI for hot reload");
+        self.winit_adapter.quarantine_active_pointers();
+        let mut effects = self
+            .widget_runtime
+            .cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
+        self.widget_runtime.clear_focus();
+        self.widget_runtime
+            .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
+                harbor_widget::layout::Size::ZERO,
+            ));
+        effects.merge(self.widget_runtime.update(Instant::now()));
+        effects.merge(self.widget_runtime.take_pending_effects());
+        let effects = self.winit_adapter.fold_effects(effects);
         apply_effects(&self.window, &effects, event_loop);
+    }
+
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    fn install_reloaded_root(&mut self, event_loop: &ActiveEventLoop) {
+        let root = match build_application_root(
+            self.tabs.ui_controller(),
+            self.backdrop_available,
+            self.backdrop_fallback,
+        ) {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::error!(error = %error, "failed to install reloaded application UI");
+                return;
+            }
+        };
+        if let Err(error) = set_application_root(&mut self.widget_runtime, root) {
+            tracing::error!(error = %error, "reloaded application UI build failed");
+            return;
+        }
+        let mut effects = self.widget_runtime.update(Instant::now());
+        effects.merge(
+            self.widget_runtime
+                .request_focus(&self.tabs.ui_controller().terminal_focus()),
+        );
+        effects.merge(self.widget_runtime.take_pending_effects());
+        let mut effects = self.winit_adapter.fold_effects(effects);
+        effects.merge(self.winit_adapter.request_frame());
+        self.sync_terminal_allocation(event_loop);
+        apply_effects(&self.window, &effects, event_loop);
+        tracing::info!("installed reloaded application UI");
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
@@ -237,7 +379,10 @@ impl ActiveSession {
         }
 
         if self.tabs.update_presentation(&self.window) {
-            let effects = self.widget_runtime.update(Instant::now());
+            let mut effects = self
+                .widget_runtime
+                .invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
+            effects.merge(self.widget_runtime.update(Instant::now()));
             let effects = self.winit_adapter.fold_effects(effects);
             apply_effects(&self.window, &effects, event_loop);
         }
@@ -328,11 +473,8 @@ fn init_widget_runtime(
         window.scale_factor() as f32,
     );
     let mut runtime = harbor_widget::runtime::Runtime::new();
-    runtime.set_root(tab_workspace_with_fallback(
-        tab_ui.clone(),
-        backdrop_available,
-        backdrop_fallback,
-    ));
+    let root = build_application_root(tab_ui.clone(), backdrop_available, backdrop_fallback)?;
+    set_application_root(&mut runtime, root)?;
     runtime.init_renderer(gpu.device(), gpu.format());
     runtime
         .init_text_renderer(gpu.device(), gpu.queue(), gpu.format())
@@ -347,12 +489,14 @@ fn init_widget_runtime(
 // ── Shell (own methods) ───────────────────────────────────────────────────
 impl Shell {
     /// Creates the application shell with no initial window, GPU, or terminal.
-    pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
-        Self {
+    pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Result<Self, ShellError> {
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        crate::hot_reload::spawn_observer(event_proxy.clone()).map_err(ShellError::HotReload)?;
+        Ok(Self {
             session: None,
             frame: FrameState::new(),
             event_proxy,
-        }
+        })
     }
 
     /// Creates the main window, GPU context, font atlas, and terminal engine.
@@ -475,6 +619,8 @@ impl Shell {
             winit_adapter,
             _backdrop: backdrop,
             backdrop_available: main_window_backdrop_available,
+            #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+            backdrop_fallback: backdrop_style.fallback,
             show_pending: true,
             startup_retry_deadline: None,
         };

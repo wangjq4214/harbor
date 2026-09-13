@@ -16,6 +16,7 @@ harbor-pty = { path = "crates/harbor-pty" }
 harbor-terminal = { path = "crates/harbor-terminal" }
 harbor-text = { path = "crates/harbor-text" }
 harbor-widget = { path = "crates/harbor-widget" }
+harbor-app = { path = "crates/harbor-app" }
 harbor-widget-macros = { path = "crates/harbor-widget-macros" }
 
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
@@ -54,6 +55,7 @@ trybuild = "1"
 harbor-config = { workspace = true }
 harbor-pty = { workspace = true }
 harbor-terminal = { workspace = true }
+harbor-app = { workspace = true }
 harbor-widget = { workspace = true, features = ["winit"] }
 
 # external
@@ -71,6 +73,7 @@ wgpu = { workspace = true }
 windows-core = { workspace = true }
 unicode-width = { workspace = true }
 winit = { workspace = true }
+hot-lib-reloader = { version = "0.8.2", optional = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }
@@ -85,6 +88,7 @@ default = []
 backend-dx12 = ["harbor-terminal/backend-dx12"]
 backend-vulkan = ["harbor-terminal/backend-vulkan"]
 dhat-heap = ["dep:dhat"]
+widget-hot-reload = ["dep:hot-lib-reloader"]
 
 [profile.release]
 opt-level = 3
