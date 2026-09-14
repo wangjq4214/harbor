@@ -4,58 +4,62 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
-#[cfg(target_os = "windows")]
-use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
 use winit::{
     application::ApplicationHandler,
-    dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoopProxy},
-    window::{Theme, Window, WindowId},
+    window::{Window, WindowId},
 };
 
 use crate::backdrop::{
-    BackdropStatus, WindowBackdropBackend, os_build, select_backend, wasdk_available,
+    MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
-use crate::chrome::harbor_window_icon;
-#[cfg(target_os = "windows")]
-use crate::chrome::{paint_gdi_background, suppress_caption_title_and_icon};
 use crate::dialog::{PasteController, PasteEventOutcome, is_paste_shortcut};
-use crate::effects::{apply_control_flow, apply_effects, apply_window_effects};
+use crate::effects::apply_control_flow;
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{TabCoordinator, TerminalTabFactory, logical_window_width};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_app::tab_manager::TabManager;
 use harbor_app::tab_view::TabUiController;
+use harbor_app::tab_view::ui::MainWindowRootInputs;
 #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
-use harbor_app::tab_view::ui::tab_workspace_with_fallback;
+use harbor_app::tab_view::ui::main_window_root;
 use harbor_pty::ShellCommand;
-use harbor_terminal::{
-    Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency, load_system_fonts,
-};
-use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
+use harbor_terminal::{Terminal, TerminalAppearance, TextMetrics, load_system_fonts};
+use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::winit::{
-    FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget,
+    HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
-    // All surfaces and terminal GPU resources must drop before the shared instance, adapter,
-    // and native window they reference.
-    surface: WindowSurface,
+    // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
     paste: PasteController,
     tabs: TabCoordinator,
-    widget_runtime: harbor_widget::runtime::Runtime,
-    winit_adapter: WinitAdapter,
-    _backdrop: Box<dyn WindowBackdropBackend>,
-    backdrop_available: bool,
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    backdrop_fallback: [f32; 3],
+    root_inputs: MainWindowRootInputs,
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
-    gpu: Arc<SharedGpu>,
-    window: Arc<Window>,
+    main_host: WinitWindowHost,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MainFramePolicy {
+    presented: bool,
+    show_window: bool,
+    schedule_hidden_retry: bool,
+    fatal: bool,
+}
+
+fn main_frame_policy(outcome: &HostFrameOutcome, show_pending: bool) -> MainFramePolicy {
+    let presented = outcome.is_presented();
+    MainFramePolicy {
+        presented,
+        show_window: presented && show_pending,
+        schedule_hidden_retry: matches!(outcome, HostFrameOutcome::Skipped { .. }) && show_pending,
+        fatal: outcome.is_fatal(),
+    }
 }
 
 /// Winit coordinator managing the application lifecycle and active session state.
@@ -68,12 +72,8 @@ pub(crate) struct Shell {
 /// Errors that can occur while starting the application.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ShellError {
-    #[error("failed to create window")]
-    Window(#[from] winit::error::OsError),
-    #[error("failed to create renderer")]
-    Renderer(#[source] anyhow::Error),
-    #[error("failed to create terminal tab")]
-    Tab(#[source] anyhow::Error),
+    #[error("failed to create native window host")]
+    Host(#[from] HostStartupError),
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
     #[error("failed to load reloadable application UI: {0}")]
     HotReload(String),
@@ -88,15 +88,15 @@ impl Component for ApplicationRoot {
     }
 }
 
-fn build_application_root(
-    tab_ui: TabUiController,
-    backdrop_available: bool,
-    backdrop_fallback: [f32; 3],
-) -> Result<ApplicationRoot, ShellError> {
+fn build_application_root(inputs: MainWindowRootInputs) -> Result<ApplicationRoot, ShellError> {
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
     {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::hot_reload::build_root(tab_ui, backdrop_available, backdrop_fallback)
+            crate::hot_reload::build_root(
+                inputs.controller,
+                inputs.backdrop_available,
+                inputs.backdrop_fallback,
+            )
         }))
         .map(ApplicationRoot)
         .map_err(|panic| ShellError::HotReload(panic_message(panic)))
@@ -104,38 +104,7 @@ fn build_application_root(
 
     #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
     {
-        Ok(ApplicationRoot(Box::new(tab_workspace_with_fallback(
-            tab_ui,
-            backdrop_available,
-            backdrop_fallback,
-        ))))
-    }
-}
-
-fn set_application_root(
-    runtime: &mut harbor_widget::runtime::Runtime,
-    root: ApplicationRoot,
-) -> Result<(), ShellError> {
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runtime.set_root(root);
-        })) {
-            Ok(()) => Ok(()),
-            Err(panic) => {
-                // The current generation is still loaded here, so partial Views can be dropped safely.
-                runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-                    harbor_widget::layout::Size::ZERO,
-                ));
-                Err(ShellError::HotReload(panic_message(panic)))
-            }
-        }
-    }
-
-    #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
-    {
-        runtime.set_root(root);
-        Ok(())
+        Ok(ApplicationRoot(Box::new(main_window_root(inputs))))
     }
 }
 
@@ -193,111 +162,109 @@ impl ApplicationHandler<AppEvent> for Shell {
 
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
 impl ActiveSession {
-    fn sync_terminal_allocation(&mut self, event_loop: &ActiveEventLoop) {
-        let viewport = self.winit_adapter.viewport();
+    fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
+        *current = match (*current, next) {
+            (Some(left), Some(right)) => Some(left.arbitrate(right)),
+            (Some(wait), None) | (None, Some(wait)) => Some(wait),
+            (None, None) => None,
+        };
+    }
+
+    fn sync_terminal_allocation(&mut self) -> Option<ControlFlowEffect> {
+        let viewport = self.main_host.viewport().clone();
         if self
             .tabs
             .apply_pending_allocation(viewport.scale_factor, viewport.physical_size)
         {
-            let effects = self.winit_adapter.request_frame();
-            apply_effects(&self.window, &effects, event_loop);
+            self.main_host.request_frame().wait
+        } else {
+            None
         }
     }
 
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        let mut wait = None;
         match event {
             AppEvent::TerminalOutputReady(tab_id) => {
                 let outcome = self.tabs.process_output(tab_id);
                 if outcome.unread_changed {
-                    self.tabs.sync_ui(&self.window);
-                    let mut effects = self
-                        .widget_runtime
-                        .invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
-                    effects.merge(self.widget_runtime.update(Instant::now()));
-                    let effects = self.winit_adapter.fold_effects(effects);
-                    self.sync_terminal_allocation(event_loop);
-                    apply_effects(&self.window, &effects, event_loop);
+                    self.tabs.sync_ui(self.main_host.window());
+                    Self::merge_wait(
+                        &mut wait,
+                        self.main_host
+                            .invalidate_external(
+                                harbor_widget::effects::ExternalInvalidation::new(),
+                            )
+                            .wait,
+                    );
+                    let allocation_wait = self.sync_terminal_allocation();
+                    Self::merge_wait(&mut wait, allocation_wait);
                 }
-                if !outcome.request_active_invalidation {
-                    return;
+                if outcome.request_active_invalidation
+                    && let Some(invalidation) =
+                        external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
+                {
+                    Self::merge_wait(
+                        &mut wait,
+                        self.main_host.invalidate_external(invalidation).wait,
+                    );
                 }
-                let Some(invalidation) =
-                    external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
-                else {
-                    return;
-                };
-                let effects = self
-                    .winit_adapter
-                    .invalidate_external(&mut self.widget_runtime, invalidation);
-                apply_effects(&self.window, &effects, event_loop);
             }
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
             AppEvent::WidgetReloadAboutToStart(blocker) => {
-                self.unmount_reloadable_root(event_loop);
-                // Releasing the loader only after Runtime teardown prevents stale callbacks.
+                tracing::info!("unmounting application UI for hot reload");
+                Self::merge_wait(&mut wait, self.main_host.unmount_root_for_reload().wait);
+                // Releasing the loader only after Host-owned Runtime teardown prevents stale callbacks.
                 drop(blocker);
             }
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-            AppEvent::WidgetReloaded => self.install_reloaded_root(event_loop),
+            AppEvent::WidgetReloaded => {
+                Self::merge_wait(&mut wait, self.install_reloaded_root());
+            }
+        }
+        if let Some(wait) = wait {
+            apply_control_flow(event_loop, wait);
         }
     }
 
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    fn unmount_reloadable_root(&mut self, event_loop: &ActiveEventLoop) {
-        tracing::info!("unmounting application UI for hot reload");
-        self.winit_adapter.quarantine_active_pointers();
-        let mut effects = self
-            .widget_runtime
-            .cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
-        self.widget_runtime.clear_focus();
-        self.widget_runtime
-            .set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-                harbor_widget::layout::Size::ZERO,
-            ));
-        effects.merge(self.widget_runtime.update(Instant::now()));
-        effects.merge(self.widget_runtime.take_pending_effects());
-        let effects = self.winit_adapter.fold_effects(effects);
-        apply_effects(&self.window, &effects, event_loop);
-    }
-
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    fn install_reloaded_root(&mut self, event_loop: &ActiveEventLoop) {
-        let root = match build_application_root(
-            self.tabs.ui_controller(),
-            self.backdrop_available,
-            self.backdrop_fallback,
-        ) {
+    fn install_reloaded_root(&mut self) -> Option<ControlFlowEffect> {
+        let root = match build_application_root(self.root_inputs.clone()) {
             Ok(root) => root,
             Err(error) => {
                 tracing::error!(error = %error, "failed to install reloaded application UI");
-                return;
+                return None;
             }
         };
-        if let Err(error) = set_application_root(&mut self.widget_runtime, root) {
-            tracing::error!(error = %error, "reloaded application UI build failed");
-            return;
-        }
-        let mut effects = self.widget_runtime.update(Instant::now());
-        effects.merge(
-            self.widget_runtime
-                .request_focus(&self.tabs.ui_controller().terminal_focus()),
-        );
-        effects.merge(self.widget_runtime.take_pending_effects());
-        let mut effects = self.winit_adapter.fold_effects(effects);
-        effects.merge(self.winit_adapter.request_frame());
-        self.sync_terminal_allocation(event_loop);
-        apply_effects(&self.window, &effects, event_loop);
+        let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.main_host.replace_root_for_reload(root)
+        }));
+        let mut wait = match installed {
+            Ok(outcome) => outcome.wait,
+            Err(panic) => {
+                let error = ShellError::HotReload(panic_message(panic));
+                tracing::error!(error = %error, "reloaded application UI build failed");
+                return self.main_host.unmount_root_for_reload().wait;
+            }
+        };
+        let focus = self.tabs.terminal_focus();
+        Self::merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
+        let allocation_wait = self.sync_terminal_allocation();
+        Self::merge_wait(&mut wait, allocation_wait);
         tracing::info!("installed reloaded application UI");
+        wait
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
         let now = Instant::now();
-        let main_effects =
-            self.winit_adapter
-                .about_to_wait(&mut self.widget_runtime, now, host_deadline);
-        self.sync_terminal_allocation(event_loop);
-        apply_window_effects(&self.window, &main_effects);
-        let mut combined_flow = main_effects.control_flow.unwrap_or(ControlFlowEffect::Wait);
+        let mut combined_flow = self
+            .main_host
+            .about_to_wait(now, host_deadline)
+            .wait
+            .unwrap_or(ControlFlowEffect::Wait);
+        if let Some(wait) = self.sync_terminal_allocation() {
+            combined_flow = combined_flow.arbitrate(wait);
+        }
 
         if let Some(confirmation_flow) = self.paste.about_to_wait(now) {
             combined_flow = combined_flow.arbitrate(confirmation_flow);
@@ -306,7 +273,9 @@ impl ActiveSession {
         if let Some(deadline) = self.startup_retry_deadline {
             if now >= deadline {
                 self.startup_retry_deadline = None;
-                self.request_main_frame(event_loop);
+                if let Some(wait) = self.main_host.request_frame().wait {
+                    combined_flow = combined_flow.arbitrate(wait);
+                }
             } else {
                 combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
             }
@@ -326,12 +295,12 @@ impl ActiveSession {
             match self.paste.handle_dialog_event(
                 &event,
                 event_loop,
-                &self.gpu,
+                &self.main_host,
                 self.tabs.active_terminal().as_ref(),
             ) {
                 PasteEventOutcome::Handled { request_redraw } => {
-                    if request_redraw {
-                        self.request_main_frame(event_loop);
+                    if request_redraw && let Some(wait) = self.main_host.request_frame().wait {
+                        apply_control_flow(event_loop, wait);
                     }
                 }
                 PasteEventOutcome::Fatal(error) => {
@@ -343,8 +312,7 @@ impl ActiveSession {
         }
 
         let gate_active = self.paste.is_active();
-
-        if self.window.id() != window_id {
+        if self.main_host.window_id() != window_id {
             return;
         }
 
@@ -358,7 +326,7 @@ impl ActiveSession {
                 &event,
                 WindowEvent::MouseInput { .. } | WindowEvent::Touch(_)
             ) {
-                self.winit_adapter.quarantine_blocked_pointer_event(&event);
+                self.main_host.quarantine_blocked_pointer_event(&event);
                 return;
             }
         }
@@ -369,121 +337,85 @@ impl ActiveSession {
             return;
         }
 
-        if is_paste_shortcut(&event, self.winit_adapter.modifiers()) {
-            let effects = self.paste.paste_from_clipboard(
+        if is_paste_shortcut(&event, self.main_host.modifiers()) {
+            let active_terminal = self.tabs.active_terminal();
+            let outcome = self.paste.paste_from_clipboard(
                 event_loop,
-                &self.window,
-                &self.gpu,
-                self.tabs.active_terminal().as_ref(),
-                &mut self.widget_runtime,
-                &mut self.winit_adapter,
+                &mut self.main_host,
+                active_terminal.as_ref(),
             );
-            apply_effects(&self.window, &effects, event_loop);
+            if let Some(wait) = outcome.wait {
+                apply_control_flow(event_loop, wait);
+            }
             return;
         }
 
-        if self.tabs.update_presentation(&self.window) {
-            let mut effects = self
-                .widget_runtime
-                .invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
-            effects.merge(self.widget_runtime.update(Instant::now()));
-            let effects = self.winit_adapter.fold_effects(effects);
-            apply_effects(&self.window, &effects, event_loop);
+        let mut wait = None;
+        if self.tabs.update_presentation(self.main_host.window()) {
+            Self::merge_wait(
+                &mut wait,
+                self.main_host
+                    .invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
+                    .wait,
+            );
         }
-        let size = self.window.inner_size();
-        let outcome = self.winit_adapter.handle_event_with_size(
-            &mut self.widget_runtime,
-            &event,
-            Some((size.width, size.height)),
-        );
-        self.sync_terminal_allocation(event_loop);
+
+        let outcome = self.main_host.handle_window_event(&event);
+        Self::merge_wait(&mut wait, outcome.wait);
+        if !outcome.external_input.is_empty() {
+            // Main terminal bridges consume input in-tree; queued events indicate a broken root contract.
+            tracing::error!(
+                count = outcome.external_input.len(),
+                "unexpected deferred main-window external input"
+            );
+        }
+        let allocation_wait = self.sync_terminal_allocation();
+        Self::merge_wait(&mut wait, allocation_wait);
         if outcome.handled {
-            apply_effects(&self.window, &outcome.effects, event_loop);
-            self.tabs.drain_tab_commands(
-                &self.window,
-                &mut self.widget_runtime,
-                &mut self.winit_adapter,
-                event_loop,
-            );
+            let tab_outcome = self.tabs.drain_tab_commands(&mut self.main_host);
+            Self::merge_wait(&mut wait, tab_outcome.wait);
+            if tab_outcome.close_window {
+                event_loop.exit();
+                return;
+            }
         }
 
-        if let WindowEvent::RedrawRequested = event {
+        if let Some(frame_outcome) = outcome.frame {
             tracing::trace!("redraw requested");
-            self.render_frame(event_loop, frame);
+            self.handle_frame_outcome(event_loop, frame, &frame_outcome);
+        }
+        if let Some(wait) = wait {
+            apply_control_flow(event_loop, wait);
         }
     }
 
-    fn request_main_frame(&mut self, event_loop: &ActiveEventLoop) {
-        let effects = self.winit_adapter.request_frame();
-        apply_effects(&self.window, &effects, event_loop);
-    }
-
-    fn render_frame(&mut self, event_loop: &ActiveEventLoop, frame: &mut FrameState) -> bool {
-        let outcome = {
-            let target = WinitFrameTarget::new(
-                &self.window,
-                &self.gpu,
-                &mut self.surface,
-                self.backdrop_available,
-            );
-            self.winit_adapter
-                .render_with_prepare(&mut self.widget_runtime, target, |runtime| {
-                    runtime.prepare_text(self.gpu.queue());
-                })
-        };
-        self.sync_terminal_allocation(event_loop);
-
-        let effects = outcome.effects().clone();
-        apply_effects(&self.window, &effects, event_loop);
-
-        let presented = outcome.is_presented();
-        if presented {
+    fn handle_frame_outcome(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame: &mut FrameState,
+        outcome: &HostFrameOutcome,
+    ) -> bool {
+        let policy = main_frame_policy(outcome, self.show_pending);
+        if policy.presented {
             frame.mark_first_present();
             let _ = frame.next_steady_state_deadline();
-            if self.show_pending {
-                self.window.set_visible(true);
-                self.show_pending = false;
-                self.startup_retry_deadline = None;
-            }
-        } else if let FrameOutcome::Fatal(error, _) = &outcome {
+        }
+        if policy.show_window {
+            self.main_host.window().set_visible(true);
+            self.show_pending = false;
+            self.startup_retry_deadline = None;
+        }
+        if policy.fatal
+            && let HostFrameOutcome::Fatal { error, .. } = outcome
+        {
             tracing::error!(?error, "fatal main-window frame error");
             event_loop.exit();
         }
-
-        if matches!(&outcome, FrameOutcome::Skipped(_)) && self.show_pending {
+        if policy.schedule_hidden_retry {
             self.startup_retry_deadline = Some(Instant::now() + HIDDEN_STARTUP_RETRY_DELAY);
         }
-        presented
+        policy.presented
     }
-}
-
-/// Initializes the persistent tab workspace once; subsequent model changes use its Signal.
-fn init_widget_runtime(
-    window: &Arc<Window>,
-    gpu: &SharedGpu,
-    format: wgpu::TextureFormat,
-    tab_ui: TabUiController,
-    backdrop_available: bool,
-    backdrop_fallback: [f32; 3],
-) -> Result<(harbor_widget::runtime::Runtime, RuntimeEffects), ShellError> {
-    let initial_size = window.inner_size();
-    let initial_viewport = harbor_widget::renderer::Viewport::new(
-        initial_size.width,
-        initial_size.height,
-        window.scale_factor() as f32,
-    );
-    let mut runtime = harbor_widget::runtime::Runtime::new();
-    let root = build_application_root(tab_ui.clone(), backdrop_available, backdrop_fallback)?;
-    set_application_root(&mut runtime, root)?;
-    runtime.init_renderer(gpu.device(), format);
-    runtime
-        .init_text_renderer(gpu.device(), gpu.queue(), format)
-        .map_err(ShellError::Renderer)?;
-    runtime.set_viewport(initial_viewport);
-    let mut initial_effects = runtime.update(Instant::now());
-    initial_effects.merge(runtime.request_focus(&tab_ui.terminal_focus()));
-    initial_effects.merge(runtime.take_pending_effects());
-    Ok((runtime, initial_effects))
 }
 
 // ── Shell (own methods) ───────────────────────────────────────────────────
@@ -519,122 +451,89 @@ impl Shell {
         }
         let settings = loaded.settings;
         let appearance = TerminalAppearance::from_palette(settings.colors);
-        let backdrop = select_backend(os_build(), wasdk_available());
-        let mut window_attrs = Window::default_attributes()
-            .with_title("Harbor")
-            .with_inner_size(LogicalSize::new(1200.0, 600.0))
-            .with_window_icon(harbor_window_icon())
-            .with_theme(Some(Theme::Dark))
-            .with_visible(false);
-        #[cfg(target_os = "windows")]
-        {
-            window_attrs = window_attrs.with_taskbar_icon(harbor_window_icon());
-        }
-        window_attrs = backdrop.configure_attributes(window_attrs);
-
-        let window = Arc::new(event_loop.create_window(window_attrs)?);
-        // Winit 0.30 emits composition commits only after IME is explicitly enabled.
-        window.set_ime_allowed(true);
-
-        #[cfg(target_os = "windows")]
-        {
-            suppress_caption_title_and_icon(&window);
-            // Apply these after caption theming, which may reset the HWND icon slots.
-            window.set_window_icon(harbor_window_icon());
-            window.set_taskbar_icon(harbor_window_icon());
-        }
         let backdrop_style = harbor_config::WindowBackdropStyle::default();
-        let BackdropStatus {
-            tier,
-            backdrop_available: backdrop_applied,
-        } = backdrop.apply(&window, &backdrop_style);
-
-        let (gpu, surface) =
-            pollster::block_on(SharedGpu::new(window.clone())).map_err(ShellError::Renderer)?;
-        #[allow(clippy::arc_with_non_send_sync)]
-        let gpu = Arc::new(gpu);
-        let main_window_backdrop_available =
-            backdrop_applied && alpha_mode_supports_transparency(surface.alpha_mode());
-        #[cfg(target_os = "windows")]
-        if !main_window_backdrop_available {
-            paint_gdi_background(&window, backdrop_style.fallback);
-        }
-        let initial_size = window.inner_size();
-
-        tracing::info!(
-            backdrop_available = main_window_backdrop_available,
-            tier = ?tier,
-            alpha_mode = ?surface.alpha_mode(),
-            "main window backdrop selected"
+        let backdrop_fallback = backdrop_style.fallback;
+        let platform = MainWindowPlatformHooks::new(
+            select_backend(os_build(), wasdk_available()),
+            backdrop_style,
         );
-
-        // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
         let font_settings = settings.font.clone();
-        let fonts = load_system_fonts(&font_settings).map_err(ShellError::Renderer)?;
-        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
-        let size = Terminal::terminal_size_for(surface.size(), &metrics);
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
-        let input_gate = Arc::new(AtomicBool::new(false));
         let event_proxy = self.event_proxy.clone();
-        let factory = TerminalTabFactory::new(
-            Arc::clone(&gpu),
-            surface.format(),
-            shell_command,
-            font_settings,
-            metrics,
-            appearance,
-            main_window_backdrop_available,
-            event_proxy,
-            Arc::clone(&input_gate),
-        );
-        let mut tabs = TabManager::new();
-        tabs.create_tab(|tab_id, draw_id| {
-            factory.create_resources(tab_id, draw_id, size, surface.size())
-        })
-        .map_err(ShellError::Tab)?;
 
-        tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
-        let mut winit_adapter = WinitAdapter::from_window(&window);
-        winit_adapter.set_drawable(initial_size.width != 0 && initial_size.height != 0);
-        let active_bridge = tabs
-            .active_bridge()
-            .expect("initial tab creation establishes an active bridge");
-        let tab_ui = TabUiController::new(
-            tabs.snapshots(),
-            active_bridge,
-            logical_window_width(&window),
-        );
-        let (widget_runtime, initial_effects) = init_widget_runtime(
-            &window,
-            &gpu,
-            surface.format(),
-            tab_ui.clone(),
-            main_window_backdrop_available,
-            backdrop_style.fallback,
-        )?;
-        let tabs = TabCoordinator::new(tabs, tab_ui, factory);
-        let paste = PasteController::new(input_gate);
+        let builder = WinitWindowHostBuilder::new(
+            Window::default_attributes(),
+            move |context: HostInitContext<'_>, _platform_state: &MainWindowPlatformState| {
+                // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
+                let fonts = load_system_fonts(&font_settings)?;
+                let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+                let surface = context.surface();
+                let size = Terminal::terminal_size_for(surface.physical_size, &metrics);
+                let input_gate = Arc::new(AtomicBool::new(false));
+                let factory = TerminalTabFactory::new(
+                    Arc::clone(context.shared_gpu()),
+                    surface.format,
+                    shell_command,
+                    font_settings,
+                    metrics,
+                    appearance,
+                    context.backdrop_available(),
+                    event_proxy,
+                    Arc::clone(&input_gate),
+                );
+                let mut tabs = TabManager::new();
+                tabs.create_tab(|tab_id, draw_id| {
+                    factory.create_resources(tab_id, draw_id, size, surface.physical_size)
+                })?;
+
+                tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
+                let active_bridge = tabs
+                    .active_bridge()
+                    .expect("initial tab creation establishes an active bridge");
+                let tab_ui = TabUiController::new(
+                    tabs.snapshots(),
+                    active_bridge,
+                    logical_window_width(context.window()),
+                );
+                let root_inputs = MainWindowRootInputs::new(
+                    tab_ui.clone(),
+                    context.backdrop_available(),
+                    backdrop_fallback,
+                );
+                let root = build_application_root(root_inputs.clone())
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let tabs = TabCoordinator::new(tabs, tab_ui, factory);
+                let paste = PasteController::new(input_gate);
+                Ok((root, (tabs, paste, root_inputs)))
+            },
+        )
+        .with_platform_hooks(platform);
+
+        let (main_host, (tabs, paste, root_inputs)) =
+            pollster::block_on(builder.build_with_output(event_loop))?;
+        #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
+        let _ = root_inputs;
         let mut session = ActiveSession {
-            window,
-            surface,
             paste,
             tabs,
-            gpu,
-            widget_runtime,
-            winit_adapter,
-            _backdrop: backdrop,
-            backdrop_available: main_window_backdrop_available,
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-            backdrop_fallback: backdrop_style.fallback,
+            root_inputs,
             show_pending: true,
             startup_retry_deadline: None,
+            main_host,
         };
 
-        session.sync_terminal_allocation(event_loop);
-        let mut effects = session.winit_adapter.fold_effects(initial_effects);
-        effects.merge(session.winit_adapter.request_frame());
-        apply_effects(&session.window, &effects, event_loop);
-        let _ = session.render_frame(event_loop, &mut self.frame);
+        let mut wait = None;
+        let focus = session.tabs.terminal_focus();
+        ActiveSession::merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
+        let allocation_wait = session.sync_terminal_allocation();
+        ActiveSession::merge_wait(&mut wait, allocation_wait);
+        let frame_outcome = session.main_host.present_now();
+        ActiveSession::merge_wait(&mut wait, frame_outcome.wait());
+        session.handle_frame_outcome(event_loop, &mut self.frame, &frame_outcome);
+        if let Some(wait) = wait {
+            apply_control_flow(event_loop, wait);
+        }
         self.session = Some(session);
         Ok(())
     }
@@ -644,31 +543,43 @@ impl Shell {
 mod tests {
     use super::*;
 
-    // Compile-only coverage for the feature-gated Host contract.
-    #[allow(dead_code)]
-    fn winit_runtime_contract_fixture<'frame>(
-        window: &'frame Window,
-        gpu: &'frame SharedGpu,
-        surface: &'frame mut WindowSurface,
-    ) {
-        use harbor_widget::{
-            runtime::Runtime,
-            winit::{FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget},
-        };
+    #[test]
+    fn presented_frame_shows_only_a_pending_window() {
+        let outcome = HostFrameOutcome::Presented { wait: None };
+        assert_eq!(
+            main_frame_policy(&outcome, true),
+            MainFramePolicy {
+                presented: true,
+                show_window: true,
+                schedule_hidden_retry: false,
+                fatal: false,
+            }
+        );
+        assert!(!main_frame_policy(&outcome, false).show_window);
+    }
 
-        type HandleEventWithSize = fn(
-            &mut WinitAdapter,
-            &mut Runtime,
-            &WindowEvent,
-            Option<(u32, u32)>,
-        ) -> WinitEventOutcome;
-        let _: fn(&mut WinitAdapter, &mut Runtime, &WindowEvent) -> WinitEventOutcome =
-            WinitAdapter::handle_event;
-        let _: HandleEventWithSize = WinitAdapter::handle_event_with_size;
-        let mut runtime = Runtime::new();
-        let mut adapter = WinitAdapter::new();
-        let target = WinitFrameTarget::new(window, gpu, surface, false);
-        let outcome: FrameOutcome = adapter.render(&mut runtime, target);
-        let _ = outcome;
+    #[test]
+    fn skipped_hidden_frame_retries_without_showing() {
+        let outcome = HostFrameOutcome::Skipped { wait: None };
+        let policy = main_frame_policy(&outcome, true);
+        assert!(!policy.presented);
+        assert!(!policy.show_window);
+        assert!(policy.schedule_hidden_retry);
+        assert!(!policy.fatal);
+    }
+
+    #[test]
+    fn recovery_waits_for_host_and_fatal_is_delegated_to_shell() {
+        let recovery = HostFrameOutcome::RecoveryScheduled { wait: None };
+        assert_eq!(
+            main_frame_policy(&recovery, true),
+            MainFramePolicy::default()
+        );
+
+        let fatal = HostFrameOutcome::Fatal {
+            error: harbor_widget::winit::FrameError::out_of_memory(),
+            wait: None,
+        };
+        assert!(main_frame_policy(&fatal, true).fatal);
     }
 }

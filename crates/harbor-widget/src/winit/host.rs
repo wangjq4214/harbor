@@ -4,8 +4,10 @@ use super::effects::apply_window_effects;
 use super::{FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget};
 use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::input::event::UiEvent;
+use crate::renderer::Viewport;
 use crate::scene::primitive::ExternalDrawId;
 use crate::view::Component;
+use crate::widgets::FocusHandle;
 use anyhow::Context as _;
 use std::any::Any;
 use std::fmt;
@@ -13,6 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 /// Identifies the construction stage that failed before a host became usable.
@@ -76,7 +79,9 @@ pub struct WindowSurfaceInfo {
 pub struct HostInitContext<'a> {
     window: &'a Window,
     gpu: &'a SharedGpu,
+    shared_gpu: &'a Arc<SharedGpu>,
     surface: WindowSurfaceInfo,
+    backdrop_available: bool,
 }
 
 impl<'a> HostInitContext<'a> {
@@ -88,8 +93,17 @@ impl<'a> HostInitContext<'a> {
         self.gpu
     }
 
+    pub const fn shared_gpu(&self) -> &'a Arc<SharedGpu> {
+        self.shared_gpu
+    }
+
     pub const fn surface(&self) -> WindowSurfaceInfo {
         self.surface
+    }
+
+    /// Returns the final backdrop decision after the surface alpha mode is known.
+    pub const fn backdrop_available(&self) -> bool {
+        self.backdrop_available
     }
 }
 
@@ -109,6 +123,17 @@ pub trait WindowPlatformHooks {
 
     fn window_created(&self, window: &Window) -> anyhow::Result<Self::Setup>;
 
+    /// Finalizes platform setup after surface metadata exists and before root construction.
+    fn surface_ready(
+        &self,
+        _window: &Window,
+        setup: &mut Self::Setup,
+        _surface: WindowSurfaceInfo,
+    ) -> anyhow::Result<bool> {
+        Ok(self.backdrop_available(setup))
+    }
+
+    /// Legacy pre-surface backdrop query retained for compatible hook implementations.
     fn backdrop_available(&self, _setup: &Self::Setup) -> bool {
         false
     }
@@ -193,6 +218,36 @@ where
         F: for<'a> FnOnce(HostInitContext<'a>, &'a P::Setup) -> anyhow::Result<R>,
         R: Component + 'static,
     {
+        let WinitWindowHostBuilder {
+            attributes,
+            gpu_source,
+            platform,
+            root_factory,
+            focus_first,
+        } = self;
+        let (host, ()) = WinitWindowHostBuilder {
+            attributes,
+            gpu_source,
+            platform,
+            root_factory: move |context: HostInitContext<'_>, setup: &P::Setup| {
+                root_factory(context, setup).map(|root| (root, ()))
+            },
+            focus_first,
+        }
+        .build_with_output(event_loop)
+        .await?;
+        Ok(host)
+    }
+
+    /// Builds a complete host and atomically returns application-owned bootstrap output.
+    pub async fn build_with_output<R, A>(
+        self,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(WinitWindowHost, A), HostStartupError>
+    where
+        F: for<'a> FnOnce(HostInitContext<'a>, &'a P::Setup) -> anyhow::Result<(R, A)>,
+        R: Component + 'static,
+    {
         let attributes = self
             .platform
             .configure_attributes(self.attributes)
@@ -200,11 +255,10 @@ where
         let window = Arc::new(event_loop.create_window(attributes).map_err(|error| {
             HostStartupError::new(HostStartupStage::CreateWindow, anyhow::Error::new(error))
         })?);
-        let platform_state = self
+        let mut platform_state = self
             .platform
             .window_created(&window)
             .map_err(|error| HostStartupError::new(HostStartupStage::PlatformSetup, error))?;
-        let backdrop_available = self.platform.backdrop_available(&platform_state);
 
         let (gpu, surface) = match self.gpu_source {
             HostGpuSource::Bootstrap => {
@@ -229,11 +283,17 @@ where
             alpha_mode: surface.alpha_mode(),
             physical_size: window.inner_size().into(),
         };
-        let root = (self.root_factory)(
+        let backdrop_available = self
+            .platform
+            .surface_ready(&window, &mut platform_state, surface_info)
+            .map_err(|error| HostStartupError::new(HostStartupStage::PlatformSetup, error))?;
+        let (root, application_output) = (self.root_factory)(
             HostInitContext {
                 window: &window,
-                gpu: &gpu,
+                gpu: gpu.as_ref(),
+                shared_gpu: &gpu,
                 surface: surface_info,
+                backdrop_available,
             },
             &platform_state,
         )
@@ -252,7 +312,14 @@ where
         let drawable = size.width != 0 && size.height != 0;
         adapter.set_drawable(drawable);
         runtime.set_viewport(adapter.viewport().clone());
-        runtime.set_root(root);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.set_root(root))).map_err(
+            |panic| {
+                HostStartupError::new(
+                    HostStartupStage::RootConstruction,
+                    anyhow::anyhow!("root component panicked: {}", panic_message(panic)),
+                )
+            },
+        )?;
 
         let mut initial_effects = runtime.update(Instant::now());
         if self.focus_first {
@@ -263,15 +330,18 @@ where
         initial_effects.merge(adapter.request_frame());
         apply_window_effects(&window, initial_effects);
 
-        Ok(WinitWindowHost {
-            runtime,
-            surface,
-            adapter,
-            _platform_keepalive: Box::new(platform_state),
-            window,
-            gpu,
-            backdrop_available,
-        })
+        Ok((
+            WinitWindowHost {
+                runtime,
+                surface,
+                adapter,
+                _platform_keepalive: Box::new(platform_state),
+                window,
+                gpu,
+                backdrop_available,
+            },
+            application_output,
+        ))
     }
 }
 
@@ -365,8 +435,91 @@ impl WinitWindowHost {
         &self.gpu
     }
 
+    pub fn viewport(&self) -> &Viewport {
+        self.adapter.viewport()
+    }
+
+    pub fn modifiers(&self) -> ModifiersState {
+        self.adapter.modifiers()
+    }
+
+    pub const fn backdrop_available(&self) -> bool {
+        self.backdrop_available
+    }
+
+    /// Records a pointer activation rejected by an application-owned modal gate.
+    pub fn quarantine_blocked_pointer_event(&mut self, event: &WindowEvent) {
+        self.adapter.quarantine_blocked_pointer_event(event);
+    }
+
+    /// Cancels all input ownership before replacing or gating an input subtree.
+    pub fn cancel_active_input_ownership(&mut self) -> HostIdleOutcome {
+        self.adapter.quarantine_active_pointers();
+        let mut effects = self
+            .runtime
+            .cancel_pointer_captures(crate::layout::Point::ZERO);
+        effects.merge(self.runtime.take_pending_effects());
+        self.apply_runtime_effects(effects)
+    }
+
+    /// Requests focus for one stable application-owned focus target.
+    pub fn request_focus(&mut self, handle: &FocusHandle) -> HostIdleOutcome {
+        let mut effects = self.runtime.request_focus(handle);
+        effects.merge(self.runtime.take_pending_effects());
+        self.apply_runtime_effects(effects)
+    }
+
+    /// Removes focus without exposing the underlying runtime.
+    pub fn clear_focus(&mut self) -> HostIdleOutcome {
+        self.runtime.clear_focus();
+        let effects = self.runtime.take_pending_effects();
+        self.apply_runtime_effects(effects)
+    }
+
+    /// Replaces the root through the host-owned Runtime. Transitional for T0005 HMR.
+    pub fn replace_root_for_reload<R: Component + 'static>(&mut self, root: R) -> HostIdleOutcome {
+        self.runtime.set_root(root);
+        let mut effects = self.runtime.update(Instant::now());
+        effects.merge(self.runtime.take_pending_effects());
+        let mut effects = self.adapter.fold_effects(effects);
+        effects.merge(self.adapter.request_frame());
+        HostIdleOutcome {
+            wait: apply_window_effects(&self.window, effects),
+        }
+    }
+
+    /// Tears down the current root and input ownership. Transitional for T0005 HMR.
+    pub fn unmount_root_for_reload(&mut self) -> HostIdleOutcome {
+        self.adapter.quarantine_active_pointers();
+        let mut effects = self
+            .runtime
+            .cancel_pointer_captures(crate::layout::Point::ZERO);
+        self.runtime.clear_focus();
+        self.runtime
+            .set_root(crate::widgets::sized_box::SizedBox::new(
+                crate::layout::Size::ZERO,
+            ));
+        effects.merge(self.runtime.update(Instant::now()));
+        effects.merge(self.runtime.take_pending_effects());
+        self.apply_runtime_effects(effects)
+    }
+
+    /// Creates a child Runtime sharing text resources with this host.
+    ///
+    /// This is the only T0004/T0006 compatibility seam for the legacy confirmation window.
+    pub fn create_transitional_child_runtime(
+        &self,
+        format: wgpu::TextureFormat,
+    ) -> crate::runtime::Runtime {
+        self.runtime.create_child_runtime(self.gpu.device(), format)
+    }
+
     pub fn invalidate_external(&mut self, work: ExternalInvalidation) -> HostIdleOutcome {
-        let effects = self.adapter.invalidate_external(&mut self.runtime, work);
+        let mut effects = self.adapter.invalidate_external(&mut self.runtime, work);
+        let update = self
+            .adapter
+            .fold_effects(self.runtime.update(Instant::now()));
+        effects.merge(update);
         HostIdleOutcome {
             wait: apply_window_effects(&self.window, effects),
         }
@@ -377,6 +530,11 @@ impl WinitWindowHost {
         HostIdleOutcome {
             wait: apply_window_effects(&self.window, effects),
         }
+    }
+
+    /// Immediately attempts one frame while retaining presentation policy in the caller.
+    pub fn present_now(&mut self) -> HostFrameOutcome {
+        self.redraw()
     }
 
     pub fn about_to_wait(
@@ -417,6 +575,13 @@ impl WinitWindowHost {
         }
     }
 
+    fn apply_runtime_effects(&mut self, effects: RuntimeEffects) -> HostIdleOutcome {
+        let effects = self.adapter.fold_effects(effects);
+        HostIdleOutcome {
+            wait: apply_window_effects(&self.window, effects),
+        }
+    }
+
     fn redraw(&mut self) -> HostFrameOutcome {
         let target = WinitFrameTarget::new(
             &self.window,
@@ -434,6 +599,16 @@ impl WinitWindowHost {
 
     fn finish_frame(&self, frame: FrameOutcome) -> HostFrameOutcome {
         finish_frame_with(frame, |effects| apply_window_effects(&self.window, effects))
+    }
+}
+
+fn panic_message(panic: Box<dyn Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_owned()
     }
 }
 

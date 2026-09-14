@@ -1,9 +1,6 @@
 //! Tab orchestration between Host-owned terminal tab models and declarative UI projection.
 
-use std::{
-    sync::{Arc, Mutex, atomic::Ordering},
-    time::Instant,
-};
+use std::sync::{Arc, Mutex, atomic::Ordering};
 
 use harbor_pty::PtyEndpoints;
 use harbor_pty::ShellCommand;
@@ -11,27 +8,34 @@ use harbor_terminal::{
     Terminal, TerminalAppearance, TerminalGpuAccess, TerminalSize, TextMetrics, load_system_fonts,
 };
 use harbor_widget::{
-    effects::RuntimeEffects,
+    effects::ControlFlowEffect,
     scene::primitive::ExternalDrawId,
-    winit::{SharedGpu, WinitAdapter},
+    winit::{SharedGpu, WinitWindowHost},
 };
-use winit::{
-    event_loop::{ActiveEventLoop, EventLoopProxy},
-    window::Window,
-};
+use winit::{event_loop::EventLoopProxy, window::Window};
 
-use crate::{effects::apply_effects, event::AppEvent};
+use crate::event::AppEvent;
 use harbor_app::{
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
     tab_view::{TabCommand, TabFocusPolicy, TabUiController},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
 };
 
-/// Effects and actions the Host must apply after a tab transition.
+/// Application-visible result of draining one FIFO tab action batch.
 #[derive(Debug, Default)]
-pub(crate) struct TabOutcomeEffects {
-    pub(crate) effects: RuntimeEffects,
+pub(crate) struct TabDrainOutcome {
+    pub(crate) wait: Option<ControlFlowEffect>,
     pub(crate) close_window: bool,
+}
+
+impl TabDrainOutcome {
+    fn merge_wait(&mut self, wait: Option<ControlFlowEffect>) {
+        self.wait = match (self.wait, wait) {
+            (Some(left), Some(right)) => Some(left.arbitrate(right)),
+            (Some(wait), None) | (None, Some(wait)) => Some(wait),
+            (None, None) => None,
+        };
+    }
 }
 
 fn process_ungated_action_batch<A>(
@@ -158,11 +162,6 @@ impl TabCoordinator {
         self.tabs.active_terminal()
     }
 
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    pub(crate) fn ui_controller(&self) -> TabUiController {
-        self.tab_ui.clone()
-    }
-
     pub(crate) fn sync_ui(&self, window: &Window) {
         self.tab_ui.sync(
             self.tabs.snapshots(),
@@ -216,75 +215,55 @@ impl TabCoordinator {
         })
     }
 
+    pub(crate) fn terminal_focus(&self) -> harbor_widget::widgets::FocusHandle {
+        self.tab_ui.terminal_focus()
+    }
+
     pub(crate) fn apply_tab_outcome(
         &mut self,
-        window: &Window,
-        runtime: &mut harbor_widget::runtime::Runtime,
-        adapter: &mut WinitAdapter,
+        host: &mut WinitWindowHost,
         outcome: TabActionOutcome,
         focus: TabFocusPolicy,
-    ) -> TabOutcomeEffects {
+    ) -> TabDrainOutcome {
+        let mut result = TabDrainOutcome::default();
         if outcome.close_window {
-            self.sync_ui(window);
-            runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-                harbor_widget::layout::Size::ZERO,
-            ));
-            let effects = adapter.fold_effects(runtime.update(Instant::now()));
-            return TabOutcomeEffects {
-                effects,
-                close_window: true,
-            };
+            self.sync_ui(host.window());
+            result.close_window = true;
+            return result;
         }
         let model_changed =
             outcome.active_bridge_changed || outcome.unread_changed || outcome.request_redraw;
         let focus_requested = focus != TabFocusPolicy::PreserveRail;
         if !model_changed && !focus_requested {
-            return TabOutcomeEffects::default();
+            return result;
         }
 
-        let mut effects = RuntimeEffects::default();
         if outcome.active_bridge_changed {
-            adapter.quarantine_active_pointers();
-            effects.merge(runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO));
-        }
-        if focus_requested {
-            runtime.clear_focus();
+            result.merge_wait(host.cancel_active_input_ownership().wait);
         }
         if model_changed {
-            self.sync_ui(window);
-            effects.merge(
-                runtime.invalidate_external(harbor_widget::effects::ExternalInvalidation::new()),
+            self.sync_ui(host.window());
+            result.merge_wait(
+                host.invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
+                    .wait,
             );
-            effects.merge(runtime.update(Instant::now()));
         }
-        let viewport = adapter.viewport();
+        let viewport = host.viewport().clone();
         self.apply_pending_allocation(viewport.scale_factor, viewport.physical_size);
-        let focus_effects = match focus {
-            TabFocusPolicy::PreserveRail => RuntimeEffects::default(),
-            TabFocusPolicy::RailTab(id) => self
-                .tab_ui
-                .tab_focus(id)
-                .map(|handle| runtime.request_focus(&handle))
-                .unwrap_or_default(),
-            TabFocusPolicy::Terminal => runtime.request_focus(&self.tab_ui.terminal_focus()),
+        let focus_handle = match focus {
+            TabFocusPolicy::PreserveRail => None,
+            TabFocusPolicy::RailTab(id) => self.tab_ui.tab_focus(id),
+            TabFocusPolicy::Terminal => Some(self.tab_ui.terminal_focus()),
         };
-        effects.merge(focus_effects);
-        effects.merge(runtime.take_pending_effects());
-        let effects = adapter.fold_effects(effects);
-        TabOutcomeEffects {
-            effects,
-            close_window: false,
+        if let Some(focus_handle) = focus_handle {
+            result.merge_wait(host.request_focus(&focus_handle).wait);
         }
+        result
     }
 
-    pub(crate) fn drain_tab_commands(
-        &mut self,
-        window: &Window,
-        runtime: &mut harbor_widget::runtime::Runtime,
-        adapter: &mut WinitAdapter,
-        event_loop: &ActiveEventLoop,
-    ) {
+    pub(crate) fn drain_tab_commands(&mut self, host: &mut WinitWindowHost) -> TabDrainOutcome {
         let input_gate = Arc::clone(&self.factory.input_gate);
+        let mut result = TabDrainOutcome::default();
         process_ungated_action_batch(self.tab_ui.drain_actions(), &input_gate, |request| {
             let focus = match (request.focus, request.command) {
                 (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
@@ -295,8 +274,7 @@ impl TabCoordinator {
                 (focus, _) => focus,
             };
             let outcome = match request.command {
-                TabCommand::New => match self.create_terminal_tab(adapter.viewport().physical_size)
-                {
+                TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
@@ -310,14 +288,15 @@ impl TabCoordinator {
                 TabCommand::Previous => self.tabs.activate_previous(),
                 TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
             };
-            let outcome_effects = self.apply_tab_outcome(window, runtime, adapter, outcome, focus);
-            apply_effects(window, &outcome_effects.effects, event_loop);
-            if outcome_effects.close_window {
-                event_loop.exit();
+            let action_result = self.apply_tab_outcome(host, outcome, focus);
+            result.merge_wait(action_result.wait);
+            if action_result.close_window {
+                result.close_window = true;
                 return false;
             }
             true
         });
+        result
     }
 }
 
@@ -388,8 +367,8 @@ mod tests {
     }
 
     #[test]
-    fn tab_outcome_effects_defaults_to_not_closing() {
-        let outcome = TabOutcomeEffects::default();
+    fn tab_drain_outcome_defaults_to_not_closing() {
+        let outcome = TabDrainOutcome::default();
         assert!(!outcome.close_window);
     }
 }

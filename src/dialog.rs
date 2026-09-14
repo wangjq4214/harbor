@@ -18,10 +18,11 @@ use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_app::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
-use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
+use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::winit::{
-    FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget,
+    FrameError, FrameOutcome, HostIdleOutcome, SharedGpu, WindowSurface, WinitAdapter,
+    WinitFrameTarget, WinitWindowHost,
 };
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -191,10 +192,10 @@ impl PasteController {
         &mut self,
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
-        gpu: &SharedGpu,
+        main_host: &WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> PasteEventOutcome {
-        let result = self.handle_event(event, event_loop, Some(gpu));
+        let result = self.handle_event(event, event_loop, Some(main_host.gpu()));
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
@@ -255,29 +256,26 @@ impl PasteController {
     pub(crate) fn paste_from_clipboard(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window: &Window,
-        gpu: &SharedGpu,
+        main_host: &mut WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
-        runtime: &mut Runtime,
-        adapter: &mut WinitAdapter,
-    ) -> RuntimeEffects {
+    ) -> HostIdleOutcome {
         let raw_text =
             match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
                 Ok(text) => text,
                 Err(error) => {
                     tracing::warn!(error = %error, "failed to read clipboard text");
-                    return RuntimeEffects::default();
+                    return HostIdleOutcome::default();
                 }
             };
 
         let confirmation = {
             let Some(active_terminal) = active_terminal else {
                 tracing::warn!("no active terminal for clipboard paste");
-                return RuntimeEffects::default();
+                return HostIdleOutcome::default();
             };
             let Ok(mut terminal) = active_terminal.lock() else {
                 tracing::warn!("terminal lock unavailable for clipboard paste");
-                return RuntimeEffects::default();
+                return HostIdleOutcome::default();
             };
             let input_modes = terminal.drain_and_snapshot().input_modes;
 
@@ -288,15 +286,14 @@ impl PasteController {
                     {
                         tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
                     }
-                    return RuntimeEffects::default();
+                    return HostIdleOutcome::default();
                 }
                 PasteDisposition::Confirm { raw_text } => {
-                    match ConfirmationWindow::new(raw_text, event_loop, gpu, runtime, Some(window))
-                    {
+                    match ConfirmationWindow::new(raw_text, event_loop, main_host) {
                         Ok(confirmation) => confirmation,
                         Err(error) => {
                             tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
-                            return RuntimeEffects::default();
+                            return HostIdleOutcome::default();
                         }
                     }
                 }
@@ -305,9 +302,7 @@ impl PasteController {
 
         self.window = Some(confirmation);
         self.input_gate.store(true, Ordering::Release);
-        adapter.quarantine_active_pointers();
-        let effects = runtime.cancel_pointer_captures(harbor_widget::layout::Point::ZERO);
-        adapter.fold_effects(effects)
+        main_host.cancel_active_input_ownership()
     }
 }
 
@@ -336,18 +331,11 @@ impl ConfirmationWindow {
     pub(crate) fn new(
         raw_text: String,
         event_loop: &ActiveEventLoop,
-        gpu: &SharedGpu,
-        source_runtime: &Runtime,
-        main_window: Option<&Window>,
+        main_host: &WinitWindowHost,
     ) -> anyhow::Result<Self> {
+        let gpu = main_host.gpu();
+        let main_window = Some(main_host.window());
         let line_count = raw_text.lines().count();
-        let metrics = *source_runtime.text_metrics();
-
-        let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
-            .floor() as usize;
-        let max_chars = max_chars.max(1);
-        let wrapped_lines = wrap_preview_text(&raw_text, max_chars);
-        let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
 
         let mut window_attrs = Window::default_attributes()
             .with_title("")
@@ -389,7 +377,14 @@ impl ConfirmationWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         let confirmed = Arc::new(AtomicBool::new(false));
 
-        let mut runtime = source_runtime.create_child_runtime(gpu.device(), format);
+        // T0004/T0006 removes this shared-text child Runtime when confirmation owns a host.
+        let mut runtime = main_host.create_transitional_child_runtime(format);
+        let metrics = *runtime.text_metrics();
+        let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
+            .floor() as usize;
+        let max_chars = max_chars.max(1);
+        let wrapped_lines = wrap_preview_text(&raw_text, max_chars);
+        let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
 
         let confirm_root = harbor_app::tab_view::ui::build_confirmation_root(
             line_count,

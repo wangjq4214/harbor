@@ -94,18 +94,6 @@ pub(crate) fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFl
     event_loop.set_control_flow(control_flow_for_effect(effect));
 }
 
-/// Applies window effects and updates control flow when requested.
-pub(crate) fn apply_effects(
-    window: &Window,
-    effects: &RuntimeEffects,
-    event_loop: &ActiveEventLoop,
-) {
-    apply_window_effects(window, effects);
-    if let Some(control_flow) = effects.control_flow {
-        apply_control_flow(event_loop, control_flow);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

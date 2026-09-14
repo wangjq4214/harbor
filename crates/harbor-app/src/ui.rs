@@ -25,19 +25,35 @@ use crate::{
 
 pub const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
 
-struct TabWorkspaceProps {
-    controller: TabUiController,
-    backdrop_available: bool,
-    backdrop_fallback: [f32; 3],
+/// Stable application-owned inputs used to construct the main-window root.
+#[derive(Clone)]
+pub struct MainWindowRootInputs {
+    pub controller: TabUiController,
+    pub backdrop_available: bool,
+    pub backdrop_fallback: [f32; 3],
+}
+
+impl MainWindowRootInputs {
+    pub fn new(
+        controller: TabUiController,
+        backdrop_available: bool,
+        backdrop_fallback: [f32; 3],
+    ) -> Self {
+        Self {
+            controller,
+            backdrop_available,
+            backdrop_fallback,
+        }
+    }
 }
 
 #[allow(dead_code)]
 pub fn tab_workspace(controller: TabUiController, backdrop_available: bool) -> impl Component {
-    tab_workspace_with_fallback(
+    main_window_root(MainWindowRootInputs::new(
         controller,
         backdrop_available,
         harbor_config::WindowBackdropStyle::default().fallback,
-    )
+    ))
 }
 
 pub fn tab_workspace_with_fallback(
@@ -45,15 +61,19 @@ pub fn tab_workspace_with_fallback(
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
 ) -> impl Component {
-    let props = TabWorkspaceProps {
+    main_window_root(MainWindowRootInputs::new(
         controller,
         backdrop_available,
         backdrop_fallback,
-    };
-    move |cx: &mut BuildCx| render_tab_workspace(cx, &props)
+    ))
 }
 
-fn render_tab_workspace(cx: &mut BuildCx, props: &TabWorkspaceProps) -> View {
+/// Builds the static main-window root from the same stable inputs used by HMR.
+pub fn main_window_root(inputs: MainWindowRootInputs) -> impl Component {
+    move |cx: &mut BuildCx| render_tab_workspace(cx, &inputs)
+}
+
+fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View {
     let state = props.controller.store.watch(cx).clone();
     let dispatcher = props.controller.store.dispatcher();
     let action_dispatcher = dispatcher.clone();

@@ -13,13 +13,21 @@
 #[cfg(target_os = "windows")]
 pub(crate) mod wasdk;
 
-#[cfg(target_os = "windows")]
 use std::cell::RefCell;
 #[cfg(target_os = "windows")]
 use windows_core::w;
 
 use harbor_config::WindowBackdropStyle;
-use winit::window::{Window, WindowAttributes};
+use harbor_terminal::alpha_mode_supports_transparency;
+use harbor_widget::winit::{WindowPlatformHooks, WindowSurfaceInfo};
+use winit::{
+    dpi::LogicalSize,
+    window::{Theme, Window, WindowAttributes},
+};
+
+use crate::chrome::harbor_window_icon;
+#[cfg(target_os = "windows")]
+use crate::chrome::{paint_gdi_background, suppress_caption_title_and_icon};
 
 /// Which tier of the Windows backdrop fallback chain is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +56,101 @@ pub(crate) struct BackdropStatus {
 pub(crate) trait WindowBackdropBackend {
     fn configure_attributes(&self, attrs: WindowAttributes) -> WindowAttributes;
     fn apply(&self, window: &Window, style: &WindowBackdropStyle) -> BackdropStatus;
+}
+
+/// Application-owned platform policy for the main native window.
+pub(crate) struct MainWindowPlatformHooks {
+    backend: RefCell<Option<Box<dyn WindowBackdropBackend>>>,
+    style: WindowBackdropStyle,
+}
+
+impl MainWindowPlatformHooks {
+    pub(crate) fn new(backend: Box<dyn WindowBackdropBackend>, style: WindowBackdropStyle) -> Self {
+        Self {
+            backend: RefCell::new(Some(backend)),
+            style,
+        }
+    }
+}
+
+/// Backdrop state retained for the complete host lifetime.
+pub(crate) struct MainWindowPlatformState {
+    _backend: Box<dyn WindowBackdropBackend>,
+    status: BackdropStatus,
+    alpha_mode: Option<wgpu::CompositeAlphaMode>,
+    backdrop_available: bool,
+}
+
+impl WindowPlatformHooks for MainWindowPlatformHooks {
+    type Setup = MainWindowPlatformState;
+
+    fn configure_attributes(
+        &self,
+        attributes: WindowAttributes,
+    ) -> anyhow::Result<WindowAttributes> {
+        let mut attributes = attributes
+            .with_title("Harbor")
+            .with_inner_size(LogicalSize::new(1200.0, 600.0))
+            .with_window_icon(harbor_window_icon())
+            .with_theme(Some(Theme::Dark))
+            .with_visible(false);
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes = attributes.with_taskbar_icon(harbor_window_icon());
+        }
+        let backend = self.backend.borrow();
+        let backend = backend
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("main window platform hooks were already consumed"))?;
+        Ok(backend.configure_attributes(attributes))
+    }
+
+    fn window_created(&self, window: &Window) -> anyhow::Result<Self::Setup> {
+        // Winit 0.30 emits composition commits only after IME is explicitly enabled.
+        window.set_ime_allowed(true);
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::WindowExtWindows;
+            suppress_caption_title_and_icon(window);
+            // Caption theming may reset both HWND icon slots, so restore them afterward.
+            window.set_window_icon(harbor_window_icon());
+            window.set_taskbar_icon(harbor_window_icon());
+        }
+        let backend =
+            self.backend.borrow_mut().take().ok_or_else(|| {
+                anyhow::anyhow!("main window platform hooks were already consumed")
+            })?;
+        let status = backend.apply(window, &self.style);
+        Ok(MainWindowPlatformState {
+            _backend: backend,
+            status,
+            alpha_mode: None,
+            backdrop_available: false,
+        })
+    }
+
+    fn surface_ready(
+        &self,
+        window: &Window,
+        setup: &mut Self::Setup,
+        surface: WindowSurfaceInfo,
+    ) -> anyhow::Result<bool> {
+        setup.alpha_mode = Some(surface.alpha_mode);
+        setup.backdrop_available =
+            setup.status.backdrop_available && alpha_mode_supports_transparency(surface.alpha_mode);
+        #[cfg(target_os = "windows")]
+        if !setup.backdrop_available {
+            paint_gdi_background(window, self.style.fallback);
+        }
+        tracing::info!(
+            backdrop_available = setup.backdrop_available,
+            tier = ?setup.status.tier,
+            alpha_mode = ?surface.alpha_mode,
+            "main window backdrop selected"
+        );
+        Ok(setup.backdrop_available)
+    }
 }
 
 /// Selects a backend for the given OS facts without touching any platform API.
@@ -484,6 +587,20 @@ impl WindowBackdropBackend for OpaqueBackend {
 #[cfg(test)]
 mod opaque_backend_tests {
     use super::*;
+
+    #[test]
+    fn main_window_hooks_preserve_hidden_startup_attributes() {
+        let hooks =
+            MainWindowPlatformHooks::new(Box::new(OpaqueBackend), WindowBackdropStyle::default());
+        let attributes = hooks
+            .configure_attributes(Window::default_attributes())
+            .expect("configure main window attributes");
+
+        assert_eq!(attributes.title, "Harbor");
+        assert!(!attributes.visible);
+        assert_eq!(attributes.preferred_theme, Some(Theme::Dark));
+        assert!(attributes.window_icon.is_some());
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

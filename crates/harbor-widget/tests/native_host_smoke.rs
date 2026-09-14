@@ -29,15 +29,20 @@ impl NativeHostSmoke {
                 .with_visible(false)
                 .with_inner_size(winit::dpi::LogicalSize::new(64.0, 64.0)),
             |_context: HostInitContext<'_>, _setup: &()| {
-                Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(Size::new(
-                    64.0, 64.0,
-                )))
+                Ok::<_, anyhow::Error>((
+                    harbor_widget::widgets::sized_box::SizedBox::new(Size::new(64.0, 64.0)),
+                    17_u32,
+                ))
             },
         );
-        match shared_gpu {
-            Some(gpu) => pollster::block_on(builder.reuse_gpu(gpu).build(event_loop)),
-            None => pollster::block_on(builder.build(event_loop)),
-        }
+        let result = match shared_gpu {
+            Some(gpu) => pollster::block_on(builder.reuse_gpu(gpu).build_with_output(event_loop)),
+            None => pollster::block_on(builder.build_with_output(event_loop)),
+        };
+        result.map(|(host, output)| {
+            assert_eq!(output, 17);
+            host
+        })
     }
 
     fn present(host: &mut WinitWindowHost) -> Result<(), String> {

@@ -9,8 +9,8 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
     FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
-    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurface, WinitAdapter,
-    WinitEventOutcome, WinitFrameTarget, WinitWindowHost, WinitWindowHostBuilder,
+    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurface, WindowSurfaceInfo,
+    WinitAdapter, WinitEventOutcome, WinitFrameTarget, WinitWindowHost, WinitWindowHostBuilder,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -184,6 +184,17 @@ impl WindowPlatformHooks for ContractHooks {
     fn window_created(&self, _window: &Window) -> anyhow::Result<Self::Setup> {
         Ok(7)
     }
+
+    fn surface_ready(
+        &self,
+        _window: &Window,
+        setup: &mut Self::Setup,
+        surface: WindowSurfaceInfo,
+    ) -> anyhow::Result<bool> {
+        assert_ne!(surface.physical_size, (0, 0));
+        *setup += 1;
+        Ok(true)
+    }
 }
 
 #[allow(dead_code)]
@@ -191,21 +202,27 @@ async fn owned_host_contract(
     event_loop: &winit::event_loop::ActiveEventLoop,
     shared_gpu: Arc<SharedGpu>,
 ) -> Result<(), HostStartupError> {
-    let first: WinitWindowHost = WinitWindowHostBuilder::new(
+    let (first, application_output): (WinitWindowHost, u32) = WinitWindowHostBuilder::new(
         Window::default_attributes().with_visible(false),
         |context: HostInitContext<'_>, setup: &u32| {
             let _ = context.window().id();
             let _ = context.gpu().device();
+            let _ = context.shared_gpu();
             let _ = context.surface();
-            assert_eq!(*setup, 7);
-            Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(
-                harbor_widget::layout::Size::new(16.0, 16.0),
+            assert!(context.backdrop_available());
+            assert_eq!(*setup, 8);
+            Ok::<_, anyhow::Error>((
+                harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::new(
+                    16.0, 16.0,
+                )),
+                42,
             ))
         },
     )
     .with_platform_hooks(ContractHooks)
-    .build(event_loop)
+    .build_with_output(event_loop)
     .await?;
+    assert_eq!(application_output, 42);
 
     let mut second: WinitWindowHost = WinitWindowHostBuilder::new(
         Window::default_attributes().with_visible(false),
@@ -224,7 +241,21 @@ async fn owned_host_contract(
     let _ = first.window_id();
     let _ = first.gpu();
     let _ = first.shared_gpu();
+    let _ = first.viewport();
+    let _ = first.modifiers();
+    let _ = first.backdrop_available();
+    let _ = first.create_transitional_child_runtime(wgpu::TextureFormat::Bgra8UnormSrgb);
     let _: HostIdleOutcome = second.request_frame();
+    let _: HostFrameOutcome = second.present_now();
+    let focus = harbor_widget::widgets::FocusHandle::new();
+    let _: HostIdleOutcome = second.request_focus(&focus);
+    let _: HostIdleOutcome = second.clear_focus();
+    let _: HostIdleOutcome = second.cancel_active_input_ownership();
+    second.quarantine_blocked_pointer_event(&WindowEvent::Focused(true));
+    let _: HostIdleOutcome = second.replace_root_for_reload(
+        harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::ZERO),
+    );
+    let _: HostIdleOutcome = second.unmount_root_for_reload();
     let _: HostIdleOutcome =
         second.invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
     let _: HostIdleOutcome = second.about_to_wait(Instant::now(), None);
