@@ -7,7 +7,8 @@ use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, Primitive,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalDrawMode,
+    Primitive,
 };
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
@@ -247,11 +248,12 @@ impl FrameEncoder {
     /// Applies a pending SceneDelta and encodes draw calls in paint order.
     pub(crate) fn encode<'a>(
         &'a mut self,
-        queue: &wgpu::Queue,
+        gpu: ExternalDrawGpu<'a>,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
         scene: EncodeScene<'_>,
     ) {
+        let queue = gpu.queue();
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
             None => return,
@@ -320,7 +322,13 @@ impl FrameEncoder {
                             invocation.scissor.2,
                             invocation.scissor.3,
                         );
-                        cb(invocation.id, &invocation.context, pass, invocation.mode);
+                        cb(
+                            invocation.id,
+                            &invocation.context,
+                            gpu,
+                            pass,
+                            invocation.mode,
+                        );
                         if invocation.apply_rounded_mask {
                             // Handlers may replace scissor; dest-in must stay on the plan.
                             pass.set_scissor_rect(

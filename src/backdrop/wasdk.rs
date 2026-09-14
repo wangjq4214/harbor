@@ -284,7 +284,7 @@ mod tests {
     fn should_occupy_distinct_composition_layers_when_stacked_with_renderer() {
         // Arrange
         let backdrop_topmost = BACKDROP_TARGET_IS_TOPMOST;
-        let renderer_topmost = harbor_terminal::render::gpu::RENDER_TARGET_IS_TOPMOST;
+        let renderer_topmost = harbor_widget::winit::RENDER_TARGET_IS_TOPMOST;
 
         // Act
         let is_distinct = backdrop_topmost != renderer_topmost;

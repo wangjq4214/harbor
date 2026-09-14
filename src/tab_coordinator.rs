@@ -8,10 +8,12 @@ use std::{
 use harbor_pty::PtyEndpoints;
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    GpuContext, Terminal, TerminalAppearance, TerminalSize, TextMetrics, load_system_fonts,
+    Terminal, TerminalAppearance, TerminalGpuAccess, TerminalSize, TextMetrics, load_system_fonts,
 };
 use harbor_widget::{
-    effects::RuntimeEffects, scene::primitive::ExternalDrawId, winit::WinitAdapter,
+    effects::RuntimeEffects,
+    scene::primitive::ExternalDrawId,
+    winit::{SharedGpu, WinitAdapter},
 };
 use winit::{
     event_loop::{ActiveEventLoop, EventLoopProxy},
@@ -46,7 +48,8 @@ fn process_ungated_action_batch<A>(
 
 /// Factory configuration for spawning new Host-owned terminal tabs.
 pub(crate) struct TerminalTabFactory {
-    gpu: Arc<GpuContext>,
+    gpu: Arc<SharedGpu>,
+    format: wgpu::TextureFormat,
     shell_command: ShellCommand,
     font_settings: harbor_config::FontSettings,
     metrics: TextMetrics,
@@ -59,7 +62,8 @@ pub(crate) struct TerminalTabFactory {
 impl TerminalTabFactory {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        gpu: Arc<GpuContext>,
+        gpu: Arc<SharedGpu>,
+        format: wgpu::TextureFormat,
         shell_command: ShellCommand,
         font_settings: harbor_config::FontSettings,
         metrics: TextMetrics,
@@ -70,6 +74,7 @@ impl TerminalTabFactory {
     ) -> Self {
         Self {
             gpu,
+            format,
             shell_command,
             font_settings,
             metrics,
@@ -84,8 +89,8 @@ impl TerminalTabFactory {
         self.metrics
     }
 
-    pub(crate) fn default_terminal_size(&self) -> TerminalSize {
-        Terminal::terminal_size_for(&self.gpu, &self.metrics)
+    pub(crate) fn default_terminal_size(&self, surface_size: (u32, u32)) -> TerminalSize {
+        Terminal::terminal_size_for(surface_size, &self.metrics)
     }
 
     pub(crate) fn create_resources(
@@ -93,6 +98,7 @@ impl TerminalTabFactory {
         tab_id: TabId,
         draw_id: ExternalDrawId,
         size: TerminalSize,
+        surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
         let fonts = load_system_fonts(&self.font_settings)?;
         let endpoints = PtyEndpoints::spawn_shell(
@@ -103,10 +109,13 @@ impl TerminalTabFactory {
             &self.shell_command,
         )?;
         let event_proxy = self.event_proxy.clone();
+        let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
+        let surface_size = (surface_size.0.max(1), surface_size.1.max(1));
         let mut terminal = Terminal::try_new_with_appearance_from_endpoints(
             size,
             endpoints,
-            &self.gpu,
+            gpu,
+            surface_size,
             fonts,
             self.metrics,
             self.appearance,
@@ -119,12 +128,8 @@ impl TerminalTabFactory {
         terminal.set_backdrop_available(self.backdrop_available);
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
-        let bridge = TerminalWidgetBridge::with_gpu(
-            draw_id,
-            Arc::clone(&terminal),
-            Arc::clone(&self.gpu),
-            Arc::clone(&self.input_gate),
-        );
+        let bridge =
+            TerminalWidgetBridge::new(draw_id, Arc::clone(&terminal), Arc::clone(&self.input_gate));
         Ok(TerminalTabResources::new(terminal, bridge))
     }
 }
@@ -197,13 +202,18 @@ impl TabCoordinator {
         self.tabs.resize_all_if_changed(size)
     }
 
-    pub(crate) fn create_terminal_tab(&mut self) -> anyhow::Result<TabActionOutcome> {
+    pub(crate) fn create_terminal_tab(
+        &mut self,
+        surface_size: (u32, u32),
+    ) -> anyhow::Result<TabActionOutcome> {
         let size = self
             .tabs
             .last_broadcast_size()
-            .unwrap_or_else(|| self.factory.default_terminal_size());
-        self.tabs
-            .create_tab(|tab_id, draw_id| self.factory.create_resources(tab_id, draw_id, size))
+            .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
+        self.tabs.create_tab(|tab_id, draw_id| {
+            self.factory
+                .create_resources(tab_id, draw_id, size, surface_size)
+        })
     }
 
     pub(crate) fn apply_tab_outcome(
@@ -285,7 +295,8 @@ impl TabCoordinator {
                 (focus, _) => focus,
             };
             let outcome = match request.command {
-                TabCommand::New => match self.create_terminal_tab() {
+                TabCommand::New => match self.create_terminal_tab(adapter.viewport().physical_size)
+                {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");

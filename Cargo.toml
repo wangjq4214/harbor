@@ -85,8 +85,8 @@ winresource = "0.1"
 
 [features]
 default = []
-backend-dx12 = ["harbor-terminal/backend-dx12"]
-backend-vulkan = ["harbor-terminal/backend-vulkan"]
+backend-dx12 = ["harbor-widget/backend-dx12"]
+backend-vulkan = ["harbor-widget/backend-vulkan"]
 dhat-heap = ["dep:dhat"]
 widget-hot-reload = ["dep:hot-lib-reloader"]
 

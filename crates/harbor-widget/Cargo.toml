@@ -14,9 +14,14 @@ tracing = { workspace = true }
 harbor-widget-macros = { workspace = true }
 winit = { workspace = true, optional = true }
 
+[target."cfg(windows)".dependencies]
+windows = { workspace = true, optional = true }
+
 [features]
 default = []
-winit = ["dep:winit"]
+winit = ["dep:winit", "dep:windows"]
+backend-dx12 = []
+backend-vulkan = []
 
 [dev-dependencies]
 pollster = { workspace = true }

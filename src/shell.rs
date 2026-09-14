@@ -31,19 +31,21 @@ use harbor_app::tab_view::TabUiController;
 use harbor_app::tab_view::ui::tab_workspace_with_fallback;
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    GpuContext, Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency,
-    load_system_fonts,
+    Terminal, TerminalAppearance, TextMetrics, alpha_mode_supports_transparency, load_system_fonts,
 };
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::winit::{FrameOutcome, WinitAdapter, WinitFrameTarget};
+use harbor_widget::winit::{
+    FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget,
+};
 
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
-    window: Arc<Window>,
-    gpu: Arc<GpuContext>,
-    tabs: TabCoordinator,
+    // All surfaces and terminal GPU resources must drop before the shared instance, adapter,
+    // and native window they reference.
+    surface: WindowSurface,
     paste: PasteController,
+    tabs: TabCoordinator,
     widget_runtime: harbor_widget::runtime::Runtime,
     winit_adapter: WinitAdapter,
     _backdrop: Box<dyn WindowBackdropBackend>,
@@ -52,6 +54,8 @@ pub(crate) struct ActiveSession {
     backdrop_fallback: [f32; 3],
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
+    gpu: Arc<SharedGpu>,
+    window: Arc<Window>,
 }
 
 /// Winit coordinator managing the application lifecycle and active session state.
@@ -416,20 +420,15 @@ impl ActiveSession {
 
     fn render_frame(&mut self, event_loop: &ActiveEventLoop, frame: &mut FrameState) -> bool {
         let outcome = {
-            let mut configure = |width, height| self.gpu.configure_size(width, height);
-            let (surface, device, queue) = self.gpu.borrow_frame();
             let target = WinitFrameTarget::new(
                 &self.window,
-                surface,
-                device,
-                queue,
-                &mut configure,
+                &self.gpu,
+                &mut self.surface,
                 self.backdrop_available,
-                self.gpu.alpha_mode(),
             );
             self.winit_adapter
                 .render_with_prepare(&mut self.widget_runtime, target, |runtime| {
-                    runtime.prepare_text(queue);
+                    runtime.prepare_text(self.gpu.queue());
                 })
         };
         self.sync_terminal_allocation(event_loop);
@@ -461,7 +460,8 @@ impl ActiveSession {
 /// Initializes the persistent tab workspace once; subsequent model changes use its Signal.
 fn init_widget_runtime(
     window: &Arc<Window>,
-    gpu: &GpuContext,
+    gpu: &SharedGpu,
+    format: wgpu::TextureFormat,
     tab_ui: TabUiController,
     backdrop_available: bool,
     backdrop_fallback: [f32; 3],
@@ -475,9 +475,9 @@ fn init_widget_runtime(
     let mut runtime = harbor_widget::runtime::Runtime::new();
     let root = build_application_root(tab_ui.clone(), backdrop_available, backdrop_fallback)?;
     set_application_root(&mut runtime, root)?;
-    runtime.init_renderer(gpu.device(), gpu.format());
+    runtime.init_renderer(gpu.device(), format);
     runtime
-        .init_text_renderer(gpu.device(), gpu.queue(), gpu.format())
+        .init_text_renderer(gpu.device(), gpu.queue(), format)
         .map_err(ShellError::Renderer)?;
     runtime.set_viewport(initial_viewport);
     let mut initial_effects = runtime.update(Instant::now());
@@ -549,12 +549,12 @@ impl Shell {
             backdrop_available: backdrop_applied,
         } = backdrop.apply(&window, &backdrop_style);
 
+        let (gpu, surface) =
+            pollster::block_on(SharedGpu::new(window.clone())).map_err(ShellError::Renderer)?;
         #[allow(clippy::arc_with_non_send_sync)]
-        let gpu = Arc::new(
-            pollster::block_on(GpuContext::new(window.clone())).map_err(ShellError::Renderer)?,
-        );
+        let gpu = Arc::new(gpu);
         let main_window_backdrop_available =
-            backdrop_applied && alpha_mode_supports_transparency(gpu.alpha_mode());
+            backdrop_applied && alpha_mode_supports_transparency(surface.alpha_mode());
         #[cfg(target_os = "windows")]
         if !main_window_backdrop_available {
             paint_gdi_background(&window, backdrop_style.fallback);
@@ -564,7 +564,7 @@ impl Shell {
         tracing::info!(
             backdrop_available = main_window_backdrop_available,
             tier = ?tier,
-            alpha_mode = ?gpu.alpha_mode(),
+            alpha_mode = ?surface.alpha_mode(),
             "main window backdrop selected"
         );
 
@@ -572,12 +572,13 @@ impl Shell {
         let font_settings = settings.font.clone();
         let fonts = load_system_fonts(&font_settings).map_err(ShellError::Renderer)?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
-        let size = Terminal::terminal_size_for(&gpu, &metrics);
+        let size = Terminal::terminal_size_for(surface.size(), &metrics);
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
         let input_gate = Arc::new(AtomicBool::new(false));
         let event_proxy = self.event_proxy.clone();
         let factory = TerminalTabFactory::new(
             Arc::clone(&gpu),
+            surface.format(),
             shell_command,
             font_settings,
             metrics,
@@ -587,8 +588,10 @@ impl Shell {
             Arc::clone(&input_gate),
         );
         let mut tabs = TabManager::new();
-        tabs.create_tab(|tab_id, draw_id| factory.create_resources(tab_id, draw_id, size))
-            .map_err(ShellError::Tab)?;
+        tabs.create_tab(|tab_id, draw_id| {
+            factory.create_resources(tab_id, draw_id, size, surface.size())
+        })
+        .map_err(ShellError::Tab)?;
 
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         let mut winit_adapter = WinitAdapter::from_window(&window);
@@ -604,6 +607,7 @@ impl Shell {
         let (widget_runtime, initial_effects) = init_widget_runtime(
             &window,
             &gpu,
+            surface.format(),
             tab_ui.clone(),
             main_window_backdrop_available,
             backdrop_style.fallback,
@@ -612,9 +616,10 @@ impl Shell {
         let paste = PasteController::new(input_gate);
         let mut session = ActiveSession {
             window,
-            gpu,
-            tabs,
+            surface,
             paste,
+            tabs,
+            gpu,
             widget_runtime,
             winit_adapter,
             _backdrop: backdrop,
@@ -641,12 +646,10 @@ mod tests {
 
     // Compile-only coverage for the feature-gated Host contract.
     #[allow(dead_code)]
-    fn winit_runtime_contract_fixture<'frame, 'surface>(
+    fn winit_runtime_contract_fixture<'frame>(
         window: &'frame Window,
-        surface: &'frame wgpu::Surface<'surface>,
-        device: &'frame wgpu::Device,
-        queue: &'frame wgpu::Queue,
-        configure: &'frame mut dyn FnMut(u32, u32),
+        gpu: &'frame SharedGpu,
+        surface: &'frame mut WindowSurface,
     ) {
         use harbor_widget::{
             runtime::Runtime,
@@ -664,15 +667,7 @@ mod tests {
         let _: HandleEventWithSize = WinitAdapter::handle_event_with_size;
         let mut runtime = Runtime::new();
         let mut adapter = WinitAdapter::new();
-        let target = WinitFrameTarget::new(
-            window,
-            surface,
-            device,
-            queue,
-            configure,
-            false,
-            wgpu::CompositeAlphaMode::Opaque,
-        );
+        let target = WinitFrameTarget::new(window, gpu, surface, false);
         let outcome: FrameOutcome = adapter.render(&mut runtime, target);
         let _ = outcome;
     }

@@ -905,8 +905,6 @@ dependencies = [
  "tracing",
  "unicode-width",
  "wgpu",
- "windows",
- "winit",
 ]
 
 [[package]]
@@ -936,6 +934,7 @@ dependencies = [
  "slotmap",
  "tracing",
  "wgpu",
+ "windows",
  "winit",
 ]
 

@@ -4,9 +4,9 @@
 
 use harbor_terminal::{
     Background, CellAttrs, Color, RenderTarget, RenderViewport, Terminal, TerminalAppearance,
-    TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
-    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
-    alpha_mode_supports_transparency,
+    TerminalEvent, TerminalFocusEvent, TerminalGpuAccess, TerminalKey, TerminalKeyboardEvent,
+    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    TextMetrics, alpha_mode_supports_transparency,
 };
 
 #[test]
@@ -158,34 +158,48 @@ fn should_only_support_premultiplied_alpha_for_transparent_terminal_frames() {
     }
 }
 
-#[cfg(target_os = "windows")]
 #[test]
-fn should_expose_topmost_render_target_flag_when_on_windows() {
-    // Arrange
-    let expected = true;
-
-    // Act
-    let is_topmost = harbor_terminal::render::gpu::RENDER_TARGET_IS_TOPMOST;
-
-    // Assert
-    assert_eq!(is_topmost, expected);
+fn harbor_terminal_manifest_has_no_native_window_or_composition_dependencies() {
+    let manifest = include_str!("../Cargo.toml");
+    for forbidden in ["winit", "windows =", "backend-dx12", "backend-vulkan"] {
+        assert!(
+            !manifest
+                .lines()
+                .any(|line| line.trim().starts_with(forbidden)),
+            "terminal manifest must not contain {forbidden}"
+        );
+    }
 }
 
 #[test]
-fn should_support_safe_gpu_context_construction_without_shared_visual_when_instantiated() {
-    // Arrange
-    fn assert_safe_signature<F, Fut>(_: F)
-    where
-        F: Fn(std::sync::Arc<winit::window::Window>) -> Fut,
-        Fut: std::future::Future<Output = anyhow::Result<harbor_terminal::render::gpu::GpuContext>>,
-    {
-    }
+fn terminal_grid_size_uses_the_explicit_current_surface_size() {
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 17.0,
+        underline_thickness: 1.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 1.0,
+    };
 
-    // Act
-    let constructor = harbor_terminal::render::gpu::GpuContext::new;
+    let initial = Terminal::terminal_size_for((800, 600), &metrics);
+    let resized = Terminal::terminal_size_for((1200, 800), &metrics);
 
-    // Assert
-    assert_safe_signature(constructor);
+    assert!(resized.cols > initial.cols);
+    assert!(resized.rows > initial.rows);
+}
+
+#[allow(dead_code)]
+fn borrowed_terminal_gpu_access_contract(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+) {
+    let gpu = TerminalGpuAccess::new(device, queue, format);
+    let _ = gpu.device();
+    let _ = gpu.queue();
+    assert_eq!(gpu.format(), format);
 }
 
 // ── TerminalEvent ───────────────────────────────────────────────────────────

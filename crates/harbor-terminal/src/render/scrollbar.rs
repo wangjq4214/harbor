@@ -6,7 +6,7 @@ use harbor_config::{
     SCROLLBAR_WIDTH,
 };
 
-use super::gpu::{self, ColoredVertex, GpuContext};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use crate::render::RenderViewport;
 
 // ── Scrollbar uniform ─────────────────────────────────────────────────────────
@@ -256,7 +256,11 @@ pub struct Scrollbar {
 }
 
 impl Scrollbar {
-    pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, viewport: &RenderViewport) -> Self {
+    pub fn new(
+        gpu: TerminalGpuAccess<'_>,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+    ) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
 
         let initial_vertices = build_vertices(snap, viewport);
@@ -363,7 +367,7 @@ impl Scrollbar {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
     ) {

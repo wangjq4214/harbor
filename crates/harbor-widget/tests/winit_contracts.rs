@@ -8,7 +8,8 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
-    FrameError, FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget,
+    FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitEventOutcome,
+    WinitFrameTarget,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,25 +21,27 @@ use winit::event::{
 use winit::keyboard::{Key, KeyLocation, ModifiersState};
 use winit::window::Window;
 
+#[test]
+fn widget_manifest_does_not_depend_on_terminal_or_application_crates() {
+    let manifest = include_str!("../Cargo.toml");
+    for forbidden in ["harbor-terminal", "harbor-app"] {
+        assert!(
+            !manifest
+                .lines()
+                .any(|line| line.trim().starts_with(forbidden)),
+            "widget manifest must not depend on {forbidden}"
+        );
+    }
+}
 // This fixture is type-checked without constructing an OS window or GPU
 // surface. In particular, the target owns no host resources.
-fn borrowed_frame_contract<'frame, 'surface>(
+fn borrowed_frame_contract<'frame>(
     window: &'frame Window,
-    surface: &'frame wgpu::Surface<'surface>,
-    device: &'frame wgpu::Device,
-    queue: &'frame wgpu::Queue,
-    configure: &'frame mut dyn FnMut(u32, u32),
+    gpu: &'frame SharedGpu,
+    surface: &'frame mut WindowSurface,
     event: &WindowEvent,
 ) {
-    let target = WinitFrameTarget::new(
-        window,
-        surface,
-        device,
-        queue,
-        configure,
-        false,
-        wgpu::CompositeAlphaMode::Opaque,
-    );
+    let target = WinitFrameTarget::new(window, gpu, surface, false);
     let _ = target.window();
     let _ = target.surface();
     let _ = target.device();

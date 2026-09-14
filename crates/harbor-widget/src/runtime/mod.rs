@@ -15,7 +15,9 @@ use crate::renderer::Viewport;
 use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalScheduleFn,
+};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
 use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
@@ -484,13 +486,13 @@ impl Runtime {
     /// `commit` live-encodes ineligible externals this pass (recovery / force).
     pub fn encode<'a>(
         &'a mut self,
-        queue: &wgpu::Queue,
+        gpu: ExternalDrawGpu<'a>,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
         commit: bool,
     ) {
         self.encoder.encode(
-            queue,
+            gpu,
             pass,
             viewport,
             EncodeScene {
@@ -848,7 +850,7 @@ mod tests {
                 self.0.set(self.0.get() + 1);
                 // Fresh registrations on each build make identity checks detect
                 // even a rebuild which otherwise emits identical scene content.
-                let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+                let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
                 let schedule: Arc<ExternalScheduleFn> =
                     Arc::new(|_, _| ExternalScheduleDemand::empty());
                 Row::new()
@@ -1496,7 +1498,7 @@ mod tests {
 
     #[test]
     fn runtime_with_custom_paint_root_reports_external_draws() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(77).handler(handler));
         rt.update(now());
@@ -1525,7 +1527,7 @@ mod tests {
 
     #[test]
     fn should_report_external_draws_when_handler_is_nested_in_subtree() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(Column::new().child(CustomPaint::new(79).handler(handler)));
         rt.update(now());
@@ -1535,7 +1537,7 @@ mod tests {
 
     #[test]
     fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(80).handler(handler));
         rt.update(now());

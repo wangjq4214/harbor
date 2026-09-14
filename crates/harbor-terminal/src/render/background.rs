@@ -2,7 +2,7 @@ use crate::model::TerminalSnapshot;
 use harbor_config::Palette;
 use std::sync::Arc;
 
-use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess, UploadMode};
 use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange};
 
@@ -29,16 +29,17 @@ impl Background {
     /// Creates the background render pipeline and pre-allocates a vertex buffer
     /// for the full grid (rows × cols × 6 vertices) plus a 6-vertex quad that
     /// covers the whole allocation with the default tint.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        initial_surface_size: (u32, u32),
         snap: &TerminalSnapshot,
         cell_width: f32,
         line_height: f32,
         tint: [f32; 4],
         palette: Palette,
     ) -> Self {
-        let pipeline = gpu.colored_quad_pipeline();
-
         let rows = snap.rows;
         let cols = snap.cols;
         let max_vertices = rows * cols * 6;
@@ -61,12 +62,11 @@ impl Background {
         };
 
         // Build initial vertex data and upload.
-        let (surface_w, surface_h) = gpu.surface_size();
         let viewport = RenderViewport::with_surface(
             cell_width,
             line_height,
-            (surface_w, surface_h),
-            (surface_w, surface_h),
+            initial_surface_size,
+            initial_surface_size,
         );
         let verts = layer.build_all_vertices(snap, &viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
@@ -95,7 +95,7 @@ impl Background {
         )
     }
 
-    fn upload_full_rect(&self, gpu: &GpuContext, viewport: &RenderViewport) {
+    fn upload_full_rect(&self, gpu: TerminalGpuAccess<'_>, viewport: &RenderViewport) {
         let full_rect = Self::build_full_rect_vertices(viewport, self.tint);
         gpu.write_buffer(&self.full_rect_buffer, 0, bytemuck::cast_slice(&full_rect));
     }
@@ -182,7 +182,7 @@ impl Background {
 
     pub fn prepare_with_dirty(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
@@ -259,7 +259,7 @@ impl Background {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
         tint: [f32; 4],

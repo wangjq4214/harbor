@@ -4,7 +4,7 @@ use harbor_config::Palette;
 use anyhow::Result;
 use wgpu::util::DeviceExt;
 
-use super::gpu::{self, GpuContext, TexturedVertex, UploadMode};
+use super::gpu::{self, TerminalGpuAccess, TexturedVertex, UploadMode};
 use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange};
 #[cfg(test)]
@@ -230,7 +230,11 @@ impl Text {
     }
 
     /// Apply CPU atlas changes to the GPU atlas / vertex dirty state.
-    fn apply_rasterize_result(&mut self, gpu: &GpuContext, result: harbor_text::RasterizeResult) {
+    fn apply_rasterize_result(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        result: harbor_text::RasterizeResult,
+    ) {
         match atlas_gpu_sync(&result) {
             AtlasGpuSync::None => {}
             AtlasGpuSync::Incremental => {
@@ -252,7 +256,7 @@ impl Text {
     /// Creates the text pipeline, rasterises all unique characters on the initial
     /// screen snapshot, and uploads vertex data for every cell.
     pub fn new(
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         fonts: FontBook,
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
@@ -458,7 +462,7 @@ impl Text {
 
     pub fn prepare_with_dirty(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
@@ -536,7 +540,7 @@ impl Text {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
     ) {

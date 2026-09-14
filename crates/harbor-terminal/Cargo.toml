@@ -3,11 +3,6 @@ name = "harbor-terminal"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = []
-backend-dx12 = []
-backend-vulkan = []
-
 [dependencies]
 harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
@@ -20,10 +15,5 @@ bytemuck = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
 wgpu = { workspace = true }
-winit = { workspace = true }
-
-[target."cfg(windows)".dependencies]
-windows = { workspace = true }
-
 [dev-dependencies]
 proptest = { workspace = true }

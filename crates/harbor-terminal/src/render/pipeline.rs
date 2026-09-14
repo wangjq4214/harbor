@@ -1,15 +1,17 @@
 use crate::damage::DirtyRange;
 use crate::model::{TerminalSnapshot, UpdateDamage};
 use crate::render::{
-    Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection, Text,
+    Background, Cursor, Decoration, RenderViewport, Scrollbar, Selection, TerminalGpuAccess, Text,
 };
 use harbor_config::Palette;
 use harbor_text::{FontBook, TextMetrics};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
     viewport: RenderViewport,
+    _colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
     pub background: Background,
     pub text: Text,
     pub decoration: Decoration,
@@ -20,22 +22,30 @@ pub struct TerminalRenderPipeline {
 
 impl TerminalRenderPipeline {
     pub fn new(
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
         snap: &TerminalSnapshot,
         tint: [f32; 4],
         palette: Palette,
     ) -> anyhow::Result<Self> {
-        let (surface_w, surface_h) = gpu.surface_size();
+        let initial_surface_size = (initial_surface_size.0.max(1), initial_surface_size.1.max(1));
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
             metrics.line_height,
-            (surface_w, surface_h),
-            (surface_w, surface_h),
+            initial_surface_size,
+            initial_surface_size,
         );
+        let colored_quad_pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+            gpu.device(),
+            gpu.format(),
+            "terminal colored-quad pipeline",
+        ));
         let background = Background::new(
             gpu,
+            Arc::clone(&colored_quad_pipeline),
+            initial_surface_size,
             snap,
             metrics.cell_width,
             metrics.line_height,
@@ -43,13 +53,21 @@ impl TerminalRenderPipeline {
             palette,
         );
         let text = Text::new(gpu, font_book, metrics, snap, &viewport, palette)?;
-        let decoration = Decoration::new(gpu, snap, metrics, palette);
-        let selection = Selection::new(gpu, palette.selection);
+        let decoration = Decoration::new(
+            gpu,
+            Arc::clone(&colored_quad_pipeline),
+            initial_surface_size,
+            snap,
+            metrics,
+            palette,
+        );
+        let selection = Selection::new(gpu, Arc::clone(&colored_quad_pipeline), palette.selection);
         let cursor = Cursor::new(gpu, metrics, palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
             viewport,
+            _colored_quad_pipeline: colored_quad_pipeline,
             background,
             text,
             decoration,
@@ -78,7 +96,7 @@ impl TerminalRenderPipeline {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
         now: Instant,

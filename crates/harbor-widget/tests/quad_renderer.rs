@@ -9,7 +9,7 @@ use harbor_widget::renderer::quad::QuadRenderer;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::clip::RoundedClip;
 use harbor_widget::scene::primitive::{
-    Color, ExternalDrawContext, ExternalDrawFn, ExternalDrawMode, Primitive,
+    Color, ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawMode, Primitive,
 };
 use harbor_widget::scene::{SceneDelta, SceneItem};
 use harbor_widget::widgets::custom_paint::CustomPaint;
@@ -46,6 +46,10 @@ fn try_create_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 /// Creates a headless RenderPass backed by a throwaway 256×256 texture.
+fn draw_gpu<'a>(device: &'a wgpu::Device, queue: &'a wgpu::Queue) -> ExternalDrawGpu<'a> {
+    ExternalDrawGpu::new(device, queue, wgpu::TextureFormat::Bgra8Unorm)
+}
+
 fn create_render_pass<'a>(
     device: &wgpu::Device,
     encoder: &'a mut wgpu::CommandEncoder,
@@ -509,7 +513,7 @@ fn should_preserve_shadow_fill_external_border_order_across_flushes() {
         view_formats: &[],
     });
     let pipeline = create_solid_pipeline(&device);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });
@@ -551,7 +555,7 @@ fn should_preserve_shadow_fill_external_border_order_across_flushes() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     queue.submit(Some(encoder.finish()));
     let pixels = read_texture(&device, &queue, &target);
@@ -695,7 +699,7 @@ fn should_render_a_visible_hard_edge_for_a_zero_blur_decorated_shadow() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1407,7 +1411,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
     let invoked = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&invoked);
     let handler: Arc<ExternalDrawFn<'static>> =
-        Arc::new(move |_draw_id, _context, _pass, _mode| {
+        Arc::new(move |_draw_id, _context, _gpu, _pass, _mode| {
             observed.store(true, Ordering::SeqCst);
         });
     let viewport = Viewport::new(0, 256, 1.0);
@@ -1420,7 +1424,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1440,7 +1444,7 @@ fn should_invoke_external_draw_with_correct_rect() {
     let callback_called = AtomicBool::new(false);
 
     let external_draw: &harbor_widget::scene::primitive::ExternalDrawFn<'_> =
-        &|draw_id, cb_rect, _pass, _mode| {
+        &|draw_id, cb_rect, _gpu, _pass, _mode| {
             callback_called.store(true, Ordering::SeqCst);
             assert_eq!(draw_id, 42);
             assert_eq!(cb_rect.logical_rect.min.x, 10.0);
@@ -1454,7 +1458,13 @@ fn should_invoke_external_draw_with_correct_rect() {
         let mut pass = create_render_pass(&device, &mut encoder);
         let context = ExternalDrawContext::new(rect, Viewport::new(256, 256, 1.0));
 
-        external_draw(42, &context, &mut pass, ExternalDrawMode::Live);
+        external_draw(
+            42,
+            &context,
+            draw_gpu(&device, &_queue),
+            &mut pass,
+            ExternalDrawMode::Live,
+        );
     }
     encoder.finish();
 
@@ -1471,9 +1481,10 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
     // Arrange: a Runtime whose root CustomPaint registers a handler.
     let invoked_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let observed_draw_id = Arc::clone(&invoked_draw_id);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, _context, _pass, _mode| {
-        observed_draw_id.store(draw_id, Ordering::SeqCst);
-    });
+    let handler: Arc<ExternalDrawFn<'static>> =
+        Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
+            observed_draw_id.store(draw_id, Ordering::SeqCst);
+        });
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
@@ -1486,7 +1497,7 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
         let mut pass = create_render_pass(&device, &mut encoder);
 
         // Act: encode the External primitive without supplying an external callback.
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1505,13 +1516,13 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     let first_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let first_observed = Arc::clone(&first_draw_id);
     let first_handler: Arc<ExternalDrawFn<'static>> =
-        Arc::new(move |draw_id, _context, _pass, _mode| {
+        Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
             first_observed.store(draw_id, Ordering::SeqCst);
         });
     let second_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let second_observed = Arc::clone(&second_draw_id);
     let second_handler: Arc<ExternalDrawFn<'static>> =
-        Arc::new(move |draw_id, _context, _pass, _mode| {
+        Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
             second_observed.store(draw_id, Ordering::SeqCst);
         });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -1528,7 +1539,7 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1553,6 +1564,7 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
         Arc::new(
             move |draw_id: u64,
                   context: &ExternalDrawContext,
+                  _gpu: ExternalDrawGpu<'_>,
                   _pass: &mut wgpu::RenderPass<'_>,
                   _mode| {
                 order.lock().unwrap().push(draw_id);
@@ -1588,7 +1600,7 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1627,7 +1639,7 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
         view_formats: &[],
     });
     let pipeline = create_solid_pipeline(&device);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });
@@ -1663,7 +1675,7 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
             timestamp_writes: None,
             multiview_mask: None,
         });
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1689,12 +1701,12 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
     // Arrange: two CustomPaint children register distinct handlers for one draw ID.
     let first_calls = Arc::new(AtomicU64::new(0));
     let first_observed = Arc::clone(&first_calls);
-    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _| {
+    let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
         first_observed.fetch_add(1, Ordering::SeqCst);
     });
     let last_calls = Arc::new(AtomicU64::new(0));
     let last_observed = Arc::clone(&last_calls);
-    let last_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _| {
+    let last_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
         last_observed.fetch_add(1, Ordering::SeqCst);
     });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -1712,7 +1724,7 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1731,7 +1743,7 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     // Arrange: a Runtime with an initially registered CustomPaint handler.
     let calls = Arc::new(AtomicU64::new(0));
     let observed_calls = Arc::clone(&calls);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
         observed_calls.fetch_add(1, Ordering::SeqCst);
     });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -1745,7 +1757,12 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut initial_encoder);
-        runtime.encode(&queue, &mut pass, viewport.clone(), false);
+        runtime.encode(
+            draw_gpu(&device, &queue),
+            &mut pass,
+            viewport.clone(),
+            false,
+        );
     }
     initial_encoder.finish();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1757,7 +1774,7 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut replacement_encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     replacement_encoder.finish();
 
@@ -1785,7 +1802,7 @@ fn should_skip_external_primitive_when_custom_paint_has_no_handler() {
         let mut pass = create_render_pass(&device, &mut encoder);
 
         // Act: encode the External primitive without a registered handler.
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
 
     // Assert: the unhandled External primitive is skipped without a validation error or panic.
@@ -1819,7 +1836,7 @@ fn should_pass_retain_or_live_mode_from_eligibility_and_commit() {
 
     let mode = Arc::new(Mutex::new(None));
     let observed = Arc::clone(&mode);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, draw_mode| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, draw_mode| {
         *observed.lock().unwrap() = Some(draw_mode);
     });
     let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
@@ -1836,7 +1853,12 @@ fn should_pass_retain_or_live_mode_from_eligibility_and_commit() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport.clone(), false);
+        runtime.encode(
+            draw_gpu(&device, &queue),
+            &mut pass,
+            viewport.clone(),
+            false,
+        );
     }
     encoder.finish();
     assert_eq!(*mode.lock().unwrap(), Some(ExternalDrawMode::Retain));
@@ -1844,7 +1866,7 @@ fn should_pass_retain_or_live_mode_from_eligibility_and_commit() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, true);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, true);
     }
     encoder.finish();
     assert_eq!(*mode.lock().unwrap(), Some(ExternalDrawMode::Live));
@@ -1860,7 +1882,7 @@ fn should_select_live_when_encode_has_no_deferred_ids() {
     // Arrange — no schedule collect, so missing ids default to Live
     let mode = Arc::new(Mutex::new(None));
     let observed = Arc::clone(&mode);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, draw_mode| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, draw_mode| {
         *observed.lock().unwrap() = Some(draw_mode);
     });
     let viewport = Viewport::new(256, 256, 1.0);
@@ -1874,7 +1896,7 @@ fn should_select_live_when_encode_has_no_deferred_ids() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -1896,10 +1918,10 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     let retain_mode = Arc::new(Mutex::new(None));
     let live_observed = Arc::clone(&live_mode);
     let retain_observed = Arc::clone(&retain_mode);
-    let live_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, draw_mode| {
+    let live_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, draw_mode| {
         *live_observed.lock().unwrap() = Some(draw_mode);
     });
-    let retain_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, draw_mode| {
+    let retain_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, draw_mode| {
         *retain_observed.lock().unwrap() = Some(draw_mode);
     });
     let eligible: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
@@ -1926,7 +1948,7 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = create_render_pass(&device, &mut encoder);
-        runtime.encode(&queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(&device, &queue), &mut pass, viewport, false);
     }
     encoder.finish();
 
@@ -2181,7 +2203,7 @@ fn encode_root_to_pixels(
             timestamp_writes: None,
             multiview_mask: None,
         });
-        runtime.encode(queue, &mut pass, viewport, false);
+        runtime.encode(draw_gpu(device, queue), &mut pass, viewport, false);
     }
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, size)
@@ -2193,7 +2215,7 @@ fn solid_external(device: &wgpu::Device, draw_id: u64) -> CustomPaint {
 
 fn solid_external_rgb(device: &wgpu::Device, draw_id: u64, r: f32, g: f32, b: f32) -> CustomPaint {
     let pipeline = create_solid_pipeline_rgb(device, r, g, b);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });
@@ -2287,7 +2309,8 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
     let id = Arc::clone(&observed_id);
     let rects = Arc::clone(&observed_rect);
     let modes = Arc::clone(&observed_mode);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, context, _, mode| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, context, gpu, _, mode| {
+        assert_eq!(gpu.target_format(), wgpu::TextureFormat::Bgra8Unorm);
         id.store(draw_id, Ordering::SeqCst);
         *rects.lock().unwrap() = Some(context.logical_rect);
         *modes.lock().unwrap() = Some(mode);
@@ -2388,7 +2411,7 @@ fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
         return;
     };
     let pipeline = create_solid_pipeline(&device);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, pass, mode| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, mode| {
         assert_eq!(mode, ExternalDrawMode::Retain);
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
@@ -2578,7 +2601,7 @@ fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
         return;
     };
     let pipeline = create_solid_pipeline(&device);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, pass, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, _, pass, _| {
         let (x, y, w, h) = context.scissor_rect();
         pass.set_scissor_rect(x, y, w, h);
         pass.set_pipeline(&pipeline);

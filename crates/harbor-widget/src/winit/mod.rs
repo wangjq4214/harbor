@@ -5,6 +5,7 @@
 //! Host policy (close requests and window routing) remains outside this module.
 
 mod event;
+mod gpu;
 mod presenter;
 mod surface;
 
@@ -26,6 +27,9 @@ use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent}
 use winit::keyboard::{Key, KeyLocation, ModifiersState};
 use winit::window::Window;
 
+#[cfg(target_os = "windows")]
+pub use gpu::RENDER_TARGET_IS_TOPMOST;
+pub use gpu::{SharedGpu, WindowSurface, select_compositing_alpha_mode};
 pub use presenter::{FrameError, FrameOutcome, WinitFrameTarget};
 
 /// The host-visible result of offering one winit event to a window adapter.

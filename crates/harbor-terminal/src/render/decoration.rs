@@ -3,7 +3,7 @@ use harbor_config::Palette;
 use harbor_text::TextMetrics;
 use std::sync::Arc;
 
-use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess, UploadMode};
 use super::text::glyph_color_with_palette;
 use crate::render::RenderViewport;
 use crate::{CellAttrs, DirtyRange};
@@ -91,13 +91,13 @@ impl Decoration {
     }
 
     pub fn new(
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        initial_surface_size: (u32, u32),
         snap: &TerminalSnapshot,
         metrics: TextMetrics,
         palette: Palette,
     ) -> Self {
-        let pipeline = gpu.colored_quad_pipeline();
-
         let rows = snap.rows;
         let cols = snap.cols;
         let max_vertices = rows * cols * 6;
@@ -106,12 +106,11 @@ impl Decoration {
         let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
         let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
 
-        let (surface_w, surface_h) = gpu.surface_size();
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
             metrics.line_height,
-            (surface_w, surface_h),
-            (surface_w, surface_h),
+            initial_surface_size,
+            initial_surface_size,
         );
         let u = build_underline_vertices(&metrics, snap, &viewport, &palette);
         let s = build_strikethrough_vertices(&metrics, snap, &viewport, &palette);
@@ -136,7 +135,7 @@ impl Decoration {
 
     pub fn prepare_with_dirty(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
@@ -239,7 +238,7 @@ impl Decoration {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
     ) {

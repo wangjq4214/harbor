@@ -2,7 +2,7 @@ use crate::model::{SelectionBounds, TerminalSnapshot};
 use harbor_config::Rgba;
 use std::sync::Arc;
 
-use super::gpu::{self, ColoredVertex, GpuContext};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use crate::render::RenderViewport;
 
 // ── Selection (outer — GPU) ──────────────────────────────────────
@@ -28,8 +28,11 @@ impl Selection {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, color: Rgba) -> Self {
-        let pipeline = gpu.colored_quad_pipeline();
+    pub fn new(
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        color: Rgba,
+    ) -> Self {
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
         Self {
             pipeline,
@@ -44,7 +47,7 @@ impl Selection {
     }
 
     /// Ensures the vertex buffer capacity can hold `rows * cols * 6` vertices.
-    fn ensure_capacity(&mut self, gpu: &GpuContext, rows: usize, cols: usize) {
+    fn ensure_capacity(&mut self, gpu: TerminalGpuAccess<'_>, rows: usize, cols: usize) {
         let required = rows * cols * 6;
         if required > self.vertex_cap {
             let cap = required.max(64);
@@ -123,7 +126,7 @@ impl Selection {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
     ) {

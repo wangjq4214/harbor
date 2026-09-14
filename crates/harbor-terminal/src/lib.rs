@@ -27,7 +27,7 @@ pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use pointer::PointerInteraction;
 pub use render::{
-    Background, Cursor, Decoration, GpuContext, RenderViewport, Scrollbar, Selection,
+    Background, Cursor, Decoration, RenderViewport, Scrollbar, Selection, TerminalGpuAccess,
     TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
     alpha_mode_supports_transparency,
 };
@@ -77,7 +77,8 @@ impl Terminal {
         pty_read: R,
         pty_write: W,
         pty_control: PtyControl,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
         wake: impl Fn() -> bool + Send + 'static,
@@ -92,6 +93,7 @@ impl Terminal {
             pty_write,
             pty_control,
             gpu,
+            initial_surface_size,
             font_book,
             metrics,
             TerminalAppearance::default(),
@@ -106,7 +108,8 @@ impl Terminal {
         pty_read: R,
         pty_write: W,
         pty_control: PtyControl,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
         appearance: TerminalAppearance,
@@ -122,6 +125,7 @@ impl Terminal {
 
         let renderer = TerminalRenderPipeline::new(
             gpu,
+            initial_surface_size,
             font_book,
             metrics,
             &snap,
@@ -143,7 +147,8 @@ impl Terminal {
     pub fn try_new_with_appearance_from_endpoints(
         size: TerminalSize,
         endpoints: PtyEndpoints,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
+        initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
         appearance: TerminalAppearance,
@@ -154,6 +159,7 @@ impl Terminal {
         let snap = terminal.screen.terminal_snapshot();
         let renderer = TerminalRenderPipeline::new(
             gpu,
+            initial_surface_size,
             font_book,
             metrics,
             &snap,
@@ -166,14 +172,13 @@ impl Terminal {
         Ok(terminal)
     }
 
-    /// Calculates the grid dimensions used by a rendered terminal at the current surface size.
-    pub fn terminal_size_for(gpu: &GpuContext, metrics: &TextMetrics) -> TerminalSize {
-        let (width, height) = gpu.surface_size();
+    /// Calculates the grid dimensions used by a rendered terminal at an explicit surface size.
+    pub fn terminal_size_for(surface_size: (u32, u32), metrics: &TextMetrics) -> TerminalSize {
         RenderViewport::with_surface(
             metrics.cell_width,
             metrics.line_height,
-            (width, height),
-            (width, height),
+            surface_size,
+            surface_size,
         )
         .compute_grid_size()
     }
@@ -229,7 +234,7 @@ impl Terminal {
     }
 
     /// Prepares GPU resources for all render components.
-    pub fn prepare(&mut self, gpu: &GpuContext, damage: Option<&UpdateDamage>) {
+    pub fn prepare(&mut self, gpu: TerminalGpuAccess<'_>, damage: Option<&UpdateDamage>) {
         let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
         if let Some(renderer) = &mut self.renderer {
@@ -239,7 +244,12 @@ impl Terminal {
     }
 
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
-    pub fn render(&mut self, target: RenderTarget, pass: &mut wgpu::RenderPass, gpu: &GpuContext) {
+    pub fn render(
+        &mut self,
+        target: RenderTarget,
+        pass: &mut wgpu::RenderPass,
+        gpu: TerminalGpuAccess<'_>,
+    ) {
         let Some(metrics) = self.text_metrics().copied() else {
             return;
         };
@@ -268,7 +278,7 @@ impl Terminal {
         &mut self,
         target: RenderTarget,
         pass: &mut wgpu::RenderPass,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
     ) {
         if self.retain_geometry_changed(target) {
             self.render(target, pass, gpu);

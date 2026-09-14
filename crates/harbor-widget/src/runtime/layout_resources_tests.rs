@@ -2,7 +2,7 @@
 use crate::layout::{Alignment, Rect};
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
-use crate::scene::primitive::{Color, ExternalDrawFn, Primitive};
+use crate::scene::primitive::{Color, ExternalDrawFn, ExternalDrawGpu, Primitive};
 use crate::widgets::custom_paint::CustomPaint;
 use crate::widgets::text_label::TextLabel;
 use crate::{
@@ -135,7 +135,12 @@ fn encode(rt: &mut Runtime, device: &wgpu::Device, queue: &wgpu::Queue, viewport
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        rt.encode(queue, &mut pass, viewport, true);
+        rt.encode(
+            ExternalDrawGpu::new(device, queue, wgpu::TextureFormat::Bgra8Unorm),
+            &mut pass,
+            viewport,
+            true,
+        );
     }
     queue.submit([encoder.finish()]);
 }
@@ -153,7 +158,7 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
     let (_texture, layout, group) = atlas(&device);
     let draws = Arc::new(Mutex::new(Vec::<Rect>::new()));
     let recorded = Arc::clone(&draws);
-    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, _, _| {
+    let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, _, _, _| {
         recorded.lock().unwrap().push(context.logical_rect);
     });
     let mut rt = Runtime::new();

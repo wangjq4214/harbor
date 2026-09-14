@@ -157,15 +157,52 @@ impl ExternalDrawMode {
         }
     }
 }
+/// Frame-scoped GPU capabilities offered to external widget drawing.
+#[derive(Clone, Copy)]
+pub struct ExternalDrawGpu<'frame> {
+    device: &'frame wgpu::Device,
+    queue: &'frame wgpu::Queue,
+    target_format: wgpu::TextureFormat,
+}
+
+impl<'frame> ExternalDrawGpu<'frame> {
+    pub fn new(
+        device: &'frame wgpu::Device,
+        queue: &'frame wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            device,
+            queue,
+            target_format,
+        }
+    }
+
+    pub fn device(self) -> &'frame wgpu::Device {
+        self.device
+    }
+
+    pub fn queue(self) -> &'frame wgpu::Queue {
+        self.queue
+    }
+
+    pub const fn target_format(self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+}
 
 /// Signature for an external draw callback.
 ///
 /// Called by [`crate::runtime::Runtime::encode`] when a [`Primitive::External`] is
-/// encountered. The callback receives the draw ID, the geometry context, the
-/// active RenderPass (with scissor already set), and whether this pass may
-/// upload live content.
-pub type ExternalDrawFn<'a> =
-    dyn Fn(ExternalDrawId, &ExternalDrawContext, &mut wgpu::RenderPass<'_>, ExternalDrawMode) + 'a;
+/// encountered. The callback receives the draw ID, geometry, frame-scoped GPU access, the
+/// active RenderPass (with scissor already set), and whether this pass may upload live content.
+pub type ExternalDrawFn<'a> = dyn Fn(
+        ExternalDrawId,
+        &ExternalDrawContext,
+        ExternalDrawGpu<'_>,
+        &mut wgpu::RenderPass<'_>,
+        ExternalDrawMode,
+    ) + 'a;
 
 /// Widget-neutral scheduling snapshot from one external schedule provider.
 ///

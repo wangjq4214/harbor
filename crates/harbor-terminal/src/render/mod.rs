@@ -13,7 +13,9 @@ pub use background::Background;
 pub use cursor::Cursor;
 pub use cursor_blink::CursorBlinkState;
 pub use decoration::Decoration;
-pub use gpu::{GpuContext, UploadMode, UploadPlan, UploadPolicy, alpha_mode_supports_transparency};
+pub use gpu::{
+    TerminalGpuAccess, UploadMode, UploadPlan, UploadPolicy, alpha_mode_supports_transparency,
+};
 pub use layout::RenderViewport;
 pub use pipeline::TerminalRenderPipeline;
 pub use scrollbar::{Scrollbar, ScrollbarHit, hit_test, offset_for_thumb};

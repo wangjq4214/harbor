@@ -4,7 +4,7 @@ use harbor_text::TextMetrics;
 use std::time::Instant;
 
 use super::cursor_blink::CursorBlinkState;
-use super::gpu::{self, GpuContext, TexturedVertex};
+use super::gpu::{self, TerminalGpuAccess, TexturedVertex};
 use crate::CursorShape;
 use crate::FrameDemand;
 use crate::render::RenderViewport;
@@ -73,7 +73,7 @@ impl Cursor {
         self.dirty
     }
 
-    pub fn new(gpu: &GpuContext, metrics: TextMetrics, color: Rgba) -> Self {
+    pub fn new(gpu: TerminalGpuAccess<'_>, metrics: TextMetrics, color: Rgba) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let vertex_buffer =
             gpu::create_vertex_buffer(gpu.device(), &[TexturedVertex::default(); 6]);
@@ -156,7 +156,7 @@ impl Cursor {
 
     pub fn prepare(
         &mut self,
-        gpu: &GpuContext,
+        gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
         now: Instant,

@@ -17,10 +17,12 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_app::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
-use harbor_terminal::{GpuContext, InputModes, PasteDisposition, Terminal};
+use harbor_terminal::{InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::{ControlFlowEffect, RuntimeEffects};
 use harbor_widget::runtime::Runtime;
-use harbor_widget::winit::{FrameError, FrameOutcome, WinitAdapter, WinitFrameTarget};
+use harbor_widget::winit::{
+    FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget,
+};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
@@ -189,7 +191,7 @@ impl PasteController {
         &mut self,
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
-        gpu: &GpuContext,
+        gpu: &SharedGpu,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> PasteEventOutcome {
         let result = self.handle_event(event, event_loop, Some(gpu));
@@ -223,7 +225,7 @@ impl PasteController {
         &mut self,
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
-        gpu: Option<&GpuContext>,
+        gpu: Option<&SharedGpu>,
     ) -> DialogOutcome {
         let Some(mut confirmation) = self.window.take() else {
             return DialogOutcome::None;
@@ -238,7 +240,7 @@ impl PasteController {
                 if matches!(event, WindowEvent::RedrawRequested)
                     && let Some(gpu) = gpu
                 {
-                    let frame = confirmation.render(gpu.device(), gpu.queue());
+                    let frame = confirmation.render(gpu);
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
                         return DialogOutcome::Fatal(error);
@@ -254,7 +256,7 @@ impl PasteController {
         &mut self,
         event_loop: &ActiveEventLoop,
         window: &Window,
-        gpu: &GpuContext,
+        gpu: &SharedGpu,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
         runtime: &mut Runtime,
         adapter: &mut WinitAdapter,
@@ -289,7 +291,14 @@ impl PasteController {
                     return RuntimeEffects::default();
                 }
                 PasteDisposition::Confirm { raw_text } => {
-                    ConfirmationWindow::new(raw_text, event_loop, gpu, runtime, Some(window))
+                    match ConfirmationWindow::new(raw_text, event_loop, gpu, runtime, Some(window))
+                    {
+                        Ok(confirmation) => confirmation,
+                        Err(error) => {
+                            tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
+                            return RuntimeEffects::default();
+                        }
+                    }
                 }
             }
         };
@@ -310,9 +319,7 @@ impl PasteController {
 /// Renders a minimal confirmation dialog: header text showing line count,
 /// Paste and Cancel buttons, with Paste focused by default.
 pub(crate) struct ConfirmationWindow {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
+    surface: WindowSurface,
     runtime: Runtime,
     /// Per-window winit integration, including input, scheduling, viewport,
     /// and surface-recovery state.
@@ -322,16 +329,17 @@ pub(crate) struct ConfirmationWindow {
     confirmed: Arc<AtomicBool>,
     wrapped_lines: Vec<String>,
     preview_scroll_offset: Arc<AtomicUsize>,
+    window: Arc<Window>,
 }
 
 impl ConfirmationWindow {
     pub(crate) fn new(
         raw_text: String,
         event_loop: &ActiveEventLoop,
-        gpu: &GpuContext,
+        gpu: &SharedGpu,
         source_runtime: &Runtime,
         main_window: Option<&Window>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let line_count = raw_text.lines().count();
         let metrics = *source_runtime.text_metrics();
 
@@ -370,43 +378,12 @@ impl ConfirmationWindow {
             ));
         }
 
-        let window = Arc::new(
-            event_loop
-                .create_window(window_attrs)
-                .expect("create confirmation window"),
-        );
+        let window = Arc::new(event_loop.create_window(window_attrs)?);
+        let surface = gpu.create_window_surface(Arc::clone(&window))?;
+        let format = surface.format();
 
-        let surface = gpu.create_surface(Arc::clone(&window));
-
-        let caps = gpu.surface_capabilities(&surface);
-        let format = gpu.format();
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| *f == format)
-            .unwrap_or(caps.formats[0]);
-        let alpha_mode = caps
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
-
-        // Surface config uses physical pixel dimensions.
         let physical_size = window.inner_size();
         let drawable = physical_size.width != 0 && physical_size.height != 0;
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: physical_size.width.max(1),
-            height: physical_size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(gpu.device(), &surface_config);
 
         // ── Widget Runtime setup ──────────────────────────────────────
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -442,10 +419,8 @@ impl ConfirmationWindow {
             apply_control_flow(event_loop, control_flow);
         }
 
-        ConfirmationWindow {
-            window,
+        Ok(ConfirmationWindow {
             surface,
-            surface_config,
             runtime,
             adapter,
             raw_text,
@@ -453,7 +428,8 @@ impl ConfirmationWindow {
             confirmed,
             wrapped_lines,
             preview_scroll_offset,
-        }
+            window,
+        })
     }
 
     pub(crate) fn window_id(&self) -> winit::window::WindowId {
@@ -536,32 +512,17 @@ impl ConfirmationWindow {
 
     /// Presents one frame through the shared winit integration using borrowed
     /// confirmation resources and shared Device, Queue, and text atlas data.
-    pub(crate) fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> FrameOutcome {
+    pub(crate) fn render(&mut self, gpu: &SharedGpu) -> FrameOutcome {
         let ConfirmationWindow {
             window,
             surface,
-            surface_config,
             runtime,
             adapter,
             ..
         } = self;
-        let alpha_mode = surface_config.alpha_mode;
-        let mut configure = |width, height| {
-            surface_config.width = width;
-            surface_config.height = height;
-            surface.configure(device, surface_config);
-        };
-        let target = WinitFrameTarget::new(
-            window,
-            surface,
-            device,
-            queue,
-            &mut configure,
-            false,
-            alpha_mode,
-        );
+        let target = WinitFrameTarget::new(window, gpu, surface, false);
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text(queue);
+            runtime.prepare_text(gpu.queue());
         })
     }
 

@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use harbor_terminal::{
-    RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent, TerminalKey,
-    TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton, TerminalPointerEvent,
-    TerminalPointerPhase, TerminalSize, TextMetrics,
+    RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent, TerminalGpuAccess,
+    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
+    TerminalPointerEvent, TerminalPointerPhase, TerminalSize, TextMetrics,
 };
 use harbor_widget::input::event::{
     FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerPhase, UiEvent,
@@ -19,7 +19,6 @@ use harbor_widget::scene::primitive::{
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
-use harbor_terminal::GpuContext;
 use harbor_widget::layout::{Point, Rect};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::scene::primitive::Color;
@@ -229,41 +228,33 @@ impl TerminalWidgetBridge {
         terminal: Arc<Mutex<Terminal>>,
         gate_active: Arc<AtomicBool>,
     ) -> Self {
-        Self::new_internal(draw_id, terminal, None, gate_active)
-    }
-
-    /// Creates a stable bridge bound to a shared GPU context for custom paint.
-    pub fn with_gpu(
-        draw_id: ExternalDrawId,
-        terminal: Arc<Mutex<Terminal>>,
-        gpu: Arc<GpuContext>,
-        gate_active: Arc<AtomicBool>,
-    ) -> Self {
-        Self::new_internal(draw_id, terminal, Some(gpu), gate_active)
+        Self::new_internal(draw_id, terminal, gate_active)
     }
 
     fn new_internal(
         draw_id: ExternalDrawId,
         terminal: Arc<Mutex<Terminal>>,
-        gpu: Option<Arc<GpuContext>>,
         gate_active: Arc<AtomicBool>,
     ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
-        let draw_gpu = gpu;
-        // ExternalDrawFn is Arc-typed; the closure captures UI-thread Terminal.
+        // ExternalDrawFn is Arc-typed; the closure captures only the UI-thread Terminal.
         #[allow(clippy::arc_with_non_send_sync)]
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |id, context, pass, mode| {
-            dispatch_matched_draw(draw_id, id, context, |target| {
-                if let Some(gpu) = &draw_gpu
-                    && let Ok(mut term) = draw_terminal.lock()
-                {
-                    match mode {
-                        ExternalDrawMode::Live => term.render(target, pass, gpu),
-                        ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+        let handler: Arc<ExternalDrawFn<'static>> =
+            Arc::new(move |id, context, external_gpu, pass, mode| {
+                dispatch_matched_draw(draw_id, id, context, |target| {
+                    if let Ok(mut term) = draw_terminal.lock() {
+                        let gpu = TerminalGpuAccess::new(
+                            external_gpu.device(),
+                            external_gpu.queue(),
+                            external_gpu.target_format(),
+                        );
+                        match mode {
+                            ExternalDrawMode::Live => term.render(target, pass, gpu),
+                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+                        }
                     }
-                }
+                });
             });
-        });
 
         let schedule_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]

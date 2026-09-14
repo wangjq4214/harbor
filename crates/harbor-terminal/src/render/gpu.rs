@@ -1,25 +1,6 @@
-use std::cell::RefCell;
-use std::sync::Arc;
-
-use anyhow::{Context as _, Result};
 use wgpu::util::DeviceExt;
-use winit::window::Window;
-
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
-};
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-#[cfg(target_os = "windows")]
-use windows::core::Interface;
-#[cfg(target_os = "windows")]
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::model::DirtyRange;
-
 /// Upload operation selected for a dirty grid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UploadMode {
@@ -108,61 +89,6 @@ impl UploadPolicy {
     }
 }
 
-fn selected_backends() -> wgpu::Backends {
-    #[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
-    {
-        wgpu::Backends::DX12 | wgpu::Backends::VULKAN
-    }
-    #[cfg(all(feature = "backend-dx12", not(feature = "backend-vulkan")))]
-    {
-        wgpu::Backends::DX12
-    }
-    #[cfg(all(not(feature = "backend-dx12"), feature = "backend-vulkan"))]
-    {
-        wgpu::Backends::VULKAN
-    }
-    #[cfg(all(
-        not(feature = "backend-dx12"),
-        not(feature = "backend-vulkan"),
-        target_os = "windows"
-    ))]
-    {
-        // Desktop Acrylic requires a DirectComposition-capable swap chain.
-        // wgpu's GL backend exposes only an opaque Win32 surface, so make
-        // DX12 the Windows default even when no backend override is enabled.
-        wgpu::Backends::DX12
-    }
-    #[cfg(all(
-        not(feature = "backend-dx12"),
-        not(feature = "backend-vulkan"),
-        not(target_os = "windows")
-    ))]
-    {
-        wgpu::Backends::all()
-    }
-}
-
-/// Picks a compositing-capable alpha mode for the main window surface.
-///
-/// Preference: `PreMultiplied`, then `PostMultiplied`, then `Auto`.
-/// `Opaque` is chosen only when no compositing mode is advertised.
-pub fn select_compositing_alpha_mode(
-    modes: &[wgpu::CompositeAlphaMode],
-) -> wgpu::CompositeAlphaMode {
-    use wgpu::CompositeAlphaMode::{Auto, PostMultiplied, PreMultiplied};
-
-    if modes.contains(&PreMultiplied) {
-        return PreMultiplied;
-    }
-    if modes.contains(&PostMultiplied) {
-        return PostMultiplied;
-    }
-    if modes.contains(&Auto) {
-        return Auto;
-    }
-    modes.first().copied().unwrap_or(Auto)
-}
-
 /// Returns true only for the alpha mode supported by the terminal's current
 /// straight-source blend pipelines. `PostMultiplied`, `Auto`, and `Inherit`
 /// are intentionally excluded until a matching pipeline path is implemented.
@@ -171,32 +97,8 @@ pub const fn alpha_mode_supports_transparency(mode: wgpu::CompositeAlphaMode) ->
 }
 
 #[cfg(test)]
-mod surface_tests {
+mod tests {
     use super::*;
-    use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
-
-    #[cfg(all(
-        target_os = "windows",
-        not(feature = "backend-dx12"),
-        not(feature = "backend-vulkan")
-    ))]
-    #[test]
-    fn should_default_to_dx12_on_windows_for_compositor_transparency() {
-        assert_eq!(selected_backends(), wgpu::Backends::DX12);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn should_configure_render_target_as_topmost_when_on_windows() {
-        // Arrange
-        let expected = true;
-
-        // Act
-        let is_topmost = RENDER_TARGET_IS_TOPMOST;
-
-        // Assert
-        assert_eq!(is_topmost, expected);
-    }
 
     fn range(row: usize, start_col: usize, end_col: usize) -> DirtyRange {
         DirtyRange {
@@ -207,67 +109,8 @@ mod surface_tests {
     }
 
     #[test]
-    fn should_select_premultiplied_when_all_compositing_modes_present() {
-        // Arrange
-        let modes = [Opaque, Auto, PostMultiplied, PreMultiplied];
-
-        // Act
-        let selected = select_compositing_alpha_mode(&modes);
-
-        // Assert
-        assert_eq!(selected, PreMultiplied);
-    }
-
-    #[test]
-    fn should_select_postmultiplied_when_premultiplied_absent() {
-        // Arrange
-        let modes = [Opaque, Auto, PostMultiplied];
-
-        // Act
-        let selected = select_compositing_alpha_mode(&modes);
-
-        // Assert
-        assert_eq!(selected, PostMultiplied);
-    }
-
-    #[test]
-    fn should_select_auto_when_only_auto_and_opaque() {
-        // Arrange
-        let modes = [Opaque, Auto];
-
-        // Act
-        let selected = select_compositing_alpha_mode(&modes);
-
-        // Assert
-        assert_eq!(selected, Auto);
-    }
-
-    #[test]
-    fn should_select_opaque_when_only_opaque_advertised() {
-        // Arrange
-        let modes = [Opaque];
-
-        // Act
-        let selected = select_compositing_alpha_mode(&modes);
-
-        // Assert
-        assert_eq!(selected, Opaque);
-    }
-
-    #[test]
-    fn should_select_auto_when_modes_empty() {
-        // Arrange
-        let modes: [wgpu::CompositeAlphaMode; 0] = [];
-
-        // Act
-        let selected = select_compositing_alpha_mode(&modes);
-
-        // Assert
-        assert_eq!(selected, Auto);
-    }
-
-    #[test]
     fn should_only_allow_supported_compositing_mode_for_transparency() {
+        use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
         assert!(alpha_mode_supports_transparency(PreMultiplied));
         assert!(!alpha_mode_supports_transparency(PostMultiplied));
         assert!(!alpha_mode_supports_transparency(Auto));
@@ -275,25 +118,6 @@ mod surface_tests {
         assert!(!alpha_mode_supports_transparency(
             wgpu::CompositeAlphaMode::Inherit
         ));
-    }
-
-    #[test]
-    fn should_never_select_opaque_when_compositing_mode_exists() {
-        // Arrange
-        let cases = [
-            &[PreMultiplied, Opaque][..],
-            &[Opaque, PostMultiplied][..],
-            &[Auto, Opaque][..],
-            &[Opaque, Auto, PostMultiplied, PreMultiplied][..],
-        ];
-
-        for modes in cases {
-            // Act
-            let selected = select_compositing_alpha_mode(modes);
-
-            // Assert
-            assert_ne!(selected, Opaque, "modes={modes:?}");
-        }
     }
 
     #[test]
@@ -338,269 +162,43 @@ mod surface_tests {
         );
     }
 }
-
-// ── GpuContext ────────────────────────────────────────────────────────────
-
-#[cfg(target_os = "windows")]
-struct CompositionHost {
-    device: IDCompositionDevice,
-    _target: IDCompositionTarget,
-    _visual: IDCompositionVisual,
-}
-
-#[cfg(target_os = "windows")]
-impl CompositionHost {
-    fn commit(&self) {
-        if let Err(error) = unsafe { self.device.Commit() } {
-            tracing::warn!(?error, "failed to commit DirectComposition surface");
-        }
-    }
-}
-
-/// The desktop composition target layer for the renderer surface is always the upper slot (ADR 0028).
-#[cfg(target_os = "windows")]
-pub const RENDER_TARGET_IS_TOPMOST: bool = true;
-
-#[cfg(target_os = "windows")]
-fn create_main_surface(
-    instance: &wgpu::Instance,
-    window: &Arc<Window>,
-    backends: wgpu::Backends,
-) -> Result<(wgpu::Surface<'static>, Option<CompositionHost>)> {
-    if !backends.contains(wgpu::Backends::DX12) {
-        return Ok((
-            instance
-                .create_surface(Arc::clone(window))
-                .context("create surface")?,
-            None,
-        ));
-    }
-
-    let handle = window.window_handle().context("get Win32 window handle")?;
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        anyhow::bail!("main window is not a Win32 window");
-    };
-
-    // A regular HWND swap chain is always reported as opaque by DXGI. Hosting
-    // wgpu's swap chain on a DirectComposition visual exposes premultiplied
-    // alpha, which lets DWM's Acrylic backdrop remain visible in the client area.
-    let device: IDCompositionDevice = unsafe {
-        DCompositionCreateDevice(None::<&IDXGIDevice>).context("create DirectComposition device")?
-    };
-    let target = unsafe {
-        device
-            .CreateTargetForHwnd(HWND(handle.hwnd.get() as *mut _), RENDER_TARGET_IS_TOPMOST)
-            .context("create DirectComposition window target")?
-    };
-    let visual = unsafe {
-        device
-            .CreateVisual()
-            .context("create DirectComposition visual")?
-    };
-    unsafe {
-        target
-            .SetRoot(&visual)
-            .context("set DirectComposition root visual")?;
-        device.Commit().context("commit DirectComposition tree")?;
-    }
-    let surface = unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(
-                visual.as_raw(),
-            ))
-            .context("create DirectComposition surface")?
-    };
-
-    Ok((
-        surface,
-        Some(CompositionHost {
-            device,
-            _target: target,
-            _visual: visual,
-        }),
-    ))
-}
-
-/// Shared GPU handles for layers to create and upload resources.
-///
-/// Fields are private — layers access device/queue/surface through methods only.
-pub struct GpuContext {
-    /// wgpu instance, kept alive for secondary surface creation (e.g. dialog windows).
-    instance: Arc<wgpu::Instance>,
-    /// Adapter, kept alive for secondary surface capability queries.
-    adapter: wgpu::Adapter,
-    /// Keeps the DirectComposition visual tree alive for the main surface.
-    #[cfg(target_os = "windows")]
-    _composition_host: Option<CompositionHost>,
-    /// wgpu surface bound to the main window, provides frame buffers.
-    surface: wgpu::Surface<'static>,
-    /// Logical GPU device for creating pipelines / textures / buffers.
-    device: wgpu::Device,
-    /// Command submission queue.
-    queue: wgpu::Queue,
-    /// Fixed adaptive policy used by cell-grid upload paths.
+/// Borrowed terminal GPU capabilities valid only for resource creation or one draw callback.
+#[derive(Clone, Copy)]
+pub struct TerminalGpuAccess<'frame> {
+    device: &'frame wgpu::Device,
+    queue: &'frame wgpu::Queue,
+    format: wgpu::TextureFormat,
     upload_policy: UploadPolicy,
-    /// Surface configuration (format, size, present mode).
-    ///
-    /// Interior mutability lets the winit integration reconfigure during a frame
-    /// while CustomPaint still borrows this context shared via the Host TLS seam.
-    config: RefCell<wgpu::SurfaceConfiguration>,
-    /// Shared untextured colored-quad pipeline (background / decoration / selection).
-    colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
 }
 
-impl GpuContext {
-    /// Creates the GPU surface, device, queue, surface configuration, and the
-    /// shared colored-quad pipeline from the window.
-    pub async fn new(window: Arc<Window>) -> Result<Self> {
-        let size = window.inner_size();
-        tracing::info!(
-            width = size.width,
-            height = size.height,
-            "creating gpu context"
-        );
-        let backends = selected_backends();
-
-        let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        }));
-        #[cfg(target_os = "windows")]
-        let (surface, composition_host) = create_main_surface(&instance, &window, backends)?;
-        #[cfg(not(target_os = "windows"))]
-        let surface = instance.create_surface(window).context("create surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .context("request adapter")?;
-        let info = adapter.get_info();
-        tracing::info!(
-            name = %info.name,
-            backend = ?info.backend,
-            device_type = ?info.device_type,
-            "selected gpu adapter"
-        );
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                // MemoryUsage: pre-allocate 8 MB device blocks instead of 128 MB.
-                // A terminal emitter never allocates large GPU buffers, so the
-                // smaller block size is sufficient and avoids unnecessary VRAM
-                // reservation at startup.
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                // memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .context("request device")?;
-
-        // Prefer sRGB format so fragment shader colours display correctly.
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(capabilities.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: select_compositing_alpha_mode(&capabilities.alpha_modes),
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-        #[cfg(target_os = "windows")]
-        if let Some(host) = composition_host.as_ref() {
-            host.commit();
-        }
-
-        tracing::info!(
-            width = config.width,
-            height = config.height,
-            ?format,
-            "gpu context configured"
-        );
-
-        let colored_quad_pipeline = Arc::new(create_colored_quad_pipeline(
-            &device,
-            config.format,
-            "colored-quad pipeline",
-        ));
-
-        Ok(Self {
-            instance,
-            adapter,
-            #[cfg(target_os = "windows")]
-            _composition_host: composition_host,
-            surface,
+impl<'frame> TerminalGpuAccess<'frame> {
+    pub fn new(
+        device: &'frame wgpu::Device,
+        queue: &'frame wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
             device,
             queue,
+            format,
             upload_policy: UploadPolicy::default(),
-            config: RefCell::new(config),
-            colored_quad_pipeline,
-        })
-    }
-
-    /// Frame-scoped borrow of Host-owned presentation resources.
-    pub fn borrow_frame(&self) -> (&wgpu::Surface<'static>, &wgpu::Device, &wgpu::Queue) {
-        (&self.surface, &self.device, &self.queue)
-    }
-
-    /// Updates the Host-owned surface configuration and applies it.
-    ///
-    /// Called by the winit integration through a frame-scoped configure seam.
-    pub fn configure_size(&self, width: u32, height: u32) {
-        debug_assert!(
-            width > 0 && height > 0,
-            "zero-sized configure is refused by the adapter"
-        );
-        let mut config = self.config.borrow_mut();
-        config.width = width;
-        config.height = height;
-        tracing::debug!(width, height, "configuring surface");
-        self.surface.configure(&self.device, &config);
-        #[cfg(target_os = "windows")]
-        if let Some(host) = self._composition_host.as_ref() {
-            host.commit();
         }
     }
 
-    /// Main window surface borrowed by the frame integration.
-    pub fn surface(&self) -> &wgpu::Surface<'static> {
-        &self.surface
+    pub fn device(self) -> &'frame wgpu::Device {
+        self.device
     }
 
-    /// Surface pixel format.
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.config.borrow().format
+    pub fn queue(self) -> &'frame wgpu::Queue {
+        self.queue
     }
 
-    /// Configured surface composite alpha mode.
-    pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        self.config.borrow().alpha_mode
-    }
-
-    /// Current surface dimensions `(width, height)`.
-    pub fn surface_size(&self) -> (u32, u32) {
-        let config = self.config.borrow();
-        (config.width, config.height)
+    pub const fn format(self) -> wgpu::TextureFormat {
+        self.format
     }
 
     pub fn upload_plan(
-        &self,
+        self,
         rows: usize,
         cols: usize,
         bytes_per_cell: usize,
@@ -611,73 +209,8 @@ impl GpuContext {
             .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
     }
 
-    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+    pub fn write_buffer(self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
         self.queue.write_buffer(buffer, offset, data);
-    }
-    /// Logical GPU device reference.
-    pub fn device(&self) -> &wgpu::Device {
-        &self.device
-    }
-
-    /// Command queue reference.
-    pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
-    }
-
-    /// Shared untextured colored-quad pipeline (background / decoration / selection).
-    pub fn colored_quad_pipeline(&self) -> Arc<wgpu::RenderPipeline> {
-        Arc::clone(&self.colored_quad_pipeline)
-    }
-
-    /// Creates a wgpu surface from an owned window handle, using the same Instance.
-    /// The returned surface has a `'static` lifetime and the caller is responsible
-    /// for configuring the surface.
-    pub fn create_surface(&self, window: Arc<winit::window::Window>) -> wgpu::Surface<'static> {
-        self.instance
-            .create_surface(window)
-            .expect("create dialog surface")
-    }
-
-    /// Queries surface capabilities for a new surface, using the stored adapter.
-    pub fn surface_capabilities(&self, surface: &wgpu::Surface) -> wgpu::SurfaceCapabilities {
-        surface.get_capabilities(&self.adapter)
-    }
-
-    // ── startup surface operations ───────────────────────────────────────
-
-    /// Acquires the surface texture, submits a single clear-color render pass,
-    /// and presents the frame. No-ops on non-`Success` variants to keep the
-    /// startup fast path simple — `Suboptimal` surfaces are intentionally
-    /// skipped rather than presented with a size mismatch.
-    pub fn clear_surface(&self, color: wgpu::Color) {
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => output,
-            _ => return,
-        };
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }));
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(output);
     }
 }
 
@@ -907,9 +440,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Builds the untextured colored-quad pipeline once at `GpuContext` construction.
-/// Layers clone the `Arc` instead of creating their own GPU objects.
-fn create_colored_quad_pipeline(
+/// Builds the terminal's shared untextured colored-quad pipeline.
+pub(super) fn create_colored_quad_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     label: &str,

@@ -1,18 +1,19 @@
 //! Frame presentation: acquisition policy, wgpu encode sequence, and frame outcomes.
 
-use super::WinitAdapter;
+use super::{SharedGpu, WindowSurface, WinitAdapter};
 use crate::effects::RuntimeEffects;
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
+use crate::scene::primitive::ExternalDrawGpu;
 use std::time::Instant;
 use winit::window::Window;
 
 impl WinitAdapter {
     /// Executes one complete integration frame.
-    pub fn render<'frame, 'surface>(
+    pub fn render<'frame>(
         &mut self,
         runtime: &mut Runtime,
-        target: WinitFrameTarget<'frame, 'surface>,
+        target: WinitFrameTarget<'frame>,
     ) -> FrameOutcome {
         self.render_with_prepare(runtime, target, |_| {})
     }
@@ -20,10 +21,10 @@ impl WinitAdapter {
     /// Executes one complete integration frame after the runtime update and
     /// before GPU encoding. Hosts use this to register frame-local resources
     /// produced during the update without owning presentation policy.
-    pub fn render_with_prepare<'frame, 'surface>(
+    pub fn render_with_prepare<'frame>(
         &mut self,
         runtime: &mut Runtime,
-        mut target: WinitFrameTarget<'frame, 'surface>,
+        mut target: WinitFrameTarget<'frame>,
         prepare: impl FnOnce(&mut Runtime),
     ) -> FrameOutcome {
         let effects = self.redraw_requested(runtime, Instant::now());
@@ -179,7 +180,7 @@ pub(super) fn execute_presented_frame<T, V, C, E>(
 
 pub(super) fn execute_wgpu_frame(
     runtime: &mut Runtime,
-    target: &WinitFrameTarget<'_, '_>,
+    target: &WinitFrameTarget<'_>,
     output: wgpu::SurfaceTexture,
     commit: bool,
 ) -> Result<(), FrameError> {
@@ -222,7 +223,12 @@ pub(super) fn execute_wgpu_frame(
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                runtime.encode(target.queue(), &mut pass, viewport, commit);
+                runtime.encode(
+                    ExternalDrawGpu::new(target.device(), target.queue(), target.format()),
+                    &mut pass,
+                    viewport,
+                    commit,
+                );
             }
             Ok(encoder.finish())
         },
@@ -269,41 +275,28 @@ pub(super) fn frame_clear_color(
 
 /// Borrowed host resources valid for one frame.
 ///
-/// The separate `surface` lifetime describes the lifetime carried by the wgpu
-/// surface itself, while `frame` describes the borrow of that surface and the
-/// other host resources. Configuration mutation is framed as a Host-owned
-/// callback so encode can share the same GpuContext via the temporary
-/// CustomPaint GPU scope without aliasing a mutable configuration borrow.
-/// This value is consumed by a frame call and cannot be retained by either
-/// the runtime or adapter.
-pub struct WinitFrameTarget<'frame, 'surface> {
+/// This transitional target borrows widget-owned shared GPU resources and one mutable window
+/// surface. It is consumed by a frame call and cannot be retained by the runtime or adapter.
+/// T0006 removes this manual frame-target compatibility seam after the owned native host lands.
+pub struct WinitFrameTarget<'frame> {
     window: &'frame Window,
-    surface: &'frame wgpu::Surface<'surface>,
-    device: &'frame wgpu::Device,
-    queue: &'frame wgpu::Queue,
-    configure: &'frame mut dyn FnMut(u32, u32),
+    gpu: &'frame SharedGpu,
+    surface: &'frame mut WindowSurface,
     backdrop_available: bool,
-    alpha_mode: wgpu::CompositeAlphaMode,
 }
 
-impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
+impl<'frame> WinitFrameTarget<'frame> {
     pub fn new(
         window: &'frame Window,
-        surface: &'frame wgpu::Surface<'surface>,
-        device: &'frame wgpu::Device,
-        queue: &'frame wgpu::Queue,
-        configure: &'frame mut dyn FnMut(u32, u32),
+        gpu: &'frame SharedGpu,
+        surface: &'frame mut WindowSurface,
         backdrop_available: bool,
-        alpha_mode: wgpu::CompositeAlphaMode,
     ) -> Self {
         Self {
             window,
+            gpu,
             surface,
-            device,
-            queue,
-            configure,
             backdrop_available,
-            alpha_mode,
         }
     }
 
@@ -312,31 +305,36 @@ impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
             viewport.is_drawable(),
             "refusing zero-sized surface configure"
         );
-        (self.configure)(viewport.physical_size.0, viewport.physical_size.1);
+        self.surface
+            .configure_size(self.gpu, viewport.physical_size.0, viewport.physical_size.1);
     }
 
     pub fn window(&self) -> &'frame Window {
         self.window
     }
 
-    pub fn surface(&self) -> &'frame wgpu::Surface<'surface> {
-        self.surface
+    pub fn surface(&self) -> &wgpu::Surface<'static> {
+        self.surface.surface()
     }
 
     pub fn device(&self) -> &'frame wgpu::Device {
-        self.device
+        self.gpu.device()
     }
 
     pub fn queue(&self) -> &'frame wgpu::Queue {
-        self.queue
+        self.gpu.queue()
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.surface.format()
     }
 
     pub const fn backdrop_available(&self) -> bool {
         self.backdrop_available
     }
 
-    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        self.alpha_mode
+    pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.surface.alpha_mode()
     }
 }
 
