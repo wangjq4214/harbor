@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation](../../spec/0012-widget-winit-native-host-consolidation.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -40,14 +40,14 @@ The independent paste-confirmation window uses the same configurable adapter-own
 
 ## Acceptance
 
-- [ ] `ConfirmationWindow` uses the common adapter/builder instead of owning separate SurfaceConfiguration, Runtime, `WinitAdapter`, and manual frame target state.
-- [ ] Confirmation and main hosts share compatible Instance/Adapter/Device/Queue resources but have independent Window, Surface, Runtime, viewport, scheduler, focus, and pointer state.
-- [ ] Confirm, cancel, close, keyboard shortcuts, focus, preview scrolling, and raw-text preservation remain unchanged.
-- [ ] The application blocks terminal keyboard input and new paste requests while confirmation exists, while permitted terminal output/rendering/scrollback behavior remains available.
-- [ ] Dialog ownership/z-order, centering including negative-coordinate monitors, fixed size, DPI behavior, and independent redraw remain correct.
-- [ ] Resize/zero-size/surface-recovery behavior is delegated to the host without affecting the main window.
-- [ ] Repeated open/close cycles release per-window resources and do not leak callbacks or scheduler work.
-- [ ] Existing dialog tests plus multi-window Windows smoke coverage pass.
+- [x] `ConfirmationWindow` uses the common adapter/builder instead of owning separate SurfaceConfiguration, Runtime, `WinitAdapter`, and manual frame target state.
+- [x] Confirmation and main hosts share compatible Instance/Adapter/Device/Queue resources but have independent Window, Surface, Runtime, viewport, scheduler, focus, and pointer state.
+- [x] Confirm, cancel, close, keyboard shortcuts, focus, preview scrolling, and raw-text preservation remain unchanged.
+- [x] The application blocks terminal keyboard input and new paste requests while confirmation exists, while permitted terminal output/rendering/scrollback behavior remains available.
+- [x] Dialog ownership/z-order, centering including negative-coordinate monitors, fixed size, DPI behavior, and independent redraw remain correct.
+- [x] Resize/zero-size/surface-recovery behavior is delegated to the host without affecting the main window.
+- [x] Repeated open/close cycles release per-window resources and do not leak callbacks or scheduler work.
+- [x] Existing dialog tests plus multi-window Windows smoke coverage pass.
 
 ## Out of Scope
 

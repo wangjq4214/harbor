@@ -65,8 +65,29 @@ impl NativeHostSmoke {
 
         for lifecycle in 0..SECONDARY_LIFECYCLES {
             let gpu = Arc::clone(primary.shared_gpu());
-            let mut secondary = Self::build_host(event_loop, Some(gpu))
+            let mut secondary = Self::build_host(event_loop, Some(Arc::clone(&gpu)))
                 .map_err(|error| format!("secondary host startup {lifecycle} failed: {error}"))?;
+            assert!(
+                Arc::ptr_eq(primary.shared_gpu(), secondary.shared_gpu()),
+                "secondary must reuse the primary GPU owner"
+            );
+            assert_ne!(
+                primary.window_id(),
+                secondary.window_id(),
+                "each Host must own a distinct native window"
+            );
+
+            let primary_viewport = primary.viewport().clone();
+            let resized = winit::dpi::PhysicalSize::new(48, 40);
+            let resize_outcome = secondary.handle_window_event(&WindowEvent::Resized(resized));
+            assert!(resize_outcome.handled);
+            assert_eq!(secondary.viewport().physical_size, resized.into());
+            assert_eq!(
+                primary.viewport(),
+                &primary_viewport,
+                "secondary resize must not mutate primary viewport state"
+            );
+
             Self::present(&mut secondary)?;
             // Drop the complete secondary Host before constructing the next one.
             drop(secondary);

@@ -14,15 +14,13 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::effects::{apply_control_flow, apply_window_effects};
 use harbor_app::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::ControlFlowEffect;
-use harbor_widget::runtime::Runtime;
 use harbor_widget::winit::{
-    FrameError, FrameOutcome, HostIdleOutcome, SharedGpu, WindowSurface, WinitAdapter,
-    WinitFrameTarget, WinitWindowHost,
+    FrameError, HostFrameOutcome, HostIdleOutcome, HostInitContext, WinitWindowHost,
+    WinitWindowHostBuilder,
 };
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
@@ -106,6 +104,15 @@ fn confirmation_result(confirmed: &AtomicBool, cancelled: &AtomicBool) -> Confir
     }
 }
 
+fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
+    if let Some(next) = next {
+        *current = Some(match current.take() {
+            Some(current) => current.arbitrate(next),
+            None => next,
+        });
+    }
+}
+
 // ── ConfirmationResult ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -113,6 +120,7 @@ pub(crate) enum ConfirmationResult {
     None,
     Cancelled,
     Confirmed,
+    Fatal(FrameError),
 }
 
 #[derive(Debug)]
@@ -153,8 +161,14 @@ pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) 
 /// Outcome of a paste confirmation event dispatch.
 #[derive(Debug)]
 pub(crate) enum PasteEventOutcome {
-    Handled { request_redraw: bool },
-    Fatal(FrameError),
+    Handled {
+        request_redraw: bool,
+        wait: Option<ControlFlowEffect>,
+    },
+    Fatal {
+        error: FrameError,
+        wait: Option<ControlFlowEffect>,
+    },
 }
 
 /// Controller encapsulating modal paste confirmation and clipboard interaction.
@@ -180,7 +194,9 @@ impl PasteController {
     }
 
     pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
-        self.window.as_mut().map(|window| window.about_to_wait(now))
+        self.window
+            .as_mut()
+            .map(|window| window.about_to_wait(now).unwrap_or(ControlFlowEffect::Wait))
     }
 
     #[allow(dead_code)]
@@ -191,11 +207,9 @@ impl PasteController {
     pub(crate) fn handle_dialog_event(
         &mut self,
         event: &WindowEvent,
-        event_loop: &ActiveEventLoop,
-        main_host: &WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
     ) -> PasteEventOutcome {
-        let result = self.handle_event(event, event_loop, Some(main_host.gpu()));
+        let (result, wait) = self.handle_event(event);
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
@@ -213,46 +227,41 @@ impl PasteController {
                 self.input_gate.store(false, Ordering::Release);
                 PasteEventOutcome::Handled {
                     request_redraw: true,
+                    wait,
                 }
             }
-            DialogOutcome::Fatal(error) => PasteEventOutcome::Fatal(error.clone()),
+            DialogOutcome::Fatal(error) => {
+                self.input_gate.store(false, Ordering::Release);
+                PasteEventOutcome::Fatal {
+                    error: error.clone(),
+                    wait,
+                }
+            }
             DialogOutcome::None => PasteEventOutcome::Handled {
                 request_redraw: false,
+                wait,
             },
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        event_loop: &ActiveEventLoop,
-        gpu: Option<&SharedGpu>,
-    ) -> DialogOutcome {
+    fn handle_event(&mut self, event: &WindowEvent) -> (DialogOutcome, Option<ControlFlowEffect>) {
         let Some(mut confirmation) = self.window.take() else {
-            return DialogOutcome::None;
+            return (DialogOutcome::None, None);
         };
-        match confirmation.handle_event(event, event_loop) {
+        let event_outcome = confirmation.handle_event(event);
+        let result = match event_outcome.result {
             ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
             ConfirmationResult::Confirmed => {
-                let raw_text = confirmation.raw_text().to_owned();
-                DialogOutcome::Confirmed(raw_text)
+                DialogOutcome::Confirmed(confirmation.raw_text().to_owned())
             }
+            ConfirmationResult::Fatal(error) => DialogOutcome::Fatal(error),
             ConfirmationResult::None => {
-                if matches!(event, WindowEvent::RedrawRequested)
-                    && let Some(gpu) = gpu
-                {
-                    let frame = confirmation.render(gpu);
-                    confirmation.apply_frame_effects(&frame, event_loop);
-                    if let Some(error) = frame.fatal_error().cloned() {
-                        return DialogOutcome::Fatal(error);
-                    }
-                }
                 self.window = Some(confirmation);
                 DialogOutcome::None
             }
-        }
+        };
+        (result, event_outcome.wait)
     }
-
     pub(crate) fn paste_from_clipboard(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -308,23 +317,26 @@ impl PasteController {
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
 
-/// A secondary owned winit window with its own Widget Runtime for paste
-/// confirmation UI.
-///
-/// Renders a minimal confirmation dialog: header text showing line count,
-/// Paste and Cancel buttons, with Paste focused by default.
-pub(crate) struct ConfirmationWindow {
-    surface: WindowSurface,
-    runtime: Runtime,
-    /// Per-window winit integration, including input, scheduling, viewport,
-    /// and surface-recovery state.
-    adapter: WinitAdapter,
-    raw_text: String,
+struct ConfirmationRootState {
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
     wrapped_lines: Vec<String>,
     preview_scroll_offset: Arc<AtomicUsize>,
-    window: Arc<Window>,
+}
+
+struct ConfirmationEventOutcome {
+    result: ConfirmationResult,
+    wait: Option<ControlFlowEffect>,
+}
+
+/// A thin application wrapper around a secondary Host-owned native window.
+///
+/// Paste result and preview policy remain here; generic native/window/widget
+/// lifecycle is delegated to `WinitWindowHost`.
+pub(crate) struct ConfirmationWindow {
+    host: WinitWindowHost,
+    raw_text: String,
+    root_state: ConfirmationRootState,
 }
 
 impl ConfirmationWindow {
@@ -333,7 +345,6 @@ impl ConfirmationWindow {
         event_loop: &ActiveEventLoop,
         main_host: &WinitWindowHost,
     ) -> anyhow::Result<Self> {
-        let gpu = main_host.gpu();
         let main_window = Some(main_host.window());
         let line_count = raw_text.lines().count();
 
@@ -366,76 +377,53 @@ impl ConfirmationWindow {
             ));
         }
 
-        let window = Arc::new(event_loop.create_window(window_attrs)?);
-        let surface = gpu.create_window_surface(Arc::clone(&window))?;
-        let format = surface.format();
+        let root_text = raw_text.clone();
+        let builder = WinitWindowHostBuilder::new(
+            window_attrs,
+            move |context: HostInitContext<'_>, _setup: &()| {
+                let metrics = *context.text_metrics();
+                let max_columns = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32
+                    / metrics.cell_width)
+                    .floor() as usize;
+                let wrapped_lines = wrap_preview_text(&root_text, max_columns.max(1));
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let confirmed = Arc::new(AtomicBool::new(false));
+                let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
+                let root = harbor_app::tab_view::ui::build_confirmation_root(
+                    line_count,
+                    wrapped_lines.clone(),
+                    Arc::clone(&preview_scroll_offset),
+                    Arc::clone(&cancelled),
+                    Arc::clone(&confirmed),
+                    metrics.line_height,
+                );
+                let root_state = ConfirmationRootState {
+                    cancelled,
+                    confirmed,
+                    wrapped_lines,
+                    preview_scroll_offset,
+                };
+                Ok::<_, anyhow::Error>((root, root_state))
+            },
+        )
+        .reuse_gpu(Arc::clone(main_host.shared_gpu()))
+        .focus_first(true);
+        let (host, root_state) = pollster::block_on(builder.build_with_output(event_loop))?;
 
-        let physical_size = window.inner_size();
-        let drawable = physical_size.width != 0 && physical_size.height != 0;
-
-        // ── Widget Runtime setup ──────────────────────────────────────
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let confirmed = Arc::new(AtomicBool::new(false));
-
-        // T0004/T0006 removes this shared-text child Runtime when confirmation owns a host.
-        let mut runtime = main_host.create_transitional_child_runtime(format);
-        let metrics = *runtime.text_metrics();
-        let max_chars = ((DIALOG_WIDTH - DIALOG_HORIZONTAL_PADDING) as f32 / metrics.cell_width)
-            .floor() as usize;
-        let max_chars = max_chars.max(1);
-        let wrapped_lines = wrap_preview_text(&raw_text, max_chars);
-        let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
-
-        let confirm_root = harbor_app::tab_view::ui::build_confirmation_root(
-            line_count,
-            wrapped_lines.clone(),
-            Arc::clone(&preview_scroll_offset),
-            Arc::clone(&cancelled),
-            Arc::clone(&confirmed),
-            metrics.line_height,
-        );
-        runtime.set_root(confirm_root);
-
-        // Each native window has an independent adapter, including its viewport,
-        // input state, scheduler, and surface-recovery budget.
-        let mut adapter = WinitAdapter::from_window(&window);
-        adapter.set_drawable(drawable);
-        runtime.set_viewport(adapter.viewport().clone());
-        let mut initial_effects = runtime.update(std::time::Instant::now());
-
-        // Set focus on the Cancel button (first focusable widget) and apply
-        // the effects produced by the programmatic focus transition.
-        runtime.focus_first_focusable();
-        initial_effects.merge(runtime.take_pending_effects());
-        let mut effects = adapter.fold_effects(initial_effects);
-        effects.merge(adapter.request_frame());
-        apply_window_effects(&window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            apply_control_flow(event_loop, control_flow);
-        }
-
-        Ok(ConfirmationWindow {
-            surface,
-            runtime,
-            adapter,
+        Ok(Self {
+            host,
             raw_text,
-            cancelled,
-            confirmed,
-            wrapped_lines,
-            preview_scroll_offset,
-            window,
+            root_state,
         })
     }
 
-    pub(crate) fn window_id(&self) -> winit::window::WindowId {
-        self.window.id()
+    pub(crate) fn window_id(&self) -> WindowId {
+        self.host.window_id()
     }
 
-    /// Applies idle redraw effects to this window and returns its wait request.
-    pub(crate) fn about_to_wait(&mut self, now: Instant) -> ControlFlowEffect {
-        let effects = self.adapter.about_to_wait(&mut self.runtime, now, None);
-        apply_window_effects(&self.window, &effects);
-        effects.control_flow.unwrap_or(ControlFlowEffect::Wait)
+    /// Applies idle redraw effects and returns this window's wait request.
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
+        self.host.about_to_wait(now, None).wait
     }
 
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
@@ -443,100 +431,62 @@ impl ConfirmationWindow {
         &self.raw_text
     }
 
-    /// Routes this window's supported event through its own Runtime integration.
-    /// Confirmation shortcuts and preview scrolling remain application policy.
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        event_loop: &ActiveEventLoop,
-    ) -> ConfirmationResult {
+    /// Applies application shortcuts/preview policy, then delegates one generic event to Host.
+    fn handle_event(&mut self, event: &WindowEvent) -> ConfirmationEventOutcome {
         if matches!(event, WindowEvent::CloseRequested) {
-            return ConfirmationResult::Cancelled;
+            return ConfirmationEventOutcome {
+                result: ConfirmationResult::Cancelled,
+                wait: None,
+            };
         }
 
+        let mut wait = None;
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = event
             && key_event.state == ElementState::Pressed
         {
             if let Some(result) = shortcut_result(&key_event.logical_key) {
-                return result;
+                return ConfirmationEventOutcome { result, wait: None };
             }
 
             let max_scroll = self
+                .root_state
                 .wrapped_lines
                 .len()
                 .saturating_sub(PREVIEW_VISIBLE_LINES);
             let scrolled = match &key_event.logical_key {
                 Key::Named(NamedKey::ArrowUp) => {
-                    scroll_preview(&self.preview_scroll_offset, -1, max_scroll)
+                    scroll_preview(&self.root_state.preview_scroll_offset, -1, max_scroll)
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    scroll_preview(&self.preview_scroll_offset, 1, max_scroll)
+                    scroll_preview(&self.root_state.preview_scroll_offset, 1, max_scroll)
                 }
                 Key::Named(NamedKey::PageUp) => scroll_preview(
-                    &self.preview_scroll_offset,
+                    &self.root_state.preview_scroll_offset,
                     -((PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize),
                     max_scroll,
                 ),
                 Key::Named(NamedKey::PageDown) => scroll_preview(
-                    &self.preview_scroll_offset,
+                    &self.root_state.preview_scroll_offset,
                     (PREVIEW_VISIBLE_LINES.saturating_sub(1)) as isize,
                     max_scroll,
                 ),
                 _ => false,
             };
             if scrolled {
-                self.request_frame(event_loop);
+                merge_wait(&mut wait, self.host.request_frame().wait);
             }
         }
 
-        let size = self.window.inner_size();
-        let outcome = self.adapter.handle_event_with_size(
-            &mut self.runtime,
-            event,
-            Some((size.width, size.height)),
-        );
-        apply_window_effects(&self.window, &outcome.effects);
-        if let Some(control_flow) = outcome.effects.control_flow {
-            apply_control_flow(event_loop, control_flow);
-        }
-
-        confirmation_result(&self.confirmed, &self.cancelled)
-    }
-
-    /// Presents one frame through the shared winit integration using borrowed
-    /// confirmation resources and shared Device, Queue, and text atlas data.
-    pub(crate) fn render(&mut self, gpu: &SharedGpu) -> FrameOutcome {
-        let ConfirmationWindow {
-            window,
-            surface,
-            runtime,
-            adapter,
-            ..
-        } = self;
-        let target = WinitFrameTarget::new(window, gpu, surface, false);
-        adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text(gpu.queue());
-        })
-    }
-
-    /// Applies host-visible effects for this confirmation window only.
-    pub(crate) fn apply_frame_effects(&self, frame: &FrameOutcome, event_loop: &ActiveEventLoop) {
-        let effects = frame.effects();
-        apply_window_effects(&self.window, effects);
-        if let Some(control_flow) = effects.control_flow {
-            apply_control_flow(event_loop, control_flow);
-        }
-    }
-
-    /// Wakes only the confirmation window; the main App scheduler is unrelated.
-    fn request_frame(&mut self, event_loop: &ActiveEventLoop) {
-        let effects = self.adapter.request_frame();
-        apply_window_effects(&self.window, &effects);
-        if let Some(control_flow) = effects.control_flow {
-            apply_control_flow(event_loop, control_flow);
-        }
+        let host_outcome = self.host.handle_window_event(event);
+        merge_wait(&mut wait, host_outcome.wait);
+        let result = if let Some(HostFrameOutcome::Fatal { error, .. }) = host_outcome.frame {
+            ConfirmationResult::Fatal(error)
+        } else {
+            confirmation_result(&self.root_state.confirmed, &self.root_state.cancelled)
+        };
+        ConfirmationEventOutcome { result, wait }
     }
 }
 
@@ -547,6 +497,42 @@ mod tests {
     use super::*;
     use harbor_app::tab_view::ui::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
+
+    #[test]
+    fn confirmation_production_code_owns_only_the_common_native_host() {
+        let production = include_str!("dialog.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production section");
+        for legacy in [
+            "WindowSurface",
+            "WinitAdapter",
+            "WinitFrameTarget",
+            "apply_window_effects",
+            "apply_control_flow",
+            "create_transitional_child_runtime",
+        ] {
+            assert!(
+                !production.contains(legacy),
+                "confirmation production code must not reference legacy host infrastructure: {legacy}"
+            );
+        }
+        assert!(production.contains("host: WinitWindowHost"));
+    }
+
+    #[test]
+    fn confirmation_waits_use_application_wide_arbitration_rules() {
+        let now = Instant::now();
+        let early = now + std::time::Duration::from_millis(10);
+        let late = now + std::time::Duration::from_millis(20);
+        let mut wait = Some(ControlFlowEffect::WaitUntil(late));
+
+        merge_wait(&mut wait, Some(ControlFlowEffect::WaitUntil(early)));
+        assert_eq!(wait, Some(ControlFlowEffect::WaitUntil(early)));
+
+        merge_wait(&mut wait, Some(ControlFlowEffect::Poll));
+        assert_eq!(wait, Some(ControlFlowEffect::Poll));
+    }
 
     #[test]
     fn centers_dialog_in_main_window() {

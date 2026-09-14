@@ -210,6 +210,8 @@ async fn owned_host_contract(
             let _ = context.shared_gpu();
             let _ = context.surface();
             assert!(context.backdrop_available());
+            assert!(context.text_metrics().cell_width > 0.0);
+            assert!(context.text_metrics().line_height > 0.0);
             assert_eq!(*setup, 8);
             Ok::<_, anyhow::Error>((
                 harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::new(

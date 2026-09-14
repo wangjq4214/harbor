@@ -6,6 +6,7 @@ use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::input::event::UiEvent;
 use crate::renderer::Viewport;
 use crate::scene::primitive::ExternalDrawId;
+use crate::text::TextMetrics;
 use crate::view::Component;
 use crate::widgets::FocusHandle;
 use anyhow::Context as _;
@@ -82,6 +83,7 @@ pub struct HostInitContext<'a> {
     shared_gpu: &'a Arc<SharedGpu>,
     surface: WindowSurfaceInfo,
     backdrop_available: bool,
+    text_metrics: &'a TextMetrics,
 }
 
 impl<'a> HostInitContext<'a> {
@@ -99,6 +101,11 @@ impl<'a> HostInitContext<'a> {
 
     pub const fn surface(&self) -> WindowSurfaceInfo {
         self.surface
+    }
+
+    /// Returns the final UI text metrics loaded by the Host-owned Runtime.
+    pub const fn text_metrics(&self) -> &'a TextMetrics {
+        self.text_metrics
     }
 
     /// Returns the final backdrop decision after the surface alpha mode is known.
@@ -287,18 +294,6 @@ where
             .platform
             .surface_ready(&window, &mut platform_state, surface_info)
             .map_err(|error| HostStartupError::new(HostStartupStage::PlatformSetup, error))?;
-        let (root, application_output) = (self.root_factory)(
-            HostInitContext {
-                window: &window,
-                gpu: gpu.as_ref(),
-                shared_gpu: &gpu,
-                surface: surface_info,
-                backdrop_available,
-            },
-            &platform_state,
-        )
-        .map_err(|error| HostStartupError::new(HostStartupStage::RootConstruction, error))?;
-
         let mut runtime = crate::runtime::Runtime::new();
         runtime.init_renderer(gpu.device(), surface.format());
         runtime
@@ -312,6 +307,29 @@ where
         let drawable = size.width != 0 && size.height != 0;
         adapter.set_drawable(drawable);
         runtime.set_viewport(adapter.viewport().clone());
+
+        let root_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.root_factory)(
+                HostInitContext {
+                    window: &window,
+                    gpu: gpu.as_ref(),
+                    shared_gpu: &gpu,
+                    surface: surface_info,
+                    backdrop_available,
+                    text_metrics: runtime.text_metrics(),
+                },
+                &platform_state,
+            )
+        }))
+        .map_err(|panic| {
+            HostStartupError::new(
+                HostStartupStage::RootConstruction,
+                anyhow::anyhow!("root factory panicked: {}", panic_message(panic)),
+            )
+        })?;
+        let (root, application_output) = root_result
+            .map_err(|error| HostStartupError::new(HostStartupStage::RootConstruction, error))?;
+
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.set_root(root))).map_err(
             |panic| {
                 HostStartupError::new(

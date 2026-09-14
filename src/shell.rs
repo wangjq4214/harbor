@@ -292,18 +292,26 @@ impl ActiveSession {
         frame: &mut FrameState,
     ) {
         if self.paste.window_id() == Some(window_id) {
-            match self.paste.handle_dialog_event(
-                &event,
-                event_loop,
-                &self.main_host,
-                self.tabs.active_terminal().as_ref(),
-            ) {
-                PasteEventOutcome::Handled { request_redraw } => {
-                    if request_redraw && let Some(wait) = self.main_host.request_frame().wait {
+            match self
+                .paste
+                .handle_dialog_event(&event, self.tabs.active_terminal().as_ref())
+            {
+                PasteEventOutcome::Handled {
+                    request_redraw,
+                    wait,
+                } => {
+                    let mut wait = wait;
+                    if request_redraw {
+                        Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
+                    }
+                    if let Some(wait) = wait {
                         apply_control_flow(event_loop, wait);
                     }
                 }
-                PasteEventOutcome::Fatal(error) => {
+                PasteEventOutcome::Fatal { error, wait } => {
+                    if let Some(wait) = wait {
+                        apply_control_flow(event_loop, wait);
+                    }
                     tracing::error!(?error, "fatal confirmation-window frame error");
                     event_loop.exit();
                 }
