@@ -1,6 +1,7 @@
 # Runtime-Owned Frame Presentation with Borrowed Host Resources
 
-**Status:** Implementing
+**Status:** Superseded
+**Superseded by:** [0031-widget-winit-adapter-owns-native-host-infrastructure.md](./0031-widget-winit-adapter-owns-native-host-infrastructure.md)
 **Date:** 2026-07-25
 
 ## Context

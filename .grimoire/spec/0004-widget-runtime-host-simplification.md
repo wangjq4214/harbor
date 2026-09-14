@@ -1,7 +1,8 @@
 # Widget Runtime Host Simplification
 
 **Spec ID:** 0004
-**Status:** In Progress
+**Status:** Superseded
+**Superseded by:** [0012-widget-winit-native-host-consolidation.md](./0012-widget-winit-native-host-consolidation.md)
 **Date:** 2026-08-02
 
 ## Requirement

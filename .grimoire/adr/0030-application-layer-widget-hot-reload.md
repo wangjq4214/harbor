@@ -1,6 +1,7 @@
 # Reload Application-Layer Widgets at the Runtime Host Boundary
 
-**Status:** Proposed
+**Status:** Superseded
+**Superseded by:** [0031-widget-winit-adapter-owns-native-host-infrastructure.md](./0031-widget-winit-adapter-owns-native-host-infrastructure.md)
 **Date:** 2026-09-12
 
 ## Context

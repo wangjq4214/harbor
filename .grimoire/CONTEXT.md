@@ -207,52 +207,57 @@ Project domain concepts and terminology.
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
 - **Relationships:**
   - consumed by Widget Renderer
-  - provided by Host
+  - provided by Winit Adapter
 
 ### Runtime Host
-- **Definition:** The binary-layer owner of application entry, winit window and surface lifetimes, GPU device resources, fatal-error policy, and cross-window coordination.
-- **Synonyms:** Host, App
+- **Definition:** The combined hosting boundary for a native Widget Runtime, split between reusable infrastructure in `harbor-widget::winit` and application-owned event-loop, business, and process policy.
+- **Synonyms:** Native Widget Host
 - **Relationships:**
+  - contains Winit Adapter
+  - contains Application Business Host
+  - contains Harbor Widget Runtime
+
+### Application Business Host
+- **Definition:** The binary application layer that owns EventLoop/ApplicationHandler coordination, multi-window routing, application models and reducers, platform-specific window policy, and fatal/exit decisions while delegating generic window, Runtime, wgpu, presentation, and HMR lifecycle to the Winit Adapter.
+- **Synonyms:** Application Host, App
+- **Relationships:**
+  - belongs to Runtime Host
+  - communicates with Winit Adapter
   - communicates with Harbor Widget Runtime
-  - contains Winit Event Adapter
-  - provides WinitFrameTarget
-  - implements Windows Acrylic Backdrop
 
 ### Application-Layer Widget Hot Reload
-- **Definition:** A Windows debug-development mode using `hot-lib-reloader` to rebuild and reload Harbor's application-level widget composition while keeping the Runtime Host, window, GPU resources, terminal sessions, PTYs, and Host-owned models alive. Each reload replaces the Runtime root and rebuilds Widget/Fiber hook state rather than migrating it across the dynamic-library boundary.
+- **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.
 - **Synonyms:** Widget HMR, UI hot reload
 - **Relationships:**
-  - belongs to Runtime Host
+  - belongs to Winit Adapter
   - communicates with Harbor Widget Runtime
   - uses Event-Turn Action Transport
-
-### Winit Event Adapter
-- **Definition:** A feature-gated harbor-widget adapter that converts winit input and lifecycle events into platform-independent runtime input without exposing winit types to the core Runtime.
+### Winit Adapter
+- **Definition:** A feature-gated `harbor-widget` native-host adapter and builder that owns per-window creation, Surface and Runtime lifetimes, generic wgpu initialization, event conversion, scheduling, presentation, and optional HMR root replacement while accepting application-provided attributes and platform hooks.
+- **Synonyms:** Winit Event Adapter, Native Widget Adapter
 - **Relationships:**
   - belongs to Runtime Host
+  - contains Harbor Widget Runtime
   - produces UiEvent
-  - communicates with Harbor Widget Runtime
-
+  - provides shared GPU resources to terminal rendering
 ### WinitFrameTarget
-- **Definition:** A frame-scoped borrowed bundle of Window, Surface, Device, and Queue references that lets the winit runtime integration render and present without retaining platform resources.
+- **Definition:** The former frame-scoped borrowed Window, Surface, Device, and Queue bundle used when the binary application owned native resources; under the adapter-owned host boundary it is removed from the application contract and may remain only as an internal implementation detail.
 - **Relationships:**
-  - provided by Runtime Host
-  - consumed by Harbor Widget Runtime
-
+  - belongs to Winit Adapter
+  - consumed internally by Runtime Frame Presentation
 ### Runtime Frame Presentation
-- **Definition:** The runtime-owned frame policy that acquires the current SurfaceTexture, encodes and submits GPU work, notifies the window, and presents the completed frame using a borrowed WinitFrameTarget.
+- **Definition:** The adapter-owned frame policy that acquires the current SurfaceTexture, encodes and submits GPU work, notifies the window, and presents the completed frame using adapter-owned platform resources.
 - **Relationships:**
-  - belongs to Harbor Widget Runtime
-  - depends on WinitFrameTarget
+  - belongs to Winit Adapter
+  - consumes WinitFrameTarget internally
   - extends Widget Renderer
 
 ### Runtime Integration Boundary
-- **Definition:** The public feature-gated harbor-widget API that handles generic window events and frame presentation while excluding terminal, paste, and other Harbor-specific business policy.
+- **Definition:** The public feature-gated `harbor-widget` native-host API that owns generic winit/wgpu lifecycle and optional root reload behavior while excluding terminal, paste, backdrop, and other Harbor-specific business policy.
 - **Relationships:**
-  - contains Winit Event Adapter
+  - contains Winit Adapter
   - contains Runtime Frame Presentation
-  - communicates with Runtime Host
-
+  - communicates with application business coordination
 ### External Runtime Invalidation
 - **Definition:** A platform-independent signal through which Host-owned asynchronous sources mark a Runtime dirty without exposing their business-specific event types to harbor-widget.
 - **Relationships:**
@@ -260,10 +265,10 @@ Project domain concepts and terminology.
   - produces RuntimeEffects
 
 ### TerminalOutputReady
-- **Definition:** A Host-owned application event emitted when the PTY reader has terminal output ready for UI-thread processing.
+- **Definition:** An application event emitted when the PTY reader has terminal output ready for UI-thread processing.
 - **Relationships:**
   - produces External Runtime Invalidation
-  - belongs to Runtime Host
+  - belongs to Application Business Host
 
 ### Runtime Frame Scheduler
 - **Definition:** The runtime-owned state machine that converts invalidation, animation deadlines, and steady-state activity into Wait, WaitUntil, Poll, and RequestRedraw effects.
@@ -327,7 +332,7 @@ Project domain concepts and terminology.
 - **Synonyms:** Runtime Effects
 - **Relationships:**
   - produced by Harbor Widget Runtime
-  - consumed by Runtime Host
+  - consumed by Winit Adapter and Application Business Host
 
 ### Runtime Per Window
 - **Definition:** The ownership model in which each OS window has an independent Runtime, Widget tree, and input state while GPU and text resources may be shared.
@@ -712,10 +717,10 @@ Project domain concepts and terminology.
   - consumed by Runtime Host
 
 ### Event-Turn Action Transport
-- **Definition:** The Host-owned sequencing rule in which widgets dispatch one-shot actions during event routing, then the Runtime Host drains and reduces the FIFO batch after widget effects are applied while retaining ownership of application models and platform effects.
+- **Definition:** The application-owned sequencing rule in which widgets dispatch one-shot actions during event routing, then the Application Business Host drains and reduces the FIFO batch after widget effects are applied while retaining ownership of application models and platform effects.
 - **Relationships:**
   - implemented by Widget Store
-  - consumed by Runtime Host
+  - consumed by Application Business Host
   - preserves RuntimeEffects ordering
   - keeps reducers and effects outside Harbor Widget Runtime
 
@@ -727,10 +732,10 @@ Project domain concepts and terminology.
   - communicates with Terminal Widget Bridge
 
 ### Terminal Tab Manager
-- **Definition:** The Runtime Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
+- **Definition:** The Application Business Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
 - **Relationships:**
   - contains Terminal Tab
-  - belongs to Runtime Host
+  - belongs to Application Business Host
   - communicates with Harbor Widget Runtime
 
 ### Widget View Macro

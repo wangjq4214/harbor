@@ -1,7 +1,8 @@
 # Application-Layer Widget Hot Reload
 
 **Spec ID:** 0011
-**Status:** Draft
+**Status:** Superseded
+**Superseded by:** [0012-widget-winit-native-host-consolidation.md](./0012-widget-winit-native-host-consolidation.md)
 **Date:** 2026-09-12
 
 ## Requirement
