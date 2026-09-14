@@ -1,0 +1,528 @@
+//! Adapter-owned native window, runtime, surface, and presentation lifecycle.
+
+use super::effects::apply_window_effects;
+use super::{FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget};
+use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::input::event::UiEvent;
+use crate::scene::primitive::ExternalDrawId;
+use crate::view::Component;
+use anyhow::Context as _;
+use std::any::Any;
+use std::fmt;
+use std::sync::Arc;
+use std::time::Instant;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowAttributes, WindowId};
+
+/// Identifies the construction stage that failed before a host became usable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostStartupStage {
+    ConfigureAttributes,
+    CreateWindow,
+    PlatformSetup,
+    GpuBootstrap,
+    SurfaceCreation,
+    RootConstruction,
+    RuntimeInitialization,
+}
+
+/// A startup failure annotated with the resource-construction stage.
+#[derive(Debug)]
+pub struct HostStartupError {
+    stage: HostStartupStage,
+    source: anyhow::Error,
+}
+
+impl HostStartupError {
+    fn new(stage: HostStartupStage, source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            stage,
+            source: source.into(),
+        }
+    }
+
+    pub const fn stage(&self) -> HostStartupStage {
+        self.stage
+    }
+}
+
+impl fmt::Display for HostStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "native window host {:?} failed: {}",
+            self.stage, self.source
+        )
+    }
+}
+
+impl std::error::Error for HostStartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// Read-only surface metadata available while constructing the root component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowSurfaceInfo {
+    pub format: wgpu::TextureFormat,
+    pub alpha_mode: wgpu::CompositeAlphaMode,
+    pub physical_size: (u32, u32),
+}
+
+/// Construction-only access to the new window and its compatible GPU resources.
+#[derive(Clone, Copy)]
+pub struct HostInitContext<'a> {
+    window: &'a Window,
+    gpu: &'a SharedGpu,
+    surface: WindowSurfaceInfo,
+}
+
+impl<'a> HostInitContext<'a> {
+    pub const fn window(&self) -> &'a Window {
+        self.window
+    }
+
+    pub const fn gpu(&self) -> &'a SharedGpu {
+        self.gpu
+    }
+
+    pub const fn surface(&self) -> WindowSurfaceInfo {
+        self.surface
+    }
+}
+
+/// Application-provided native setup around window creation.
+///
+/// The associated setup value is passed to the root factory, then retained as
+/// opaque drop-only state for exactly the host lifetime.
+pub trait WindowPlatformHooks {
+    type Setup: 'static;
+
+    fn configure_attributes(
+        &self,
+        attributes: WindowAttributes,
+    ) -> anyhow::Result<WindowAttributes> {
+        Ok(attributes)
+    }
+
+    fn window_created(&self, window: &Window) -> anyhow::Result<Self::Setup>;
+
+    fn backdrop_available(&self, _setup: &Self::Setup) -> bool {
+        false
+    }
+}
+
+/// Default platform lifecycle seam with no application-specific setup.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopWindowPlatformHooks;
+
+impl WindowPlatformHooks for NoopWindowPlatformHooks {
+    type Setup = ();
+
+    fn window_created(&self, _window: &Window) -> anyhow::Result<Self::Setup> {
+        Ok(())
+    }
+}
+
+/// Selects first-window GPU bootstrap or reuse for a subsequent window.
+#[derive(Clone)]
+pub enum HostGpuSource {
+    Bootstrap,
+    Reuse(Arc<SharedGpu>),
+}
+
+/// Configures and constructs one complete [`WinitWindowHost`].
+pub struct WinitWindowHostBuilder<P, F> {
+    attributes: WindowAttributes,
+    gpu_source: HostGpuSource,
+    platform: P,
+    root_factory: F,
+    focus_first: bool,
+}
+
+impl<F> WinitWindowHostBuilder<NoopWindowPlatformHooks, F> {
+    pub fn new(attributes: WindowAttributes, root_factory: F) -> Self {
+        Self {
+            attributes,
+            gpu_source: HostGpuSource::Bootstrap,
+            platform: NoopWindowPlatformHooks,
+            root_factory,
+            focus_first: false,
+        }
+    }
+}
+
+impl<P, F> WinitWindowHostBuilder<P, F> {
+    pub fn reuse_gpu(mut self, gpu: Arc<SharedGpu>) -> Self {
+        self.gpu_source = HostGpuSource::Reuse(gpu);
+        self
+    }
+
+    pub fn bootstrap_gpu(mut self) -> Self {
+        self.gpu_source = HostGpuSource::Bootstrap;
+        self
+    }
+
+    pub fn focus_first(mut self, focus_first: bool) -> Self {
+        self.focus_first = focus_first;
+        self
+    }
+
+    pub fn with_platform_hooks<Q>(self, platform: Q) -> WinitWindowHostBuilder<Q, F> {
+        WinitWindowHostBuilder {
+            attributes: self.attributes,
+            gpu_source: self.gpu_source,
+            platform,
+            root_factory: self.root_factory,
+            focus_first: self.focus_first,
+        }
+    }
+}
+
+impl<P, F> WinitWindowHostBuilder<P, F>
+where
+    P: WindowPlatformHooks,
+{
+    pub async fn build<R>(
+        self,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<WinitWindowHost, HostStartupError>
+    where
+        F: for<'a> FnOnce(HostInitContext<'a>, &'a P::Setup) -> anyhow::Result<R>,
+        R: Component + 'static,
+    {
+        let attributes = self
+            .platform
+            .configure_attributes(self.attributes)
+            .map_err(|error| HostStartupError::new(HostStartupStage::ConfigureAttributes, error))?;
+        let window = Arc::new(event_loop.create_window(attributes).map_err(|error| {
+            HostStartupError::new(HostStartupStage::CreateWindow, anyhow::Error::new(error))
+        })?);
+        let platform_state = self
+            .platform
+            .window_created(&window)
+            .map_err(|error| HostStartupError::new(HostStartupStage::PlatformSetup, error))?;
+        let backdrop_available = self.platform.backdrop_available(&platform_state);
+
+        let (gpu, surface) = match self.gpu_source {
+            HostGpuSource::Bootstrap => {
+                let (gpu, surface) =
+                    SharedGpu::new(Arc::clone(&window)).await.map_err(|error| {
+                        HostStartupError::new(HostStartupStage::GpuBootstrap, error)
+                    })?;
+                (Arc::new(gpu), surface)
+            }
+            HostGpuSource::Reuse(gpu) => {
+                let surface = gpu
+                    .create_window_surface(Arc::clone(&window))
+                    .map_err(|error| {
+                        HostStartupError::new(HostStartupStage::SurfaceCreation, error)
+                    })?;
+                (gpu, surface)
+            }
+        };
+
+        let surface_info = WindowSurfaceInfo {
+            format: surface.format(),
+            alpha_mode: surface.alpha_mode(),
+            physical_size: window.inner_size().into(),
+        };
+        let root = (self.root_factory)(
+            HostInitContext {
+                window: &window,
+                gpu: &gpu,
+                surface: surface_info,
+            },
+            &platform_state,
+        )
+        .map_err(|error| HostStartupError::new(HostStartupStage::RootConstruction, error))?;
+
+        let mut runtime = crate::runtime::Runtime::new();
+        runtime.init_renderer(gpu.device(), surface.format());
+        runtime
+            .init_text_renderer(gpu.device(), gpu.queue(), surface.format())
+            .context("initialize host text renderer")
+            .map_err(|error| {
+                HostStartupError::new(HostStartupStage::RuntimeInitialization, error)
+            })?;
+        let mut adapter = WinitAdapter::from_window(&window);
+        let size = window.inner_size();
+        let drawable = size.width != 0 && size.height != 0;
+        adapter.set_drawable(drawable);
+        runtime.set_viewport(adapter.viewport().clone());
+        runtime.set_root(root);
+
+        let mut initial_effects = runtime.update(Instant::now());
+        if self.focus_first {
+            runtime.focus_first_focusable();
+            initial_effects.merge(runtime.take_pending_effects());
+        }
+        let mut initial_effects = adapter.fold_effects(initial_effects);
+        initial_effects.merge(adapter.request_frame());
+        apply_window_effects(&window, initial_effects);
+
+        Ok(WinitWindowHost {
+            runtime,
+            surface,
+            adapter,
+            _platform_keepalive: Box::new(platform_state),
+            window,
+            gpu,
+            backdrop_available,
+        })
+    }
+}
+
+/// The result of a complete host-owned frame attempt.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HostFrameOutcome {
+    Presented {
+        wait: Option<ControlFlowEffect>,
+    },
+    PresentedSuboptimal {
+        wait: Option<ControlFlowEffect>,
+    },
+    Skipped {
+        wait: Option<ControlFlowEffect>,
+    },
+    RecoveryScheduled {
+        wait: Option<ControlFlowEffect>,
+    },
+    Fatal {
+        error: FrameError,
+        wait: Option<ControlFlowEffect>,
+    },
+}
+
+impl HostFrameOutcome {
+    pub const fn wait(&self) -> Option<ControlFlowEffect> {
+        match self {
+            Self::Presented { wait }
+            | Self::PresentedSuboptimal { wait }
+            | Self::Skipped { wait }
+            | Self::RecoveryScheduled { wait }
+            | Self::Fatal { wait, .. } => *wait,
+        }
+    }
+
+    pub const fn is_presented(&self) -> bool {
+        matches!(
+            self,
+            Self::Presented { .. } | Self::PresentedSuboptimal { .. }
+        )
+    }
+
+    pub const fn is_fatal(&self) -> bool {
+        matches!(self, Self::Fatal { .. })
+    }
+}
+
+/// A routed native event, including business input drained at the host boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostEventOutcome {
+    pub handled: bool,
+    pub external_input: Vec<(ExternalDrawId, UiEvent)>,
+    pub frame: Option<HostFrameOutcome>,
+    pub wait: Option<ControlFlowEffect>,
+}
+
+/// A non-frame host turn and its cross-window wait demand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostIdleOutcome {
+    pub wait: Option<ControlFlowEffect>,
+}
+
+/// Owns all native and widget state whose invariants are scoped to one window.
+///
+/// Field order is intentional: runtime/surface state drops before platform
+/// keepalive, then the native window, and finally the shared GPU reference.
+pub struct WinitWindowHost {
+    runtime: crate::runtime::Runtime,
+    surface: WindowSurface,
+    adapter: WinitAdapter,
+    _platform_keepalive: Box<dyn Any>,
+    window: Arc<Window>,
+    gpu: Arc<SharedGpu>,
+    backdrop_available: bool,
+}
+
+impl WinitWindowHost {
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    pub fn window_id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    pub fn gpu(&self) -> &SharedGpu {
+        &self.gpu
+    }
+
+    pub fn shared_gpu(&self) -> &Arc<SharedGpu> {
+        &self.gpu
+    }
+
+    pub fn invalidate_external(&mut self, work: ExternalInvalidation) -> HostIdleOutcome {
+        let effects = self.adapter.invalidate_external(&mut self.runtime, work);
+        HostIdleOutcome {
+            wait: apply_window_effects(&self.window, effects),
+        }
+    }
+
+    pub fn request_frame(&mut self) -> HostIdleOutcome {
+        let effects = self.adapter.request_frame();
+        HostIdleOutcome {
+            wait: apply_window_effects(&self.window, effects),
+        }
+    }
+
+    pub fn about_to_wait(
+        &mut self,
+        now: Instant,
+        host_deadline: Option<Instant>,
+    ) -> HostIdleOutcome {
+        let effects = self
+            .adapter
+            .about_to_wait(&mut self.runtime, now, host_deadline);
+        HostIdleOutcome {
+            wait: apply_window_effects(&self.window, effects),
+        }
+    }
+
+    pub fn handle_window_event(&mut self, event: &WindowEvent) -> HostEventOutcome {
+        if matches!(event, WindowEvent::RedrawRequested) {
+            let frame = self.redraw();
+            return HostEventOutcome {
+                handled: true,
+                external_input: self.runtime.drain_external_input(),
+                wait: frame.wait(),
+                frame: Some(frame),
+            };
+        }
+
+        let size = self.window.inner_size();
+        let outcome = self.adapter.handle_event_with_size(
+            &mut self.runtime,
+            event,
+            Some((size.width, size.height)),
+        );
+        HostEventOutcome {
+            handled: outcome.handled,
+            external_input: self.runtime.drain_external_input(),
+            frame: None,
+            wait: apply_window_effects(&self.window, outcome.effects),
+        }
+    }
+
+    fn redraw(&mut self) -> HostFrameOutcome {
+        let target = WinitFrameTarget::new(
+            &self.window,
+            &self.gpu,
+            &mut self.surface,
+            self.backdrop_available,
+        );
+        let frame = self
+            .adapter
+            .render_with_prepare(&mut self.runtime, target, |runtime| {
+                runtime.prepare_text(self.gpu.queue());
+            });
+        self.finish_frame(frame)
+    }
+
+    fn finish_frame(&self, frame: FrameOutcome) -> HostFrameOutcome {
+        finish_frame_with(frame, |effects| apply_window_effects(&self.window, effects))
+    }
+}
+
+fn finish_frame_with(
+    frame: FrameOutcome,
+    mut apply_effects: impl FnMut(RuntimeEffects) -> Option<ControlFlowEffect>,
+) -> HostFrameOutcome {
+    match frame {
+        FrameOutcome::Presented(effects) => HostFrameOutcome::Presented {
+            wait: apply_effects(effects),
+        },
+        FrameOutcome::PresentedSuboptimal(effects) => HostFrameOutcome::PresentedSuboptimal {
+            wait: apply_effects(effects),
+        },
+        FrameOutcome::Skipped(effects) => HostFrameOutcome::Skipped {
+            wait: apply_effects(effects),
+        },
+        FrameOutcome::RecoveryRequired(effects) => HostFrameOutcome::RecoveryScheduled {
+            wait: apply_effects(effects),
+        },
+        FrameOutcome::Fatal(error, effects) => HostFrameOutcome::Fatal {
+            error,
+            wait: apply_effects(effects),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_outcomes_keep_wait_visible_without_runtime_effects() {
+        let deadline = Instant::now();
+        let outcome = HostFrameOutcome::RecoveryScheduled {
+            wait: Some(ControlFlowEffect::WaitUntil(deadline)),
+        };
+        assert_eq!(outcome.wait(), Some(ControlFlowEffect::WaitUntil(deadline)));
+        assert!(!outcome.is_presented());
+        assert!(!outcome.is_fatal());
+    }
+
+    #[test]
+    fn frame_mapping_consumes_effects_once_for_every_disposition() {
+        let cases = [
+            FrameOutcome::presented(RuntimeEffects::request_redraw()),
+            FrameOutcome::presented_suboptimal(RuntimeEffects::request_redraw()),
+            FrameOutcome::skipped(RuntimeEffects::request_redraw()),
+            FrameOutcome::recovery_required(RuntimeEffects::request_redraw()),
+            FrameOutcome::fatal(
+                FrameError::out_of_memory(),
+                RuntimeEffects::request_redraw(),
+            ),
+        ];
+
+        for frame in cases {
+            let mut applied = 0;
+            let outcome = finish_frame_with(frame, |effects| {
+                applied += 1;
+                assert!(effects.request_redraw);
+                Some(ControlFlowEffect::Poll)
+            });
+            assert_eq!(applied, 1);
+            assert_eq!(outcome.wait(), Some(ControlFlowEffect::Poll));
+        }
+    }
+
+    #[test]
+    fn startup_errors_preserve_stage_and_source_context() {
+        for stage in [
+            HostStartupStage::ConfigureAttributes,
+            HostStartupStage::CreateWindow,
+            HostStartupStage::PlatformSetup,
+            HostStartupStage::GpuBootstrap,
+            HostStartupStage::SurfaceCreation,
+            HostStartupStage::RootConstruction,
+            HostStartupStage::RuntimeInitialization,
+        ] {
+            let error = HostStartupError::new(stage, anyhow::anyhow!("sentinel failure"));
+            assert_eq!(error.stage(), stage);
+            assert!(error.to_string().contains("sentinel failure"));
+            assert!(std::error::Error::source(&error).is_some());
+        }
+    }
+
+    #[test]
+    fn gpu_source_expresses_bootstrap_and_reuse_at_the_type_boundary() {
+        fn accepts(_: HostGpuSource) {}
+        accepts(HostGpuSource::Bootstrap);
+        let _ = accepts;
+    }
+}

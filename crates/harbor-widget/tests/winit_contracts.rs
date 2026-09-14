@@ -8,8 +8,9 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
-    FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitEventOutcome,
-    WinitFrameTarget,
+    FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
+    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurface, WinitAdapter,
+    WinitEventOutcome, WinitFrameTarget, WinitWindowHost, WinitWindowHostBuilder,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -173,6 +174,64 @@ fn frame_error_categories_are_host_inspectable() {
 #[allow(dead_code)]
 fn compile_only_borrowed_frame_contract() {
     let _ = borrowed_frame_contract;
+}
+
+struct ContractHooks;
+
+impl WindowPlatformHooks for ContractHooks {
+    type Setup = u32;
+
+    fn window_created(&self, _window: &Window) -> anyhow::Result<Self::Setup> {
+        Ok(7)
+    }
+}
+
+#[allow(dead_code)]
+async fn owned_host_contract(
+    event_loop: &winit::event_loop::ActiveEventLoop,
+    shared_gpu: Arc<SharedGpu>,
+) -> Result<(), HostStartupError> {
+    let first: WinitWindowHost = WinitWindowHostBuilder::new(
+        Window::default_attributes().with_visible(false),
+        |context: HostInitContext<'_>, setup: &u32| {
+            let _ = context.window().id();
+            let _ = context.gpu().device();
+            let _ = context.surface();
+            assert_eq!(*setup, 7);
+            Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(
+                harbor_widget::layout::Size::new(16.0, 16.0),
+            ))
+        },
+    )
+    .with_platform_hooks(ContractHooks)
+    .build(event_loop)
+    .await?;
+
+    let mut second: WinitWindowHost = WinitWindowHostBuilder::new(
+        Window::default_attributes().with_visible(false),
+        |_context: HostInitContext<'_>, _setup: &()| {
+            Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(
+                harbor_widget::layout::Size::new(8.0, 8.0),
+            ))
+        },
+    )
+    .reuse_gpu(shared_gpu)
+    .focus_first(true)
+    .build(event_loop)
+    .await?;
+
+    let _ = first.window();
+    let _ = first.window_id();
+    let _ = first.gpu();
+    let _ = first.shared_gpu();
+    let _: HostIdleOutcome = second.request_frame();
+    let _: HostIdleOutcome =
+        second.invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
+    let _: HostIdleOutcome = second.about_to_wait(Instant::now(), None);
+    let event = WindowEvent::Focused(true);
+    let event_outcome: HostEventOutcome = second.handle_window_event(&event);
+    let _: Option<HostFrameOutcome> = event_outcome.frame;
+    Ok(())
 }
 
 fn custom_paint_runtime(draw_id: u64) -> Runtime {

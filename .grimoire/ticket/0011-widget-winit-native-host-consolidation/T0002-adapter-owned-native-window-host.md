@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation](../../spec/0012-widget-winit-native-host-consolidation.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

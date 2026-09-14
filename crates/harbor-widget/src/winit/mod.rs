@@ -4,8 +4,10 @@
 //! platform-independent widget runtime, including per-window frame scheduling.
 //! Host policy (close requests and window routing) remains outside this module.
 
+mod effects;
 mod event;
 mod gpu;
+mod host;
 mod presenter;
 mod surface;
 
@@ -30,6 +32,11 @@ use winit::window::Window;
 #[cfg(target_os = "windows")]
 pub use gpu::RENDER_TARGET_IS_TOPMOST;
 pub use gpu::{SharedGpu, WindowSurface, select_compositing_alpha_mode};
+pub use host::{
+    HostEventOutcome, HostFrameOutcome, HostGpuSource, HostIdleOutcome, HostInitContext,
+    HostStartupError, HostStartupStage, NoopWindowPlatformHooks, WindowPlatformHooks,
+    WindowSurfaceInfo, WinitWindowHost, WinitWindowHostBuilder,
+};
 pub use presenter::{FrameError, FrameOutcome, WinitFrameTarget};
 
 /// The host-visible result of offering one winit event to a window adapter.

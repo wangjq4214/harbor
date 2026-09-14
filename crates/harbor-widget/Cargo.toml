@@ -12,6 +12,7 @@ harbor-text = { workspace = true }
 wgpu = { workspace = true }
 tracing = { workspace = true }
 harbor-widget-macros = { workspace = true }
+arboard = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 
 [target."cfg(windows)".dependencies]
@@ -19,7 +20,7 @@ windows = { workspace = true, optional = true }
 
 [features]
 default = []
-winit = ["dep:winit", "dep:windows"]
+winit = ["dep:winit", "dep:windows", "dep:arboard"]
 backend-dx12 = []
 backend-vulkan = []
 
