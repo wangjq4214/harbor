@@ -13,11 +13,11 @@ mod tests;
 
 use crate::model::AltScreenAction;
 use crate::screen::Screen;
+pub use crate::screen::SessionTitle;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
 use status_strings::DecrqssRequest;
 use xtgettcap::XtgettcapRequest;
-
 /// Streaming terminal parser.
 ///
 /// `TerminalParser` owns only parser state. It mutates a supplied `Screen`, which keeps the
@@ -27,6 +27,7 @@ pub struct TerminalParser {
     inner: Parser,
     decrqss: DecrqssRequest,
     xtgettcap: XtgettcapRequest,
+    title: SessionTitle,
 }
 
 /// Result of feeding bytes through the parser.
@@ -50,6 +51,7 @@ impl TerminalParser {
                     screen,
                     decrqss: &mut self.decrqss,
                     xtgettcap: &mut self.xtgettcap,
+                    title: &mut self.title,
                 },
                 byte,
             );
@@ -63,6 +65,26 @@ impl TerminalParser {
         PutResult {
             consumed: bytes.len(),
             alt_request: None,
+        }
+    }
+
+    pub fn window_title(&self) -> Option<&str> {
+        self.title.window.as_deref()
+    }
+
+    pub fn icon_title(&self) -> Option<&str> {
+        self.title.icon.as_deref()
+    }
+
+    pub fn drain_title_changed(&mut self) -> bool {
+        std::mem::take(&mut self.title.changed)
+    }
+
+    pub fn reset_title(&mut self) {
+        if self.title.window.is_some() || self.title.icon.is_some() {
+            self.title.window = None;
+            self.title.icon = None;
+            self.title.changed = true;
         }
     }
 }

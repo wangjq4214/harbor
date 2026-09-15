@@ -596,6 +596,21 @@ impl Terminal {
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt()
     }
+
+    /// Returns the active window title if one has been set.
+    pub fn window_title(&self) -> Option<&str> {
+        self.io.window_title()
+    }
+
+    /// Returns the active icon title if one has been set.
+    pub fn icon_title(&self) -> Option<&str> {
+        self.io.icon_title()
+    }
+
+    /// Drains whether the window or icon title has changed since the last drain.
+    pub fn drain_title_changed(&mut self) -> bool {
+        self.io.drain_title_changed()
+    }
 }
 
 fn retain_geometry_changed(

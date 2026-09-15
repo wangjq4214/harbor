@@ -5,7 +5,7 @@ use super::mode_query::ModeQuery;
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
-use crate::screen::Screen;
+use crate::screen::{MAX_TITLE_BYTES, Screen, SessionTitle, filter_title};
 use harbor_parser::{Params, VtHandler};
 
 /// Applies recognized VT actions to a `Screen`.
@@ -13,6 +13,7 @@ pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
     pub decrqss: &'a mut DecrqssRequest,
     pub xtgettcap: &'a mut XtgettcapRequest,
+    pub title: &'a mut SessionTitle,
 }
 
 impl VtHandler for ScreenHandler<'_> {
@@ -250,6 +251,11 @@ impl VtHandler for ScreenHandler<'_> {
         match byte {
             b'c' => {
                 self.screen.reset_display();
+                if self.title.window.is_some() || self.title.icon.is_some() {
+                    self.title.window = None;
+                    self.title.icon = None;
+                    self.title.changed = true;
+                }
             }
             b'D' => {
                 self.screen.index();
@@ -285,11 +291,57 @@ impl VtHandler for ScreenHandler<'_> {
         }
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], bell_terminated: bool) {
-        if bell_terminated {
-            tracing::warn!("unsupported OSC sequence (terminated by BEL)");
-        } else {
-            tracing::warn!("unsupported OSC sequence (terminated by ST)");
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        if params.is_empty() {
+            return;
+        }
+        match params[0] {
+            b"0" | b"1" | b"2" => {
+                let mut raw_title = Vec::new();
+                for (idx, slice) in params.iter().enumerate().skip(1) {
+                    if idx > 1 {
+                        raw_title.push(b';');
+                    }
+                    raw_title.extend_from_slice(slice);
+                }
+                let title = filter_title(&raw_title, MAX_TITLE_BYTES);
+                match params[0] {
+                    b"0" => {
+                        let mut changed = false;
+                        if self.title.window != title {
+                            self.title.window = title.clone();
+                            changed = true;
+                        }
+                        if self.title.icon != title {
+                            self.title.icon = title;
+                            changed = true;
+                        }
+                        if changed {
+                            self.title.changed = true;
+                        }
+                    }
+                    b"1" => {
+                        if self.title.icon != title {
+                            self.title.icon = title;
+                            self.title.changed = true;
+                        }
+                    }
+                    b"2" => {
+                        if self.title.window != title {
+                            self.title.window = title;
+                            self.title.changed = true;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => {
+                if bell_terminated {
+                    tracing::warn!("unsupported OSC sequence (terminated by BEL)");
+                } else {
+                    tracing::warn!("unsupported OSC sequence (terminated by ST)");
+                }
+            }
         }
     }
 

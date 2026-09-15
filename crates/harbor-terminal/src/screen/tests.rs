@@ -3613,6 +3613,25 @@ fn reset_display_drops_parked_alt_buffer() {
 }
 
 #[test]
+fn reset_display_clears_queued_alt_requests() {
+    let mut screen = Screen::new(3, 10);
+
+    // Queued enter request must be discarded by reset_display.
+    screen.request_alt_enter(true);
+    assert_eq!(screen.alt_request(), Some(AltScreenAction::Enter { clear: true }));
+    screen.reset_display();
+    assert_eq!(screen.alt_request(), None);
+    assert_eq!(screen.take_alt_request(), None);
+
+    // Queued exit request must be discarded by reset_display.
+    screen.request_alt_exit();
+    assert_eq!(screen.alt_request(), Some(AltScreenAction::Exit));
+    screen.reset_display();
+    assert_eq!(screen.alt_request(), None);
+    assert_eq!(screen.take_alt_request(), None);
+}
+
+#[test]
 fn alt_screen_repeated_cycles_keep_parking_alt_contents() {
     // Regression for the exit-side ordering: `exit_alt` parks the alternate
     // buffer only after the saved primary is restored (`*self = *primary`),

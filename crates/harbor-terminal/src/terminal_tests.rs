@@ -578,12 +578,16 @@ fn ignores_private_cursor_visibility_sequence() {
 }
 
 #[test]
-fn ignores_osc_title_sequence_terminated_by_bel() {
+fn parses_osc_title_sequence_terminated_by_bel() {
     let mut terminal = Terminal::new_headless(1, 8);
 
     terminal.put_bytes(b"a\x1b]0;C:\\Windows\\system32\\cmd.exe\x07b");
 
     assert_eq!(terminal.row_text(0), "ab      ");
+    assert_eq!(terminal.window_title(), Some("C:\\Windows\\system32\\cmd.exe"));
+    assert_eq!(terminal.icon_title(), Some("C:\\Windows\\system32\\cmd.exe"));
+    assert!(terminal.drain_title_changed());
+    assert!(!terminal.drain_title_changed());
 }
 
 #[test]
@@ -594,8 +598,148 @@ fn keeps_incomplete_osc_sequence_across_chunks() {
     terminal.put_bytes(b"\x1b\\b");
 
     assert_eq!(terminal.row_text(0), "ab      ");
+    assert_eq!(terminal.window_title(), Some("title"));
+    assert_eq!(terminal.icon_title(), Some("title"));
 }
 
+#[test]
+fn osc_1_sets_only_icon_title() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]2;window\x07");
+    assert_eq!(terminal.window_title(), Some("window"));
+    assert_eq!(terminal.icon_title(), None);
+
+    terminal.put_bytes(b"\x1b]1;icon\x07");
+    assert_eq!(terminal.window_title(), Some("window"));
+    assert_eq!(terminal.icon_title(), Some("icon"));
+}
+
+#[test]
+fn osc_2_sets_only_window_title() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]1;icon\x07");
+    assert_eq!(terminal.icon_title(), Some("icon"));
+    assert_eq!(terminal.window_title(), None);
+
+    terminal.put_bytes(b"\x1b]2;window\x07");
+    assert_eq!(terminal.window_title(), Some("window"));
+    assert_eq!(terminal.icon_title(), Some("icon"));
+}
+
+#[test]
+fn osc_title_preserves_embedded_semicolons() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]0;git;status;branch\x1b\\");
+    assert_eq!(terminal.window_title(), Some("git;status;branch"));
+    assert_eq!(terminal.icon_title(), Some("git;status;branch"));
+}
+
+#[test]
+fn osc_title_filters_control_characters_and_preserves_utf8() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    // Contains C0 controls (\x01, \x1b), DEL (\x7f), \r, \n, and valid Chinese UTF-8 chars
+    terminal.put_bytes("a\x1b]0;\x01终端\x1b测试\r\n\x7f\x07b".as_bytes());
+    assert_eq!(terminal.window_title(), Some("终端测试"));
+}
+
+#[test]
+fn osc_title_enforces_1024_byte_length_limit() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    // Repeat "中" (3 bytes each) 400 times = 1200 bytes.
+    let long_chinese = "中".repeat(400);
+    let seq = format!("\x1b]0;{long_chinese}\x07");
+    terminal.put_bytes(seq.as_bytes());
+    let title = terminal.window_title().expect("title exists");
+    assert!(title.len() <= 1024);
+    // 1024 / 3 = 341 * 3 = 1023 bytes
+    assert_eq!(title.len(), 1023);
+    assert_eq!(title, "中".repeat(341));
+}
+
+#[test]
+fn empty_osc_title_resets_title() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]0;initial\x07");
+    assert_eq!(terminal.window_title(), Some("initial"));
+    assert!(terminal.drain_title_changed());
+
+    // Empty payload clears title
+    terminal.put_bytes(b"\x1b]0;\x07");
+    assert_eq!(terminal.window_title(), None);
+    assert_eq!(terminal.icon_title(), None);
+    assert!(terminal.drain_title_changed());
+}
+
+#[test]
+fn ris_resets_title() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]0;my_app\x07");
+    assert_eq!(terminal.window_title(), Some("my_app"));
+    terminal.drain_title_changed();
+
+    // Hard reset ESC c (RIS)
+    terminal.put_bytes(b"\x1bc");
+    assert_eq!(terminal.window_title(), None);
+    assert_eq!(terminal.icon_title(), None);
+    assert!(terminal.drain_title_changed());
+}
+
+#[test]
+fn alt_screen_transitions_preserve_title() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]0;persisted_title\x07");
+    assert_eq!(terminal.window_title(), Some("persisted_title"));
+
+    // Enter alt screen (?1049h)
+    terminal.put_bytes(b"\x1b[?1049h");
+    assert!(terminal.is_alt_screen());
+    assert_eq!(terminal.window_title(), Some("persisted_title"));
+
+    // Update title while in alt screen
+    terminal.put_bytes(b"\x1b]0;alt_title\x07");
+    assert_eq!(terminal.window_title(), Some("alt_title"));
+
+    // Exit alt screen (?1049l)
+    terminal.put_bytes(b"\x1b[?1049l");
+    assert!(!terminal.is_alt_screen());
+    assert_eq!(terminal.window_title(), Some("alt_title"));
+}
+
+#[test]
+fn alt_screen_title_drain_and_updates_across_transitions() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    // 1. Set title in primary, verify pending drain
+    terminal.put_bytes(b"\x1b]0;primary_title\x07");
+    assert!(terminal.drain_title_changed(), "title changed must be true after set");
+    assert!(!terminal.drain_title_changed(), "second drain must be false");
+
+    // 2. Transition into alt screen without setting new title
+    terminal.put_bytes(b"\x1b[?1049h");
+    assert!(terminal.is_alt_screen());
+    assert_eq!(terminal.window_title(), Some("primary_title"));
+    assert!(!terminal.drain_title_changed(), "enter_alt without title change must not resurrect changed flag");
+
+    // 3. Set title inside alt screen
+    terminal.put_bytes(b"\x1b]0;vim_title\x07");
+    assert_eq!(terminal.window_title(), Some("vim_title"));
+    assert!(terminal.drain_title_changed(), "title change in alt screen must set changed flag");
+    assert!(!terminal.drain_title_changed(), "drain consumes changed flag");
+
+    // 4. Exit alt screen back to primary
+    terminal.put_bytes(b"\x1b[?1049l");
+    assert!(!terminal.is_alt_screen());
+    assert_eq!(terminal.window_title(), Some("vim_title"), "vim_title persists across exit_alt");
+    assert!(!terminal.drain_title_changed(), "exit_alt must not resurrect consumed changed flag");
+
+    // 5. Unconsumed title change before exit_alt preserves its pending flag
+    terminal.put_bytes(b"\x1b[?1049h"); // enter alt
+    terminal.put_bytes(b"\x1b]0;pending_alt_title\x07"); // set title without draining
+    terminal.put_bytes(b"\x1b[?1049l"); // exit alt immediately
+    assert_eq!(terminal.window_title(), Some("pending_alt_title"));
+    assert!(terminal.drain_title_changed(), "pending title change must survive exit_alt until drained");
+    assert!(!terminal.drain_title_changed());
+}
 #[test]
 fn cargo_update_output_spans_multiple_rows() {
     // Replay the PTY output chunks logged during `cargo update`.
@@ -895,6 +1039,20 @@ fn ris_while_in_alt_exits_and_drops_alt_buffer() {
         terminal.row_text(0).trim().is_empty(),
         "RIS must drop the alt buffer"
     );
+}
+
+#[test]
+fn ris_clears_queued_alt_screen_requests() {
+    let mut terminal = Terminal::new_headless(3, 20);
+    terminal.screen_mut().request_alt_enter(true);
+    assert!(terminal.screen().alt_request().is_some());
+    terminal.screen_mut().reset_display();
+    assert_eq!(terminal.screen().alt_request(), None);
+
+    terminal.screen_mut().request_alt_exit();
+    assert!(terminal.screen().alt_request().is_some());
+    terminal.screen_mut().reset_display();
+    assert_eq!(terminal.screen().alt_request(), None);
 }
 
 #[test]

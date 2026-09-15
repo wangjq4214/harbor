@@ -930,14 +930,14 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 24.2 Titles
 
-* [ ] `OSC 0 ; title ST`
-* [ ] `OSC 1 ; icon-name ST`
-* [ ] `OSC 2 ; window-title ST`
-* [ ] Supports BEL termination
-* [ ] Supports ST termination
-* [ ] Title length limit
-* [ ] Control characters in titles are filtered
-* [ ] Empty titles are handled correctly
+* [x] `OSC 0 ; title ST`
+* [x] `OSC 1 ; icon-name ST`
+* [x] `OSC 2 ; window-title ST`
+* [x] Supports BEL termination
+* [x] Supports ST termination
+* [x] Title length limit
+* [x] Control characters in titles are filtered
+* [x] Empty titles are handled correctly
 
 ### 24.3 Palette
 
@@ -1379,7 +1379,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Maximum APC length
 * [x] Maximum PM length
 * [x] Maximum SOS length
-* [ ] Maximum title length
+* [x] Maximum title length
 * [ ] Maximum hyperlink URI length
 * [ ] Maximum OSC 52 Base64 length
 * [ ] Maximum clipboard decoded length
@@ -1551,8 +1551,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 38.8 OSC
 
-* [ ] `\x1b]0;title\x07`
-* [ ] `\x1b]2;title\x1b\\`
+* [x] `\x1b]0;title\x07`
+* [x] `\x1b]2;title\x1b\\`
 * [ ] `\x1b]7;file:///tmp\x1b\\`
 * [ ] `\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\`
 * [ ] `\x1b]10;?\x1b\\`

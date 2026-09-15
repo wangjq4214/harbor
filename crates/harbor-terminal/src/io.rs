@@ -364,8 +364,19 @@ impl TerminalIo {
     pub(crate) fn set_suppress_scroll_snap(&mut self, suppress: bool) {
         self.suppress_scroll_snap = suppress;
     }
-
     pub(crate) fn reset_scroll_snap(&mut self) {
         self.suppress_scroll_snap = false;
+    }
+
+    pub(crate) fn window_title(&self) -> Option<&str> {
+        self.parser.window_title()
+    }
+
+    pub(crate) fn icon_title(&self) -> Option<&str> {
+        self.parser.icon_title()
+    }
+
+    pub(crate) fn drain_title_changed(&mut self) -> bool {
+        self.parser.drain_title_changed()
     }
 }

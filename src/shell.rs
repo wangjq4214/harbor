@@ -125,7 +125,7 @@ impl ActiveSession {
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         let AppEvent::TerminalOutputReady(tab_id) = event;
         let outcome = self.tabs.process_output(tab_id);
-        if outcome.unread_changed {
+        if outcome.unread_changed || outcome.title_changed {
             self.tabs.sync_ui(&self.window);
             let effects = self.widget_runtime.update(Instant::now());
             let effects = self.winit_adapter.fold_effects(effects);

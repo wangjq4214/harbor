@@ -117,6 +117,7 @@ impl TabActionOutcome {
 pub(crate) struct TabOutputOutcome {
     pub(crate) request_active_invalidation: bool,
     pub(crate) unread_changed: bool,
+    pub(crate) title_changed: bool,
 }
 
 /// Ordered Host-owned terminal sessions.
@@ -317,16 +318,33 @@ impl TabManager {
             return TabOutputOutcome::default();
         };
         let ingested_output = terminal.drain_pty();
+        let title_changed = if terminal.drain_title_changed() {
+            let new_title = terminal
+                .window_title()
+                .map(String::from)
+                .unwrap_or_else(|| format!("Terminal {id}"));
+            if tab.title != new_title {
+                tab.title = new_title;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         if self.active == Some(id) {
             TabOutputOutcome {
                 request_active_invalidation: true,
                 unread_changed: false,
+                title_changed,
             }
         } else {
             let unread_changed = ingested_output && !std::mem::replace(&mut tab.unread, true);
             TabOutputOutcome {
                 request_active_invalidation: false,
                 unread_changed,
+                title_changed,
             }
         }
     }
@@ -500,6 +518,42 @@ mod tests {
                 .unwrap()
                 .unread
         );
+    }
+
+    #[test]
+    fn process_output_updates_tab_title_and_reports_title_changed() {
+        use std::io::Cursor;
+        use std::time::Duration;
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        let mut manager = TabManager::new();
+        manager
+            .create_tab(|_, draw_id| {
+                #[allow(clippy::arc_with_non_send_sync)]
+                let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+                    4,
+                    20,
+                    Cursor::new(b"\x1b]0;Custom Tab Title\x07".to_vec()),
+                    std::io::sink(),
+                    move || wake_tx.send(()).is_ok(),
+                )));
+                let bridge = TerminalWidgetBridge::new(
+                    draw_id,
+                    Arc::clone(&terminal),
+                    Arc::new(AtomicBool::new(false)),
+                );
+                Ok(TerminalTabResources::new(terminal, bridge))
+            })
+            .unwrap();
+        let tab_id = manager.active_id().unwrap();
+
+        wake_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("reader announces queued output");
+
+        let outcome = manager.process_output(tab_id);
+        assert!(outcome.title_changed);
+        let snap = manager.snapshots().into_iter().find(|s| s.id == tab_id).unwrap();
+        assert_eq!(snap.title, "Custom Tab Title");
     }
 
     #[test]

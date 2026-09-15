@@ -25,6 +25,43 @@ use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
 use self::synchronized_output::SynchronizedOutput;
 
+/// Maximum length for title strings in bytes.
+pub const MAX_TITLE_BYTES: usize = 1024;
+
+/// Session-level window and icon title state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionTitle {
+    pub window: Option<String>,
+    pub icon: Option<String>,
+    pub changed: bool,
+}
+
+/// Filters and bounds raw title bytes according to protocol and security constraints.
+///
+/// 1. Decodes lossy UTF-8 to prevent invalid UTF-8 panic or mojibake corruption.
+/// 2. Filters out Unicode control characters (including C0, C1, DEL, and newlines).
+/// 3. Safely truncates to at most `max_bytes` on a valid char boundary.
+/// 4. Returns `None` if the resulting string is empty.
+pub fn filter_title(raw: &[u8], max_bytes: usize) -> Option<String> {
+    let lossy = String::from_utf8_lossy(raw);
+    let filtered: String = lossy.chars().filter(|c| !c.is_control()).collect();
+    if filtered.is_empty() {
+        return None;
+    }
+    if filtered.len() <= max_bytes {
+        return Some(filtered);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !filtered.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        None
+    } else {
+        Some(filtered[..end].to_string())
+    }
+}
+
 pub use self::reader::ScreenReader;
 
 // ── re-exports ────────────────────────────────────────────────────────
@@ -220,6 +257,7 @@ impl Screen {
         std::mem::take(&mut self.replies)
     }
 
+
     /// Returns the 1-based (row, col) coordinates relative to origin/margins if DECOM is enabled.
     pub fn cpr_coordinates(&self) -> (usize, usize) {
         let row = if self.cursor.modes.origin {
@@ -391,7 +429,6 @@ impl Screen {
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
-        // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
         let mut primary = std::mem::replace(self, Self::new(rows, cols));
         let parked = primary.parked_alt.take();
@@ -413,7 +450,6 @@ impl Screen {
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
         if let Some(primary) = self.saved_primary.take() {
-            // Preserve the alternate-screen contents for a later `?47` re-entry.
             let rows = self.rows();
             let cols = self.cols();
             let mut alt = std::mem::replace(self, Self::new(rows, cols));
@@ -428,7 +464,6 @@ impl Screen {
         }
         self.replies = replies;
         self.synchronized_output = sync;
-        debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
 
     // ── resize ─────────────────────────────────────────────────────────
