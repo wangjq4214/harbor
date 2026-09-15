@@ -6,6 +6,7 @@ use harbor_widget::input::event::{
 };
 use harbor_widget::layout::Point;
 use harbor_widget::runtime::Runtime;
+use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::preview_pane::PreviewPane;
@@ -302,7 +303,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
         first_runtime.drain_external_input(),
         vec![
             (
-                101,
+                ExternalDrawId::new(101),
                 UiEvent::Pointer(
                     PointerEvent::new(
                         Point::new(10.0, 5.0),
@@ -317,7 +318,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
                 ),
             ),
             (
-                101,
+                ExternalDrawId::new(101),
                 UiEvent::Keyboard(KeyboardEvent::KeyDown {
                     key: WidgetKey::Character('x'),
                     modifiers: Modifiers {
@@ -332,7 +333,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
         second_runtime.drain_external_input(),
         vec![
             (
-                202,
+                ExternalDrawId::new(202),
                 UiEvent::Pointer(PointerEvent::new(
                     Point::new(20.0, 10.0),
                     PointerPhase::Move,
@@ -341,7 +342,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
                 )),
             ),
             (
-                202,
+                ExternalDrawId::new(202),
                 UiEvent::Keyboard(KeyboardEvent::KeyDown {
                     key: WidgetKey::Character('x'),
                     modifiers: Modifiers::default(),
@@ -376,7 +377,7 @@ fn should_reset_modifiers_for_keyboard_input_after_focus_loss() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            303,
+            ExternalDrawId::new(303),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: WidgetKey::Character('x'),
                 modifiers: Modifiers::default(),
@@ -444,7 +445,7 @@ fn should_request_redraw_when_programmatic_focus_changes() {
 #[test]
 fn programmatic_focus_events_and_effects_stay_with_the_owning_runtime() {
     let mut owner = custom_paint_runtime(601);
-    let other = custom_paint_runtime(602);
+    let mut other = custom_paint_runtime(602);
     let owner_id = owner.root_id().expect("owner root");
 
     owner.clear_focus();

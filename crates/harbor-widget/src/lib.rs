@@ -32,8 +32,6 @@ pub mod layout;
 pub mod renderer;
 pub mod runtime;
 pub mod scene;
-#[cfg(any(feature = "winit", test))]
-mod scheduler;
 pub mod store;
 pub use store::{Dispatcher, Store};
 pub mod signal;

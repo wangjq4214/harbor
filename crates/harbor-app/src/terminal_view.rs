@@ -79,11 +79,13 @@ pub fn terminal_size_from_allocation(
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
 pub(crate) fn dispatch_matched_draw(
-    owned_id: ExternalDrawId,
-    invoked_id: ExternalDrawId,
+    owned_id: impl Into<ExternalDrawId>,
+    invoked_id: impl Into<ExternalDrawId>,
     context: &ExternalDrawContext,
     draw: impl FnOnce(RenderTarget),
 ) {
+    let owned_id = owned_id.into();
+    let invoked_id = invoked_id.into();
     if invoked_id != owned_id {
         return;
     }
@@ -224,11 +226,11 @@ impl TerminalWidgetBridge {
     #[allow(dead_code)]
     /// Creates a stable bridge that paints and receives input for `terminal`.
     pub fn new(
-        draw_id: ExternalDrawId,
+        draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
         gate_active: Arc<AtomicBool>,
     ) -> Self {
-        Self::new_internal(draw_id, terminal, gate_active)
+        Self::new_internal(draw_id.into(), terminal, gate_active)
     }
 
     fn new_internal(
@@ -337,11 +339,13 @@ fn render_terminal_widget(cx: &mut BuildCx, bridge: &TerminalWidgetBridge) -> Vi
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
 pub(crate) fn schedule_demand_for_terminal(
-    owned_id: ExternalDrawId,
-    invoked_id: ExternalDrawId,
+    owned_id: impl Into<ExternalDrawId>,
+    invoked_id: impl Into<ExternalDrawId>,
     terminal: &Mutex<Terminal>,
     now: std::time::Instant,
 ) -> ExternalScheduleDemand {
+    let owned_id = owned_id.into();
+    let invoked_id = invoked_id.into();
     if invoked_id != owned_id {
         return ExternalScheduleDemand::empty();
     }
@@ -1425,7 +1429,7 @@ mod decoration_tests {
             assert_eq!(*occluder_rect, expected_child);
             assert!(matches!(
                 items[1].primitive,
-                Primitive::External { draw: 1, rect } if rect == expected_child
+                Primitive::External { draw, rect } if draw == 1 && rect == expected_child
             ));
             let clip = items[1]
                 .clips
@@ -1538,9 +1542,9 @@ mod decoration_tests {
         assert!(matches!(
             external.primitive,
             Primitive::External {
-                draw: 1,
+                draw,
                 rect
-            } if rect == expected_child
+            } if draw == 1 && rect == expected_child
         ));
         assert!(!external.clips.is_empty());
         let innermost = external.clips.last().expect("innermost clip");

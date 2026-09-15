@@ -5,7 +5,10 @@ use super::WidgetHmrWork;
 use super::effects::apply_window_effects;
 #[cfg(feature = "hmr")]
 use super::hmr::{WidgetHmrConfig, WidgetHmrRoot, WidgetHmrState, WidgetHmrWorkKind};
-use super::{FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget};
+use super::{
+    FrameError, FrameOutcome, SharedGpu, WindowPresenter, WindowSurface, WinitAdapter,
+    WinitFrameTarget,
+};
 use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::input::event::UiEvent;
 use crate::renderer::Viewport;
@@ -317,10 +320,12 @@ where
                 HostStartupError::new(HostStartupStage::RuntimeInitialization, error)
             })?;
         let mut adapter = WinitAdapter::from_window(&window);
+        adapter.use_external_presenter();
+        let mut presenter = WindowPresenter::from_window(&window);
         let size = window.inner_size();
         let drawable = size.width != 0 && size.height != 0;
-        adapter.set_drawable(drawable);
-        runtime.set_viewport(adapter.viewport().clone());
+        presenter.set_drawable(drawable);
+        runtime.set_viewport(presenter.viewport().clone());
 
         let root_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.root_factory)(
@@ -358,8 +363,8 @@ where
             runtime.focus_first_focusable();
             initial_effects.merge(runtime.take_pending_effects());
         }
-        let mut initial_effects = adapter.fold_effects(initial_effects);
-        initial_effects.merge(adapter.request_frame());
+        let mut initial_effects = presenter.fold_effects(initial_effects);
+        initial_effects.merge(presenter.request_frame());
         apply_window_effects(&window, initial_effects);
 
         #[cfg(feature = "hmr")]
@@ -379,6 +384,7 @@ where
                 runtime,
                 surface,
                 adapter,
+                presenter,
                 _platform_keepalive: Box::new(platform_state),
                 window,
                 gpu,
@@ -457,6 +463,7 @@ pub struct HostIdleOutcome {
 pub struct WinitWindowHost {
     runtime: crate::runtime::Runtime,
     surface: WindowSurface,
+    presenter: WindowPresenter,
     adapter: WinitAdapter,
     _platform_keepalive: Box<dyn Any>,
     window: Arc<Window>,
@@ -484,7 +491,7 @@ impl WinitWindowHost {
     }
 
     pub fn viewport(&self) -> &Viewport {
-        self.adapter.viewport()
+        self.presenter.viewport()
     }
 
     pub fn modifiers(&self) -> ModifiersState {
@@ -604,8 +611,8 @@ impl WinitWindowHost {
                         return self.apply_runtime_effects(effects);
                     }
                 };
-                effects = self.adapter.fold_effects(effects);
-                effects.merge(self.adapter.request_frame());
+                effects = self.presenter.fold_effects(effects);
+                effects.merge(self.presenter.request_frame());
                 self.hmr
                     .as_mut()
                     .expect("HMR state checked above")
@@ -620,9 +627,9 @@ impl WinitWindowHost {
     }
 
     pub fn invalidate_external(&mut self, work: ExternalInvalidation) -> HostIdleOutcome {
-        let mut effects = self.adapter.invalidate_external(&mut self.runtime, work);
+        let mut effects = self.presenter.invalidate_external(&mut self.runtime, work);
         let update = self
-            .adapter
+            .presenter
             .fold_effects(self.runtime.update(Instant::now()));
         effects.merge(update);
         HostIdleOutcome {
@@ -631,7 +638,7 @@ impl WinitWindowHost {
     }
 
     pub fn request_frame(&mut self) -> HostIdleOutcome {
-        let effects = self.adapter.request_frame();
+        let effects = self.presenter.request_frame();
         HostIdleOutcome {
             wait: apply_window_effects(&self.window, effects),
         }
@@ -648,7 +655,7 @@ impl WinitWindowHost {
         host_deadline: Option<Instant>,
     ) -> HostIdleOutcome {
         let effects = self
-            .adapter
+            .presenter
             .about_to_wait(&mut self.runtime, now, host_deadline);
         HostIdleOutcome {
             wait: apply_window_effects(&self.window, effects),
@@ -690,7 +697,8 @@ impl WinitWindowHost {
         }
 
         let size = self.window.inner_size();
-        let outcome = self.adapter.handle_event_with_size(
+        let outcome = self.presenter.handle_event_with_size(
+            &mut self.adapter,
             &mut self.runtime,
             event,
             Some((size.width, size.height)),
@@ -704,7 +712,7 @@ impl WinitWindowHost {
     }
 
     fn apply_runtime_effects(&mut self, effects: RuntimeEffects) -> HostIdleOutcome {
-        let effects = self.adapter.fold_effects(effects);
+        let effects = self.presenter.fold_effects(effects);
         HostIdleOutcome {
             wait: apply_window_effects(&self.window, effects),
         }
@@ -713,7 +721,7 @@ impl WinitWindowHost {
     fn redraw(&mut self) -> HostFrameOutcome {
         let target = WinitFrameTarget::new(&self.window, &self.gpu, &mut self.surface);
         let frame = self
-            .adapter
+            .presenter
             .render_with_prepare(&mut self.runtime, target, |runtime| {
                 runtime.prepare_text(self.gpu.queue());
             });

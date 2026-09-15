@@ -9,7 +9,8 @@ use harbor_widget::renderer::quad::QuadRenderer;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::clip::RoundedClip;
 use harbor_widget::scene::primitive::{
-    Color, ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawMode, Primitive,
+    Color, ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalDrawMode,
+    Primitive,
 };
 use harbor_widget::scene::{SceneDelta, SceneItem};
 use harbor_widget::widgets::custom_paint::CustomPaint;
@@ -1459,7 +1460,7 @@ fn should_invoke_external_draw_with_correct_rect() {
         let context = ExternalDrawContext::new(rect, Viewport::new(256, 256, 1.0));
 
         external_draw(
-            42,
+            ExternalDrawId::new(42),
             &context,
             draw_gpu(&device, &_queue),
             &mut pass,
@@ -1483,7 +1484,7 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
     let observed_draw_id = Arc::clone(&invoked_draw_id);
     let handler: Arc<ExternalDrawFn<'static>> =
         Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
-            observed_draw_id.store(draw_id, Ordering::SeqCst);
+            observed_draw_id.store(draw_id.get(), Ordering::SeqCst);
         });
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
@@ -1517,13 +1518,13 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     let first_observed = Arc::clone(&first_draw_id);
     let first_handler: Arc<ExternalDrawFn<'static>> =
         Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
-            first_observed.store(draw_id, Ordering::SeqCst);
+            first_observed.store(draw_id.get(), Ordering::SeqCst);
         });
     let second_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let second_observed = Arc::clone(&second_draw_id);
     let second_handler: Arc<ExternalDrawFn<'static>> =
         Arc::new(move |draw_id, _context, _gpu, _pass, _mode| {
-            second_observed.store(draw_id, Ordering::SeqCst);
+            second_observed.store(draw_id.get(), Ordering::SeqCst);
         });
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
@@ -1562,12 +1563,12 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     let rects = Arc::new(Mutex::new(Vec::new()));
     let make_handler = |order: Arc<Mutex<Vec<u64>>>, rects: Arc<Mutex<Vec<Rect>>>| {
         Arc::new(
-            move |draw_id: u64,
+            move |draw_id: ExternalDrawId,
                   context: &ExternalDrawContext,
                   _gpu: ExternalDrawGpu<'_>,
                   _pass: &mut wgpu::RenderPass<'_>,
                   _mode| {
-                order.lock().unwrap().push(draw_id);
+                order.lock().unwrap().push(draw_id.get());
                 rects.lock().unwrap().push(context.logical_rect);
             },
         ) as Arc<ExternalDrawFn<'static>>
@@ -2311,7 +2312,7 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
     let modes = Arc::clone(&observed_mode);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |draw_id, context, gpu, _, mode| {
         assert_eq!(gpu.target_format(), wgpu::TextureFormat::Bgra8Unorm);
-        id.store(draw_id, Ordering::SeqCst);
+        id.store(draw_id.get(), Ordering::SeqCst);
         *rects.lock().unwrap() = Some(context.logical_rect);
         *modes.lock().unwrap() = Some(mode);
         assert_eq!(context.surface_size(), (32, 32));

@@ -13,7 +13,6 @@ use crate::scene::primitive::ExternalDrawId;
 use crate::view::EnsureVisibleResult;
 use crate::widgets::shortcuts::KeyChord;
 use std::any::Any;
-use std::cell::RefCell;
 
 /// Owns input state and routes UI events through capture → target → bubble.
 pub(crate) struct EventRouter {
@@ -26,7 +25,7 @@ pub(crate) struct EventRouter {
     pending_reveal: Option<FiberId>,
     layout_available: bool,
     last_focus_scope: Option<FiberId>,
-    pending_external_input: RefCell<Vec<(ExternalDrawId, UiEvent)>>,
+    pending_external_input: Vec<(ExternalDrawId, UiEvent)>,
 }
 
 impl EventRouter {
@@ -41,7 +40,7 @@ impl EventRouter {
             pending_reveal: None,
             layout_available: false,
             last_focus_scope: None,
-            pending_external_input: RefCell::new(Vec::new()),
+            pending_external_input: Vec::new(),
         }
     }
 
@@ -70,8 +69,8 @@ impl EventRouter {
         self.pending_focus_handle = handle;
     }
 
-    pub(crate) fn drain_external_input(&self) -> Vec<(ExternalDrawId, UiEvent)> {
-        std::mem::take(&mut *self.pending_external_input.borrow_mut())
+    pub(crate) fn drain_external_input(&mut self) -> Vec<(ExternalDrawId, UiEvent)> {
+        std::mem::take(&mut self.pending_external_input)
     }
 
     /// Clears stale routing identities after reconciliation and resolves a pending
@@ -263,7 +262,7 @@ impl EventRouter {
         }
         let external = ctx.take_external_input();
         if !external.is_empty() {
-            self.pending_external_input.borrow_mut().extend(external);
+            self.pending_external_input.extend(external);
         }
         let previous_focus = self.input.focused;
         let previous_visible = self.input.focus_visible;
@@ -447,7 +446,7 @@ impl EventRouter {
             );
             let external = ctx.take_external_input();
             if !external.is_empty() {
-                self.pending_external_input.borrow_mut().extend(external);
+                self.pending_external_input.extend(external);
             }
         }
         self.input.apply(ctx.take_commands(), arena) || ctx.needs_paint()

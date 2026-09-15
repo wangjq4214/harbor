@@ -566,7 +566,7 @@ mod tests {
         let external_item = SceneItem {
             id: 0,
             primitive: Primitive::External {
-                draw: 42u64 as ExternalDrawId,
+                draw: ExternalDrawId::new(42),
                 rect: Rect::from_min_size(Point::new(0.0, 0.0), Size::new(800.0, 600.0)),
             },
             clips: Vec::new(),

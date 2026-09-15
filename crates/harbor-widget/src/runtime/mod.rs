@@ -15,7 +15,6 @@ use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
-use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
 use crate::scene::primitive::{
@@ -23,12 +22,14 @@ use crate::scene::primitive::{
 };
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
-use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
+#[cfg(test)]
+use crate::text::TextRunCache;
+use crate::text::{TextMetrics, text_metrics_equal};
 use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
@@ -60,7 +61,6 @@ pub struct Runtime {
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
     text_metrics: TextMetrics,
-    text_atlas: Option<Rc<RefCell<WidgetTextAtlas>>>,
     scene_graph: SceneGraph,
     next_scene_item_id: u64,
     pending_delta: Option<SceneDelta>,
@@ -95,7 +95,6 @@ impl Runtime {
             root_id: None,
             root_component: None,
             text_metrics,
-            text_atlas: None,
             scene_graph: SceneGraph::new(),
             next_scene_item_id: 1,
             pending_delta: None,
@@ -486,7 +485,7 @@ impl Runtime {
         self.encoder.init_renderer(device, format);
     }
 
-    /// Initializes Runtime-owned Widget text resources and renderer using system default UI fonts.
+    /// Initializes encoder-owned Widget text resources using system default UI fonts.
     pub fn init_text_renderer(
         &mut self,
         device: &wgpu::Device,
@@ -496,17 +495,8 @@ impl Runtime {
         let fonts = harbor_text::load_system_ui_fonts()?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
         self.set_text_metrics(metrics);
-        let atlas = Rc::new(RefCell::new(WidgetTextAtlas::new(device, queue, fonts)));
-        {
-            let atlas_ref = atlas.borrow();
-            self.encoder.init_text_renderer(
-                device,
-                format,
-                atlas_ref.bind_group_layout(),
-                atlas_ref.bind_group(),
-            );
-        }
-        self.text_atlas = Some(atlas);
+        self.encoder
+            .init_text_resources(device, queue, format, fonts);
         Ok(())
     }
 
@@ -514,18 +504,9 @@ impl Runtime {
     pub fn create_child_runtime(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let mut runtime = Self::with_text_metrics(self.text_metrics);
         runtime.init_renderer(device, format);
-        if let Some(atlas) = &self.text_atlas {
-            {
-                let atlas_ref = atlas.borrow();
-                runtime.encoder.init_text_renderer(
-                    device,
-                    format,
-                    atlas_ref.bind_group_layout(),
-                    atlas_ref.bind_group(),
-                );
-            }
-            runtime.text_atlas = Some(Rc::clone(atlas));
-        }
+        runtime
+            .encoder
+            .inherit_text_resources(&self.encoder, device, format);
         runtime
     }
 
@@ -656,27 +637,12 @@ impl Runtime {
         }
     }
 
-    /// Ensures glyphs and prepares cached text runs using Runtime-owned resources.
+    /// Ensures glyphs and prepares cached text runs through the frame encoder.
     ///
     /// Call after Runtime update/paint and before encoding the frame.
     pub fn prepare_text(&mut self, queue: &wgpu::Queue) {
-        let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
-            return;
-        };
-        let mut atlas = atlas.borrow_mut();
-        let revision = atlas.ensure_scene_text(
-            self.scene_graph.items().iter().filter_map(|item| {
-                if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
-                    Some(text.as_ref())
-                } else {
-                    None
-                }
-            }),
-            queue,
-        );
-        let glyph_fn = |ch| atlas.glyph(ch).copied();
         self.encoder
-            .prepare_text_runs(&self.scene_graph, &self.text_metrics, revision, &glyph_fn);
+            .prepare_text(&self.scene_graph, &self.text_metrics, queue);
     }
 
     #[cfg(test)]
@@ -712,7 +678,7 @@ impl Runtime {
     /// Drains queued external input events produced by focusable CustomPaint
     /// widgets during the last event dispatch.
     pub fn drain_external_input(
-        &self,
+        &mut self,
     ) -> Vec<(
         crate::scene::primitive::ExternalDrawId,
         crate::input::event::UiEvent,
@@ -742,6 +708,7 @@ impl Runtime {
         }
     }
 
+    #[cfg(test)]
     /// Returns a mutable reference to the TextRunCache.
     /// The host uses this to look up glyph data for text rendering.
     pub fn text_run_cache(&mut self) -> &mut TextRunCache {
@@ -1063,7 +1030,8 @@ mod tests {
             .added
             .iter()
             .find_map(|item| {
-                matches!(item.primitive, Primitive::External { draw: 42, .. }).then_some(item.id)
+                matches!(item.primitive, Primitive::External { draw, .. } if draw == 42)
+                    .then_some(item.id)
             })
             .unwrap();
         let draw = rt.external_draws[&42].clone();
@@ -1084,7 +1052,7 @@ mod tests {
         assert_eq!(resized.modified.len(), 1);
         assert_eq!(resized.modified[0].id, external_id);
         assert!(matches!(resized.modified[0].primitive,
-            Primitive::External { rect, draw: 42 } if rect.size() == Size::new(999.0, 80.0)));
+            Primitive::External { rect, draw } if draw == 42 && rect.size() == Size::new(999.0, 80.0)));
         assert_eq!(
             rt.scene_graph
                 .items()
@@ -2314,7 +2282,7 @@ mod tests {
         let seen = Arc::new(AtomicU64::new(0));
         let seen_id = Arc::clone(&seen);
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, _| {
-            seen_id.store(id, Ordering::SeqCst);
+            seen_id.store(id.get(), Ordering::SeqCst);
             ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();

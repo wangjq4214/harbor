@@ -106,7 +106,7 @@ fn should_support_multiple_draw_ids() {
 
 #[test]
 fn should_drain_empty_when_no_events_queued() {
-    let rt = Runtime::new();
+    let mut rt = Runtime::new();
     let drained = rt.drain_external_input();
     assert!(drained.is_empty());
 }
@@ -356,8 +356,8 @@ fn should_queue_move_events_from_custom_paint() {
 fn should_clone_and_maintain_draw_id() {
     let cp1 = CustomPaint::new(99);
     let cp2 = cp1.clone();
-    assert_eq!(cp2.draw_id, 99);
-    assert_eq!(cp2.draw_id, cp1.draw_id);
+    assert_eq!(cp2.draw_id(), 99);
+    assert_eq!(cp2.draw_id(), cp1.draw_id());
 }
 
 #[test]

@@ -248,7 +248,7 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
             .items()
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::External { draw: 99, rect } => Some(rect),
+                Primitive::External { draw, rect } if draw == 99 => Some(rect),
                 _ => None,
             })
             .unwrap();

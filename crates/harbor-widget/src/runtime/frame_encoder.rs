@@ -5,6 +5,7 @@ use crate::layout::Rect;
 use crate::renderer::Viewport;
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
+use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::{
     ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalDrawMode,
@@ -13,6 +14,8 @@ use crate::scene::primitive::{
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
 use hashbrown::HashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Encoder-facing decision for one external SceneItem.
@@ -83,13 +86,14 @@ struct ExternalDrawInvocation {
 }
 
 fn plan_external_draw(
-    id: ExternalDrawId,
+    id: impl Into<ExternalDrawId>,
     rect: Rect,
     clips: &[RoundedClip],
     viewport: &Viewport,
     eligible: bool,
     commit: bool,
 ) -> Option<ExternalDrawInvocation> {
+    let id = id.into();
     match ExternalClipPlan::from(rect, clips, viewport) {
         ExternalClipPlan::Skip => None,
         ExternalClipPlan::Draw {
@@ -163,6 +167,7 @@ pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
     text_renderer: Option<TextRenderer>,
     text_run_cache: TextRunCache,
+    text_atlas: Option<Rc<RefCell<WidgetTextAtlas>>>,
     prepared_atlas_revision: Option<u64>,
     text_instances_dirty: bool,
     encoded_viewport: Option<Viewport>,
@@ -174,6 +179,7 @@ impl FrameEncoder {
             renderer: None,
             text_renderer: None,
             text_run_cache: TextRunCache::new(),
+            text_atlas: None,
             prepared_atlas_revision: None,
             text_instances_dirty: false,
             encoded_viewport: None,
@@ -199,6 +205,72 @@ impl FrameEncoder {
         ));
     }
 
+    pub(crate) fn init_text_resources(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        fonts: harbor_text::FontBook,
+    ) {
+        let atlas = Rc::new(RefCell::new(WidgetTextAtlas::new(device, queue, fonts)));
+        {
+            let atlas_ref = atlas.borrow();
+            self.init_text_renderer(
+                device,
+                format,
+                atlas_ref.bind_group_layout(),
+                atlas_ref.bind_group(),
+            );
+        }
+        self.text_atlas = Some(atlas);
+    }
+
+    pub(crate) fn inherit_text_resources(
+        &mut self,
+        parent: &Self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) {
+        let Some(atlas) = parent.text_atlas.as_ref().map(Rc::clone) else {
+            return;
+        };
+        {
+            let atlas_ref = atlas.borrow();
+            self.init_text_renderer(
+                device,
+                format,
+                atlas_ref.bind_group_layout(),
+                atlas_ref.bind_group(),
+            );
+        }
+        self.text_atlas = Some(atlas);
+    }
+
+    pub(crate) fn prepare_text(
+        &mut self,
+        scene_graph: &SceneGraph,
+        metrics: &TextMetrics,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
+            return;
+        };
+        let mut atlas = atlas.borrow_mut();
+        let revision = atlas.ensure_scene_text(
+            scene_graph.items().iter().filter_map(|item| {
+                if let Primitive::Text { text, .. } = &item.primitive {
+                    Some(text.as_ref())
+                } else {
+                    None
+                }
+            }),
+            queue,
+        );
+        let glyph_fn = |ch| atlas.glyph(ch).copied();
+        self.prepare_text_runs(scene_graph, metrics, revision, &glyph_fn);
+    }
+
+    #[cfg(test)]
     pub(crate) fn text_run_cache(&mut self) -> &mut TextRunCache {
         &mut self.text_run_cache
     }
@@ -233,8 +305,9 @@ impl FrameEncoder {
         let mut live_ids = Vec::new();
         for item in scene_graph.items() {
             if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
-                changed |= self.text_run_cache.upsert(item.id, text, metrics, glyph_fn);
-                live_ids.push(item.id);
+                let run_id = crate::scene::primitive::TextRunId::new(item.id);
+                changed |= self.text_run_cache.upsert(run_id, text, metrics, glyph_fn);
+                live_ids.push(run_id);
             }
         }
         let previous_len = self.text_run_cache.len();

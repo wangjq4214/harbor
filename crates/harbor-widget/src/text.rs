@@ -73,11 +73,12 @@ impl TextRunCache {
     /// existing text and metrics already matched.
     pub fn upsert(
         &mut self,
-        id: TextRunId,
+        id: impl Into<TextRunId>,
         text: &str,
         metrics: &TextMetrics,
         glyph_fn: &GlyphFn<'_>,
     ) -> bool {
+        let id = id.into();
         if self
             .runs
             .get(&id)
@@ -98,19 +99,22 @@ impl TextRunCache {
     }
 
     /// Removes every run whose stable scene item ID is no longer live.
-    pub fn retain_live_ids(&mut self, live_ids: impl IntoIterator<Item = TextRunId>) {
-        let live_ids: HashSet<TextRunId> = live_ids.into_iter().collect();
+    pub fn retain_live_ids<I>(&mut self, live_ids: impl IntoIterator<Item = I>)
+    where
+        I: Into<TextRunId>,
+    {
+        let live_ids: HashSet<TextRunId> = live_ids.into_iter().map(Into::into).collect();
         self.runs.retain(|id, _| live_ids.contains(id));
     }
 
     /// Removes one run by its stable scene item ID.
-    pub fn remove(&mut self, id: TextRunId) -> Option<TextRunData> {
-        self.runs.remove(&id).map(|run| run.data)
+    pub fn remove(&mut self, id: impl Into<TextRunId>) -> Option<TextRunData> {
+        self.runs.remove(&id.into()).map(|run| run.data)
     }
 
     /// Returns the cached glyph data for a stable scene item ID.
-    pub fn get(&self, id: TextRunId) -> Option<&TextRunData> {
-        self.runs.get(&id).map(|run| &run.data)
+    pub fn get(&self, id: impl Into<TextRunId>) -> Option<&TextRunData> {
+        self.runs.get(&id.into()).map(|run| &run.data)
     }
 
     /// Clears all cached runs.

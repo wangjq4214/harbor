@@ -63,8 +63,72 @@ impl Color {
 
 // ── Primitive ────────────────────────────────────────────────────────────────
 
-pub type TextRunId = u64;
-pub type ExternalDrawId = u64;
+/// Stable identifier for a cached text run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextRunId(u64);
+
+impl TextRunId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for TextRunId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl PartialEq<u64> for TextRunId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+/// Stable identifier connecting an external primitive with its callbacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalDrawId(u64);
+
+impl ExternalDrawId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_add(self, rhs: u64) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+}
+impl PartialEq<u64> for ExternalDrawId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::borrow::Borrow<u64> for ExternalDrawId {
+    fn borrow(&self) -> &u64 {
+        &self.0
+    }
+}
+
+impl From<u64> for ExternalDrawId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl std::fmt::Display for ExternalDrawId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// Immutable geometry context for one retained external draw invocation.
 #[derive(Clone, Debug, PartialEq)]

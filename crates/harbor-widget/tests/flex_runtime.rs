@@ -37,7 +37,7 @@ fn pointer(runtime: &mut Runtime, x: f32, y: f32) -> Vec<u64> {
     runtime
         .drain_external_input()
         .into_iter()
-        .filter_map(|(id, event)| matches!(event, UiEvent::Pointer(_)).then_some(id))
+        .filter_map(|(id, event)| matches!(event, UiEvent::Pointer(_)).then_some(id.get()))
         .collect()
 }
 

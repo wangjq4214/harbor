@@ -11,6 +11,7 @@ mod gpu;
 mod hmr;
 mod host;
 mod presenter;
+mod scheduler;
 mod surface;
 
 use crate::effects::{ExternalInvalidation, RuntimeEffects};
@@ -19,12 +20,11 @@ use crate::input::event::{
     PointerEvent, PointerPhase, UiEvent,
 };
 use crate::layout::Point;
-use crate::renderer::Viewport;
 use crate::runtime::Runtime;
-use crate::scheduler::FrameScheduler;
 use crate::winit::event::{
     ime_suppresses_keyboard, keyboard_to_uievent, modifiers_to_widget, mouse_button,
 };
+#[cfg(test)]
 use crate::winit::surface::SurfaceState;
 use std::time::Instant;
 use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -43,7 +43,7 @@ pub use host::{
     WindowSurfaceInfo, WinitWindowHost, WinitWindowHostBuilder,
 };
 pub(crate) use presenter::WinitFrameTarget;
-pub use presenter::{FrameError, FrameOutcome};
+pub use presenter::{FrameError, FrameOutcome, WindowPresenter};
 
 /// The host-visible result of offering one winit event to a window adapter.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,10 +100,9 @@ pub struct WinitAdapter {
     /// Suppresses touch releases for contacts that were active on focus loss.
     quarantined_touches: Vec<(winit::event::DeviceId, u64)>,
     next_touch_pointer_id: u64,
-    /// Per-window redraw coalescing and idle wait policy.
-    scheduler: FrameScheduler,
-    /// Drawable viewport and surface configuration policy.
-    surface_state: SurfaceState,
+    schedule_output: bool,
+    /// Backward-compatible presentation policy; native hosts own a separate presenter.
+    compat_presenter: WindowPresenter,
 }
 
 impl Default for WinitAdapter {
@@ -117,8 +116,8 @@ impl WinitAdapter {
         Self::with_surface(0, 0, 1.0)
     }
 
-    /// Creates an adapter with initial physical size and scale factor.
-    pub fn with_surface(width: u32, height: u32, scale: f32) -> Self {
+    /// Creates an input adapter with an initial pointer scale factor.
+    pub fn with_surface(_width: u32, _height: u32, scale: f32) -> Self {
         Self {
             modifiers: ModifiersState::empty(),
             mouse_position: Point::ZERO,
@@ -133,8 +132,8 @@ impl WinitAdapter {
             active_mouse_buttons: [false; 3],
             quarantined_touches: Vec::new(),
             next_touch_pointer_id: 1,
-            scheduler: FrameScheduler::default(),
-            surface_state: SurfaceState::new(width, height, scale),
+            schedule_output: true,
+            compat_presenter: WindowPresenter::new(_width, _height, scale),
         }
     }
 
@@ -142,11 +141,6 @@ impl WinitAdapter {
     pub fn from_window(window: &Window) -> Self {
         let size = window.inner_size();
         Self::with_surface(size.width, size.height, window.scale_factor() as f32)
-    }
-
-    /// Returns the adapter's current viewport descriptor.
-    pub fn viewport(&self) -> &Viewport {
-        self.surface_state.viewport()
     }
 
     /// Sets the current window scale factor used for physical pointer input.
@@ -161,71 +155,110 @@ impl WinitAdapter {
         self.modifiers
     }
 
-    /// Updates whether this window can acquire a drawable surface.
-    /// Restoring drawability returns one recovery-frame edge.
+    pub(crate) fn use_external_presenter(&mut self) {
+        self.schedule_output = false;
+    }
+
+    /// Compatibility façade for callers that have not yet split input and presentation.
+    pub fn viewport(&self) -> &crate::renderer::Viewport {
+        self.compat_presenter.viewport()
+    }
+
     pub fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
-        self.scheduler.set_drawable(drawable)
+        self.compat_presenter.set_drawable(drawable)
     }
 
-    /// Folds a raw runtime effect batch through the per-window scheduler.
     pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
-        self.scheduler.schedule_retaining_ineligibility(effects)
+        self.compat_presenter.fold_effects(effects)
     }
 
-    /// Forwards source-agnostic host work through runtime external invalidation
-    /// and the per-window scheduler.
     pub fn invalidate_external(
         &mut self,
         runtime: &mut Runtime,
         work: ExternalInvalidation,
     ) -> RuntimeEffects {
-        self.surface_state.reset_recovery_budget();
-        let core_effects = runtime.invalidate_external(work);
-        self.scheduler
-            .schedule_retaining_ineligibility(core_effects)
+        self.compat_presenter.invalidate_external(runtime, work)
     }
 
-    /// Observes `RedrawRequested`: runs a runtime update and consumes the
-    /// outstanding redraw edge with the current frame.
     pub fn redraw_requested(&mut self, runtime: &mut Runtime, now: Instant) -> RuntimeEffects {
-        let core_effects = runtime.update(now);
-        self.scheduler.frame_started(core_effects)
+        self.compat_presenter.redraw_requested(runtime, now)
     }
 
-    /// Observes successful presentation and may request an active continuation.
     pub fn frame_completed(&mut self, now: Instant) -> RuntimeEffects {
-        self.scheduler.frame_completed(now)
+        self.compat_presenter.frame_completed(now)
     }
 
-    /// Runs an idle turn: folds dirty Fiber work, then calculates wait policy.
     pub fn about_to_wait(
         &mut self,
         runtime: &mut Runtime,
         now: Instant,
         host_deadline: Option<Instant>,
     ) -> RuntimeEffects {
-        // Consume a due deadline before update replaces it with the next phase
-        // boundary reported by external schedule providers (cursor blink).
-        let due_redraw = self.scheduler.consume_due_deadline(now);
-
-        let mut dirty_effects = runtime.update(now);
-        if due_redraw {
-            dirty_effects.request_redraw = true;
-        }
-        let mut scheduled = self.scheduler.schedule(dirty_effects);
-        // Control-flow from the dirty turn was folded into scheduler state.
-        // The idle calculation owns the host-facing wait mode (including host
-        // deadlines and due-deadline normalization), so drop the raw CF here
-        // before merging redraw/cursor/IME/clipboard side effects.
-        scheduled.control_flow = None;
-        self.scheduler
-            .about_to_wait(now, host_deadline)
-            .merged(&scheduled)
+        self.compat_presenter
+            .about_to_wait(runtime, now, host_deadline)
     }
 
-    /// Requests a host retry frame (for example after routed terminal input).
     pub fn request_frame(&mut self) -> RuntimeEffects {
-        self.scheduler.request_frame()
+        self.compat_presenter.request_frame()
+    }
+
+    #[cfg(test)]
+    fn finish_acquisition<T>(
+        &mut self,
+        effects: RuntimeEffects,
+        acquisition: presenter::FrameAcquisition<T>,
+        present: impl FnOnce(T) -> Result<(), FrameError>,
+    ) -> FrameOutcome {
+        self.compat_presenter
+            .finish_acquisition(effects, acquisition, present)
+    }
+
+    #[cfg(test)]
+    fn handle_surface_transition(
+        &mut self,
+        runtime: &mut Runtime,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> WinitEventOutcome {
+        let viewport = self.compat_presenter.viewport().clone();
+        let mut presenter = std::mem::replace(
+            &mut self.compat_presenter,
+            WindowPresenter::new(
+                viewport.physical_size.0,
+                viewport.physical_size.1,
+                viewport.scale_factor,
+            ),
+        );
+        let outcome = presenter.handle_surface_transition(self, runtime, width, height, scale);
+        self.compat_presenter = presenter;
+        outcome
+    }
+
+    fn handle_compat_surface_event(
+        &mut self,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+        physical_size: Option<(u32, u32)>,
+    ) -> Option<WinitEventOutcome> {
+        if !matches!(
+            event,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            return None;
+        }
+        let viewport = self.compat_presenter.viewport().clone();
+        let mut presenter = std::mem::replace(
+            &mut self.compat_presenter,
+            WindowPresenter::new(
+                viewport.physical_size.0,
+                viewport.physical_size.1,
+                viewport.scale_factor,
+            ),
+        );
+        let outcome = presenter.handle_surface_event(self, runtime, event, physical_size);
+        self.compat_presenter = presenter;
+        outcome
     }
 
     /// Handles one window event and returns whether it was supported plus any
@@ -250,8 +283,22 @@ impl WinitAdapter {
         event: &WindowEvent,
         physical_size: Option<(u32, u32)>,
     ) -> WinitEventOutcome {
-        if let Some(outcome) = self.handle_lifecycle_event(runtime, event, physical_size) {
+        if let Some(outcome) = self.handle_compat_surface_event(runtime, event, physical_size) {
             return outcome;
+        }
+        let _ = physical_size;
+        if matches!(event, WindowEvent::CloseRequested) {
+            self.quarantine_active_pointers();
+            let effects = runtime.cancel_pointer_captures(self.logical_pointer_position());
+            let effects = if self.schedule_output {
+                self.fold_effects(effects)
+            } else {
+                effects
+            };
+            return WinitEventOutcome {
+                handled: false,
+                effects,
+            };
         }
 
         if self.quarantine_pointer_event(event) {
@@ -300,67 +347,11 @@ impl WinitAdapter {
                 ..RuntimeEffects::default()
             });
         }
-        WinitEventOutcome::handled(self.fold_effects(effects))
-    }
-
-    fn handle_lifecycle_event(
-        &mut self,
-        runtime: &mut Runtime,
-        event: &WindowEvent,
-        physical_size: Option<(u32, u32)>,
-    ) -> Option<WinitEventOutcome> {
-        match event {
-            WindowEvent::Resized(size) => Some(self.handle_surface_transition(
-                runtime,
-                size.width,
-                size.height,
-                self.scale_factor,
-            )),
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.set_scale_factor(*scale_factor as f32);
-                // Prefer the host's current physical size on DPI change; fall
-                // back to SurfaceState only when the host omitted a hint
-                // (headless tests).
-                let (width, height) = match physical_size {
-                    Some(size) => size,
-                    None => self.surface_state.viewport().physical_size,
-                };
-                Some(self.handle_surface_transition(runtime, width, height, self.scale_factor))
-            }
-            WindowEvent::CloseRequested => {
-                self.quarantine_active_pointers();
-                let effects = runtime.cancel_pointer_captures(self.logical_pointer_position());
-                Some(WinitEventOutcome {
-                    handled: false,
-                    effects: self.fold_effects(effects),
-                })
-            }
-            _ => None,
-        }
-    }
-
-    fn handle_surface_transition(
-        &mut self,
-        runtime: &mut Runtime,
-        width: u32,
-        height: u32,
-        scale: f32,
-    ) -> WinitEventOutcome {
-        let was_drawable = self.surface_state.can_acquire();
-        let changed = self.surface_state.update(width, height, scale);
-        runtime.set_viewport(self.surface_state.viewport().clone());
-        let mut effects = self.set_drawable(self.surface_state.can_acquire());
-        if was_drawable && !self.surface_state.can_acquire() {
-            self.quarantine_active_pointers();
-            let canceled = runtime.cancel_pointer_captures(self.logical_pointer_position());
-            effects.merge(self.fold_effects(canceled));
-        }
-        self.surface_state.reset_recovery_budget();
-
-        if changed && self.surface_state.can_acquire() {
-            effects.merge(self.scheduler.schedule(runtime.update(Instant::now())));
-            effects.merge(self.request_frame());
-        }
+        let effects = if self.schedule_output {
+            self.fold_effects(effects)
+        } else {
+            effects
+        };
         WinitEventOutcome::handled(effects)
     }
     /// Quarantines releases for every pointer source currently held by the native window.
@@ -524,7 +515,13 @@ impl WinitAdapter {
                 WinitEventOutcome::unhandled()
             };
         };
-        WinitEventOutcome::handled(self.fold_effects(runtime.dispatch(ui_event)))
+        let effects = runtime.dispatch(ui_event);
+        let effects = if self.schedule_output {
+            self.fold_effects(effects)
+        } else {
+            effects
+        };
+        WinitEventOutcome::handled(effects)
     }
 
     fn convert_event(&mut self, event: &WindowEvent) -> Option<UiEvent> {

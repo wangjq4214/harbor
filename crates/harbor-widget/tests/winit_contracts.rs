@@ -5,6 +5,7 @@ use harbor_widget::input::event::{
     KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
 use harbor_widget::runtime::Runtime;
+use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
@@ -329,7 +330,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
         events,
         vec![
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::Move,
@@ -338,7 +339,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
                 ))
             ),
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::Down,
@@ -347,7 +348,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
                 ))
             ),
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::WheelPixel { dx: 1.5, dy: -2.0 },
@@ -383,7 +384,7 @@ fn adapter_keeps_valid_scale_and_pointer_state_when_invalid_scale_is_offered() {
     assert_eq!(
         events,
         vec![(
-            12,
+            ExternalDrawId::new(12),
             UiEvent::Pointer(PointerEvent::new(
                 harbor_widget::layout::Point::new(10.0, 5.0),
                 PointerPhase::Move,
@@ -430,7 +431,10 @@ fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
     // Assert: composition text is delivered once, and empty commits are ignored.
     assert_eq!(
         runtime.drain_external_input(),
-        vec![(13, UiEvent::Keyboard(KeyboardEvent::Ime("語".into())),)]
+        vec![(
+            ExternalDrawId::new(13),
+            UiEvent::Keyboard(KeyboardEvent::Ime("語".into())),
+        )]
     );
 }
 
@@ -438,7 +442,7 @@ fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
 fn adapter_modifier_state_is_per_window_and_does_not_leak_between_runtimes() {
     // Arrange
     let mut first_runtime = custom_paint_runtime(14);
-    let second_runtime = custom_paint_runtime(15);
+    let mut second_runtime = custom_paint_runtime(15);
     let mut first_adapter = WinitAdapter::new();
     let second_adapter = WinitAdapter::new();
 
@@ -473,7 +477,10 @@ fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
     main_adapter.handle_event(&mut main_runtime, &main_event);
     assert_eq!(
         main_runtime.drain_external_input(),
-        vec![(16, UiEvent::Keyboard(KeyboardEvent::Ime("main".into())),)]
+        vec![(
+            ExternalDrawId::new(16),
+            UiEvent::Keyboard(KeyboardEvent::Ime("main".into())),
+        )]
     );
     assert!(confirmation_runtime.drain_external_input().is_empty());
 
@@ -481,7 +488,7 @@ fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
     assert_eq!(
         confirmation_runtime.drain_external_input(),
         vec![(
-            17,
+            ExternalDrawId::new(17),
             UiEvent::Pointer(PointerEvent::new(
                 harbor_widget::layout::Point::new(4.0, 6.0),
                 PointerPhase::Move,
@@ -510,7 +517,7 @@ fn adapter_dispatch_reaches_runtime_custom_paint_with_public_event_outcome() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            18,
+            ExternalDrawId::new(18),
             UiEvent::Keyboard(KeyboardEvent::Ime("terminal input".into())),
         )]
     );
@@ -538,7 +545,7 @@ fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            19,
+            ExternalDrawId::new(19),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -591,7 +598,7 @@ fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            20,
+            ExternalDrawId::new(20),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -625,7 +632,7 @@ fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_no
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            20,
+            ExternalDrawId::new(20),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -667,7 +674,7 @@ fn modifier_changes_are_applied_to_dispatched_keyboard_events() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            26,
+            ExternalDrawId::new(26),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('x'),
                 modifiers: Modifiers {
@@ -794,7 +801,7 @@ fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled(
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            22,
+            ExternalDrawId::new(22),
             UiEvent::Keyboard(KeyboardEvent::KeyUp {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -816,7 +823,7 @@ fn adapter_routes_focus_loss_to_custom_paint() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            25,
+            ExternalDrawId::new(25),
             UiEvent::Focus(harbor_widget::input::event::FocusEvent::Lost),
         )]
     );

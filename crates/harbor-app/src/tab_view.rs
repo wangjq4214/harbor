@@ -218,7 +218,7 @@ mod tests {
         layout::Point,
         renderer::Viewport,
         runtime::Runtime,
-        scene::primitive::Primitive,
+        scene::primitive::{ExternalDrawId, Primitive},
     };
     use std::{any::TypeId, sync::atomic::AtomicBool, time::Instant};
 
@@ -227,7 +227,7 @@ mod tests {
             id: TabId(id),
             title: format!("Terminal {id}"),
             unread,
-            draw_id: id,
+            draw_id: ExternalDrawId::new(id),
             active,
         }
     }
@@ -235,7 +235,7 @@ mod tests {
     #[allow(clippy::arc_with_non_send_sync)]
     fn bridge(draw_id: u64) -> TerminalWidgetBridge {
         TerminalWidgetBridge::new(
-            draw_id,
+            ExternalDrawId::new(draw_id),
             Arc::new(Mutex::new(Terminal::new_headless(4, 20))),
             Arc::new(AtomicBool::new(false)),
         )
@@ -364,7 +364,7 @@ mod tests {
             .added
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::External { rect, draw: 1 } => Some(rect),
+                Primitive::External { rect, draw } if draw == 1 => Some(rect),
                 _ => None,
             })
             .unwrap();
@@ -407,7 +407,7 @@ mod tests {
                 .added
                 .iter()
                 .find_map(|item| match item.primitive {
-                    Primitive::External { rect, draw: 1 } => Some(rect),
+                    Primitive::External { rect, draw } if draw == 1 => Some(rect),
                     _ => None,
                 })
                 .expect("active terminal primitive");

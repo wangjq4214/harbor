@@ -141,7 +141,7 @@ impl TabManager {
             tabs: Vec::new(),
             active: None,
             next_tab_id: 1,
-            next_draw_id: 1,
+            next_draw_id: ExternalDrawId::new(1),
             last_broadcast_size: None,
         }
     }
