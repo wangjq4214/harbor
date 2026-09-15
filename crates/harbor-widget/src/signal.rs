@@ -83,11 +83,9 @@ pub(crate) fn remove_runtime(runtime_id: RuntimeId) {
 ///
 /// Each concrete hook type (e.g., `Signal<T>`) implements this trait
 /// so it can be stored in the fiber's type-erased hook list.
-#[allow(dead_code)]
 pub(crate) trait Hook: 'static {
     fn unsubscribe_all(&self, id: FiberId);
     fn as_any_ref(&self) -> &dyn std::any::Any;
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 // ── Signal ───────────────────────────────────────────────────────────────────
@@ -128,10 +126,6 @@ impl<T: 'static> Hook for Signal<T> {
     }
 
     fn as_any_ref(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }

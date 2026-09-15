@@ -138,15 +138,10 @@ pub trait WindowPlatformHooks {
     fn surface_ready(
         &self,
         _window: &Window,
-        setup: &mut Self::Setup,
+        _setup: &mut Self::Setup,
         _surface: WindowSurfaceInfo,
     ) -> anyhow::Result<bool> {
-        Ok(self.backdrop_available(setup))
-    }
-
-    /// Legacy pre-surface backdrop query retained for compatible hook implementations.
-    fn backdrop_available(&self, _setup: &Self::Setup) -> bool {
-        false
+        Ok(false)
     }
 }
 

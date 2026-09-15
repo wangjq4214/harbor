@@ -53,10 +53,6 @@ impl SurfaceState {
         true
     }
 
-    pub(super) fn reset_after_success(&mut self) {
-        self.recovery_attempted = false;
-    }
-
     pub(super) fn reset_recovery_budget(&mut self) {
         self.recovery_attempted = false;
     }

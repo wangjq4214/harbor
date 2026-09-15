@@ -212,7 +212,6 @@ pub(crate) enum EnsureVisibleResult {
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
 /// configuration and can be used for layout and rebuild.
-#[allow(dead_code)]
 pub(crate) trait AnyView: 'static {
     /// Optional key for list reconciliation.
     fn key(&self) -> Option<&Key> {

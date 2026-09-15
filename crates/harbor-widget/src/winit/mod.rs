@@ -802,7 +802,7 @@ mod tests {
         assert!(!state.recovery_attempted());
         assert!(state.allow_recovery_retry());
         assert!(!state.allow_recovery_retry());
-        state.reset_after_success();
+        state.reset_recovery_budget();
         assert!(state.allow_recovery_retry());
 
         state.update(0, 600, 2.0);

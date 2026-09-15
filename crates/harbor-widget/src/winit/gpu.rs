@@ -333,11 +333,6 @@ impl WindowSurface {
         self.config.format
     }
 
-    #[allow(dead_code)]
-    pub fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
-    }
-
     pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
         self.config.alpha_mode
     }

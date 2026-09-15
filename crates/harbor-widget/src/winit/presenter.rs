@@ -9,16 +9,6 @@ use std::time::Instant;
 use winit::window::Window;
 
 impl WinitAdapter {
-    /// Executes one complete integration frame.
-    #[allow(dead_code)]
-    pub(crate) fn render<'frame>(
-        &mut self,
-        runtime: &mut Runtime,
-        target: WinitFrameTarget<'frame>,
-    ) -> FrameOutcome {
-        self.render_with_prepare(runtime, target, |_| {})
-    }
-
     /// Executes one complete integration frame after the runtime update and
     /// before GPU encoding. Hosts use this to register frame-local resources
     /// produced during the update without owning presentation policy.
@@ -74,7 +64,7 @@ impl WinitAdapter {
             FrameAcquisition::Presented(output) => {
                 let outcome = self.finish_presentable(effects, output, false, present);
                 if outcome.is_presented() {
-                    self.surface_state.reset_after_success();
+                    self.surface_state.reset_recovery_budget();
                 }
                 outcome
             }
