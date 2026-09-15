@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0005
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation](../../spec/0012-widget-winit-native-host-consolidation.md)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 
@@ -42,16 +42,30 @@ Optional Windows debug Widget HMR is a reusable `harbor-widget::winit` host capa
 
 ## Acceptance
 
-- [ ] Generic reload observation, lifecycle state, teardown barrier, Runtime root replacement, and redraw scheduling reside in the optional `harbor-widget::winit` HMR capability.
-- [ ] Harbor application code supplies root factories and Host-owned state handles but does not coordinate prepare/ready generations or barrier release.
+- [x] Generic reload observation, lifecycle state, teardown barrier, Runtime root replacement, and redraw scheduling reside in the optional `harbor-widget::winit` HMR capability.
+- [x] Harbor application code supplies root factories and Host-owned state handles but does not coordinate prepare/ready generations or barrier release.
 - [ ] Old Views, Fibers, external draw/schedule registrations, pointer/focus ownership, and callbacks are unreachable before the old dynamic generation unloads.
 - [ ] A valid generation installs exactly one replacement root and redraws without recreating Window, Surface, Instance, Adapter, Device, Queue, terminal sessions, or PTYs.
-- [ ] Widget/Fiber-local state resets; Store-published application state remains available; Dispatcher actions retain FIFO drain-once behavior.
-- [ ] Failed builds, rapid reloads, startup without a session, closed event proxies, and application exit cannot deadlock reload or activate invalid code.
-- [ ] Shared contract/signature/layout changes remain documented as requiring application restart.
-- [ ] Default/non-HMR and unsupported-target builds contain no active observer and preserve static behavior.
+- [x] Widget/Fiber-local state resets; Store-published application state remains available; Dispatcher actions retain FIFO drain-once behavior.
+- [x] Failed builds, rapid reloads, startup without a session, closed event proxies, and application exit cannot deadlock reload or activate invalid code.
+- [x] Shared contract/signature/layout changes remain documented as requiring application restart.
+- [x] Default/non-HMR and unsupported-target builds contain no active observer and preserve static behavior.
 - [ ] Repeated real Windows reloads pass the existing TypeId, duplicate dependency, tracing, callback lifetime, and library-generation feasibility gate.
 
+
+## Verification Evidence
+
+Automated verification passes for the adapter lifecycle and static parity:
+
+- `cargo test -p harbor-widget --features hmr`
+- `cargo build -p harbor-app-ui` followed by `cargo test -p harbor --features widget-hot-reload`
+- `cargo check -p harbor --features widget-hot-reload --release`
+- `cargo test --workspace`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `git diff --check`
+
+The ticket remains **In Progress** because the interactive Windows watcher has not yet been run through repeated real DLL generations. Consequently, the unload-time reachability proof, no-resource-recreation observation, and final feasibility gate remain unchecked above.
 ## Out of Scope
 
 - Hot-reloading `harbor-widget`, terminal/PTY implementations, or generic Runtime/rendering code.

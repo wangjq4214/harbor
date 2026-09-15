@@ -1,6 +1,10 @@
 //! Adapter-owned native window, runtime, surface, and presentation lifecycle.
 
+#[cfg(feature = "hmr")]
+use super::WidgetHmrWork;
 use super::effects::apply_window_effects;
+#[cfg(feature = "hmr")]
+use super::hmr::{WidgetHmrConfig, WidgetHmrRoot, WidgetHmrState, WidgetHmrWorkKind};
 use super::{FrameError, FrameOutcome, SharedGpu, WindowSurface, WinitAdapter, WinitFrameTarget};
 use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::input::event::UiEvent;
@@ -172,6 +176,8 @@ pub struct WinitWindowHostBuilder<P, F> {
     platform: P,
     root_factory: F,
     focus_first: bool,
+    #[cfg(feature = "hmr")]
+    hmr: Option<WidgetHmrConfig>,
 }
 
 impl<F> WinitWindowHostBuilder<NoopWindowPlatformHooks, F> {
@@ -182,6 +188,8 @@ impl<F> WinitWindowHostBuilder<NoopWindowPlatformHooks, F> {
             platform: NoopWindowPlatformHooks,
             root_factory,
             focus_first: false,
+            #[cfg(feature = "hmr")]
+            hmr: None,
         }
     }
 }
@@ -208,8 +216,15 @@ impl<P, F> WinitWindowHostBuilder<P, F> {
             gpu_source: self.gpu_source,
             platform,
             root_factory: self.root_factory,
+            #[cfg(feature = "hmr")]
+            hmr: self.hmr,
             focus_first: self.focus_first,
         }
+    }
+    #[cfg(feature = "hmr")]
+    pub fn with_hmr(mut self, hmr: WidgetHmrConfig) -> Self {
+        self.hmr = Some(hmr);
+        self
     }
 }
 
@@ -231,6 +246,8 @@ where
             platform,
             root_factory,
             focus_first,
+            #[cfg(feature = "hmr")]
+            hmr,
         } = self;
         let (host, ()) = WinitWindowHostBuilder {
             attributes,
@@ -239,6 +256,8 @@ where
             root_factory: move |context: HostInitContext<'_>, setup: &P::Setup| {
                 root_factory(context, setup).map(|root| (root, ()))
             },
+            #[cfg(feature = "hmr")]
+            hmr,
             focus_first,
         }
         .build_with_output(event_loop)
@@ -348,6 +367,18 @@ where
         initial_effects.merge(adapter.request_frame());
         apply_window_effects(&window, initial_effects);
 
+        #[cfg(feature = "hmr")]
+        let hmr = self
+            .hmr
+            .map(WidgetHmrConfig::start)
+            .transpose()
+            .map_err(|error| {
+                HostStartupError::new(
+                    HostStartupStage::RuntimeInitialization,
+                    anyhow::Error::new(error).context("start widget hot-reload observer"),
+                )
+            })?
+            .flatten();
         Ok((
             WinitWindowHost {
                 runtime,
@@ -357,6 +388,8 @@ where
                 window,
                 gpu,
                 backdrop_available,
+                #[cfg(feature = "hmr")]
+                hmr,
             },
             application_output,
         ))
@@ -434,6 +467,8 @@ pub struct WinitWindowHost {
     window: Arc<Window>,
     gpu: Arc<SharedGpu>,
     backdrop_available: bool,
+    #[cfg(feature = "hmr")]
+    hmr: Option<WidgetHmrState>,
 }
 
 impl WinitWindowHost {
@@ -494,32 +529,99 @@ impl WinitWindowHost {
         self.apply_runtime_effects(effects)
     }
 
-    /// Replaces the root through the host-owned Runtime. Transitional for T0005 HMR.
-    pub fn replace_root_for_reload<R: Component + 'static>(&mut self, root: R) -> HostIdleOutcome {
-        self.runtime.set_root(root);
-        let mut effects = self.runtime.update(Instant::now());
-        effects.merge(self.runtime.take_pending_effects());
-        let mut effects = self.adapter.fold_effects(effects);
-        effects.merge(self.adapter.request_frame());
-        HostIdleOutcome {
-            wait: apply_window_effects(&self.window, effects),
+    /// Applies one opaque adapter-owned hot-reload work item on the UI thread.
+    #[cfg(feature = "hmr")]
+    pub fn handle_hmr_work(&mut self, work: WidgetHmrWork) -> HostIdleOutcome {
+        if self.hmr.is_none() {
+            return HostIdleOutcome::default();
         }
-    }
 
-    /// Tears down the current root and input ownership. Transitional for T0005 HMR.
-    pub fn unmount_root_for_reload(&mut self) -> HostIdleOutcome {
-        self.adapter.quarantine_active_pointers();
-        let mut effects = self
-            .runtime
-            .cancel_pointer_captures(crate::layout::Point::ZERO);
-        self.runtime.clear_focus();
-        self.runtime
-            .set_root(crate::widgets::sized_box::SizedBox::new(
-                crate::layout::Size::ZERO,
-            ));
-        effects.merge(self.runtime.update(Instant::now()));
-        effects.merge(self.runtime.take_pending_effects());
-        self.apply_runtime_effects(effects)
+        match work.into_kind() {
+            WidgetHmrWorkKind::Prepare {
+                generation,
+                barrier,
+            } => {
+                let accepted = self
+                    .hmr
+                    .as_mut()
+                    .is_some_and(|hmr| hmr.lifecycle.begin_prepare(generation));
+                if !accepted {
+                    tracing::warn!(generation, "ignored stale widget HMR prepare work");
+                    drop(barrier);
+                    return HostIdleOutcome::default();
+                }
+
+                self.adapter.quarantine_active_pointers();
+                let mut effects = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.runtime
+                        .cancel_pointer_captures(crate::layout::Point::ZERO)
+                }))
+                .unwrap_or_else(|panic| {
+                    tracing::error!(
+                        generation,
+                        error = %panic_message(panic),
+                        "widget input cancellation panicked during HMR prepare"
+                    );
+                    RuntimeEffects::default()
+                });
+                self.runtime.clear_root();
+                effects.merge(self.runtime.update(Instant::now()));
+                effects.merge(self.runtime.take_pending_effects());
+                let outcome = self.apply_runtime_effects(effects);
+                // The old library may unload only after every Runtime-owned reference is gone.
+                drop(barrier);
+                tracing::info!(generation, "prepared widget host for hot reload");
+                outcome
+            }
+            WidgetHmrWorkKind::Activate { generation } => {
+                let accepted = self
+                    .hmr
+                    .as_mut()
+                    .is_some_and(|hmr| hmr.lifecycle.begin_activate(generation));
+                if !accepted {
+                    tracing::warn!(
+                        generation,
+                        "ignored stale or duplicate widget HMR activation"
+                    );
+                    return HostIdleOutcome::default();
+                }
+
+                let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let root = {
+                        let hmr = self.hmr.as_ref().expect("HMR state checked above");
+                        (hmr.root_factory)()
+                    };
+                    self.runtime.set_root(WidgetHmrRoot(root));
+                    let mut effects = self.runtime.update(Instant::now());
+                    effects.merge(self.runtime.take_pending_effects());
+                    effects
+                }));
+                let mut effects = match installed {
+                    Ok(effects) => effects,
+                    Err(panic) => {
+                        tracing::error!(
+                            generation,
+                            error = %panic_message(panic),
+                            "widget HMR root activation failed"
+                        );
+                        self.runtime.clear_root();
+                        let effects = self.runtime.update(Instant::now());
+                        return self.apply_runtime_effects(effects);
+                    }
+                };
+                effects = self.adapter.fold_effects(effects);
+                effects.merge(self.adapter.request_frame());
+                self.hmr
+                    .as_mut()
+                    .expect("HMR state checked above")
+                    .lifecycle
+                    .finish_activate(generation);
+                tracing::info!(generation, "activated widget HMR generation");
+                HostIdleOutcome {
+                    wait: apply_window_effects(&self.window, effects),
+                }
+            }
+        }
     }
 
     /// Creates a child Runtime sharing text resources with this host.
@@ -576,6 +678,29 @@ impl WinitWindowHost {
                 external_input: self.runtime.drain_external_input(),
                 wait: frame.wait(),
                 frame: Some(frame),
+            };
+        }
+
+        #[cfg(feature = "hmr")]
+        if self
+            .hmr
+            .as_ref()
+            .is_some_and(|hmr| !hmr.lifecycle.accepts_widget_input())
+            && !matches!(
+                event,
+                WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::CloseRequested
+                    | WindowEvent::Focused(_)
+                    | WindowEvent::CursorLeft { .. }
+            )
+        {
+            self.adapter.observe_blocked_widget_event(event);
+            return HostEventOutcome {
+                handled: true,
+                external_input: Vec::new(),
+                frame: None,
+                wait: None,
             };
         }
 

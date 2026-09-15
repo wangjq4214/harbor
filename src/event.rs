@@ -12,12 +12,9 @@ use harbor_app::tab_manager::TabId;
 pub(crate) enum AppEvent {
     /// The terminal reader queued output for one Host-owned session.
     TerminalOutputReady(TabId),
-    /// The old UI generation remains loaded until this blocker is dropped on the UI thread.
+    /// Opaque adapter work transported to the owning main-window Host.
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    WidgetReloadAboutToStart(hot_lib_reloader::BlockReload),
-    /// A new UI library generation is active and can build a replacement root.
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    WidgetReloaded,
+    WidgetHostWork(harbor_widget::winit::WidgetHmrWork),
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
@@ -27,7 +24,7 @@ pub(crate) fn external_invalidation_for_app_event(
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-        AppEvent::WidgetReloadAboutToStart(_) | AppEvent::WidgetReloaded => None,
+        AppEvent::WidgetHostWork(_) => None,
     }
 }
 
@@ -41,15 +38,6 @@ mod tests {
         assert_eq!(
             external_invalidation_for_app_event(&event),
             Some(ExternalInvalidation::new())
-        );
-    }
-
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    #[test]
-    fn reload_lifecycle_events_do_not_masquerade_as_terminal_invalidation() {
-        assert_eq!(
-            external_invalidation_for_app_event(&AppEvent::WidgetReloaded),
-            None
         );
     }
 }

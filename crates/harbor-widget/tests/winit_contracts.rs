@@ -34,6 +34,25 @@ fn widget_manifest_does_not_depend_on_terminal_or_application_crates() {
         );
     }
 }
+
+#[cfg(feature = "hmr")]
+#[test]
+fn hmr_contract_is_widget_owned_and_work_is_sendable() {
+    fn assert_send<T: Send>() {}
+    assert_send::<harbor_widget::winit::WidgetHmrWork>();
+
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("hmr = [\"winit\", \"dep:hot-lib-reloader\"]"));
+}
+
+#[cfg(feature = "hmr")]
+#[allow(dead_code)]
+fn attach_hmr_config<P, F>(
+    builder: WinitWindowHostBuilder<P, F>,
+    config: harbor_widget::winit::WidgetHmrConfig,
+) -> WinitWindowHostBuilder<P, F> {
+    builder.with_hmr(config)
+}
 // This fixture is type-checked without constructing an OS window or GPU
 // surface. In particular, the target owns no host resources.
 fn borrowed_frame_contract<'frame>(
@@ -254,10 +273,6 @@ async fn owned_host_contract(
     let _: HostIdleOutcome = second.clear_focus();
     let _: HostIdleOutcome = second.cancel_active_input_ownership();
     second.quarantine_blocked_pointer_event(&WindowEvent::Focused(true));
-    let _: HostIdleOutcome = second.replace_root_for_reload(
-        harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::ZERO),
-    );
-    let _: HostIdleOutcome = second.unmount_root_for_reload();
     let _: HostIdleOutcome =
         second.invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
     let _: HostIdleOutcome = second.about_to_wait(Instant::now(), None);

@@ -50,6 +50,7 @@ quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 trybuild = "1"
 
+hot-lib-reloader = "0.8.2"
 [dependencies]
 # workspace crates
 harbor-config = { workspace = true }
@@ -73,7 +74,7 @@ wgpu = { workspace = true }
 windows-core = { workspace = true }
 unicode-width = { workspace = true }
 winit = { workspace = true }
-hot-lib-reloader = { version = "0.8.2", optional = true }
+hot-lib-reloader = { workspace = true, optional = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true }
@@ -88,7 +89,7 @@ default = []
 backend-dx12 = ["harbor-widget/backend-dx12"]
 backend-vulkan = ["harbor-widget/backend-vulkan"]
 dhat-heap = ["dep:dhat"]
-widget-hot-reload = ["dep:hot-lib-reloader"]
+widget-hot-reload = ["dep:hot-lib-reloader", "harbor-widget/hmr"]
 
 [profile.release]
 opt-level = 3

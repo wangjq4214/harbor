@@ -40,7 +40,7 @@ Run the persistent Runtime Host in another terminal:
 cargo run --features widget-hot-reload
 ```
 
-This mode reloads application widget composition while retaining the Host window, GPU resources, tab model, terminals, and PTYs. Widget-local Fiber state resets. Changes to `harbor-widget`, shared `harbor-app` contract types, or exported function signatures require stopping and rebuilding the Host. Ordinary `cargo run` does not start a reload observer.
+The optional HMR observer, teardown barrier, generation state machine, Runtime root replacement, and redraw scheduling are owned by `harbor-widget::winit`; Harbor only provides the `harbor_app_ui` root factory and transports opaque Host work. This mode retains the Host window, GPU resources, Store-published tab state, terminals, and PTYs while resetting Widget/Fiber-local state. Changes to `harbor-widget`, shared `harbor-app` contract types (including `MainWindowRootInputs`), dependency layout, or exported function signatures require stopping the watcher and fully rebuilding/restarting the Host. Ordinary, release, and unsupported-target builds do not start a reload observer.
 
 ## ⚙️ Startup Configuration
 

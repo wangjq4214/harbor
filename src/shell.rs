@@ -1,5 +1,7 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
+#[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+use std::{cell::RefCell, rc::Rc};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
@@ -37,8 +39,6 @@ pub(crate) struct ActiveSession {
     // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
     paste: PasteController,
     tabs: TabCoordinator,
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    root_inputs: MainWindowRootInputs,
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
     main_host: WinitWindowHost,
@@ -92,30 +92,15 @@ fn build_application_root(inputs: MainWindowRootInputs) -> Result<ApplicationRoo
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
     {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::hot_reload::build_root(
-                inputs.controller,
-                inputs.backdrop_available,
-                inputs.backdrop_fallback,
-            )
+            crate::hot_reload::build_root(inputs)
         }))
         .map(ApplicationRoot)
-        .map_err(|panic| ShellError::HotReload(panic_message(panic)))
+        .map_err(|_| ShellError::HotReload("reloadable UI root factory panicked".to_owned()))
     }
 
     #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
     {
         Ok(ApplicationRoot(Box::new(main_window_root(inputs))))
-    }
-}
-
-#[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = panic.downcast_ref::<&str>() {
-        (*message).to_owned()
-    } else if let Some(message) = panic.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "reloadable UI panicked".to_owned()
     }
 }
 // ── ApplicationHandler (winit lifecycle) ──────────────────────────────────
@@ -211,48 +196,17 @@ impl ActiveSession {
                 }
             }
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-            AppEvent::WidgetReloadAboutToStart(blocker) => {
-                tracing::info!("unmounting application UI for hot reload");
-                Self::merge_wait(&mut wait, self.main_host.unmount_root_for_reload().wait);
-                // Releasing the loader only after Host-owned Runtime teardown prevents stale callbacks.
-                drop(blocker);
-            }
-            #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-            AppEvent::WidgetReloaded => {
-                Self::merge_wait(&mut wait, self.install_reloaded_root());
+            AppEvent::WidgetHostWork(work) => {
+                Self::merge_wait(&mut wait, self.main_host.handle_hmr_work(work).wait);
+                let focus = self.tabs.terminal_focus();
+                Self::merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
+                let allocation_wait = self.sync_terminal_allocation();
+                Self::merge_wait(&mut wait, allocation_wait);
             }
         }
         if let Some(wait) = wait {
             apply_control_flow(event_loop, wait);
         }
-    }
-
-    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-    fn install_reloaded_root(&mut self) -> Option<ControlFlowEffect> {
-        let root = match build_application_root(self.root_inputs.clone()) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::error!(error = %error, "failed to install reloaded application UI");
-                return None;
-            }
-        };
-        let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.main_host.replace_root_for_reload(root)
-        }));
-        let mut wait = match installed {
-            Ok(outcome) => outcome.wait,
-            Err(panic) => {
-                let error = ShellError::HotReload(panic_message(panic));
-                tracing::error!(error = %error, "reloaded application UI build failed");
-                return self.main_host.unmount_root_for_reload().wait;
-            }
-        };
-        let focus = self.tabs.terminal_focus();
-        Self::merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
-        let allocation_wait = self.sync_terminal_allocation();
-        Self::merge_wait(&mut wait, allocation_wait);
-        tracing::info!("installed reloaded application UI");
-        wait
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
@@ -430,8 +384,6 @@ impl ActiveSession {
 impl Shell {
     /// Creates the application shell with no initial window, GPU, or terminal.
     pub(crate) fn new(event_proxy: EventLoopProxy<AppEvent>) -> Result<Self, ShellError> {
-        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-        crate::hot_reload::spawn_observer(event_proxy.clone()).map_err(ShellError::HotReload)?;
         Ok(Self {
             session: None,
             frame: FrameState::new(),
@@ -468,6 +420,31 @@ impl Shell {
         let font_settings = settings.font.clone();
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
         let event_proxy = self.event_proxy.clone();
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        let hmr = {
+            let wake_proxy = event_proxy.clone();
+            let factory_inputs = Rc::clone(&hmr_root_inputs);
+            crate::hot_reload::config(
+                move |work| {
+                    wake_proxy
+                        .send_event(AppEvent::WidgetHostWork(work))
+                        .is_ok()
+                },
+                move || {
+                    let inputs = factory_inputs
+                        .borrow()
+                        .as_ref()
+                        .expect("initial root inputs installed before HMR activation")
+                        .clone();
+                    crate::hot_reload::build_root(inputs)
+                },
+            )
+            .map_err(ShellError::HotReload)?
+        };
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        let bootstrap_hmr_inputs = Rc::clone(&hmr_root_inputs);
 
         let builder = WinitWindowHostBuilder::new(
             Window::default_attributes(),
@@ -508,24 +485,25 @@ impl Shell {
                     context.backdrop_available(),
                     backdrop_fallback,
                 );
+                #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+                {
+                    *bootstrap_hmr_inputs.borrow_mut() = Some(root_inputs.clone());
+                }
                 let root = build_application_root(root_inputs.clone())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let tabs = TabCoordinator::new(tabs, tab_ui, factory);
                 let paste = PasteController::new(input_gate);
-                Ok((root, (tabs, paste, root_inputs)))
+                Ok((root, (tabs, paste)))
             },
         )
         .with_platform_hooks(platform);
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        let builder = builder.with_hmr(hmr);
 
-        let (main_host, (tabs, paste, root_inputs)) =
-            pollster::block_on(builder.build_with_output(event_loop))?;
-        #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
-        let _ = root_inputs;
+        let (main_host, (tabs, paste)) = pollster::block_on(builder.build_with_output(event_loop))?;
         let mut session = ActiveSession {
             paste,
             tabs,
-            #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
-            root_inputs,
             show_pending: true,
             startup_retry_deadline: None,
             main_host,

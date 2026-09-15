@@ -1,19 +1,15 @@
-//! Debug-only dynamic application UI loading and lifecycle observation.
+//! Application-specific glue for the debug-reloadable UI library.
 
-use std::thread;
-
-use harbor_app::tab_view::TabUiController;
+use harbor_app::tab_view::ui::MainWindowRootInputs;
 use harbor_widget::view::Component;
-use winit::event_loop::EventLoopProxy;
-
-use crate::event::AppEvent;
+use harbor_widget::winit::{WidgetHmrConfig, WidgetHmrWork};
 
 #[hot_lib_reloader::hot_module(
     dylib = "harbor_app_ui",
     loaded_lib_name_template = "{lib_name}_hot_{pid}_{load_counter}"
 )]
 mod hot_ui {
-    use harbor_app::tab_view::TabUiController;
+    use harbor_app::tab_view::ui::MainWindowRootInputs;
     use harbor_widget::view::Component;
 
     hot_functions_from_file!("crates/harbor-app-ui/src/lib.rs");
@@ -22,38 +18,19 @@ mod hot_ui {
     pub fn subscribe() -> hot_lib_reloader::LibReloadObserver {}
 }
 
-pub(crate) fn build_root(
-    controller: TabUiController,
-    backdrop_available: bool,
-    backdrop_fallback: [f32; 3],
-) -> Box<dyn Component> {
-    hot_ui::build_root(controller, backdrop_available, backdrop_fallback)
+pub(crate) fn build_root(inputs: MainWindowRootInputs) -> Box<dyn Component> {
+    hot_ui::build_root(inputs)
 }
 
-/// Relays loader lifecycle notifications onto winit's UI-thread event queue.
-pub(crate) fn spawn_observer(proxy: EventLoopProxy<AppEvent>) -> Result<(), String> {
-    // Subscribe synchronously so no installed generation can outlive an unobserved reload.
+/// Binds this application's dynamic-library identity to the widget-owned HMR lifecycle.
+pub(crate) fn config<W, F>(wake: W, root_factory: F) -> Result<WidgetHmrConfig, String>
+where
+    W: Fn(WidgetHmrWork) -> bool + Send + 'static,
+    F: Fn() -> Box<dyn Component> + 'static,
+{
     let observer = std::panic::catch_unwind(hot_ui::subscribe)
         .map_err(|_| "load initial reloadable UI library".to_owned())?;
-    thread::Builder::new()
-        .name("harbor-widget-hot-reload".to_owned())
-        .spawn(move || {
-            loop {
-                let blocker = observer.wait_for_about_to_reload();
-                if proxy
-                    .send_event(AppEvent::WidgetReloadAboutToStart(blocker))
-                    .is_err()
-                {
-                    return;
-                }
-                observer.wait_for_reload();
-                if proxy.send_event(AppEvent::WidgetReloaded).is_err() {
-                    return;
-                }
-            }
-        })
-        .map(|_| ())
-        .map_err(|error| format!("spawn widget hot-reload observer: {error}"))
+    Ok(WidgetHmrConfig::new(observer, wake, root_factory))
 }
 
 #[cfg(test)]
@@ -65,7 +42,7 @@ mod tests {
 
     use harbor_app::{
         tab_manager::{TabManager, TerminalTabResources},
-        tab_view::{TabCommand, TabUiController},
+        tab_view::{TabCommand, TabUiController, ui::MainWindowRootInputs},
         terminal_view::TerminalWidgetBridge,
     };
     use harbor_terminal::Terminal;
@@ -86,6 +63,7 @@ mod tests {
             self.0.build(cx)
         }
     }
+
     #[test]
     #[allow(clippy::arc_with_non_send_sync)]
     fn dynamic_generation_accepts_host_contract_and_builds_a_view() {
@@ -107,7 +85,7 @@ mod tests {
         );
 
         let published = controller.clone();
-        let root = build_root(controller, false, [0.0; 3]);
+        let root = build_root(MainWindowRootInputs::new(controller, false, [0.0; 3]));
         let mut runtime = Runtime::new();
         runtime.set_viewport(Viewport::new(1_200, 600, 1.0));
         runtime.set_root(MountedRoot(root));
@@ -128,7 +106,6 @@ mod tests {
         assert!(published.update_presentation(500.0));
         let mut effects = runtime.invalidate_external(ExternalInvalidation::new());
         effects.merge(runtime.update(Instant::now()));
-
         assert!(effects.request_redraw);
     }
 }

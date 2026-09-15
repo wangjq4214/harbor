@@ -201,6 +201,12 @@ impl FiberArena {
         self.fibers.remove(id)
     }
 
+    /// Removes every live fiber while preserving slot generations so stale IDs
+    /// cannot identify fibers mounted after a lifecycle teardown.
+    pub(crate) fn clear(&mut self) {
+        self.fibers.clear();
+    }
+
     /// Returns true if the arena contains a live fiber for the given key.
     pub fn contains(&self, id: FiberId) -> bool {
         self.fibers.contains_key(id)

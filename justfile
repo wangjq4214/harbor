@@ -50,10 +50,13 @@ hmr-run: hmr-build
 
 # Compile-check the Host's widget hot-reload path.
 hmr-check:
+    cargo check -p harbor-widget --features hmr
     cargo check -p harbor --features widget-hot-reload
+    cargo check -p harbor --features widget-hot-reload --release
 
 # Build the DLL and run Host tests with widget hot reload enabled.
 hmr-test: hmr-build
+    cargo test -p harbor-widget --features hmr
     cargo test -p harbor --features widget-hot-reload
 
 # Run ordinary and hot-reload verification.

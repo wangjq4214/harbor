@@ -62,6 +62,14 @@ impl EventRouter {
         self.pending_cursor.take()
     }
 
+    pub(crate) fn pending_focus_handle(&self) -> Option<u64> {
+        self.pending_focus_handle
+    }
+
+    pub(crate) fn restore_pending_focus_handle(&mut self, handle: Option<u64>) {
+        self.pending_focus_handle = handle;
+    }
+
     pub(crate) fn drain_external_input(&self) -> Vec<(ExternalDrawId, UiEvent)> {
         std::mem::take(&mut *self.pending_external_input.borrow_mut())
     }

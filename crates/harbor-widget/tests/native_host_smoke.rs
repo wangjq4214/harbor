@@ -1,4 +1,4 @@
-#![cfg(target_os = "windows")]
+#![cfg(all(target_os = "windows", feature = "winit"))]
 
 use harbor_widget::layout::Size;
 use harbor_widget::winit::{

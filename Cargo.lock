@@ -931,6 +931,7 @@ dependencies = [
  "harbor-text",
  "harbor-widget-macros",
  "hashbrown 0.17.1",
+ "hot-lib-reloader",
  "pollster",
  "slotmap",
  "tracing",

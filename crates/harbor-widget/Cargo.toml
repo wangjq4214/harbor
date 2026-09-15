@@ -14,6 +14,7 @@ tracing = { workspace = true }
 harbor-widget-macros = { workspace = true }
 arboard = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
+hot-lib-reloader = { workspace = true, optional = true }
 
 [target."cfg(windows)".dependencies]
 windows = { workspace = true, optional = true }
@@ -21,6 +22,7 @@ windows = { workspace = true, optional = true }
 [features]
 default = []
 winit = ["dep:winit", "dep:windows", "dep:arboard"]
+hmr = ["winit", "dep:hot-lib-reloader"]
 backend-dx12 = []
 backend-vulkan = []
 

@@ -1,7 +1,10 @@
 mod event_router;
 mod frame_encoder;
 
-use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::effects::{
+    ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
+    RuntimeEffects,
+};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, LayoutOutcome, layout_fiber, paint_fiber,
     reconcile_children_with_externals, unmount_fiber,
@@ -121,16 +124,75 @@ impl Runtime {
         self.invalidate_layout();
     }
 
-    /// Sets the root component and performs the initial build + layout.
-    ///
-    /// If a previous root existed, it is unmounted recursively.
-    pub fn set_root(&mut self, root: impl Component + 'static) {
+    /// Drops the mounted tree and resets all state derived from it.
+    pub(crate) fn clear_root(&mut self) {
         let _scope = RuntimeScope::enter(self.runtime_id);
 
-        // Unmount old root if present
-        if let Some(old_root) = self.root_id.take() {
-            unmount_fiber(&mut self.arena, old_root);
+        // Detach every old-generation owner before invoking unmount hooks. If a
+        // hook panics, unwinding drops this detached closure environment while the
+        // Runtime itself already contains only generation-neutral state.
+        let old_root = self.root_id.take();
+        let old_root_component = self.root_component.take();
+        let mut old_arena = std::mem::take(&mut self.arena);
+        let old_external_draws = std::mem::take(&mut self.external_draws);
+        let old_external_schedules = std::mem::take(&mut self.external_schedules);
+        let old_external_eligible = std::mem::take(&mut self.external_eligible);
+        let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
+        let old_events = std::mem::replace(&mut self.events, EventRouter::new());
+        remove_runtime(self.runtime_id);
+
+        let removal = self.scene_graph.diff(Vec::new());
+        if let Some(pending_delta) = &mut self.pending_delta {
+            pending_delta.coalesce(removal);
+        } else {
+            self.pending_delta = Some(removal);
         }
+
+        self.pending_effects = RuntimeEffects {
+            request_redraw: true,
+            cursor: Some(CursorEffect::reset()),
+            ime: Some(ImeEffect::set_allowed(false)),
+            ..RuntimeEffects::default()
+        };
+
+        let unmount_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(root_id) = old_root {
+                unmount_fiber(&mut old_arena, root_id);
+            }
+        }))
+        .is_err();
+        // Remove any fibers left behind by a panicking unmount hook, then retain
+        // the emptied arena so its slot generations continue rejecting stale IDs.
+        old_arena.clear();
+        self.arena = old_arena;
+
+        let drop_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            drop((
+                old_root_component,
+                old_external_draws,
+                old_external_schedules,
+                old_external_eligible,
+                old_layout_notifications,
+                old_events,
+            ));
+        }))
+        .is_err();
+        if unmount_panicked || drop_panicked {
+            tracing::error!("widget root teardown callback panicked after state was detached");
+        }
+    }
+
+    /// Sets the root component and performs the initial build + layout.
+    ///
+    /// If a previous root existed, it is torn down before the replacement is built.
+    pub fn set_root(&mut self, root: impl Component + 'static) {
+        let pending_focus_handle = self.events.pending_focus_handle();
+        if self.root_id.is_some() || self.root_component.is_some() {
+            self.clear_root();
+            self.events
+                .restore_pending_focus_handle(pending_focus_handle);
+        }
+        let _scope = RuntimeScope::enter(self.runtime_id);
 
         // Create a temporary root fiber
         let root_fiber = Fiber::new(
@@ -775,11 +837,7 @@ fn valid_layout_notification_rect(rect: Rect) -> bool {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let _scope = RuntimeScope::enter(self.runtime_id);
-        if let Some(root_id) = self.root_id.take() {
-            unmount_fiber(&mut self.arena, root_id);
-        }
-        remove_runtime(self.runtime_id);
+        self.clear_root();
     }
 }
 
@@ -791,20 +849,147 @@ mod tests {
     };
     use crate::input::event_ctx::EventCtx;
     use crate::scene::primitive::ExternalScheduleDemand;
+    use crate::view::View;
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::focus::Focus;
     use crate::widgets::focus_scope::FocusScope;
+    use crate::widgets::layout_observer::LayoutObserver;
     use crate::widgets::sized_box::SizedBox;
     use crate::widgets::text_label::TextLabel;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     fn now() -> Instant {
         Instant::now()
     }
 
+    struct TeardownProbeRoot {
+        drops: Arc<AtomicUsize>,
+        callback_probe: Arc<()>,
+    }
+
+    impl Drop for TeardownProbeRoot {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Component for TeardownProbeRoot {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let draw_probe = Arc::clone(&self.callback_probe);
+            let schedule_probe = Arc::clone(&self.callback_probe);
+            let layout_probe = Arc::clone(&self.callback_probe);
+            let draw: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
+                let _ = &draw_probe;
+            });
+            let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| {
+                let _ = &schedule_probe;
+                ExternalScheduleDemand::empty()
+            });
+            LayoutObserver::new(move |_| {
+                let _ = &layout_probe;
+            })
+            .child(CustomPaint::new(91).handler(draw).schedule(schedule))
+            .build(cx)
+        }
+    }
+
+    #[test]
+    fn clear_root_drops_tree_callbacks_and_resets_root_derived_state() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback_probe = Arc::new(());
+        let weak_callback = Arc::downgrade(&callback_probe);
+        let mut rt = Runtime::new();
+        let viewport = Viewport::new(640, 480, 1.0);
+        rt.set_viewport(viewport.clone());
+        rt.set_root(TeardownProbeRoot {
+            drops: Arc::clone(&drops),
+            callback_probe,
+        });
+        assert!(rt.update(now()).request_redraw);
+        assert!(rt.focus_first_focusable());
+        assert!(rt.has_external_draws());
+        assert!(weak_callback.upgrade().is_some());
+        let scene_count = rt.scene_graph.item_count();
+        assert!(scene_count > 0);
+        let _presented_delta = rt.pending_delta.take().expect("initial scene delta");
+        let old_root = rt.root_id.expect("mounted root");
+
+        rt.clear_root();
+
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(weak_callback.upgrade().is_none());
+        assert!(rt.root_id.is_none());
+        assert!(!rt.arena.contains(old_root));
+        assert!(rt.external_draws.is_empty());
+        assert!(rt.external_schedules.is_empty());
+        assert!(rt.external_eligible.is_empty());
+        assert!(rt.pending_layout_notifications.is_empty());
+        assert!(rt.scene_graph.items().is_empty());
+        assert!(rt.input().focused.is_none());
+        assert_eq!(rt.current_viewport(), Some(&viewport));
+        let delta = rt.pending_delta.as_ref().expect("root removal delta");
+        assert_eq!(delta.removed.len(), scene_count);
+        assert!(rt.pending_effects.request_redraw);
+        assert_eq!(rt.pending_effects.cursor, Some(CursorEffect::Reset));
+        assert_eq!(rt.pending_effects.ime, Some(ImeEffect::set_allowed(false)));
+
+        rt.clear_root();
+        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)));
+        let new_root = rt.root_id.expect("replacement root");
+        assert!(rt.arena.contains(new_root));
+        assert_ne!(new_root, old_root);
+    }
+
+    #[test]
+    fn set_root_preserves_a_pending_stable_focus_request() {
+        let handle = crate::widgets::FocusHandle::new();
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.request_focus(&handle);
+
+        rt.set_root(Focus::new(Button::new("replacement")).handle(handle));
+
+        assert!(rt.input().focused().is_some());
+    }
+
+    struct PanicOnUnsubscribe;
+
+    impl crate::signal::Hook for PanicOnUnsubscribe {
+        fn unsubscribe_all(&self, _id: FiberId) {
+            panic!("unsubscribe panic probe");
+        }
+
+        fn as_any_ref(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn clear_root_contains_unsubscribe_panics_after_detaching_old_state() {
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        let root = rt.root_id.expect("mounted root");
+        rt.arena
+            .get_mut(root)
+            .expect("mounted fiber")
+            .hooks
+            .push(Box::new(PanicOnUnsubscribe));
+
+        rt.clear_root();
+
+        assert!(rt.root_id.is_none());
+        assert!(!rt.arena.contains(root));
+        assert!(rt.external_draws.is_empty());
+        assert!(rt.scene_graph.items().is_empty());
+    }
     #[test]
     fn dispatch_does_not_attribute_pending_focus_redraw_to_consumed_keyboard_event() {
         use crate::input::event_ctx::EventHandled;

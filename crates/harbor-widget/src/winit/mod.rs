@@ -7,6 +7,8 @@
 mod effects;
 mod event;
 mod gpu;
+#[cfg(feature = "hmr")]
+mod hmr;
 mod host;
 mod presenter;
 mod surface;
@@ -32,6 +34,8 @@ use winit::window::Window;
 #[cfg(target_os = "windows")]
 pub use gpu::RENDER_TARGET_IS_TOPMOST;
 pub use gpu::{SharedGpu, WindowSurface, select_compositing_alpha_mode};
+#[cfg(feature = "hmr")]
+pub use hmr::{WidgetHmrConfig, WidgetHmrWork};
 pub use host::{
     HostEventOutcome, HostFrameOutcome, HostGpuSource, HostIdleOutcome, HostInitContext,
     HostStartupError, HostStartupStage, NoopWindowPlatformHooks, WindowPlatformHooks,
@@ -408,6 +412,22 @@ impl WinitAdapter {
                     }
                     TouchPhase::Moved => {}
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Updates native input bookkeeping for widget input rejected by a host gate.
+    /// No event from this path is dispatched into the Runtime.
+    pub(crate) fn observe_blocked_widget_event(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::MouseInput { .. } | WindowEvent::Touch(_) => {
+                self.quarantine_blocked_pointer_event(event);
+            }
+            WindowEvent::ModifiersChanged(_)
+            | WindowEvent::Ime(_)
+            | WindowEvent::CursorMoved { .. } => {
+                let _ = self.convert_event(event);
             }
             _ => {}
         }
@@ -1889,6 +1909,39 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn blocked_widget_events_preserve_native_state_without_cross_generation_release() {
+        let mut adapter = WinitAdapter::new();
+        adapter.observe_blocked_widget_event(&WindowEvent::ModifiersChanged(
+            ModifiersState::CONTROL.into(),
+        ));
+        adapter.observe_blocked_widget_event(&WindowEvent::Ime(Ime::Preedit(
+            "draft".into(),
+            Some((0, 5)),
+        )));
+        adapter.observe_blocked_widget_event(&WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(20.0, 30.0),
+        });
+        adapter.observe_blocked_widget_event(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+
+        assert_eq!(adapter.modifiers, ModifiersState::CONTROL);
+        assert_eq!(adapter.ime_preedit.as_deref(), Some("draft"));
+        assert_eq!(adapter.mouse_position, Point::new(20.0, 30.0));
+        assert!(adapter.quarantine_pointer_event(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }));
+
+        adapter.observe_blocked_widget_event(&WindowEvent::Ime(Ime::Preedit(String::new(), None)));
+        assert!(adapter.ime_preedit.is_none());
     }
 
     #[test]
