@@ -7,7 +7,7 @@
 Architectural rationale is recorded in [`.grimoire/adr/`](../../.grimoire/adr/). In particular:
 
 - [ADR-0007](../../.grimoire/adr/0007-retain-separate-paste-confirmation-window.md) keeps paste confirmation in a separate OS window.
-- [ADR-0015](../../.grimoire/adr/0015-runtime-owned-frame-presentation.md) assigns complete frame policy to the feature-gated winit integration while the application retains long-lived GPU resource ownership.
+- [ADR-0031](../../.grimoire/adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) consolidates native Window, Surface, Runtime, scheduling, and presentation lifecycle in the widget winit adapter host, while the binary coordinates application-wide multi-window and business policy.
 
 ## Goals
 
@@ -18,7 +18,7 @@ The runtime turns immutable Rust view descriptions into a retained GPU scene:
 - layout produces logical-pixel geometry;
 - painting updates a retained scene graph;
 - the renderer incrementally updates GPU resources;
-- the winit integration schedules and presents frames without owning host resources.
+- the winit integration schedules and presents frames through an owned native window host.
 
 Harbor's terminal remains a focusable and layout-aware `CustomPaint` region. The terminal renderer, parser, model, and PTY stay outside the generic widget runtime.
 
@@ -44,7 +44,8 @@ Those capabilities require a concrete Harbor use case and profiling evidence.
 | `SceneItem`                 | Long       | Retained GPU-visible primitive and paint order                    |
 | Renderer resources          | Long       | Pipelines, buffers, text resources, and incremental scene uploads |
 | `WinitAdapter`              | Per window | Event conversion, scheduling, surface state, and frame policy     |
-| `WinitFrameTarget`          | Per frame  | Borrowed host window and GPU resources                            |
+| `WinitWindowHost`           | Per window | Owned Window, Surface, Runtime, event routing, and presentation   |
+| `SharedGpu`                 | Multi-window | Shared wgpu Instance, Adapter, Device, and Queue                 |
 
 ```mermaid
 flowchart TB
@@ -53,7 +54,7 @@ flowchart TB
     C --> D[Layout and Hit Geometry]
     D --> E[Retained Scene Graph]
     E --> F[Widget Renderer]
-    F --> G[Winit Frame Acquire / Submit / Present]
+    F --> G[WinitWindowHost Presentation]
 ```
 
 A widget is a description, not a mutable long-lived control. Fiber state, geometry, scene state, and GPU resources have separate owners and lifecycles.
@@ -83,19 +84,17 @@ The core runtime may depend on wgpu but not on winit or Harbor's terminal model.
 
 ## Host and Frame Ownership
 
-The application is the long-lived owner of each `Window`, `Surface`, `Device`, and `Queue`. It also owns window creation and destruction, cross-window coordination, business policy, and fatal-error handling.
+The feature-gated `harbor-widget::winit` adapter owns each native `Window`, its `Surface`, its independent `Runtime`, and its complete update/render/present lifecycle through `WinitWindowHost`. Shared GPU resources (`Instance`, `Adapter`, `Device`, `Queue`) are initialized and owned by `SharedGpu` and shared across windows.
 
-For each redraw, the host creates a borrowed `WinitFrameTarget`. The feature-gated widget integration then:
+The binary `Shell` coordinates `ActiveEventLoop` and `ApplicationHandler` dispatch, multi-window routing, terminal tabs, PTYs, paste safety, and fatal-error policy. For each redraw, `WinitWindowHost`:
 
 1. acquires the `SurfaceTexture`;
 2. creates the command encoder;
 3. updates and encodes the retained widget scene;
-4. invokes `CustomPaint` handlers in paint order;
+4. invokes `CustomPaint` handlers in paint order (injecting frame-scoped GPU access);
 5. submits the command buffer;
-6. performs the pre-present notification and presents;
-7. returns a classified outcome to the host.
-
-Neither `Runtime` nor `WinitAdapter` may retain or take ownership of host window or GPU resources.
+6. performs the window pre-present notification and presents;
+7. returns a classified outcome (`HostFrameOutcome`) to the application.
 
 Surface policy belongs to the winit integration: lost and outdated surfaces are reconfigured, timeouts and occlusion skip a frame, zero-sized windows suspend drawing, and fatal out-of-memory outcomes return to the application.
 

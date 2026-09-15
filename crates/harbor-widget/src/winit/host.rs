@@ -624,16 +624,6 @@ impl WinitWindowHost {
         }
     }
 
-    /// Creates a child Runtime sharing text resources with this host.
-    ///
-    /// This is the only T0004/T0006 compatibility seam for the legacy confirmation window.
-    pub fn create_transitional_child_runtime(
-        &self,
-        format: wgpu::TextureFormat,
-    ) -> crate::runtime::Runtime {
-        self.runtime.create_child_runtime(self.gpu.device(), format)
-    }
-
     pub fn invalidate_external(&mut self, work: ExternalInvalidation) -> HostIdleOutcome {
         let mut effects = self.adapter.invalidate_external(&mut self.runtime, work);
         let update = self
@@ -726,12 +716,7 @@ impl WinitWindowHost {
     }
 
     fn redraw(&mut self) -> HostFrameOutcome {
-        let target = WinitFrameTarget::new(
-            &self.window,
-            &self.gpu,
-            &mut self.surface,
-            self.backdrop_available,
-        );
+        let target = WinitFrameTarget::new(&self.window, &self.gpu, &mut self.surface);
         let frame = self
             .adapter
             .render_with_prepare(&mut self.runtime, target, |runtime| {

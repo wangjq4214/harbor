@@ -33,7 +33,8 @@ use winit::window::Window;
 
 #[cfg(target_os = "windows")]
 pub use gpu::RENDER_TARGET_IS_TOPMOST;
-pub use gpu::{SharedGpu, WindowSurface, select_compositing_alpha_mode};
+pub(crate) use gpu::WindowSurface;
+pub use gpu::{SharedGpu, select_compositing_alpha_mode};
 #[cfg(feature = "hmr")]
 pub use hmr::{WidgetHmrConfig, WidgetHmrWork};
 pub use host::{
@@ -41,7 +42,8 @@ pub use host::{
     HostStartupError, HostStartupStage, NoopWindowPlatformHooks, WindowPlatformHooks,
     WindowSurfaceInfo, WinitWindowHost, WinitWindowHostBuilder,
 };
-pub use presenter::{FrameError, FrameOutcome, WinitFrameTarget};
+pub(crate) use presenter::WinitFrameTarget;
+pub use presenter::{FrameError, FrameOutcome};
 
 /// The host-visible result of offering one winit event to a window adapter.
 #[derive(Clone, Debug, PartialEq)]
@@ -419,6 +421,7 @@ impl WinitAdapter {
 
     /// Updates native input bookkeeping for widget input rejected by a host gate.
     /// No event from this path is dispatched into the Runtime.
+    #[cfg_attr(not(feature = "hmr"), allow(dead_code))]
     pub(crate) fn observe_blocked_widget_event(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::MouseInput { .. } | WindowEvent::Touch(_) => {

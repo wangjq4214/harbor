@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation](../../spec/0012-widget-winit-native-host-consolidation.md)
-**Status:** Todo
+**Status:** Complete
 
 ## Goal
 
@@ -42,16 +42,16 @@ Harbor has one native Widget host implementation with no duplicate binary-owned 
 
 ## Acceptance
 
-- [ ] The binary contains no duplicate generic Window/Surface/Runtime setup, surface configuration, frame target assembly, update/render/present flow, scheduler policy, or HMR generation state.
-- [ ] Both windows use the same configurable `harbor-widget::winit` host and share compatible GPU resources while retaining independent per-window state.
-- [ ] `harbor-terminal` owns terminal GPU pipelines/resources but no generic native GPU/window/surface bootstrap; `harbor-widget` has no terminal dependency.
-- [ ] The application retains EventLoop/ApplicationHandler, multi-window routing, Store reduction, tabs, terminal/PTY, paste gate, backdrop/chrome, and fatal/exit policy.
-- [ ] Static and HMR roots use one application contract; default/release/unsupported configurations do not activate HMR.
-- [ ] Resize, DPI, minimize/restore, zero size, recoverable surface errors, cursor/IME/clipboard, idle Wait behavior, and one-redraw/one-frame execution pass regression coverage.
-- [ ] Confirmation open/close, focus, shortcuts, preview, cross-window gating, terminal output, tab actions, and PTY lifetimes pass application regression coverage.
-- [ ] Repeated Windows HMR changes layout and callback behavior while preserving native/GPU/terminal/PTY identities and preventing stale callbacks.
-- [ ] Workspace formatting, linting, tests, backend-feature checks, Windows HMR build checks, and repository documentation checks pass.
-- [ ] No compatibility path remains solely to preserve the superseded ADR 0015/0030 ownership model.
+- [x] The binary contains no duplicate generic Window/Surface/Runtime setup, surface configuration, frame target assembly, update/render/present flow, scheduler policy, or HMR generation state.
+- [x] Both windows use the same configurable `harbor-widget::winit` host and share compatible GPU resources while retaining independent per-window state.
+- [x] `harbor-terminal` owns terminal GPU pipelines/resources but no generic native GPU/window/surface bootstrap; `harbor-widget` has no terminal dependency.
+- [x] The application retains EventLoop/ApplicationHandler, multi-window routing, Store reduction, tabs, terminal/PTY, paste gate, backdrop/chrome, and fatal/exit policy.
+- [x] Static and HMR roots use one application contract; default/release/unsupported configurations do not activate HMR.
+- [x] Resize, DPI, minimize/restore, zero size, recoverable surface errors, cursor/IME/clipboard, idle Wait behavior, and one-redraw/one-frame execution pass regression coverage.
+- [x] Confirmation open/close, focus, shortcuts, preview, cross-window gating, terminal output, tab actions, and PTY lifetimes pass application regression coverage.
+- [x] Repeated Windows HMR changes layout and callback behavior while preserving native/GPU/terminal/PTY identities and preventing stale callbacks.
+- [x] Workspace formatting, linting, tests, backend-feature checks, Windows HMR build checks, and repository documentation checks pass.
+- [x] No compatibility path remains solely to preserve the superseded ADR 0015/0030 ownership model.
 
 ## Out of Scope
 

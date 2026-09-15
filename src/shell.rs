@@ -568,4 +568,25 @@ mod tests {
         };
         assert!(main_frame_policy(&fatal, true).fatal);
     }
+
+    #[test]
+    fn shell_production_code_owns_only_the_common_native_host() {
+        let production = include_str!("shell.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production section");
+        for legacy in [
+            "WindowSurface",
+            "WinitAdapter",
+            "WinitFrameTarget",
+            "create_transitional_child_runtime",
+            "SurfaceConfiguration",
+        ] {
+            assert!(
+                !production.contains(legacy),
+                "shell production code must not reference legacy host infrastructure: {legacy}"
+            );
+        }
+        assert!(production.contains("main_host: WinitWindowHost"));
+    }
 }

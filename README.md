@@ -68,8 +68,8 @@ cargo run --profile dhat --features dhat-heap
 
 ```text
 winit events
-    -> harbor-widget WinitAdapter
-    -> Runtime event routing and frame scheduling
+    -> Shell ApplicationHandler
+    -> harbor-widget WinitWindowHost (Window, Surface, Runtime, Scheduler, Presentation)
     -> Terminal CustomPaint
        -> harbor-parser
        -> terminal screen and input model
@@ -77,7 +77,7 @@ winit events
        -> wgpu terminal renderer
 ```
 
-The application owns windows and long-lived GPU resources. The feature-gated widget winit integration borrows those resources per frame to acquire, encode, submit, and present. Each OS window has an independent widget runtime.
+The feature-gated `harbor-widget::winit` integration owns per-window `Window`, `Surface`, `Runtime`, scheduling, presentation, and shared GPU resources ([ADR-0031](.grimoire/adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)). The application shell coordinates `ApplicationHandler`, multi-window routing, terminal tabs, PTYs, paste safety, and business policy. Each OS window has an independent widget runtime.
 
 ## 📚 Documentation
 

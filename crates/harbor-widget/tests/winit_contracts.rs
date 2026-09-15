@@ -9,8 +9,8 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
     FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
-    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurface, WindowSurfaceInfo,
-    WinitAdapter, WinitEventOutcome, WinitFrameTarget, WinitWindowHost, WinitWindowHostBuilder,
+    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurfaceInfo, WinitAdapter,
+    WinitEventOutcome, WinitWindowHost, WinitWindowHostBuilder,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -53,29 +53,17 @@ fn attach_hmr_config<P, F>(
 ) -> WinitWindowHostBuilder<P, F> {
     builder.with_hmr(config)
 }
-// This fixture is type-checked without constructing an OS window or GPU
-// surface. In particular, the target owns no host resources.
-fn borrowed_frame_contract<'frame>(
-    window: &'frame Window,
-    gpu: &'frame SharedGpu,
-    surface: &'frame mut WindowSurface,
-    event: &WindowEvent,
-) {
-    let target = WinitFrameTarget::new(window, gpu, surface, false);
-    let _ = target.window();
-    let _ = target.surface();
-    let _ = target.device();
-    let _ = target.queue();
-    assert!(!target.backdrop_available());
-    assert_eq!(target.alpha_mode(), wgpu::CompositeAlphaMode::Opaque);
-
-    let mut runtime = Runtime::new();
-    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-    let outcome: WinitEventOutcome = adapter.handle_event(&mut runtime, event);
-    assert!(outcome.handled);
-    assert!(outcome.effects.is_noop());
-    let outcome = adapter.render(&mut runtime, target);
-    assert!(outcome.effects().is_noop());
+#[test]
+fn native_host_public_api_encapsulates_frame_target_and_surface() {
+    let winit_mod = include_str!("../src/winit/mod.rs");
+    for internal_only in ["WinitFrameTarget", "WindowSurface"] {
+        assert!(
+            !winit_mod
+                .lines()
+                .any(|line| line.trim().starts_with("pub use") && line.contains(internal_only)),
+            "public winit contract must not expose {internal_only}"
+        );
+    }
 }
 
 #[test]
@@ -190,11 +178,6 @@ fn frame_error_categories_are_host_inspectable() {
     );
 }
 
-#[allow(dead_code)]
-fn compile_only_borrowed_frame_contract() {
-    let _ = borrowed_frame_contract;
-}
-
 struct ContractHooks;
 
 impl WindowPlatformHooks for ContractHooks {
@@ -265,7 +248,6 @@ async fn owned_host_contract(
     let _ = first.viewport();
     let _ = first.modifiers();
     let _ = first.backdrop_available();
-    let _ = first.create_transitional_child_runtime(wgpu::TextureFormat::Bgra8UnormSrgb);
     let _: HostIdleOutcome = second.request_frame();
     let _: HostFrameOutcome = second.present_now();
     let focus = harbor_widget::widgets::FocusHandle::new();

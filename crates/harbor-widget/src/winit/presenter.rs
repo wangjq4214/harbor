@@ -10,7 +10,8 @@ use winit::window::Window;
 
 impl WinitAdapter {
     /// Executes one complete integration frame.
-    pub fn render<'frame>(
+    #[allow(dead_code)]
+    pub(crate) fn render<'frame>(
         &mut self,
         runtime: &mut Runtime,
         target: WinitFrameTarget<'frame>,
@@ -21,7 +22,7 @@ impl WinitAdapter {
     /// Executes one complete integration frame after the runtime update and
     /// before GPU encoding. Hosts use this to register frame-local resources
     /// produced during the update without owning presentation policy.
-    pub fn render_with_prepare<'frame>(
+    pub(crate) fn render_with_prepare<'frame>(
         &mut self,
         runtime: &mut Runtime,
         mut target: WinitFrameTarget<'frame>,
@@ -275,32 +276,28 @@ pub(super) fn frame_clear_color(
 
 /// Borrowed host resources valid for one frame.
 ///
-/// This transitional target borrows widget-owned shared GPU resources and one mutable window
-/// surface. It is consumed by a frame call and cannot be retained by the runtime or adapter.
-/// T0006 removes this manual frame-target compatibility seam after the owned native host lands.
-pub struct WinitFrameTarget<'frame> {
+/// This internal target borrows widget-owned shared GPU resources and one mutable window
+/// surface. It is consumed by an internal frame call and cannot be retained by the runtime or adapter.
+pub(crate) struct WinitFrameTarget<'frame> {
     window: &'frame Window,
     gpu: &'frame SharedGpu,
     surface: &'frame mut WindowSurface,
-    backdrop_available: bool,
 }
 
 impl<'frame> WinitFrameTarget<'frame> {
-    pub fn new(
+    pub(crate) fn new(
         window: &'frame Window,
         gpu: &'frame SharedGpu,
         surface: &'frame mut WindowSurface,
-        backdrop_available: bool,
     ) -> Self {
         Self {
             window,
             gpu,
             surface,
-            backdrop_available,
         }
     }
 
-    pub fn reconfigure(&mut self, viewport: &Viewport) {
+    pub(crate) fn reconfigure(&mut self, viewport: &Viewport) {
         assert!(
             viewport.is_drawable(),
             "refusing zero-sized surface configure"
@@ -309,31 +306,27 @@ impl<'frame> WinitFrameTarget<'frame> {
             .configure_size(self.gpu, viewport.physical_size.0, viewport.physical_size.1);
     }
 
-    pub fn window(&self) -> &'frame Window {
+    pub(crate) fn window(&self) -> &'frame Window {
         self.window
     }
 
-    pub fn surface(&self) -> &wgpu::Surface<'static> {
+    pub(crate) fn surface(&self) -> &wgpu::Surface<'static> {
         self.surface.surface()
     }
 
-    pub fn device(&self) -> &'frame wgpu::Device {
+    pub(crate) fn device(&self) -> &'frame wgpu::Device {
         self.gpu.device()
     }
 
-    pub fn queue(&self) -> &'frame wgpu::Queue {
+    pub(crate) fn queue(&self) -> &'frame wgpu::Queue {
         self.gpu.queue()
     }
 
-    pub fn format(&self) -> wgpu::TextureFormat {
+    pub(crate) fn format(&self) -> wgpu::TextureFormat {
         self.surface.format()
     }
 
-    pub const fn backdrop_available(&self) -> bool {
-        self.backdrop_available
-    }
-
-    pub fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+    pub(crate) fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
         self.surface.alpha_mode()
     }
 }

@@ -156,7 +156,7 @@ pub struct SharedGpu {
 
 impl SharedGpu {
     /// Bootstraps the shared adapter from the main window's compatible surface.
-    pub async fn new(main_window: Arc<Window>) -> Result<(Self, WindowSurface)> {
+    pub(crate) async fn new(main_window: Arc<Window>) -> Result<(Self, WindowSurface)> {
         let size = main_window.inner_size();
         let backends = selected_backends();
         let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -217,7 +217,7 @@ impl SharedGpu {
     }
 
     /// Creates and configures an independent secondary surface against this adapter.
-    pub fn create_window_surface(&self, window: Arc<Window>) -> Result<WindowSurface> {
+    pub(crate) fn create_window_surface(&self, window: Arc<Window>) -> Result<WindowSurface> {
         let size = window.inner_size();
         let surface = self
             .instance
@@ -247,7 +247,7 @@ impl SharedGpu {
 ///
 /// `surface` is declared before the Windows composition keepalive so the surface is destroyed
 /// first, while the visual tree it targets is still alive.
-pub struct WindowSurface {
+pub(crate) struct WindowSurface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     #[cfg(target_os = "windows")]
@@ -333,6 +333,7 @@ impl WindowSurface {
         self.config.format
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
     }
