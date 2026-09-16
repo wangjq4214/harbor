@@ -12,6 +12,7 @@ use crate::scene::primitive::{
     Primitive,
 };
 use crate::scene::{SceneDelta, SceneGraph};
+use crate::signal::RuntimeId;
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
 use hashbrown::HashMap;
 use std::cell::RefCell;
@@ -250,6 +251,8 @@ impl FrameEncoder {
         &mut self,
         scene_graph: &SceneGraph,
         metrics: &TextMetrics,
+        owner: RuntimeId,
+        raster_scale: f32,
         queue: &wgpu::Queue,
     ) {
         let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
@@ -257,6 +260,7 @@ impl FrameEncoder {
         };
         let mut atlas = atlas.borrow_mut();
         let revision = atlas.ensure_scene_text(
+            owner,
             scene_graph.items().iter().filter_map(|item| {
                 if let Primitive::Text { text, .. } = &item.primitive {
                     Some(text.as_ref())
@@ -264,10 +268,17 @@ impl FrameEncoder {
                     None
                 }
             }),
+            raster_scale,
             queue,
         );
-        let glyph_fn = |ch| atlas.glyph(ch).copied();
-        self.prepare_text_runs(scene_graph, metrics, revision, &glyph_fn);
+        let glyph_fn = |ch| atlas.glyph(ch, raster_scale).copied();
+        self.prepare_text_runs_at_scale(scene_graph, metrics, revision, raster_scale, &glyph_fn);
+    }
+
+    pub(crate) fn release_text_owner(&mut self, owner: RuntimeId) {
+        if let Some(atlas) = &self.text_atlas {
+            atlas.borrow_mut().release_owner(owner);
+        }
     }
 
     #[cfg(test)]
@@ -289,11 +300,23 @@ impl FrameEncoder {
     ///
     /// Scene item IDs are cache keys. A changed atlas revision invalidates every
     /// run because a repack may have changed all previously cached UVs.
+    #[cfg(test)]
     pub(crate) fn prepare_text_runs(
         &mut self,
         scene_graph: &SceneGraph,
         metrics: &TextMetrics,
         atlas_revision: u64,
+        glyph_fn: &GlyphFn<'_>,
+    ) {
+        self.prepare_text_runs_at_scale(scene_graph, metrics, atlas_revision, 1.0, glyph_fn);
+    }
+
+    pub(crate) fn prepare_text_runs_at_scale(
+        &mut self,
+        scene_graph: &SceneGraph,
+        metrics: &TextMetrics,
+        atlas_revision: u64,
+        raster_scale: f32,
         glyph_fn: &GlyphFn<'_>,
     ) {
         let revision_changed = self.prepared_atlas_revision != Some(atlas_revision);
@@ -306,7 +329,13 @@ impl FrameEncoder {
         for item in scene_graph.items() {
             if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
                 let run_id = crate::scene::primitive::TextRunId::new(item.id);
-                changed |= self.text_run_cache.upsert(run_id, text, metrics, glyph_fn);
+                changed |= self.text_run_cache.upsert_at_scale(
+                    run_id,
+                    text,
+                    metrics,
+                    raster_scale,
+                    glyph_fn,
+                );
                 live_ids.push(run_id);
             }
         }

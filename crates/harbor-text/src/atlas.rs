@@ -282,12 +282,38 @@ impl GlyphAtlas {
     /// When `evicted` is true, all UVs have changed and the caller must rebuild
     /// all GPU vertices.
     pub fn rasterize_new(&mut self, fonts: &FontBook, chars: &[char]) -> RasterizeResult {
+        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
+        self.font_size = size;
+        self.rasterize_new_at_size(fonts, chars, size)
+    }
+
+    /// Rasterizes uncached glyphs at an explicit physical font size.
+    ///
+    /// Unlike [`Self::rasterize_new`], this does not change the default size used
+    /// by the legacy character lookup path.
+    pub fn rasterize_new_at_size(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        size: FontSize,
+    ) -> RasterizeResult {
+        let retained_keys = self.store.glyph_keys();
+        self.rasterize_new_at_size_retaining(fonts, chars, size, &retained_keys)
+    }
+
+    /// Rasterizes at an explicit size and, if repacking is required, evicts
+    /// entries not present in `retained_keys`.
+    pub fn rasterize_new_at_size_retaining(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        size: FontSize,
+        retained_keys: &[GlyphKey],
+    ) -> RasterizeResult {
         let mut chars: Vec<char> = chars.to_vec();
         chars.sort_unstable();
         chars.dedup();
 
-        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
-        self.font_size = size;
         let style = FontStyle::REGULAR;
 
         // Collect only new available glyphs (not yet cached), deduplicated by GlyphKey.
@@ -336,10 +362,9 @@ impl GlyphAtlas {
 
         if !self.store.add_incremental(&new_glyphs) {
             tracing::debug!("atlas full; evicting and rebuilding");
-            let all_keys: Vec<GlyphKey> = self
-                .store
-                .glyph_keys()
-                .into_iter()
+            let all_keys: Vec<GlyphKey> = retained_keys
+                .iter()
+                .copied()
                 .chain(new_keys.iter().copied())
                 .collect();
             self.rebuild_by_keys(fonts, &all_keys);
@@ -421,7 +446,12 @@ impl GlyphAtlas {
     /// Looks up a cached glyph by character. Returns `None` if not cached
     /// or if the character resolved as unavailable.
     pub fn glyph_by_char(&self, ch: char) -> Option<&AtlasGlyph> {
-        let request = ResolutionKey::new(ch, self.font_size, FontStyle::REGULAR);
+        self.glyph_by_char_at_size(ch, self.font_size)
+    }
+
+    /// Looks up a cached glyph by character at an explicit physical font size.
+    pub fn glyph_by_char_at_size(&self, ch: char, size: FontSize) -> Option<&AtlasGlyph> {
+        let request = ResolutionKey::new(ch, size, FontStyle::REGULAR);
         match self.resolution.get(&request)? {
             GlyphResolution::Available(key) => self.store.glyph(*key),
             GlyphResolution::Unavailable => None,
@@ -1169,5 +1199,27 @@ mod tests {
         assert_eq!(by_char.atlas_y, by_key.atlas_y);
         assert_eq!(by_char.width, by_key.width);
         assert_eq!(by_char.height, by_key.height);
+    }
+
+    #[test]
+    fn explicit_sizes_coexist_without_changing_default_lookup() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let default_size = FontSize::new(fonts.size()).expect("valid default size");
+        let double_size = FontSize::new(fonts.size() * 2.0).expect("valid double size");
+
+        atlas.rasterize_new(&fonts, &['M']);
+        atlas.rasterize_new_at_size(&fonts, &['M'], double_size);
+
+        let default_glyph = atlas
+            .glyph_by_char('M')
+            .expect("default-size glyph should remain available");
+        let double_glyph = atlas
+            .glyph_by_char_at_size('M', double_size)
+            .expect("double-size glyph should be available");
+
+        assert_eq!(default_glyph.key.size, default_size);
+        assert_eq!(double_glyph.key.size, double_size);
+        assert_ne!(default_glyph.key, double_glyph.key);
     }
 }

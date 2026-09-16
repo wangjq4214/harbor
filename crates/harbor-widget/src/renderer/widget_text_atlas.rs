@@ -1,9 +1,13 @@
 //! Widget-owned glyph atlas and GPU texture resources.
 
+use crate::signal::RuntimeId;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
-use harbor_text::{AtlasGlyph, FontBook, GlyphAtlas, GlyphKey, RasterizeResult};
+use harbor_text::{
+    AtlasGlyph, FontBook, FontSize, FontStyle, GlyphAtlas, GlyphKey, GlyphResolution,
+    RasterizeResult,
+};
+use hashbrown::{HashMap, HashSet};
 use wgpu::util::DeviceExt;
-
 /// Glyph atlas shared by Widget runtimes on the UI/render thread.
 ///
 /// The texture and bind group remain stable for the lifetime of the atlas. The
@@ -14,6 +18,7 @@ pub struct WidgetTextAtlas {
     texture: wgpu::Texture,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    active_glyphs: HashMap<RuntimeId, HashSet<GlyphKey>>,
     revision: u64,
 }
 
@@ -92,19 +97,41 @@ impl WidgetTextAtlas {
             texture,
             bind_group_layout,
             bind_group,
+            active_glyphs: HashMap::new(),
             revision: 0,
         }
     }
 
-    /// Ensures every non-space character from the supplied retained text exists.
-    /// Returns the current UV-layout revision.
+    /// Ensures every non-space character from the supplied retained text exists
+    /// at the physical raster density for `scale_factor`. Returns the current
+    /// UV-layout revision.
     pub fn ensure_scene_text<'a>(
         &mut self,
+        owner: RuntimeId,
         texts: impl IntoIterator<Item = &'a str>,
+        scale_factor: f32,
         queue: &wgpu::Queue,
     ) -> u64 {
         let chars = collect_unique_chars(texts);
-        let result = self.atlas.rasterize_new(&self.fonts, &chars);
+        let size = self.raster_size(scale_factor);
+        let active = chars
+            .iter()
+            .filter_map(
+                |ch| match self.fonts.resolve(*ch, size.get(), FontStyle::REGULAR) {
+                    GlyphResolution::Available(key) => Some(key),
+                    GlyphResolution::Unavailable => None,
+                },
+            )
+            .collect();
+        self.active_glyphs.insert(owner, active);
+        let retained_keys: Vec<GlyphKey> = self
+            .active_glyphs
+            .values()
+            .flat_map(|keys| keys.iter().copied())
+            .collect();
+        let result =
+            self.atlas
+                .rasterize_new_at_size_retaining(&self.fonts, &chars, size, &retained_keys);
         match upload_kind(&result) {
             AtlasUploadKind::None => {}
             AtlasUploadKind::Incremental => self.upload_glyphs(queue, &result.new_keys),
@@ -119,8 +146,19 @@ impl WidgetTextAtlas {
         self.revision
     }
 
-    pub fn glyph(&self, ch: char) -> Option<&AtlasGlyph> {
-        self.atlas.glyph_by_char(ch)
+    pub fn release_owner(&mut self, owner: RuntimeId) {
+        self.active_glyphs.remove(&owner);
+    }
+
+    pub fn glyph(&self, ch: char, scale_factor: f32) -> Option<&AtlasGlyph> {
+        self.atlas
+            .glyph_by_char_at_size(ch, self.raster_size(scale_factor))
+    }
+
+    fn raster_size(&self, scale_factor: f32) -> FontSize {
+        FontSize::new(self.fonts.size() * scale_factor).unwrap_or_else(|| {
+            FontSize::new(self.fonts.size()).expect("configured font size is valid")
+        })
     }
 
     pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {

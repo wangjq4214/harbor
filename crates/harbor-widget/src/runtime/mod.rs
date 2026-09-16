@@ -139,6 +139,7 @@ impl Runtime {
         let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
         let old_events = std::mem::replace(&mut self.events, EventRouter::new());
         remove_runtime(self.runtime_id);
+        self.encoder.release_text_owner(self.runtime_id);
 
         let removal = self.scene_graph.diff(Vec::new());
         if let Some(pending_delta) = &mut self.pending_delta {
@@ -641,8 +642,17 @@ impl Runtime {
     ///
     /// Call after Runtime update/paint and before encoding the frame.
     pub fn prepare_text(&mut self, queue: &wgpu::Queue) {
-        self.encoder
-            .prepare_text(&self.scene_graph, &self.text_metrics, queue);
+        let raster_scale = self
+            .current_viewport
+            .as_ref()
+            .map_or(1.0, |viewport| viewport.scale_factor);
+        self.encoder.prepare_text(
+            &self.scene_graph,
+            &self.text_metrics,
+            self.runtime_id,
+            raster_scale,
+            queue,
+        );
     }
 
     #[cfg(test)]
@@ -2088,6 +2098,11 @@ mod tests {
         rt.encoder
             .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 1, &glyph);
         assert!(!rt.encoder.text_instances_dirty());
+
+        rt.encoder
+            .prepare_text_runs_at_scale(&rt.scene_graph, &rt.text_metrics, 1, 2.0, &glyph);
+        assert!(rt.encoder.text_instances_dirty());
+        rt.encoder.mark_text_instances_uploaded();
 
         rt.encoder
             .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 2, &glyph);
