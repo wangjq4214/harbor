@@ -396,7 +396,7 @@ mod tests {
     use harbor_widget::layout::{Point, Rect, Size};
     use harbor_widget::renderer::Viewport;
     use harbor_widget::scene::primitive::ExternalDrawContext;
-    use harbor_widget::winit::WinitAdapter;
+    use harbor_widget::winit::WindowPresenter;
     use std::cell::Cell;
     use std::sync::atomic::AtomicBool;
 
@@ -964,10 +964,10 @@ mod tests {
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
         let now = std::time::Instant::now();
         let _ = rt.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
-        let idle = adapter.about_to_wait(&mut rt, now, None);
+        let idle = presenter.about_to_wait(&mut rt, now, None);
 
         // Assert
         assert!(!idle.request_redraw);
@@ -990,11 +990,11 @@ mod tests {
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
         let now = std::time::Instant::now();
         let _ = rt.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.about_to_wait(&mut rt, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.about_to_wait(&mut rt, now, None);
 
         // Act
-        let due = adapter.about_to_wait(&mut rt, now + Duration::from_millis(100), None);
+        let due = presenter.about_to_wait(&mut rt, now + Duration::from_millis(100), None);
 
         // Assert — recovery live-commits without resetting nested DECRQM Set
         assert!(due.request_redraw);
@@ -1020,10 +1020,10 @@ mod tests {
             .unwrap()
             .process_output(b"\x1b[?2026hhello\x1b[?2026l");
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
-        let idle = adapter.about_to_wait(&mut rt, std::time::Instant::now(), None);
+        let idle = presenter.about_to_wait(&mut rt, std::time::Instant::now(), None);
 
         // Assert
         assert!(idle.ordinary_present_eligible);
@@ -1062,8 +1062,8 @@ mod tests {
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
         let now = std::time::Instant::now();
         let _ = rt.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let armed = adapter.about_to_wait(&mut rt, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let armed = presenter.about_to_wait(&mut rt, now, None);
         assert!(armed.has_deferred_externals);
         assert_eq!(
             armed.control_flow,
@@ -1074,7 +1074,7 @@ mod tests {
 
         // Act
         terminal.lock().unwrap().process_output(b"\x1bc");
-        let idle = adapter.about_to_wait(&mut rt, now, None);
+        let idle = presenter.about_to_wait(&mut rt, now, None);
 
         // Assert
         assert!(idle.ordinary_present_eligible);
@@ -1107,12 +1107,12 @@ mod tests {
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
         let now = std::time::Instant::now();
         let _ = rt.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.about_to_wait(&mut rt, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.about_to_wait(&mut rt, now, None);
 
         // Act
         terminal.lock().unwrap().process_output(b"\x1b[!p");
-        let idle = adapter.about_to_wait(&mut rt, now, None);
+        let idle = presenter.about_to_wait(&mut rt, now, None);
 
         // Assert
         assert!(idle.has_deferred_externals);
@@ -1175,8 +1175,8 @@ mod tests {
         let mut rt = runtime_with_bridge(Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
         let now = std::time::Instant::now();
         let _ = rt.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let armed = adapter.about_to_wait(&mut rt, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let armed = presenter.about_to_wait(&mut rt, now, None);
         assert!(armed.has_deferred_externals);
         assert_eq!(
             armed.control_flow,
@@ -1189,7 +1189,7 @@ mod tests {
         exited_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("reader must drop before drain can observe disconnect");
-        let idle = adapter.about_to_wait(&mut rt, now, None);
+        let idle = presenter.about_to_wait(&mut rt, now, None);
 
         assert!(idle.ordinary_present_eligible);
         assert!(!idle.has_deferred_externals);

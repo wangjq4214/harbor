@@ -14,7 +14,7 @@ mod presenter;
 mod scheduler;
 mod surface;
 
-use crate::effects::{ExternalInvalidation, RuntimeEffects};
+use crate::effects::RuntimeEffects;
 use crate::input::event::{
     FocusEvent, KeyboardEvent, PointerBoundaryEvent, PointerBoundaryKind, PointerButton,
     PointerEvent, PointerPhase, UiEvent,
@@ -26,6 +26,7 @@ use crate::winit::event::{
 };
 #[cfg(test)]
 use crate::winit::surface::SurfaceState;
+#[cfg(test)]
 use std::time::Instant;
 use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState};
@@ -100,9 +101,6 @@ pub struct WinitAdapter {
     /// Suppresses touch releases for contacts that were active on focus loss.
     quarantined_touches: Vec<(winit::event::DeviceId, u64)>,
     next_touch_pointer_id: u64,
-    schedule_output: bool,
-    /// Backward-compatible presentation policy; native hosts own a separate presenter.
-    compat_presenter: WindowPresenter,
 }
 
 impl Default for WinitAdapter {
@@ -113,11 +111,11 @@ impl Default for WinitAdapter {
 
 impl WinitAdapter {
     pub fn new() -> Self {
-        Self::with_surface(0, 0, 1.0)
+        Self::with_scale(1.0)
     }
 
     /// Creates an input adapter with an initial pointer scale factor.
-    pub fn with_surface(_width: u32, _height: u32, scale: f32) -> Self {
+    pub fn with_scale(scale: f32) -> Self {
         Self {
             modifiers: ModifiersState::empty(),
             mouse_position: Point::ZERO,
@@ -132,15 +130,17 @@ impl WinitAdapter {
             active_mouse_buttons: [false; 3],
             quarantined_touches: Vec::new(),
             next_touch_pointer_id: 1,
-            schedule_output: true,
-            compat_presenter: WindowPresenter::new(_width, _height, scale),
         }
     }
 
-    /// Creates an adapter initialized from the window's current size and scale.
+    /// Creates an adapter initialized with a surface scale factor.
+    pub fn with_surface(_width: u32, _height: u32, scale: f32) -> Self {
+        Self::with_scale(scale)
+    }
+
+    /// Creates an adapter initialized from the window's current scale.
     pub fn from_window(window: &Window) -> Self {
-        let size = window.inner_size();
-        Self::with_surface(size.width, size.height, window.scale_factor() as f32)
+        Self::with_scale(window.scale_factor() as f32)
     }
 
     /// Sets the current window scale factor used for physical pointer input.
@@ -153,112 +153,6 @@ impl WinitAdapter {
     /// Returns the latest modifier state received for this window.
     pub const fn modifiers(&self) -> ModifiersState {
         self.modifiers
-    }
-
-    pub(crate) fn use_external_presenter(&mut self) {
-        self.schedule_output = false;
-    }
-
-    /// Compatibility façade for callers that have not yet split input and presentation.
-    pub fn viewport(&self) -> &crate::renderer::Viewport {
-        self.compat_presenter.viewport()
-    }
-
-    pub fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
-        self.compat_presenter.set_drawable(drawable)
-    }
-
-    pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
-        self.compat_presenter.fold_effects(effects)
-    }
-
-    pub fn invalidate_external(
-        &mut self,
-        runtime: &mut Runtime,
-        work: ExternalInvalidation,
-    ) -> RuntimeEffects {
-        self.compat_presenter.invalidate_external(runtime, work)
-    }
-
-    pub fn redraw_requested(&mut self, runtime: &mut Runtime, now: Instant) -> RuntimeEffects {
-        self.compat_presenter.redraw_requested(runtime, now)
-    }
-
-    pub fn frame_completed(&mut self, now: Instant) -> RuntimeEffects {
-        self.compat_presenter.frame_completed(now)
-    }
-
-    pub fn about_to_wait(
-        &mut self,
-        runtime: &mut Runtime,
-        now: Instant,
-        host_deadline: Option<Instant>,
-    ) -> RuntimeEffects {
-        self.compat_presenter
-            .about_to_wait(runtime, now, host_deadline)
-    }
-
-    pub fn request_frame(&mut self) -> RuntimeEffects {
-        self.compat_presenter.request_frame()
-    }
-
-    #[cfg(test)]
-    fn finish_acquisition<T>(
-        &mut self,
-        effects: RuntimeEffects,
-        acquisition: presenter::FrameAcquisition<T>,
-        present: impl FnOnce(T) -> Result<(), FrameError>,
-    ) -> FrameOutcome {
-        self.compat_presenter
-            .finish_acquisition(effects, acquisition, present)
-    }
-
-    #[cfg(test)]
-    fn handle_surface_transition(
-        &mut self,
-        runtime: &mut Runtime,
-        width: u32,
-        height: u32,
-        scale: f32,
-    ) -> WinitEventOutcome {
-        let viewport = self.compat_presenter.viewport().clone();
-        let mut presenter = std::mem::replace(
-            &mut self.compat_presenter,
-            WindowPresenter::new(
-                viewport.physical_size.0,
-                viewport.physical_size.1,
-                viewport.scale_factor,
-            ),
-        );
-        let outcome = presenter.handle_surface_transition(self, runtime, width, height, scale);
-        self.compat_presenter = presenter;
-        outcome
-    }
-
-    fn handle_compat_surface_event(
-        &mut self,
-        runtime: &mut Runtime,
-        event: &WindowEvent,
-        physical_size: Option<(u32, u32)>,
-    ) -> Option<WinitEventOutcome> {
-        if !matches!(
-            event,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            return None;
-        }
-        let viewport = self.compat_presenter.viewport().clone();
-        let mut presenter = std::mem::replace(
-            &mut self.compat_presenter,
-            WindowPresenter::new(
-                viewport.physical_size.0,
-                viewport.physical_size.1,
-                viewport.scale_factor,
-            ),
-        );
-        let outcome = presenter.handle_surface_event(self, runtime, event, physical_size);
-        self.compat_presenter = presenter;
-        outcome
     }
 
     /// Handles one window event and returns whether it was supported plus any
@@ -283,18 +177,10 @@ impl WinitAdapter {
         event: &WindowEvent,
         physical_size: Option<(u32, u32)>,
     ) -> WinitEventOutcome {
-        if let Some(outcome) = self.handle_compat_surface_event(runtime, event, physical_size) {
-            return outcome;
-        }
         let _ = physical_size;
         if matches!(event, WindowEvent::CloseRequested) {
             self.quarantine_active_pointers();
             let effects = runtime.cancel_pointer_captures(self.logical_pointer_position());
-            let effects = if self.schedule_output {
-                self.fold_effects(effects)
-            } else {
-                effects
-            };
             return WinitEventOutcome {
                 handled: false,
                 effects,
@@ -347,11 +233,6 @@ impl WinitAdapter {
                 ..RuntimeEffects::default()
             });
         }
-        let effects = if self.schedule_output {
-            self.fold_effects(effects)
-        } else {
-            effects
-        };
         WinitEventOutcome::handled(effects)
     }
     /// Quarantines releases for every pointer source currently held by the native window.
@@ -516,11 +397,6 @@ impl WinitAdapter {
             };
         };
         let effects = runtime.dispatch(ui_event);
-        let effects = if self.schedule_output {
-            self.fold_effects(effects)
-        } else {
-            effects
-        };
         WinitEventOutcome::handled(effects)
     }
 
@@ -865,16 +741,17 @@ mod tests {
         use crate::runtime::Runtime;
         use winit::dpi::PhysicalSize;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
         let resized = WindowEvent::Resized(PhysicalSize::new(1024, 768));
 
         // Act
-        let outcome = adapter.handle_event(&mut runtime, &resized);
+        let outcome = presenter.handle_event(&mut adapter, &mut runtime, &resized);
 
         // Assert
         assert!(outcome.is_handled());
-        assert_eq!(adapter.viewport().physical_size, (1024, 768));
+        assert_eq!(presenter.viewport().physical_size, (1024, 768));
         assert_eq!(
             runtime.current_viewport().map(|vp| vp.physical_size),
             Some((1024, 768))
@@ -890,17 +767,19 @@ mod tests {
         // so this exercises the same transition the lifecycle handler applies.)
         use crate::runtime::Runtime;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
         adapter.set_scale_factor(2.0);
 
         // Act
-        let outcome = adapter.handle_surface_transition(&mut runtime, 1600, 1200, 2.0);
+        let outcome =
+            presenter.handle_surface_transition(&mut adapter, &mut runtime, 1600, 1200, 2.0);
 
         // Assert
         assert!(outcome.is_handled());
-        assert_eq!(adapter.viewport().physical_size, (1600, 1200));
-        assert!((adapter.viewport().scale_factor - 2.0).abs() < f32::EPSILON);
+        assert_eq!(presenter.viewport().physical_size, (1600, 1200));
+        assert!((presenter.viewport().scale_factor - 2.0).abs() < f32::EPSILON);
         assert_eq!(
             runtime.current_viewport().map(|vp| vp.physical_size),
             Some((1600, 1200))
@@ -914,15 +793,18 @@ mod tests {
         use crate::runtime::Runtime;
         use winit::dpi::PhysicalSize;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
-        adapter.handle_event(
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(PhysicalSize::new(800, 600)),
         );
 
         // Act
-        let outcome = adapter.handle_event(
+        let outcome = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(PhysicalSize::new(800, 600)),
         );
@@ -938,17 +820,19 @@ mod tests {
         use crate::runtime::Runtime;
         use winit::dpi::PhysicalSize;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
 
         // Act
-        adapter.handle_event(
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(PhysicalSize::new(0, 600)),
         );
 
         // Assert
-        assert!(!adapter.viewport().is_drawable());
+        assert!(!presenter.viewport().is_drawable());
         assert_eq!(
             runtime.current_viewport().map(|vp| vp.physical_size),
             Some((0, 600))
@@ -961,11 +845,13 @@ mod tests {
         use crate::runtime::Runtime;
         use winit::dpi::PhysicalSize;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
 
         // Act
-        let outcome = adapter.handle_event(
+        let outcome = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(PhysicalSize::new(0, 600)),
         );
@@ -981,27 +867,33 @@ mod tests {
         use crate::runtime::Runtime;
         use winit::dpi::PhysicalSize;
 
-        let mut adapter = WinitAdapter::with_surface(0, 0, 1.0);
+        let mut presenter = WindowPresenter::new(0, 0, 1.0);
+        let mut adapter = WinitAdapter::new();
         let mut runtime = Runtime::new();
-        adapter.handle_event(&mut runtime, &WindowEvent::Resized(PhysicalSize::new(0, 0)));
+        presenter.handle_event(
+            &mut adapter,
+            &mut runtime,
+            &WindowEvent::Resized(PhysicalSize::new(0, 0)),
+        );
 
         // Act
-        let outcome = adapter.handle_event(
+        let outcome = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(PhysicalSize::new(800, 600)),
         );
 
         // Assert
         assert!(outcome.is_handled());
-        assert!(adapter.viewport().is_drawable());
+        assert!(presenter.viewport().is_drawable());
         assert!(outcome.effects.request_redraw);
     }
 
     #[test]
     fn should_turn_validation_acquisition_into_fatal_outcome() {
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
-        let outcome = adapter.finish_acquisition(
+        let outcome = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::Validation,
             |_| Ok(()),
@@ -1020,19 +912,19 @@ mod tests {
         // Arrange
         use crate::runtime::Runtime;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let mut runtime = Runtime::new();
         let frame_start = RuntimeEffects::default();
 
         // Act
-        let first = adapter.finish_acquisition(
+        let first = presenter.finish_acquisition(
             frame_start.clone(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
         );
         // Host consumes the recovery redraw before the next acquisition attempt.
-        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
-        let second = adapter.finish_acquisition(
+        let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+        let second = presenter.finish_acquisition(
             frame_start,
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
@@ -1052,16 +944,16 @@ mod tests {
         use crate::effects::ExternalInvalidation;
         use crate::runtime::Runtime;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let mut runtime = Runtime::new();
-        let exhausted = adapter.finish_acquisition(
+        let exhausted = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
         );
         assert!(exhausted.effects().request_redraw);
-        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
-        let blocked = adapter.finish_acquisition(
+        let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+        let blocked = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
@@ -1070,9 +962,9 @@ mod tests {
         assert!(!blocked.effects().request_redraw);
 
         // Act: a fresh external wake restores the one-retry budget.
-        let _ = adapter.invalidate_external(&mut runtime, ExternalInvalidation::new());
-        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
-        let retry = adapter.finish_acquisition(
+        let _ = presenter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+        let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+        let retry = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
@@ -1086,10 +978,10 @@ mod tests {
     #[test]
     fn should_not_request_recovery_frame_when_acquisition_is_skipped() {
         // Arrange
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
-        let outcome = adapter.finish_acquisition(
+        let outcome = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::Skipped,
             |_| Ok(()),
@@ -1106,17 +998,17 @@ mod tests {
         // Arrange
         use crate::runtime::Runtime;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let mut runtime = Runtime::new();
 
         // Act
-        let first = adapter.finish_acquisition(
+        let first = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::Suboptimal("ok"),
             |_| Ok(()),
         );
-        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
-        let second = adapter.finish_acquisition(
+        let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+        let second = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::Suboptimal("ok"),
             |_| Ok(()),
@@ -1136,23 +1028,23 @@ mod tests {
         // Arrange
         use crate::runtime::Runtime;
 
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let mut runtime = Runtime::new();
-        let exhausted = adapter.finish_acquisition(
+        let exhausted = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
         );
         assert!(exhausted.effects().request_redraw);
-        let _ = adapter.redraw_requested(&mut runtime, Instant::now());
+        let _ = presenter.redraw_requested(&mut runtime, Instant::now());
 
         // Act: a successful present resets the one-retry budget.
-        let presented = adapter.finish_acquisition(
+        let presented = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::Presented("ok"),
             |_| Ok(()),
         );
-        let retry = adapter.finish_acquisition(
+        let retry = presenter.finish_acquisition(
             RuntimeEffects::default(),
             FrameAcquisition::<&str>::RecoveryRequired,
             |_| Ok(()),
@@ -1179,13 +1071,13 @@ mod tests {
         // A skipped acquisition returns exactly the frame-start batch and does
         // not invoke presentation or consume the active continuation.
         {
-            let mut adapter = WinitAdapter::new();
-            adapter.fold_effects(RuntimeEffects {
+            let mut presenter = WindowPresenter::new(800, 600, 1.0);
+            presenter.fold_effects(RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::poll()),
                 ..RuntimeEffects::default()
             });
             let present_count = Cell::new(0);
-            let outcome = adapter.finish_acquisition(
+            let outcome = presenter.finish_acquisition(
                 frame_start.clone(),
                 FrameAcquisition::<&str>::Skipped,
                 |_| {
@@ -1198,7 +1090,7 @@ mod tests {
             assert!(!outcome.is_presented());
             assert_eq!(present_count.get(), 0);
 
-            let continuation = adapter.frame_completed(Instant::now());
+            let continuation = presenter.frame_completed(Instant::now());
             assert!(continuation.request_redraw);
             assert_eq!(continuation.control_flow, Some(ControlFlowEffect::Poll));
         }
@@ -1206,13 +1098,13 @@ mod tests {
         // RecoveryRequired grants one retry edge; that pending redraw means the
         // scheduler has already consumed the continuation opportunity.
         {
-            let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-            adapter.fold_effects(RuntimeEffects {
+            let mut presenter = WindowPresenter::new(800, 600, 1.0);
+            presenter.fold_effects(RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::poll()),
                 ..RuntimeEffects::default()
             });
             let present_count = Cell::new(0);
-            let outcome = adapter.finish_acquisition(
+            let outcome = presenter.finish_acquisition(
                 RuntimeEffects::default(),
                 FrameAcquisition::<&str>::RecoveryRequired,
                 |_| {
@@ -1224,20 +1116,20 @@ mod tests {
             assert!(outcome.is_recovery_required());
             assert!(outcome.effects().request_redraw);
             assert_eq!(present_count.get(), 0);
-            assert!(!adapter.frame_completed(Instant::now()).request_redraw);
+            assert!(!presenter.frame_completed(Instant::now()).request_redraw);
         }
 
         for (acquisition, expected_suboptimal) in [
             (FrameAcquisition::Presented("success"), false),
             (FrameAcquisition::Suboptimal("suboptimal"), true),
         ] {
-            let mut adapter = WinitAdapter::new();
-            adapter.fold_effects(RuntimeEffects {
+            let mut presenter = WindowPresenter::new(800, 600, 1.0);
+            presenter.fold_effects(RuntimeEffects {
                 control_flow: Some(ControlFlowEffect::poll()),
                 ..RuntimeEffects::default()
             });
             let present_count = Cell::new(0);
-            let outcome = adapter.finish_acquisition(frame_start.clone(), acquisition, |label| {
+            let outcome = presenter.finish_acquisition(frame_start.clone(), acquisition, |label| {
                 assert_eq!(
                     label,
                     if expected_suboptimal {
@@ -1263,19 +1155,19 @@ mod tests {
 
         // An execution failure is not a completed presentation, so it keeps
         // only frame-start effects and leaves completion available to the host.
-        let mut adapter = WinitAdapter::new();
-        adapter.fold_effects(RuntimeEffects {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        presenter.fold_effects(RuntimeEffects {
             control_flow: Some(ControlFlowEffect::poll()),
             ..RuntimeEffects::default()
         });
-        let failed = adapter.finish_acquisition(
+        let failed = presenter.finish_acquisition(
             frame_start.clone(),
             FrameAcquisition::Presented("failed"),
             |_| Err(FrameError::other("encode")),
         );
         assert!(failed.is_fatal());
         assert_eq!(failed.effects(), &frame_start);
-        assert!(adapter.frame_completed(Instant::now()).request_redraw);
+        assert!(presenter.frame_completed(Instant::now()).request_redraw);
     }
 
     #[test]
@@ -1871,7 +1763,7 @@ mod tests {
         let lost = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
         assert!(lost.handled);
         assert!(lost.effects.request_redraw);
-        adapter.redraw_requested(&mut runtime, Instant::now());
+        let _ = runtime.update(Instant::now());
 
         let gained = adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
         assert!(gained.handled);
@@ -2001,9 +1893,11 @@ mod tests {
             clicked_clone.store(true, Ordering::SeqCst);
         }));
         runtime.update(Instant::now());
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let mut adapter = WinitAdapter::new();
 
-        let hover = adapter.handle_event(
+        let hover = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
@@ -2011,7 +1905,8 @@ mod tests {
             },
         );
         assert!(hover.effects.request_redraw);
-        adapter.handle_event(
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
@@ -2019,19 +1914,22 @@ mod tests {
                 button: MouseButton::Left,
             },
         );
-        let focus_loss = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+        let focus_loss =
+            presenter.handle_event(&mut adapter, &mut runtime, &WindowEvent::Focused(false));
         // Hover already owns the outstanding redraw edge; later cancel work coalesces.
         assert!(!focus_loss.effects.request_redraw);
         assert!(runtime.input().captor(0).is_none());
 
-        adapter.handle_event(
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(500.0, 500.0),
             },
         );
-        adapter.handle_event(
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
@@ -2083,7 +1981,9 @@ mod tests {
             },
         );
         press(&mut runtime, &mut adapter);
-        adapter.handle_event(
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
         );
@@ -2092,9 +1992,9 @@ mod tests {
 
     #[test]
     fn should_keep_poll_when_deferred_effects_are_folded() {
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
-        let effects = adapter.fold_effects(RuntimeEffects {
+        let effects = presenter.fold_effects(RuntimeEffects {
             has_deferred_externals: true,
             control_flow: Some(ControlFlowEffect::Poll),
             ..RuntimeEffects::default()
@@ -2113,16 +2013,16 @@ mod tests {
         });
         let mut runtime = Runtime::new();
         runtime.set_root(CustomPaint::new(91).schedule(schedule));
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let armed = adapter.fold_effects(RuntimeEffects {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let armed = presenter.fold_effects(RuntimeEffects {
             request_redraw: true,
             has_deferred_externals: true,
             force_present: true,
             ..RuntimeEffects::default()
         });
 
-        let started = adapter.redraw_requested(&mut runtime, Instant::now());
-        let after_consumption = adapter.redraw_requested(&mut runtime, Instant::now());
+        let started = presenter.redraw_requested(&mut runtime, Instant::now());
+        let after_consumption = presenter.redraw_requested(&mut runtime, Instant::now());
 
         assert!(armed.request_redraw);
         assert!(started.ordinary_present_eligible);
@@ -2134,11 +2034,11 @@ mod tests {
     #[test]
     fn should_not_invoke_present_when_eligible_acquisition_is_skipped() {
         // Arrange
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let called = AtomicBool::new(false);
 
         // Act
-        let outcome = adapter.finish_acquisition(
+        let outcome = presenter.finish_acquisition(
             RuntimeEffects::request_redraw(),
             FrameAcquisition::<&str>::Skipped,
             |_| {
@@ -2157,7 +2057,7 @@ mod tests {
     #[test]
     fn should_invoke_present_when_deferred_effects_are_forced() {
         // Arrange
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let called = AtomicBool::new(false);
         let effects = RuntimeEffects {
             has_deferred_externals: true,
@@ -2168,7 +2068,7 @@ mod tests {
 
         // Act
         let outcome =
-            adapter.finish_acquisition(effects, FrameAcquisition::Presented("ok"), |_| {
+            presenter.finish_acquisition(effects, FrameAcquisition::Presented("ok"), |_| {
                 called.store(true, Ordering::SeqCst);
                 Ok(())
             });
@@ -2191,9 +2091,9 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
-        let idle = adapter.about_to_wait(&mut runtime, now, None);
+        let idle = presenter.about_to_wait(&mut runtime, now, None);
 
         assert!(idle.ordinary_present_eligible);
         assert!(idle.has_deferred_externals);
@@ -2219,10 +2119,10 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.about_to_wait(&mut runtime, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.about_to_wait(&mut runtime, now, None);
 
-        let due = adapter.about_to_wait(&mut runtime, now + Duration::from_millis(100), None);
+        let due = presenter.about_to_wait(&mut runtime, now + Duration::from_millis(100), None);
 
         assert!(due.request_redraw);
         assert!(due.force_present);
@@ -2239,10 +2139,10 @@ mod tests {
         });
         let mut runtime = Runtime::new();
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
-        let idle = adapter.about_to_wait(&mut runtime, Instant::now(), None);
+        let idle = presenter.about_to_wait(&mut runtime, Instant::now(), None);
 
         // Assert
         assert!(idle.ordinary_present_eligible);
@@ -2267,8 +2167,8 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let deferred = adapter.about_to_wait(&mut runtime, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let deferred = presenter.about_to_wait(&mut runtime, now, None);
         assert!(deferred.ordinary_present_eligible);
         assert!(deferred.has_deferred_externals);
         assert!(!deferred.request_redraw);
@@ -2276,7 +2176,7 @@ mod tests {
         // Act
         eligible.store(true, Ordering::SeqCst);
         redraw.store(true, Ordering::SeqCst);
-        let later = adapter.about_to_wait(&mut runtime, now, None);
+        let later = presenter.about_to_wait(&mut runtime, now, None);
 
         // Assert
         assert!(later.ordinary_present_eligible);
@@ -2297,15 +2197,15 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.fold_effects(RuntimeEffects {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.fold_effects(RuntimeEffects {
             has_deferred_externals: true,
             control_flow: Some(ControlFlowEffect::Poll),
             ..RuntimeEffects::default()
         });
 
         // Act
-        let idle = adapter.about_to_wait(&mut runtime, now, None);
+        let idle = presenter.about_to_wait(&mut runtime, now, None);
 
         // Assert — recovery WaitUntil must not demote widget Poll
         assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
@@ -2331,11 +2231,11 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.about_to_wait(&mut runtime, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.about_to_wait(&mut runtime, now, None);
 
         // Act — widget dirtiness arrives without a fresh schedule collect
-        let widget = adapter.fold_effects(RuntimeEffects::request_redraw());
+        let widget = presenter.fold_effects(RuntimeEffects::request_redraw());
 
         // Assert
         assert!(widget.request_redraw);
@@ -2363,8 +2263,8 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let armed = adapter.about_to_wait(&mut runtime, now, None);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let armed = presenter.about_to_wait(&mut runtime, now, None);
         assert!(armed.has_deferred_externals);
         assert_eq!(
             armed.control_flow,
@@ -2375,7 +2275,7 @@ mod tests {
 
         eligible.store(true, Ordering::SeqCst);
         redraw.store(true, Ordering::SeqCst);
-        let released = adapter.about_to_wait(&mut runtime, now, None);
+        let released = presenter.about_to_wait(&mut runtime, now, None);
 
         assert!(released.ordinary_present_eligible);
         assert!(!released.has_deferred_externals);
@@ -2405,17 +2305,17 @@ mod tests {
         runtime.set_root(CustomPaint::new(2026).schedule(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
-        let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-        let _ = adapter.about_to_wait(&mut runtime, now, None);
-        let _ = adapter.set_drawable(false);
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        let _ = presenter.about_to_wait(&mut runtime, now, None);
+        let _ = presenter.set_drawable(false);
 
         eligible.store(true, Ordering::SeqCst);
-        let idle = adapter.about_to_wait(&mut runtime, now, None);
+        let idle = presenter.about_to_wait(&mut runtime, now, None);
 
         assert!(!idle.has_deferred_externals);
         assert!(!idle.force_present);
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
-        let restored = adapter.set_drawable(true);
+        let restored = presenter.set_drawable(true);
         assert!(!restored.force_present);
     }
 }

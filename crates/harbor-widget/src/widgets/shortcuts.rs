@@ -1,6 +1,6 @@
 use crate::input::event::{Key, Modifiers};
 use crate::layout::{BoxConstraints, Point, Size};
-use crate::view::{AnyView, BuildCx, Component, View};
+use crate::view::{ActionProviderView, AnyView, BuildCx, Component, View};
 use std::any::Any;
 
 /// A keyboard key plus its complete modifier set.
@@ -72,6 +72,12 @@ impl<A: Clone + 'static> AnyView for Shortcuts<A> {
         (size, vec![Point::ZERO; child_sizes.len()])
     }
 
+    fn as_action_provider(&self) -> Option<&dyn ActionProviderView> {
+        Some(self)
+    }
+}
+
+impl<A: Clone + 'static> ActionProviderView for Shortcuts<A> {
     fn shortcut_action(&self, chord: KeyChord) -> Option<Box<dyn Any>> {
         self.bindings
             .iter()

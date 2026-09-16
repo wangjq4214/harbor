@@ -1,7 +1,7 @@
 use crate::layout::{BoxConstraints, Point, Size};
 use crate::signal::Signal;
 use crate::theme::Theme;
-use crate::view::{AnyView, BuildCx, Component, View};
+use crate::view::{AnyView, BuildCx, Component, ThemedView, View};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -85,6 +85,12 @@ impl AnyView for ThemeProviderView {
         (size, vec![Point::ZERO; child_sizes.len()])
     }
 
+    fn as_themed(&self) -> Option<&dyn ThemedView> {
+        Some(self)
+    }
+}
+
+impl ThemedView for ThemeProviderView {
     fn theme_override(&self) -> Option<Arc<Theme>> {
         Some(self.theme.clone())
     }

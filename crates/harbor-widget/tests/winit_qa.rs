@@ -11,7 +11,7 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::winit::WinitAdapter;
+use harbor_widget::winit::{WindowPresenter, WinitAdapter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -698,56 +698,56 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
     assert!(runtime.update(Instant::now()).request_redraw);
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
 
     // Act / Assert: host external wake requests one edge; repeats coalesce.
-    let first = adapter.invalidate_external(&mut runtime, ExternalInvalidation::new());
-    let second = adapter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+    let first = presenter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+    let second = presenter.invalidate_external(&mut runtime, ExternalInvalidation::new());
     assert!(first.request_redraw);
     assert!(!second.request_redraw);
 
     // Frame start consumes dirty update redraw without requesting another edge.
-    let started = adapter.redraw_requested(&mut runtime, now);
+    let started = presenter.redraw_requested(&mut runtime, now);
     assert!(!started.request_redraw);
 
     // Idle with no pending work returns Wait and no redraw.
-    let idle = adapter.about_to_wait(&mut runtime, now, None);
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
     assert!(!idle.request_redraw);
     assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
 
     // Active animation completion may request one continuation and keep Poll.
-    let _ = adapter.fold_effects(RuntimeEffects {
+    let _ = presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::Poll),
         ..RuntimeEffects::default()
     });
-    let completed = adapter.frame_completed(now);
+    let completed = presenter.frame_completed(now);
     assert!(completed.request_redraw);
     assert_eq!(completed.control_flow, Some(ControlFlowEffect::Poll));
 
     // Due deadline requests one frame and never returns a past WaitUntil.
     let past = now - Duration::from_millis(1);
-    let mut deadline_adapter = WinitAdapter::new();
+    let mut deadline_presenter = WindowPresenter::new(800, 600, 1.0);
     let mut deadline_runtime = Runtime::new();
     deadline_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
     let _ = deadline_runtime.update(now);
-    let _ = deadline_adapter.fold_effects(RuntimeEffects {
+    let _ = deadline_presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(past)),
         ..RuntimeEffects::default()
     });
-    let due = deadline_adapter.about_to_wait(&mut deadline_runtime, now, None);
+    let due = deadline_presenter.about_to_wait(&mut deadline_runtime, now, None);
     assert!(due.request_redraw);
     assert_eq!(due.control_flow, Some(ControlFlowEffect::Wait));
 
-    // Independent adapters do not suppress each other's redraw edges.
+    // Independent presenters do not suppress each other's redraw edges.
     let mut other_runtime = Runtime::new();
     other_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = other_runtime.update(now);
-    let mut other = WinitAdapter::new();
+    let mut other = WindowPresenter::new(800, 600, 1.0);
     // Clear the continuation edge left by frame_completed before asserting isolation.
-    let _ = adapter.redraw_requested(&mut runtime, now);
+    let _ = presenter.redraw_requested(&mut runtime, now);
     assert!(
-        adapter
+        presenter
             .invalidate_external(&mut runtime, ExternalInvalidation::new())
             .request_redraw
     );
@@ -762,10 +762,10 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
 fn should_not_request_redraw_when_external_invalidation_has_no_root() {
     // Arrange
     let mut runtime = Runtime::new();
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
     // Act
-    let effects = adapter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+    let effects = presenter.invalidate_external(&mut runtime, ExternalInvalidation::new());
 
     // Assert
     assert!(!effects.request_redraw);
@@ -779,11 +779,11 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
     let _ = runtime.update(Instant::now());
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
     let past = now - Duration::from_millis(5);
     let host = now + Duration::from_secs(2);
-    let _ = adapter.fold_effects(RuntimeEffects {
+    let _ = presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(past)),
         ..RuntimeEffects::default()
     });
@@ -791,7 +791,7 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
     let _ = runtime.invalidate_external(ExternalInvalidation::new());
 
     // Act
-    let effects = adapter.about_to_wait(&mut runtime, now, Some(host));
+    let effects = presenter.about_to_wait(&mut runtime, now, Some(host));
 
     // Assert: the due runtime deadline requests one edge, is consumed, and
     // leaves the future host deadline as the next normalized wait target.
@@ -809,11 +809,11 @@ fn should_honor_host_deadline_when_adapter_is_idle() {
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(16.0, 16.0)));
     let now = Instant::now();
     assert!(runtime.update(now).request_redraw);
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let host = now + Duration::from_secs(2);
 
     // Act
-    let effects = adapter.about_to_wait(&mut runtime, now, Some(host));
+    let effects = presenter.about_to_wait(&mut runtime, now, Some(host));
 
     // Assert
     assert!(!effects.request_redraw);
@@ -828,11 +828,11 @@ fn should_request_redraw_when_idle_turn_finds_dirty_fiber() {
     // Arrange — set_root dirties the tree; no update yet.
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(12.0, 12.0)));
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
 
     // Act
-    let effects = adapter.about_to_wait(&mut runtime, now, None);
+    let effects = presenter.about_to_wait(&mut runtime, now, None);
 
     // Assert
     assert!(effects.request_redraw);
@@ -845,12 +845,12 @@ fn should_keep_confirmation_idle_when_main_adapter_has_pending_redraw() {
     let mut main_runtime = Runtime::new();
     main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
     assert!(main_runtime.update(now).request_redraw);
-    let mut main = WinitAdapter::new();
+    let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
     confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
     assert!(confirmation_runtime.update(now).request_redraw);
-    let mut confirmation = WinitAdapter::new();
+    let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
     // Act
     assert!(
@@ -879,12 +879,12 @@ fn should_request_independent_edges_when_both_adapters_need_redraw() {
     let mut main_runtime = Runtime::new();
     main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
     assert!(main_runtime.update(now).request_redraw);
-    let mut main = WinitAdapter::new();
+    let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
     confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
     assert!(confirmation_runtime.update(now).request_redraw);
-    let mut confirmation = WinitAdapter::new();
+    let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
     // Act
     let main_wake = main.invalidate_external(&mut main_runtime, ExternalInvalidation::new());
@@ -899,16 +899,16 @@ fn should_request_independent_edges_when_both_adapters_need_redraw() {
 #[test]
 fn should_coalesce_host_retry_until_frame_starts_on_adapter() {
     // Arrange
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
     // Act
-    let first = adapter.request_frame();
-    let second = adapter.request_frame();
+    let first = presenter.request_frame();
+    let second = presenter.request_frame();
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = runtime.update(Instant::now());
-    let _ = adapter.redraw_requested(&mut runtime, Instant::now());
-    let after_frame = adapter.request_frame();
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+    let after_frame = presenter.request_frame();
 
     // Assert
     assert!(first.request_redraw);
@@ -923,17 +923,17 @@ fn should_request_recovery_frame_after_drawable_window_is_restored() {
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = runtime.update(now);
-    let mut adapter = WinitAdapter::new();
-    let _ = adapter.set_drawable(false);
-    let _ = adapter.fold_effects(RuntimeEffects {
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.set_drawable(false);
+    let _ = presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
         ..RuntimeEffects::default()
     });
 
     // Act — the non-drawable idle turn consumes the deadline before restoration.
-    let suspended = adapter.about_to_wait(&mut runtime, now, None);
-    let recovery = adapter.set_drawable(true);
-    let restored = adapter.about_to_wait(&mut runtime, now, None);
+    let suspended = presenter.about_to_wait(&mut runtime, now, None);
+    let recovery = presenter.set_drawable(true);
+    let restored = presenter.about_to_wait(&mut runtime, now, None);
 
     // Assert — restoration emits exactly one recovery edge; the following idle
     // turn does not duplicate the outstanding redraw request.
@@ -951,8 +951,8 @@ fn should_not_request_another_frame_when_due_deadline_is_covered_by_redraw_edge(
     let mut runtime = Runtime::new();
     runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
     let _ = runtime.update(now);
-    let mut adapter = WinitAdapter::new();
-    let scheduled = adapter.fold_effects(RuntimeEffects {
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let scheduled = presenter.fold_effects(RuntimeEffects {
         request_redraw: true,
         control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
         ..RuntimeEffects::default()
@@ -960,9 +960,9 @@ fn should_not_request_another_frame_when_due_deadline_is_covered_by_redraw_edge(
     assert!(scheduled.request_redraw);
 
     // Act — consume the covered deadline, then consume its outstanding frame.
-    let covered = adapter.about_to_wait(&mut runtime, now, None);
-    let frame_start = adapter.redraw_requested(&mut runtime, now);
-    let following_idle_turn = adapter.about_to_wait(&mut runtime, now, None);
+    let covered = presenter.about_to_wait(&mut runtime, now, None);
+    let frame_start = presenter.redraw_requested(&mut runtime, now);
+    let following_idle_turn = presenter.about_to_wait(&mut runtime, now, None);
 
     // Assert — clearing the deadline prevents it from producing a second frame.
     assert!(!covered.request_redraw);
@@ -989,11 +989,11 @@ fn should_wait_until_schedule_deadline_when_runtime_registers_external_schedule(
     let mut runtime = Runtime::new();
     runtime.set_root(CustomPaint::new(9).schedule(schedule));
     let _ = runtime.update(Instant::now());
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
 
     // Act
-    let idle = adapter.about_to_wait(&mut runtime, now, None);
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
 
     // Assert
     assert!(!idle.request_redraw);
@@ -1021,14 +1021,14 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
     let mut runtime = Runtime::new();
     runtime.set_root(CustomPaint::new(3).schedule(schedule));
     let _ = runtime.update(now);
-    let mut adapter = WinitAdapter::new();
-    let _ = adapter.fold_effects(RuntimeEffects {
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(now - Duration::from_millis(1))),
         ..RuntimeEffects::default()
     });
 
     // Act
-    let due = adapter.about_to_wait(&mut runtime, now, None);
+    let due = presenter.about_to_wait(&mut runtime, now, None);
 
     // Assert
     assert!(due.request_redraw);
@@ -1051,9 +1051,9 @@ fn should_not_request_redraw_from_ineligible_schedule_redraw_now() {
     let mut runtime = Runtime::new();
     runtime.set_root(CustomPaint::new(4).schedule(schedule));
     let _ = runtime.update(now);
-    let mut adapter = WinitAdapter::new();
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
-    let idle = adapter.about_to_wait(&mut runtime, now, None);
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
 
     assert!(!idle.request_redraw);
     assert!(idle.ordinary_present_eligible);

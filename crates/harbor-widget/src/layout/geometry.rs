@@ -11,6 +11,10 @@ impl Point {
     pub fn new(x: f32, y: f32) -> Self {
         Point { x, y }
     }
+    /// Returns true when both coordinates are finite.
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
 }
 
 /// A 2D extent in logical pixels.
@@ -33,6 +37,11 @@ impl Size {
     /// Returns true if either dimension is <= 0.
     pub fn is_empty(&self) -> bool {
         self.width <= 0.0 || self.height <= 0.0
+    }
+
+    /// Returns true when both dimensions are finite and nonnegative.
+    pub fn is_valid(&self) -> bool {
+        self.width.is_finite() && self.height.is_finite() && self.width >= 0.0 && self.height >= 0.0
     }
 }
 
@@ -61,6 +70,14 @@ impl Rect {
     /// excluding right/bottom edges).
     pub fn contains(&self, p: Point) -> bool {
         p.x >= self.min.x && p.x < self.max.x && p.y >= self.min.y && p.y < self.max.y
+    }
+
+    /// Returns true when coordinates are finite and extents are strictly positive.
+    pub fn is_valid(&self) -> bool {
+        self.min.is_valid()
+            && self.max.is_valid()
+            && self.max.x > self.min.x
+            && self.max.y > self.min.y
     }
 }
 

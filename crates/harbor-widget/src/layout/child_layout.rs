@@ -74,11 +74,11 @@ pub(crate) struct ParentLayout {
 }
 
 pub(crate) fn valid_size(size: Size) -> bool {
-    size.width.is_finite() && size.height.is_finite() && size.width >= 0.0 && size.height >= 0.0
+    size.is_valid()
 }
 
 pub(crate) fn valid_point(point: Point) -> bool {
-    point.x.is_finite() && point.y.is_finite()
+    point.is_valid()
 }
 
 pub(crate) fn valid_diagnostic(diagnostic: &LayoutDiagnostic) -> bool {

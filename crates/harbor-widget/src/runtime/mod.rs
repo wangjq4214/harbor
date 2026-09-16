@@ -718,10 +718,13 @@ impl Runtime {
         }
     }
 
+    /// Returns the number of retained cached text runs.
+    pub fn cached_text_run_count(&self) -> usize {
+        self.encoder.cached_text_run_count()
+    }
+
     #[cfg(test)]
-    /// Returns a mutable reference to the TextRunCache.
-    /// The host uses this to look up glyph data for text rendering.
-    pub fn text_run_cache(&mut self) -> &mut TextRunCache {
+    pub(crate) fn text_run_cache(&mut self) -> &mut TextRunCache {
         self.encoder.text_run_cache()
     }
 
@@ -804,12 +807,7 @@ impl Runtime {
 }
 
 fn valid_layout_notification_rect(rect: Rect) -> bool {
-    rect.min.x.is_finite()
-        && rect.min.y.is_finite()
-        && rect.max.x.is_finite()
-        && rect.max.y.is_finite()
-        && rect.max.x > rect.min.x
-        && rect.max.y > rect.min.y
+    rect.is_valid()
 }
 
 impl Drop for Runtime {

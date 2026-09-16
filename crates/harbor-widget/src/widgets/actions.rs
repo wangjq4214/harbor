@@ -1,5 +1,5 @@
 use crate::layout::{BoxConstraints, Point, Size};
-use crate::view::{AnyView, BuildCx, Component, View};
+use crate::view::{ActionProviderView, AnyView, BuildCx, Component, View};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -56,7 +56,12 @@ impl<A: Clone + 'static> AnyView for Actions<A> {
         let size = constraints.constrain(child_sizes.first().copied().unwrap_or(Size::ZERO));
         (size, vec![Point::ZERO; child_sizes.len()])
     }
+    fn as_action_provider(&self) -> Option<&dyn ActionProviderView> {
+        Some(self)
+    }
+}
 
+impl<A: Clone + 'static> ActionProviderView for Actions<A> {
     fn invoke_action(&self, action: &dyn Any) -> bool {
         let Some(action) = action.downcast_ref::<A>() else {
             return false;

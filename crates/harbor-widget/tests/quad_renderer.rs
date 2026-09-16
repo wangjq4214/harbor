@@ -2603,8 +2603,8 @@ fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
     };
     let pipeline = create_solid_pipeline(&device);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, context, _, pass, _| {
-        let (x, y, w, h) = context.scissor_rect();
-        pass.set_scissor_rect(x, y, w, h);
+        let scissor = context.scissor_rect();
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });

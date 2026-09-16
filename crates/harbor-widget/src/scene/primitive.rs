@@ -168,7 +168,8 @@ impl ExternalDrawContext {
     }
 
     /// Clamped physical scissor `(x, y, width, height)` for wgpu.
-    pub fn scissor_rect(&self) -> (u32, u32, u32, u32) {
+    /// Clamped physical scissor for wgpu.
+    pub fn scissor_rect(&self) -> ScissorRect {
         Self::compute_scissor(self.logical_rect, self.scale_factor(), self.surface_size())
     }
 
@@ -176,9 +177,9 @@ impl ExternalDrawContext {
         logical_rect: Rect,
         scale: f32,
         (surf_w, surf_h): (u32, u32),
-    ) -> (u32, u32, u32, u32) {
+    ) -> ScissorRect {
         if surf_w == 0 || surf_h == 0 {
-            return (0, 0, 0, 0);
+            return ScissorRect::ZERO;
         }
 
         let left = (logical_rect.min.x * scale).floor() as i64;
@@ -193,12 +194,89 @@ impl ExternalDrawContext {
 
         let width = (clip_right - clip_left).max(0) as u32;
         let height = (clip_bottom - clip_top).max(0) as u32;
-        (clip_left as u32, clip_top as u32, width, height)
+        ScissorRect::new(clip_left as u32, clip_top as u32, width, height)
     }
 
     pub fn is_empty(&self) -> bool {
-        let (_, _, w, h) = self.scissor_rect();
-        w == 0 || h == 0
+        self.scissor_rect().is_empty()
+    }
+}
+
+/// Physical scissor rectangle with origin and extent in device pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScissorRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ScissorRect {
+    pub const ZERO: Self = Self {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    pub fn intersect(&self, other: &Self) -> Self {
+        let left = self.x.max(other.x);
+        let top = self.y.max(other.y);
+        let right = self
+            .x
+            .saturating_add(self.width)
+            .min(other.x.saturating_add(other.width));
+        let bottom = self
+            .y
+            .saturating_add(self.height)
+            .min(other.y.saturating_add(other.height));
+        Self {
+            x: left,
+            y: top,
+            width: right.saturating_sub(left),
+            height: bottom.saturating_sub(top),
+        }
+    }
+
+    pub const fn as_tuple(&self) -> (u32, u32, u32, u32) {
+        (self.x, self.y, self.width, self.height)
+    }
+}
+
+impl PartialEq<(u32, u32, u32, u32)> for ScissorRect {
+    fn eq(&self, other: &(u32, u32, u32, u32)) -> bool {
+        self.as_tuple() == *other
+    }
+}
+
+impl PartialEq<ScissorRect> for (u32, u32, u32, u32) {
+    fn eq(&self, other: &ScissorRect) -> bool {
+        *self == other.as_tuple()
+    }
+}
+
+impl From<(u32, u32, u32, u32)> for ScissorRect {
+    fn from((x, y, width, height): (u32, u32, u32, u32)) -> Self {
+        Self::new(x, y, width, height)
+    }
+}
+
+impl From<ScissorRect> for (u32, u32, u32, u32) {
+    fn from(rect: ScissorRect) -> Self {
+        rect.as_tuple()
     }
 }
 
@@ -469,10 +547,10 @@ mod tests {
         let context = ExternalDrawContext::new(rect, Viewport::new(800, 600, 1.0));
 
         // Act
-        let (x, y, width, height) = context.scissor_rect();
+        let scissor = context.scissor_rect();
 
         // Assert
-        assert_eq!((x, y, width, height), (750, 550, 50, 50));
+        assert_eq!(scissor, (750, 550, 50, 50));
         assert!(!context.is_empty());
     }
 

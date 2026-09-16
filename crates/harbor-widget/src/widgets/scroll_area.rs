@@ -5,7 +5,7 @@ use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Po
 use crate::scene::clip::RoundedClip;
 use crate::signal::Signal;
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, EnsureVisibleResult, View};
+use crate::view::{AnyView, BuildCx, Component, EnsureVisibleResult, ScrollableView, View};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -371,6 +371,12 @@ impl AnyView for ScrollAreaView {
             .commit_metrics(rect.size().height, content_extent, offset);
     }
 
+    fn as_scrollable(&self) -> Option<&dyn ScrollableView> {
+        Some(self)
+    }
+}
+
+impl ScrollableView for ScrollAreaView {
     fn ensure_visible(&self, rect: Rect, target: &mut Rect) -> EnsureVisibleResult {
         if !valid_rect(rect) || rect.size().is_empty() {
             EnsureVisibleResult::Unavailable

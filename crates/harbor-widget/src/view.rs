@@ -208,6 +208,30 @@ pub(crate) enum EnsureVisibleResult {
     Unavailable,
 }
 
+/// Capability for scroll containers that manage descendant visibility.
+pub(crate) trait ScrollableView: 'static {
+    fn ensure_visible(&self, rect: Rect, target: &mut Rect) -> EnsureVisibleResult;
+}
+
+/// Capability for views that provide a theme override to descendants.
+pub(crate) trait ThemedView: 'static {
+    fn theme_override(&self) -> Option<Arc<Theme>>;
+}
+
+/// Capability for views that register or invoke typed actions and shortcuts.
+pub(crate) trait ActionProviderView: 'static {
+    fn shortcut_action(
+        &self,
+        _chord: crate::widgets::shortcuts::KeyChord,
+    ) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+
+    fn invoke_action(&self, _action: &dyn std::any::Any) -> bool {
+        false
+    }
+}
+
 /// Internal type-erased View capability.
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
@@ -336,11 +360,20 @@ pub(crate) trait AnyView: 'static {
         None
     }
 
+    /// Optional capability query for scroll containers.
+    fn as_scrollable(&self) -> Option<&dyn ScrollableView> {
+        None
+    }
+
     /// Requests the minimum movement needed to reveal an absolute target rect.
     /// Implementations adjust `target` by the accepted movement so outer
     /// ancestors coordinate against its eventual position.
-    fn ensure_visible(&self, _rect: Rect, _target: &mut Rect) -> EnsureVisibleResult {
-        EnsureVisibleResult::NotApplicable
+    fn ensure_visible(&self, rect: Rect, target: &mut Rect) -> EnsureVisibleResult {
+        if let Some(scrollable) = self.as_scrollable() {
+            scrollable.ensure_visible(rect, target)
+        } else {
+            EnsureVisibleResult::NotApplicable
+        }
     }
 
     /// Returns true if the point (in widget-local coordinates) is inside
@@ -388,22 +421,34 @@ pub(crate) trait AnyView: 'static {
     fn permits_pointer_capture(&self) -> bool {
         true
     }
+    /// Optional capability query for theme providers.
+    fn as_themed(&self) -> Option<&dyn ThemedView> {
+        None
+    }
+
     /// Replaces the inherited theme for descendants during reconciliation.
     fn theme_override(&self) -> Option<Arc<Theme>> {
+        self.as_themed().and_then(|t| t.theme_override())
+    }
+
+    /// Optional capability query for action and shortcut providers.
+    fn as_action_provider(&self) -> Option<&dyn ActionProviderView> {
         None
     }
 
     /// Returns the typed action bound to this exact chord, if any.
     fn shortcut_action(
         &self,
-        _chord: crate::widgets::shortcuts::KeyChord,
+        chord: crate::widgets::shortcuts::KeyChord,
     ) -> Option<Box<dyn std::any::Any>> {
-        None
+        self.as_action_provider()
+            .and_then(|p| p.shortcut_action(chord))
     }
 
     /// Delivers a pending action to a compatible typed provider.
-    fn invoke_action(&self, _action: &dyn std::any::Any) -> bool {
-        false
+    fn invoke_action(&self, action: &dyn std::any::Any) -> bool {
+        self.as_action_provider()
+            .is_some_and(|p| p.invoke_action(action))
     }
     /// Whether this widget is a modal scope — events targeting widgets outside
     /// its subtree should be blocked.

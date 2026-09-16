@@ -1,5 +1,6 @@
 pub mod clip;
 pub mod primitive;
+pub use primitive::ScissorRect;
 
 use clip::RoundedClip;
 use hashbrown::{HashMap, HashSet};

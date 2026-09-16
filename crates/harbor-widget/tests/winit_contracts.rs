@@ -10,8 +10,8 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
     FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
-    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurfaceInfo, WinitAdapter,
-    WinitEventOutcome, WinitWindowHost, WinitWindowHostBuilder,
+    HostStartupError, SharedGpu, WindowPlatformHooks, WindowPresenter, WindowSurfaceInfo,
+    WinitAdapter, WinitEventOutcome, WinitWindowHost, WinitWindowHostBuilder,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -71,11 +71,13 @@ fn native_host_public_api_encapsulates_frame_target_and_surface() {
 fn should_update_confirmation_viewport_when_resized_event_includes_current_size() {
     // Arrange
     let mut runtime = Runtime::new();
-    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
     let event = WindowEvent::Resized(winit::dpi::PhysicalSize::new(640, 480));
 
     // Act
-    let outcome = adapter.handle_event_with_size(&mut runtime, &event, Some((640, 480)));
+    let outcome =
+        presenter.handle_event_with_size(&mut adapter, &mut runtime, &event, Some((640, 480)));
 
     // Assert
     assert!(outcome.handled);
@@ -85,7 +87,7 @@ fn should_update_confirmation_viewport_when_resized_event_includes_current_size(
             .map(|viewport| viewport.physical_size),
         Some((640, 480))
     );
-    assert_eq!(adapter.viewport().physical_size, (640, 480));
+    assert_eq!(presenter.viewport().physical_size, (640, 480));
 }
 
 #[test]
@@ -93,14 +95,16 @@ fn should_keep_main_viewport_drawable_when_confirmation_is_resized_to_zero() {
     // Arrange
     let mut main_runtime = Runtime::new();
     let mut confirmation_runtime = Runtime::new();
-    let main_adapter = WinitAdapter::with_surface(800, 600, 1.0);
-    let mut confirmation_adapter = WinitAdapter::with_surface(600, 500, 1.0);
-    main_runtime.set_viewport(main_adapter.viewport().clone());
-    confirmation_runtime.set_viewport(confirmation_adapter.viewport().clone());
+    let main_presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut confirmation_presenter = WindowPresenter::new(600, 500, 1.0);
+    let mut confirmation_adapter = WinitAdapter::new();
+    main_runtime.set_viewport(main_presenter.viewport().clone());
+    confirmation_runtime.set_viewport(confirmation_presenter.viewport().clone());
     let minimized = WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0));
 
     // Act
-    let outcome = confirmation_adapter.handle_event_with_size(
+    let outcome = confirmation_presenter.handle_event_with_size(
+        &mut confirmation_adapter,
         &mut confirmation_runtime,
         &minimized,
         Some((0, 0)),
@@ -115,14 +119,14 @@ fn should_keep_main_viewport_drawable_when_confirmation_is_resized_to_zero() {
             .map(|viewport| viewport.physical_size),
         Some((0, 0))
     );
-    assert_eq!(confirmation_adapter.viewport().physical_size, (0, 0));
+    assert_eq!(confirmation_presenter.viewport().physical_size, (0, 0));
     assert_eq!(
         main_runtime
             .current_viewport()
             .map(|viewport| viewport.physical_size),
         Some((800, 600))
     );
-    assert_eq!(main_adapter.viewport().physical_size, (800, 600));
+    assert_eq!(main_presenter.viewport().physical_size, (800, 600));
 }
 
 #[test]
@@ -722,10 +726,12 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
         clicks_clone.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let mut adapter = WinitAdapter::new();
 
     for (index, source_id) in [31, 47].into_iter().enumerate() {
-        let _outcome = adapter.handle_event(
+        let _outcome = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Touch(Touch {
                 device_id: winit::event::DeviceId::dummy(),
@@ -745,7 +751,8 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
     }
 
     // Act: losing the native window focus cancels every captured pointer.
-    let focus_loss = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+    let focus_loss =
+        presenter.handle_event(&mut adapter, &mut runtime, &WindowEvent::Focused(false));
 
     // Assert: captures are released, and stale touch endings cannot activate the button.
     // Touch starts already own the outstanding redraw edge; focus-loss work coalesces.
@@ -754,7 +761,8 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
     assert_eq!(runtime.input().captor((1 << 63) | 1), None);
     assert_eq!(runtime.input().captor((1 << 63) | 2), None);
     for pointer_id in [31, 47] {
-        let outcome = adapter.handle_event(
+        let outcome = presenter.handle_event(
+            &mut adapter,
             &mut runtime,
             &WindowEvent::Touch(Touch {
                 device_id: winit::event::DeviceId::dummy(),

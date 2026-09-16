@@ -319,8 +319,7 @@ where
             .map_err(|error| {
                 HostStartupError::new(HostStartupStage::RuntimeInitialization, error)
             })?;
-        let mut adapter = WinitAdapter::from_window(&window);
-        adapter.use_external_presenter();
+        let adapter = WinitAdapter::from_window(&window);
         let mut presenter = WindowPresenter::from_window(&window);
         let size = window.inner_size();
         let drawable = size.width != 0 && size.height != 0;

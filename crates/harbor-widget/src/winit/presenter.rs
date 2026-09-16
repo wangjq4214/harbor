@@ -136,7 +136,7 @@ impl WindowPresenter {
         }
     }
 
-    pub(super) fn handle_surface_transition(
+    pub(crate) fn handle_surface_transition(
         &mut self,
         adapter: &mut WinitAdapter,
         runtime: &mut Runtime,
@@ -205,7 +205,7 @@ impl WindowPresenter {
     /// Mirrors production recovery/retry policy from [`Self::render`], omitting
     /// only Host-owned surface reconfiguration.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn finish_acquisition<T>(
+    pub(crate) fn finish_acquisition<T>(
         &mut self,
         effects: RuntimeEffects,
         acquisition: FrameAcquisition<T>,
@@ -275,7 +275,7 @@ impl WindowPresenter {
 ///
 /// Native wgpu statuses are mapped to this private seam before presentation,
 /// allowing the policy to be tested without constructing a native Surface.
-pub(super) enum FrameAcquisition<T> {
+pub(crate) enum FrameAcquisition<T> {
     Presented(T),
     Suboptimal(T),
     RecoveryRequired,
