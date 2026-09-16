@@ -5,7 +5,7 @@
 
 ## Overview
 
-These tickets deliver one Windows-first vertical slice: reusable widget foundations, an internal experimental `view!(cx, ...)` macro, application-owned multi-terminal sessions, a responsive side tab rail, and product-level resize/scheduling/resource evidence. They do not build a complete Flutter-compatible widget catalog.
+These tickets deliver one Windows-first vertical slice: reusable widget foundations, an internal experimental `view! { cx; root }` macro, application-owned multi-terminal sessions, a responsive side tab rail, and product-level resize/scheduling/resource evidence. They do not build a complete Flutter-compatible widget catalog.
 
 ## Dependency Graph
 

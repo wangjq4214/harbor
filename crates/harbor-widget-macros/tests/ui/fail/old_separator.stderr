@@ -1,11 +1,11 @@
-error: view! accepts exactly one root
- --> tests/ui/fail/multiple_roots.rs:7:45
+error: view! uses `;` after the context expression; replace this `,` with `;`
+ --> tests/ui/fail/old_separator.rs:7:26
   |
-7 |     let _ = view! { &mut cx; Column::new(); Column::new(); };
-  |                                             ^^^^^^
+7 |     let _ = view!(&mut cx, Column::new(););
+  |                          ^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/multiple_roots.rs:2:5
+ --> tests/ui/fail/old_separator.rs:2:5
   |
 2 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

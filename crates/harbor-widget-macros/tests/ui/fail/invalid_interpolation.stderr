@@ -1,8 +1,8 @@
-error: unexpected end of input, view! interpolation requires an expression
- --> tests/ui/fail/invalid_interpolation.rs:7:48
-  |
-7 |     let _ = view!(&mut cx, Column::new() => { {} });
-  |                                                ^
+error: unexpected end of input, view! expected `;` or `=> { ... }` after the child expression
+  --> tests/ui/fail/invalid_interpolation.rs:12:9
+   |
+12 |         }
+   |         ^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
  --> tests/ui/fail/invalid_interpolation.rs:2:5
@@ -11,3 +11,15 @@ warning: unused import: `harbor_widget::widgets::column::Column`
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `harbor_widget::widgets::sized_box::SizedBox`
+ --> tests/ui/fail/invalid_interpolation.rs:3:5
+  |
+3 | use harbor_widget::widgets::sized_box::SizedBox;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `layout::Size`
+ --> tests/ui/fail/invalid_interpolation.rs:4:21
+  |
+4 | use harbor_widget::{layout::Size, view};
+  |                     ^^^^^^^^^^^^

@@ -1,0 +1,14 @@
+error[E0382]: use of moved value: `leaf`
+  --> tests/ui/fail/moved_child.rs:20:28
+   |
+18 |     let leaf = Leaf;
+   |         ---- move occurs because `leaf` has type `Leaf`, which does not implement the `Copy` trait
+19 |     let _ = view! { &mut cx; Column::new() => { leaf; } };
+   |                                                 ---- value moved here
+20 |     let _used_after_move = leaf;
+   |                            ^^^^ value used here after move
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+19 |     let _ = view! { &mut cx; Column::new() => { leaf.clone(); } };
+   |                                                     ++++++++

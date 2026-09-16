@@ -1,4 +1,4 @@
-use crate::ast::{Child, IfChild, MatchArm, MatchChild, Node, ViewInput};
+use crate::ast::{Child, IfChild, MatchArm, MatchChild, Node, Root, ViewInput};
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -40,7 +40,28 @@ impl Expander {
         Ident::new(&format!("__harbor_view_{role}_{index}"), Span::mixed_site())
     }
 
-    fn expand_root(&mut self, node: &Node, cx: &syn::Expr) -> TokenStream {
+    fn expand_root(&mut self, root: &Root, cx: &syn::Expr) -> TokenStream {
+        match root {
+            Root::Value { expr, span } => self.expand_value_root(expr, *span, cx),
+            Root::Parent(node) => self.expand_parent_root(node, cx),
+        }
+    }
+
+    fn expand_value_root(&mut self, expr: &syn::Expr, span: Span, cx: &syn::Expr) -> TokenStream {
+        let component = self.fresh_ident("component");
+        let build_cx = self.fresh_ident("cx");
+        let support = &self.support;
+
+        quote_spanned! {span=>
+            {
+                let #component = #expr;
+                let #build_cx = #cx;
+                <_ as #support::Component>::build(&#component, #build_cx)
+            }
+        }
+    }
+
+    fn expand_parent_root(&mut self, node: &Node, cx: &syn::Expr) -> TokenStream {
         let children = self.fresh_ident("children");
         let component = self.fresh_ident("component");
         let build_cx = self.fresh_ident("cx");
@@ -76,13 +97,8 @@ impl Expander {
 
     fn expand_child(&mut self, child: &Child, parent: &Ident) -> TokenStream {
         match child {
-            Child::Node(node) => self.expand_node(node, parent),
-            Child::Interpolation { expr, span } => {
-                let support = &self.support;
-                quote_spanned! {*span=>
-                    <_ as #support::IntoChildren>::append_to(#expr, &mut #parent);
-                }
-            }
+            Child::Value { expr, span } => self.expand_value_child(expr, *span, parent),
+            Child::Parent(node) => self.expand_parent_child(node, parent),
             Child::For(child) => {
                 let pattern = &child.pattern;
                 let iter = &child.iter;
@@ -99,7 +115,21 @@ impl Expander {
         }
     }
 
-    fn expand_node(&mut self, node: &Node, parent: &Ident) -> TokenStream {
+    fn expand_value_child(&mut self, expr: &syn::Expr, span: Span, parent: &Ident) -> TokenStream {
+        let value = self.fresh_ident("value");
+        let child_view = self.fresh_ident("child");
+        let support = &self.support;
+
+        quote_spanned! {span=>
+            {
+                let #value = #expr;
+                let #child_view = <_ as #support::IntoChildView>::into_child_view(#value);
+                #support::Children::push(&mut #parent, #child_view);
+            }
+        }
+    }
+
+    fn expand_parent_child(&mut self, node: &Node, parent: &Ident) -> TokenStream {
         let children = self.fresh_ident("children");
         let component = self.fresh_ident("component");
         let child_view = self.fresh_ident("child");
@@ -185,29 +215,42 @@ mod tests {
     use quote::quote;
 
     #[test]
-    fn expansion_uses_only_the_macro_support_boundary() {
+    fn expansion_uses_root_child_and_parent_protocols() {
         let input: ViewInput = syn::parse2(quote! {
-            cx, Root::new() => {
-                { existing }
-                for item in items { Row::new(item).keyed(item.id) => {} }
-                if visible { Leaf::new() => {} } else { Leaf::new() => {} }
-                match choice { Some(value) => { Row::new(value) => {} }, None => {} }
+            cx; Root::new() => {
+                existing;
+                Row::new() => { Leaf::new(); }
+                for item in items { Row::new(item); }
+                if visible { Leaf::new(); } else { Leaf::new(); }
+                match choice { Some(value) => { Row::new(value); }, None => {} }
             }
         })
         .unwrap();
 
         let expansion = expand(input).unwrap().to_string();
         assert!(expansion.contains("__macro_support"));
-        assert!(expansion.contains("IntoChildren"));
+        assert!(expansion.contains("IntoChildView"));
         assert!(expansion.contains("WithChildren"));
+        assert!(expansion.contains("Component"));
+        assert!(!expansion.contains("IntoChildren"));
         assert!(!expansion.contains("clone"));
         assert!(!expansion.contains("use_state"));
     }
 
     #[test]
-    fn nested_nodes_receive_distinct_internal_collectors() {
+    fn leaf_root_builds_directly_without_children_attachment() {
+        let input: ViewInput = syn::parse2(quote! { cx; Root::new(); }).unwrap();
+        let expansion = expand(input).unwrap().to_string();
+
+        assert!(expansion.contains("Component"));
+        assert!(!expansion.contains("IntoChildView"));
+        assert!(!expansion.contains("WithChildren"));
+    }
+
+    #[test]
+    fn nested_parents_receive_distinct_internal_collectors() {
         let input: ViewInput = syn::parse2(quote! {
-            cx, Root::new() => { Parent::new() => { Leaf::new() => {} } }
+            cx; Root::new() => { Parent::new() => { Leaf::new(); } }
         })
         .unwrap();
 

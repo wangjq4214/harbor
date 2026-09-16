@@ -1,10 +1,18 @@
 use proc_macro2::Span;
 use syn::{Expr, Pat, Token, spanned::Spanned};
 
-/// Parsed input to `view!(cx, component => { children })`.
+/// Parsed input to `view! { cx; root }`.
 pub struct ViewInput {
     pub cx: Expr,
-    pub root: Node,
+    pub root: Root,
+}
+
+/// The single root of a declarative view tree.
+pub enum Root {
+    /// A component built directly without attaching children.
+    Value { expr: Expr, span: Span },
+    /// A component that receives a declarative child list before it is built.
+    Parent(Node),
 }
 
 /// A component expression with a declarative child block.
@@ -21,8 +29,13 @@ impl Node {
 
 /// One item inside a node's child block.
 pub enum Child {
-    Node(Node),
-    Interpolation { expr: Expr, span: Span },
+    /// One ordinary Rust expression converted through `IntoChildView`.
+    Value {
+        expr: Expr,
+        span: Span,
+    },
+    /// A component expression that receives a child list through `WithChildren`.
+    Parent(Node),
     For(ForChild),
     If(IfChild),
     Match(MatchChild),

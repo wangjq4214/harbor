@@ -269,8 +269,7 @@ mod tests {
             .into_iter()
             .filter(|id| {
                 let fiber = runtime.arena().get(*id).expect("live fiber");
-                fiber.widget_type() == TypeId::of::<harbor_widget::Keyed<Row>>()
-                    && fiber.children().len() == 2
+                fiber.widget_type() == TypeId::of::<Row>() && fiber.children().len() == 2
             })
             .collect();
         rows.sort_by(|left, right| {

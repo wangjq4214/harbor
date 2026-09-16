@@ -1,8 +1,8 @@
-error: expected curly braces
- --> tests/ui/fail/non_block_children.rs:9:45
-  |
-9 |     let _ = view!(&mut cx, Column::new() => SizedBox::new(Size::new(1.0, 1.0)));
-  |                                             ^^^^^^^^
+error: view! expected a braced child list after `=>`
+  --> tests/ui/fail/non_block_children.rs:11:26
+   |
+11 |         Column::new() => SizedBox::new(Size::new(1.0, 1.0));
+   |                          ^^^^^^^^
 
 warning: unused import: `harbor_widget::layout::Size`
  --> tests/ui/fail/non_block_children.rs:1:5

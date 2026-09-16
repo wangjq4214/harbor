@@ -4,5 +4,5 @@ use harbor_widget::view;
 
 fn main() {
     let mut cx = BuildCx::stub();
-    let _ = view! { &mut cx; Column::new() }
+    let _ = view! { &mut cx; Column::new() => {}; };
 }

@@ -16,6 +16,7 @@ use harbor_widget::scene::primitive::{
     ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalScheduleDemand,
     ExternalScheduleFn,
 };
+#[cfg(test)]
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
 
@@ -325,16 +326,12 @@ impl TerminalWidgetBridge {
     }
 }
 
-/// Creates the UI component that renders a terminal bridge.
-pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> impl Component {
-    move |cx: &mut BuildCx| render_terminal_widget(cx, &bridge)
-}
-
-fn render_terminal_widget(cx: &mut BuildCx, bridge: &TerminalWidgetBridge) -> View {
-    harbor_widget::view!(cx, CustomPaint::new(bridge.draw_id())
+/// Creates the leaf widget that renders a terminal bridge without an extra component wrapper.
+pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> CustomPaint {
+    CustomPaint::new(bridge.draw_id())
         .handler(Arc::clone(&bridge.handler))
         .schedule(Arc::clone(&bridge.schedule))
-        .on_input(Arc::clone(&bridge.on_input)) => {})
+        .on_input(Arc::clone(&bridge.on_input))
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
@@ -566,31 +563,27 @@ mod tests {
     }
 
     #[test]
-    fn should_reuse_cached_handler_arc_when_built_multiple_times() {
-        // Arrange: handler is created once in `new` and cloned into each build.
+    fn should_reuse_cached_handler_arc_when_building_multiple_widgets() {
+        // Arrange: handler is created once in `new` and cloned into each widget.
         let terminal = headless_terminal(24, 80);
         let bridge = TerminalWidgetBridge::new(42, terminal, Arc::new(AtomicBool::new(false)));
         let cached = Arc::clone(&bridge.handler);
         assert_eq!(Arc::strong_count(&cached), 2);
 
         // Act
-        let mut cx_a = BuildCx::stub();
-        let view_a = render_terminal_widget(&mut cx_a, &bridge);
+        let widget_a = terminal_widget(bridge.clone());
         let count_after_first = Arc::strong_count(&cached);
 
-        let mut cx_b = BuildCx::stub();
-        let view_b = render_terminal_widget(&mut cx_b, &bridge);
+        let widget_b = terminal_widget(bridge.clone());
         let count_after_second = Arc::strong_count(&cached);
 
-        // Assert: each build clones the same Arc (not a freshly allocated handler).
+        // Assert: each widget clones the same Arc (not a freshly allocated handler).
         assert!(Arc::ptr_eq(&cached, &bridge.handler));
         assert!(count_after_first > 2);
         assert!(count_after_second > count_after_first);
 
-        drop(view_a);
-        drop(cx_a);
-        drop(view_b);
-        drop(cx_b);
+        drop(widget_a);
+        drop(widget_b);
         assert_eq!(Arc::strong_count(&cached), 2);
     }
 
@@ -1243,11 +1236,12 @@ mod decoration_tests {
 
     impl<C: Component + Clone + 'static> Component for TestMainTerminalRoot<C> {
         fn build(&self, cx: &mut BuildCx) -> View {
-            harbor_widget::view!(cx, self.root.clone() => {
+            harbor_widget::view! { cx; self.root.clone() => {
                 TerminalDecorationPreset::container() => {
-                    { self.child.clone() }
+                    self.child.clone();
                 }
-            })
+            }
+            }
         }
     }
 

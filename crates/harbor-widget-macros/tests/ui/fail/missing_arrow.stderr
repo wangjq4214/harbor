@@ -1,8 +1,18 @@
-error: expected `=>`
- --> tests/ui/fail/missing_arrow.rs:7:42
+error: expected `;`, found `}`
+ --> tests/ui/fail/missing_arrow.rs:7:45
   |
-7 |     let _ = view!(&mut cx, Column::new() { });
-  |                                          ^
+7 |     let _ = view! { &mut cx; Column::new() }
+  |                                             ^ help: add `;` here
+8 | }
+  | - unexpected token
+
+error: unexpected end of input, view! expected `;` or `=> { ... }` after the root expression
+ --> tests/ui/fail/missing_arrow.rs:7:13
+  |
+7 |     let _ = view! { &mut cx; Column::new() }
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 warning: unused import: `harbor_widget::widgets::column::Column`
  --> tests/ui/fail/missing_arrow.rs:2:5

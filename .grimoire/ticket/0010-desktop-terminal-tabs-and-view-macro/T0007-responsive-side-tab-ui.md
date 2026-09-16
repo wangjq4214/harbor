@@ -11,7 +11,7 @@ The Harbor main window uses a macro-authored, keyboard-accessible vertical tab r
 ## Layers
 
 - [ ] **Widget Composition:** Compose Flex, bounded rail, Separator, Expanded terminal, ScrollArea, interaction/focus/theme primitives, and explicit keyed TabItems.
-- [ ] **Declarative Macro:** Author the product tree with `view!(cx, expression => { children })`, including the dynamic keyed tab loop.
+- [ ] **Declarative Macro:** Author the product tree with `view! { cx; root }`, including ordinary value statements and the dynamic keyed tab loop.
 - [ ] **Runtime Host:** Bind TabManager actions, active bridge, unread/selected state, focus restoration, and paste gate.
 - [ ] **Renderer:** Reuse existing primitives and terminal CustomPaint; only active terminal paints.
 - [ ] **Verification:** Compare expanded/compact geometry, mouse/keyboard operation, focus, dynamic close/insert, scrolling, decoration, and Acrylic.

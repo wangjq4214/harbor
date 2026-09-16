@@ -10,7 +10,7 @@ use crate::widgets::column::Column;
 use crate::widgets::padding::Padding;
 use crate::widgets::sized_box::SizedBox;
 use std::any::TypeId;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,25 +24,25 @@ struct MacroTree {
 
 impl Component for MacroTree {
     fn build(&self, cx: &mut BuildCx) -> View {
-        crate::view!(cx, Column::new() => {
-            SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED) => {}
-            { SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN) }
+        crate::view! { cx; Column::new() => {
+            SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED);
+            SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN);
             for (index, size) in self.values.iter().copied().enumerate() {
-                SizedBox::new(size).color(Color::BLUE).keyed(index.to_string()) => {}
+                SizedBox::new(size).color(Color::BLUE).keyed(index.to_string());
             }
             if self.show_extra {
-                SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE) => {}
+                SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE);
             } else {
-                SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK) => {}
+                SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK);
             }
             match self.values.first().copied() {
                 Some(size) if size.width > 0.0 => {
-                    SizedBox::new(size).color(Color::TRANSPARENT) => {}
+                    SizedBox::new(size).color(Color::TRANSPARENT);
                 },
                 Some(_) => {},
                 None => {},
             }
-        })
+        } }
     }
 }
 
@@ -92,11 +92,11 @@ impl Component for KeyedMacroList {
         *self.items.borrow_mut() = Some(state.clone());
         let current_items = state.read();
 
-        crate::view!(cx, Column::new() => {
+        crate::view! { cx; Column::new() => {
             for item in current_items.iter() {
-                SizedBox::new(Size::new(10.0, 10.0)).keyed(*item) => {}
+                SizedBox::new(Size::new(10.0, 10.0)).keyed(*item);
             }
-        })
+        } }
     }
 }
 
@@ -108,9 +108,9 @@ struct MacroButtonTree {
 impl Component for MacroButtonTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
-        crate::view!(cx, Column::new() => {
-            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst)) => {}
-        })
+        crate::view! { cx; Column::new() => {
+            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
+        } }
     }
 }
 
@@ -205,7 +205,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroLeaf {
         fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view!(cx, SizedBox::new(Size::new(10.0, 10.0)) => {})
+            crate::view! { cx; SizedBox::new(Size::new(10.0, 10.0)); }
         }
     }
 
@@ -223,9 +223,9 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroSingle {
         fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view!(cx, Padding::all(2.0) => {
-                SizedBox::new(Size::new(10.0, 10.0)) => {}
-            })
+            crate::view! { cx; Padding::all(2.0) => {
+                SizedBox::new(Size::new(10.0, 10.0));
+            } }
         }
     }
 
@@ -316,31 +316,107 @@ fn keyed_for_children_reorder_without_fiber_replacement() {
 }
 
 #[test]
-fn macro_evaluates_each_component_expression_once() {
-    fn counted_column(calls: &Cell<u32>) -> Column {
-        calls.set(calls.get() + 1);
+fn macro_preserves_expression_evaluation_order_and_reachability() {
+    fn logged_column(log: &RefCell<Vec<&'static str>>, label: &'static str) -> Column {
+        log.borrow_mut().push(label);
         Column::new()
     }
 
-    fn column_using_cx(_cx: &mut BuildCx, calls: &Cell<u32>) -> Column {
-        calls.set(calls.get() + 1);
-        Column::new()
+    fn logged_choice(log: &RefCell<Vec<&'static str>>) -> Option<i32> {
+        log.borrow_mut().push("match-expression");
+        Some(1)
     }
 
-    fn counted_cx<'a>(cx: &'a mut BuildCx, calls: &Cell<u32>) -> &'a mut BuildCx {
-        calls.set(calls.get() + 1);
+    fn logged_leaf(log: &RefCell<Vec<&'static str>>, label: &'static str) -> SizedBox {
+        log.borrow_mut().push(label);
+        SizedBox::new(Size::new(1.0, 1.0))
+    }
+
+    fn logged_bool(log: &RefCell<Vec<&'static str>>, label: &'static str, value: bool) -> bool {
+        log.borrow_mut().push(label);
+        value
+    }
+
+    fn logged_cx<'a>(cx: &'a mut BuildCx, log: &RefCell<Vec<&'static str>>) -> &'a mut BuildCx {
+        log.borrow_mut().push("context");
         cx
     }
 
-    let calls = Cell::new(0);
-    let cx_calls = Cell::new(0);
-    let child_cx_calls = Cell::new(0);
+    let log = RefCell::new(Vec::new());
     let mut cx = BuildCx::stub();
-    let _ = crate::view!(counted_cx(&mut cx, &cx_calls), counted_column(&calls) => {
-        column_using_cx(&mut cx, &child_cx_calls) => {}
-    });
+    let _ = crate::view! {
+        logged_cx(&mut cx, &log);
+        logged_column(&log, "root") => {
+            logged_leaf(&log, "first");
+            logged_column(&log, "parent") => {
+                logged_leaf(&log, "nested");
+            }
+            for _ in { log.borrow_mut().push("iterator"); 0..2 } {
+                logged_leaf(&log, "loop");
+            }
+            if logged_bool(&log, "if-condition", false) {
+                logged_leaf(&log, "untaken");
+            } else {
+                logged_leaf(&log, "else");
+            }
+            match logged_choice(&log) {
+                Some(value) if logged_bool(&log, "guard", value == 1) => {
+                    logged_leaf(&log, "match");
+                }
+                _ => {
+                    logged_leaf(&log, "wrong-arm");
+                }
+            }
+        }
+    };
 
-    assert_eq!(calls.get(), 1);
-    assert_eq!(child_cx_calls.get(), 1);
-    assert_eq!(cx_calls.get(), 1);
+    assert_eq!(
+        *log.borrow(),
+        [
+            "first",
+            "nested",
+            "parent",
+            "iterator",
+            "loop",
+            "loop",
+            "if-condition",
+            "else",
+            "match-expression",
+            "guard",
+            "match",
+            "root",
+            "context",
+        ]
+    );
+}
+
+#[test]
+fn leaf_root_evaluates_component_then_context_then_build() {
+    #[derive(Clone)]
+    struct LoggedRoot {
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl Component for LoggedRoot {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            self.log.borrow_mut().push("build");
+            SizedBox::new(Size::new(1.0, 1.0)).build(cx)
+        }
+    }
+
+    fn root(log: &Rc<RefCell<Vec<&'static str>>>) -> LoggedRoot {
+        log.borrow_mut().push("component");
+        LoggedRoot { log: log.clone() }
+    }
+
+    fn context<'a>(cx: &'a mut BuildCx, log: &Rc<RefCell<Vec<&'static str>>>) -> &'a mut BuildCx {
+        log.borrow_mut().push("context");
+        cx
+    }
+
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut cx = BuildCx::stub();
+    let _ = crate::view! { context(&mut cx, &log); root(&log); };
+
+    assert_eq!(*log.borrow(), ["component", "context", "build"]);
 }

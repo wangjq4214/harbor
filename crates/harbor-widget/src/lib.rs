@@ -1,7 +1,7 @@
 pub mod construction;
 pub use construction::{
-    ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, IntoChildren,
-    Keyed, WithChildren,
+    ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
+    WithChildren,
 };
 pub use harbor_widget_macros::view;
 
@@ -9,8 +9,8 @@ pub use harbor_widget_macros::view;
 #[doc(hidden)]
 pub mod __macro_support {
     pub use crate::construction::{
-        ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView,
-        IntoChildren, Keyed, WithChildren,
+        ChildCardinality, ChildConstructionError, Children, ComponentExt, IntoChildView, Keyed,
+        WithChildren,
     };
     pub use crate::view::Component;
 }

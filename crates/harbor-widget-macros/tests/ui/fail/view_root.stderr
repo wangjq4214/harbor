@@ -1,0 +1,17 @@
+error[E0277]: the trait bound `View: harbor_widget::view::Component` is not satisfied
+ --> tests/ui/fail/view_root.rs:9:30
+  |
+9 |     let _ = view! { &mut cx; existing; };
+  |                              ^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `View`
+  |
+  = help: the following other types implement trait `harbor_widget::view::Component`:
+            Actions<A>
+            Align
+            Button
+            Column
+            ConstrainedBox
+            CustomPaint
+            DecoratedBox
+            Expanded
+          and $N others
+  = note: required for `View` to implement `harbor_widget::view::Component`

@@ -1,33 +1,54 @@
-use crate::ast::{Child, ForChild, IfBranch, IfChild, MatchArm, MatchChild, Node, ViewInput};
+use crate::ast::{Child, ForChild, IfBranch, IfChild, MatchArm, MatchChild, Node, Root, ViewInput};
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Pat, Result, Token, braced, spanned::Spanned};
 
 impl Parse for ViewInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let cx = input.call(Expr::parse_without_eager_brace)?;
-        input.parse::<Token![,]>()?;
-        let root = parse_node(input)?;
+        if input.peek(Token![,]) {
+            return Err(input
+                .error("view! uses `;` after the context expression; replace this `,` with `;`"));
+        }
+        input.parse::<Token![;]>()?;
 
+        let root = parse_root(input)?;
         if !input.is_empty() {
-            return Err(input.error("view! accepts exactly one root node"));
+            if input.peek(Token![;]) {
+                return Err(input.error(
+                    "view! parent roots do not take a trailing `;`; remove this semicolon",
+                ));
+            }
+            return Err(input.error("view! accepts exactly one root"));
         }
 
         Ok(Self { cx, root })
     }
 }
 
-fn parse_node(input: ParseStream<'_>) -> Result<Node> {
-    let component = input.parse::<Expr>()?;
-    input.parse::<Token![=>]>()?;
-    let children = parse_child_block(input)?;
+fn parse_root(input: ParseStream<'_>) -> Result<Root> {
+    let expr = input.parse::<Expr>()?;
+    let span = expr.span();
 
-    Ok(Node {
-        component,
-        children,
-    })
+    if input.peek(Token![;]) {
+        input.parse::<Token![;]>()?;
+        return Ok(Root::Value { expr, span });
+    }
+    if input.peek(Token![=>]) {
+        input.parse::<Token![=>]>()?;
+        let children = parse_child_block(input, "view! expected a braced child list after `=>`")?;
+        return Ok(Root::Parent(Node {
+            component: expr,
+            children,
+        }));
+    }
+
+    Err(input.error("view! expected `;` or `=> { ... }` after the root expression"))
 }
 
-fn parse_child_block(input: ParseStream<'_>) -> Result<Vec<Child>> {
+fn parse_child_block(input: ParseStream<'_>, message: &str) -> Result<Vec<Child>> {
+    if !input.peek(syn::token::Brace) {
+        return Err(input.error(message));
+    }
     let content;
     braced!(content in input);
     parse_children(&content)
@@ -42,35 +63,48 @@ fn parse_children(input: ParseStream<'_>) -> Result<Vec<Child>> {
 }
 
 fn parse_child(input: ParseStream<'_>) -> Result<Child> {
-    if input.peek(syn::token::Brace) {
-        return parse_interpolation(input);
-    }
-    if input.peek(Token![for]) {
-        return parse_for(input).map(Child::For);
-    }
-    if input.peek(Token![if]) {
-        return parse_if(input).map(Child::If);
-    }
-    if input.peek(Token![match]) {
-        return parse_match(input).map(Child::Match);
-    }
+    let child = if input.peek(Token![for]) {
+        parse_for(input).map(Child::For)?
+    } else if input.peek(Token![if]) {
+        parse_if(input).map(Child::If)?
+    } else if input.peek(Token![match]) {
+        parse_match(input).map(Child::Match)?
+    } else {
+        return parse_expression_child(input);
+    };
 
-    parse_node(input).map(Child::Node)
+    reject_trailing_semicolon(input, "control-flow child")?;
+    Ok(child)
 }
 
-fn parse_interpolation(input: ParseStream<'_>) -> Result<Child> {
-    let content;
-    braced!(content in input);
-    if content.is_empty() {
-        return Err(content.error("view! interpolation requires an expression"));
+fn parse_expression_child(input: ParseStream<'_>) -> Result<Child> {
+    let expr = input.parse::<Expr>()?;
+    let span = expr.span();
+
+    if input.peek(Token![;]) {
+        input.parse::<Token![;]>()?;
+        return Ok(Child::Value { expr, span });
+    }
+    if input.peek(Token![=>]) {
+        input.parse::<Token![=>]>()?;
+        let children = parse_child_block(input, "view! expected a braced child list after `=>`")?;
+        reject_trailing_semicolon(input, "parent child")?;
+        return Ok(Child::Parent(Node {
+            component: expr,
+            children,
+        }));
     }
 
-    let expr = content.parse::<Expr>()?;
-    if !content.is_empty() {
-        return Err(content.error("view! interpolation accepts exactly one expression"));
+    Err(input.error("view! expected `;` or `=> { ... }` after the child expression"))
+}
+
+fn reject_trailing_semicolon(input: ParseStream<'_>, construct: &str) -> Result<()> {
+    if input.peek(Token![;]) {
+        return Err(input.error(format!(
+            "view! {construct} does not take a trailing `;`; remove this semicolon"
+        )));
     }
-    let span = expr.span();
-    Ok(Child::Interpolation { expr, span })
+    Ok(())
 }
 
 fn parse_for(input: ParseStream<'_>) -> Result<ForChild> {
@@ -78,7 +112,7 @@ fn parse_for(input: ParseStream<'_>) -> Result<ForChild> {
     let pattern = input.call(Pat::parse_multi_with_leading_vert)?;
     input.parse::<Token![in]>()?;
     let iter = input.call(Expr::parse_without_eager_brace)?;
-    let body = parse_child_block(input)?;
+    let body = parse_child_block(input, "view! `for` child requires a braced child list")?;
 
     Ok(ForChild {
         for_token,
@@ -97,7 +131,10 @@ fn parse_if(input: ParseStream<'_>) -> Result<IfChild> {
         if input.peek(Token![if]) {
             branches.push(parse_if_branch(input)?);
         } else {
-            else_body = Some(parse_child_block(input)?);
+            else_body = Some(parse_child_block(
+                input,
+                "view! `else` child requires a braced child list",
+            )?);
             break;
         }
     }
@@ -111,7 +148,7 @@ fn parse_if(input: ParseStream<'_>) -> Result<IfChild> {
 fn parse_if_branch(input: ParseStream<'_>) -> Result<IfBranch> {
     let if_token = input.parse::<Token![if]>()?;
     let condition = input.call(Expr::parse_without_eager_brace)?;
-    let body = parse_child_block(input)?;
+    let body = parse_child_block(input, "view! `if` child requires a braced child list")?;
 
     Ok(IfBranch {
         if_token,
@@ -123,6 +160,9 @@ fn parse_if_branch(input: ParseStream<'_>) -> Result<IfBranch> {
 fn parse_match(input: ParseStream<'_>) -> Result<MatchChild> {
     let match_token = input.parse::<Token![match]>()?;
     let expr = input.call(Expr::parse_without_eager_brace)?;
+    if !input.peek(syn::token::Brace) {
+        return Err(input.error("view! `match` child requires braced match arms"));
+    }
     let content;
     braced!(content in input);
 
@@ -137,7 +177,7 @@ fn parse_match(input: ParseStream<'_>) -> Result<MatchChild> {
             None
         };
         content.parse::<Token![=>]>()?;
-        let body = parse_child_block(&content)?;
+        let body = parse_child_block(&content, "view! match arm body must be a braced child list")?;
         arms.push(MatchArm {
             pattern,
             guard,
@@ -161,72 +201,104 @@ mod tests {
     use super::*;
     use quote::quote;
 
+    fn parse_error(tokens: proc_macro2::TokenStream) -> syn::Error {
+        match syn::parse2::<ViewInput>(tokens) {
+            Ok(_) => panic!("input unexpectedly parsed"),
+            Err(error) => error,
+        }
+    }
+
     #[test]
-    fn parses_nested_nodes_interpolation_and_control_flow() {
+    fn parses_values_parents_blocks_and_control_flow() {
         let input: ViewInput = syn::parse2(quote! {
-            cx, Root::new() => {
-                Leaf::new() => {}
-                { existing }
-                for item in items {
-                    Row::new(item) => {}
-                }
-                if enabled {
-                    Leaf::new() => {}
-                } else if fallback {
-                    Leaf::new() => {}
-                } else {
-                    Leaf::new() => {}
-                }
+            cx; Root::new() => {
+                Leaf::new();
+                existing;
+                { let value = 1; Leaf::new(value) };
+                for item in items { Row::new(item); }
+                if enabled { Leaf::new(); } else if fallback { Leaf::new(); } else { Leaf::new(); }
                 match choice {
-                    Some(value) if value > 0 => { Row::new(value) => {} },
+                    Some(value) if value > 0 => { Row::new(value); },
                     None => {}
                 }
             }
         })
         .unwrap();
 
-        assert_eq!(input.root.children.len(), 5);
-        assert!(matches!(input.root.children[0], Child::Node(_)));
-        assert!(matches!(
-            input.root.children[1],
-            Child::Interpolation { .. }
-        ));
-        assert!(matches!(input.root.children[2], Child::For(_)));
-        assert!(matches!(input.root.children[3], Child::If(_)));
-        assert!(matches!(input.root.children[4], Child::Match(_)));
+        let Root::Parent(root) = input.root else {
+            panic!("parent root unexpectedly parsed as a value");
+        };
+        assert_eq!(root.children.len(), 6);
+        assert!(matches!(root.children[0], Child::Value { .. }));
+        assert!(matches!(root.children[1], Child::Value { .. }));
+        assert!(matches!(root.children[2], Child::Value { .. }));
+        assert!(matches!(root.children[3], Child::For(_)));
+        assert!(matches!(root.children[4], Child::If(_)));
+        assert!(matches!(root.children[5], Child::Match(_)));
     }
 
     #[test]
-    fn parses_struct_literals_in_component_expressions() {
-        let input: ViewInput = syn::parse2(quote! {
-            cx, Root { label: "root" } => { Leaf { value: 1 } => {} }
+    fn parses_leaf_root_and_struct_literals() {
+        let leaf: ViewInput = syn::parse2(quote! { cx; Leaf::new(); }).unwrap();
+        assert!(matches!(leaf.root, Root::Value { .. }));
+
+        let parent: ViewInput = syn::parse2(quote! {
+            cx; Root { label: "root" } => { Leaf { value: 1 }; }
         })
         .unwrap();
+        let Root::Parent(root) = parent.root else {
+            panic!("struct-literal root unexpectedly parsed as a value");
+        };
+        assert_eq!(root.children.len(), 1);
+    }
 
-        assert_eq!(input.root.children.len(), 1);
+    #[test]
+    fn parenthesized_control_flow_is_a_value() {
+        let input: ViewInput = syn::parse2(quote! {
+            cx; Root::new() => {
+                (if enabled { one() } else { two() });
+                ({ match choice { Some(value) => value, None => fallback } });
+            }
+        })
+        .unwrap();
+        let Root::Parent(root) = input.root else {
+            panic!("parent root unexpectedly parsed as a value");
+        };
+        assert!(
+            root.children
+                .iter()
+                .all(|child| matches!(child, Child::Value { .. }))
+        );
+    }
+
+    #[test]
+    fn rejects_old_separator_with_migration_diagnostic() {
+        let error = parse_error(quote! { cx, Root::new(); });
+        assert!(error.to_string().contains("replace this `,` with `;`"));
     }
 
     #[test]
     fn rejects_a_second_root() {
-        let error = match syn::parse2::<ViewInput>(quote! {
-            cx, Root::new() => {} Other::new() => {}
-        }) {
-            Ok(_) => panic!("second root unexpectedly parsed"),
-            Err(error) => error,
-        };
-
+        let error = parse_error(quote! {
+            cx; Root::new() => {} Other::new();
+        });
         assert!(error.to_string().contains("exactly one root"));
     }
 
     #[test]
-    fn rejects_non_block_child_body() {
-        let error = match syn::parse2::<ViewInput>(quote! {
-            cx, Root::new() => Leaf::new()
-        }) {
-            Ok(_) => panic!("non-block child body unexpectedly parsed"),
-            Err(error) => error,
-        };
+    fn rejects_non_block_child_body_and_trailing_parent_semicolon() {
+        let body_error = parse_error(quote! {
+            cx; Root::new() => Leaf::new();
+        });
+        assert!(body_error.to_string().contains("braced child list"));
 
-        assert!(error.to_string().contains("expected curly braces"));
+        let semicolon_error = parse_error(quote! {
+            cx; Root::new() => {};
+        });
+        assert!(
+            semicolon_error
+                .to_string()
+                .contains("do not take a trailing")
+        );
     }
 }

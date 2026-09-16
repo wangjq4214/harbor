@@ -1,11 +1,11 @@
-error: view! accepts exactly one root
- --> tests/ui/fail/multiple_roots.rs:7:45
-  |
-7 |     let _ = view! { &mut cx; Column::new(); Column::new(); };
-  |                                             ^^^^^^
+error: view! match arm body must be a braced child list
+  --> tests/ui/fail/invalid_match_body.rs:11:32
+   |
+11 |                 Some(value) => value,
+   |                                ^^^^^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/multiple_roots.rs:2:5
+ --> tests/ui/fail/invalid_match_body.rs:2:5
   |
 2 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

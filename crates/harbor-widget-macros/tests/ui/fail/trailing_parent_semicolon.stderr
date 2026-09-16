@@ -1,0 +1,13 @@
+error: view! parent roots do not take a trailing `;`; remove this semicolon
+ --> tests/ui/fail/trailing_parent_semicolon.rs:7:49
+  |
+7 |     let _ = view! { &mut cx; Column::new() => {}; };
+  |                                                 ^
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/trailing_parent_semicolon.rs:2:5
+  |
+2 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

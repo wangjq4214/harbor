@@ -1,0 +1,13 @@
+error: view! control-flow child does not take a trailing `;`; remove this semicolon
+  --> tests/ui/fail/trailing_control_flow_semicolon.rs:10:23
+   |
+10 |             if true {};
+   |                       ^
+
+warning: unused import: `harbor_widget::widgets::column::Column`
+ --> tests/ui/fail/trailing_control_flow_semicolon.rs:2:5
+  |
+2 | use harbor_widget::widgets::column::Column;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -739,7 +739,7 @@ Project domain concepts and terminology.
   - communicates with Harbor Widget Runtime
 
 ### Widget View Macro
-- **Definition:** An internal experimental Rust-style `view!(cx, {...})` function-like procedural macro that expands ordinary widget constructor expressions and declarative child nesting into the existing Component/View build model without adding runtime semantics.
+- **Definition:** An internal experimental Rust-style `view! { cx; root }` procedural macro that uses semicolon-terminated ordinary Rust expressions for child values, `expression => { children }` for child-bearing components, and bare `for`/`if`/`match` only to organize child lists. It expands into the existing Component/View build model without adding runtime semantics; roots are Components, while child values convert through `IntoChildView`.
 - **Synonyms:** view! DSL
 - **Relationships:**
   - produces View

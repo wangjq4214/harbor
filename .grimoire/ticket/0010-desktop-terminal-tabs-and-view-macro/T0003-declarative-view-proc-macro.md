@@ -6,7 +6,7 @@
 
 ## Goal
 
-Harbor screens can express nested static and dynamic widget trees with an internal experimental `view!(cx, component => { children })` macro that expands to the existing Component/View model.
+Harbor screens can express nested static and dynamic widget trees with an internal experimental `view! { cx; root }` macro that uses ordinary Rust value expressions, explicit parent child lists, and child-list control flow while expanding to the existing Component/View model.
 
 ## Layers
 
@@ -17,12 +17,11 @@ Harbor screens can express nested static and dynamic widget trees with an intern
 
 ## Approach
 
-1. Parse one explicit BuildCx expression and one root component expression separated from children by `=>`.
-2. Support nested nodes, empty children, `{ expression }`, `for`, `if/else`, and `match`.
-3. Build the root concretely with the supplied context and convert children to deferred Views.
-4. Generate calls only through `harbor_widget::__macro_support`; the macro crate must not depend on `harbor-widget`.
-5. Keep constructors, builder methods, callbacks, clones, moves, hooks, and keys as ordinary explicit Rust.
-6. Preserve useful spans and let Rust report type/ownership/method errors where possible.
+1. Parse one explicit BuildCx expression and one Component root separated by `;`.
+2. Support `expression;` child values, `expression => { children }` parents, ordinary Rust blocks, and bare child-list `for`/`if`/`match`.
+3. Generate calls only through `harbor_widget::__macro_support`; the macro crate must not depend on `harbor-widget`.
+4. Keep constructors, builder methods, callbacks, clones, moves, hooks, and keys as ordinary explicit Rust.
+5. Preserve useful spans and let Rust report type/ownership/method errors where possible.
 
 ## Blocked by
 
@@ -35,9 +34,9 @@ Harbor screens can express nested static and dynamic widget trees with an intern
 ## Acceptance
 
 - [ ] Static leaf, single-child, and multi-child trees compile and match handwritten View/Fiber structure.
-- [ ] Interpolation and nested `for`/`if`/`match` preserve child order and explicit keys.
+- [ ] Ordinary value expressions and nested `for`/`if`/`match` preserve child order and explicit keys.
 - [ ] The macro performs no implicit clone, move closure, hook, state, key, or resource registration.
-- [ ] Invalid arrows/blocks, multiple roots, invalid interpolation, and non-Component children have focused compile-fail coverage.
+- [ ] Old separators/interpolation, malformed terminators/blocks, multiple roots, and non-Component values have focused compile-fail coverage.
 - [ ] Renamed dependency or internal-crate use resolves generated paths according to the chosen support policy.
 - [ ] Macro-authored and handwritten fixtures produce equivalent layout, event targets, and scene output.
 - [ ] Handwritten builder APIs remain fully usable without the macro.

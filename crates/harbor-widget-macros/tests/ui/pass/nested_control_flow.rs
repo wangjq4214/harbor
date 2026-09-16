@@ -11,21 +11,28 @@ fn main() {
     let visible = true;
     let choice = Some(Size::new(9.0, 10.0));
 
-    let _root = view!(&mut cx, Column::new() => {
-        SizedBox::new(Size::new(1.0, 2.0)) => {}
-        { existing }
-        for size in sizes {
-            SizedBox::new(size).keyed(size.width.to_string()) => {}
+    let _root = view! {
+        &mut cx;
+        Column::new() => {
+            SizedBox::new(Size::new(1.0, 2.0));
+            existing;
+            {
+                let size = Size::new(2.0, 3.0);
+                SizedBox::new(size)
+            };
+            for size in sizes {
+                SizedBox::new(size).keyed(size.width.to_string());
+            }
+            if visible {
+                SizedBox::new(Size::new(11.0, 12.0));
+            } else {
+                SizedBox::new(Size::new(13.0, 14.0));
+            }
+            match choice {
+                Some(size) if size.width > 0.0 => { SizedBox::new(size); },
+                None => {}
+                Some(_) => {}
+            }
         }
-        if visible {
-            SizedBox::new(Size::new(11.0, 12.0)) => {}
-        } else {
-            SizedBox::new(Size::new(13.0, 14.0)) => {}
-        }
-        match choice {
-            Some(size) if size.width > 0.0 => { SizedBox::new(size) => {} },
-            None => {}
-            Some(_) => {}
-        }
-    });
+    };
 }

@@ -8,7 +8,7 @@
 
 Harbor must support multiple independent terminal sessions in one main window, selected from a responsive vertical tab rail. Each tab retains its own Terminal and PTY lifecycle, while only the active tab receives input and terminal painting. The implementation must add the minimum reusable `harbor-widget` layout, interaction, styling, scrolling, and keyed-reconciliation capabilities required by this product slice.
 
-Harbor must also provide an internal experimental Rust-style `view!(cx, ...)` procedural macro so nested widget trees, dynamic tab children, and conditional composition can be expressed without long fluent `.child(...)` chains. The macro is syntax sugar over ordinary widget constructors and the existing Component/View runtime; it must not introduce a second state, lifecycle, layout, or event model.
+Harbor must also provide an internal experimental Rust-style `view! { cx; root }` procedural macro so nested widget trees, dynamic tab children, and conditional composition can be expressed without long fluent `.child(...)` chains. The macro is syntax sugar over ordinary Rust expressions and the existing Component/View runtime; it must not introduce a second state, lifecycle, layout, or event model.
 
 The initial target is Windows-first desktop behavior. Mobile navigation, touch-first tab gestures, and a stable third-party widget DSL are not required.
 
@@ -94,47 +94,47 @@ The macro is initially an internal experimental API. The architecture non-goal o
 
 ### Syntax
 
-The macro accepts an explicit build context, an ordinary Rust widget-constructor expression, and `=>`-delimited children:
+The macro accepts exactly one root after a context expression separated by `;`. Ordinary child values are Rust expressions terminated by `;`; child-bearing components use `expression => { children }`; bare `for`, `if`/`else`, and `match` organize child lists:
 
 ```rust
 fn build(&self, cx: &mut BuildCx) -> View {
-    view!(cx,
+    view! {
+        cx;
         Flex::horizontal().gap(1.0) => {
-            ConstrainedBox::new().min_width(56.0).max_width(self.rail_width) => {
+            ConstrainedBox::new()
+                .min_width(56.0)
+                .max_width(self.rail_width) => {
                 TabRail::new() => {
                     ScrollArea::vertical() => {
                         for tab in self.tabs.iter() {
                             TabItem::new(tab.title.clone())
                                 .selected(tab.id == self.active)
                                 .on_select(self.select_tab(tab.id))
-                                .keyed(tab.id)
-                            => {}
+                                .keyed(tab.id);
                         }
                     }
                 }
             }
 
-            Separator::vertical() => {}
-
+            Separator::vertical();
             Expanded::new() => {
-                { self.active_bridge.clone() }
+                self.active_bridge.clone();
             }
         }
-    )
+    }
 }
 ```
 
-`=>` is mandatory between a component expression and its child block so arbitrary Rust method chains and closures remain parseable without the macro knowing widget constructors or property metadata.
-
+Rust blocks are ordinary expressions and require a trailing semicolon when used as child values. `=>` is reserved for components that receive a braced child list. Parenthesized or block-wrapped `if` and `match` retain ordinary Rust value-expression semantics.
 ### Expansion semantics
 
-- The root component is built with the supplied `BuildCx` and returns the concrete root `View` expected by `Component::build`.
-- Child component expressions become deferred child Views.
-- `{ expression }` converts an existing component/View/children value through explicit support traits without cloning or changing closure capture.
-- `for`, `if/else`, and `match` normalize their produced children into ordered `View` values.
-- Empty child blocks are valid.
+- A root value is a Component built directly with the supplied `BuildCx`; an already-built `View` is supported only as a child value.
+- `expression;` evaluates once and converts through `IntoChildView`, preserving deferred Component children and existing Views.
+- `expression => { children }` constructs children first, attaches them through `WithChildren`, then converts or builds the component according to root/child position.
+- Bare `for`, `if/else`, and `match` write selected values into the current ordered `Children` collector; collections are expanded explicitly with a loop.
+- Empty parent child lists are valid, while value statements do not call `WithChildren` with an empty list.
 - `keyed(...)` is an ordinary Rust extension method, not macro-only syntax.
-- The macro preserves source spans and delegates widget constructor, method, callback, ownership, and lifetime errors to Rust whenever possible.
+- The macro preserves source spans and delegates ordinary expression, method, trait, ownership, and lifetime errors to Rust whenever possible.
 - The macro performs no implicit `clone`, `move`, state creation, hook invocation, event binding, or resource registration.
 
 ### Macro support API
@@ -151,8 +151,8 @@ Single-child widgets reject more than one attached child with a diagnostic tied 
 
 ### Macro test contract
 
-- Expansion tests cover leaf, single-child, multi-child, interpolation, nested control flow, empty lists, and stable keys.
-- `trybuild` compile-fail cases cover malformed arrows/blocks, multiple roots, invalid interpolation, non-Component values, non-static borrowed callbacks, and invalid child cardinality where compile-time diagnosis is possible.
+- Parser and expansion tests cover leaf and parent roots, value and parent children, Rust blocks, struct literals, wrapped value control flow, bare child-list control flow, empty lists, and stable generated names.
+- `trybuild` pass/fail cases cover expression forms, renamed dependencies, the old separator/interpolation rejection, malformed terminators and child blocks, multiple roots, trailing semicolons, non-Component values, and the Component-only root bound.
 - Runtime equivalence tests compare macro and handwritten trees for widget type, key, Fiber order, layout, event routing, and scene output.
 - `cargo expand` snapshots may aid review but are not the sole correctness evidence.
 
@@ -264,8 +264,8 @@ A layout observer or equivalent post-layout effect reports the active terminal c
 
 ### Use a thin internal Rust-style procedural macro
 
-- **Choice:** `view!(cx, expression => { children })` expands ordinary constructors and child attachment through public support traits.
-- **Reason:** It improves tree readability while retaining Rust ownership/type errors and one Component/View runtime model.
+- **Choice:** `view! { cx; root }` uses `expression;` for one child value, `expression => { children }` for child-bearing components, and bare control flow only within child lists.
+- **Reason:** It improves tree readability while retaining ordinary Rust expressions, explicit ownership/type errors, and one Component/View runtime model.
 
 ### Keep macro keying explicit
 
