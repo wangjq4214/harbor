@@ -31,6 +31,7 @@ fn glyph(_: char) -> Option<crate::text::AtlasGlyph> {
         height: 8,
         bearing_x: 0,
         bearing_y: 8,
+        advance_width: 8.0,
         atlas_x: 0,
         atlas_y: 0,
     })

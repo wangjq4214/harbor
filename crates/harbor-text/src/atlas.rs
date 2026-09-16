@@ -79,6 +79,8 @@ pub struct AtlasGlyph {
     pub bearing_x: i32,
     /// Vertical offset from glyph origin to top edge of bitmap.
     pub bearing_y: i32,
+    /// Horizontal advance in physical pixels at this glyph's raster size.
+    pub advance_width: f32,
     /// Pixel x position within the fixed-size atlas.
     pub atlas_x: u32,
     /// Pixel y position within the fixed-size atlas.
@@ -231,6 +233,7 @@ impl AtlasStore {
                 height: glyph.metrics.height as u32,
                 bearing_x: glyph.metrics.bearing_x,
                 bearing_y: glyph.metrics.bearing_y,
+                advance_width: glyph.metrics.advance_width,
                 atlas_x: x,
                 atlas_y: y,
             },
@@ -526,19 +529,19 @@ mod tests {
     }
 
     #[test]
-    fn rasterize_new_skips_spaces_with_zero_width() {
+    fn rasterize_new_retains_metric_only_space() {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
 
-        // Space char produces zero-width bitmap; atlas should skip it.
-        let chars: Vec<char> = vec!['a', ' ', 'b'];
-        let result = atlas.rasterize_new(&fonts, &chars);
+        let result = atlas.rasterize_new(&fonts, &['a', ' ', 'b']);
 
-        // 'a' and 'b' added; space rasterized but skipped (width 0).
-        assert_eq!(result.new_keys.len(), 3); // space also returned as "new" but has width 0
-        // Caller should pre-filter spaces; this test confirms atlas doesn't crash.
+        assert_eq!(result.new_keys.len(), 3);
+        let space = atlas
+            .glyph_by_char(' ')
+            .expect("space metrics should remain in the atlas");
+        assert_eq!((space.width, space.height), (0, 0));
+        assert!(space.advance_width > 0.0);
     }
-
     #[test]
     fn cached_atlas_reuses_existing_glyphs() {
         let fonts = test_font_book();
@@ -1135,17 +1138,37 @@ mod tests {
     // ── AtlasGlyph bearing fields tests ──────────────────────────────
 
     #[test]
-    fn should_store_bearing_fields_in_atlas_glyph() {
+    fn should_store_bearing_and_advance_fields_in_atlas_glyph() {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
         let _ = atlas.rasterize_new(&fonts, &['A']);
         let glyph = atlas.glyph_by_char('A').expect("A should be in atlas");
-        // bearing_x and bearing_y should be set (exact values depend on the font).
-        // Just verify the fields are accessible and the struct is coherent.
+        let key = expect_key(fonts.resolve('A', FONT_SIZE, FontStyle::REGULAR));
+        let (bounds, _) = fonts.rasterize_from_key(key);
+
+        assert_eq!(
+            glyph.advance_width.to_bits(),
+            bounds.advance_width.to_bits()
+        );
         let _ = glyph.bearing_x;
         let _ = glyph.bearing_y;
         assert!(glyph.width > 0, "A glyph should have positive width");
         assert!(glyph.height > 0, "A glyph should have positive height");
+    }
+
+    #[test]
+    fn rebuild_preserves_glyph_advance_width() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        atlas.rebuild(&fonts, &['W']);
+        let glyph = atlas.glyph_by_char('W').expect("W should be in atlas");
+        let key = expect_key(fonts.resolve('W', FONT_SIZE, FontStyle::REGULAR));
+        let (bounds, _) = fonts.rasterize_from_key(key);
+
+        assert_eq!(
+            glyph.advance_width.to_bits(),
+            bounds.advance_width.to_bits()
+        );
     }
 
     #[test]

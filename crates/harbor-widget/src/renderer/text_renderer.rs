@@ -491,4 +491,28 @@ mod tests {
         assert!((snapped.x * 1.25 - 13.0).abs() < f32::EPSILON);
         assert!((snapped.y * 1.25 - 5.0).abs() < f32::EPSILON);
     }
+
+    #[test]
+    fn proportional_glyph_origins_each_land_on_the_physical_pixel_grid() {
+        let run_origin = Point::new(10.2, 3.6);
+        let proportional_offsets = [0.0, 4.25, 13.0];
+
+        for scale in [1.25, 1.5] {
+            let origins: Vec<Point> = proportional_offsets
+                .into_iter()
+                .map(|offset| {
+                    snap_origin_to_physical_pixel_grid(
+                        Point::new(run_origin.x + offset, run_origin.y),
+                        scale,
+                    )
+                })
+                .collect();
+
+            for origin in &origins {
+                assert!((origin.x * scale - (origin.x * scale).round()).abs() < f32::EPSILON);
+                assert!((origin.y * scale - (origin.y * scale).round()).abs() < f32::EPSILON);
+            }
+            assert!(origins.windows(2).all(|pair| pair[0].x < pair[1].x));
+        }
+    }
 }

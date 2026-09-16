@@ -2064,6 +2064,7 @@ mod tests {
                 height: 16,
                 bearing_x: 0,
                 bearing_y: 12,
+                advance_width: 8.0,
                 atlas_x: 0,
                 atlas_y: 0,
             })

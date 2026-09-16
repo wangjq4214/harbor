@@ -102,9 +102,9 @@ impl WidgetTextAtlas {
         }
     }
 
-    /// Ensures every non-space character from the supplied retained text exists
-    /// at the physical raster density for `scale_factor`. Returns the current
-    /// UV-layout revision.
+    /// Ensures every character from the supplied retained text exists at the
+    /// physical raster density for `scale_factor`. Returns the current UV-layout
+    /// revision. Metric-only glyphs such as spaces remain available for layout.
     pub fn ensure_scene_text<'a>(
         &mut self,
         owner: RuntimeId,
@@ -238,11 +238,7 @@ impl WidgetTextAtlas {
 }
 
 fn collect_unique_chars<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<char> {
-    let mut chars: Vec<char> = texts
-        .into_iter()
-        .flat_map(str::chars)
-        .filter(|ch| *ch != ' ')
-        .collect();
+    let mut chars: Vec<char> = texts.into_iter().flat_map(str::chars).collect();
     chars.sort_unstable();
     chars.dedup();
     chars
@@ -270,10 +266,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scene_text_collection_deduplicates_and_skips_spaces() {
+    fn scene_text_collection_deduplicates_and_keeps_spaces() {
         assert_eq!(
             collect_unique_chars(["B A", "AB", "中中"]),
-            vec!['A', 'B', '中']
+            vec![' ', 'A', 'B', '中']
         );
     }
 

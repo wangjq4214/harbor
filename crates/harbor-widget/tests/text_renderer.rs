@@ -190,6 +190,7 @@ fn solid_glyph() -> AtlasGlyph {
         height: 32,
         bearing_x: 0,
         bearing_y: 0,
+        advance_width: 32.0,
         atlas_x: 0,
         atlas_y: 0,
     }
