@@ -4306,6 +4306,47 @@ fn should_preserve_wrapped_flag_when_margin_erase_covers_active_region() {
 }
 
 #[test]
+fn should_preserve_focus_reporting_state_across_alt_screen_swaps() {
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(1004, true);
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Gained));
+
+    screen.enter_alt(false);
+    assert_eq!(screen.mode_status(true, 1004), ModeStatus::Set);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Gained));
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Lost));
+
+    screen.exit_alt();
+    assert_eq!(screen.mode_status(true, 1004), ModeStatus::Set);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Lost));
+
+    screen.enter_alt(false);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Lost));
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Gained));
+    screen.exit_alt();
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Gained));
+}
+
+#[test]
+fn should_reset_focus_reporting_only_on_hard_reset() {
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(1004, true);
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Lost));
+
+    screen.soft_reset();
+    assert_eq!(screen.mode_status(true, 1004), ModeStatus::Set);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Lost));
+
+    screen.reset_display();
+    assert_eq!(screen.mode_status(true, 1004), ModeStatus::Reset);
+    screen.set_private_mode(1004, true);
+    assert!(
+        screen.observe_focus(crate::TerminalFocusEvent::Lost),
+        "RIS must clear the observed focus baseline"
+    );
+}
+
+#[test]
 fn should_be_eligible_when_synchronized_output_is_default() {
     // Arrange
     let screen = Screen::new(2, 8);

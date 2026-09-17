@@ -740,7 +740,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 17.7 Other Modern Modes
 
-* [ ] `?1004` — Focus Reporting
+* [x] `?1004` — Focus Reporting
 * [x] `?2004` — Bracketed Paste
 * [x] `?2026` — Synchronized Output
 
@@ -797,7 +797,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Reset tab stops
 * [ ] Reset mouse modes
 * [x] Reset bracketed paste
-* [ ] Reset focus reporting
+* [x] Reset focus reporting
 * [ ] Reset synchronized output
 * [x] Exit alternate screen
 * [x] Clear pending wrap
@@ -1176,10 +1176,10 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 28.5 Focus Reporting
 
-* [ ] Sends `CSI I` on focus gained
-* [ ] Sends `CSI O` on focus lost
-* [ ] Only sent when `?1004` is enabled
-* [ ] Duplicate focus events can be deduplicated per policy
+* [x] Sends `CSI I` on focus gained
+* [x] Sends `CSI O` on focus lost
+* [x] Only sent when `?1004` is enabled
+* [x] Duplicate focus events can be deduplicated per policy
 
 ---
 

@@ -513,9 +513,15 @@ impl Terminal {
                     return Ok(outcome);
                 }
             }
-            TerminalEvent::Focus(TerminalFocusEvent::Lost) => {
-                outcome = self.pointer.cancel();
-                self.io.set_suppress_scroll_snap(false);
+            TerminalEvent::Focus(focus) => {
+                if matches!(focus, TerminalFocusEvent::Lost) {
+                    outcome = self.pointer.cancel();
+                    self.io.set_suppress_scroll_snap(false);
+                }
+                let wrote =
+                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                self.maybe_reset_blink(before, wrote);
+                return Ok(outcome);
             }
             _ => {
                 let wrote =

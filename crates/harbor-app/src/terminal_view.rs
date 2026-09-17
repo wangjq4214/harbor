@@ -706,6 +706,11 @@ mod tests {
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Gained)),
             Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
         );
+
+        assert_eq!(
+            terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::GainedVisible)),
+            Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Pointer(PointerEvent::new(
                 Point::new(1.0, 2.0),

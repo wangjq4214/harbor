@@ -284,6 +284,14 @@ impl TerminalIo {
     ) -> anyhow::Result<bool> {
         self.drain(screen);
 
+        if let TerminalEvent::Focus(focus) = &event {
+            if screen.observe_focus(*focus) {
+                self.write_pty(TerminalInputEncoder::encode_focus(*focus))?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
         if matches!(&event, TerminalEvent::Pointer(_))
             && screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
         {

@@ -3,14 +3,21 @@
 use crate::InputModes;
 use crate::model::MouseTrackingMode;
 use crate::types::{
-    TerminalEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
-    TerminalPointerEvent, TerminalPointerPhase,
+    TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
 };
 
-/// Encodes supported terminal keyboard events against the terminal's current modes.
+/// Encodes supported terminal input events for the direct PTY path.
 pub(super) struct TerminalInputEncoder;
 
 impl TerminalInputEncoder {
+    pub(super) const fn encode_focus(event: TerminalFocusEvent) -> &'static [u8] {
+        match event {
+            TerminalFocusEvent::Gained => b"\x1b[I",
+            TerminalFocusEvent::Lost => b"\x1b[O",
+        }
+    }
+
     pub(super) fn encode(event: &TerminalEvent, modes: InputModes) -> Option<Vec<u8>> {
         match event {
             TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
@@ -276,6 +283,18 @@ mod tests {
 
     fn key_down(key: TerminalKey, modifiers: TerminalModifiers) -> TerminalEvent {
         TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers })
+    }
+
+    #[test]
+    fn should_encode_focus_transitions_as_fixed_csi_sequences() {
+        assert_eq!(
+            TerminalInputEncoder::encode_focus(TerminalFocusEvent::Gained),
+            b"\x1b[I"
+        );
+        assert_eq!(
+            TerminalInputEncoder::encode_focus(TerminalFocusEvent::Lost),
+            b"\x1b[O"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@
 mod cursor;
 mod default_colors;
 mod edit;
+mod focus_reporting;
 mod hyperlink;
 mod reader;
 mod synchronized_output;
@@ -26,6 +27,7 @@ use harbor_parser::Params;
 
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
+use self::focus_reporting::FocusReporting;
 use self::synchronized_output::SynchronizedOutput;
 use harbor_config::{Palette, Rgba};
 use hyperlink::HyperlinkRegistry;
@@ -101,6 +103,8 @@ pub struct Screen {
     parked_alt: Option<Box<Screen>>,
     /// Outgoing VT replies buffer.
     pub(crate) replies: Vec<u8>,
+    /// Session-owned `?1004` mode and latest observed native-window focus.
+    focus_reporting: FocusReporting,
     /// Session-owned `?2026` nesting; preserved across alt-screen swap.
     synchronized_output: SynchronizedOutput,
     /// Startup and active OSC default colors, owned by the terminal session.
@@ -124,6 +128,7 @@ impl Screen {
             saved_primary: None,
             parked_alt: None,
             replies: Vec::new(),
+            focus_reporting: FocusReporting::default(),
             synchronized_output: SynchronizedOutput::default(),
             default_colors: DefaultColors::new(palette),
         }
@@ -459,6 +464,7 @@ impl Screen {
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
+        let focus_reporting = self.focus_reporting;
         let default_colors = self.default_colors;
         // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
@@ -476,12 +482,14 @@ impl Screen {
         self.default_colors = default_colors;
         self.saved_primary = Some(Box::new(primary));
         self.replies = replies;
+        self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
     }
 
     pub fn exit_alt(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
+        let focus_reporting = self.focus_reporting;
         let default_colors = self.default_colors;
         if let Some(primary) = self.saved_primary.take() {
             // Preserve the alternate-screen contents for a later `?47` re-entry.
@@ -500,6 +508,7 @@ impl Screen {
             self.mark_all_dirty();
         }
         self.replies = replies;
+        self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
         debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
@@ -583,6 +592,7 @@ impl Screen {
 
     pub fn set_private_mode(&mut self, param: usize, enabled: bool) {
         match param {
+            FocusReporting::MODE => self.focus_reporting.set_enabled(enabled),
             47 => {
                 if enabled {
                     self.request_alt_enter(false);
@@ -635,6 +645,7 @@ impl Screen {
     pub(crate) fn mode_status(&self, private: bool, param: usize) -> ModeStatus {
         let enabled = if private {
             match param {
+                FocusReporting::MODE => return self.focus_reporting.mode_status(),
                 47 | 1047 | 1049 => Some(self.is_alt()),
                 1048 => Some(self.cursor.cursor.saved.is_some()),
                 SynchronizedOutput::MODE => return self.synchronized_output.mode_status(),
@@ -652,6 +663,10 @@ impl Screen {
 
     pub(crate) fn ordinary_present_eligible(&self) -> bool {
         self.synchronized_output.ordinary_present_eligible()
+    }
+
+    pub(crate) fn observe_focus(&mut self, event: crate::TerminalFocusEvent) -> bool {
+        self.focus_reporting.observe(event)
     }
 
     pub(crate) fn clear_synchronized_output(&mut self) {
@@ -1156,6 +1171,7 @@ impl Screen {
 
     pub fn reset_display(&mut self) {
         self.synchronized_output.clear();
+        self.focus_reporting.reset_for_ris();
         self.alt_request = None;
         self.saved_primary = None;
         self.parked_alt = None;

@@ -236,3 +236,12 @@
   - belongs to Terminal
   - communicates with Application Business Host
   - depends on Parser Retention Limits
+
+### Focus Reporting
+- **Definition:** DEC private mode `?1004` makes Harbor send `CSI I` after a real host focus gain and `CSI O` after a real host focus loss. Enabling the mode emits no synthetic report; repeated observations of the same focus state are suppressed, while genuine alternating transitions are preserved. Harbor continues tracking observed focus while reporting is disabled, preserves that observation across alternate-screen transitions, and clears both the mode and observed state on RIS.
+- **Synonyms:** focus tracking, DECSET focus reporting
+- **Relationships:**
+  - belongs to Terminal
+  - communicates with Runtime Host
+  - references RIS
+  - references Alternate-Screen Mode Family

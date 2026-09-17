@@ -2061,6 +2061,38 @@ fn pty_reader_output_is_drained_fifo_coalesces_wakes_and_refreshes_snapshot() {
 }
 
 #[test]
+fn focus_event_drains_queued_mode_and_reset_changes_before_reporting() {
+    let cases: &[(&[u8], &[u8])] = &[
+        (b"\x1b[?1004h", b"\x1b[I"),
+        (b"\x1b[?1004h\x1b[?1004l", b""),
+        (b"\x1b[?1004h\x1bc", b""),
+    ];
+
+    for &(queued, expected) in cases {
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let reader = CompletedScriptedReader {
+            chunks: std::collections::VecDeque::from([queued.to_vec()]),
+            completed: completed_tx,
+        };
+        let (mut terminal, written, wake_rx) = terminal_with_io(reader);
+        wait_for_pty_wake(&wake_rx);
+        completed_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reader should queue mode bytes before the focus event");
+
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+            .unwrap();
+
+        assert_eq!(
+            written.lock().unwrap().as_slice(),
+            expected,
+            "unexpected focus report after queued bytes {queued:?}"
+        );
+    }
+}
+
+#[test]
 fn direct_widget_input_writes_all_encoded_bytes() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
@@ -2104,6 +2136,137 @@ fn direct_widget_input_writes_all_encoded_bytes() {
         written.lock().unwrap().as_slice(),
         [b"\x03".as_slice(), "語".as_bytes(), b"\x1bx".as_slice()].concat()
     );
+}
+
+#[test]
+fn focus_reporting_writes_only_enabled_real_transitions() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+    terminal.process_output(b"\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+    assert!(written.lock().unwrap().is_empty());
+
+    for event in [
+        TerminalFocusEvent::Lost,
+        TerminalFocusEvent::Lost,
+        TerminalFocusEvent::Gained,
+    ] {
+        terminal.handle_event(TerminalEvent::Focus(event)).unwrap();
+    }
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[O\x1b[I");
+
+    terminal.process_output(b"\x1b[?1004l");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+    terminal.process_output(b"\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[O\x1b[I");
+}
+#[test]
+fn ris_disables_focus_reporting_and_clears_the_observed_edge() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[O");
+
+    terminal.process_output(b"\x1bc\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[O\x1b[O",
+        "RIS must clear the previously observed Lost edge"
+    );
+
+    terminal.process_output(b"\x1bc");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+    terminal.process_output(b"\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[O\x1b[O",
+        "the disabled observation after RIS must become the new baseline"
+    );
+}
+
+#[test]
+fn focus_reporting_state_survives_parser_driven_alt_screen_families() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?1004h");
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+
+    for enter in [b"\x1b[?1049h".as_slice(), b"\x1b[?1047h", b"\x1b[?47h"] {
+        terminal.process_output(enter);
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+            .unwrap();
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+            .unwrap();
+        terminal.process_output(match enter {
+            b"\x1b[?1049h" => b"\x1b[?1049l",
+            b"\x1b[?1047h" => b"\x1b[?1047l",
+            _ => b"\x1b[?47l",
+        });
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+            .unwrap();
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+            .unwrap();
+    }
+
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[I\x1b[O\x1b[I\x1b[O\x1b[I\x1b[O\x1b[I"
+    );
+}
+
+#[test]
+fn focus_reporting_does_not_snap_scrollback_to_live_viewport() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.process_output(b"\x1b[?1004h");
+    for line in 0..8 {
+        terminal.process_output(format!("line {line}\r\n").as_bytes());
+    }
+    terminal.scroll_viewport_up(3);
+    let offset = terminal.screen().view_offset();
+
+    terminal
+        .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+        .unwrap();
+
+    assert_eq!(terminal.screen().view_offset(), offset);
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[I");
 }
 
 #[test]
@@ -2348,6 +2511,68 @@ fn should_propagate_writer_errors_for_encodable_widget_events() {
     let result = terminal.handle_event(event);
 
     // Assert
+    assert!(result.is_err());
+}
+#[test]
+fn focus_loss_keeps_pointer_cleanup_and_restores_output_scrollback_snap() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    let pressed = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            7,
+        )))
+        .unwrap();
+    assert_eq!(pressed.capture_pointer, Some(7));
+    let dragged = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (25.0, 1.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Left,
+            7,
+        )))
+        .unwrap();
+    assert!(dragged.redraw);
+
+    let lost = terminal
+        .handle_event_with_outcome(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+
+    assert_eq!(lost.release_pointer, Some(7));
+    assert!(lost.redraw);
+    for line in 0..8 {
+        terminal.put_str(&format!("line {line}\r\n"));
+    }
+    terminal.scroll_viewport_up(2);
+    assert!(terminal.screen().view_offset() > 0);
+    terminal.process_output(b"new output\r\n");
+    assert_eq!(
+        terminal.screen().view_offset(),
+        0,
+        "focus loss must clear local pointer scroll-snap suppression"
+    );
+}
+
+#[test]
+fn focus_reporting_propagates_writer_errors() {
+    let mut terminal = Terminal::new_headless_with_io(
+        2,
+        8,
+        ScriptedReader {
+            chunks: std::collections::VecDeque::new(),
+        },
+        FailingWriter,
+        || true,
+    );
+    terminal.process_output(b"\x1b[?1004h");
+
+    let result = terminal.handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained));
+
     assert!(result.is_err());
 }
 

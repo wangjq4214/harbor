@@ -1824,6 +1824,31 @@ fn should_write_printable_output_when_it_follows_extra_2026_disables() {
 }
 
 #[test]
+fn should_handle_focus_reporting_modes_queries_and_resets() {
+    let mut screen = Screen::new(2, 20);
+    let mut parser = TerminalParser::default();
+
+    feed(&mut parser, &mut screen, b"\x1b[?1004$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
+
+    feed(&mut parser, &mut screen, b"\x1b[?1004;2004h\x1b[?1004$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1004;1$y");
+
+    feed(&mut parser, &mut screen, b"\x1b[!p\x1b[?1004$p");
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1004;1$y",
+        "DECSTR must not reset focus reporting"
+    );
+
+    feed(&mut parser, &mut screen, b"\x1b[?1004l\x1b[?1004$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
+
+    feed(&mut parser, &mut screen, b"\x1b[?1004h\x1bc\x1b[?1004$p");
+    assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
+}
+
+#[test]
 fn should_keep_2026_set_when_alt_screen_toggles_while_nested() {
     // Arrange
     let mut screen = Screen::new(2, 20);
