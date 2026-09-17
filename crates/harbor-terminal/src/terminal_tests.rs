@@ -2009,6 +2009,272 @@ where
     (terminal, bytes, wake_rx)
 }
 
+#[test]
+fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 2.0));
+    terminal.process_output(b"\x1b[?1003;1006h");
+
+    let down = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (27.0, 23.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            7,
+        )))
+        .unwrap();
+    assert_eq!(down.capture_pointer, Some(7));
+
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (999.0, 999.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            7,
+        )))
+        .unwrap();
+    let up = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (-5.0, -5.0),
+            TerminalPointerPhase::Up,
+            TerminalPointerButton::Left,
+            7,
+        )))
+        .unwrap();
+
+    assert_eq!(up.release_pointer, Some(7));
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[<0;3;2M\x1b[<32;8;2M\x1b[<0;1;1m"
+    );
+
+    terminal.process_output(b"\x1b[?1006l");
+    let before = written.lock().unwrap().len();
+    let silent = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 2.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            8,
+        )))
+        .unwrap();
+    assert_eq!(silent.capture_pointer, Some(8));
+    assert_eq!(written.lock().unwrap().len(), before);
+
+    terminal.process_output(b"\x1bc");
+    assert_eq!(terminal.screen().input_modes(), InputModes::default());
+    let released = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 2.0),
+            TerminalPointerPhase::Cancel,
+            TerminalPointerButton::None,
+            8,
+        )))
+        .unwrap();
+    assert_eq!(released.release_pointer, Some(8));
+
+    let local = terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (2.0, 2.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            10,
+        )))
+        .unwrap();
+    assert_eq!(local.capture_pointer, Some(10));
+    assert_eq!(written.lock().unwrap().len(), before);
+}
+
+#[test]
+fn tracking_without_sgr_consumes_wheel_until_tracking_is_disabled() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    for line in 0..8 {
+        terminal.process_output(format!("line {line}\r\n").as_bytes());
+    }
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    terminal.process_output(b"\x1b[?1000h");
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            TerminalPointerButton::None,
+            1,
+        )))
+        .unwrap();
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert!(written.lock().unwrap().is_empty());
+
+    terminal.process_output(b"\x1b[?1000l");
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+            TerminalPointerButton::None,
+            1,
+        )))
+        .unwrap();
+    assert!(terminal.screen().view_offset() > 0);
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn terminal_mouse_filters_follow_effective_mode_fallback_and_cancel_state() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    let event = |phase, button, pointer_id| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            phase,
+            button,
+            pointer_id,
+        ))
+    };
+
+    terminal.process_output(b"\x1b[?1000;1006h");
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            1,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            1,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Up,
+            TerminalPointerButton::Left,
+            1,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+            TerminalPointerButton::None,
+            1,
+        ))
+        .unwrap();
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[<0;1;1M\x1b[<0;1;1m\x1b[<65;1;1M"
+    );
+    written.lock().unwrap().clear();
+
+    terminal.process_output(b"\x1b[?1002h");
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            2,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Middle,
+            2,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            2,
+        ))
+        .unwrap();
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Up,
+            TerminalPointerButton::Middle,
+            2,
+        ))
+        .unwrap();
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[<1;1;1M\x1b[<33;1;1M\x1b[<1;1;1m"
+    );
+    written.lock().unwrap().clear();
+
+    terminal.process_output(b"\x1b[?1003h");
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            3,
+        ))
+        .unwrap();
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[<35;1;1M");
+    written.lock().unwrap().clear();
+
+    terminal.process_output(b"\x1b[?1003l");
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            3,
+        ))
+        .unwrap();
+    assert!(written.lock().unwrap().is_empty());
+    terminal.process_output(b"\x1b[?1002l");
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Right,
+            4,
+        ))
+        .unwrap();
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[<2;1;1M");
+    written.lock().unwrap().clear();
+
+    terminal.process_output(b"\x1b[?1002h");
+    let captured = terminal
+        .handle_event_with_outcome(event(
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Right,
+            9,
+        ))
+        .unwrap();
+    assert_eq!(captured.capture_pointer, Some(9));
+    let cancelled = terminal
+        .handle_event_with_outcome(event(
+            TerminalPointerPhase::Cancel,
+            TerminalPointerButton::None,
+            9,
+        ))
+        .unwrap();
+    assert_eq!(cancelled.release_pointer, Some(9));
+    terminal
+        .handle_event(event(
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::None,
+            9,
+        ))
+        .unwrap();
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[<2;1;1M");
+}
+
 struct CompletedScriptedReader {
     chunks: std::collections::VecDeque<Vec<u8>>,
     completed: std::sync::mpsc::Sender<()>,

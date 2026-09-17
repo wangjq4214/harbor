@@ -60,7 +60,10 @@ impl TerminalInputEncoder {
             | TerminalPointerPhase::WheelPixel { dy, .. } => Some(dy),
             _ => None,
         };
-        if let Some(dy) = wheel_delta.filter(|dy| *dy != 0.0) {
+        if let Some(dy) = wheel_delta {
+            if dy == 0.0 {
+                return None;
+            }
             button = if dy > 0.0 { 64 } else { 65 };
         }
         button |= mouse_modifier_code(pointer.modifiers);
@@ -453,5 +456,137 @@ mod tests {
         // Assert
         assert_eq!(encoded_motion, Some(b"\x1b[<34;501;1M".to_vec()));
         assert_eq!(encoded_wheel, Some(b"\x1b[<64;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn should_encode_complete_sgr_pointer_transition_matrix() {
+        let modes = InputModes {
+            mouse_tracking: MouseTrackingMode::AnyMotion,
+            mouse_sgr: true,
+            ..InputModes::default()
+        };
+        let pointer = |phase, button| {
+            TerminalEvent::Pointer(TerminalPointerEvent::new((1.0, 2.0), phase, button, 1))
+        };
+
+        for (button, code) in [
+            (TerminalPointerButton::Left, 0),
+            (TerminalPointerButton::Middle, 1),
+            (TerminalPointerButton::Right, 2),
+        ] {
+            assert_eq!(
+                TerminalInputEncoder::encode(&pointer(TerminalPointerPhase::Down, button), modes),
+                Some(format!("\x1b[<{code};2;3M").into_bytes())
+            );
+            assert_eq!(
+                TerminalInputEncoder::encode(&pointer(TerminalPointerPhase::Up, button), modes),
+                Some(format!("\x1b[<{code};2;3m").into_bytes())
+            );
+        }
+
+        assert_eq!(
+            TerminalInputEncoder::encode(
+                &pointer(TerminalPointerPhase::Move, TerminalPointerButton::None),
+                modes
+            ),
+            Some(b"\x1b[<35;2;3M".to_vec())
+        );
+        assert_eq!(
+            TerminalInputEncoder::encode(
+                &pointer(
+                    TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
+                    TerminalPointerButton::Left,
+                ),
+                modes
+            ),
+            Some(b"\x1b[<65;2;3M".to_vec())
+        );
+    }
+
+    #[test]
+    fn should_apply_all_mouse_modifiers_and_suppress_unsupported_pointer_reports() {
+        let sgr_modes = InputModes {
+            mouse_tracking: MouseTrackingMode::ButtonMotion,
+            mouse_sgr: true,
+            ..InputModes::default()
+        };
+        let modified = TerminalEvent::Pointer(
+            TerminalPointerEvent::new(
+                (0.0, 0.0),
+                TerminalPointerPhase::Move,
+                TerminalPointerButton::Left,
+                1,
+            )
+            .with_modifiers(TerminalModifiers {
+                shift: true,
+                ctrl: true,
+                alt: false,
+                meta: true,
+            }),
+        );
+        assert_eq!(
+            TerminalInputEncoder::encode(&modified, sgr_modes),
+            Some(b"\x1b[<60;1;1M".to_vec())
+        );
+
+        for modifiers in [
+            TerminalModifiers {
+                alt: true,
+                ..TerminalModifiers::default()
+            },
+            TerminalModifiers {
+                meta: true,
+                ..TerminalModifiers::default()
+            },
+        ] {
+            let press = TerminalEvent::Pointer(
+                TerminalPointerEvent::new(
+                    (0.0, 0.0),
+                    TerminalPointerPhase::Down,
+                    TerminalPointerButton::Left,
+                    1,
+                )
+                .with_modifiers(modifiers),
+            );
+            assert_eq!(
+                TerminalInputEncoder::encode(&press, sgr_modes),
+                Some(b"\x1b[<8;1;1M".to_vec())
+            );
+        }
+
+        for event in [
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (0.0, 0.0),
+                TerminalPointerPhase::Move,
+                TerminalPointerButton::None,
+                1,
+            )),
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (0.0, 0.0),
+                TerminalPointerPhase::WheelPixel { dx: 1.0, dy: 0.0 },
+                TerminalPointerButton::Right,
+                1,
+            )),
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (0.0, 0.0),
+                TerminalPointerPhase::Cancel,
+                TerminalPointerButton::Left,
+                1,
+            )),
+        ] {
+            assert_eq!(TerminalInputEncoder::encode(&event, sgr_modes), None);
+        }
+
+        let no_sgr = InputModes {
+            mouse_sgr: false,
+            ..sgr_modes
+        };
+        let press = TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (0.0, 0.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            1,
+        ));
+        assert_eq!(TerminalInputEncoder::encode(&press, no_sgr), None);
     }
 }

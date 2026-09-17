@@ -730,11 +730,11 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ### 17.6 Mouse Modes
 
 * [ ] `?9` — X10 Mouse
-* [ ] `?1000` — Normal Tracking
-* [ ] `?1002` — Button Event Tracking
-* [ ] `?1003` — Any Event Tracking
+* [x] `?1000` — Normal Tracking
+* [x] `?1002` — Button Event Tracking
+* [x] `?1003` — Any Event Tracking
 * [ ] `?1005` — UTF-8 Mouse
-* [ ] `?1006` — SGR Mouse
+* [x] `?1006` — SGR Mouse
 * [ ] `?1015` — urxvt Mouse
 * [ ] `?1016` — SGR Pixel Mouse
 
@@ -795,7 +795,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Reset insert mode
 * [ ] Reset character sets
 * [x] Reset tab stops
-* [ ] Reset mouse modes
+* [x] Reset mouse modes
 * [x] Reset bracketed paste
 * [x] Reset focus reporting
 * [ ] Reset synchronized output
@@ -1135,11 +1135,11 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ### 28.1 Mode Priority
 
 * [ ] X10
-* [ ] Normal Tracking
-* [ ] Button Event Tracking
-* [ ] Any Event Tracking
-* [ ] Correct priority is used when multiple modes are enabled simultaneously
-* [ ] Corresponding events are no longer sent after disabling a mode
+* [x] Normal Tracking
+* [x] Button Event Tracking
+* [x] Any Event Tracking
+* [x] Correct priority is used when multiple modes are enabled simultaneously
+* [x] Corresponding events are no longer sent after disabling a mode
 
 ### 28.2 X10 Encoding
 
@@ -1151,21 +1151,21 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 28.3 SGR Mouse
 
-* [ ] Press: `CSI < Cb;Cx;Cy M`
-* [ ] Release: `CSI < Cb;Cx;Cy m`
-* [ ] Coordinates use 1-based
-* [ ] Left button encoding correct
-* [ ] Middle button encoding correct
-* [ ] Right button encoding correct
-* [ ] Release encoding correct
-* [ ] Scroll up encoding correct
-* [ ] Scroll down encoding correct
+* [x] Press: `CSI < Cb;Cx;Cy M`
+* [x] Release: `CSI < Cb;Cx;Cy m`
+* [x] Coordinates use 1-based
+* [x] Left button encoding correct
+* [x] Middle button encoding correct
+* [x] Right button encoding correct
+* [x] Release encoding correct
+* [x] Scroll up encoding correct
+* [x] Scroll down encoding correct
 * [ ] Horizontal scroll optionally supported
-* [ ] Shift bit correct
-* [ ] Alt/Meta bit correct
-* [ ] Ctrl bit correct
-* [ ] Motion bit correct
-* [ ] Drag and Move are correctly distinguished
+* [x] Shift bit correct
+* [x] Alt/Meta bit correct
+* [x] Ctrl bit correct
+* [x] Motion bit correct
+* [x] Drag and Move are correctly distinguished
 
 ### 28.4 Pixel Mouse
 

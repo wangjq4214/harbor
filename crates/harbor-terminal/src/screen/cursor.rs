@@ -126,8 +126,12 @@ pub(crate) struct TerminalModes {
     pub(crate) application_keypad: bool,
     /// Bracketed paste mode (DECSET ?2004).
     pub(crate) bracketed_paste: bool,
-    /// DEC mouse event reporting mode.
-    pub(crate) mouse_tracking: crate::model::MouseTrackingMode,
+    /// Normal mouse tracking (DECSET ?1000).
+    pub(crate) mouse_button_tracking: bool,
+    /// Button-event mouse tracking (DECSET ?1002).
+    pub(crate) mouse_button_motion_tracking: bool,
+    /// Any-event mouse tracking (DECSET ?1003).
+    pub(crate) mouse_any_motion_tracking: bool,
     /// SGR extended mouse coordinate encoding (DECSET ?1006).
     pub(crate) mouse_sgr: bool,
 }
@@ -143,8 +147,22 @@ impl TerminalModes {
             application_cursor: false,
             application_keypad: false,
             bracketed_paste: false,
-            mouse_tracking: crate::model::MouseTrackingMode::Disabled,
+            mouse_button_tracking: false,
+            mouse_button_motion_tracking: false,
+            mouse_any_motion_tracking: false,
             mouse_sgr: false,
+        }
+    }
+
+    fn effective_mouse_tracking(&self) -> crate::model::MouseTrackingMode {
+        if self.mouse_any_motion_tracking {
+            crate::model::MouseTrackingMode::AnyMotion
+        } else if self.mouse_button_motion_tracking {
+            crate::model::MouseTrackingMode::ButtonMotion
+        } else if self.mouse_button_tracking {
+            crate::model::MouseTrackingMode::Button
+        } else {
+            crate::model::MouseTrackingMode::Disabled
         }
     }
 }
@@ -233,7 +251,7 @@ impl CursorEngine {
             application_cursor: self.modes.application_cursor,
             application_keypad: self.modes.application_keypad,
             bracketed_paste: self.modes.bracketed_paste,
-            mouse_tracking: self.modes.mouse_tracking,
+            mouse_tracking: self.modes.effective_mouse_tracking(),
             mouse_sgr: self.modes.mouse_sgr,
         }
     }
@@ -435,27 +453,9 @@ impl CursorEngine {
         match param {
             1 => self.modes.application_cursor = enabled,
             66 => self.modes.application_keypad = enabled,
-            1000 => {
-                self.modes.mouse_tracking = if enabled {
-                    crate::model::MouseTrackingMode::Button
-                } else {
-                    crate::model::MouseTrackingMode::Disabled
-                }
-            }
-            1002 => {
-                self.modes.mouse_tracking = if enabled {
-                    crate::model::MouseTrackingMode::ButtonMotion
-                } else {
-                    crate::model::MouseTrackingMode::Disabled
-                }
-            }
-            1003 => {
-                self.modes.mouse_tracking = if enabled {
-                    crate::model::MouseTrackingMode::AnyMotion
-                } else {
-                    crate::model::MouseTrackingMode::Disabled
-                }
-            }
+            1000 => self.modes.mouse_button_tracking = enabled,
+            1002 => self.modes.mouse_button_motion_tracking = enabled,
+            1003 => self.modes.mouse_any_motion_tracking = enabled,
             1006 => self.modes.mouse_sgr = enabled,
             2004 => self.modes.bracketed_paste = enabled,
             6 => {
@@ -490,18 +490,9 @@ impl CursorEngine {
             25 => Some(self.cursor.visible),
             66 => Some(self.modes.application_keypad),
             69 => Some(self.margins.enabled),
-            1000 => Some(matches!(
-                self.modes.mouse_tracking,
-                crate::model::MouseTrackingMode::Button
-            )),
-            1002 => Some(matches!(
-                self.modes.mouse_tracking,
-                crate::model::MouseTrackingMode::ButtonMotion
-            )),
-            1003 => Some(matches!(
-                self.modes.mouse_tracking,
-                crate::model::MouseTrackingMode::AnyMotion
-            )),
+            1000 => Some(self.modes.mouse_button_tracking),
+            1002 => Some(self.modes.mouse_button_motion_tracking),
+            1003 => Some(self.modes.mouse_any_motion_tracking),
             1006 => Some(self.modes.mouse_sgr),
             2004 => Some(self.modes.bracketed_paste),
             _ => None,

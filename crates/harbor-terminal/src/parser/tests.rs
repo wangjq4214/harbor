@@ -1549,6 +1549,50 @@ fn should_report_private_mode_states_with_private_marker() {
     feed(&mut parser, &mut screen, b"\x1b[?1049$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1049;2$y");
 }
+#[test]
+fn should_track_mouse_modes_independently_across_multi_parameter_changes_and_ris() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[?1002;1000;1003;1006h\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
+    );
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1000;1$y\x1b[?1002;1$y\x1b[?1003;1$y\x1b[?1006;1$y"
+    );
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::AnyMotion
+    );
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[?1003;1006l\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
+    );
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1000;1$y\x1b[?1002;1$y\x1b[?1003;2$y\x1b[?1006;2$y"
+    );
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::ButtonMotion
+    );
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1bc\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
+    );
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b[?1000;2$y\x1b[?1002;2$y\x1b[?1003;2$y\x1b[?1006;2$y"
+    );
+    assert_eq!(screen.input_modes(), crate::InputModes::default());
+}
 
 #[test]
 fn should_report_alt_screen_family_mode_states() {

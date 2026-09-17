@@ -4306,6 +4306,91 @@ fn should_preserve_wrapped_flag_when_margin_erase_covers_active_region() {
 }
 
 #[test]
+fn mouse_tracking_modes_are_independent_prioritized_and_reset_by_ris() {
+    let mut screen = Screen::new(2, 8);
+
+    for mode in [1000, 1002, 1003, 1006] {
+        assert_eq!(screen.mode_status(true, mode), ModeStatus::Reset);
+    }
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::Disabled
+    );
+
+    for order in [
+        [1000, 1002, 1003],
+        [1000, 1003, 1002],
+        [1002, 1000, 1003],
+        [1002, 1003, 1000],
+        [1003, 1000, 1002],
+        [1003, 1002, 1000],
+    ] {
+        let mut ordered = Screen::new(2, 8);
+        for mode in order {
+            ordered.set_private_mode(mode, true);
+        }
+        assert_eq!(
+            ordered.input_modes().mouse_tracking,
+            crate::model::MouseTrackingMode::AnyMotion
+        );
+    }
+
+    for mode in [1002, 1000, 1003, 1006] {
+        screen.set_private_mode(mode, true);
+    }
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::AnyMotion
+    );
+    for mode in [1000, 1002, 1003, 1006] {
+        assert_eq!(screen.mode_status(true, mode), ModeStatus::Set);
+    }
+
+    screen.set_private_mode(1000, false);
+    assert_eq!(screen.mode_status(true, 1000), ModeStatus::Reset);
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::AnyMotion
+    );
+    screen.set_private_mode(1003, false);
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::ButtonMotion
+    );
+
+    screen.reset_display();
+    assert_eq!(screen.input_modes(), crate::InputModes::default());
+    for mode in [1000, 1002, 1003, 1006] {
+        assert_eq!(screen.mode_status(true, mode), ModeStatus::Reset);
+    }
+}
+
+#[test]
+fn mouse_tracking_modes_remain_buffer_local_across_alt_screen_swaps() {
+    let mut screen = Screen::new(2, 8);
+    screen.set_private_mode(1003, true);
+    screen.set_private_mode(1006, true);
+
+    screen.enter_alt(false);
+    assert_eq!(screen.input_modes(), crate::InputModes::default());
+    screen.set_private_mode(1000, true);
+
+    screen.exit_alt();
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::AnyMotion
+    );
+    assert!(screen.input_modes().mouse_sgr);
+
+    screen.enter_alt(false);
+    assert_eq!(
+        screen.input_modes().mouse_tracking,
+        crate::model::MouseTrackingMode::Button
+    );
+    assert!(!screen.input_modes().mouse_sgr);
+}
+
+#[test]
 fn should_preserve_focus_reporting_state_across_alt_screen_swaps() {
     let mut screen = Screen::new(2, 8);
     screen.set_private_mode(1004, true);

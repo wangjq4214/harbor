@@ -245,3 +245,12 @@
   - communicates with Runtime Host
   - references RIS
   - references Alternate-Screen Mode Family
+
+### SGR Mouse Reporting
+- **Definition:** Harbor's cell-coordinate mouse protocol path uses DEC tracking modes `?1000`, `?1002`, and `?1003` with independent enablement and effective priority `?1003 > ?1002 > ?1000`; clearing a higher-priority mode reveals the next enabled mode. Reports are emitted only with SGR encoding mode `?1006`; without it, tracking still owns and consumes pointer input but emits no legacy encoding. RIS clears all tracking and SGR encoding modes.
+- **Synonyms:** SGR mouse tracking, DECSET mouse reporting
+- **Relationships:**
+  - belongs to Terminal
+  - communicates with Runtime Host
+  - references RIS
+  - implements Terminal Pointer Interaction Policy
