@@ -94,6 +94,7 @@ impl AnyView for Focus {
     fn focus_metadata(&self) -> Option<FocusMetadata> {
         Some(FocusMetadata {
             enabled: self.enabled,
+            participates_in_tab_traversal: true,
             order: self.order,
             handle: self.handle.map(|handle| handle.0),
         })

@@ -145,6 +145,7 @@ impl EventRouter {
             return false;
         };
 
+        let mut suppress_focus_navigation = false;
         let mut hover_needs_redraw = false;
         match event {
             UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Move => {
@@ -166,7 +167,19 @@ impl EventRouter {
                 key: Key::Tab,
                 modifiers,
             }) if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => {
-                return self.navigate_focus(arena, root_id, !modifiers.shift);
+                let focused_excludes_tab_traversal = self
+                    .input
+                    .focused
+                    .and_then(|focused| arena.get(focused))
+                    .and_then(|fiber| fiber.view.as_ref())
+                    .and_then(|view| view.focus_metadata())
+                    .is_some_and(|metadata| {
+                        metadata.enabled && !metadata.participates_in_tab_traversal
+                    });
+                if !focused_excludes_tab_traversal {
+                    return self.navigate_focus(arena, root_id, !modifiers.shift);
+                }
+                suppress_focus_navigation = true;
             }
             UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
                 if let Some((source, action)) = self.find_shortcut(arena, root_id, *key, *modifiers)
@@ -215,6 +228,9 @@ impl EventRouter {
         };
         let ancestors = &path[..path.len().saturating_sub(1)];
         let mut ctx = EventCtx::new();
+        if suppress_focus_navigation {
+            ctx.suppress_focus_navigation();
+        }
 
         ctx.set_phase(EventPhase::Capture);
         for &ancestor_id in ancestors {
@@ -665,7 +681,7 @@ impl EventRouter {
         };
         let view = fiber.view.as_ref();
         if let Some(metadata) = view.and_then(|view| view.focus_metadata()) {
-            if metadata.enabled {
+            if metadata.enabled && metadata.participates_in_tab_traversal {
                 out.push((id, metadata.order, out.len()));
             }
             // A node-level Focus wrapper owns one logical tab stop and merely

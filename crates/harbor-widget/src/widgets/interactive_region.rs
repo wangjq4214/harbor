@@ -386,6 +386,7 @@ impl AnyView for InteractiveRegionView {
     fn focus_metadata(&self) -> Option<FocusMetadata> {
         Some(FocusMetadata {
             enabled: !self.runtime.read().visual.disabled,
+            participates_in_tab_traversal: true,
             order: 0,
             handle: None,
         })

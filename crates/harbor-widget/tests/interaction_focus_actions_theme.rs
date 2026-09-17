@@ -6,6 +6,7 @@ use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::view::{Component, SizedBox};
+use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::{
     Actions, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion, Shortcuts, Theme,
     ThemeProvider,
@@ -200,6 +201,45 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
     let effects = runtime.request_focus(&first);
     assert!(effects.request_redraw);
     assert_eq!(runtime.input().focused(), Some(first_fiber));
+}
+
+#[test]
+fn tab_traversal_skips_custom_paint_in_both_directions() {
+    let mut runtime = Runtime::new();
+    runtime.set_root(
+        FocusScope::new()
+            .child(CustomPaint::new(1))
+            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0))))
+            .child(CustomPaint::new(2))
+            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)))),
+    );
+    runtime.update(now());
+
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers::default(),
+    }));
+    let first = runtime.input().focused().expect("first ordinary tab stop");
+    assert!(runtime.drain_external_input().is_empty());
+
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers::default(),
+    }));
+    let second = runtime.input().focused().expect("second ordinary tab stop");
+    assert_ne!(second, first);
+    assert!(runtime.drain_external_input().is_empty());
+
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    }));
+
+    assert_eq!(runtime.input().focused(), Some(first));
+    assert!(runtime.drain_external_input().is_empty());
 }
 
 #[test]

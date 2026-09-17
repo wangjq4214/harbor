@@ -1789,8 +1789,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             FocusScope::new()
-                .child(CustomPaint::new(1))
-                .child(CustomPaint::new(2)),
+                .child(Focus::new(CustomPaint::new(1)))
+                .child(Focus::new(CustomPaint::new(2))),
         );
         rt.update(now());
         assert!(rt.focus_first_focusable());

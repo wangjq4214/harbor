@@ -8,6 +8,8 @@ use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::focus::Focus;
+use harbor_widget::widgets::focus_scope::FocusScope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -188,6 +190,47 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
     let drained = rt.drain_external_input();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].0, 12);
+}
+
+#[test]
+fn should_forward_tab_and_shift_tab_from_pointer_focused_custom_paint() {
+    let mut rt = Runtime::new();
+    rt.set_root(FocusScope::new().child(Focus::new(CustomPaint::new(21))));
+    rt.update(now());
+    rt.clear_focus();
+
+    rt.dispatch(pointer_event(
+        Point::new(400.0, 300.0),
+        PointerPhase::Down,
+        PointerButton::Left,
+        0,
+    ));
+    let focused = rt
+        .input()
+        .focused()
+        .expect("pointer-down focuses the nested CustomPaint");
+    rt.drain_external_input();
+    rt.update(now());
+
+    let tab = key_down(Key::Tab);
+    let shift_tab = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    });
+    rt.dispatch(tab.clone());
+    assert_eq!(rt.input().focused(), Some(focused));
+    rt.dispatch(shift_tab.clone());
+
+    assert_eq!(rt.input().focused(), Some(focused));
+    let drained = rt.drain_external_input();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].0, 21);
+    assert_eq!(drained[0].1, tab);
+    assert_eq!(drained[1].0, 21);
+    assert_eq!(drained[1].1, shift_tab);
 }
 
 #[test]

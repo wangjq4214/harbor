@@ -44,6 +44,7 @@ pub struct EventCtx {
     clipboard_write: Option<String>,
     current_fiber: Option<FiberId>,
     phase: EventPhase,
+    focus_navigation_enabled: bool,
     external_input: Vec<(ExternalDrawId, UiEvent)>,
 }
 
@@ -56,6 +57,7 @@ impl EventCtx {
             clipboard_write: None,
             current_fiber: None,
             phase: EventPhase::Direct,
+            focus_navigation_enabled: true,
             external_input: Vec::new(),
         }
     }
@@ -132,10 +134,16 @@ impl EventCtx {
         self.propagation_stopped = true;
     }
 
+    pub(crate) fn suppress_focus_navigation(&mut self) {
+        self.focus_navigation_enabled = false;
+    }
+
     /// Request focus navigation within a FocusScope.
     /// Called by FocusScope when it intercepts Tab/Shift+Tab.
     pub(crate) fn navigate_focus(&mut self, forward: bool) {
-        if let Some(fid) = self.current_fiber {
+        if self.focus_navigation_enabled
+            && let Some(fid) = self.current_fiber
+        {
             self.commands.push(EventCommand::NavigateFocus {
                 scope: fid,
                 forward,

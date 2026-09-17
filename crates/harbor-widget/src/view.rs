@@ -41,6 +41,7 @@ impl From<&str> for Key {
 pub(crate) struct FocusMetadata {
     pub(crate) enabled: bool,
     pub(crate) order: i32,
+    pub(crate) participates_in_tab_traversal: bool,
     pub(crate) handle: Option<u64>,
 }
 // ── ExternalRegistrations ───────────────────────────────────────────────────

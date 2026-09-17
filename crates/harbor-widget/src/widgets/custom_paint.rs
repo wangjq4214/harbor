@@ -127,6 +127,7 @@ impl AnyView for CustomPaint {
     fn focus_metadata(&self) -> Option<FocusMetadata> {
         Some(FocusMetadata {
             enabled: true,
+            participates_in_tab_traversal: false,
             order: 0,
             handle: None,
         })
