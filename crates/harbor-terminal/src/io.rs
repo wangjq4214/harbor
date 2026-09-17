@@ -187,6 +187,9 @@ impl TerminalIo {
         }
         self.feed_pty_output(screen, output);
     }
+    pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
+        self.parser.drain_output_events()
+    }
 
     // ── PTY I/O ───────────────────────────────────────────────────────
 

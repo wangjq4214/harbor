@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
-use harbor_terminal::{Terminal, TerminalSize};
+use harbor_terminal::{Terminal, TerminalOutputEvent, TerminalSize};
 use harbor_widget::scene::primitive::ExternalDrawId;
 
 use crate::terminal_view::TerminalWidgetBridge;
@@ -65,17 +65,27 @@ impl TabIndex {
 pub struct TerminalTabResources {
     terminal: Arc<Mutex<Terminal>>,
     bridge: TerminalWidgetBridge,
+    shell_fallback: String,
 }
 
 impl TerminalTabResources {
-    pub fn new(terminal: Arc<Mutex<Terminal>>, bridge: TerminalWidgetBridge) -> Self {
-        Self { terminal, bridge }
+    pub fn new(
+        terminal: Arc<Mutex<Terminal>>,
+        bridge: TerminalWidgetBridge,
+        shell_fallback: impl Into<String>,
+    ) -> Self {
+        Self {
+            terminal,
+            bridge,
+            shell_fallback: shell_fallback.into(),
+        }
     }
 }
 
 struct TerminalTab {
     id: TabId,
     title: String,
+    shell_fallback: String,
     unread: bool,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
@@ -98,6 +108,7 @@ pub struct TabActionOutcome {
     pub active_bridge_changed: bool,
     pub request_redraw: bool,
     pub unread_changed: bool,
+    pub active_title_changed: bool,
     pub close_window: bool,
 }
 
@@ -107,6 +118,7 @@ impl TabActionOutcome {
             active_bridge_changed: false,
             request_redraw: false,
             unread_changed: false,
+            active_title_changed: false,
             close_window: false,
         }
     }
@@ -117,6 +129,30 @@ impl TabActionOutcome {
 pub struct TabOutputOutcome {
     pub request_active_invalidation: bool,
     pub unread_changed: bool,
+    pub title_changed: bool,
+    pub active_title_changed: bool,
+}
+
+fn normalize_shell_title(title: String, shell_fallback: &str) -> String {
+    let basename = title
+        .rsplit(['\\', '/'])
+        .find(|component| !component.is_empty())
+        .unwrap_or(&title);
+    let suffix_start = basename.len().saturating_sub(4);
+    let shell_name = basename
+        .get(..suffix_start)
+        .filter(|_| {
+            basename
+                .get(suffix_start..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".exe"))
+        })
+        .unwrap_or(basename);
+
+    if shell_name.eq_ignore_ascii_case(shell_fallback) {
+        shell_fallback.to_owned()
+    } else {
+        title
+    }
 }
 
 /// Ordered Host-owned terminal sessions.
@@ -161,10 +197,11 @@ impl TabManager {
             ));
         }
 
-        let title = format!("Terminal {id}");
+        let title = resources.shell_fallback.clone();
         self.tabs.push(TerminalTab {
             id,
             title,
+            shell_fallback: resources.shell_fallback,
             unread: false,
             draw_id,
             terminal: resources.terminal,
@@ -175,6 +212,7 @@ impl TabManager {
             active_bridge_changed: true,
             request_redraw: true,
             unread_changed: false,
+            active_title_changed: true,
             close_window: false,
         })
     }
@@ -205,6 +243,10 @@ impl TabManager {
         self.active_tab().map(|tab| tab.bridge.clone())
     }
 
+    pub fn active_title(&self) -> Option<&str> {
+        self.active_tab().map(|tab| tab.title.as_str())
+    }
+
     pub fn snapshots(&self) -> Vec<TabSnapshot> {
         self.tabs
             .iter()
@@ -231,6 +273,7 @@ impl TabManager {
             active_bridge_changed: true,
             request_redraw: true,
             unread_changed,
+            active_title_changed: true,
             close_window: false,
         }
     }
@@ -277,6 +320,7 @@ impl TabManager {
                 active_bridge_changed: was_active,
                 request_redraw: false,
                 unread_changed: false,
+                active_title_changed: was_active,
                 close_window: true,
             };
         }
@@ -296,6 +340,7 @@ impl TabManager {
             active_bridge_changed: true,
             request_redraw: true,
             unread_changed,
+            active_title_changed: true,
             close_window: false,
         }
     }
@@ -317,16 +362,34 @@ impl TabManager {
             return TabOutputOutcome::default();
         };
         let ingested_output = terminal.drain_pty();
-        if self.active == Some(id) {
+        let output_events = terminal.drain_output_events();
+        drop(terminal);
+
+        let previous_title = tab.title.clone();
+        for event in output_events {
+            match event {
+                TerminalOutputEvent::TitleChanged(title) => {
+                    tab.title = normalize_shell_title(title, &tab.shell_fallback);
+                }
+                TerminalOutputEvent::TitleReset => tab.title.clone_from(&tab.shell_fallback),
+            }
+        }
+        let title_changed = tab.title != previous_title;
+        let active = self.active == Some(id);
+        if active {
             TabOutputOutcome {
                 request_active_invalidation: true,
                 unread_changed: false,
+                title_changed,
+                active_title_changed: title_changed,
             }
         } else {
             let unread_changed = ingested_output && !std::mem::replace(&mut tab.unread, true);
             TabOutputOutcome {
                 request_active_invalidation: false,
                 unread_changed,
+                title_changed,
+                active_title_changed: false,
             }
         }
     }
@@ -399,7 +462,7 @@ mod tests {
         let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
         let bridge =
             TerminalWidgetBridge::new(id, Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
-        TerminalTabResources::new(terminal, bridge)
+        TerminalTabResources::new(terminal, bridge, "test-shell")
     }
 
     fn create(manager: &mut TabManager) -> (TabId, ExternalDrawId) {
@@ -408,6 +471,15 @@ mod tests {
             .unwrap();
         let snapshot = manager.snapshots().pop().unwrap();
         (snapshot.id, snapshot.draw_id)
+    }
+
+    fn terminal(manager: &TabManager, id: TabId) -> Arc<Mutex<Terminal>> {
+        manager
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .map(|tab| Arc::clone(&tab.terminal))
+            .unwrap()
     }
 
     #[test]
@@ -425,7 +497,7 @@ mod tests {
                 .iter()
                 .map(|tab| tab.title.as_str())
                 .collect::<Vec<_>>(),
-            ["Terminal 1", "Terminal 2"]
+            vec!["test-shell", "test-shell"]
         );
     }
 
@@ -460,6 +532,60 @@ mod tests {
     }
 
     #[test]
+    fn shell_osc_titles_use_the_same_short_display_name_as_the_fallback() {
+        assert_eq!(
+            normalize_shell_title(r"C:\Windows\System32\cmd.exe".to_owned(), "cmd",),
+            "cmd"
+        );
+        assert_eq!(normalize_shell_title("PWsh.EXE".to_owned(), "pwsh"), "pwsh");
+        assert_eq!(
+            normalize_shell_title(r"C:\project\README.md".to_owned(), "cmd"),
+            r"C:\project\README.md"
+        );
+    }
+
+    #[test]
+    fn title_events_update_tabs_and_only_active_window_metadata() {
+        let mut manager = TabManager::new();
+        let (background, _) = create(&mut manager);
+        let (active, _) = create(&mut manager);
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]2;background title\x07");
+        let background_outcome = manager.process_output(background);
+        assert!(background_outcome.title_changed);
+        assert!(!background_outcome.active_title_changed);
+        assert_eq!(manager.active_title(), Some("test-shell"));
+        assert_eq!(manager.snapshots()[0].title, "background title");
+
+        assert!(manager.activate(background).active_title_changed);
+        assert_eq!(manager.active_title(), Some("background title"));
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]2;\x1b\\");
+        let reset = manager.process_output(background);
+        assert!(reset.active_title_changed);
+        assert_eq!(manager.active_title(), Some("test-shell"));
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]2;test-shell\x07");
+        let duplicate = manager.process_output(background);
+        assert!(!duplicate.title_changed);
+        assert!(!duplicate.active_title_changed);
+
+        assert_eq!(
+            manager.process_output(TabId(u64::MAX)),
+            TabOutputOutcome::default()
+        );
+        assert_eq!(manager.active_id(), Some(background));
+        assert_ne!(manager.active_id(), Some(active));
+    }
+
+    #[test]
     fn inactive_output_marks_unread_only_when_bytes_are_ingested() {
         use std::io::Cursor;
         use std::time::Duration;
@@ -481,7 +607,11 @@ mod tests {
                     Arc::clone(&terminal),
                     Arc::new(AtomicBool::new(false)),
                 );
-                Ok(TerminalTabResources::new(terminal, bridge))
+                Ok(TerminalTabResources::new(
+                    terminal,
+                    bridge,
+                    "background-shell",
+                ))
             })
             .unwrap();
         let background = manager.active_id().unwrap();

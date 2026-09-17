@@ -21,8 +21,9 @@ pub trait VtHandler {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8);
 
-    /// `params` are OSC semicolon-separated slices (may be empty).
-    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool);
+    /// `command` is the bytes before the first `;`; `payload` is everything after it.
+    /// Both slices borrow the parser's bounded OSC buffer for this callback only.
+    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool);
 
     /// DCS introducer complete (final byte). Payload follows via `dcs_put` until `dcs_unhook`.
     fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8);

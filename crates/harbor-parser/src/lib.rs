@@ -16,7 +16,7 @@
 //!     // … remaining methods
 //!     # fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: u8, _: Option<u8>) {}
 //!     # fn esc_dispatch(&mut self, _: &[u8], _: u8) {}
-//!     # fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
+//!     # fn osc_dispatch(&mut self, _: &[u8], _: &[u8], _: bool) {}
 //!     # fn dcs_hook(&mut self, _: &Params, _: &[u8], _: u8) {}
 //!     # fn dcs_put(&mut self, _: u8) {}
 //!     # fn dcs_unhook(&mut self, _: bool) {}

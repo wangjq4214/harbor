@@ -438,13 +438,12 @@ impl Parser {
 
     fn finish_osc<H: VtHandler>(&mut self, handler: &mut H, bell_terminated: bool) {
         if !self.osc_overflow {
-            // Split on ';' for param slices without allocation of owned strings.
-            let parts: Vec<&[u8]> = if self.osc.is_empty() {
-                Vec::new()
-            } else {
-                self.osc.split(|b| *b == b';').collect()
-            };
-            handler.osc_dispatch(&parts, bell_terminated);
+            let (command, payload): (&[u8], &[u8]) =
+                match self.osc.iter().position(|byte| *byte == b';') {
+                    Some(separator) => (&self.osc[..separator], &self.osc[separator + 1..]),
+                    None => (self.osc.as_slice(), &[]),
+                };
+            handler.osc_dispatch(command, payload, bell_terminated);
         }
         self.clear_osc();
         self.enter_ground();

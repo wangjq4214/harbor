@@ -20,7 +20,8 @@ enum CallbackEvent {
         byte: u8,
     },
     Osc {
-        params: Vec<Vec<u8>>,
+        command: Vec<u8>,
+        payload: Vec<u8>,
         bell_terminated: bool,
     },
     DcsHook {
@@ -71,9 +72,10 @@ impl VtHandler for RecordingHandler {
         });
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
         self.events.push(CallbackEvent::Osc {
-            params: params.iter().map(|param| param.to_vec()).collect(),
+            command: command.to_vec(),
+            payload: payload.to_vec(),
             bell_terminated,
         });
     }

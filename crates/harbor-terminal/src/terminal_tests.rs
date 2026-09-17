@@ -5,9 +5,9 @@ use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
     FrameDemand, InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent,
-    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
-    TerminalPointerEvent, TerminalPointerPhase, TerminalSize, safe_preview_line,
-    should_confirm_multiline,
+    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize,
+    safe_preview_line, should_confirm_multiline,
 };
 use std::borrow::Cow;
 use std::time::Instant;
@@ -594,6 +594,60 @@ fn keeps_incomplete_osc_sequence_across_chunks() {
     terminal.put_bytes(b"\x1b\\b");
 
     assert_eq!(terminal.row_text(0), "ab      ");
+}
+
+#[test]
+fn osc_titles_validate_and_drain_once_in_fifo_order() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]0;first\x07\x1b]2;second;part\x1b\\");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![
+            TerminalOutputEvent::TitleChanged("first".to_owned()),
+            TerminalOutputEvent::TitleChanged("second;part".to_owned()),
+        ]
+    );
+    assert!(terminal.drain_output_events().is_empty());
+}
+
+#[test]
+fn osc_titles_enforce_utf8_control_and_scalar_limits() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    let title_256 = "界".repeat(256);
+    let title_257 = "界".repeat(257);
+
+    terminal.put_bytes(format!("\x1b]1;{title_256}\x07").as_bytes());
+    terminal.put_bytes(format!("\x1b]1;{title_257}\x07").as_bytes());
+    for control in [
+        '\0', '\u{000b}', '\u{001b}', '\u{007f}', '\u{0080}', '\u{009f}',
+    ] {
+        terminal.put_bytes(format!("\x1b]2;bad{control}value\x07").as_bytes());
+    }
+    terminal.put_bytes(b"\x1b]2;bad\xffvalue\x07");
+    terminal.put_bytes(b"\x1b]9;ignored\x07");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::TitleChanged(title_256)]
+    );
+}
+
+#[test]
+fn osc_empty_and_ris_reset_title_but_cancellation_and_decstr_do_not() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]2;kept\x18");
+    terminal.put_bytes(b"\x1b]2;\x07");
+    terminal.put_bytes(b"\x1b]2\x07");
+    terminal.put_bytes(b"\x1b[!p");
+    terminal.put_bytes(b"\x1bc");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::TitleReset; 3]
+    );
 }
 
 #[test]

@@ -20,6 +20,9 @@ use harbor_app::{
     tab_view::{TabCommand, TabFocusPolicy, TabUiController},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
 };
+pub(crate) fn format_window_title(title: &str) -> String {
+    format!("{title} — Harbor")
+}
 
 /// Application-visible result of draining one FIFO tab action batch.
 #[derive(Debug, Default)]
@@ -112,6 +115,7 @@ impl TerminalTabFactory {
             },
             &self.shell_command,
         )?;
+        let shell_name = endpoints.shell_name().to_owned();
         let event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
         let surface_size = (surface_size.0.max(1), surface_size.1.max(1));
@@ -134,7 +138,7 @@ impl TerminalTabFactory {
         let terminal = Arc::new(Mutex::new(terminal));
         let bridge =
             TerminalWidgetBridge::new(draw_id, Arc::clone(&terminal), Arc::clone(&self.input_gate));
-        Ok(TerminalTabResources::new(terminal, bridge))
+        Ok(TerminalTabResources::new(terminal, bridge, shell_name))
     }
 }
 
@@ -163,6 +167,13 @@ impl TabCoordinator {
     }
 
     pub(crate) fn sync_ui(&self, window: &Window) {
+        if let Some(title) = self.tabs.active_title() {
+            window.set_title(&format_window_title(title));
+        }
+        self.sync_tab_ui(window);
+    }
+
+    pub(crate) fn sync_tab_ui(&self, window: &Window) {
         self.tab_ui.sync(
             self.tabs.snapshots(),
             self.tabs.active_bridge(),
@@ -364,6 +375,14 @@ mod tests {
         assert_eq!(logical_width_from_physical(900, 0.0), 0.0);
         assert_eq!(logical_width_from_physical(900, f64::NAN), 0.0);
         assert_eq!(logical_width_from_physical(900, f64::INFINITY), 0.0);
+    }
+    #[test]
+    fn native_window_title_appends_product_suffix() {
+        assert_eq!(format_window_title("pwsh.exe"), "pwsh.exe — Harbor");
+        assert_eq!(
+            format_window_title("project — Harbor"),
+            "project — Harbor — Harbor"
+        );
     }
 
     #[test]

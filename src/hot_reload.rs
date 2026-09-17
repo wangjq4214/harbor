@@ -75,7 +75,7 @@ mod tests {
                 Arc::clone(&terminal),
                 Arc::new(AtomicBool::new(false)),
             );
-            Ok(TerminalTabResources::new(terminal, bridge))
+            Ok(TerminalTabResources::new(terminal, bridge, "test-shell"))
         })
         .expect("create reload smoke-test tab");
         let controller = TabUiController::new(

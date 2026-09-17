@@ -923,21 +923,21 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [ ] 8-bit ST `0x9C` terminates
 * [x] OSC content can span input fragments
 * [x] `ESC` and the following `\` can span input fragments
-* [ ] Enters discard state when OSC exceeds length limit
-* [ ] Oversized OSC can eventually recover at the terminator
+* [x] Enters discard state when OSC exceeds length limit
+* [x] Oversized OSC can eventually recover at the terminator
 * [x] OSC content is not displayed as plain text
 * [x] Unknown OSC numbers can be safely ignored
 
 ### 24.2 Titles
 
-* [ ] `OSC 0 ; title ST`
-* [ ] `OSC 1 ; icon-name ST`
-* [ ] `OSC 2 ; window-title ST`
-* [ ] Supports BEL termination
-* [ ] Supports ST termination
-* [ ] Title length limit
-* [ ] Control characters in titles are filtered
-* [ ] Empty titles are handled correctly
+* [x] `OSC 0 ; title ST`
+* [x] `OSC 1 ; icon-name ST`
+* [x] `OSC 2 ; window-title ST`
+* [x] Supports BEL termination
+* [x] Supports ST termination
+* [x] Title length limit
+* [x] Control characters in titles are filtered
+* [x] Empty titles are handled correctly
 
 ### 24.3 Palette
 
@@ -1379,7 +1379,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Maximum APC length
 * [x] Maximum PM length
 * [x] Maximum SOS length
-* [ ] Maximum title length
+* [x] Maximum title length
 * [ ] Maximum hyperlink URI length
 * [ ] Maximum OSC 52 Base64 length
 * [ ] Maximum clipboard decoded length

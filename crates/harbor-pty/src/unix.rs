@@ -14,7 +14,7 @@ impl Pty {
     pub fn spawn_shell(
         _size: PtySize,
         _command: &ShellCommand,
-    ) -> anyhow::Result<(Self, PtyReader)> {
+    ) -> anyhow::Result<(Self, PtyReader, String)> {
         bail!("pty is not implemented on unix")
     }
 

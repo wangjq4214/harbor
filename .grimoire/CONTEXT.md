@@ -731,6 +731,13 @@ Project domain concepts and terminology.
   - referenced by Terminal Tab Manager
   - communicates with Terminal Widget Bridge
 
+
+### Terminal Title Policy
+- **Definition:** Each terminal tab falls back to its effective shell executable name. A valid OSC 0/1/2 title replaces that fallback without requiring a user setting; an empty title or terminal reset restores the fallback. OSC title payloads are accepted only as valid UTF-8 without control characters and at no more than 256 Unicode characters; invalid payloads leave the current title unchanged. Every tab updates its own visible tab title, while only the active tab drives the native window title in the form `<title> — Harbor`. Working-directory tracking is deferred to OSC 7 rather than inferred at startup.
+- **Relationships:**
+  - belongs to Terminal Tab
+  - communicates with Application Business Host
+  - references TOML User Settings
 ### Terminal Tab Manager
 - **Definition:** The Application Business Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
 - **Relationships:**

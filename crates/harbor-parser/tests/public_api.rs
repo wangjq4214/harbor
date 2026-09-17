@@ -15,7 +15,8 @@ enum Callback {
         byte: u8,
     },
     Osc {
-        params: Vec<Vec<u8>>,
+        command: Vec<u8>,
+        payload: Vec<u8>,
         bell_terminated: bool,
     },
     DcsHook {
@@ -64,9 +65,10 @@ impl VtHandler for RecordingHandler {
         });
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
         self.callbacks.push(Callback::Osc {
-            params: params.iter().map(|param| param.to_vec()).collect(),
+            command: command.to_vec(),
+            payload: payload.to_vec(),
             bell_terminated,
         });
     }
@@ -476,5 +478,22 @@ fn should_report_dcs_cancellation_when_can_arrives_during_escape() {
             Callback::DcsUnhook(false),
             Callback::Print('Z'),
         ]
+    );
+}
+
+#[test]
+fn should_preserve_raw_osc_payload_after_first_separator() {
+    let mut parser = Parser::default();
+    let mut handler = RecordingHandler::default();
+
+    feed(&mut parser, &mut handler, b"\x1b]2;a;b\x1b\\");
+
+    assert_eq!(
+        handler.callbacks,
+        vec![Callback::Osc {
+            command: b"2".to_vec(),
+            payload: b"a;b".to_vec(),
+            bell_terminated: false,
+        }]
     );
 }

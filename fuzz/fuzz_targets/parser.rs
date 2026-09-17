@@ -23,7 +23,7 @@ impl VtHandler for NoopFuzzHandler {
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _byte: u8) {}
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn osc_dispatch(&mut self, _command: &[u8], _payload: &[u8], _bell_terminated: bool) {}
 
     fn dcs_hook(&mut self, _params: &Params, _intermediates: &[u8], _action: u8) {}
 

@@ -127,6 +127,7 @@ pub struct PtyEndpoints {
     reader: Option<PtyReaderEndpoint>,
     writer: Option<PtyWriter>,
     control: Option<PtyControl>,
+    shell_name: String,
 }
 
 /// Read endpoint that acknowledges shutdown only after its blocking read has
@@ -153,10 +154,12 @@ pub struct PtyControl {
 impl PtyEndpoints {
     /// Spawns a shell and returns its independent terminal-owned endpoints.
     pub fn spawn_shell(size: TerminalSize, command: &ShellCommand) -> anyhow::Result<Self> {
-        let (pty, reader) = RawPty::spawn_shell(PtySize::from_terminal(size)?, command)?;
+        let (pty, reader, shell_name) =
+            RawPty::spawn_shell(PtySize::from_terminal(size)?, command)?;
         let (reader_shutdown, completion) = ReaderShutdown::new();
         let (reader, writer, pty) = pty.into_endpoints(reader);
         Ok(Self {
+            shell_name,
             reader: Some(PtyReaderEndpoint {
                 reader,
                 _completion: completion,
@@ -167,6 +170,11 @@ impl PtyEndpoints {
                 reader_shutdown: Some(reader_shutdown),
             }),
         })
+    }
+
+    /// Display name of the executable that actually started after platform fallback.
+    pub fn shell_name(&self) -> &str {
+        &self.shell_name
     }
 
     /// Transfers the I/O endpoints and their shutdown owner to a terminal.

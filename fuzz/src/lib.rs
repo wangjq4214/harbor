@@ -38,7 +38,7 @@ mod tests {
         Execute(u8),
         Csi(Params, Vec<u8>, u8, Option<u8>),
         Esc(Vec<u8>, u8),
-        Osc(Vec<Vec<u8>>, bool),
+        Osc(Vec<u8>, Vec<u8>, bool),
         DcsHook(Params, Vec<u8>, u8),
         DcsPut(u8),
         DcsUnhook(bool),
@@ -78,9 +78,10 @@ mod tests {
             self.events.push(Event::Esc(intermediates.to_vec(), byte));
         }
 
-        fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
             self.events.push(Event::Osc(
-                params.iter().map(|param| param.to_vec()).collect(),
+                command.to_vec(),
+                payload.to_vec(),
                 bell_terminated,
             ));
         }

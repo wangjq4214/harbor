@@ -6,6 +6,9 @@ use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
+use std::collections::VecDeque;
+
+use crate::TerminalOutputEvent;
 use harbor_parser::{Params, VtHandler};
 
 /// Applies recognized VT actions to a `Screen`.
@@ -13,6 +16,7 @@ pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
     pub decrqss: &'a mut DecrqssRequest,
     pub xtgettcap: &'a mut XtgettcapRequest,
+    pub output_events: &'a mut VecDeque<TerminalOutputEvent>,
 }
 
 impl VtHandler for ScreenHandler<'_> {
@@ -250,6 +254,8 @@ impl VtHandler for ScreenHandler<'_> {
         match byte {
             b'c' => {
                 self.screen.reset_display();
+                self.output_events
+                    .push_back(TerminalOutputEvent::TitleReset);
             }
             b'D' => {
                 self.screen.index();
@@ -285,12 +291,24 @@ impl VtHandler for ScreenHandler<'_> {
         }
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], bell_terminated: bool) {
-        if bell_terminated {
-            tracing::warn!("unsupported OSC sequence (terminated by BEL)");
-        } else {
-            tracing::warn!("unsupported OSC sequence (terminated by ST)");
+    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], _bell_terminated: bool) {
+        if !matches!(command, b"0" | b"1" | b"2") {
+            return;
         }
+        if payload.is_empty() {
+            self.output_events
+                .push_back(TerminalOutputEvent::TitleReset);
+            return;
+        }
+        let Ok(title) = std::str::from_utf8(payload) else {
+            return;
+        };
+        let mut chars = title.chars();
+        if chars.by_ref().take(257).count() > 256 || title.chars().any(char::is_control) {
+            return;
+        }
+        self.output_events
+            .push_back(TerminalOutputEvent::TitleChanged(title.to_owned()));
     }
 
     fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {

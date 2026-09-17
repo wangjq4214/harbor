@@ -42,7 +42,7 @@ use std::io::{Read, Write};
 use std::time::Instant;
 pub use types::{
     FrameDemand, RenderTarget, TerminalAppearance, TerminalEvent, TerminalEventOutcome,
-    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
     TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
 };
 
@@ -390,6 +390,10 @@ impl Terminal {
     /// Drains all reader-thread output in FIFO order into the terminal parser.
     pub fn drain_pty(&mut self) -> bool {
         self.ingest_and_blink(|io, screen| io.drain(screen))
+    }
+    /// Drains parser side effects exactly once in FIFO order.
+    pub fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
+        self.io.drain_output_events()
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.

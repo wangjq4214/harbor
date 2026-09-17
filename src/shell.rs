@@ -19,7 +19,9 @@ use crate::backdrop::{
 use crate::dialog::{PasteController, PasteEventOutcome, is_paste_shortcut};
 use crate::effects::apply_control_flow;
 use crate::event::{AppEvent, external_invalidation_for_app_event};
-use crate::tab_coordinator::{TabCoordinator, TerminalTabFactory, logical_window_width};
+use crate::tab_coordinator::{
+    TabCoordinator, TerminalTabFactory, format_window_title, logical_window_width,
+};
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_app::tab_manager::TabManager;
 use harbor_app::tab_view::TabUiController;
@@ -172,8 +174,12 @@ impl ActiveSession {
         match event {
             AppEvent::TerminalOutputReady(tab_id) => {
                 let outcome = self.tabs.process_output(tab_id);
-                if outcome.unread_changed {
-                    self.tabs.sync_ui(self.main_host.window());
+                if outcome.unread_changed || outcome.title_changed {
+                    if outcome.active_title_changed {
+                        self.tabs.sync_ui(self.main_host.window());
+                    } else {
+                        self.tabs.sync_tab_ui(self.main_host.window());
+                    }
                     Self::merge_wait(
                         &mut wait,
                         self.main_host
@@ -470,6 +476,9 @@ impl Shell {
                 tabs.create_tab(|tab_id, draw_id| {
                     factory.create_resources(tab_id, draw_id, size, surface.physical_size)
                 })?;
+                if let Some(title) = tabs.active_title() {
+                    context.window().set_title(&format_window_title(title));
+                }
 
                 tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
                 let active_bridge = tabs

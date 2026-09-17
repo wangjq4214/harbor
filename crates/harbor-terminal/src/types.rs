@@ -5,6 +5,13 @@
 
 use std::time::Instant;
 
+/// Host-neutral side effects produced while parsing terminal output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalOutputEvent {
+    TitleChanged(String),
+    TitleReset,
+}
+
 use harbor_config::{Palette, Rgba};
 
 /// Terminal-owned visual policy for the startup palette and backdrop fallback.

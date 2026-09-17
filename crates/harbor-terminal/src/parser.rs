@@ -11,11 +11,13 @@ mod incremental_tests;
 #[cfg(test)]
 mod tests;
 
+use crate::TerminalOutputEvent;
 use crate::model::AltScreenAction;
 use crate::screen::Screen;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
 use status_strings::DecrqssRequest;
+use std::collections::VecDeque;
 use xtgettcap::XtgettcapRequest;
 
 /// Streaming terminal parser.
@@ -27,6 +29,7 @@ pub struct TerminalParser {
     inner: Parser,
     decrqss: DecrqssRequest,
     xtgettcap: XtgettcapRequest,
+    output_events: VecDeque<TerminalOutputEvent>,
 }
 
 /// Result of feeding bytes through the parser.
@@ -50,6 +53,7 @@ impl TerminalParser {
                     screen,
                     decrqss: &mut self.decrqss,
                     xtgettcap: &mut self.xtgettcap,
+                    output_events: &mut self.output_events,
                 },
                 byte,
             );
@@ -64,5 +68,9 @@ impl TerminalParser {
             consumed: bytes.len(),
             alt_request: None,
         }
+    }
+
+    pub(crate) fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
+        self.output_events.drain(..).collect()
     }
 }
