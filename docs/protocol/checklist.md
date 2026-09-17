@@ -965,12 +965,12 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 24.5 Current Working Directory
 
-* [ ] `OSC 7 ; file://host/path ST`
-* [ ] URI parsing is correct
-* [ ] Percent-encoding is handled correctly
-* [ ] Host and path are separated
-* [ ] Illegal URIs are safely ignored
-* [ ] Untrusted paths do not directly trigger file operations
+* [x] `OSC 7 ; file://host/path ST`
+* [x] URI parsing is correct
+* [x] Percent-encoding is handled correctly
+* [x] Host and path are separated
+* [x] Illegal URIs are safely ignored
+* [x] Untrusted paths do not directly trigger file operations
 
 ### 24.6 Hyperlinks
 
@@ -1458,7 +1458,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 37.4 Modern Shell Integration
 
-* [ ] OSC 7
+* [x] OSC 7
 * [ ] OSC 8
 * [ ] OSC 133
 * [ ] OSC 9/99/777 optional

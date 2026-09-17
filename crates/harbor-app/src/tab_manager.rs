@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
-use harbor_terminal::{Terminal, TerminalOutputEvent, TerminalSize};
+use harbor_terminal::{Terminal, TerminalOutputEvent, TerminalSize, WorkingDirectoryMetadata};
 use harbor_widget::scene::primitive::ExternalDrawId;
 
 use crate::terminal_view::TerminalWidgetBridge;
@@ -86,6 +86,7 @@ struct TerminalTab {
     id: TabId,
     title: String,
     shell_fallback: String,
+    working_directory: Option<WorkingDirectoryMetadata>,
     unread: bool,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
@@ -97,9 +98,17 @@ struct TerminalTab {
 pub struct TabSnapshot {
     pub(crate) id: TabId,
     pub(crate) title: String,
+    pub(crate) working_directory: Option<WorkingDirectoryMetadata>,
     pub(crate) unread: bool,
     pub(crate) draw_id: ExternalDrawId,
     pub(crate) active: bool,
+}
+
+impl TabSnapshot {
+    /// Returns the latest validated OSC 7 metadata retained for this tab.
+    pub const fn working_directory(&self) -> Option<&WorkingDirectoryMetadata> {
+        self.working_directory.as_ref()
+    }
 }
 
 /// Effects the Host must apply after a model transition.
@@ -131,6 +140,7 @@ pub struct TabOutputOutcome {
     pub unread_changed: bool,
     pub title_changed: bool,
     pub active_title_changed: bool,
+    pub metadata_changed: bool,
 }
 
 fn normalize_shell_title(title: String, shell_fallback: &str) -> String {
@@ -202,6 +212,7 @@ impl TabManager {
             id,
             title,
             shell_fallback: resources.shell_fallback,
+            working_directory: None,
             unread: false,
             draw_id,
             terminal: resources.terminal,
@@ -253,6 +264,7 @@ impl TabManager {
             .map(|tab| TabSnapshot {
                 id: tab.id,
                 title: tab.title.clone(),
+                working_directory: tab.working_directory.clone(),
                 unread: tab.unread,
                 draw_id: tab.draw_id,
                 active: self.active == Some(tab.id),
@@ -366,14 +378,20 @@ impl TabManager {
         drop(terminal);
 
         let previous_title = tab.title.clone();
+        let previous_working_directory = tab.working_directory.clone();
         for event in output_events {
             match event {
                 TerminalOutputEvent::TitleChanged(title) => {
                     tab.title = normalize_shell_title(title, &tab.shell_fallback);
                 }
                 TerminalOutputEvent::TitleReset => tab.title.clone_from(&tab.shell_fallback),
+                TerminalOutputEvent::WorkingDirectoryChanged(metadata) => {
+                    tab.working_directory = Some(metadata);
+                }
+                TerminalOutputEvent::WorkingDirectoryReset => tab.working_directory = None,
             }
         }
+        let metadata_changed = tab.working_directory != previous_working_directory;
         let title_changed = tab.title != previous_title;
         let active = self.active == Some(id);
         if active {
@@ -382,6 +400,7 @@ impl TabManager {
                 unread_changed: false,
                 title_changed,
                 active_title_changed: title_changed,
+                metadata_changed,
             }
         } else {
             let unread_changed = ingested_output && !std::mem::replace(&mut tab.unread, true);
@@ -390,6 +409,7 @@ impl TabManager {
                 unread_changed,
                 title_changed,
                 active_title_changed: false,
+                metadata_changed,
             }
         }
     }
@@ -583,6 +603,57 @@ mod tests {
         );
         assert_eq!(manager.active_id(), Some(background));
         assert_ne!(manager.active_id(), Some(active));
+    }
+    #[test]
+    fn working_directory_metadata_is_retained_per_tab_and_reports_real_changes() {
+        let mut manager = TabManager::new();
+        let (background, _) = create(&mut manager);
+        let (active, _) = create(&mut manager);
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]7;file://host/home/one\x07");
+        let changed = manager.process_output(background);
+        assert!(changed.metadata_changed);
+        assert!(!changed.title_changed);
+        assert!(!changed.active_title_changed);
+        assert!(!changed.request_active_invalidation);
+        let snapshots = manager.snapshots();
+        let background_cwd = snapshots[0].working_directory().unwrap();
+        assert_eq!(background_cwd.host(), Some("host"));
+        assert_eq!(background_cwd.path(), "/home/one");
+        assert_eq!(snapshots[1].working_directory(), None);
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]7;file://host/home/one\x07\x1b]7;invalid\x07");
+        assert!(!manager.process_output(background).metadata_changed);
+
+        terminal(&manager, active)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]7;file:///active\x07");
+        let active_changed = manager.process_output(active);
+        assert!(active_changed.metadata_changed);
+        assert!(!active_changed.title_changed);
+        assert!(!active_changed.active_title_changed);
+        let snapshots = manager.snapshots();
+        let active_cwd = snapshots[1].working_directory().unwrap();
+        assert_eq!(active_cwd.host(), None);
+        assert_eq!(active_cwd.path(), "/active");
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]7;\x07");
+        assert!(manager.process_output(background).metadata_changed);
+        assert_eq!(manager.snapshots()[0].working_directory, None);
+        assert_eq!(
+            manager.process_output(TabId(u64::MAX)),
+            TabOutputOutcome::default()
+        );
     }
 
     #[test]

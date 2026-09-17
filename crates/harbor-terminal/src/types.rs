@@ -5,11 +5,30 @@
 
 use std::time::Instant;
 
+/// Validated, platform-neutral working-directory metadata reported by OSC 7.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkingDirectoryMetadata {
+    pub(crate) host: Option<String>,
+    pub(crate) path: String,
+}
+
+impl WorkingDirectoryMetadata {
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
 /// Host-neutral side effects produced while parsing terminal output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalOutputEvent {
     TitleChanged(String),
     TitleReset,
+    WorkingDirectoryChanged(WorkingDirectoryMetadata),
+    WorkingDirectoryReset,
 }
 
 use harbor_config::{Palette, Rgba};

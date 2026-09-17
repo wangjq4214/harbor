@@ -5,10 +5,22 @@
 use harbor_terminal::{
     Background, CellAttrs, Color, RenderTarget, RenderViewport, Terminal, TerminalAppearance,
     TerminalEvent, TerminalFocusEvent, TerminalGpuAccess, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
-    TextMetrics, alpha_mode_supports_transparency,
+    TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, TextMetrics, alpha_mode_supports_transparency,
 };
 
+#[test]
+fn should_expose_structured_working_directory_metadata() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]7;file://build-host/C:/work\x07");
+    let events = terminal.drain_output_events();
+    let TerminalOutputEvent::WorkingDirectoryChanged(metadata) = &events[0] else {
+        panic!("expected working-directory metadata");
+    };
+
+    assert_eq!(metadata.host(), Some("build-host"));
+    assert_eq!(metadata.path(), "/C:/work");
+}
 #[test]
 fn harbor_terminal_manifest_does_not_depend_on_harbor_widget() {
     let manifest = include_str!("../Cargo.toml");

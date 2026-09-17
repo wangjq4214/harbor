@@ -203,3 +203,11 @@
 - **Relationships:**
   - belongs to Terminal
   - referenced by Alternate-Screen Mode Family
+
+### OSC 7 Working-Directory Metadata
+- **Definition:** A bounded, host-visible representation of an OSC 7 `file://[host]/absolute-path` URI, stored per terminal tab as optional structured host/path metadata without UI presentation. Harbor accepts an ASCII host up to 255 bytes and a strictly percent-decoded UTF-8 path up to 2048 bytes, rejects userinfo, ports, queries, fragments, relative paths, malformed encoding, and control characters, and retains URI path form without `PathBuf` conversion or normalization. Empty OSC 7 and RIS reset the metadata; invalid input leaves the prior value unchanged and never triggers directory changes, file reads, or network access.
+- **Synonyms:** Current working directory metadata, CWD metadata
+- **Relationships:**
+  - belongs to Terminal
+  - communicates with Application Business Host
+  - depends on Parser Retention Limits

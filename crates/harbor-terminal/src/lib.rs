@@ -43,7 +43,7 @@ use std::time::Instant;
 pub use types::{
     FrameDemand, RenderTarget, TerminalAppearance, TerminalEvent, TerminalEventOutcome,
     TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
-    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, WorkingDirectoryMetadata,
 };
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.

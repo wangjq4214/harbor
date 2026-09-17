@@ -7,7 +7,7 @@ use crate::{
     FrameDemand, InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent,
     TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
     TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize,
-    safe_preview_line, should_confirm_multiline,
+    WorkingDirectoryMetadata, safe_preview_line, should_confirm_multiline,
 };
 use std::borrow::Cow;
 use std::time::Instant;
@@ -635,7 +635,83 @@ fn osc_titles_enforce_utf8_control_and_scalar_limits() {
 }
 
 #[test]
-fn osc_empty_and_ris_reset_title_but_cancellation_and_decstr_do_not() {
+fn osc7_emits_structured_metadata_in_fifo_order_and_drains_once() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]7;file:///home/Alice%20Smith\x07");
+    terminal.put_bytes(b"\x1b]7;file://build");
+    terminal.put_bytes(b"-host/C:/work\x1b");
+    terminal.put_bytes(b"\\");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![
+            TerminalOutputEvent::WorkingDirectoryChanged(WorkingDirectoryMetadata {
+                host: None,
+                path: "/home/Alice Smith".to_owned(),
+            }),
+            TerminalOutputEvent::WorkingDirectoryChanged(WorkingDirectoryMetadata {
+                host: Some("build-host".to_owned()),
+                path: "/C:/work".to_owned(),
+            }),
+        ]
+    );
+    assert!(terminal.drain_output_events().is_empty());
+}
+
+#[test]
+fn osc7_reset_and_invalid_sequence_semantics_match_contract() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]7;file:///kept\x07");
+    terminal.put_bytes(b"\x1b]7;file://user@host/rejected\x07");
+    terminal.put_bytes(b"\x1b]7;file:///cancelled\x18");
+    terminal.put_bytes(b"\x1b[!p");
+    terminal.put_bytes(b"\x1b]7;\x07");
+    terminal.put_bytes(b"\x1b]7\x1b\\");
+    terminal.put_bytes(b"\x1bc");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![
+            TerminalOutputEvent::WorkingDirectoryChanged(WorkingDirectoryMetadata {
+                host: None,
+                path: "/kept".to_owned(),
+            }),
+            TerminalOutputEvent::WorkingDirectoryReset,
+            TerminalOutputEvent::WorkingDirectoryReset,
+            TerminalOutputEvent::TitleReset,
+            TerminalOutputEvent::WorkingDirectoryReset,
+        ]
+    );
+}
+
+#[test]
+fn osc7_incomplete_and_overflow_sequences_emit_nothing_then_recover() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]7;file:///incomplete");
+    assert!(terminal.drain_output_events().is_empty());
+    terminal.put_bytes(b"\x18");
+
+    let oversized = format!("\x1b]7;file:///{}\x07", "x".repeat(4096));
+    terminal.put_bytes(oversized.as_bytes());
+    assert!(terminal.drain_output_events().is_empty());
+
+    terminal.put_bytes(b"\x1b]7;file:///recovered\x07");
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::WorkingDirectoryChanged(
+            WorkingDirectoryMetadata {
+                host: None,
+                path: "/recovered".to_owned(),
+            }
+        )]
+    );
+}
+
+#[test]
+fn osc_empty_and_ris_reset_title_and_cwd_but_cancellation_and_decstr_do_not() {
     let mut terminal = Terminal::new_headless(1, 8);
 
     terminal.put_bytes(b"\x1b]2;kept\x18");
@@ -646,7 +722,12 @@ fn osc_empty_and_ris_reset_title_but_cancellation_and_decstr_do_not() {
 
     assert_eq!(
         terminal.drain_output_events(),
-        vec![TerminalOutputEvent::TitleReset; 3]
+        vec![
+            TerminalOutputEvent::TitleReset,
+            TerminalOutputEvent::TitleReset,
+            TerminalOutputEvent::TitleReset,
+            TerminalOutputEvent::WorkingDirectoryReset,
+        ]
     );
 }
 

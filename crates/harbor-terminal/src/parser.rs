@@ -3,6 +3,7 @@
 mod device_attributes;
 mod handlers;
 mod mode_query;
+mod osc7;
 mod status_strings;
 mod xtgettcap;
 

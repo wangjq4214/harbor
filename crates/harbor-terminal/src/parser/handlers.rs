@@ -2,6 +2,7 @@
 
 use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
 use super::mode_query::ModeQuery;
+use super::osc7;
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
@@ -256,6 +257,8 @@ impl VtHandler for ScreenHandler<'_> {
                 self.screen.reset_display();
                 self.output_events
                     .push_back(TerminalOutputEvent::TitleReset);
+                self.output_events
+                    .push_back(TerminalOutputEvent::WorkingDirectoryReset);
             }
             b'D' => {
                 self.screen.index();
@@ -292,6 +295,16 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], _bell_terminated: bool) {
+        if command == b"7" {
+            if payload.is_empty() {
+                self.output_events
+                    .push_back(TerminalOutputEvent::WorkingDirectoryReset);
+            } else if let Some(metadata) = osc7::parse(payload) {
+                self.output_events
+                    .push_back(TerminalOutputEvent::WorkingDirectoryChanged(metadata));
+            }
+            return;
+        }
         if !matches!(command, b"0" | b"1" | b"2") {
             return;
         }

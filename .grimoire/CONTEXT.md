@@ -6,7 +6,7 @@ Project domain concepts and terminology.
 
 | Domain | File | Entry Count |
 | --- | --- | ---: |
-| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 29 |
+| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 30 |
 
 ### System-Native Font Loading
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.

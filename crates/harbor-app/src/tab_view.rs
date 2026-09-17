@@ -228,6 +228,7 @@ mod tests {
             title: format!("Terminal {id}"),
             unread,
             draw_id: ExternalDrawId::new(id),
+            working_directory: None,
             active,
         }
     }
