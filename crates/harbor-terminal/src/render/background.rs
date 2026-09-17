@@ -180,6 +180,11 @@ impl Background {
         self.dirty = true;
     }
 
+    pub(crate) fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+        self.dirty = true;
+    }
+
     pub fn prepare_with_dirty(
         &mut self,
         gpu: TerminalGpuAccess<'_>,

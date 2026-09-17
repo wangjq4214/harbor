@@ -18,6 +18,7 @@ pub struct TerminalRenderPipeline {
     pub selection: Selection,
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
+    palette: Palette,
 }
 
 impl TerminalRenderPipeline {
@@ -74,7 +75,19 @@ impl TerminalRenderPipeline {
             selection,
             cursor,
             scrollbar,
+            palette,
         })
+    }
+    pub fn sync_palette(&mut self, palette: Palette) -> bool {
+        if self.palette == palette {
+            return false;
+        }
+        self.palette = palette;
+        self.background.set_palette(palette);
+        self.text.set_palette(palette);
+        self.decoration.set_palette(palette);
+        self.cursor.set_color(palette.cursor);
+        true
     }
 
     pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) {

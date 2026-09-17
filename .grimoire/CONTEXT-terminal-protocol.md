@@ -219,3 +219,12 @@
   - belongs to Terminal
   - depends on Parser Retention Limits
   - communicates with Runtime Host
+
+### OSC Default Color Policy
+- **Definition:** OSC 10/11/12 accept `#RRGGBB` or `rgb:R/G/B` with one to four hexadecimal digits per component, change only RGB while preserving each active slot's Harbor alpha, and answer queries as `rgb:rrrr/gggg/bbbb` using the request's BEL or ST terminator. OSC 110/111/112 restore the corresponding complete startup-configured RGBA value. Invalid values, color names, `rgbi:`, alpha-bearing forms, and multi-color payloads leave active colors unchanged.
+- **Synonyms:** Dynamic default colors, OSC 10/11/12 colors
+- **Relationships:**
+  - belongs to Terminal
+  - depends on TerminalReply
+  - references TOML User Settings
+  - references Windows Acrylic Backdrop

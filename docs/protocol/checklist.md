@@ -951,15 +951,15 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 24.4 Default Colors
 
-* [ ] `OSC 10 ; color ST` — Default foreground
-* [ ] `OSC 11 ; color ST` — Default background
-* [ ] `OSC 12 ; color ST` — Cursor color
-* [ ] `OSC 10 ; ? ST` — Query default foreground
-* [ ] `OSC 11 ; ? ST` — Query default background
-* [ ] `OSC 12 ; ? ST` — Query cursor color
-* [ ] `OSC 110 ST` — Reset default foreground
-* [ ] `OSC 111 ST` — Reset default background
-* [ ] `OSC 112 ST` — Reset cursor color
+* [x] `OSC 10 ; color ST` — Default foreground
+* [x] `OSC 11 ; color ST` — Default background
+* [x] `OSC 12 ; color ST` — Cursor color
+* [x] `OSC 10 ; ? ST` — Query default foreground
+* [x] `OSC 11 ; ? ST` — Query default background
+* [x] `OSC 12 ; ? ST` — Query cursor color
+* [x] `OSC 110 ST` — Reset default foreground
+* [x] `OSC 111 ST` — Reset default background
+* [x] `OSC 112 ST` — Reset cursor color
 * [ ] `OSC 104 ST` — Reset palette
 * [ ] `OSC 104 ; index ST` — Reset specified color
 

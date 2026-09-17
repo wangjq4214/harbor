@@ -2,6 +2,7 @@
 
 use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
 use super::mode_query::ModeQuery;
+use super::osc_color;
 use super::osc7;
 use super::osc8;
 use super::status_strings::DecrqssRequest;
@@ -303,7 +304,27 @@ impl VtHandler for ScreenHandler<'_> {
         }
     }
 
-    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
+        if matches!(command, b"10" | b"11" | b"12" | b"110" | b"111" | b"112") {
+            match osc_color::parse(command, payload) {
+                Some(osc_color::Action::Set(slot, rgb)) => {
+                    self.screen.set_default_color_rgb(slot, rgb);
+                }
+                Some(osc_color::Action::Query(slot)) => {
+                    let reply = osc_color::format_query(
+                        slot,
+                        self.screen.default_color(slot),
+                        bell_terminated,
+                    );
+                    self.screen.push_reply(reply.as_bytes());
+                }
+                Some(osc_color::Action::Reset(slot)) => {
+                    self.screen.reset_default_color(slot);
+                }
+                None => {}
+            }
+            return;
+        }
         if command == b"8" {
             match osc8::parse(payload) {
                 Some(osc8::Action::Open { uri, id }) => self.screen.open_hyperlink(uri, id),

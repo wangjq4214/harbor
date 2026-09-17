@@ -11,6 +11,7 @@
 //! `scroll_region_up_one`) stay here.
 
 mod cursor;
+mod default_colors;
 mod edit;
 mod hyperlink;
 mod reader;
@@ -18,6 +19,7 @@ mod synchronized_output;
 #[cfg(test)]
 mod tests;
 
+use self::default_colors::DefaultColors;
 use crate::normal_buf::CellsIter;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
@@ -25,9 +27,11 @@ use harbor_parser::Params;
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
 use self::synchronized_output::SynchronizedOutput;
+use harbor_config::{Palette, Rgba};
 use hyperlink::HyperlinkRegistry;
 use std::collections::HashSet;
 
+pub(crate) use self::default_colors::DefaultColorSlot;
 pub use self::reader::ScreenReader;
 
 // ── re-exports ────────────────────────────────────────────────────────
@@ -99,10 +103,16 @@ pub struct Screen {
     pub(crate) replies: Vec<u8>,
     /// Session-owned `?2026` nesting; preserved across alt-screen swap.
     synchronized_output: SynchronizedOutput,
+    /// Startup and active OSC default colors, owned by the terminal session.
+    default_colors: DefaultColors,
 }
 
 impl Screen {
     pub fn new(rows: usize, cols: usize) -> Self {
+        Self::with_palette(rows, cols, Palette::default())
+    }
+
+    pub(crate) fn with_palette(rows: usize, cols: usize, palette: Palette) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
         Self {
@@ -115,6 +125,27 @@ impl Screen {
             parked_alt: None,
             replies: Vec::new(),
             synchronized_output: SynchronizedOutput::default(),
+            default_colors: DefaultColors::new(palette),
+        }
+    }
+
+    pub(crate) fn active_palette(&self) -> Palette {
+        self.default_colors.active_palette()
+    }
+
+    pub(crate) fn default_color(&self, slot: DefaultColorSlot) -> Rgba {
+        self.default_colors.get(slot)
+    }
+
+    pub(crate) fn set_default_color_rgb(&mut self, slot: DefaultColorSlot, rgb: [u8; 3]) {
+        if self.default_colors.set_rgb(slot, rgb) {
+            self.mark_all_dirty();
+        }
+    }
+
+    pub(crate) fn reset_default_color(&mut self, slot: DefaultColorSlot) {
+        if self.default_colors.reset(slot) {
+            self.mark_all_dirty();
         }
     }
 
@@ -428,6 +459,7 @@ impl Screen {
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
+        let default_colors = self.default_colors;
         // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
         let mut primary = std::mem::replace(self, Self::new(rows, cols));
@@ -441,6 +473,7 @@ impl Screen {
         }
         // Save the primary after the install block: a restored parked buffer
         // carries `saved_primary = None`, so assigning first would be clobbered.
+        self.default_colors = default_colors;
         self.saved_primary = Some(Box::new(primary));
         self.replies = replies;
         self.synchronized_output = sync;
@@ -449,6 +482,7 @@ impl Screen {
     pub fn exit_alt(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
+        let default_colors = self.default_colors;
         if let Some(primary) = self.saved_primary.take() {
             // Preserve the alternate-screen contents for a later `?47` re-entry.
             let rows = self.rows();
@@ -456,8 +490,10 @@ impl Screen {
             let mut alt = std::mem::replace(self, Self::new(rows, cols));
             // Drop the nested primary copy so parked alt stays a leaf buffer.
             alt.saved_primary = None;
+            alt.default_colors = default_colors;
 
             *self = *primary;
+            self.default_colors = default_colors;
             // Park the alternate buffer after the primary is back, since the
             // saved primary carries an empty `parked_alt` slot.
             self.parked_alt = Some(Box::new(alt));

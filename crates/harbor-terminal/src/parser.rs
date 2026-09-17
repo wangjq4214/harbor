@@ -5,6 +5,7 @@ mod handlers;
 mod mode_query;
 mod osc7;
 mod osc8;
+mod osc_color;
 mod status_strings;
 mod xtgettcap;
 

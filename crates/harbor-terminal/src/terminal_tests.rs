@@ -4,11 +4,12 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    FrameDemand, InputModes, PasteDisposition, Terminal, TerminalEvent, TerminalFocusEvent,
-    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
+    FrameDemand, InputModes, PasteDisposition, Terminal, TerminalAppearance, TerminalEvent,
+    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
     TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize,
     WorkingDirectoryMetadata, safe_preview_line, should_confirm_multiline,
 };
+use harbor_config::{Palette, Rgba};
 use std::borrow::Cow;
 use std::time::Instant;
 
@@ -3215,6 +3216,28 @@ fn should_default_backdrop_availability_to_false_when_headless() {
     let terminal = Terminal::new_headless(2, 4);
 
     assert!(!terminal.backdrop_available);
+}
+#[test]
+fn osc_background_updates_live_tint_and_reset_restores_startup_rgba() {
+    let startup = Palette {
+        background: Rgba::from_rgba8(1, 2, 3, 77),
+        ..Palette::default()
+    };
+    let mut terminal =
+        Terminal::new_headless_with_appearance(2, 4, TerminalAppearance::from_palette(startup));
+
+    terminal.put_bytes(b"\x1b]11;#445566\x07");
+    assert_eq!(
+        terminal.clear_rgba(true),
+        Rgba::from_rgba8(0x44, 0x55, 0x66, 77).components()
+    );
+    assert_eq!(
+        terminal.clear_rgba(false),
+        Rgba::from_rgb8(0x44, 0x55, 0x66).components()
+    );
+
+    terminal.put_bytes(b"\x1b]111;\x1b\\");
+    assert_eq!(terminal.clear_rgba(true), startup.background.components());
 }
 
 #[test]

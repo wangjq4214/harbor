@@ -90,6 +90,11 @@ impl Cursor {
         }
     }
 
+    pub(crate) fn set_color(&mut self, color: Rgba) {
+        self.color = color;
+        self.dirty = true;
+    }
+
     /// Resets the blink timer (makes cursor solid-on immediately).
     pub fn reset_blink(&mut self, now: Instant) {
         self.blink.reset(now);

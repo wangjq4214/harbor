@@ -1,5 +1,6 @@
 use super::*;
-use crate::screen::{AltScreenAction, CursorShape, Screen};
+use crate::screen::{AltScreenAction, CursorShape, DefaultColorSlot, Screen};
+use harbor_config::{Palette, Rgba};
 use harbor_parser::Params;
 
 fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
@@ -848,6 +849,27 @@ fn should_treat_eight_bit_device_attributes_as_unrecognized_and_resume_text() {
     // Assert — no DA reply is generated and subsequent printable input is preserved.
     assert_eq!(screen.drain_replies(), Vec::new());
     assert!(screen.row_text(0).contains("cVISIBLE"));
+}
+
+#[test]
+fn osc_color_reply_is_atomic_at_capacity_boundary() {
+    let reply = b"\x1b]10;rgb:ffff/ffff/ffff\x07";
+    for (remaining, accepted) in [(reply.len(), true), (reply.len() - 1, false)] {
+        let prefix = vec![b'x'; 1024 - remaining];
+        let mut screen = Screen::new(2, 4);
+        let mut parser = TerminalParser::default();
+        screen.push_reply(&prefix);
+
+        feed(&mut parser, &mut screen, b"\x1b]10;?\x07");
+
+        let replies = screen.drain_replies();
+        if accepted {
+            assert_eq!(replies.len(), 1024);
+            assert_eq!(&replies[prefix.len()..], reply);
+        } else {
+            assert_eq!(replies, prefix);
+        }
+    }
 }
 
 #[test]
@@ -1855,6 +1877,130 @@ fn should_keep_decrqm_set_when_decstr_leaves_nested_2026() {
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
     assert!(!screen.ordinary_present_eligible());
     assert!(screen.row_text(0).contains("hello"));
+}
+
+#[test]
+fn osc_default_colors_set_query_reset_and_round_trip_all_slots() {
+    let startup = Palette {
+        foreground: Rgba::from_rgba8(1, 2, 3, 64),
+        background: Rgba::from_rgba8(4, 5, 6, 96),
+        cursor: Rgba::from_rgba8(7, 8, 9, 128),
+        ..Palette::default()
+    };
+    let mut screen = Screen::with_palette(2, 8, startup);
+    let mut parser = TerminalParser::default();
+
+    screen.clear_dirty();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]10;#123456\x07\x1b]11;rgb:f/80/0000\x1b\\\x1b]12;#abcdef\x07",
+    );
+    let active = screen.active_palette();
+    assert_eq!(active.foreground, Rgba::from_rgba8(0x12, 0x34, 0x56, 64));
+    assert_eq!(active.background, Rgba::from_rgba8(255, 128, 0, 96));
+    assert_eq!(active.cursor, Rgba::from_rgba8(0xab, 0xcd, 0xef, 128));
+    let dirty = screen.dirty_ranges();
+    assert_eq!(dirty.len(), 2);
+    assert!(
+        dirty
+            .iter()
+            .all(|range| range.start_col == 0 && range.end_col == 8)
+    );
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, b"\x1b]12;#abcdef\x07");
+    assert!(screen.dirty_ranges().is_empty());
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07",
+    );
+    assert_eq!(
+        screen.drain_replies(),
+        b"\x1b]10;rgb:1212/3434/5656\x07\x1b]11;rgb:ffff/8080/0000\x1b\\\x1b]12;rgb:abab/cdcd/efef\x07"
+    );
+
+    feed(&mut parser, &mut screen, b"\x1b]10;?\x07");
+    let query_reply = screen.drain_replies();
+    feed(&mut parser, &mut screen, b"\x1b]110;\x1b\\");
+    assert_eq!(screen.active_palette().foreground, startup.foreground);
+    feed(&mut parser, &mut screen, &query_reply);
+    assert_eq!(
+        screen.active_palette().foreground,
+        Rgba::from_rgba8(0x12, 0x34, 0x56, 64)
+    );
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]110;\x07\x1b]111;\x1b\\\x1b]112;\x07",
+    );
+    assert_eq!(screen.active_palette(), startup);
+}
+
+#[test]
+fn osc_default_colors_reject_invalid_input_and_recover_after_cancel_or_overflow() {
+    let mut screen = Screen::new(2, 8);
+    let startup = screen.active_palette();
+    let mut parser = TerminalParser::default();
+    for payload in [
+        b"".as_slice(),
+        b"red",
+        b"rgbi:1/0/0",
+        b"#12345678",
+        b"rgb:0/0/0;rgb:f/f/f",
+        b"\xff",
+    ] {
+        let mut sequence = b"\x1b]10;".to_vec();
+        sequence.extend_from_slice(payload);
+        sequence.push(0x07);
+        feed(&mut parser, &mut screen, &sequence);
+    }
+    feed(&mut parser, &mut screen, b"\x1b]110;payload\x07");
+    assert_eq!(screen.active_palette(), startup);
+    assert!(screen.drain_replies().is_empty());
+
+    feed(&mut parser, &mut screen, b"\x1b]10;#112233\x18");
+    let mut overflow = b"\x1b]11;".to_vec();
+    overflow.extend(std::iter::repeat_n(b'a', 4097));
+    overflow.push(0x07);
+    feed(&mut parser, &mut screen, &overflow);
+    assert_eq!(screen.active_palette(), startup);
+
+    for &byte in b"\x1b]12;#445566\x1b\\" {
+        feed(&mut parser, &mut screen, &[byte]);
+    }
+    assert_eq!(
+        screen.default_color(DefaultColorSlot::Cursor),
+        Rgba::from_rgba8(0x44, 0x55, 0x66, 204)
+    );
+}
+
+#[test]
+fn osc_default_colors_survive_alt_screen_families_ris_decstr_and_sgr_resets() {
+    for mode in [47, 1047, 1049] {
+        let mut screen = Screen::new(2, 8);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, b"\x1b]10;#112233\x07");
+        let sequence = format!(
+            "\x1b[?{mode}h\x1b]11;#445566\x07\x1b[0m\x1b[!p\x1b[?{mode}l\x1b[?{mode}h\x1b[?{mode}l"
+        );
+        feed_with_alt_transitions(&mut parser, &mut screen, sequence.as_bytes());
+        feed(&mut parser, &mut screen, b"\x1bc");
+
+        let active = screen.active_palette();
+        assert_eq!(active.foreground, Rgba::from_rgb8(0x11, 0x22, 0x33));
+        assert_eq!(
+            active.background,
+            Rgba::new(
+                0x44 as f32 / 255.0,
+                0x55 as f32 / 255.0,
+                0x66 as f32 / 255.0,
+                0.25,
+            )
+        );
+    }
 }
 
 #[test]

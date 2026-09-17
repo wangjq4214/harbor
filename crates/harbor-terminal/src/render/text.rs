@@ -299,6 +299,11 @@ impl Text {
         Ok(layer)
     }
 
+    pub(crate) fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+        self.dirty = true;
+    }
+
     pub fn invalidate_projection(&mut self) {
         self.dirty = true;
     }
@@ -617,6 +622,31 @@ mod tests {
         attrs.set(CellAttrs::INVERSE);
         let color = glyph_color(Color::Default, Color::Named(1), attrs);
         assert_eq!(color, Color::Named(1).to_rgba());
+    }
+
+    #[test]
+    fn injected_default_colors_control_normal_and_inverse_glyphs() {
+        let palette = Palette {
+            foreground: harbor_config::Rgba::from_rgba8(10, 20, 30, 128),
+            background: harbor_config::Rgba::from_rgba8(40, 50, 60, 64),
+            ..Palette::default()
+        };
+        assert_eq!(
+            glyph_color_with_palette(
+                &palette,
+                Color::Default,
+                Color::Default,
+                CellAttrs::default(),
+            ),
+            palette.foreground.components()
+        );
+
+        let mut inverse = CellAttrs::default();
+        inverse.set(CellAttrs::INVERSE);
+        assert_eq!(
+            glyph_color_with_palette(&palette, Color::Default, Color::Default, inverse,),
+            [40.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0, 1.0]
+        );
     }
 
     #[test]

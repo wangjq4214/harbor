@@ -15,6 +15,7 @@ mod types;
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
 pub use harbor_config::Color;
+use harbor_config::Palette;
 use harbor_pty::{PtyControl, PtyEndpoints};
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
@@ -119,8 +120,7 @@ impl Terminal {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        let mut terminal = Self::new_headless(size.rows, size.cols);
-        terminal.appearance = appearance;
+        let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
         let snap = terminal.screen.terminal_snapshot();
 
         let renderer = TerminalRenderPipeline::new(
@@ -154,8 +154,7 @@ impl Terminal {
         appearance: TerminalAppearance,
         wake: impl Fn() -> bool + Send + 'static,
     ) -> anyhow::Result<Self> {
-        let mut terminal = Self::new_headless(size.rows, size.cols);
-        terminal.appearance = appearance;
+        let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
         let snap = terminal.screen.terminal_snapshot();
         let renderer = TerminalRenderPipeline::new(
             gpu,
@@ -185,12 +184,20 @@ impl Terminal {
 
     /// Creates a headless Terminal without GPU or PTY resources (for parser tests).
     pub fn new_headless(rows: usize, cols: usize) -> Self {
+        Self::new_headless_with_appearance(rows, cols, TerminalAppearance::default())
+    }
+
+    pub(crate) fn new_headless_with_appearance(
+        rows: usize,
+        cols: usize,
+        appearance: TerminalAppearance,
+    ) -> Self {
         Self {
-            screen: Screen::new(rows, cols),
+            screen: Screen::with_palette(rows, cols, appearance.palette()),
             io: TerminalIo::new_headless(),
             renderer: None,
             pointer: PointerInteraction::new(),
-            appearance: TerminalAppearance::default(),
+            appearance,
             backdrop_available: false,
             pending_ordinary_present: false,
         }
@@ -217,7 +224,7 @@ impl Terminal {
 
     /// Returns the terminal-owned default clear color for the host environment.
     pub fn clear_rgba(&self, backdrop_available: bool) -> [f32; 4] {
-        self.appearance.clear_rgba(backdrop_available)
+        clear_rgba_for_palette(self.screen.active_palette(), backdrop_available)
     }
 
     /// Returns the configured tint used by a host compositor backdrop.
@@ -237,8 +244,10 @@ impl Terminal {
     pub fn prepare(&mut self, gpu: TerminalGpuAccess<'_>, damage: Option<&UpdateDamage>) {
         let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
+        let palette = self.screen.active_palette();
         if let Some(renderer) = &mut self.renderer {
-            let tint = self.appearance.clear_rgba(self.backdrop_available);
+            renderer.sync_palette(palette);
+            let tint = clear_rgba_for_palette(palette, self.backdrop_available);
             renderer.prepare(gpu, &snap, damage, now, self.pointer.bounds(), tint);
         }
     }
@@ -262,9 +271,11 @@ impl Terminal {
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);
         let snap = self.screen.terminal_snapshot();
+        let palette = self.screen.active_palette();
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
-            let tint = self.appearance.clear_rgba(self.backdrop_available);
+            renderer.sync_palette(palette);
+            let tint = clear_rgba_for_palette(palette, self.backdrop_available);
             renderer.prepare(gpu, &snap, None, now, self.pointer.bounds(), tint);
             renderer.draw(pass);
         }
@@ -613,6 +624,15 @@ impl Terminal {
 
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt()
+    }
+}
+
+fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4] {
+    let rgba = palette.background.components();
+    if backdrop_available {
+        rgba
+    } else {
+        [rgba[0], rgba[1], rgba[2], 1.0]
     }
 }
 
