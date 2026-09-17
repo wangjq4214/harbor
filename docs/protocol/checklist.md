@@ -974,16 +974,15 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 24.6 Hyperlinks
 
-* [ ] `OSC 8 ; params ; URI ST`
-* [ ] `OSC 8 ; ; ST` closes hyperlink
-* [ ] Supports `id=` parameter
-* [ ] Empty URI closes the current hyperlink
-* [ ] Hyperlink state can persist across plain text
-* [ ] SGR Reset does not erroneously close the hyperlink
-* [ ] RIS closes the current hyperlink
-* [ ] URI length is limited
-* [ ] Illegal URIs do not cause parse desynchronization
-
+* [x] `OSC 8 ; params ; URI ST`
+* [x] `OSC 8 ; ; ST` closes hyperlink
+* [x] Supports `id=` parameter
+* [x] Empty URI closes the current hyperlink
+* [x] Hyperlink state can persist across plain text
+* [x] SGR Reset does not erroneously close the hyperlink
+* [x] RIS closes the current hyperlink
+* [x] URI length is limited
+* [x] Illegal URIs do not cause parse desynchronization
 ### 24.7 Clipboard
 
 * [ ] `OSC 52 ; selection ; base64 ST`
@@ -1380,7 +1379,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Maximum PM length
 * [x] Maximum SOS length
 * [x] Maximum title length
-* [ ] Maximum hyperlink URI length
+* [x] Maximum hyperlink URI length
 * [ ] Maximum OSC 52 Base64 length
 * [ ] Maximum clipboard decoded length
 * [ ] Maximum image transfer length
@@ -1436,7 +1435,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] True Color
 * [ ] Curly underline
 * [ ] Underline color
-* [ ] OSC 8
+* [x] OSC 8
 * [ ] DA1/DA2
 * [ ] CPR
 
@@ -1447,7 +1446,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [ ] DECRQM
 * [ ] DA1
 * [ ] DA2
-* [ ] OSC 8
+* [x] OSC 8
 * [ ] OSC 52
 * [x] Bracketed Paste
 * [ ] Focus Reporting
@@ -1459,7 +1458,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ### 37.4 Modern Shell Integration
 
 * [x] OSC 7
-* [ ] OSC 8
+* [x] OSC 8
 * [ ] OSC 133
 * [ ] OSC 9/99/777 optional
 * [x] OSC 1337 can be safely ignored

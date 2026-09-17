@@ -195,6 +195,12 @@ fn map_pointer_button(button: PointerButton) -> TerminalPointerButton {
     }
 }
 
+fn forward_hyperlink_activation(uri: Option<String>, callback: &(dyn Fn(String) + Send + Sync)) {
+    if let Some(uri) = uri {
+        callback(uri);
+    }
+}
+
 fn is_terminal_wheel(event: &UiEvent) -> bool {
     matches!(
         event,
@@ -231,13 +237,24 @@ impl TerminalWidgetBridge {
         terminal: Arc<Mutex<Terminal>>,
         gate_active: Arc<AtomicBool>,
     ) -> Self {
-        Self::new_internal(draw_id.into(), terminal, gate_active)
+        Self::new_internal(draw_id.into(), terminal, gate_active, Arc::new(|_| {}))
+    }
+
+    /// Creates a bridge with a Host-owned OSC 8 activation callback.
+    pub fn new_with_hyperlink_activation(
+        draw_id: impl Into<ExternalDrawId>,
+        terminal: Arc<Mutex<Terminal>>,
+        gate_active: Arc<AtomicBool>,
+        activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
+    ) -> Self {
+        Self::new_internal(draw_id.into(), terminal, gate_active, activate_hyperlink)
     }
 
     fn new_internal(
         draw_id: ExternalDrawId,
         terminal: Arc<Mutex<Terminal>>,
         gate_active: Arc<AtomicBool>,
+        activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
         // ExternalDrawFn is Arc-typed; the closure captures only the UI-thread Terminal.
@@ -265,6 +282,7 @@ impl TerminalWidgetBridge {
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
+        let input_activate_hyperlink = Arc::clone(&activate_hyperlink);
         let input_gate = Arc::clone(&gate_active);
         let input_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
@@ -295,6 +313,10 @@ impl TerminalWidgetBridge {
                         if let Some(text) = outcome.clipboard_text {
                             ctx.write_clipboard(text);
                         }
+                        forward_hyperlink_activation(
+                            outcome.hyperlink_activation,
+                            input_activate_hyperlink.as_ref(),
+                        );
                         let offset_moved = offset_before
                             .is_some_and(|before| before != term.screen().view_offset());
                         if key_wakes || offset_moved || outcome.redraw {
@@ -560,6 +582,23 @@ mod tests {
         let bridge = TerminalWidgetBridge::new(41, terminal, gate);
 
         assert_eq!(bridge.draw_id(), 41);
+    }
+
+    #[test]
+    fn should_forward_one_hyperlink_activation_to_injected_callback() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let callback_received = Arc::clone(&received);
+        let callback: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |uri| {
+            callback_received.lock().unwrap().push(uri);
+        });
+
+        forward_hyperlink_activation(Some("https://example.test".to_owned()), callback.as_ref());
+        forward_hyperlink_activation(None, callback.as_ref());
+
+        assert_eq!(
+            received.lock().unwrap().as_slice(),
+            ["https://example.test"]
+        );
     }
 
     #[test]

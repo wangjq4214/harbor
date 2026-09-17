@@ -36,6 +36,7 @@ impl Pen {
 /// Snapshot of pen color + attributes + character sets for DECSC/DECRC save/restore.
 #[derive(Debug, Clone, Copy)]
 struct SavedPen {
+    hyperlink: Option<crate::model::HyperlinkId>,
     fg: Color,
     bg: Color,
     attrs: CellAttrs,
@@ -135,6 +136,7 @@ pub(crate) struct PenState {
     pub(crate) pen: Pen,
     pub(crate) tab_stops: TabStops,
     pub(crate) charsets: CharacterSets,
+    pub(crate) active_hyperlink: Option<crate::model::HyperlinkId>,
     saved_pen: Option<SavedPen>,
 }
 
@@ -144,6 +146,7 @@ impl PenState {
             pen: Pen::reset(),
             tab_stops: TabStops::new(cols),
             charsets: CharacterSets::default(),
+            active_hyperlink: None,
             saved_pen: None,
         }
     }
@@ -153,6 +156,7 @@ impl PenState {
         self.pen = Pen::reset();
         self.charsets.reset();
         self.tab_stops = TabStops::new(cols);
+        self.active_hyperlink = None;
         self.saved_pen = None;
     }
 
@@ -174,12 +178,14 @@ impl PenState {
             bg: self.pen.bg,
             attrs: self.pen.attrs,
             protected: false,
+            hyperlink: None,
         }
     }
 
     /// Saves the current pen colors + attributes (DECSC).
     pub(crate) fn save_pen(&mut self) {
         self.saved_pen = Some(SavedPen {
+            hyperlink: self.active_hyperlink,
             fg: self.pen.fg,
             bg: self.pen.bg,
             attrs: self.pen.attrs,
@@ -190,6 +196,7 @@ impl PenState {
     /// Restores the saved pen colors + attributes and character set designations (DECRC).
     pub(crate) fn restore_pen(&mut self) {
         if let Some(saved) = self.saved_pen {
+            self.active_hyperlink = saved.hyperlink;
             self.pen.fg = saved.fg;
             self.pen.bg = saved.bg;
             self.pen.attrs = saved.attrs;
@@ -200,6 +207,15 @@ impl PenState {
             self.charsets.active = saved.charsets.active;
             self.charsets.single_shift = None;
         }
+    }
+
+    pub(crate) fn hyperlink_ids(&self) -> impl Iterator<Item = crate::model::HyperlinkId> + '_ {
+        [
+            self.active_hyperlink,
+            self.saved_pen.and_then(|saved| saved.hyperlink),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     // ── SGR ───────────────────────────────────────────────────────

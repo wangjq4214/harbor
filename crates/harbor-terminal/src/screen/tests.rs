@@ -4492,3 +4492,76 @@ fn should_keep_cells_when_clear_synchronized_output_releases_nested_suppression(
     assert_eq!(screen.mode_status(true, 2026), ModeStatus::Reset);
     assert!(screen.row_text(0).contains('x'));
 }
+
+#[test]
+fn hyperlink_registry_deduplicates_and_periodically_collects_orphans() {
+    let mut screen = Screen::new(1, 2);
+    screen.open_hyperlink("https://same.test".to_owned(), Some("id".to_owned()));
+    let first = screen.pen_state.active_hyperlink.unwrap();
+    screen.open_hyperlink("https://same.test".to_owned(), Some("id".to_owned()));
+    assert_eq!(screen.pen_state.active_hyperlink, Some(first));
+
+    screen.close_hyperlink();
+    for index in 0..600 {
+        screen.open_hyperlink(format!("https://example.test/{index}"), None);
+        screen.close_hyperlink();
+    }
+    assert!(screen.hyperlinks.len() <= 256);
+}
+
+#[test]
+fn saved_hyperlink_restores_and_erase_cells_are_unlinked() {
+    let mut screen = Screen::new(1, 4);
+    screen.open_hyperlink("https://one.test".to_owned(), None);
+    screen.save_cursor();
+    screen.open_hyperlink("https://two.test".to_owned(), None);
+    screen.write_char('a');
+    let second = screen.cell(0, 0).hyperlink;
+    screen.restore_cursor();
+    screen.write_char('b');
+    assert_ne!(screen.cell(0, 1).hyperlink, second);
+
+    screen.set_cursor_position(1, 1);
+    screen.erase_line(0);
+    for col in 0..screen.cols() {
+        assert!(screen.cell(0, col).hyperlink.is_none());
+    }
+}
+
+#[test]
+fn primary_and_alternate_screens_resolve_overlapping_ids_in_their_own_registries() {
+    let mut screen = Screen::new(2, 4);
+    screen.open_hyperlink("https://primary.test".to_owned(), None);
+    screen.write_char('p');
+    let primary_id = screen.cell(0, 0).hyperlink.unwrap();
+
+    screen.enter_alt(false);
+    screen.open_hyperlink("https://alternate.test".to_owned(), None);
+    screen.write_char('a');
+    let alternate_id = screen.cell(0, 0).hyperlink.unwrap();
+    assert_eq!(
+        primary_id, alternate_id,
+        "screen-local ID spaces may overlap"
+    );
+    assert_eq!(
+        screen
+            .hyperlink_at_generation(screen.history_start(), 0)
+            .map(|(_, uri)| uri),
+        Some("https://alternate.test")
+    );
+
+    screen.exit_alt();
+    assert_eq!(
+        screen
+            .hyperlink_at_generation(screen.history_start(), 0)
+            .map(|(_, uri)| uri),
+        Some("https://primary.test")
+    );
+    screen.enter_alt(false);
+    assert_eq!(
+        screen
+            .hyperlink_at_generation(screen.history_start(), 0)
+            .map(|(_, uri)| uri),
+        Some("https://alternate.test")
+    );
+}

@@ -211,3 +211,11 @@
   - belongs to Terminal
   - communicates with Application Business Host
   - depends on Parser Retention Limits
+
+### OSC 8 Hyperlink
+- **Definition:** A bounded terminal hyperlink attribute opened by `OSC 8 ; params ; URI ST` and closed by an empty URI. Harbor accepts control-free UTF-8 URIs up to 2048 bytes and optional `id` values up to 250 bytes, rejecting rather than truncating invalid or over-limit candidates. Written cells retain compact hyperlink identifiers resolved through a screen-owned, reachability-cleaned registry. A primary-button click directly requests host activation without requiring Ctrl, while terminal parsing and rendering never fetch the target themselves. Direct activation is limited to `http`, `https`, `mailto`, and `file` URI schemes.
+- **Synonyms:** Terminal hyperlink
+- **Relationships:**
+  - belongs to Terminal
+  - depends on Parser Retention Limits
+  - communicates with Runtime Host

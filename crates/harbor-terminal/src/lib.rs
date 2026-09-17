@@ -421,6 +421,9 @@ impl Terminal {
                     || self.screen.input_modes().mouse_tracking
                         != crate::model::MouseTrackingMode::Disabled
                 {
+                    let interrupted = self.pointer.cancel_local_pointer();
+                    outcome.redraw = interrupted.redraw;
+                    outcome.release_pointer = interrupted.release_pointer;
                     let mut reported = self.pointer.prepare_mouse_event(*pointer);
                     if let Some(position) = self
                         .pointer
@@ -438,7 +441,7 @@ impl Terminal {
                         }
                         _ => None,
                     };
-                    outcome.release_pointer = match pointer.phase {
+                    let vt_release = match pointer.phase {
                         TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
                             if self.pointer.end_vt_capture(pointer.pointer_id) =>
                         {
@@ -446,6 +449,7 @@ impl Terminal {
                         }
                         _ => None,
                     };
+                    outcome.release_pointer = vt_release.or(outcome.release_pointer);
                     self.maybe_reset_blink(before, wrote);
                     return Ok(outcome);
                 }

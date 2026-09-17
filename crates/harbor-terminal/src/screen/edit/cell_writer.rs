@@ -213,12 +213,13 @@ impl CellWriter {
         }
 
         let cell = normal.live_cell_mut(cursor.cursor.y, cursor.cursor.x);
-        cell.set(
+        cell.set_with_hyperlink(
             ch,
             pen_state.pen.fg,
             pen_state.pen.bg,
             pen_state.pen.attrs,
             pen_state.pen.protected,
+            pen_state.active_hyperlink,
         );
 
         if width == 2 && cursor.cursor.x < right_limit {
@@ -229,6 +230,7 @@ impl CellWriter {
                 bg: pen_state.pen.bg,
                 attrs: pen_state.pen.attrs,
                 protected: pen_state.pen.protected,
+                hyperlink: pen_state.active_hyperlink,
             };
         }
     }

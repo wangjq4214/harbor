@@ -116,7 +116,8 @@ impl TerminalTabFactory {
             &self.shell_command,
         )?;
         let shell_name = endpoints.shell_name().to_owned();
-        let event_proxy = self.event_proxy.clone();
+        let output_event_proxy = self.event_proxy.clone();
+        let hyperlink_event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
         let surface_size = (surface_size.0.max(1), surface_size.1.max(1));
         let mut terminal = Terminal::try_new_with_appearance_from_endpoints(
@@ -128,7 +129,7 @@ impl TerminalTabFactory {
             self.metrics,
             self.appearance,
             move || {
-                event_proxy
+                output_event_proxy
                     .send_event(AppEvent::TerminalOutputReady(tab_id))
                     .is_ok()
             },
@@ -136,8 +137,14 @@ impl TerminalTabFactory {
         terminal.set_backdrop_available(self.backdrop_available);
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
-        let bridge =
-            TerminalWidgetBridge::new(draw_id, Arc::clone(&terminal), Arc::clone(&self.input_gate));
+        let bridge = TerminalWidgetBridge::new_with_hyperlink_activation(
+            draw_id,
+            Arc::clone(&terminal),
+            Arc::clone(&self.input_gate),
+            Arc::new(move |uri| {
+                let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(uri));
+            }),
+        );
         Ok(TerminalTabResources::new(terminal, bridge, shell_name))
     }
 }

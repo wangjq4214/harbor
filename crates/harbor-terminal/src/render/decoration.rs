@@ -26,7 +26,9 @@ pub fn build_underline_vertices(
         let u_bottom = u_top + metrics.underline_thickness;
         for col in 0..snap.cols {
             let cell = snap.cell(row, col);
-            if cell.attrs.contains(CellAttrs::UNDERLINE) && cell.ch != ' ' {
+            if (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some())
+                && cell.ch != ' '
+            {
                 let (left, _, right, _) = viewport.cell_bounds(row, col);
                 let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
@@ -198,7 +200,9 @@ impl Decoration {
                 let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 for col in range.start_col..range.end_col {
                     let cell = snap.cell(range.row, col);
-                    if cell.attrs.contains(CellAttrs::UNDERLINE) && cell.ch != ' ' {
+                    if (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some())
+                        && cell.ch != ' '
+                    {
                         let (left, _, right, _) = viewport.cell_bounds(range.row, col);
                         let color =
                             glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
@@ -302,6 +306,42 @@ mod tests {
             s_verts[0].position,
             [0.0, 0.0],
             "no strikethrough expected, should be degenerate"
+        );
+    }
+
+    #[test]
+    fn osc8_hyperlink_cells_are_underlined_until_close() {
+        let mut terminal = Terminal::new_headless(1, 4);
+        terminal.put_str("\x1b]8;;https://example.test\x1b\\a b\x1b]8;;\x1b\\x");
+        let snap = terminal.screen().terminal_snapshot();
+
+        let vertices = build_underline_vertices(
+            &test_metrics(),
+            &snap,
+            &test_viewport(),
+            &Palette::default(),
+        );
+
+        assert_eq!(vertices.len(), 4 * 6);
+        assert_ne!(
+            vertices[0].position,
+            [0.0, 0.0],
+            "linked character should have an underline"
+        );
+        assert_eq!(
+            vertices[6].position,
+            [0.0, 0.0],
+            "linked spaces should remain undecorated"
+        );
+        assert_ne!(
+            vertices[12].position,
+            [0.0, 0.0],
+            "linked character after a space should have an underline"
+        );
+        assert_eq!(
+            vertices[18].position,
+            [0.0, 0.0],
+            "character after OSC 8 close should remain undecorated"
         );
     }
 

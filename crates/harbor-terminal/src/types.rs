@@ -160,6 +160,8 @@ pub struct TerminalEventOutcome {
     pub capture_pointer: Option<u64>,
     pub release_pointer: Option<u64>,
     pub clipboard_text: Option<String>,
+    /// URI requested by a completed local hyperlink click.
+    pub hyperlink_activation: Option<String>,
 }
 
 /// A terminal-relevant keyboard or IME state transition.

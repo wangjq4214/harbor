@@ -963,6 +963,7 @@ impl CellOps {
             bg: pen_state.pen.bg,
             attrs: pen_state.pen.attrs,
             protected: pen_state.pen.protected,
+            hyperlink: None,
         };
 
         for row in t..=b {

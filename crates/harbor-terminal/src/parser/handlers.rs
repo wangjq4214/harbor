@@ -3,6 +3,7 @@
 use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
 use super::mode_query::ModeQuery;
 use super::osc7;
+use super::osc8;
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
@@ -303,6 +304,14 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], _bell_terminated: bool) {
+        if command == b"8" {
+            match osc8::parse(payload) {
+                Some(osc8::Action::Open { uri, id }) => self.screen.open_hyperlink(uri, id),
+                Some(osc8::Action::Close) => self.screen.close_hyperlink(),
+                None => {}
+            }
+            return;
+        }
         if command == b"7" {
             if payload.is_empty() {
                 self.output_events

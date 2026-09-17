@@ -201,6 +201,15 @@ impl ActiveSession {
                     );
                 }
             }
+            AppEvent::OpenHyperlink(uri) => {
+                if let Err(error) = crate::hyperlink::open(&uri) {
+                    tracing::warn!(
+                        uri,
+                        error = %format_args!("{error:#}"),
+                        "failed to open terminal hyperlink"
+                    );
+                }
+            }
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
             AppEvent::WidgetHostWork(work) => {
                 Self::merge_wait(&mut wait, self.main_host.handle_hmr_work(work).wait);

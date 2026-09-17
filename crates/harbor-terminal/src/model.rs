@@ -37,6 +37,16 @@ impl CellAttrs {
     }
 }
 
+/// Compact screen-local identity for an OSC 8 hyperlink.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct HyperlinkId(std::num::NonZeroU32);
+
+impl HyperlinkId {
+    pub(crate) const fn from_nonzero(value: std::num::NonZeroU32) -> Self {
+        Self(value)
+    }
+}
+
 // ── Cell ──────────────────────────────────────────────────────────────────────
 
 /// One visible terminal grid cell.
@@ -54,6 +64,8 @@ pub struct Cell {
     pub attrs: CellAttrs,
     /// True if this character is protected against selective erasure (DECSCA).
     pub protected: bool,
+    /// Screen-local OSC 8 hyperlink identity, if any.
+    pub hyperlink: Option<HyperlinkId>,
 }
 
 impl Default for Cell {
@@ -65,19 +77,33 @@ impl Default for Cell {
             bg: Color::Default,
             attrs: CellAttrs::default(),
             protected: false,
+            hyperlink: None,
         }
     }
 }
 
 impl Cell {
-    /// Sets all fields atomically (ensures no field is forgotten on add).
+    /// Sets the public cell fields and clears any screen-local hyperlink identity.
     pub fn set(&mut self, ch: char, fg: Color, bg: Color, attrs: CellAttrs, protected: bool) {
+        self.set_with_hyperlink(ch, fg, bg, attrs, protected, None);
+    }
+
+    pub(crate) fn set_with_hyperlink(
+        &mut self,
+        ch: char,
+        fg: Color,
+        bg: Color,
+        attrs: CellAttrs,
+        protected: bool,
+        hyperlink: Option<HyperlinkId>,
+    ) {
         self.ch = ch;
         self.wide_continuation = false;
         self.fg = fg;
         self.bg = bg;
         self.attrs = attrs;
         self.protected = protected;
+        self.hyperlink = hyperlink;
     }
 
     /// Applies a single SGR (Select Graphic Rendition) code to this cell,

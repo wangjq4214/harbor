@@ -12,15 +12,28 @@ use crate::{
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct HyperlinkPress {
+    cell: GenPos,
+    hyperlink: crate::model::HyperlinkId,
+    pressed_cell: crate::Cell,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ActivePointer {
-    Selection { pointer_id: u64 },
-    Scrollbar { pointer_id: u64, grab_offset: f32 },
+    Selection {
+        pointer_id: u64,
+        hyperlink: Option<HyperlinkPress>,
+    },
+    Scrollbar {
+        pointer_id: u64,
+        grab_offset: f32,
+    },
 }
 
 impl ActivePointer {
     fn pointer_id(self) -> u64 {
         match self {
-            Self::Selection { pointer_id } | Self::Scrollbar { pointer_id, .. } => pointer_id,
+            Self::Selection { pointer_id, .. } | Self::Scrollbar { pointer_id, .. } => pointer_id,
         }
     }
 }
@@ -166,6 +179,16 @@ impl PointerInteraction {
         self.interrupt_outcome(redraw)
     }
 
+    /// Interrupts only local selection/scrollbar capture when VT mouse reporting takes over.
+    pub fn cancel_local_pointer(&mut self) -> TerminalEventOutcome {
+        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
+        let redraw = self.selection.cancel() != SelectionOutcome::None;
+        TerminalEventOutcome {
+            redraw,
+            release_pointer,
+            ..TerminalEventOutcome::default()
+        }
+    }
     /// Releases the active pointer and clears button state after a selection interrupt.
     fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
         let release_pointer = self.active.take().map(ActivePointer::pointer_id);
@@ -203,10 +226,12 @@ impl PointerInteraction {
         match event.phase {
             TerminalPointerPhase::WheelLine { dy, .. }
             | TerminalPointerPhase::WheelPixel { dy, .. } => {
+                let interrupted = self.cancel_local_pointer();
                 let is_pixel = matches!(event.phase, TerminalPointerPhase::WheelPixel { .. });
                 let lines = screen.scroll_wheel(dy, is_pixel);
                 TerminalEventOutcome {
-                    redraw: lines != 0,
+                    redraw: lines != 0 || interrupted.redraw,
+                    release_pointer: interrupted.release_pointer,
                     ..TerminalEventOutcome::default()
                 }
             }
@@ -243,10 +268,20 @@ impl PointerInteraction {
                 let cell = self.pixel_to_cell(event.position, &snapshot, &viewport);
                 let was_visible =
                     self.selection.has_selection() && !self.selection.is_range_empty();
+                let hyperlink = screen
+                    .cell_at_generation(cell.generation, cell.col)
+                    .and_then(|pressed_cell| {
+                        pressed_cell.hyperlink.map(|hyperlink| HyperlinkPress {
+                            cell,
+                            hyperlink,
+                            pressed_cell: *pressed_cell,
+                        })
+                    });
                 let outcome = self.selection.press(cell, now, &snapshot);
                 let is_visible = !self.selection.is_range_empty();
                 self.active = Some(ActivePointer::Selection {
                     pointer_id: event.pointer_id,
+                    hyperlink: (!is_visible).then_some(hyperlink).flatten(),
                 });
                 TerminalEventOutcome {
                     // A first press creates only an empty anchor and must not
@@ -263,14 +298,21 @@ impl PointerInteraction {
                     return TerminalEventOutcome::default();
                 };
                 match active {
-                    ActivePointer::Selection { pointer_id } if pointer_id == event.pointer_id => {
+                    ActivePointer::Selection { pointer_id, .. }
+                        if pointer_id == event.pointer_id =>
+                    {
                         let cell = self.pixel_to_cell(event.position, &snapshot, &viewport);
                         let changed = self.selection.drag_to(cell, &snapshot);
                         let auto_scrolled = self.tick(screen, now);
+                        let auto_scrolling = self.selection.auto_scroll_direction().is_some();
+                        if (changed || auto_scrolled || auto_scrolling)
+                            && let Some(ActivePointer::Selection { hyperlink, .. }) =
+                                self.active.as_mut()
+                        {
+                            *hyperlink = None;
+                        }
                         TerminalEventOutcome {
-                            redraw: changed
-                                || auto_scrolled
-                                || self.selection.auto_scroll_direction().is_some(),
+                            redraw: changed || auto_scrolled || auto_scrolling,
                             ..TerminalEventOutcome::default()
                         }
                     }
@@ -308,18 +350,48 @@ impl PointerInteraction {
                     self.active = Some(active);
                     return TerminalEventOutcome::default();
                 }
-                let redraw = match active {
-                    ActivePointer::Selection { .. } => {
-                        if matches!(event.phase, TerminalPointerPhase::Cancel) {
+                let (redraw, hyperlink_activation) = match active {
+                    ActivePointer::Selection { hyperlink, .. } => {
+                        let activation = if matches!(event.phase, TerminalPointerPhase::Cancel)
+                            || event.button != TerminalPointerButton::Left
+                        {
+                            None
+                        } else {
+                            let release = self.pixel_to_cell(event.position, &snapshot, &viewport);
+                            hyperlink.and_then(|press| {
+                                let original_cell = screen
+                                    .cell_at_generation(press.cell.generation, press.cell.col);
+                                let original = screen
+                                    .hyperlink_at_generation(press.cell.generation, press.cell.col);
+                                let released =
+                                    screen.hyperlink_at_generation(release.generation, release.col);
+                                match (original_cell, original, released) {
+                                    (
+                                        Some(current_cell),
+                                        Some((original_id, uri)),
+                                        Some((released_id, _)),
+                                    ) if *current_cell == press.pressed_cell
+                                        && original_id == press.hyperlink
+                                        && released_id == press.hyperlink =>
+                                    {
+                                        Some(uri.to_owned())
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        };
+                        let redraw = if matches!(event.phase, TerminalPointerPhase::Cancel) {
                             self.selection.cancel() != SelectionOutcome::None
                         } else {
                             self.selection.release() != SelectionOutcome::None
-                        }
+                        };
+                        (redraw, activation)
                     }
-                    ActivePointer::Scrollbar { .. } => true,
+                    ActivePointer::Scrollbar { .. } => (true, None),
                 };
                 TerminalEventOutcome {
                     redraw,
+                    hyperlink_activation,
                     release_pointer: Some(event.pointer_id),
                     ..TerminalEventOutcome::default()
                 }
@@ -510,5 +582,79 @@ mod tests {
                 end_col: 9,
             })
         );
+    }
+
+    #[test]
+    fn should_activate_same_hyperlink_on_plain_click_and_suppress_drag_or_replacement() {
+        let mut screen = Screen::new(2, 10);
+        screen.open_hyperlink("https://example.test".to_owned(), None);
+        screen.write_char('a');
+        screen.write_char('b');
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let now = Instant::now();
+
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 7),
+            now,
+        );
+        let clicked = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((11.0, 1.0), TerminalPointerPhase::Up, 7),
+            now,
+        );
+        assert_eq!(
+            clicked.hyperlink_activation.as_deref(),
+            Some("https://example.test")
+        );
+
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 70),
+            now,
+        );
+        let non_primary_release = pointer.handle_pointer(
+            &mut screen,
+            TerminalPointerEvent::new(
+                (11.0, 1.0),
+                TerminalPointerPhase::Up,
+                TerminalPointerButton::Right,
+                70,
+            ),
+            now,
+        );
+        assert!(non_primary_release.hyperlink_activation.is_none());
+
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 8),
+            now,
+        );
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((31.0, 1.0), TerminalPointerPhase::Move, 8),
+            now,
+        );
+        let dragged = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((11.0, 1.0), TerminalPointerPhase::Up, 8),
+            now,
+        );
+        assert!(dragged.hyperlink_activation.is_none());
+
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 9),
+            now,
+        );
+        screen.set_cursor_position(1, 1);
+        screen.write_char('x');
+        let replaced = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((11.0, 1.0), TerminalPointerPhase::Up, 9),
+            now,
+        );
+        assert!(replaced.hyperlink_activation.is_none());
     }
 }

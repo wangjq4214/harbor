@@ -1856,3 +1856,95 @@ fn should_keep_decrqm_set_when_decstr_leaves_nested_2026() {
     assert!(!screen.ordinary_present_eligible());
     assert!(screen.row_text(0).contains("hello"));
 }
+
+#[test]
+fn osc8_applies_cell_state_and_obeys_close_reset_and_invalid_preservation() {
+    let mut screen = Screen::new(2, 8);
+    let mut parser = TerminalParser::default();
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;id=one;https://example.test\x1b\\a\x1b[0mb",
+    );
+    let link = screen.cell(0, 0).hyperlink.expect("opened hyperlink");
+    assert_eq!(screen.cell(0, 1).hyperlink, Some(link));
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;id=bad:id=dup;https://bad\x07c",
+    );
+    assert_eq!(screen.cell(0, 2).hyperlink, Some(link));
+
+    feed(&mut parser, &mut screen, b"\x1b]8;;\x1b\\d");
+    assert_eq!(screen.cell(0, 3).hyperlink, None);
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;;https://again\x1b\\\x1b[!pe",
+    );
+    assert!(
+        screen.cell(0, 0).hyperlink.is_some(),
+        "DECSTR keeps active hyperlink"
+    );
+    feed(&mut parser, &mut screen, b"\x1bcf");
+    assert_eq!(
+        screen.cell(0, 0).hyperlink,
+        None,
+        "RIS clears cells and registry state"
+    );
+}
+
+#[test]
+fn osc8_fragmented_st_completion_preserves_wide_cell_identity() {
+    let mut screen = Screen::new(2, 4);
+    let mut parser = TerminalParser::default();
+    for chunk in [
+        b"\x1b]8;;https://example".as_slice(),
+        b".test\x1b".as_slice(),
+        b"\\\xe7\x95\x8c".as_slice(),
+    ] {
+        feed(&mut parser, &mut screen, chunk);
+    }
+    let link = screen.cell(0, 0).hyperlink.expect("base half linked");
+    assert_eq!(screen.cell(0, 1).hyperlink, Some(link));
+    assert!(screen.cell(0, 1).wide_continuation);
+}
+
+#[test]
+fn osc8_cancel_overflow_and_incomplete_input_preserve_state_and_recover() {
+    let mut screen = Screen::new(2, 12);
+    let mut parser = TerminalParser::default();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;;https://original.test\x1b\\a",
+    );
+    let original = screen.cell(0, 0).hyperlink.unwrap();
+
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;;https://cancelled.test\x18b",
+    );
+    assert_eq!(screen.cell(0, 1).hyperlink, Some(original));
+
+    let mut overflow = b"\x1b]8;;".to_vec();
+    overflow.extend(std::iter::repeat_n(b'x', 5000));
+    overflow.extend_from_slice(b"\x07c");
+    feed(&mut parser, &mut screen, &overflow);
+    assert_eq!(screen.cell(0, 2).hyperlink, Some(original));
+
+    let cursor_before = screen.cursor_x();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b]8;;https://fragmented.test\x1b",
+    );
+    assert_eq!(screen.cursor_x(), cursor_before);
+    feed(&mut parser, &mut screen, b"\\d");
+    assert_ne!(screen.cell(0, 3).hyperlink, Some(original));
+    assert!(screen.cell(0, 3).hyperlink.is_some());
+}

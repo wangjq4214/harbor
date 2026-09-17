@@ -231,6 +231,11 @@ impl NormalBuf {
         &mut self.cells[actual_row * self.cols + col]
     }
 
+    /// Iterates every retained ring-buffer cell, including scrollback.
+    pub(crate) fn retained_cells(&self) -> impl Iterator<Item = &Cell> {
+        self.cells.iter()
+    }
+
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
     pub fn cells(&self) -> CellsIter<'_> {
         let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;

@@ -12,6 +12,7 @@
 
 mod cursor;
 mod edit;
+mod hyperlink;
 mod reader;
 mod synchronized_output;
 #[cfg(test)]
@@ -24,6 +25,8 @@ use harbor_parser::Params;
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
 use self::synchronized_output::SynchronizedOutput;
+use hyperlink::HyperlinkRegistry;
+use std::collections::HashSet;
 
 pub use self::reader::ScreenReader;
 
@@ -82,6 +85,8 @@ pub struct Screen {
     cursor: CursorEngine,
     /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
     pen_state: PenState,
+    /// OSC 8 values owned by this screen and referenced from cells/pen state.
+    hyperlinks: HyperlinkRegistry,
     /// Pending alt-screen request set by the parser, consumed by I/O.
     alt_request: Option<AltScreenAction>,
     /// Primary screen saved while the alternate screen is active.
@@ -104,6 +109,7 @@ impl Screen {
             normal: NormalBuf::new(rows, cols),
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
+            hyperlinks: HyperlinkRegistry::default(),
             alt_request: None,
             saved_primary: None,
             parked_alt: None,
@@ -269,6 +275,37 @@ impl Screen {
 
     pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
         self.normal.cell_at_generation(generation, col)
+    }
+
+    pub(crate) fn hyperlink_at_generation(
+        &self,
+        generation: u64,
+        col: usize,
+    ) -> Option<(crate::model::HyperlinkId, &str)> {
+        let id = self.normal.cell_at_generation(generation, col)?.hyperlink?;
+        Some((id, self.hyperlinks.get(id)?.uri.as_str()))
+    }
+
+    pub(crate) fn open_hyperlink(&mut self, uri: String, external_id: Option<String>) {
+        let Screen {
+            normal,
+            pen_state,
+            hyperlinks,
+            ..
+        } = self;
+        let id = hyperlinks.intern(uri, external_id, || {
+            let mut reachable: HashSet<_> = normal
+                .retained_cells()
+                .filter_map(|cell| cell.hyperlink)
+                .collect();
+            reachable.extend(pen_state.hyperlink_ids());
+            reachable
+        });
+        pen_state.active_hyperlink = Some(id);
+    }
+
+    pub(crate) fn close_hyperlink(&mut self) {
+        self.pen_state.active_hyperlink = None;
     }
 
     pub fn is_wrapped_at_generation(&self, generation: u64) -> bool {
@@ -1092,6 +1129,7 @@ impl Screen {
         self.normal.fill_all();
         self.cursor.reset(rows, cols);
         self.pen_state.reset(cols);
+        self.hyperlinks.clear();
         self.mark_all_dirty();
     }
 
