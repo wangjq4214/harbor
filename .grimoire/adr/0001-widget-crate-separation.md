@@ -1,7 +1,7 @@
 # Separate `harbor-widget` Crate from `harbor-ui`
 
-**Status:** Superseded
-**Superseded by:** [0007-retain-separate-paste-confirmation-window.md](./0007-retain-separate-paste-confirmation-window.md)
+**Status:** Completed
+**Amended:** 2026-09-17 — ADR 0007 superseded only the planned removal of the separate paste-confirmation window; the `harbor-widget` crate-separation decision remains current.
 **Date:** 2025-07-16
 
 ## Context

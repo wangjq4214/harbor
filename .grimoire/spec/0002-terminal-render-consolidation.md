@@ -4,6 +4,8 @@
 **Status:** Implemented
 **Date:** 2025-07-28
 
+
+**Architecture evolution:** The consolidation remains current; later boundary changes are defined by Specs 0005 and 0012 and ADR 0031.
 ## Requirement
 
 Merge `harbor-render` GPU rendering into `harbor-terminal`, making the terminal a self-contained engine (state + parsing + wgpu rendering + PTY I/O) that renders into the widget tree via the existing `CustomPaint` escape hatch, with zero orchestration in the app layer. Delete `harbor-render` and `harbor-ui` crates. Minimize `harbor-parser`'s public API to three items (`VtHandler`, `Params`, `Parser`).

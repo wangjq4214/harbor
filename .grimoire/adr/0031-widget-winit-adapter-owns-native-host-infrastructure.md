@@ -1,6 +1,6 @@
 # Move Native Widget Host Infrastructure into the Winit Adapter
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-13
 **Supersedes:** [0015-runtime-owned-frame-presentation.md](./0015-runtime-owned-frame-presentation.md), [0030-application-layer-widget-hot-reload.md](./0030-application-layer-widget-hot-reload.md)
 

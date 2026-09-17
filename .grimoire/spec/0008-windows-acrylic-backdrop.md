@@ -4,6 +4,8 @@
 **Status:** In Progress
 **Date:** 2026-08-25
 
+
+**Reconciliation required:** The implementation currently uses a unified four-tier backdrop chain and a 0.25 tint alpha, while the acceptance text below records the earlier TransientWindow-first and 0.72-alpha contract. This discrepancy is retained explicitly pending a product-requirement decision; it must not be treated as resolved by implementation alone.
 ## Requirement
 
 The Harbor main window on Windows must show a Windows Terminal-style Acrylic backdrop through default-background cells and the caption strip, while remaining readable for inverse and non-default cells.

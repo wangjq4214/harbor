@@ -103,8 +103,7 @@ PTY resizing, post-layout observation, Positioned, or a production root redesign
 
 ## Verification
 
-See [T0001](../.grimoire/ticket/0010-desktop-terminal-tabs-and-view-macro/T0001-parent-directed-flex-layout.md)
-and the executable evidence in `crates/harbor-widget/tests/flex_layout.rs`,
+The governing behavior and acceptance criteria are maintained in [Spec 0010](../.grimoire/spec/0010-desktop-terminal-tabs-and-view-macro.md) and the executable evidence in `crates/harbor-widget/tests/flex_layout.rs`,
 `crates/harbor-widget/tests/flex_runtime.rs`, and
 `crates/harbor-widget/src/runtime/layout_resources_tests.rs`.
 The GPU retention test compares actual pipeline, buffer and atlas-binding handles

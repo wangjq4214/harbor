@@ -9,7 +9,7 @@
   - consumed by harbor-terminal
 
 ### VtHandler
-- **Definition:** A trait with 9 callback methods (`print`, `execute`, `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `dcs_hook`, `dcs_put`, `dcs_unhook`, `string_start`) that receives fully-parsed VT actions from the Parser. Static dispatch via generics.
+- **Definition:** A trait with 9 callback methods (`print`, `execute`, `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `dcs_hook`, `dcs_put`, `dcs_unhook`, `start_string`) that receives fully-parsed VT actions from the Parser. Static dispatch via generics.
 - **Relationships:**
   - implemented by harbor-terminal Screen handler
   - called by Parser::advance

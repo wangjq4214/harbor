@@ -1,6 +1,7 @@
 # CustomPaint Provider-by-ID Integration
 
-**Status:** Completed
+**Status:** Superseded
+**Superseded by:** [0011-terminal-custompaint-gpu-injection.md](./0011-terminal-custompaint-gpu-injection.md)
 **Date:** 2026-07-24
 
 ## Context

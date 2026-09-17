@@ -1,7 +1,7 @@
 # Widget Winit Native Host Consolidation
 
 **Spec ID:** 0012
-**Status:** Draft
+**Status:** Implementing
 **Date:** 2026-09-13
 
 ## Requirements

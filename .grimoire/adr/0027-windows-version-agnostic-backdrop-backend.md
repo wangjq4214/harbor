@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-01
+**Amended by:** [0028-dual-composition-target-stack.md](./0028-dual-composition-target-stack.md)
 
 ## Context
 
@@ -17,3 +18,7 @@ Introduce a host-layer `WindowBackdropBackend` trait with three real Windows imp
 - The existing `backdrop_available` data flow (terminal clear policy, root fallback fill) is fed by `BackdropStatus`.
 - Future macOS/Linux translucency fits as additional backend implementations without host changes.
 - The backend is selected once per window at bootstrap; tier degradation follows ADR 0026's fallback chain.
+
+## Correction — 2026-09-17
+
+The host-layer backend boundary remains current, but ADR 0028 extended the selector to four Windows tiers: Windows App SDK Desktop Acrylic, DWM TransientWindow Acrylic, AccentPolicy Acrylic, and opaque fallback. The implementation now lives in `src/backdrop.rs`; the three-tier list and former `src/app/window_backdrop.rs` path above describe the original decision.

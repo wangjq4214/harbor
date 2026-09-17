@@ -2,6 +2,12 @@
 
 Project domain concepts and terminology.
 
+## Domain Index
+
+| Domain | File | Entry Count |
+| --- | --- | ---: |
+| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 29 |
+
 ### System-Native Font Loading
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
 
@@ -108,17 +114,15 @@ Project domain concepts and terminology.
   - accessed by BuildCx
 
 ### Primitive
-- **Definition:** A standardized draw input produced by RenderNode, describing a single GPU draw call: Quad (colored rect with optional corner radius), Text, Border, or External delegate.
+- **Definition:** A standardized retained draw input produced during widget painting. Variants cover Quad, Text, Border, OuterShadow, RoundedQuad, RoundedBorder, and External delegate rendering; a primitive is input to scene encoding rather than a guarantee of exactly one GPU draw call.
 - **Relationships:**
-  - produced by RenderNode
+  - produced by View painting
   - consumed by Scene Graph
-
 ### SceneItem
-- **Definition:** A retained GPU-visible draw item in the scene graph with a Primitive, local transform, clip region, and paint order index.
+- **Definition:** A retained GPU-visible draw item containing a stable ID, Primitive, ancestor clip stack, and paint-order index.
 - **Relationships:**
   - contains Primitive
   - belongs to Scene Graph
-
 ### SceneDelta
 - **Definition:** An incremental update describing added, removed, or modified SceneItems since the last frame; consumed by the widget renderer to update GPU buffers.
 - **Relationships:**
@@ -461,11 +465,11 @@ Project domain concepts and terminology.
   - communicates with UiEvent
 
 ### ExternalDrawFn
-- **Definition:** A callback type `dyn Fn(ExternalDrawId, Rect, &mut RenderPass)` registered per `ExternalDrawId`, invoked by Runtime during encode for each `Primitive::External` encountered.
+- **Definition:** A callback type receiving `ExternalDrawId`, `ExternalDrawContext`, frame-scoped `ExternalDrawGpu`, the active `RenderPass`, and `ExternalDrawMode`; it is registered per draw ID and invoked by Runtime during encode for each matching `Primitive::External`.
 - **Relationships:**
-  - stored in Runtime HashMap
+  - registered by CustomPaint
+  - stored by Runtime
   - invoked by Runtime::encode
-
 ### ExternalDrawId
 - **Definition:** A `u64` identifier linking a `CustomPaint` widget to its `ExternalDrawFn` handler in the Runtime.
 - **Synonyms:** Draw ID
@@ -553,12 +557,6 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Reset Paths
   - resets Pending-Wrap
-
-## Domain Index
-
-| Domain | File | Entry Count |
-| --- | --- | ---: |
-| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 29 |
 
 ### Terminal Frame Demand
 - **Definition:** A host-neutral terminal scheduling output that reports an immediate redraw requirement and the next cursor-blink deadline to its rendering host.
@@ -691,8 +689,7 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Widget Renderer
   - implements ClipBehavior
-  - consumes External Frame Appearance pixels (erased corners reveal the frame clear color)
-
+  - reveals the host/frame clear where clipped pixels are erased
 ### TOML User Settings
 - **Definition:** Startup-only user preferences loaded from `~/.harbor/config.toml`; missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
 - **Relationships:**

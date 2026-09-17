@@ -4,6 +4,8 @@
 **Status:** In Progress
 **Date:** 2026-08-26
 
+
+**Reconciliation required:** The current tested product preset uses a 4dp inset, 8dp radius, 10%-opaque black shadow, and 1dp offset/blur, while the acceptance text below records the earlier 16dp/12dp/25%/4dp/12dp contract. This discrepancy is retained explicitly pending a product-requirement decision.
 ## Requirement
 
 Harbor must provide Flutter-style, reusable widget box decoration and use it to render the main terminal with anti-aliased rounded corners and an outer shadow while preserving layout, input, external-draw, and Acrylic behavior.
