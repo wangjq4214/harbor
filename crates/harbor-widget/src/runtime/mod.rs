@@ -18,7 +18,7 @@ use crate::renderer::Viewport;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
 use crate::scene::primitive::{
-    ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalScheduleFn,
+    ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalImeFn, ExternalScheduleFn,
 };
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
@@ -67,6 +67,8 @@ pub struct Runtime {
     current_viewport: Option<Viewport>,
     external_draws: HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     external_schedules: HashMap<ExternalDrawId, Arc<ExternalScheduleFn>>,
+    external_ime: HashMap<ExternalDrawId, Arc<ExternalImeFn>>,
+    external_ime_active: bool,
     /// Tracks per-draw present eligibility for synchronized output.
     external_eligible: HashMap<ExternalDrawId, bool>,
     events: EventRouter,
@@ -101,6 +103,8 @@ impl Runtime {
             current_viewport: None,
             external_draws: HashMap::new(),
             external_schedules: HashMap::new(),
+            external_ime: HashMap::new(),
+            external_ime_active: false,
             external_eligible: HashMap::new(),
             events: EventRouter::new(),
             encoder: FrameEncoder::new(),
@@ -135,6 +139,8 @@ impl Runtime {
         let mut old_arena = std::mem::take(&mut self.arena);
         let old_external_draws = std::mem::take(&mut self.external_draws);
         let old_external_schedules = std::mem::take(&mut self.external_schedules);
+        let old_external_ime = std::mem::take(&mut self.external_ime);
+        self.external_ime_active = false;
         let old_external_eligible = std::mem::take(&mut self.external_eligible);
         let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
         let old_events = std::mem::replace(&mut self.events, EventRouter::new());
@@ -171,6 +177,7 @@ impl Runtime {
                 old_root_component,
                 old_external_draws,
                 old_external_schedules,
+                old_external_ime,
                 old_external_eligible,
                 old_layout_notifications,
                 old_events,
@@ -225,6 +232,7 @@ impl Runtime {
             effects.cursor = Some(cursor);
         }
         effects.merge(self.collect_external_schedule(now));
+        effects.merge(self.collect_focused_external_ime());
         effects
     }
 
@@ -302,6 +310,34 @@ impl Runtime {
             has_deferred_externals,
             request_redraw: redraw_now,
             control_flow: earliest.map(ControlFlowEffect::WaitUntil),
+            ..RuntimeEffects::default()
+        }
+    }
+
+    /// Evaluates only the focused external leaf after current layout geometry is committed.
+    fn collect_focused_external_ime(&mut self) -> RuntimeEffects {
+        let ime = (|| {
+            let target = self.events.focused_event_target(&self.arena)?;
+            let fiber = self.arena.get(target)?;
+            let draw_id = fiber.view.as_ref()?.external_draw_id()?;
+            let provider = self.external_ime.get(&draw_id)?;
+            let rect = fiber.layout_rect()?;
+            let viewport = self.current_viewport.clone()?;
+            let context = crate::scene::primitive::ExternalDrawContext::new(rect, viewport);
+            provider(draw_id, &context)
+        })();
+
+        let active = ime
+            .as_ref()
+            .is_some_and(|effect| effect.allowed == Some(true));
+        let ime = if ime.is_none() && self.external_ime_active {
+            Some(ImeEffect::set_allowed(false))
+        } else {
+            ime
+        };
+        self.external_ime_active = active;
+        RuntimeEffects {
+            ime,
             ..RuntimeEffects::default()
         }
     }
@@ -473,6 +509,8 @@ impl Runtime {
         self.external_schedules.clear();
         self.external_schedules
             .extend(externals.schedules.drain(..));
+        self.external_ime.clear();
+        self.external_ime.extend(externals.ime.drain(..));
     }
 
     /// Returns the viewport installed for the current frame, if any.
@@ -594,6 +632,7 @@ impl Runtime {
         if let Some(cursor) = self.events.take_cursor() {
             effects.cursor = Some(cursor);
         }
+        effects.merge(self.collect_focused_external_ime());
         effects
     }
 
@@ -1708,6 +1747,72 @@ mod tests {
         assert!(!rt.has_external_draws());
     }
 
+    #[test]
+    fn focused_external_ime_provider_tracks_layout_and_disables_after_focus_leaves() {
+        let provider: Arc<ExternalImeFn> = Arc::new(|_, context| {
+            Some(ImeEffect {
+                allowed: Some(true),
+                position: Some(context.logical_rect.max),
+            })
+        });
+        let mut rt = Runtime::new();
+        rt.set_viewport(Viewport::new(100, 40, 1.0));
+        rt.set_root(CustomPaint::new(81).ime(provider));
+
+        let initial = rt.update(now());
+        assert!(initial.ime.is_none());
+
+        assert!(rt.focus_first_focusable());
+        let focused = rt.update(now());
+        assert_eq!(
+            focused.ime,
+            Some(ImeEffect {
+                allowed: Some(true),
+                position: Some(Point::new(100.0, 40.0)),
+            })
+        );
+
+        rt.set_viewport(Viewport::new(160, 60, 1.0));
+        let resized = rt.update(now());
+        assert_eq!(
+            resized.ime.and_then(|effect| effect.position),
+            Some(Point::new(160.0, 60.0))
+        );
+
+        rt.clear_focus();
+        let unfocused = rt.update(now());
+        assert_eq!(unfocused.ime, Some(ImeEffect::set_allowed(false)));
+    }
+
+    #[test]
+    fn external_schedule_refreshes_state_before_focused_ime_is_collected() {
+        let state = Arc::new(AtomicUsize::new(0));
+        let schedule_state = Arc::clone(&state);
+        let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| {
+            schedule_state.store(7, Ordering::SeqCst);
+            ExternalScheduleDemand::empty()
+        });
+        let ime_state = Arc::clone(&state);
+        let ime: Arc<ExternalImeFn> = Arc::new(move |_, _| {
+            Some(ImeEffect {
+                allowed: Some(true),
+                position: Some(Point::new(ime_state.load(Ordering::SeqCst) as f32, 0.0)),
+            })
+        });
+        let mut rt = Runtime::new();
+        rt.set_viewport(Viewport::new(100, 40, 1.0));
+        rt.set_root(CustomPaint::new(82).schedule(schedule).ime(ime));
+        rt.update(now());
+        assert!(rt.focus_first_focusable());
+        state.store(0, Ordering::SeqCst);
+
+        let effects = rt.update(now());
+
+        assert_eq!(
+            effects.ime.and_then(|effect| effect.position),
+            Some(Point::new(7.0, 0.0))
+        );
+    }
     #[test]
     fn new_runtime_has_no_root() {
         let rt = Runtime::new();

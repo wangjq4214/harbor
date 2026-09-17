@@ -42,7 +42,7 @@ pub use selection_model::{
 use std::io::{Read, Write};
 use std::time::Instant;
 pub use types::{
-    FrameDemand, RenderTarget, ShellIntegrationMarker, TerminalAppearance, TerminalEvent,
+    FrameDemand, Preedit, RenderTarget, ShellIntegrationMarker, TerminalAppearance, TerminalEvent,
     TerminalEventOutcome, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
     TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
     TerminalPointerPhase, WorkingDirectoryMetadata,
@@ -63,6 +63,8 @@ pub struct Terminal {
     /// Host compositor fact: true when an acrylic backdrop is available.
     /// Drives the default-background tint alpha via `appearance.clear_rgba`.
     backdrop_available: bool,
+    /// Terminal-owned transient IME composition presentation state.
+    preedit: Option<Preedit>,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
     pending_ordinary_present: bool,
 }
@@ -200,6 +202,7 @@ impl Terminal {
             pointer: PointerInteraction::new(),
             appearance,
             backdrop_available: false,
+            preedit: None,
             pending_ordinary_present: false,
         }
     }
@@ -249,7 +252,15 @@ impl Terminal {
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_palette(palette);
             let tint = clear_rgba_for_palette(palette, self.backdrop_available);
-            renderer.prepare(gpu, &snap, damage, now, self.pointer.bounds(), tint);
+            renderer.prepare(
+                gpu,
+                &snap,
+                damage,
+                self.preedit.as_ref(),
+                now,
+                self.pointer.bounds(),
+                tint,
+            );
         }
     }
 
@@ -277,7 +288,15 @@ impl Terminal {
             renderer.sync_viewport(viewport, grid_changed);
             renderer.sync_palette(palette);
             let tint = clear_rgba_for_palette(palette, self.backdrop_available);
-            renderer.prepare(gpu, &snap, None, now, self.pointer.bounds(), tint);
+            renderer.prepare(
+                gpu,
+                &snap,
+                None,
+                self.preedit.as_ref(),
+                now,
+                self.pointer.bounds(),
+                tint,
+            );
             renderer.draw(pass);
         }
     }
@@ -428,6 +447,20 @@ impl Terminal {
         let mut outcome = TerminalEventOutcome::default();
 
         match &event {
+            TerminalEvent::Preedit(next) => {
+                let had_preedit = self.preedit.is_some();
+                if next.is_empty() {
+                    outcome.redraw = self.clear_preedit();
+                } else {
+                    if !had_preedit {
+                        self.screen.scroll_to_bottom();
+                        self.io.set_suppress_scroll_snap(false);
+                    }
+                    outcome.redraw = self.preedit.as_ref() != Some(next);
+                    self.preedit = Some(next.clone());
+                }
+                return Ok(outcome);
+            }
             TerminalEvent::Pointer(pointer) => {
                 if !self.pointer.has_viewport()
                     || self.screen.input_modes().mouse_tracking
@@ -479,6 +512,13 @@ impl Terminal {
                     self.io.set_suppress_scroll_snap(false);
                 }
             }
+            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(_)) => {
+                outcome.redraw = self.clear_preedit();
+                let wrote =
+                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                self.maybe_reset_blink(before, wrote);
+                return Ok(outcome);
+            }
             TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
                 if *key == TerminalKey::Escape {
                     outcome = self.pointer.clear_selection_outcome();
@@ -516,6 +556,7 @@ impl Terminal {
             TerminalEvent::Focus(focus) => {
                 if matches!(focus, TerminalFocusEvent::Lost) {
                     outcome = self.pointer.cancel();
+                    outcome.redraw |= self.clear_preedit();
                     self.io.set_suppress_scroll_snap(false);
                 }
                 let wrote =
@@ -550,6 +591,37 @@ impl Terminal {
     /// Returns the current GPU-independent terminal state for the UI/update contract.
     pub fn snapshot(&self) -> TerminalSnapshot {
         self.screen.terminal_snapshot()
+    }
+
+    /// Clears transient IME composition without affecting terminal protocol state.
+    pub fn clear_preedit(&mut self) -> bool {
+        self.preedit.take().is_some()
+    }
+
+    /// Returns the current transient IME composition, if one is active.
+    pub fn preedit(&self) -> Option<&Preedit> {
+        self.preedit.as_ref()
+    }
+
+    /// Computes the physical candidate-window anchor from the current live cursor.
+    pub fn ime_candidate_position(&self, target: RenderTarget) -> Option<(f32, f32)> {
+        let preedit = self.preedit.as_ref()?;
+        let metrics = self.text_metrics()?;
+        let viewport = RenderViewport::from_target(target, metrics);
+        let snap = self.screen.terminal_snapshot();
+        let layout = crate::render::layout_preedit(
+            preedit,
+            (snap.cursor_x, snap.cursor_y),
+            snap.rows,
+            snap.cols,
+        );
+        let (row, col) = layout.caret;
+        let (mut x, mut y) = viewport.cell_pos(row, col.min(snap.cols));
+        let max_x = viewport.allocation_origin.0 + viewport.allocation_size.0 as f32;
+        let max_y = viewport.allocation_origin.1 + viewport.allocation_size.1 as f32;
+        x = x.clamp(viewport.allocation_origin.0, max_x);
+        y = y.clamp(viewport.allocation_origin.1, max_y);
+        Some((x, y))
     }
 
     /// Drains pending PTY output before returning the current terminal snapshot.

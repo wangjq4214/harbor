@@ -1,3 +1,4 @@
+use crate::Preedit;
 use crate::damage::DirtyRange;
 use crate::model::{TerminalSnapshot, UpdateDamage};
 use crate::render::{
@@ -107,11 +108,13 @@ impl TerminalRenderPipeline {
         self.viewport
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
+        preedit: Option<&Preedit>,
         now: Instant,
         selection_bounds: Option<crate::model::SelectionBounds>,
         tint: [f32; 4],
@@ -135,14 +138,15 @@ impl TerminalRenderPipeline {
             self.background
                 .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport, tint);
             self.text
-                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
+                .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport, preedit);
             self.decoration
                 .prepare_with_dirty(gpu, snap, dirty_ranges, &viewport);
         } else {
             self.background.prepare(gpu, Some(snap), &viewport, tint);
-            self.text.prepare(gpu, Some(snap), &viewport);
+            self.text.prepare(gpu, Some(snap), &viewport, preedit);
             self.decoration.prepare(gpu, Some(snap), &viewport);
         }
+        self.text.prepare_preedit(gpu, preedit, snap, &viewport);
         self.selection.set_bounds(selection_bounds);
         self.selection.prepare(gpu, Some(snap), &viewport);
         self.cursor.prepare(gpu, Some(snap), &viewport, now);

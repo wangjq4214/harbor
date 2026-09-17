@@ -44,6 +44,9 @@ pub(crate) fn unmount_fiber(arena: &mut FiberArena, id: FiberId) {
         unmount_fiber(arena, child_id);
     }
     if let Some(fiber) = arena.remove(id) {
+        if let Some(view) = &fiber.view {
+            view.unmount();
+        }
         for hook in &fiber.hooks {
             hook.unsubscribe_all(id);
         }

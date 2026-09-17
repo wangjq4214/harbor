@@ -170,10 +170,32 @@ impl RenderTarget {
     }
 }
 
+/// Transient IME composition state. This is presentation-only and is never encoded for the PTY.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Preedit {
+    pub text: String,
+    /// UTF-8 byte range for the platform-reported caret or selection.
+    pub cursor_range: Option<(usize, usize)>,
+}
+
+impl Preedit {
+    pub fn new(text: impl Into<String>, cursor_range: Option<(usize, usize)>) -> Self {
+        Self {
+            text: text.into(),
+            cursor_range,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
 /// The complete platform-independent input message accepted by the terminal engine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TerminalEvent {
     Keyboard(TerminalKeyboardEvent),
+    /// Transient IME composition update; empty text clears the current composition.
+    Preedit(Preedit),
     Pointer(TerminalPointerEvent),
     Focus(TerminalFocusEvent),
 }

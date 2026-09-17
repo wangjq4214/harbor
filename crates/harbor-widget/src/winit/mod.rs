@@ -501,15 +501,25 @@ impl WinitAdapter {
             }
             Ime::Disabled => {
                 self.ime_preedit = None;
-                None
+                Some(UiEvent::ImePreedit(
+                    crate::input::event::ImePreedit::default(),
+                ))
             }
-            Ime::Preedit(text, _) => {
+            Ime::Preedit(text, cursor_range) => {
                 self.ime_preedit = (!text.is_empty()).then(|| text.clone());
-                None
+                Some(UiEvent::ImePreedit(crate::input::event::ImePreedit::new(
+                    text.clone(),
+                    *cursor_range,
+                )))
             }
             Ime::Commit(text) => {
-                self.ime_preedit = None;
-                (!text.is_empty()).then(|| UiEvent::Keyboard(KeyboardEvent::Ime(text.clone())))
+                let was_composing = self.ime_preedit.take().is_some();
+                if text.is_empty() {
+                    was_composing
+                        .then(|| UiEvent::ImePreedit(crate::input::event::ImePreedit::default()))
+                } else {
+                    Some(UiEvent::Keyboard(KeyboardEvent::Ime(text.clone())))
+                }
             }
         }
     }

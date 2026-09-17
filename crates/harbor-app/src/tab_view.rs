@@ -255,6 +255,36 @@ mod tests {
         runtime
     }
 
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn programmatic_terminal_focus_reaches_ime_provider_and_preedit_input() {
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
+        let controller = TabUiController::new(
+            vec![snapshot(1, true, false)],
+            TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false))),
+            1000.0,
+        );
+        let mut runtime = mount(controller.clone(), 1000, 320);
+
+        let focus = runtime.request_focus(&controller.terminal_focus());
+        assert!(focus.request_redraw);
+        let effects = runtime.update(Instant::now());
+        let ime = effects.ime.expect("focused terminal IME effect");
+        assert_eq!(ime.allowed, Some(true));
+
+        runtime.dispatch(UiEvent::ImePreedit(
+            harbor_widget::input::event::ImePreedit::new("draft", Some((0, 5))),
+        ));
+        assert_eq!(
+            terminal
+                .lock()
+                .unwrap()
+                .preedit()
+                .map(|value| value.text.as_str()),
+            Some("draft")
+        );
+    }
+
     fn fiber_ids(runtime: &Runtime) -> Vec<FiberId> {
         let mut pending = vec![runtime.root_id().expect("workspace root")];
         let mut ids = Vec::new();
@@ -570,6 +600,32 @@ mod tests {
         assert_eq!(abbreviation(&snapshot(123, false, false)), "3");
         let button = IconButton::new(abbreviation(&unread), tab_label(&unread));
         assert_eq!(button.label(), "• Terminal 123");
+    }
+
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn unmounting_terminal_widget_clears_transient_preedit() {
+        use harbor_widget::widgets::sized_box::SizedBox;
+
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
+        terminal
+            .lock()
+            .unwrap()
+            .handle_event(harbor_terminal::TerminalEvent::Preedit(
+                harbor_terminal::Preedit::new("draft", Some((0, 5))),
+            ))
+            .unwrap();
+        let controller = TabUiController::new(
+            vec![snapshot(1, true, false)],
+            TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false))),
+            1000.0,
+        );
+        let mut runtime = mount(controller, 1000, 320);
+
+        runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+        runtime.update(Instant::now());
+
+        assert!(terminal.lock().unwrap().preedit().is_none());
     }
 
     #[test]

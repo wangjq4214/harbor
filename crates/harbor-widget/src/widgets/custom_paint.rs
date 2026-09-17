@@ -12,6 +12,9 @@ use std::sync::Arc;
 /// being queued for [`crate::runtime::Runtime::drain_external_input`].
 pub type ExternalInputFn = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
 
+/// Callback invoked when an external-paint leaf leaves the mounted tree.
+pub type ExternalUnmountFn = dyn Fn();
+
 /// A focusable widget that delegates painting to an externally-owned
 /// renderer identified by [`ExternalDrawId`].
 ///
@@ -23,7 +26,9 @@ pub struct CustomPaint {
     draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
     schedule: Option<Arc<ExternalScheduleFn>>,
+    ime: Option<Arc<crate::scene::primitive::ExternalImeFn>>,
     on_input: Option<Arc<ExternalInputFn>>,
+    on_unmount: Option<Arc<ExternalUnmountFn>>,
     children: Vec<View>,
 }
 
@@ -31,9 +36,11 @@ impl CustomPaint {
     pub fn new(draw_id: impl Into<ExternalDrawId>) -> Self {
         CustomPaint {
             draw_id: draw_id.into(),
+            ime: None,
             handler: None,
             schedule: None,
             on_input: None,
+            on_unmount: None,
             children: vec![],
         }
     }
@@ -52,6 +59,18 @@ impl CustomPaint {
     /// Sets the schedule provider consulted before idle wait selection.
     pub fn schedule(mut self, schedule: Arc<ExternalScheduleFn>) -> Self {
         self.schedule = Some(schedule);
+        self
+    }
+
+    /// Sets a callback invoked when this retained external leaf is unmounted.
+    pub fn on_unmount(mut self, on_unmount: Arc<ExternalUnmountFn>) -> Self {
+        self.on_unmount = Some(on_unmount);
+        self
+    }
+
+    /// Sets the IME effect provider consulted while this external leaf owns focus.
+    pub fn ime(mut self, ime: Arc<crate::scene::primitive::ExternalImeFn>) -> Self {
+        self.ime = Some(ime);
         self
     }
 
@@ -80,6 +99,9 @@ impl Component for CustomPaint {
         }
         if let Some(schedule) = &self.schedule {
             cx.register_external_schedule(self.draw_id, Arc::clone(schedule));
+        }
+        if let Some(ime) = &self.ime {
+            cx.register_external_ime(self.draw_id, Arc::clone(ime));
         }
         View::new(self.clone(), self.children.clone(), None)
     }
@@ -132,6 +154,9 @@ impl AnyView for CustomPaint {
             handle: None,
         })
     }
+    fn external_draw_id(&self) -> Option<ExternalDrawId> {
+        Some(self.draw_id)
+    }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         if matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Down)
@@ -147,6 +172,12 @@ impl AnyView for CustomPaint {
         // Queue for deferred delivery to the App via Runtime.
         ctx.queue_external_input(self.draw_id, event.clone());
         EventHandled::Handled
+    }
+
+    fn unmount(&self) {
+        if let Some(on_unmount) = &self.on_unmount {
+            on_unmount();
+        }
     }
 }
 

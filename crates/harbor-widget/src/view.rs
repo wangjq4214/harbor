@@ -54,12 +54,14 @@ pub(crate) struct FocusMetadata {
 pub(crate) struct ExternalRegistrations {
     pub(crate) draws: Vec<(ExternalDrawId, Arc<ExternalDrawFn<'static>>)>,
     pub(crate) schedules: Vec<(ExternalDrawId, Arc<ExternalScheduleFn>)>,
+    pub(crate) ime: Vec<(ExternalDrawId, Arc<crate::scene::primitive::ExternalImeFn>)>,
 }
 
 impl ExternalRegistrations {
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.draws.append(&mut other.draws);
         self.schedules.append(&mut other.schedules);
+        self.ime.append(&mut other.ime);
     }
 }
 
@@ -106,6 +108,15 @@ impl BuildCx {
         schedule: Arc<ExternalScheduleFn>,
     ) {
         self.externals.schedules.push((id.into(), schedule));
+    }
+
+    /// Registers a focused external IME effect provider for the current build.
+    pub fn register_external_ime(
+        &mut self,
+        id: impl Into<ExternalDrawId>,
+        provider: Arc<crate::scene::primitive::ExternalImeFn>,
+    ) {
+        self.externals.ime.push((id.into(), provider));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -391,9 +402,16 @@ pub(crate) trait AnyView: 'static {
         let _ = (event, ctx, rect);
         EventHandled::Ignored
     }
+    /// Runs when the retained fiber leaves the mounted tree.
+    fn unmount(&self) {}
 
     /// Metadata for focus traversal. Disabled nodes are omitted by the router.
     fn focus_metadata(&self) -> Option<FocusMetadata> {
+        None
+    }
+
+    /// Stable external identity exposed by an external-paint leaf.
+    fn external_draw_id(&self) -> Option<ExternalDrawId> {
         None
     }
 

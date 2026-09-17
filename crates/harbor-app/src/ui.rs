@@ -173,8 +173,8 @@ fn terminal_panel(
 ) -> View {
     harbor_widget::view! { cx; Expanded::new() => {
         controller.allocation.observer() => {
-            Focus::empty().handle(controller.terminal_focus) => {
-                TerminalDecorationPreset::container() => {
+            TerminalDecorationPreset::container() => {
+                Focus::empty().handle(controller.terminal_focus) => {
                     terminal_widget(active_bridge);
                 }
             }

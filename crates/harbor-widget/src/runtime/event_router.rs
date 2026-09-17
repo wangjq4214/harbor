@@ -211,11 +211,14 @@ impl EventRouter {
                     .filter(|captor| arena.contains(*captor))
                     .or_else(|| Self::hit_test_walk(arena, root_id, pointer.position))
             }
-            UiEvent::Keyboard(_) | UiEvent::Focus(_) => self.input.focused,
+            UiEvent::Keyboard(_) | UiEvent::ImePreedit(_) | UiEvent::Focus(_) => self.input.focused,
             UiEvent::PointerBoundary(_) => None,
         };
 
-        let target = if matches!(event, UiEvent::Keyboard(_) | UiEvent::Focus(_)) {
+        let target = if matches!(
+            event,
+            UiEvent::Keyboard(_) | UiEvent::ImePreedit(_) | UiEvent::Focus(_)
+        ) {
             target.map(|target| Self::resolve_focused_event_target(arena, target))
         } else {
             target
@@ -610,6 +613,12 @@ impl EventRouter {
                     .is_some_and(|view| view.is_focus_scope())
             })
             .or_else(|| path.first().copied())
+    }
+
+    pub(crate) fn focused_event_target(&self, arena: &FiberArena) -> Option<FiberId> {
+        self.input
+            .focused
+            .map(|target| Self::resolve_focused_event_target(arena, target))
     }
 
     fn resolve_focused_event_target(arena: &FiberArena, mut target: FiberId) -> FiberId {

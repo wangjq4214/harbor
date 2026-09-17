@@ -5,8 +5,8 @@ use anyhow::Result;
 use wgpu::util::DeviceExt;
 
 use super::gpu::{self, TerminalGpuAccess, TexturedVertex, UploadMode};
-use crate::render::RenderViewport;
-use crate::{CellAttrs, Color, DirtyRange};
+use crate::render::{RenderViewport, layout_preedit};
+use crate::{CellAttrs, Color, DirtyRange, Preedit};
 #[cfg(test)]
 use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
@@ -218,6 +218,9 @@ pub struct Text {
     atlas: GlyphAtlas,
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
+    overlay_vertex_buffer: wgpu::Buffer,
+    overlay_vertex_capacity: usize,
+    overlay_vertex_count: u32,
     dirty: bool,
     rows: usize,
     cols: usize,
@@ -278,6 +281,7 @@ impl Text {
             .and_then(|cells| cells.checked_mul(6))
             .expect("text vertex count overflow");
         let vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), max_vertices);
+        let overlay_vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), 0);
 
         let mut layer = Self {
             fonts,
@@ -285,6 +289,9 @@ impl Text {
             pipeline,
             atlas,
             gpu_atlas,
+            overlay_vertex_buffer,
+            overlay_vertex_capacity: 0,
+            overlay_vertex_count: 0,
             vertex_buffer,
             dirty: true,
             rows,
@@ -465,19 +472,95 @@ impl Text {
         })
     }
 
+    /// Rebuilds only the transient IME overlay while sharing the base glyph atlas.
+    pub fn prepare_preedit(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        preedit: Option<&Preedit>,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+    ) {
+        let Some(preedit) = preedit.filter(|preedit| !preedit.is_empty()) else {
+            self.overlay_vertex_count = 0;
+            return;
+        };
+
+        let layout = layout_preedit(
+            preedit,
+            (snap.cursor_x, snap.cursor_y),
+            snap.rows,
+            snap.cols,
+        );
+        let (surf_w, surf_h) = viewport.surface_dimensions();
+        let color = glyph_color_with_palette(
+            &self.palette,
+            Color::Default,
+            Color::Default,
+            CellAttrs::default(),
+        );
+        let mut vertices = Vec::with_capacity(layout.glyphs.len().saturating_mul(6));
+        for positioned in layout.glyphs {
+            let Some(glyph) = self.atlas.glyph_by_char(positioned.ch) else {
+                continue;
+            };
+            if glyph.width == 0 || glyph.height == 0 {
+                continue;
+            }
+            let (cell_x, cell_y) = viewport.cell_pos(positioned.row, positioned.col);
+            let baseline = cell_y + self.metrics.ascent.ceil();
+            let glyph_left = cell_x + glyph.bearing_x as f32;
+            let glyph_bottom = baseline - glyph.bearing_y as f32;
+            let glyph_top = glyph_bottom - glyph.height as f32;
+            let glyph_right = glyph_left + glyph.width as f32;
+            vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
+                glyph_left,
+                glyph_top,
+                glyph_right,
+                glyph_bottom,
+                glyph.uv.left,
+                glyph.uv.top,
+                glyph.uv.right,
+                glyph.uv.bottom,
+                color,
+                surf_w,
+                surf_h,
+            ));
+        }
+
+        if vertices.len() > self.overlay_vertex_capacity {
+            let replacement = gpu::create_vertex_buffer_sized(gpu.device(), vertices.len());
+            self.overlay_vertex_buffer = replacement;
+            self.overlay_vertex_capacity = vertices.len();
+        }
+        if !vertices.is_empty() {
+            gpu.write_buffer(
+                &self.overlay_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&vertices),
+            );
+        }
+        self.overlay_vertex_count = vertices.len() as u32;
+    }
+
     pub fn prepare_with_dirty(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
+        preedit: Option<&Preedit>,
     ) {
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
-            let all_chars = Self::collect_all_chars(snap);
+            let mut all_chars = Self::collect_all_chars(snap);
+            if let Some(preedit) = preedit {
+                all_chars.extend(preedit.text.chars());
+                all_chars.sort_unstable();
+                all_chars.dedup();
+            }
             self.atlas.rebuild(&self.fonts, &all_chars);
             self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
 
@@ -507,7 +590,12 @@ impl Text {
             return;
         }
 
-        let unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
+        let mut unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
+        if let Some(preedit) = preedit {
+            unique.extend(preedit.text.chars());
+            unique.sort_unstable();
+            unique.dedup();
+        }
         let result = self.atlas.rasterize_new(&self.fonts, &unique);
         self.apply_rasterize_result(gpu, result);
 
@@ -548,9 +636,10 @@ impl Text {
         gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
+        preedit: Option<&Preedit>,
     ) {
         if let Some(snap) = snap {
-            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges, viewport);
+            self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges, viewport, preedit);
         }
     }
 
@@ -561,6 +650,10 @@ impl Text {
         let vertex_count = (self.rows * self.cols * 6) as u32;
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
+            if self.overlay_vertex_count > 0 {
+                pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
+                pass.draw(0..self.overlay_vertex_count, 0..1);
+            }
         }
     }
 }

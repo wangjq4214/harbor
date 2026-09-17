@@ -346,6 +346,10 @@ pub type ExternalDrawFn<'a> = dyn Fn(
         ExternalDrawMode,
     ) + 'a;
 
+/// Focused external widget provider for host-neutral IME allowance and candidate geometry.
+pub type ExternalImeFn =
+    dyn Fn(ExternalDrawId, &ExternalDrawContext) -> Option<crate::effects::ImeEffect>;
+
 /// Widget-neutral scheduling snapshot from one external schedule provider.
 ///
 /// Mirrors terminal Frame Demand shape without depending on harbor-terminal.

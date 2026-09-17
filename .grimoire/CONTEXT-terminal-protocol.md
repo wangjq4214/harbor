@@ -246,6 +246,14 @@
   - references RIS
   - references Alternate-Screen Mode Family
 
+### IME Preedit Composition
+- **Definition:** Transient input-method composition text routed to the focused terminal for visual overlay at the live cursor without changing terminal screen cells, scrollback, pending-wrap, or PTY input. It wraps across visible terminal cells, is clipped to the terminal viewport, clears on commit or cancellation, and returns a scrolled-back terminal to the live bottom when composition begins.
+- **Synonyms:** preedit, composition text
+- **Relationships:**
+  - belongs to Terminal Input Semantics
+  - communicates with Winit Adapter
+  - depends on Terminal Widget Bridge
+
 ### SGR Mouse Reporting
 - **Definition:** Harbor's cell-coordinate mouse protocol path uses DEC tracking modes `?1000`, `?1002`, and `?1003` with independent enablement and effective priority `?1003 > ?1002 > ?1000`; clearing a higher-priority mode reveals the next enabled mode. Reports are emitted only with SGR encoding mode `?1006`; without it, tracking still owns and consumes pointer input but emits no legacy encoding. RIS clears all tracking and SGR encoding modes.
 - **Synonyms:** SGR mouse tracking, DECSET mouse reporting

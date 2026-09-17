@@ -228,6 +228,7 @@ impl TabManager {
             terminal: resources.terminal,
             bridge: resources.bridge,
         });
+        self.clear_active_preedit();
         self.active = Some(id);
         Ok(TabActionOutcome {
             active_bridge_changed: true,
@@ -254,6 +255,14 @@ impl TabManager {
     fn active_tab(&self) -> Option<&TerminalTab> {
         let id = self.active?;
         self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    fn clear_active_preedit(&self) {
+        if let Some(tab) = self.active_tab()
+            && let Ok(mut terminal) = tab.terminal.lock()
+        {
+            terminal.clear_preedit();
+        }
     }
 
     pub fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
@@ -287,11 +296,12 @@ impl TabManager {
         if self.active == Some(id) {
             return TabActionOutcome::unchanged();
         }
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return TabActionOutcome::unchanged();
         };
+        self.clear_active_preedit();
         self.active = Some(id);
-        let unread_changed = std::mem::take(&mut tab.unread);
+        let unread_changed = std::mem::take(&mut self.tabs[index].unread);
         TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -335,7 +345,10 @@ impl TabManager {
             return TabActionOutcome::unchanged();
         };
         let was_active = self.active == Some(id);
-        self.tabs.remove(index);
+        let removed = self.tabs.remove(index);
+        if was_active && let Ok(mut terminal) = removed.terminal.lock() {
+            terminal.clear_preedit();
+        }
 
         if self.tabs.is_empty() {
             self.active = None;
@@ -536,6 +549,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["test-shell", "test-shell"]
         );
+    }
+
+    #[test]
+    fn active_tab_changes_clear_the_previous_terminal_preedit() {
+        use harbor_terminal::{Preedit, TerminalEvent};
+
+        let mut manager = TabManager::new();
+        let (a, _) = create(&mut manager);
+        let terminal_a = terminal(&manager, a);
+        terminal_a
+            .lock()
+            .unwrap()
+            .handle_event(TerminalEvent::Preedit(Preedit::new("first", None)))
+            .unwrap();
+
+        let (b, _) = create(&mut manager);
+        assert!(terminal_a.lock().unwrap().preedit().is_none());
+
+        let terminal_b = terminal(&manager, b);
+        terminal_b
+            .lock()
+            .unwrap()
+            .handle_event(TerminalEvent::Preedit(Preedit::new("second", None)))
+            .unwrap();
+        manager.activate(a);
+
+        assert!(terminal_b.lock().unwrap().preedit().is_none());
     }
 
     #[test]

@@ -4,17 +4,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use harbor_terminal::{
-    RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent, TerminalGpuAccess,
-    TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalPointerButton,
-    TerminalPointerEvent, TerminalPointerPhase, TerminalSize, TextMetrics,
+    Preedit, RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent,
+    TerminalGpuAccess, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize, TextMetrics,
 };
+use harbor_widget::effects::ImeEffect;
 use harbor_widget::input::event::{
     FocusEvent, Key, KeyboardEvent, Modifiers, PointerButton, PointerPhase, UiEvent,
 };
 use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::scene::primitive::{
-    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalScheduleDemand,
-    ExternalScheduleFn,
+    ExternalDrawContext, ExternalDrawFn, ExternalDrawId, ExternalDrawMode, ExternalImeFn,
+    ExternalScheduleDemand, ExternalScheduleFn,
 };
 #[cfg(test)]
 use harbor_widget::view::{BuildCx, Component, View};
@@ -111,6 +112,10 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> Option<TerminalEve
                 modifiers: map_modifiers(modifiers),
             }))
         }
+        UiEvent::ImePreedit(preedit) => Some(TerminalEvent::Preedit(Preedit::new(
+            preedit.text,
+            preedit.cursor_range,
+        ))),
         UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
             Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)))
         }
@@ -226,7 +231,9 @@ pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
     handler: Arc<ExternalDrawFn<'static>>,
     schedule: Arc<ExternalScheduleFn>,
+    ime: Arc<ExternalImeFn>,
     on_input: Arc<ExternalInputFn>,
+    on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn>,
 }
 
 impl TerminalWidgetBridge {
@@ -282,6 +289,23 @@ impl TerminalWidgetBridge {
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
+        let ime_terminal = Arc::clone(&terminal);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let ime: Arc<ExternalImeFn> = Arc::new(move |id, context| {
+            if id != draw_id {
+                return None;
+            }
+            let target = render_target_from_context(context);
+            let mut effect = ImeEffect::set_allowed(true);
+            if let Ok(term) = ime_terminal.lock()
+                && let Some((x, y)) = term.ime_candidate_position(target)
+            {
+                effect.position =
+                    Some(Point::new(x / target.scale_factor, y / target.scale_factor));
+            }
+            Some(effect)
+        });
+
         let input_activate_hyperlink = Arc::clone(&activate_hyperlink);
         let input_gate = Arc::clone(&gate_active);
         let input_terminal = Arc::clone(&terminal);
@@ -334,11 +358,22 @@ impl TerminalWidgetBridge {
             EventHandled::Handled
         });
 
+        let unmount_terminal = Arc::clone(&terminal);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn> =
+            Arc::new(move || {
+                if let Ok(mut term) = unmount_terminal.lock() {
+                    term.clear_preedit();
+                }
+            });
+
         Self {
             draw_id,
             handler,
             schedule,
+            ime,
             on_input,
+            on_unmount,
         }
     }
 
@@ -353,7 +388,9 @@ pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> CustomPaint {
     CustomPaint::new(bridge.draw_id())
         .handler(Arc::clone(&bridge.handler))
         .schedule(Arc::clone(&bridge.schedule))
+        .ime(Arc::clone(&bridge.ime))
         .on_input(Arc::clone(&bridge.on_input))
+        .on_unmount(Arc::clone(&bridge.on_unmount))
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.
@@ -701,6 +738,12 @@ mod tests {
             Some(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(
                 "你好".into()
             )))
+        );
+        assert_eq!(
+            terminal_event_from_ui_event(UiEvent::ImePreedit(
+                harbor_widget::input::event::ImePreedit::new("ni", Some((2, 2))),
+            )),
+            Some(TerminalEvent::Preedit(Preedit::new("ni", Some((2, 2)))))
         );
         assert_eq!(
             terminal_event_from_ui_event(UiEvent::Focus(FocusEvent::Gained)),

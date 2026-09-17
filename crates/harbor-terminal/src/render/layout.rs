@@ -1,7 +1,8 @@
 use crate::model::TerminalSize;
 
-use crate::types::RenderTarget;
+use crate::types::{Preedit, RenderTarget};
 use harbor_text::TextMetrics;
+use unicode_width::UnicodeWidthChar;
 
 /// Centralizes grid geometry, layout margins, and cell-to-pixel coordinate projection.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,6 +89,121 @@ impl RenderViewport {
             rows: ((available_height / self.line_height).floor() as usize).max(1),
             cols: ((available_width / self.cell_width).floor() as usize).max(1),
         }
+    }
+}
+/// One visible glyph position in the transient preedit overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreeditGlyph {
+    pub ch: char,
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Visible preedit glyphs and the clamped candidate-window caret cell.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PreeditLayout {
+    pub glyphs: Vec<PreeditGlyph>,
+    pub caret: (usize, usize),
+}
+
+/// Lays out transient IME text from the live cursor without touching terminal cells.
+pub fn layout_preedit(
+    preedit: &Preedit,
+    cursor: (usize, usize),
+    rows: usize,
+    cols: usize,
+) -> PreeditLayout {
+    let rows = rows.max(1);
+    let cols = cols.max(1);
+    let caret_offset = preedit
+        .cursor_range
+        .filter(|(start, end)| {
+            start <= end
+                && *end <= preedit.text.len()
+                && preedit.text.is_char_boundary(*start)
+                && preedit.text.is_char_boundary(*end)
+        })
+        .map_or(preedit.text.len(), |(_, end)| end);
+
+    let mut row = cursor.1.min(rows - 1);
+    let mut col = cursor.0.min(cols);
+    let mut glyphs = Vec::new();
+    let mut previous_glyph_cell = None;
+    let mut rejected_base = false;
+    let mut caret = None;
+
+    for (byte_index, ch) in preedit.text.char_indices() {
+        if byte_index == caret_offset {
+            caret = Some((row.min(rows - 1), col.min(cols)));
+        }
+        if row >= rows {
+            row = rows - 1;
+            col = cols;
+            break;
+        }
+        if ch == '\n' {
+            row = row.saturating_add(1);
+            col = 0;
+            previous_glyph_cell = None;
+            rejected_base = false;
+            continue;
+        }
+
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width > cols {
+            col = cols;
+            previous_glyph_cell = None;
+            rejected_base = true;
+            continue;
+        }
+        if width > 0 && col > 0 && col.saturating_add(width) > cols {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        if row >= rows {
+            row = rows - 1;
+            col = cols;
+            break;
+        }
+
+        if width == 0 && rejected_base {
+            continue;
+        }
+        let glyph_cell = if width == 0 {
+            previous_glyph_cell.unwrap_or((row, col.saturating_sub(1)))
+        } else {
+            (row, col)
+        };
+        glyphs.push(PreeditGlyph {
+            ch,
+            row: glyph_cell.0,
+            col: glyph_cell.1.min(cols - 1),
+        });
+
+        if width > 0 {
+            previous_glyph_cell = Some(glyph_cell);
+            rejected_base = false;
+        }
+        if width > 0 {
+            col = col.saturating_add(width);
+            if col >= cols {
+                if row + 1 < rows {
+                    row += 1;
+                    col = 0;
+                } else {
+                    col = cols;
+                }
+            }
+        }
+    }
+
+    if caret.is_none() && caret_offset == preedit.text.len() {
+        caret = Some((row.min(rows - 1), col.min(cols)));
+    }
+
+    PreeditLayout {
+        glyphs,
+        caret: caret.unwrap_or((rows - 1, cols)),
     }
 }
 
@@ -249,5 +365,103 @@ mod tests {
         // Assert
         assert_eq!(grid.rows, 1);
         assert_eq!(grid.cols, 1);
+    }
+
+    #[test]
+    fn preedit_wraps_from_live_cursor_and_places_fallback_caret_after_text() {
+        let layout = layout_preedit(&Preedit::new("ab", None), (3, 0), 3, 4);
+
+        assert_eq!(
+            layout.glyphs,
+            vec![
+                PreeditGlyph {
+                    ch: 'a',
+                    row: 0,
+                    col: 3
+                },
+                PreeditGlyph {
+                    ch: 'b',
+                    row: 1,
+                    col: 0
+                },
+            ]
+        );
+        assert_eq!(layout.caret, (1, 1));
+    }
+
+    #[test]
+    fn preedit_wraps_wide_glyphs_and_keeps_combining_marks_with_previous_cell() {
+        let layout = layout_preedit(&Preedit::new("你a\u{301}", None), (3, 0), 3, 4);
+
+        assert_eq!(
+            layout.glyphs[0],
+            PreeditGlyph {
+                ch: '你',
+                row: 1,
+                col: 0
+            }
+        );
+        assert_eq!(
+            layout.glyphs[1],
+            PreeditGlyph {
+                ch: 'a',
+                row: 1,
+                col: 2
+            }
+        );
+        assert_eq!(
+            layout.glyphs[2],
+            PreeditGlyph {
+                ch: '\u{301}',
+                row: 1,
+                col: 2
+            }
+        );
+        assert_eq!(layout.caret, (1, 3));
+
+        let wide_combining = layout_preedit(&Preedit::new("你\u{301}", None), (0, 0), 2, 4);
+        assert_eq!(wide_combining.glyphs[0].row, 0);
+        assert_eq!(wide_combining.glyphs[0].col, 0);
+        assert_eq!(wide_combining.glyphs[1].row, 0);
+        assert_eq!(wide_combining.glyphs[1].col, 0);
+
+        let edge_combining = layout_preedit(&Preedit::new("a\u{301}", None), (3, 0), 2, 4);
+        assert_eq!(edge_combining.glyphs[0].row, 0);
+        assert_eq!(edge_combining.glyphs[0].col, 3);
+        assert_eq!(edge_combining.glyphs[1].row, 0);
+        assert_eq!(edge_combining.glyphs[1].col, 3);
+    }
+
+    #[test]
+    fn preedit_does_not_split_a_wide_glyph_in_a_one_column_grid() {
+        let layout = layout_preedit(&Preedit::new("你\u{301}", None), (0, 0), 2, 1);
+
+        assert!(layout.glyphs.is_empty());
+        assert_eq!(layout.caret, (0, 1));
+    }
+    #[test]
+    fn preedit_uses_valid_utf8_caret_and_falls_back_for_invalid_ranges() {
+        let valid = layout_preedit(&Preedit::new("a你", Some((1, 1))), (0, 0), 2, 4);
+        let reversed = layout_preedit(&Preedit::new("a你", Some((4, 1))), (0, 0), 2, 4);
+        let split_codepoint = layout_preedit(&Preedit::new("a你", Some((2, 2))), (0, 0), 2, 4);
+
+        assert_eq!(valid.caret, (0, 1));
+        assert_eq!(reversed.caret, (0, 3));
+        assert_eq!(split_codepoint.caret, (0, 3));
+    }
+
+    #[test]
+    fn preedit_clips_beyond_visible_bottom_and_clamps_caret_to_right_edge() {
+        let layout = layout_preedit(&Preedit::new("ab", None), (3, 0), 1, 4);
+
+        assert_eq!(
+            layout.glyphs,
+            vec![PreeditGlyph {
+                ch: 'a',
+                row: 0,
+                col: 3
+            }]
+        );
+        assert_eq!(layout.caret, (0, 4));
     }
 }

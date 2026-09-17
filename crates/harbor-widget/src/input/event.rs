@@ -9,6 +9,8 @@ pub enum UiEvent {
     /// Synthetic boundary event derived from hit-test path changes.
     PointerBoundary(PointerBoundaryEvent),
     Keyboard(KeyboardEvent),
+    /// Transient IME composition text delivered to the focused widget.
+    ImePreedit(ImePreedit),
     Focus(FocusEvent),
 }
 
@@ -61,6 +63,23 @@ pub enum KeyboardEvent {
     KeyDown { key: Key, modifiers: Modifiers },
     KeyUp { key: Key, modifiers: Modifiers },
     Ime(String),
+}
+
+/// Platform-neutral transient IME composition update.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImePreedit {
+    pub text: String,
+    /// UTF-8 byte range reported by the platform for the composition caret/selection.
+    pub cursor_range: Option<(usize, usize)>,
+}
+
+impl ImePreedit {
+    pub fn new(text: impl Into<String>, cursor_range: Option<(usize, usize)>) -> Self {
+        Self {
+            text: text.into(),
+            cursor_range,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

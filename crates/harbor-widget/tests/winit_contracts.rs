@@ -2,7 +2,7 @@
 
 use harbor_widget::effects::RuntimeEffects;
 use harbor_widget::input::event::{
-    KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
+    ImePreedit, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::ExternalDrawId;
@@ -400,7 +400,7 @@ fn adapter_keeps_valid_scale_and_pointer_state_when_invalid_scale_is_offered() {
 }
 
 #[test]
-fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
+fn adapter_routes_preedit_updates_and_forwards_only_nonempty_commit() {
     // Arrange
     let mut runtime = custom_paint_runtime(13);
     let mut adapter = WinitAdapter::new();
@@ -419,8 +419,13 @@ fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
             )
             .is_handled()
     );
-    assert!(runtime.drain_external_input().is_empty());
-
+    assert_eq!(
+        runtime.drain_external_input(),
+        vec![(
+            ExternalDrawId::new(13),
+            UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))),
+        )]
+    );
     assert!(
         adapter
             .handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit("語".into())))
@@ -574,7 +579,13 @@ fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
     );
     assert!(outcome_composing.is_handled());
     assert!(outcome_composing.effects.is_noop());
-    assert!(runtime.drain_external_input().is_empty());
+    assert_eq!(
+        runtime.drain_external_input(),
+        vec![(
+            ExternalDrawId::new(19),
+            UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))),
+        )]
+    );
 }
 
 #[test]
@@ -601,13 +612,23 @@ fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
     );
     assert_eq!(
         runtime.drain_external_input(),
-        vec![(
-            ExternalDrawId::new(20),
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: harbor_widget::input::event::Key::Character('a'),
-                modifiers: Default::default(),
-            }),
-        )]
+        vec![
+            (
+                ExternalDrawId::new(20),
+                UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))),
+            ),
+            (
+                ExternalDrawId::new(20),
+                UiEvent::ImePreedit(ImePreedit::default()),
+            ),
+            (
+                ExternalDrawId::new(20),
+                UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: harbor_widget::input::event::Key::Character('a'),
+                    modifiers: Default::default(),
+                }),
+            ),
+        ]
     );
 
     let empty = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
@@ -635,18 +656,39 @@ fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_no
     );
     assert_eq!(
         runtime.drain_external_input(),
-        vec![(
-            ExternalDrawId::new(20),
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: harbor_widget::input::event::Key::Character('a'),
-                modifiers: Default::default(),
-            }),
-        )]
+        vec![
+            (
+                ExternalDrawId::new(20),
+                UiEvent::ImePreedit(ImePreedit::default()),
+            ),
+            (
+                ExternalDrawId::new(20),
+                UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: harbor_widget::input::event::Key::Character('a'),
+                    modifiers: Default::default(),
+                }),
+            ),
+        ]
     );
 
     let empty = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
     assert!(empty.is_handled());
     assert!(empty.effects.is_noop());
+
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+    );
+    let _ = runtime.drain_external_input();
+    let cancel = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
+    assert!(cancel.is_handled());
+    assert_eq!(
+        runtime.drain_external_input(),
+        vec![(
+            ExternalDrawId::new(20),
+            UiEvent::ImePreedit(ImePreedit::default()),
+        )]
+    );
     assert!(runtime.drain_external_input().is_empty());
 }
 
@@ -808,13 +850,19 @@ fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled(
     assert!(release.is_handled());
     assert_eq!(
         runtime.drain_external_input(),
-        vec![(
-            ExternalDrawId::new(22),
-            UiEvent::Keyboard(KeyboardEvent::KeyUp {
-                key: harbor_widget::input::event::Key::Character('a'),
-                modifiers: Default::default(),
-            }),
-        )]
+        vec![
+            (
+                ExternalDrawId::new(22),
+                UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))),
+            ),
+            (
+                ExternalDrawId::new(22),
+                UiEvent::Keyboard(KeyboardEvent::KeyUp {
+                    key: harbor_widget::input::event::Key::Character('a'),
+                    modifiers: Default::default(),
+                }),
+            ),
+        ]
     );
 }
 
