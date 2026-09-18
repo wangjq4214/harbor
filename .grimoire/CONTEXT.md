@@ -696,6 +696,7 @@ Project domain concepts and terminology.
   - configures Terminal
   - configures System Default Font Selection
   - configures Window Backdrop Tint
+  - configures Application Keybindings
 
 
 ### Widget Store
@@ -720,6 +721,41 @@ Project domain concepts and terminology.
   - consumed by Application Business Host
   - preserves RuntimeEffects ordering
   - keeps reducers and effects outside Harbor Widget Runtime
+
+### Application Command
+- **Definition:** A user-invokable Harbor application operation exposed through a stable string ID at configuration and UI-discovery boundaries and represented by a typed command internally. PTY output, redraw, window lifecycle, and other internal notifications are not application commands.
+- **Relationships:**
+  - dispatched by Application Command Dispatcher
+  - registered in Application Command Registry
+  - belongs to Application Business Host
+
+### Application Command Registry
+- **Definition:** The application-owned catalog of implemented commands, their stable IDs, display metadata, default keybindings, and current availability, shared by shortcut resolution and future command-palette presentation.
+- **Relationships:**
+  - contains Application Command
+  - configures Application Keybindings
+  - belongs to Application Business Host
+
+### Application Command Dispatcher
+- **Definition:** The single application-owned command submission path used by shortcuts, buttons, menus, and the future command palette. Shortcut handlers synchronously return a Command Outcome and enqueue only consumed commands into scoped FIFO Event-Turn Action Transport; the Application Business Host later executes them and owns side effects. It is not a generic publish/subscribe bus.
+- **Relationships:**
+  - dispatches Application Command
+  - implements Event-Turn Action Transport
+  - communicates with Application Business Host
+
+### Application Keybindings
+- **Definition:** Startup TOML command tables such as `[keybindings.app.new-tab]`, each containing a `bindings` array of self-contained `{ modifiers = [...], key = "..." }` records. Modifiers are explicit rather than encoded into chord strings. Omitted commands retain registry defaults, an empty `bindings` array unbinds defaults, and a matched available command receives first refusal before terminal input. The superseded command-to-string-array format is not accepted; like any invalid binding shape, it rejects the complete override set in favor of defaults without discarding valid non-keybinding settings.
+- **Relationships:**
+  - configured by TOML User Settings
+  - references Application Command Registry
+  - communicates with Terminal Input Semantics
+
+### Command Outcome
+- **Definition:** The synchronous result of attempting an application shortcut action: `Consumed` enqueues the command and prevents the triggering input from reaching the terminal, while `PassThrough` enqueues nothing and continues the same input to terminal handling. `terminal.copy-or-interrupt` passes through without a selection; `terminal.copy` always consumes and preserves empty-copy behavior.
+- **Relationships:**
+  - produced by Application Command Dispatcher
+  - controls Application Keybindings
+  - communicates with Terminal Selection Copy Policy
 
 ### Terminal Tab
 - **Definition:** An application-owned terminal session identified by a stable TabId, retaining its Terminal and PTY resources independently of whether its side-rail item is active.

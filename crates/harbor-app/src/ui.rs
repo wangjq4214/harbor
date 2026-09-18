@@ -1,14 +1,8 @@
 //! Declarative widget definitions for Harbor's main workspace and dialogs.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-};
-
 use harbor_widget::{
-    Actions, Button, Column, ComponentExt as _, ConstrainedBox, Dispatcher, Expanded, Focus,
-    FocusScope, IconButton, KeyChord, Row, ScrollArea, Separator, Shortcuts,
-    input::event::{Key, Modifiers},
+    ActionOutcome, Actions, Button, Column, ComponentExt as _, ConstrainedBox, Dispatcher,
+    Expanded, Focus, FocusScope, IconButton, Row, ScrollArea, Separator, Shortcuts,
     layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -16,12 +10,19 @@ use harbor_widget::{
         padding::Padding, preview_pane::PreviewPane, sized_box::SizedBox, text_label::TextLabel,
     },
 };
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
-use super::{RailPresentation, TabCommand, TabCommandRequest, TabUiController, TabUiState};
+use super::{RailPresentation, TabCommand, TabUiController, TabUiState};
 use crate::{
-    tab_manager::{TabIndex, TabSnapshot},
+    command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
+    tab_manager::TabSnapshot,
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
+#[cfg(test)]
+use harbor_widget::input::event::Modifiers;
 
 pub const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
 
@@ -30,6 +31,7 @@ pub const CONFIRMATION_PREVIEW_VISIBLE_LINES: usize = 12;
 pub struct MainWindowRootInputs {
     pub controller: TabUiController,
     pub backdrop_available: bool,
+    pub keybindings: ResolvedKeybindings,
     pub backdrop_fallback: [f32; 3],
 }
 
@@ -38,11 +40,13 @@ impl MainWindowRootInputs {
         controller: TabUiController,
         backdrop_available: bool,
         backdrop_fallback: [f32; 3],
+        keybindings: ResolvedKeybindings,
     ) -> Self {
         Self {
             controller,
             backdrop_available,
             backdrop_fallback,
+            keybindings,
         }
     }
 }
@@ -53,6 +57,7 @@ pub fn tab_workspace(controller: TabUiController, backdrop_available: bool) -> i
         controller,
         backdrop_available,
         harbor_config::WindowBackdropStyle::default().fallback,
+        crate::command::resolve_keybindings(&harbor_config::RawKeybindings::default()).keybindings,
     ))
 }
 
@@ -65,6 +70,7 @@ pub fn tab_workspace_with_fallback(
         controller,
         backdrop_available,
         backdrop_fallback,
+        crate::command::resolve_keybindings(&harbor_config::RawKeybindings::default()).keybindings,
     ))
 }
 
@@ -82,8 +88,15 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
-    let shortcuts = shortcuts();
-    let actions = Actions::handler(move |request| action_dispatcher.dispatch(request));
+    let shortcuts = shortcuts(&props.keybindings);
+    let command_bridge = active_bridge.clone();
+    let actions = Actions::handler(move |command| {
+        let outcome = command_outcome(command, &command_bridge);
+        if outcome == ActionOutcome::Consumed {
+            action_dispatcher.dispatch(AppCommandRequest::shortcut(command));
+        }
+        outcome
+    });
 
     harbor_widget::view! { cx; root => {
         FocusScope::new() => {
@@ -104,7 +117,7 @@ fn tab_rail(
     cx: &mut BuildCx,
     state: &TabUiState,
     controller: &TabUiController,
-    dispatcher: Dispatcher<TabCommandRequest>,
+    dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
     let new_dispatcher = dispatcher.clone();
     harbor_widget::view! { cx;
@@ -130,12 +143,12 @@ fn tab_rail(
                 match state.presentation {
                     RailPresentation::Expanded => {
                         Button::new("New terminal").on_click(move |_| {
-                            new_dispatcher.dispatch(TabCommandRequest::rail(TabCommand::New));
+                            new_dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New));
                         });
                     },
                     RailPresentation::Compact => {
                         IconButton::new("+", "New terminal").on_click(move |_| {
-                            new_dispatcher.dispatch(TabCommandRequest::rail(TabCommand::New));
+                            new_dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New));
                         });
                     }
                 }
@@ -149,7 +162,7 @@ fn tab_row(
     snapshot: &TabSnapshot,
     presentation: RailPresentation,
     controller: &TabUiController,
-    dispatcher: Dispatcher<TabCommandRequest>,
+    dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
     harbor_widget::view! { cx;
         Row::new().keyed(format!("terminal-tab-{}", snapshot.id)) => {
@@ -262,40 +275,32 @@ pub fn build_confirmation_root(
     move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
 }
 
-fn shortcuts() -> Shortcuts<TabCommandRequest> {
-    let shortcuts = Shortcuts::empty()
-        .bind(
-            KeyChord::new(Key::Character('t'), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::New),
-        )
-        .bind(
-            KeyChord::new(Key::Character('w'), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::CloseActive),
-        )
-        .bind(
-            KeyChord::new(Key::Tab, ctrl()),
-            TabCommandRequest::shortcut(TabCommand::Next),
-        )
-        .bind(
-            KeyChord::new(
-                Key::Tab,
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Modifiers::default()
-                },
-            ),
-            TabCommandRequest::shortcut(TabCommand::Previous),
-        );
-    (1..=9).fold(shortcuts, |shortcuts, index| {
-        let digit = char::from_digit(index as u32, 10).expect("numeric shortcut is a digit");
-        shortcuts.bind(
-            KeyChord::new(Key::Character(digit), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::Numeric(TabIndex::from_valid_u8(index as u8))),
-        )
-    })
+fn shortcuts(keybindings: &ResolvedKeybindings) -> Shortcuts<AppCommand> {
+    keybindings
+        .bindings()
+        .fold(Shortcuts::empty(), |shortcuts, (chord, command)| {
+            shortcuts.bind(chord, command)
+        })
 }
 
+fn command_outcome(command: AppCommand, bridge: &TerminalWidgetBridge) -> ActionOutcome {
+    match command {
+        AppCommand::CopyOrInterrupt if !bridge.has_non_empty_selection() => {
+            ActionOutcome::PassThrough
+        }
+        AppCommand::PageUp
+        | AppCommand::PageDown
+        | AppCommand::ScrollToTop
+        | AppCommand::ScrollToBottom
+            if bridge.is_alt_screen() =>
+        {
+            ActionOutcome::PassThrough
+        }
+        _ => ActionOutcome::Consumed,
+    }
+}
+
+#[cfg(test)]
 pub(super) fn ctrl() -> Modifiers {
     Modifiers {
         ctrl: true,
@@ -306,7 +311,7 @@ pub(super) fn ctrl() -> Modifiers {
 fn select_tab_button(
     snapshot: &TabSnapshot,
     presentation: RailPresentation,
-    dispatcher: Dispatcher<TabCommandRequest>,
+    dispatcher: Dispatcher<AppCommandRequest>,
 ) -> IconButton {
     let id = snapshot.id;
     let label = tab_label(snapshot);
@@ -317,17 +322,17 @@ fn select_tab_button(
     IconButton::new(glyph, label)
         .selected(snapshot.active)
         .on_click(move |_| {
-            dispatcher.dispatch(TabCommandRequest::rail(TabCommand::Activate(id)));
+            dispatcher.dispatch(AppCommandRequest::rail(TabCommand::Activate(id)));
         })
 }
 
 fn close_tab_button(
     snapshot: &TabSnapshot,
-    dispatcher: Dispatcher<TabCommandRequest>,
+    dispatcher: Dispatcher<AppCommandRequest>,
 ) -> IconButton {
     let id = snapshot.id;
     IconButton::new("×", format!("Close {}", snapshot.title)).on_click(move |_| {
-        dispatcher.dispatch(TabCommandRequest::rail(TabCommand::Close(id)));
+        dispatcher.dispatch(AppCommandRequest::close_rail(id));
     })
 }
 

@@ -8,11 +8,11 @@ use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::view::{Component, SizedBox};
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::{
-    Actions, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion, Shortcuts, Theme,
-    ThemeProvider,
+    ActionOutcome, Actions, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion,
+    Shortcuts, Theme, ThemeProvider,
 };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 fn now() -> Instant {
@@ -397,6 +397,7 @@ fn shortcuts_claim_exact_chords_and_invoke_nearest_actions_provider() {
         move |action| {
             assert!(matches!(action, TestAction::NewTab));
             observed.fetch_add(1, Ordering::SeqCst);
+            ActionOutcome::Consumed
         },
     ));
     runtime.update(now());
@@ -427,6 +428,35 @@ fn shortcuts_claim_exact_chords_and_invoke_nearest_actions_provider() {
 }
 
 #[test]
+fn shortcut_outcome_controls_focused_delivery() {
+    for (outcome, clicked_after) in [
+        (ActionOutcome::Consumed, false),
+        (ActionOutcome::PassThrough, true),
+    ] {
+        let clicked = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&clicked);
+        let chord = KeyChord::new(Key::Enter, Modifiers::default());
+        let mut runtime = Runtime::new();
+        runtime.set_root(Actions::new(
+            Shortcuts::new(Button::new("Target").on_click(move |_| {
+                observed.store(true, Ordering::SeqCst);
+            }))
+            .bind(chord, TestAction::NewTab),
+            move |_: TestAction| outcome,
+        ));
+        runtime.update(now());
+        assert!(runtime.focus_first_focusable());
+
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+
+        assert_eq!(clicked.load(Ordering::SeqCst), clicked_after);
+    }
+}
+
+#[test]
 fn keyboard_shortcut_restores_focus_visible_modality() {
     let chord = KeyChord::new(
         Key::Character('t'),
@@ -438,7 +468,7 @@ fn keyboard_shortcut_restores_focus_visible_modality() {
     let mut runtime = Runtime::new();
     runtime.set_root(Actions::new(
         Shortcuts::new(Button::new("Target")).bind(chord, TestAction::NewTab),
-        |_: TestAction| {},
+        |_: TestAction| ActionOutcome::Consumed,
     ));
     runtime.update(now());
     runtime.dispatch(pointer(Point::new(10.0, 10.0), PointerPhase::Down));
@@ -484,6 +514,7 @@ fn ctrl_tab_prefers_the_exact_shortcut_over_focus_traversal() {
         move |action| {
             assert!(matches!(action, TestAction::NextTab));
             observed.fetch_add(1, Ordering::SeqCst);
+            ActionOutcome::Consumed
         },
     ));
     runtime.update(now());
@@ -550,6 +581,7 @@ fn standard_tab_chords_map_to_typed_actions() {
             TabCommand::Select(index) => 10 + index,
         };
         callback_observed.store(code, Ordering::SeqCst);
+        ActionOutcome::Consumed
     }));
     runtime.update(now());
 

@@ -41,6 +41,7 @@ mod tests {
     };
 
     use harbor_app::{
+        command::AppCommand,
         tab_manager::{TabManager, TerminalTabResources},
         tab_view::{TabCommand, TabUiController, ui::MainWindowRootInputs},
         terminal_view::TerminalWidgetBridge,
@@ -85,7 +86,15 @@ mod tests {
         );
 
         let published = controller.clone();
-        let root = build_root(MainWindowRootInputs::new(controller, false, [0.0; 3]));
+        let keybindings =
+            harbor_app::command::resolve_keybindings(&harbor_config::RawKeybindings::default())
+                .keybindings;
+        let root = build_root(MainWindowRootInputs::new(
+            controller,
+            false,
+            [0.0; 3],
+            keybindings,
+        ));
         let mut runtime = Runtime::new();
         runtime.set_viewport(Viewport::new(1_200, 600, 1.0));
         runtime.set_root(MountedRoot(root));
@@ -100,7 +109,10 @@ mod tests {
         }));
         let actions = published.drain_actions();
         assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0].command, TabCommand::New));
+        assert!(matches!(
+            actions[0].command,
+            AppCommand::Tab(TabCommand::New)
+        ));
         assert!(published.drain_actions().is_empty());
 
         assert!(published.update_presentation(500.0));

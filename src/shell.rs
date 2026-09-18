@@ -16,13 +16,14 @@ use winit::{
 use crate::backdrop::{
     MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
-use crate::dialog::{PasteController, PasteEventOutcome, is_paste_shortcut};
+use crate::dialog::{PasteController, PasteEventOutcome};
 use crate::effects::apply_control_flow;
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{
     TabCoordinator, TerminalTabFactory, format_window_title, logical_window_width,
 };
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
+use harbor_app::command::{AppCommand, resolve_keybindings};
 use harbor_app::tab_manager::TabManager;
 use harbor_app::tab_view::TabUiController;
 use harbor_app::tab_view::ui::MainWindowRootInputs;
@@ -167,6 +168,82 @@ impl ActiveSession {
         } else {
             None
         }
+    }
+
+    fn drain_app_commands(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+    ) -> crate::tab_coordinator::TabDrainOutcome {
+        let mut result = crate::tab_coordinator::TabDrainOutcome::default();
+        for request in self.tabs.drain_actions() {
+            if self.paste.is_active() {
+                break;
+            }
+            match request.command {
+                AppCommand::Tab(command) => {
+                    let outcome =
+                        self.tabs
+                            .execute_tab_command(&mut self.main_host, command, request.focus);
+                    Self::merge_wait(&mut result.wait, outcome.wait);
+                    if outcome.close_window {
+                        result.close_window = true;
+                        break;
+                    }
+                }
+                AppCommand::Copy | AppCommand::CopyOrInterrupt => {
+                    let text = self.tabs.active_terminal().and_then(|terminal| {
+                        terminal
+                            .lock()
+                            .ok()
+                            .map(|terminal| terminal.selection_text())
+                    });
+                    if let Some(text) = text {
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host.write_clipboard(text).wait,
+                        );
+                    }
+                }
+                AppCommand::Paste => {
+                    let active_terminal = self.tabs.active_terminal();
+                    let outcome = self.paste.paste_from_clipboard(
+                        event_loop,
+                        &mut self.main_host,
+                        active_terminal.as_ref(),
+                    );
+                    Self::merge_wait(&mut result.wait, outcome.wait);
+                }
+                AppCommand::PageUp
+                | AppCommand::PageDown
+                | AppCommand::ScrollToTop
+                | AppCommand::ScrollToBottom => {
+                    let scroll_outcome = self.tabs.active_terminal().and_then(|terminal| {
+                        terminal
+                            .lock()
+                            .ok()
+                            .map(|mut terminal| match request.command {
+                                AppCommand::PageUp => terminal.command_page_up(),
+                                AppCommand::PageDown => terminal.command_page_down(),
+                                AppCommand::ScrollToTop => terminal.command_scroll_to_top(),
+                                AppCommand::ScrollToBottom => terminal.command_scroll_to_bottom(),
+                                _ => unreachable!("matched scroll command"),
+                            })
+                    });
+                    if let Some(outcome) = scroll_outcome {
+                        if outcome.release_pointer.is_some() {
+                            Self::merge_wait(
+                                &mut result.wait,
+                                self.main_host.cancel_active_input_ownership().wait,
+                            );
+                        }
+                        if outcome.redraw {
+                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
@@ -314,19 +391,6 @@ impl ActiveSession {
             return;
         }
 
-        if is_paste_shortcut(&event, self.main_host.modifiers()) {
-            let active_terminal = self.tabs.active_terminal();
-            let outcome = self.paste.paste_from_clipboard(
-                event_loop,
-                &mut self.main_host,
-                active_terminal.as_ref(),
-            );
-            if let Some(wait) = outcome.wait {
-                apply_control_flow(event_loop, wait);
-            }
-            return;
-        }
-
         let mut wait = None;
         if self.tabs.update_presentation(self.main_host.window()) {
             Self::merge_wait(
@@ -348,13 +412,11 @@ impl ActiveSession {
         }
         let allocation_wait = self.sync_terminal_allocation();
         Self::merge_wait(&mut wait, allocation_wait);
-        if outcome.handled {
-            let tab_outcome = self.tabs.drain_tab_commands(&mut self.main_host);
-            Self::merge_wait(&mut wait, tab_outcome.wait);
-            if tab_outcome.close_window {
-                event_loop.exit();
-                return;
-            }
+        let command_outcome = self.drain_app_commands(event_loop);
+        Self::merge_wait(&mut wait, command_outcome.wait);
+        if command_outcome.close_window {
+            event_loop.exit();
+            return;
         }
 
         if let Some(frame_outcome) = outcome.frame {
@@ -424,6 +486,11 @@ impl Shell {
                 }
             }
         }
+        let keybinding_resolution = resolve_keybindings(&loaded.settings.keybindings);
+        for diagnostic in &keybinding_resolution.diagnostics {
+            tracing::error!(message = %diagnostic, "keybinding fallback");
+        }
+        let keybindings = keybinding_resolution.keybindings;
         let settings = loaded.settings;
         let appearance = TerminalAppearance::from_palette(settings.colors);
         let backdrop_style = harbor_config::WindowBackdropStyle::default();
@@ -502,6 +569,7 @@ impl Shell {
                     tab_ui.clone(),
                     context.backdrop_available(),
                     backdrop_fallback,
+                    keybindings.clone(),
                 );
                 #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
                 {

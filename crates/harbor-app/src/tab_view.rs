@@ -11,6 +11,7 @@ use harbor_widget::{
 };
 
 use crate::{
+    command::AppCommandRequest,
     tab_manager::{TabId, TabIndex, TabSnapshot},
     terminal_view::TerminalWidgetBridge,
 };
@@ -66,28 +67,6 @@ pub enum TabFocusPolicy {
     Terminal,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TabCommandRequest {
-    pub command: TabCommand,
-    pub focus: TabFocusPolicy,
-}
-
-impl TabCommandRequest {
-    const fn rail(command: TabCommand) -> Self {
-        Self {
-            command,
-            focus: TabFocusPolicy::PreserveRail,
-        }
-    }
-
-    const fn shortcut(command: TabCommand) -> Self {
-        Self {
-            command,
-            focus: TabFocusPolicy::Terminal,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct TabUiState {
     snapshots: Vec<TabSnapshot>,
@@ -125,7 +104,7 @@ impl TerminalAllocationMailbox {
 /// Stable boundary between the Host-owned tab model and the declarative widget tree.
 #[derive(Clone)]
 pub struct TabUiController {
-    store: Store<TabUiState, TabCommandRequest>,
+    store: Store<TabUiState, AppCommandRequest>,
     tab_focus: Arc<Mutex<HashMap<TabId, FocusHandle>>>,
     scroll: ScrollController,
     terminal_focus: FocusHandle,
@@ -187,7 +166,7 @@ impl TabUiController {
         true
     }
 
-    pub fn drain_actions(&self) -> Vec<TabCommandRequest> {
+    pub fn drain_actions(&self) -> Vec<AppCommandRequest> {
         self.store.drain_actions()
     }
 
@@ -208,6 +187,7 @@ impl TabUiController {
 mod tests {
     use super::ui::*;
     use super::*;
+    use crate::command::{AppCommand, AppCommandRequest};
     use harbor_terminal::Terminal;
     use harbor_widget::{
         ConstrainedBox, IconButton, Row,
@@ -380,11 +360,53 @@ mod tests {
             runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }));
             assert_eq!(
                 controller.drain_actions(),
-                [TabCommandRequest::shortcut(command)]
+                [AppCommandRequest::shortcut(AppCommand::Tab(command))]
             );
         }
     }
 
+    #[test]
+    fn terminal_shortcuts_enqueue_only_when_context_consumes() {
+        let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('C'),
+            modifiers: ctrl_shift,
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [AppCommandRequest::shortcut(AppCommand::Copy)]
+        );
+
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('c'),
+            modifiers: ctrl(),
+        }));
+        assert!(controller.drain_actions().is_empty());
+
+        for (key, command) in [
+            (Key::Character('v'), AppCommand::Paste),
+            (Key::PageUp, AppCommand::PageUp),
+            (Key::Home, AppCommand::ScrollToTop),
+        ] {
+            let modifiers = if key == Key::Character('v') {
+                ctrl()
+            } else {
+                Modifiers::default()
+            };
+            runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }));
+            assert_eq!(
+                controller.drain_actions(),
+                [AppCommandRequest::shortcut(command)]
+            );
+        }
+    }
     #[test]
     fn workspace_publishes_the_final_terminal_panel_allocation() {
         let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
@@ -489,7 +511,9 @@ mod tests {
         }));
         assert_eq!(
             controller.drain_actions(),
-            [TabCommandRequest::shortcut(TabCommand::New)]
+            [AppCommandRequest::shortcut(AppCommand::Tab(
+                TabCommand::New
+            ))]
         );
 
         let row = tab_rows(&runtime)[0];
@@ -505,7 +529,7 @@ mod tests {
         }
         assert_eq!(
             controller.drain_actions(),
-            [TabCommandRequest::rail(TabCommand::Activate(TabId(1)))]
+            [AppCommandRequest::rail(TabCommand::Activate(TabId(1)))]
         );
     }
 

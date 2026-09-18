@@ -8,6 +8,54 @@ size = 24.0
 program = "pwsh.exe"
 args = ["-NoLogo"]
 
+
+# Each command table's bindings replace its defaults. Modifiers in one record are
+# simultaneous. Omit a command table to retain its defaults; use `bindings = []`
+# to unbind it. Multiple records bind multiple chords. Any invalid command, field,
+# modifier, key, duplicate, or conflict restores the complete default binding set.
+[keybindings.app.new-tab]
+bindings = [{ modifiers = ["ctrl"], key = "t" }]
+[keybindings.app.close-active-tab]
+bindings = [{ modifiers = ["ctrl"], key = "w" }]
+[keybindings.app.next-tab]
+bindings = [{ modifiers = ["ctrl"], key = "tab" }]
+[keybindings.app.previous-tab]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "tab" }]
+[keybindings.app.select-tab-1]
+bindings = [{ modifiers = ["ctrl"], key = "1" }]
+[keybindings.app.select-tab-2]
+bindings = [{ modifiers = ["ctrl"], key = "2" }]
+[keybindings.app.select-tab-3]
+bindings = [{ modifiers = ["ctrl"], key = "3" }]
+[keybindings.app.select-tab-4]
+bindings = [{ modifiers = ["ctrl"], key = "4" }]
+[keybindings.app.select-tab-5]
+bindings = [{ modifiers = ["ctrl"], key = "5" }]
+[keybindings.app.select-tab-6]
+bindings = [{ modifiers = ["ctrl"], key = "6" }]
+[keybindings.app.select-tab-7]
+bindings = [{ modifiers = ["ctrl"], key = "7" }]
+[keybindings.app.select-tab-8]
+bindings = [{ modifiers = ["ctrl"], key = "8" }]
+[keybindings.app.select-tab-9]
+bindings = [{ modifiers = ["ctrl"], key = "9" }]
+[keybindings.terminal.copy]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "c" }]
+[keybindings.terminal.copy-or-interrupt]
+bindings = [{ modifiers = ["ctrl"], key = "c" }]
+[keybindings.terminal.paste]
+bindings = [
+  { modifiers = ["ctrl"], key = "v" },
+  { modifiers = ["shift"], key = "insert" },
+]
+[keybindings.terminal.page-up]
+bindings = [{ modifiers = [], key = "pageup" }]
+[keybindings.terminal.page-down]
+bindings = [{ modifiers = [], key = "pagedown" }]
+[keybindings.terminal.scroll-to-top]
+bindings = [{ modifiers = [], key = "home" }]
+[keybindings.terminal.scroll-to-bottom]
+bindings = [{ modifiers = [], key = "end" }]
 [colors]
 foreground = "#FFFFFF"
 background = "#5C331440"

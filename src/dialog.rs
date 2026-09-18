@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use winit::{
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
-    keyboard::{Key, ModifiersState, NamedKey},
+    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
@@ -146,18 +146,6 @@ pub(crate) fn write_confirmation_outcome<E>(
     Ok(true)
 }
 
-pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { event, .. }
-            if event.state == ElementState::Pressed
-                && modifiers.control_key()
-                && !modifiers.alt_key()
-                && !modifiers.super_key()
-                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("v"))
-    )
-}
-
 /// Outcome of a paste confirmation event dispatch.
 #[derive(Debug)]
 pub(crate) enum PasteEventOutcome {
@@ -197,11 +185,6 @@ impl PasteController {
         self.window
             .as_mut()
             .map(|window| window.about_to_wait(now).unwrap_or(ControlFlowEffect::Wait))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
-        is_paste_shortcut(event, modifiers)
     }
 
     pub(crate) fn handle_dialog_event(

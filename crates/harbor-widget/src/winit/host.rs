@@ -9,7 +9,7 @@ use super::{
     FrameError, FrameOutcome, SharedGpu, WindowPresenter, WindowSurface, WinitAdapter,
     WinitFrameTarget,
 };
-use crate::effects::{ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
 use crate::input::event::UiEvent;
 use crate::renderer::Viewport;
 use crate::scene::primitive::ExternalDrawId;
@@ -528,6 +528,14 @@ impl WinitWindowHost {
         self.runtime.clear_focus();
         let effects = self.runtime.take_pending_effects();
         self.apply_runtime_effects(effects)
+    }
+
+    /// Applies a command-generated clipboard write through the native effect boundary.
+    pub fn write_clipboard(&mut self, text: impl Into<String>) -> HostIdleOutcome {
+        self.apply_runtime_effects(RuntimeEffects {
+            clipboard: Some(ClipboardEffect::write(text)),
+            ..RuntimeEffects::default()
+        })
     }
 
     /// Applies one opaque adapter-owned hot-reload work item on the UI thread.

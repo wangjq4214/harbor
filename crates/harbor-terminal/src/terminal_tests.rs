@@ -3064,8 +3064,11 @@ fn terminal_input_returns_scrollback_to_live_viewport() {
 }
 
 #[test]
-fn ctrl_shift_uppercase_c_copies_even_without_a_selection() {
-    let mut terminal = Terminal::new_headless(2, 4);
+fn ctrl_shift_c_is_encoded_after_copy_migration() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
 
     let outcome = terminal
         .handle_event_with_outcome(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
@@ -3076,13 +3079,13 @@ fn ctrl_shift_uppercase_c_copies_even_without_a_selection() {
                 ..TerminalModifiers::default()
             },
         }))
-        .expect("copy shortcut should be handled");
+        .expect("terminal input should be encoded");
 
-    assert_eq!(outcome.clipboard_text, Some(String::new()));
+    assert_eq!(outcome.clipboard_text, None);
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x03");
 }
-
 #[test]
-fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
+fn bare_navigation_keys_encode_after_scroll_migration() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -3090,42 +3093,95 @@ fn bare_navigation_keys_scroll_viewport_on_normal_screen() {
     for _ in 0..12 {
         terminal.process_output(b"line\r\n");
     }
-    let rows = terminal.screen().rows();
-    let scroll_count = terminal.screen().scroll_count();
-    assert!(scroll_count > rows);
+    let before = terminal.screen().view_offset();
 
-    terminal
-        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
-            key: TerminalKey::PageUp,
-            modifiers: TerminalModifiers::default(),
-        }))
-        .unwrap();
-    assert_eq!(terminal.screen().view_offset(), rows);
+    for key in [
+        TerminalKey::PageUp,
+        TerminalKey::PageDown,
+        TerminalKey::Home,
+        TerminalKey::End,
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+                key,
+                modifiers: TerminalModifiers::default(),
+            }))
+            .unwrap();
+    }
 
-    terminal
-        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
-            key: TerminalKey::PageDown,
-            modifiers: TerminalModifiers::default(),
-        }))
-        .unwrap();
-    assert_eq!(terminal.screen().view_offset(), 0);
+    assert_eq!(terminal.screen().view_offset(), before);
+    assert!(!written.lock().unwrap().is_empty());
+}
 
-    terminal
-        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
-            key: TerminalKey::Home,
-            modifiers: TerminalModifiers::default(),
-        }))
-        .unwrap();
-    assert_eq!(terminal.screen().view_offset(), scroll_count);
+#[test]
+fn explicit_primary_scroll_commands_report_visible_changes() {
+    let mut terminal = Terminal::new_headless(3, 8);
+    for _ in 0..12 {
+        terminal.process_output(b"line\r\n");
+    }
 
+    assert!(terminal.command_page_up().redraw);
+    assert!(terminal.screen().view_offset() > 0);
+    assert!(terminal.command_scroll_to_top().redraw);
+    assert!(!terminal.command_scroll_to_top().redraw);
+    assert!(terminal.command_page_down().redraw);
+    assert!(terminal.command_scroll_to_bottom().redraw);
+    assert!(!terminal.command_scroll_to_bottom().redraw);
+
+    terminal.process_output(b"\x1b[?1049h");
+    assert!(terminal.is_alt_screen());
+    assert!(!terminal.command_page_up().redraw);
+}
+
+#[test]
+fn explicit_scroll_command_clears_selection_even_at_viewport_boundary() {
+    let mut terminal = Terminal::new_headless(3, 8);
     terminal
-        .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
-            key: TerminalKey::End,
-            modifiers: TerminalModifiers::default(),
-        }))
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            41,
+        )))
         .unwrap();
-    assert_eq!(terminal.screen().view_offset(), 0);
-    assert!(written.lock().unwrap().is_empty());
+    terminal
+        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (25.0, 1.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Left,
+            41,
+        )))
+        .unwrap();
+    assert!(terminal.has_non_empty_selection());
+
+    let outcome = terminal.command_page_down();
+
+    assert!(outcome.redraw);
+    assert_eq!(outcome.release_pointer, Some(41));
+    assert!(!terminal.has_non_empty_selection());
+}
+
+#[test]
+fn explicit_scroll_command_observes_queued_alt_screen_transition() {
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([b"\x1b[?1049h".to_vec()]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("alternate-screen transition should finish reading");
+
+    let outcome = terminal.command_page_up();
+
+    assert!(terminal.is_alt_screen());
+    assert!(!outcome.redraw);
 }
 
 #[test]

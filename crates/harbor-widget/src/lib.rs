@@ -43,10 +43,11 @@ pub use layout::{Alignment, FlexFit};
 pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
-    Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP, Expanded, Flex,
-    Flexible, Focus, FocusHandle, FocusScope, IconButton, InteractionState, InteractiveRegion,
-    KeyChord, LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, Row,
-    ScrollArea, ScrollController, ScrollMetrics, Separator, Shortcuts, Spacer, ThemeProvider,
+    ActionOutcome, Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP,
+    Expanded, Flex, Flexible, Focus, FocusHandle, FocusScope, IconButton, InteractionState,
+    InteractiveRegion, KeyChord, LayoutChangedCallback, LayoutObserver, MainAxisAlignment,
+    MouseRegion, Row, ScrollArea, ScrollController, ScrollMetrics, Separator, Shortcuts, Spacer,
+    ThemeProvider,
 };
 
 #[cfg(test)]

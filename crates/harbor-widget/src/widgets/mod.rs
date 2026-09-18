@@ -24,7 +24,7 @@ pub mod stack;
 pub mod text_label;
 pub mod theme;
 
-pub use actions::Actions;
+pub use actions::{ActionOutcome, Actions};
 pub use button::Button;
 pub use column::Column;
 pub use constrained_box::ConstrainedBox;
