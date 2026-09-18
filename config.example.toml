@@ -8,6 +8,31 @@ size = 24.0
 program = "pwsh.exe"
 args = ["-NoLogo"]
 
+
+# Keybinding arrays replace a command's defaults. Omit an ID to retain its
+# default; use [] to unbind it. The complete table falls back to defaults if
+# any ID, chord, value shape, or chord ownership is invalid.
+[keybindings]
+"app.new-tab" = ["ctrl+t"]
+"app.close-active-tab" = ["ctrl+w"]
+"app.next-tab" = ["ctrl+tab"]
+"app.previous-tab" = ["ctrl+shift+tab"]
+"app.select-tab-1" = ["ctrl+1"]
+"app.select-tab-2" = ["ctrl+2"]
+"app.select-tab-3" = ["ctrl+3"]
+"app.select-tab-4" = ["ctrl+4"]
+"app.select-tab-5" = ["ctrl+5"]
+"app.select-tab-6" = ["ctrl+6"]
+"app.select-tab-7" = ["ctrl+7"]
+"app.select-tab-8" = ["ctrl+8"]
+"app.select-tab-9" = ["ctrl+9"]
+"terminal.copy" = ["ctrl+shift+c"]
+"terminal.copy-or-interrupt" = ["ctrl+c"]
+"terminal.paste" = ["ctrl+v"]
+"terminal.page-up" = ["pageup"]
+"terminal.page-down" = ["pagedown"]
+"terminal.scroll-to-top" = ["home"]
+"terminal.scroll-to-bottom" = ["end"]
 [colors]
 foreground = "#FFFFFF"
 background = "#5C331440"

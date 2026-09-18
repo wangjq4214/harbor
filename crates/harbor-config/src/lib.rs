@@ -6,6 +6,7 @@
 //! validated and committed atomically.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -32,8 +33,25 @@ pub struct Settings {
     pub font: FontSettings,
     pub shell: ShellSettings,
     pub colors: Palette,
+    pub keybindings: RawKeybindings,
 }
 
+/// Raw command-to-chord arrays. Command and chord semantics are application-owned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawKeybindings {
+    pub entries: BTreeMap<String, Vec<String>>,
+    /// False when the TOML table or any entry had the wrong value shape.
+    pub valid: bool,
+}
+
+impl Default for RawKeybindings {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            valid: true,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontSettings {
     /// Requested DirectWrite family. `None` delegates primary selection to Windows.
@@ -126,11 +144,21 @@ fn parse_document(document: Value) -> SettingsLoad {
     let Some(root) = document.as_table() else {
         return SettingsLoad::defaults("settings document must be a TOML table");
     };
-    warn_unknown(root, &["font", "shell", "colors"], "", &mut diagnostics);
+    warn_unknown(
+        root,
+        &["font", "shell", "colors", "keybindings"],
+        "",
+        &mut diagnostics,
+    );
 
     let mut settings = Settings::default();
     parse_font(root.get("font"), &mut settings.font, &mut diagnostics);
     parse_shell(root.get("shell"), &mut settings.shell, &mut diagnostics);
+    parse_keybindings(
+        root.get("keybindings"),
+        &mut settings.keybindings,
+        &mut diagnostics,
+    );
     if let Some(colors) = root.get("colors") {
         match parse_colors(colors, &mut diagnostics) {
             Some(palette) => settings.colors = palette,
@@ -209,6 +237,37 @@ fn parse_shell(
                 "shell.args must be an array of strings; using no arguments",
             )),
         }
+    }
+}
+
+fn parse_keybindings(
+    value: Option<&Value>,
+    settings: &mut RawKeybindings,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        settings.valid = false;
+        diagnostics.push(error(
+            "keybindings must be a table of command IDs to string arrays; using keybinding defaults",
+        ));
+        return;
+    };
+    for (id, value) in table {
+        let Some(chords) = value.as_array().and_then(|values| {
+            values
+                .iter()
+                .map(Value::as_str)
+                .map(|value| value.map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        }) else {
+            settings.valid = false;
+            diagnostics.push(error(format!(
+                "keybindings.{id} must be an array of strings; using keybinding defaults"
+            )));
+            continue;
+        };
+        settings.entries.insert(id.clone(), chords);
     }
 }
 
@@ -474,6 +533,45 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn keybinding_arrays_are_preserved_without_command_semantics() {
+        let loaded = parse(
+            r#"
+            [keybindings]
+            "app.new-tab" = ["ctrl+n"]
+            "terminal.page-up" = []
+            "#,
+        );
+        assert!(loaded.settings.keybindings.valid);
+        assert_eq!(
+            loaded.settings.keybindings.entries["app.new-tab"],
+            ["ctrl+n"]
+        );
+        assert!(loaded.settings.keybindings.entries["terminal.page-up"].is_empty());
+    }
+
+    #[test]
+    fn invalid_keybinding_shape_preserves_other_settings() {
+        let loaded = parse(
+            r#"
+            [font]
+            size = 18
+            [keybindings]
+            "app.new-tab" = "ctrl+n"
+            "terminal.paste" = ["ctrl+v"]
+            "#,
+        );
+        assert_eq!(loaded.settings.font.size, 18.0);
+        assert!(!loaded.settings.keybindings.valid);
+        assert_eq!(
+            loaded.settings.keybindings.entries["terminal.paste"],
+            ["ctrl+v"]
+        );
+        assert!(loaded.diagnostics.iter().any(|diagnostic| {
+            diagnostic.level == DiagnosticLevel::Error && diagnostic.message.contains("app.new-tab")
+        }));
     }
 
     #[test]

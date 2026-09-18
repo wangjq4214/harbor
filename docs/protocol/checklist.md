@@ -1276,6 +1276,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Tab
 * [x] Shift+Tab
 * [x] Escape
+* [x] Consumed application keybindings do not inject their ordinary encoding into the PTY
+* [x] Passed-through or unbound editing keys retain traditional terminal encoding
 
 ### 31.6 ModifyOtherKeys
 

@@ -1,6 +1,6 @@
 //! Tab orchestration between Host-owned terminal tab models and declarative UI projection.
 
-use std::sync::{Arc, Mutex, atomic::Ordering};
+use std::sync::{Arc, Mutex};
 
 use harbor_pty::PtyEndpoints;
 use harbor_pty::ShellCommand;
@@ -12,10 +12,13 @@ use harbor_widget::{
     scene::primitive::ExternalDrawId,
     winit::{SharedGpu, WinitWindowHost},
 };
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use winit::{event_loop::EventLoopProxy, window::Window};
 
 use crate::event::AppEvent;
 use harbor_app::{
+    command::AppCommandRequest,
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
     tab_view::{TabCommand, TabFocusPolicy, TabUiController},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
@@ -41,6 +44,7 @@ impl TabDrainOutcome {
     }
 }
 
+#[cfg(test)]
 fn process_ungated_action_batch<A>(
     actions: impl IntoIterator<Item = A>,
     input_gate: &std::sync::atomic::AtomicBool,
@@ -279,42 +283,40 @@ impl TabCoordinator {
         result
     }
 
-    pub(crate) fn drain_tab_commands(&mut self, host: &mut WinitWindowHost) -> TabDrainOutcome {
-        let input_gate = Arc::clone(&self.factory.input_gate);
-        let mut result = TabDrainOutcome::default();
-        process_ungated_action_batch(self.tab_ui.drain_actions(), &input_gate, |request| {
-            let focus = match (request.focus, request.command) {
-                (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
-                    .tabs
-                    .neighbor_for_close(id)
-                    .map(TabFocusPolicy::RailTab)
-                    .unwrap_or(TabFocusPolicy::PreserveRail),
-                (focus, _) => focus,
-            };
-            let outcome = match request.command {
-                TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
-                        return true;
-                    }
-                },
-                TabCommand::Close(id) => self.tabs.close(id),
-                TabCommand::CloseActive => self.tabs.close_active(),
-                TabCommand::Activate(id) => self.tabs.activate(id),
-                TabCommand::Next => self.tabs.activate_next(),
-                TabCommand::Previous => self.tabs.activate_previous(),
-                TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
-            };
-            let action_result = self.apply_tab_outcome(host, outcome, focus);
-            result.merge_wait(action_result.wait);
-            if action_result.close_window {
-                result.close_window = true;
-                return false;
-            }
-            true
-        });
-        result
+    pub(crate) fn drain_actions(&self) -> Vec<AppCommandRequest> {
+        self.tab_ui.drain_actions()
+    }
+
+    pub(crate) fn execute_tab_command(
+        &mut self,
+        host: &mut WinitWindowHost,
+        command: TabCommand,
+        requested_focus: TabFocusPolicy,
+    ) -> TabDrainOutcome {
+        let focus = match (requested_focus, command) {
+            (TabFocusPolicy::PreserveRail, TabCommand::Close(id)) => self
+                .tabs
+                .neighbor_for_close(id)
+                .map(TabFocusPolicy::RailTab)
+                .unwrap_or(TabFocusPolicy::PreserveRail),
+            (focus, _) => focus,
+        };
+        let outcome = match command {
+            TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
+                    return TabDrainOutcome::default();
+                }
+            },
+            TabCommand::Close(id) => self.tabs.close(id),
+            TabCommand::CloseActive => self.tabs.close_active(),
+            TabCommand::Activate(id) => self.tabs.activate(id),
+            TabCommand::Next => self.tabs.activate_next(),
+            TabCommand::Previous => self.tabs.activate_previous(),
+            TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
+        };
+        self.apply_tab_outcome(host, outcome, focus)
     }
 }
 

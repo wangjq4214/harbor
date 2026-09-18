@@ -3,16 +3,25 @@ use crate::view::{ActionProviderView, AnyView, BuildCx, Component, View};
 use std::any::Any;
 use std::sync::Arc;
 
+/// Result of synchronously invoking a typed application action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionOutcome {
+    /// The action was accepted and the triggering keyboard event must stop.
+    Consumed,
+    /// The action declined the current context and routing must continue.
+    PassThrough,
+}
+
 /// Typed action handler selected by the nearest compatible ancestor provider.
 #[derive(Clone)]
 pub struct Actions<A: Clone + 'static> {
-    handler: Arc<dyn Fn(A) + Send + Sync>,
+    handler: Arc<dyn Fn(A) -> ActionOutcome>,
     child: Option<View>,
 }
 
 impl<A: Clone + 'static> Actions<A> {
     /// Creates an action provider without a child for declarative `view!` composition.
-    pub fn handler(handler: impl Fn(A) + Send + Sync + 'static) -> Self {
+    pub fn handler(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
         Self {
             handler: Arc::new(handler),
             child: None,
@@ -21,7 +30,7 @@ impl<A: Clone + 'static> Actions<A> {
 
     pub fn new(
         child: impl crate::IntoChildView,
-        handler: impl Fn(A) + Send + Sync + 'static,
+        handler: impl Fn(A) -> ActionOutcome + 'static,
     ) -> Self {
         Self {
             handler: Arc::new(handler),
@@ -62,11 +71,8 @@ impl<A: Clone + 'static> AnyView for Actions<A> {
 }
 
 impl<A: Clone + 'static> ActionProviderView for Actions<A> {
-    fn invoke_action(&self, action: &dyn Any) -> bool {
-        let Some(action) = action.downcast_ref::<A>() else {
-            return false;
-        };
-        (self.handler)(action.clone());
-        true
+    fn invoke_action(&self, action: &dyn Any) -> Option<ActionOutcome> {
+        let action = action.downcast_ref::<A>()?;
+        Some((self.handler)(action.clone()))
     }
 }

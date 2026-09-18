@@ -239,8 +239,11 @@ pub(crate) trait ActionProviderView: 'static {
         None
     }
 
-    fn invoke_action(&self, _action: &dyn std::any::Any) -> bool {
-        false
+    fn invoke_action(
+        &self,
+        _action: &dyn std::any::Any,
+    ) -> Option<crate::widgets::actions::ActionOutcome> {
+        None
     }
 }
 
@@ -465,9 +468,12 @@ pub(crate) trait AnyView: 'static {
     }
 
     /// Delivers a pending action to a compatible typed provider.
-    fn invoke_action(&self, action: &dyn std::any::Any) -> bool {
+    fn invoke_action(
+        &self,
+        action: &dyn std::any::Any,
+    ) -> Option<crate::widgets::actions::ActionOutcome> {
         self.as_action_provider()
-            .is_some_and(|p| p.invoke_action(action))
+            .and_then(|provider| provider.invoke_action(action))
     }
     /// Whether this widget is a modal scope — events targeting widgets outside
     /// its subtree should be blocked.

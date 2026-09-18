@@ -519,28 +519,11 @@ impl Terminal {
                 self.maybe_reset_blink(before, wrote);
                 return Ok(outcome);
             }
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
+            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, .. }) => {
                 if *key == TerminalKey::Escape {
                     outcome = self.pointer.clear_selection_outcome();
                     if outcome.release_pointer.is_some() {
                         self.io.set_suppress_scroll_snap(false);
-                    }
-                } else if matches!(*key, TerminalKey::Character('c' | 'C')) && modifiers.ctrl {
-                    if self.pointer.has_non_empty_selection() {
-                        outcome.clipboard_text = self
-                            .pointer
-                            .bounds()
-                            .map(|bounds| self.screen.selected_text(bounds));
-                        outcome.redraw = true;
-                    } else if modifiers.shift {
-                        // Copying with no selection still clears the host
-                        // clipboard, matching the always-copy shortcut.
-                        outcome.clipboard_text = Some(String::new());
-                    } else {
-                        let wrote = self
-                            .ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
-                        self.maybe_reset_blink(before, wrote);
-                        return Ok(outcome);
                     }
                 } else {
                     outcome = self.pointer.on_key_press_outcome();
@@ -686,6 +669,19 @@ impl Terminal {
         Ok(true)
     }
 
+    /// Returns whether copying the current selection would produce non-empty text.
+    pub fn has_non_empty_selection(&self) -> bool {
+        self.pointer.has_non_empty_selection()
+    }
+
+    /// Returns selected text, or an empty string when no non-empty selection exists.
+    pub fn selection_text(&self) -> String {
+        self.pointer
+            .bounds()
+            .map(|bounds| self.screen.selected_text(bounds))
+            .unwrap_or_default()
+    }
+
     // ── viewport scroll ───────────────────────────────────────────────
 
     pub fn scroll_viewport_up(&mut self, n: usize) {
@@ -707,6 +703,41 @@ impl Terminal {
 
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt()
+    }
+
+    /// Scrolls one primary-screen page toward older history.
+    pub fn command_page_up(&mut self) -> TerminalEventOutcome {
+        self.command_scroll(|screen| screen.scroll_up(screen.rows()))
+    }
+
+    /// Scrolls one primary-screen page toward live content.
+    pub fn command_page_down(&mut self) -> TerminalEventOutcome {
+        self.command_scroll(|screen| screen.scroll_down(screen.rows()))
+    }
+
+    /// Scrolls to the oldest retained primary-screen history.
+    pub fn command_scroll_to_top(&mut self) -> TerminalEventOutcome {
+        self.command_scroll(|screen| screen.scroll_up(screen.scroll_count()))
+    }
+
+    /// Returns the primary-screen viewport to live content.
+    pub fn command_scroll_to_bottom(&mut self) -> TerminalEventOutcome {
+        self.command_scroll(Screen::scroll_to_bottom)
+    }
+
+    fn command_scroll(&mut self, operation: impl FnOnce(&mut Screen)) -> TerminalEventOutcome {
+        self.drain_pty();
+        if self.screen.is_alt() {
+            return TerminalEventOutcome::default();
+        }
+        let mut outcome = self.pointer.on_key_press_outcome();
+        if outcome.release_pointer.is_some() {
+            self.io.set_suppress_scroll_snap(false);
+        }
+        let before = self.screen.view_offset();
+        operation(&mut self.screen);
+        outcome.redraw |= before != self.screen.view_offset();
+        outcome
     }
 }
 

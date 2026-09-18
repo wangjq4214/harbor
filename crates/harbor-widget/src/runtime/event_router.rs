@@ -184,12 +184,19 @@ impl EventRouter {
             UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
                 if let Some((source, action)) = self.find_shortcut(arena, root_id, *key, *modifiers)
                 {
-                    let focus_visibility_changed = self.input.focused.is_some()
-                        && !self.input.focus_visible()
-                        && self.transition_focus_with_visibility(arena, self.input.focused, true);
-                    let commands_committed = self.finish_event(arena, EventCtx::new());
-                    let action_invoked = self.invoke_action(arena, source, action);
-                    return focus_visibility_changed || commands_committed || action_invoked;
+                    let outcome = self.invoke_action(arena, source, action);
+                    if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
+                        let focus_visibility_changed = self.input.focused.is_some()
+                            && !self.input.focus_visible()
+                            && self.transition_focus_with_visibility(
+                                arena,
+                                self.input.focused,
+                                true,
+                            );
+                        let commands_committed = self.finish_event(arena, EventCtx::new());
+                        let _ = (focus_visibility_changed, commands_committed);
+                        return true;
+                    }
                 }
             }
             _ => {}
@@ -586,19 +593,24 @@ impl EventRouter {
         matched
     }
 
-    fn invoke_action(&self, arena: &FiberArena, source: FiberId, action: Box<dyn Any>) -> bool {
+    fn invoke_action(
+        &self,
+        arena: &FiberArena,
+        source: FiberId,
+        action: Box<dyn Any>,
+    ) -> Option<crate::widgets::actions::ActionOutcome> {
         let mut current = Some(source);
         while let Some(fiber) = current {
-            if arena
+            if let Some(outcome) = arena
                 .get(fiber)
                 .and_then(|fiber| fiber.view.as_ref())
-                .is_some_and(|view| view.invoke_action(action.as_ref()))
+                .and_then(|view| view.invoke_action(action.as_ref()))
             {
-                return true;
+                return Some(outcome);
             }
             current = arena.get(fiber).and_then(|fiber| fiber.parent);
         }
-        false
+        None
     }
 
     fn focus_scope_for(arena: &FiberArena, target: FiberId) -> Option<FiberId> {

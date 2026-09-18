@@ -17,7 +17,7 @@ use harbor_pty::PtyControl;
 use crate::input::TerminalInputEncoder;
 use crate::parser::TerminalParser;
 use crate::screen::Screen;
-use crate::types::{TerminalEvent, TerminalKey, TerminalKeyboardEvent, TerminalPointerPhase};
+use crate::types::{TerminalEvent, TerminalPointerPhase};
 
 /// The maximum number of parser chunks buffered between the blocking PTY reader
 /// and the UI thread. Backpressure here bounds memory without ever blocking UI.
@@ -304,9 +304,6 @@ impl TerminalIo {
             return Ok(false);
         }
 
-        if Self::try_scrollback_key(screen, &event) {
-            return Ok(false);
-        }
         if Self::try_scrollback_wheel(screen, &event) {
             return Ok(false);
         }
@@ -320,38 +317,6 @@ impl TerminalIo {
         self.suppress_scroll_snap = false;
         self.write_pty(&bytes)?;
         Ok(true)
-    }
-
-    /// Bare PageUp/PageDown/Home/End navigate scrollback on the primary screen.
-    fn try_scrollback_key(screen: &mut Screen, event: &TerminalEvent) -> bool {
-        let TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) = event
-        else {
-            return false;
-        };
-        if screen.is_alt() || modifiers.shift || modifiers.ctrl || modifiers.alt || modifiers.meta {
-            return false;
-        }
-
-        match key {
-            TerminalKey::PageUp => {
-                screen.scroll_up(screen.rows());
-                true
-            }
-            TerminalKey::PageDown => {
-                screen.scroll_down(screen.rows());
-                true
-            }
-            TerminalKey::Home => {
-                let scroll_count = screen.scroll_count();
-                screen.scroll_up(scroll_count);
-                true
-            }
-            TerminalKey::End => {
-                screen.scroll_to_bottom();
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Wheel events scroll the primary-screen viewport; alt-screen wheels are

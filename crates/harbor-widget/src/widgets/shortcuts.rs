@@ -11,7 +11,12 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
-    pub const fn new(key: Key, modifiers: Modifiers) -> Self {
+    pub fn new(key: Key, modifiers: Modifiers) -> Self {
+        let key = match key {
+            Key::Character(character) => Key::Character(character.to_ascii_lowercase()),
+            Key::NumpadCharacter(character) => Key::NumpadCharacter(character.to_ascii_lowercase()),
+            key => key,
+        };
         Self { key, modifiers }
     }
 }

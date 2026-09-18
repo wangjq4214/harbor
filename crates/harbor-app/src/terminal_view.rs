@@ -229,6 +229,7 @@ fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
     draw_id: ExternalDrawId,
+    terminal: Arc<Mutex<Terminal>>,
     handler: Arc<ExternalDrawFn<'static>>,
     schedule: Arc<ExternalScheduleFn>,
     ime: Arc<ExternalImeFn>,
@@ -369,6 +370,7 @@ impl TerminalWidgetBridge {
 
         Self {
             draw_id,
+            terminal,
             handler,
             schedule,
             ime,
@@ -380,6 +382,20 @@ impl TerminalWidgetBridge {
     /// Widget-facing external draw identifier owned by this bridge.
     pub fn draw_id(&self) -> ExternalDrawId {
         self.draw_id
+    }
+
+    /// Reports whether the active selection would produce non-empty copied text.
+    pub fn has_non_empty_selection(&self) -> bool {
+        self.terminal
+            .lock()
+            .is_ok_and(|terminal| terminal.has_non_empty_selection())
+    }
+
+    /// Reports whether terminal input currently targets the alternate screen.
+    pub fn is_alt_screen(&self) -> bool {
+        self.terminal
+            .lock()
+            .is_ok_and(|mut terminal| terminal.drain_and_snapshot().is_alt)
     }
 }
 
@@ -840,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn should_scroll_viewport_when_gate_open_and_page_up_delivered() {
+    fn should_leave_scrollback_unchanged_when_page_up_reaches_terminal_bridge() {
         // Arrange
         let terminal = headless_terminal(8, 40);
         seed_scrollback(&mut terminal.lock().unwrap());
@@ -854,9 +870,12 @@ mod tests {
             modifiers: Modifiers::default(),
         }));
 
-        // Assert: open-gate delivery scrolls; KeyDown invalidates paint.
-        assert!(terminal.lock().unwrap().screen().view_offset() > offset_before);
-        assert!(effects.request_redraw);
+        // Assert: application scroll interception has migrated out of terminal input.
+        assert_eq!(
+            terminal.lock().unwrap().screen().view_offset(),
+            offset_before
+        );
+        assert!(!effects.request_redraw);
         assert!(rt.drain_external_input().is_empty());
     }
 
