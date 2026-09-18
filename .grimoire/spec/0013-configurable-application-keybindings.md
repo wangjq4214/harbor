@@ -55,23 +55,40 @@ Key-up and IME events are not command triggers and retain existing routing. A co
 Harbor loads overrides from the existing startup file `~/.harbor/config.toml`:
 
 ```toml
-[keybindings]
-"app.new-tab" = ["ctrl+t"]
-"terminal.copy" = ["ctrl+shift+c", "ctrl+insert"]
-"terminal.paste" = ["ctrl+v", "shift+insert"]
-"terminal.page-up" = []
+[keybindings.app.new-tab]
+bindings = [
+  { modifiers = ["ctrl"], key = "t" }
+]
+
+[keybindings.terminal.copy]
+bindings = [
+  { modifiers = ["ctrl", "shift"], key = "c" },
+  { modifiers = ["ctrl"], key = "insert" }
+]
+
+[keybindings.terminal.paste]
+bindings = [
+  { modifiers = ["ctrl"], key = "v" },
+  { modifiers = ["shift"], key = "insert" }
+]
+
+[keybindings.terminal.page-up]
+bindings = []
 ```
 
 For every registered command:
 
 - omission retains the registry defaults;
-- an array replaces all defaults for that command;
-- an empty array unbinds the command;
-- an array may contain multiple chord strings.
+- a command table's `bindings` array replaces all defaults for that command;
+- an empty `bindings` array unbinds the command;
+- every binding is a self-contained record with a `modifiers` string array and one `key` string;
+- a `bindings` array may contain multiple records with different modifier sets and keys.
 
-The documented chord parser must accept every default chord and the modifier/key combinations shown above. Unsupported or malformed chord strings are invalid rather than silently normalized to a different binding.
+The documented binding parser must accept every default binding and the modifier/key combinations shown above. Modifier names and key names are validated independently. Unsupported modifiers, unsupported keys, duplicate modifiers, or malformed binding records are invalid rather than silently normalized to a different binding.
 
-The complete keybinding override set is atomic. An unknown command ID, invalid value shape, invalid chord, repeated chord within one command, or chord owned by multiple commands produces an error diagnostic and restores all default keybindings. Valid font, shell, and color settings from the same document remain applied. Binding conflicts never use registration order, table order, or last-writer-wins behavior.
+The complete keybinding override set is atomic. An unknown command ID, invalid command-table or binding shape, unsupported modifier or key, duplicate modifier, repeated binding within one command, or chord owned by multiple commands produces an error diagnostic and restores all default keybindings. Valid font, shell, and color settings from the same document remain applied. Binding conflicts never use registration order, table order, or last-writer-wins behavior.
+
+The superseded `[keybindings]` command-to-string-array format is not accepted through a compatibility path. It is an invalid keybinding shape and follows the same diagnostic and atomic fallback behavior.
 
 Defaults and the override format must be documented in the user-facing configuration example or linked settings documentation.
 
@@ -79,7 +96,7 @@ Defaults and the override format must be documented in the user-facing configura
 
 | Seam | Connects | Expects | Provides |
 | --- | --- | --- | --- |
-| Startup keybinding settings | `harbor-config` → application command registry | `[keybindings]` command-to-chord arrays and diagnostic isolation from other settings | Validated atomic overrides or complete default bindings |
+| Startup keybinding settings | `harbor-config` → application command registry | Nested `[keybindings.<namespace>.<command>]` tables containing structured `bindings` records, with diagnostic isolation from other settings | Validated atomic overrides or complete default bindings |
 | Shortcut action result | `harbor-app` actions ↔ `harbor-widget` routing | Typed action plus synchronous `Consumed`/`PassThrough` result | Deterministic continuation or suppression of the current key-down |
 | Event-turn command transport | Widget command sources → Application Business Host | Consumed typed commands in FIFO order | Host-owned execution after widget effects, preserving ADR-0029 ordering |
 | Terminal command execution | Application Business Host ↔ active terminal/paste controller | Existing selection, screen mode, clipboard, paste gate, and tab state | Existing copy, paste, scroll, tab, focus, and PTY behavior through commands |
@@ -123,15 +140,21 @@ Defaults and the override format must be documented in the user-facing configura
 
 ### E2E: Valid override replaces defaults
 
-- **Given:** A valid `[keybindings]` table rebinds one command, assigns multiple chords to another, and assigns an empty array to a third.
+- **Given:** Valid nested command tables rebind one command, assign multiple structured bindings to another, and assign `bindings = []` to a third.
 - **When:** Harbor starts and those old and new chords are pressed.
-- **Then:** Unspecified commands retain defaults, replacement chords invoke their commands, old replaced chords no longer do so, both chords invoke the multi-bound command, and the empty-array command has no application shortcut.
+- **Then:** Unspecified commands retain defaults, replacement bindings invoke their commands, old replaced chords no longer do so, every record invokes the multi-bound command, and the command with empty `bindings` has no application shortcut.
 
 ### E2E: Invalid keybinding set falls back atomically
 
-- **Given:** A settings document contains valid non-keybinding settings and any unknown command, malformed chord, invalid value, repeated chord, or cross-command chord conflict.
+- **Given:** A settings document contains valid non-keybinding settings and any unknown command, malformed command table or binding record, unsupported modifier or key, duplicate modifier or binding, or cross-command chord conflict.
 - **When:** Harbor loads the document.
 - **Then:** It reports an error, uses the complete default keybinding set, and still applies the valid non-keybinding settings.
+
+### E2E: Superseded string-array format is rejected
+
+- **Given:** A settings document uses the former `[keybindings]` command-to-string-array syntax and also contains valid non-keybinding settings.
+- **When:** Harbor loads the document.
+- **Then:** It diagnoses the keybinding shape, uses the complete default keybinding set, and still applies the valid non-keybinding settings.
 
 ### E2E: All command sources share dispatch
 
@@ -140,6 +163,12 @@ Defaults and the override format must be documented in the user-facing configura
 - **Then:** Both travel through the same dispatcher and Host execution policy while preserving source-specific parameters and focus disposition.
 
 ## Decisions
+
+### Structured per-command binding records
+
+- **Choice:** Use nested command tables with a `bindings` array of self-contained `{ modifiers = [...], key = "..." }` records.
+- **Reason:** Each binding owns its modifiers and key, avoiding positional pairing and Cartesian-product ambiguity while leaving room for future per-binding metadata.
+- **ADR reference:** [0041-structured-keybinding-configuration](../adr/0041-structured-keybinding-configuration.md)
 
 ### Typed application commands with stable external IDs
 
@@ -167,7 +196,7 @@ Defaults and the override format must be documented in the user-facing configura
 
 ## Test Plan
 
-- **Configuration unit tests:** Defaults, replacement, multiple chords, empty-array unbinding, unknown IDs, malformed values, malformed chords, duplicate chords, cross-command conflicts, and preservation of valid non-keybinding fields after keybinding fallback.
+- **Configuration unit tests:** Defaults, replacement, multiple structured bindings, empty-`bindings` unbinding, nested command-ID reconstruction, unknown IDs, malformed command tables and binding records, rejection of the superseded string-array format, unsupported modifier and key names, duplicate modifiers, duplicate bindings, cross-command conflicts, and preservation of valid non-keybinding fields after keybinding fallback.
 - **Registry tests:** Unique stable IDs, unique default chords, correct palette visibility, deterministic ID-to-typed-command conversion, and complete expected default table.
 - **Widget routing tests:** Consumed action stops focused delivery; pass-through action continues the same event; unmatched chords remain unchanged; key-up and IME do not invoke commands.
 - **Application integration tests:** FIFO ordering, one execution per source, existing tab focus policy, paste gate/confirmation behavior, primary versus alternate screen scrolling, copy clipboard effects, and PTY byte capture for consumed versus passed-through chords.
@@ -180,6 +209,7 @@ Defaults and the override format must be documented in the user-facing configura
 - Search, zoom, themes, or other commands whose behavior is not implemented today.
 - Mouse binding configuration or changes to existing selection and SGR mouse precedence.
 - Runtime configuration reload; keybindings remain startup-only with the existing settings system.
+- Backward-compatible parsing or automatic migration of the superseded command-to-string-array format.
 - A command-palette UI. This work provides registry metadata and shared invocation semantics only.
 - Replacing the Store/Dispatcher transport, moving reducers into `harbor-widget`, or introducing a general event bus.
 
@@ -187,4 +217,4 @@ Defaults and the override format must be documented in the user-facing configura
 
 - A command palette may enumerate palette-visible registry entries and submit the same typed commands.
 - Newly implemented user operations may add registry entries, defaults, and configuration IDs without changing the dispatch contract.
-- Richer chord syntax or multi-stroke sequences require an explicit configuration-contract extension rather than silent reinterpretation of current strings.
+- Multi-stroke sequences or additional per-binding metadata require an explicit configuration-contract extension; the current `modifiers` field represents simultaneous modifier keys only.

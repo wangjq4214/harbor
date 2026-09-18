@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use harbor_config::RawKeybindings;
+use harbor_config::{RawKeybinding, RawKeybindings};
 use harbor_widget::{
     KeyChord,
     input::event::{Key, Modifiers},
@@ -273,25 +273,29 @@ pub fn resolve_keybindings(raw: &RawKeybindings) -> KeybindingResolution {
     for entry in &registry {
         let configured = raw.entries.get(entry.id);
         let mut local = HashSet::new();
-        if let Some(chords) = configured {
-            for text in chords {
-                match parse_key_chord(text) {
+        if let Some(raw_bindings) = configured {
+            for (index, raw_binding) in raw_bindings.iter().enumerate() {
+                match parse_keybinding(raw_binding) {
                     Ok(chord) => {
                         if !local.insert(chord) {
-                            diagnostics.push(format!("keybindings.{} repeats `{text}`", entry.id));
+                            diagnostics.push(format!(
+                                "keybindings.{}.bindings[{index}] repeats a binding",
+                                entry.id
+                            ));
                             continue;
                         }
                         if let Some(owner) = owners.insert(chord, entry.id) {
                             diagnostics.push(format!(
-                                "keybindings conflict: `{text}` is owned by `{owner}` and `{}`",
+                                "keybindings.{}.bindings[{index}] conflicts with `{owner}`",
                                 entry.id
                             ));
                         }
                         bindings.push((chord, entry.command));
                     }
-                    Err(reason) => {
-                        diagnostics.push(format!("keybindings.{} `{text}` {reason}", entry.id))
-                    }
+                    Err(reason) => diagnostics.push(format!(
+                        "keybindings.{}.bindings[{index}] {reason}",
+                        entry.id
+                    )),
                 }
             }
         } else {
@@ -322,21 +326,12 @@ pub fn resolve_keybindings(raw: &RawKeybindings) -> KeybindingResolution {
     }
 }
 
-/// Parses one documented single-stroke chord with an exact modifier set.
-pub fn parse_key_chord(text: &str) -> Result<KeyChord, &'static str> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("must not be empty");
-    }
+/// Parses one documented structured single-stroke binding with an exact modifier set.
+fn parse_keybinding(raw: &RawKeybinding) -> Result<KeyChord, &'static str> {
     let mut modifiers = Modifiers::default();
-    let mut key = None;
-    let mut seen = HashSet::new();
-    for raw_token in text.split('+') {
-        let token = raw_token.trim().to_ascii_lowercase();
-        if token.is_empty() || !seen.insert(token.clone()) {
-            return Err("contains an empty or repeated token");
-        }
-        match token.as_str() {
+    for raw_modifier in &raw.modifiers {
+        let modifier = raw_modifier.trim().to_ascii_lowercase();
+        match modifier.as_str() {
             "ctrl" | "control" if !modifiers.ctrl => modifiers.ctrl = true,
             "shift" if !modifiers.shift => modifiers.shift = true,
             "alt" if !modifiers.alt => modifiers.alt = true,
@@ -344,16 +339,15 @@ pub fn parse_key_chord(text: &str) -> Result<KeyChord, &'static str> {
             "ctrl" | "control" | "shift" | "alt" | "meta" | "super" | "win" => {
                 return Err("contains a repeated modifier");
             }
-            _ => {
-                if key.is_some() {
-                    return Err("must contain exactly one key");
-                }
-                key = Some(parse_key(&token)?);
-            }
+            _ => return Err("contains an unsupported modifier"),
         }
     }
-    key.map(|key| KeyChord::new(key, modifiers))
-        .ok_or("must contain a key")
+
+    let key = raw.key.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return Err("key must not be empty");
+    }
+    Ok(KeyChord::new(parse_key(&key)?, modifiers))
 }
 
 fn parse_key(token: &str) -> Result<Key, &'static str> {
@@ -390,16 +384,21 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn raw(entries: &[(&str, &[&str])]) -> RawKeybindings {
+    fn binding(modifiers: &[&str], key: &str) -> RawKeybinding {
+        RawKeybinding {
+            modifiers: modifiers
+                .iter()
+                .map(|modifier| (*modifier).to_owned())
+                .collect(),
+            key: key.to_owned(),
+        }
+    }
+
+    fn raw(entries: Vec<(&str, Vec<RawKeybinding>)>) -> RawKeybindings {
         RawKeybindings {
             entries: entries
-                .iter()
-                .map(|(id, chords)| {
-                    (
-                        (*id).to_owned(),
-                        chords.iter().map(|chord| (*chord).to_owned()).collect(),
-                    )
-                })
+                .into_iter()
+                .map(|(id, bindings)| (id.to_owned(), bindings))
                 .collect::<BTreeMap<_, _>>(),
             valid: true,
         }
@@ -443,15 +442,18 @@ mod tests {
 
     #[test]
     fn partial_replacement_multiple_bindings_and_empty_unbind_are_supported() {
-        let resolved = resolve_keybindings(&raw(&[
-            ("app.new-tab", &["ctrl+n"]),
-            ("terminal.paste", &["ctrl+v", "shift+insert"]),
-            ("terminal.page-up", &[]),
+        let resolved = resolve_keybindings(&raw(vec![
+            ("app.new-tab", vec![binding(&["ctrl"], "n")]),
+            (
+                "terminal.paste",
+                vec![binding(&["ctrl"], "v"), binding(&["shift"], "insert")],
+            ),
+            ("terminal.page-up", vec![]),
         ]));
         assert!(!resolved.used_defaults);
         let bindings: Vec<_> = resolved.keybindings.bindings().collect();
         assert!(bindings.contains(&(
-            parse_key_chord("ctrl+n").unwrap(),
+            chord(Key::Character('n'), true, false),
             AppCommand::Tab(TabCommand::New)
         )));
         assert!(
@@ -469,17 +471,60 @@ mod tests {
     }
 
     #[test]
+    fn structured_fields_resolve_independently_to_an_exact_chord() {
+        let chord = parse_keybinding(&binding(&["control", "SHIFT", "alt", "win"], "TAB")).unwrap();
+        assert_eq!(
+            chord,
+            KeyChord::new(
+                Key::Tab,
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: true,
+                    meta: true,
+                }
+            )
+        );
+    }
+
+    #[test]
     fn semantic_errors_restore_the_complete_default_table() {
-        for overrides in [
-            raw(&[("unknown", &["ctrl+x"])]),
-            raw(&[("app.new-tab", &["ctrl++n"])]),
-            raw(&[("app.new-tab", &["ctrl+n", "ctrl+n"])]),
-            raw(&[("app.new-tab", &["ctrl+w"])]),
-        ] {
+        let cases = [
+            raw(vec![("unknown", vec![binding(&["ctrl"], "x")])]),
+            raw(vec![("app.new-tab", vec![binding(&["hyper"], "n")])]),
+            raw(vec![("app.new-tab", vec![binding(&["ctrl"], "f13")])]),
+            raw(vec![("app.new-tab", vec![binding(&["ctrl"], "")])]),
+            raw(vec![(
+                "app.new-tab",
+                vec![binding(&["ctrl", "control"], "n")],
+            )]),
+            raw(vec![(
+                "app.new-tab",
+                vec![binding(&["ctrl"], "n"), binding(&["ctrl"], "n")],
+            )]),
+            raw(vec![("app.new-tab", vec![binding(&["ctrl"], "w")])]),
+        ];
+
+        for overrides in cases {
             let resolved = resolve_keybindings(&overrides);
             assert!(resolved.used_defaults);
             assert_eq!(resolved.keybindings, default_bindings(&command_registry()));
             assert!(!resolved.diagnostics.is_empty());
         }
+    }
+
+    #[test]
+    fn diagnostics_identify_command_and_binding_index() {
+        let resolved = resolve_keybindings(&raw(vec![(
+            /* duplicate second record */
+            "app.new-tab",
+            vec![binding(&["ctrl"], "n"), binding(&["ctrl"], "n")],
+        )]));
+        assert!(
+            resolved
+                .diagnostics
+                .iter()
+                .any(|message| message.contains("keybindings.app.new-tab.bindings[1]"))
+        );
     }
 }

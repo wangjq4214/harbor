@@ -185,7 +185,7 @@ Every implemented string effect has explicit size, cancellation, permission, and
 - Home, End, Page, function, editing, and modifier encodings.
 - Bracketed paste and confirmation flow.
 - IME commit routing without sending preedit text to the PTY.
-- Startup-configurable application keybindings with stable command IDs, exact chord matching, empty-array unbinding, conflict diagnostics, and atomic keybinding fallback.
+- Startup-configurable application keybindings with nested per-command tables, structured simultaneous-modifier/key records, omission defaults, empty-array unbinding, conflict diagnostics, and atomic keybinding fallback.
 
 ### Remaining work
 

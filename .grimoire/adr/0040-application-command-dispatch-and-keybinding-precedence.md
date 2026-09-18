@@ -3,6 +3,8 @@
 **Status:** Proposed
 **Date:** 2026-09-18
 
+**Configuration format note:** The command-dispatch and precedence decisions remain current. The command-to-chord-array format is superseded by [ADR-0041](./0041-structured-keybinding-configuration.md).
+
 ## Context
 
 Issue #104 requires configurable Harbor keybindings, explicit precedence over terminal application input, and proof that UI-only chords do not reach the PTY. Harbor already resolves widget shortcuts before delivering unmatched keyboard events to the focused terminal, and `Store<S, A>` provides FIFO event-turn transport from widgets to the Application Business Host. Future command-palette invocation should use the same application operations without coupling configuration or UI surfaces to concrete handlers.

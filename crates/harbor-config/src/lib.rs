@@ -36,12 +36,19 @@ pub struct Settings {
     pub keybindings: RawKeybindings,
 }
 
-/// Raw command-to-chord arrays. Command and chord semantics are application-owned.
+/// Raw structured bindings keyed by stable command ID. Command semantics are application-owned.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawKeybindings {
-    pub entries: BTreeMap<String, Vec<String>>,
-    /// False when the TOML table or any entry had the wrong value shape.
+    pub entries: BTreeMap<String, Vec<RawKeybinding>>,
+    /// False when the TOML table or any command/binding had the wrong value shape.
     pub valid: bool,
+}
+
+/// One structured, single-stroke keybinding from startup configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RawKeybinding {
+    pub modifiers: Vec<String>,
+    pub key: String,
 }
 
 impl Default for RawKeybindings {
@@ -246,29 +253,162 @@ fn parse_keybindings(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(value) = value else { return };
-    let Some(table) = value.as_table() else {
-        settings.valid = false;
-        diagnostics.push(error(
-            "keybindings must be a table of command IDs to string arrays; using keybinding defaults",
-        ));
+    let Some(namespaces) = value.as_table() else {
+        invalidate_keybindings(
+            settings,
+            diagnostics,
+            "keybindings must be a table of namespace tables",
+        );
         return;
     };
-    for (id, value) in table {
-        let Some(chords) = value.as_array().and_then(|values| {
-            values
-                .iter()
-                .map(Value::as_str)
-                .map(|value| value.map(str::to_owned))
-                .collect::<Option<Vec<_>>>()
-        }) else {
-            settings.valid = false;
-            diagnostics.push(error(format!(
-                "keybindings.{id} must be an array of strings; using keybinding defaults"
-            )));
+
+    for (namespace, value) in namespaces {
+        let path = format!("keybindings.{namespace}");
+        let Some(commands) = value.as_table() else {
+            invalidate_keybindings(
+                settings,
+                diagnostics,
+                format!("{path} must be a table of command tables"),
+            );
             continue;
         };
-        settings.entries.insert(id.clone(), chords);
+
+        for (command, value) in commands {
+            let path = format!("{path}.{command}");
+            let Some(command_table) = value.as_table() else {
+                invalidate_keybindings(
+                    settings,
+                    diagnostics,
+                    format!("{path} must be a table containing `bindings`"),
+                );
+                continue;
+            };
+            for field in command_table
+                .keys()
+                .filter(|field| field.as_str() != "bindings")
+            {
+                invalidate_keybindings(
+                    settings,
+                    diagnostics,
+                    format!("{path}.{field} is not a supported keybinding field"),
+                );
+            }
+
+            let Some(value) = command_table.get("bindings") else {
+                invalidate_keybindings(
+                    settings,
+                    diagnostics,
+                    format!("{path}.bindings is required"),
+                );
+                continue;
+            };
+            let Some(records) = value.as_array() else {
+                invalidate_keybindings(
+                    settings,
+                    diagnostics,
+                    format!("{path}.bindings must be an array of binding records"),
+                );
+                continue;
+            };
+
+            let mut bindings = Vec::with_capacity(records.len());
+            for (index, record) in records.iter().enumerate() {
+                if let Some(binding) =
+                    parse_raw_keybinding(record, &path, index, settings, diagnostics)
+                {
+                    bindings.push(binding);
+                }
+            }
+            settings
+                .entries
+                .insert(format!("{namespace}.{command}"), bindings);
+        }
     }
+}
+
+fn parse_raw_keybinding(
+    value: &Value,
+    command_path: &str,
+    index: usize,
+    settings: &mut RawKeybindings,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<RawKeybinding> {
+    let path = format!("{command_path}.bindings[{index}]");
+    let Some(record) = value.as_table() else {
+        invalidate_keybindings(
+            settings,
+            diagnostics,
+            format!("{path} must be a table with `modifiers` and `key`"),
+        );
+        return None;
+    };
+    let mut structurally_valid = true;
+    for field in record
+        .keys()
+        .filter(|field| !matches!(field.as_str(), "modifiers" | "key"))
+    {
+        invalidate_keybindings(
+            settings,
+            diagnostics,
+            format!("{path}.{field} is not a supported binding field"),
+        );
+        structurally_valid = false;
+    }
+
+    let modifiers = match record.get("modifiers").and_then(Value::as_array) {
+        Some(values) => match values
+            .iter()
+            .map(Value::as_str)
+            .map(|value| value.map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(modifiers) => modifiers,
+            None => {
+                invalidate_keybindings(
+                    settings,
+                    diagnostics,
+                    format!("{path}.modifiers must be an array of strings"),
+                );
+                structurally_valid = false;
+                Vec::new()
+            }
+        },
+        None => {
+            invalidate_keybindings(
+                settings,
+                diagnostics,
+                format!("{path}.modifiers must be an array of strings"),
+            );
+            structurally_valid = false;
+            Vec::new()
+        }
+    };
+    let key = match record.get("key").and_then(Value::as_str) {
+        Some(key) => key.to_owned(),
+        None => {
+            invalidate_keybindings(
+                settings,
+                diagnostics,
+                format!("{path}.key must be a string"),
+            );
+            structurally_valid = false;
+            String::new()
+        }
+    };
+
+    structurally_valid.then_some(RawKeybinding { modifiers, key })
+}
+
+fn invalidate_keybindings(
+    settings: &mut RawKeybindings,
+    diagnostics: &mut Vec<Diagnostic>,
+    message: impl Into<String>,
+) {
+    settings.valid = false;
+    diagnostics.push(error(format!(
+        "{}; using keybinding defaults",
+        message.into()
+    )));
 }
 
 fn parse_colors(value: &Value, diagnostics: &mut Vec<Diagnostic>) -> Option<Palette> {
@@ -536,42 +676,122 @@ mod tests {
     }
 
     #[test]
-    fn keybinding_arrays_are_preserved_without_command_semantics() {
+    fn structured_keybindings_reconstruct_ids_and_preserve_records() {
         let loaded = parse(
             r#"
-            [keybindings]
-            "app.new-tab" = ["ctrl+n"]
-            "terminal.page-up" = []
+            [keybindings.app.new-tab]
+            bindings = [{ modifiers = ["ctrl"], key = "n" }]
+            [keybindings.terminal.paste]
+            bindings = [
+              { modifiers = ["ctrl"], key = "v" },
+              { modifiers = ["shift"], key = "insert" }
+            ]
+            [keybindings.terminal.page-up]
+            bindings = []
             "#,
         );
+
         assert!(loaded.settings.keybindings.valid);
         assert_eq!(
             loaded.settings.keybindings.entries["app.new-tab"],
-            ["ctrl+n"]
+            [RawKeybinding {
+                modifiers: vec!["ctrl".to_owned()],
+                key: "n".to_owned(),
+            }]
+        );
+        assert_eq!(
+            loaded.settings.keybindings.entries["terminal.paste"].len(),
+            2
         );
         assert!(loaded.settings.keybindings.entries["terminal.page-up"].is_empty());
     }
 
     #[test]
-    fn invalid_keybinding_shape_preserves_other_settings() {
+    fn malformed_keybinding_shapes_are_atomic_and_preserve_other_settings() {
+        let cases = [
+            ("keybindings = []", "keybindings"),
+            ("[keybindings]\napp = [\"bad\"]", "keybindings.app"),
+            (
+                "[keybindings.app]\nnew-tab = [\"ctrl+n\"]",
+                "keybindings.app.new-tab",
+            ),
+            (
+                "[keybindings.app.new-tab]\nother = []",
+                "keybindings.app.new-tab.bindings",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = {}",
+                "keybindings.app.new-tab.bindings",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [\"ctrl+n\"]",
+                "keybindings.app.new-tab.bindings[0]",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ modifiers = \"ctrl\", key = \"n\" }]",
+                "modifiers",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ modifiers = [\"ctrl\"] }]",
+                ".key",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ modifiers = [\"ctrl\"], key = 1 }]",
+                ".key",
+            ),
+            (
+                "[keybindings]\n\"app.new-tab\" = [\"ctrl+n\"]",
+                "keybindings.app.new-tab",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ key = \"n\" }]",
+                ".modifiers",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ modifiers = [\"ctrl\", 1], key = \"n\" }]",
+                ".modifiers",
+            ),
+            (
+                "[keybindings.app.new-tab]\nbindings = [{ modifiers = [\"ctrl\"], key = \"n\", leader = true }]",
+                ".leader",
+            ),
+        ];
+
+        for (keybindings, expected_path) in cases {
+            let loaded = parse(&format!("{keybindings}\n[font]\nsize = 18"));
+            assert_eq!(loaded.settings.font.size, 18.0);
+            assert!(!loaded.settings.keybindings.valid, "{keybindings}");
+            assert!(
+                loaded
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.level == DiagnosticLevel::Error
+                        && diagnostic.message.contains(expected_path)),
+                "missing path {expected_path} in diagnostics for {keybindings}: {:?}",
+                loaded.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_record_does_not_hide_other_structurally_valid_entries() {
         let loaded = parse(
             r#"
-            [font]
-            size = 18
-            [keybindings]
-            "app.new-tab" = "ctrl+n"
-            "terminal.paste" = ["ctrl+v"]
+            [keybindings.app.new-tab]
+            bindings = [{ modifiers = "ctrl", key = "n" }]
+            [keybindings.terminal.paste]
+            bindings = [{ modifiers = ["ctrl"], key = "v" }]
             "#,
         );
-        assert_eq!(loaded.settings.font.size, 18.0);
+
         assert!(!loaded.settings.keybindings.valid);
         assert_eq!(
             loaded.settings.keybindings.entries["terminal.paste"],
-            ["ctrl+v"]
+            [RawKeybinding {
+                modifiers: vec!["ctrl".to_owned()],
+                key: "v".to_owned(),
+            }]
         );
-        assert!(loaded.diagnostics.iter().any(|diagnostic| {
-            diagnostic.level == DiagnosticLevel::Error && diagnostic.message.contains("app.new-tab")
-        }));
     }
 
     #[test]

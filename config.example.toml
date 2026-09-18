@@ -9,30 +9,53 @@ program = "pwsh.exe"
 args = ["-NoLogo"]
 
 
-# Keybinding arrays replace a command's defaults. Omit an ID to retain its
-# default; use [] to unbind it. The complete table falls back to defaults if
-# any ID, chord, value shape, or chord ownership is invalid.
-[keybindings]
-"app.new-tab" = ["ctrl+t"]
-"app.close-active-tab" = ["ctrl+w"]
-"app.next-tab" = ["ctrl+tab"]
-"app.previous-tab" = ["ctrl+shift+tab"]
-"app.select-tab-1" = ["ctrl+1"]
-"app.select-tab-2" = ["ctrl+2"]
-"app.select-tab-3" = ["ctrl+3"]
-"app.select-tab-4" = ["ctrl+4"]
-"app.select-tab-5" = ["ctrl+5"]
-"app.select-tab-6" = ["ctrl+6"]
-"app.select-tab-7" = ["ctrl+7"]
-"app.select-tab-8" = ["ctrl+8"]
-"app.select-tab-9" = ["ctrl+9"]
-"terminal.copy" = ["ctrl+shift+c"]
-"terminal.copy-or-interrupt" = ["ctrl+c"]
-"terminal.paste" = ["ctrl+v"]
-"terminal.page-up" = ["pageup"]
-"terminal.page-down" = ["pagedown"]
-"terminal.scroll-to-top" = ["home"]
-"terminal.scroll-to-bottom" = ["end"]
+# Each command table's bindings replace its defaults. Modifiers in one record are
+# simultaneous. Omit a command table to retain its defaults; use `bindings = []`
+# to unbind it. Multiple records bind multiple chords. Any invalid command, field,
+# modifier, key, duplicate, or conflict restores the complete default binding set.
+[keybindings.app.new-tab]
+bindings = [{ modifiers = ["ctrl"], key = "t" }]
+[keybindings.app.close-active-tab]
+bindings = [{ modifiers = ["ctrl"], key = "w" }]
+[keybindings.app.next-tab]
+bindings = [{ modifiers = ["ctrl"], key = "tab" }]
+[keybindings.app.previous-tab]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "tab" }]
+[keybindings.app.select-tab-1]
+bindings = [{ modifiers = ["ctrl"], key = "1" }]
+[keybindings.app.select-tab-2]
+bindings = [{ modifiers = ["ctrl"], key = "2" }]
+[keybindings.app.select-tab-3]
+bindings = [{ modifiers = ["ctrl"], key = "3" }]
+[keybindings.app.select-tab-4]
+bindings = [{ modifiers = ["ctrl"], key = "4" }]
+[keybindings.app.select-tab-5]
+bindings = [{ modifiers = ["ctrl"], key = "5" }]
+[keybindings.app.select-tab-6]
+bindings = [{ modifiers = ["ctrl"], key = "6" }]
+[keybindings.app.select-tab-7]
+bindings = [{ modifiers = ["ctrl"], key = "7" }]
+[keybindings.app.select-tab-8]
+bindings = [{ modifiers = ["ctrl"], key = "8" }]
+[keybindings.app.select-tab-9]
+bindings = [{ modifiers = ["ctrl"], key = "9" }]
+[keybindings.terminal.copy]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "c" }]
+[keybindings.terminal.copy-or-interrupt]
+bindings = [{ modifiers = ["ctrl"], key = "c" }]
+[keybindings.terminal.paste]
+bindings = [
+  { modifiers = ["ctrl"], key = "v" },
+  { modifiers = ["shift"], key = "insert" },
+]
+[keybindings.terminal.page-up]
+bindings = [{ modifiers = [], key = "pageup" }]
+[keybindings.terminal.page-down]
+bindings = [{ modifiers = [], key = "pagedown" }]
+[keybindings.terminal.scroll-to-top]
+bindings = [{ modifiers = [], key = "home" }]
+[keybindings.terminal.scroll-to-bottom]
+bindings = [{ modifiers = [], key = "end" }]
 [colors]
 foreground = "#FFFFFF"
 background = "#5C331440"

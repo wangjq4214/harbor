@@ -744,7 +744,7 @@ Project domain concepts and terminology.
   - communicates with Application Business Host
 
 ### Application Keybindings
-- **Definition:** Startup TOML mappings from stable application command IDs to zero or more key chords. Omitted commands retain defaults, empty arrays unbind defaults, and a matched available command receives first refusal before terminal input. Any unknown command ID, invalid chord, or duplicate chord ownership rejects the complete override set in favor of default bindings without discarding valid non-keybinding settings.
+- **Definition:** Startup TOML command tables such as `[keybindings.app.new-tab]`, each containing a `bindings` array of self-contained `{ modifiers = [...], key = "..." }` records. Modifiers are explicit rather than encoded into chord strings. Omitted commands retain registry defaults, an empty `bindings` array unbinds defaults, and a matched available command receives first refusal before terminal input. The superseded command-to-string-array format is not accepted; like any invalid binding shape, it rejects the complete override set in favor of defaults without discarding valid non-keybinding settings.
 - **Relationships:**
   - configured by TOML User Settings
   - references Application Command Registry
