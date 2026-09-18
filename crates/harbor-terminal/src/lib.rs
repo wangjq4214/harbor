@@ -596,10 +596,8 @@ impl Terminal {
     /// Clears transient IME composition without affecting terminal protocol state.
     pub fn clear_preedit(&mut self) -> bool {
         let cleared = self.preedit.take().is_some();
-        if cleared {
-            if let Some(renderer) = &mut self.renderer {
-                renderer.cursor.reset_blink(Instant::now());
-            }
+        if cleared && let Some(renderer) = &mut self.renderer {
+            renderer.cursor.reset_blink(Instant::now());
         }
         cleared
     }
