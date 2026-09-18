@@ -2428,11 +2428,23 @@ fn preedit_replaces_transient_state_without_screen_or_pty_mutation() {
 }
 
 #[test]
-fn preedit_clears_on_empty_commit_and_focus_loss_while_only_commit_reaches_pty() {
+fn preedit_clears_through_all_paths_without_mutating_terminal_cursor_state() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
     let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.put_bytes(b"\x1b[2;3H\x1b[2 q\x1b[?25l");
+    let cursor_state = |terminal: &Terminal| {
+        let snap = terminal.snapshot();
+        (
+            snap.cursor_x,
+            snap.cursor_y,
+            snap.cursor_shape,
+            snap.cursor_blink,
+            snap.cursor_visible,
+        )
+    };
+    let expected_cursor = cursor_state(&terminal);
 
     terminal
         .handle_event(TerminalEvent::Preedit(Preedit::new("draft", None)))
@@ -2442,6 +2454,7 @@ fn preedit_clears_on_empty_commit_and_focus_loss_while_only_commit_reaches_pty()
         .unwrap();
     assert!(cleared.redraw);
     assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
 
     terminal
         .handle_event(TerminalEvent::Preedit(Preedit::new("候補", None)))
@@ -2453,6 +2466,7 @@ fn preedit_clears_on_empty_commit_and_focus_loss_while_only_commit_reaches_pty()
         .unwrap();
     assert!(committed.redraw);
     assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
     assert_eq!(written.lock().unwrap().as_slice(), "候補".as_bytes());
 
     terminal
@@ -2463,6 +2477,14 @@ fn preedit_clears_on_empty_commit_and_focus_loss_while_only_commit_reaches_pty()
         .unwrap();
     assert!(lost.redraw);
     assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("tab switch", None)))
+        .unwrap();
+    assert!(terminal.clear_preedit());
+    assert!(!terminal.clear_preedit());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
 }
 
 #[test]

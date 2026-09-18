@@ -149,7 +149,8 @@ impl TerminalRenderPipeline {
         self.text.prepare_preedit(gpu, preedit, snap, &viewport);
         self.selection.set_bounds(selection_bounds);
         self.selection.prepare(gpu, Some(snap), &viewport);
-        self.cursor.prepare(gpu, Some(snap), &viewport, now);
+        self.cursor
+            .prepare(gpu, Some(snap), &viewport, preedit.is_some(), now);
         self.scrollbar.prepare(gpu, Some(snap), &viewport);
     }
 

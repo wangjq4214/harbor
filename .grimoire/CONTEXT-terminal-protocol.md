@@ -247,7 +247,7 @@
   - references Alternate-Screen Mode Family
 
 ### IME Preedit Composition
-- **Definition:** Transient input-method composition text routed to the focused terminal for visual overlay at the live cursor without changing terminal screen cells, scrollback, pending-wrap, or PTY input. It wraps across visible terminal cells, is clipped to the terminal viewport, clears on commit or cancellation, and returns a scrolled-back terminal to the live bottom when composition begins.
+- **Definition:** Transient input-method composition text routed to the focused terminal for visual overlay at the live cursor without changing terminal screen cells, scrollback, pending-wrap, or PTY input. While non-empty composition is active, Harbor hides the ordinary terminal cursor; on commit or cancellation it clears the overlay and restores the cursor from authoritative terminal state, so normal shell echo places it after committed text without synthetic cursor advancement. Preedit wraps across visible terminal cells, is clipped to the terminal viewport, and returns a scrolled-back terminal to the live bottom when composition begins.
 - **Synonyms:** preedit, composition text
 - **Relationships:**
   - belongs to Terminal Input Semantics

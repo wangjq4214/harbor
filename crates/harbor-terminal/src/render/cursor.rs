@@ -43,8 +43,12 @@ struct LastCursorState {
     shape: CursorShape,
 }
 
-fn should_render_cursor(snap: &TerminalSnapshot, blink_visible: bool) -> bool {
-    snap.cursor_visible && (!snap.cursor_blink || blink_visible)
+fn should_render_cursor(
+    snap: &TerminalSnapshot,
+    blink_visible: bool,
+    preedit_active: bool,
+) -> bool {
+    !preedit_active && snap.cursor_visible && (!snap.cursor_blink || blink_visible)
 }
 
 /// Combined cursor rendering + blink state machine.
@@ -164,6 +168,7 @@ impl Cursor {
         gpu: TerminalGpuAccess<'_>,
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
+        preedit_active: bool,
         now: Instant,
     ) {
         let Some(snap) = snap else {
@@ -172,7 +177,7 @@ impl Cursor {
             return;
         };
 
-        let visible = should_render_cursor(snap, self.blink.phase_visible(now));
+        let visible = should_render_cursor(snap, self.blink.phase_visible(now), preedit_active);
         let shape = snap.cursor_shape;
 
         let state_changed = self.last_cursor.is_none_or(|last| {
@@ -288,19 +293,23 @@ mod tests {
     }
 
     #[test]
-    fn dectcem_controls_rendered_cursor_visibility() {
+    fn preedit_and_dectcem_control_rendered_cursor_visibility() {
         let mut terminal = Terminal::new_headless(3, 3);
-        assert!(should_render_cursor(&terminal.snapshot(), true));
-        assert!(!should_render_cursor(&terminal.snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), true, false));
+        assert!(!should_render_cursor(&terminal.snapshot(), false, false));
+        assert!(!should_render_cursor(&terminal.snapshot(), true, true));
+        assert!(!should_render_cursor(&terminal.snapshot(), false, true));
 
         terminal.put_bytes(b"\x1b[2 q");
-        assert!(should_render_cursor(&terminal.snapshot(), false));
+        assert!(should_render_cursor(&terminal.snapshot(), false, false));
+        assert!(!should_render_cursor(&terminal.snapshot(), false, true));
 
         terminal.put_bytes(b"\x1b[?25l");
-        assert!(!should_render_cursor(&terminal.snapshot(), true));
+        assert!(!should_render_cursor(&terminal.snapshot(), true, false));
+        assert!(!should_render_cursor(&terminal.snapshot(), true, true));
 
         terminal.put_bytes(b"\x1b[?25h");
-        assert!(should_render_cursor(&terminal.snapshot(), true));
+        assert!(should_render_cursor(&terminal.snapshot(), true, false));
     }
 
     #[test]
@@ -386,15 +395,19 @@ mod tests {
         let snap = terminal.snapshot();
 
         // Act + Assert — blinking visible phase
-        assert!(should_render_cursor(&snap, blink.phase_visible(t0)));
+        assert!(should_render_cursor(&snap, blink.phase_visible(t0), false));
         // blinking hidden phase
-        assert!(!should_render_cursor(&snap, blink.phase_visible(hidden_at)));
-
+        assert!(!should_render_cursor(
+            &snap,
+            blink.phase_visible(hidden_at),
+            false
+        ));
         terminal.put_bytes(b"\x1b[2 q"); // steady: draw even when phase would be hidden
         let steady = terminal.snapshot();
         assert!(should_render_cursor(
             &steady,
-            blink.phase_visible(hidden_at)
+            blink.phase_visible(hidden_at),
+            false
         ));
     }
 }
