@@ -1,16 +1,17 @@
 # Performance Optimization Plan
 
-This plan contains only active or explicitly accepted memory work. Historical captures are in [`memory-baseline.md`](memory-baseline.md), and measurement procedures are in [`profiling-guide.md`](profiling-guide.md).
+This plan records measurement-gated performance work and accepted bounded costs. Historical captures remain in [`memory-baseline.md`](memory-baseline.md); procedures are in [`profiling-guide.md`](profiling-guide.md). [`../current-status.md`](../current-status.md) separates implementation from runtime evidence. Product priority belongs to [`../roadmap.md`](../roadmap.md), with broader performance and memory scope in N15 of [`../next-stage-plan.md`](../next-stage-plan.md).
 
 ## Priority
 
-| Item                               | Status    | Reason                                                                          |
-| ---------------------------------- | --------- | ------------------------------------------------------------------------------- |
-| R1: Reuse renderer scratch buffers | Next      | Per-frame vertex churn was 42.1% of allocations in the reference capture        |
-| Re-profile after R1                | Required  | Confirms the new dominant owner before more work                                |
-| R2: Grow the glyph atlas on demand | Open      | The fixed atlas reserves 4 MiB of CPU pixels and a fixed GPU texture at startup |
-| GlyphKey architecture              | Delivered | Face, glyph ID, size, and style already form stable atlas identity              |
-| Tracing registry slab              | Accepted  | Bounded third-party process-lifetime overhead; no Harbor change planned         |
+| Item                               | Status                  | Reason                                                                                   |
+| ---------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
+| Current comparable profile         | Next                    | Establish present allocation owners and budgets before selecting an optimization         |
+| R1: Reuse renderer scratch buffers | Open; measurement-gated | Historical render-frame attribution was 42.1%; this is not a current hotspot measurement |
+| Re-profile after an optimization   | Required                | Confirms impact and the new dominant owner before selecting further work                 |
+| R2: Grow the glyph atlas on demand | Open; measurement-gated | Fixed CPU/GPU atlas allocation still exists; priority depends on new evidence            |
+| GlyphKey architecture              | Delivered               | Face, glyph ID, size, and style already form stable atlas identity                       |
+| Tracing registry slab              | Accepted                | Bounded third-party process-lifetime overhead; no Harbor change planned                  |
 
 ## R1 — Reuse Renderer Scratch Buffers
 
@@ -22,7 +23,9 @@ This plan contains only active or explicitly accepted memory work. Historical ca
 
 ### Problem
 
-Full and range vertex builders, plus dirty-character collection, create short-lived `Vec` values on dirty frames. The reference capture attributed about 11.6 MiB of cumulative allocation to this pattern.
+Full and range vertex builders, plus dirty-character collection, still create short-lived `Vec` values on dirty frames; R1 is not delivered. See [text builders](../../crates/harbor-terminal/src/render/text.rs), [background builders](../../crates/harbor-terminal/src/render/background.rs), and [decoration builders](../../crates/harbor-terminal/src/render/decoration.rs).
+
+The historical DirectWrite capture attributed about 11.6 MiB of cumulative allocation to this pattern and 42.1% of total allocated bytes to the capture-era render-frame owner. Those figures are not a profile of `a53395d` or the current tree. Source inspection establishes that allocations remain, not their present cost or rank. First capture the same Latin and dirty-range workloads on a recorded current commit, then decide whether R1 is the next optimization.
 
 ### Design constraints
 
@@ -41,7 +44,7 @@ Full and range vertex builders, plus dirty-character collection, create short-li
 
 ## Re-profile Gate
 
-Immediately after R1:
+After the current baseline selects an optimization, repeat these measurements immediately after implementing it (including R1 if selected):
 
 1. repeat the reference Latin scenario;
 2. repeat a dirty-range-heavy output scenario;
@@ -57,7 +60,7 @@ Do not begin a new speculative memory refactor before this gate.
 
 ### Problem
 
-The current atlas allocates a fixed 2048×2048 CPU pixel buffer and GPU texture from startup, even for Latin-idle sessions.
+R2 is not delivered. [AtlasStore](../../crates/harbor-text/src/atlas.rs) still allocates a fixed 2048×2048 CPU pixel buffer (4 MiB); [terminal](../../crates/harbor-terminal/src/render/text.rs) and [widget](../../crates/harbor-widget/src/renderer/widget_text_atlas.rs) adapters create fixed GPU textures. This is a per-atlas fact, not a measurement of total process residency across tabs and windows. Growth remains a candidate only after the current baseline and post-optimization profile justify it.
 
 ### Proposed design
 
@@ -108,12 +111,26 @@ No action is planned for:
 
 Reopen an accepted cost only when a comparable capture shows it materially blocks a product memory target.
 
+## N15 — Feature Budgets and Lifecycle Scenarios
+
+N15 in [`../next-stage-plan.md`](../next-stage-plan.md) extends the baseline beyond a single Latin terminal. Establish numeric budgets from recorded workloads before accepting feature costs; this plan does not invent current measurements or promise savings.
+
+| Area           | Measure and budget                                                                                                  | Lifecycle check                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Tabs and panes | Incremental live heap/private bytes, atlas/GPU residency, frame and input latency for visible and inactive sessions | Open, switch, split, resize, close, and verify retained resources settle  |
+| Font reload    | Peak overlap of old/new fonts, atlases and vertices; reload latency and settled memory                              | Repeated reload plus DPI changes; verify old resources become reclaimable |
+| Graphics       | CPU decoded bytes, GPU texture residency, upload volume and frame cost                                              | Replacement, eviction and session close under bounded resource limits     |
+| Glass/backdrop | Compositor/GPU cost, resize overhead and idle behavior with effects on/off                                          | Minimize/restore, fallback mode and window close                          |
+
+Record machine, commit, profile, fonts, viewport, session counts and dwell with every result. Use DHAT for allocation evidence, Windows private-memory measurements for process residency, and release/render or GPU/compositor tooling for latency and graphics cost. Profile mixed workloads separately from the historical reference scenario. Threading or renderer restructures require a demonstrated bottleneck and a scoped proposal, not speculative inclusion in R1/R2.
+
 ## Delivery Order
 
-1. `perf(render): reuse vertex scratch buffers`
-2. re-profile and record before/after evidence
-3. `perf(text): grow the glyph atlas on demand`
-4. `test(text): harden fallback-face and emoji GlyphKey coverage`
-5. optional complex shaping work as a separate, evidence-backed project
+1. Capture current comparable Latin/dirty-range baselines and establish N15 feature budgets.
+2. Select R1 scratch reuse only if current attribution justifies it; preserve the constraints and acceptance above.
+3. Re-profile the same workloads and record before/after evidence, including any regressions.
+4. Decide whether R2 atlas growth is warranted from that evidence; implement and re-profile only if selected.
+5. Harden fallback-face and emoji `GlyphKey` coverage without redesigning delivered identity.
+6. Keep optional complex shaping or thread/renderer restructuring separate and evidence-backed.
 
 Each implementation unit follows [`../validation.md`](../validation.md) and the scenarios in [`profiling-guide.md`](profiling-guide.md).

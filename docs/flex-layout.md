@@ -98,8 +98,12 @@ cannot become stale. Layout-only updates preserve retained scene IDs and externa
 registrations. DPI conversion stays at the renderer boundary; layout remains in
 unrounded logical pixels.
 
-This does not implement tab/session behavior, responsive breakpoint selection,
-PTY resizing, post-layout observation, Positioned, or a production root redesign.
+This layout contract does not own tab/session policy, responsive breakpoint decisions
+or PTY resizing. Those are application/integration responsibilities, not necessarily
+missing project features: the current application uses Flex/Expanded and
+`LayoutObserver` for committed allocation, and coordinates terminal resize.
+Positioned children remain outside this Flex contract. See [Current Status](current-status.md)
+and [Widget Runtime Architecture](architecture/widget-runtime.md) for the surrounding implementation.
 
 ## Verification
 
