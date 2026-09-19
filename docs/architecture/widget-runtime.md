@@ -1,6 +1,6 @@
 # Harbor Widget Runtime Architecture
 
-> Status: Implementing
+> Status: Current implementation reference; open work is listed separately below.
 >
 > Scope: Harbor's internal declarative GPU UI runtime. This document describes the current architecture and invariants; it does not define a stable third-party API.
 
@@ -27,7 +27,7 @@ Harbor's terminal remains a focusable and layout-aware `CustomPaint` region. The
 The current runtime is not a general desktop GUI framework. It does not aim to provide:
 
 - concurrent React-style rendering or interruptible work loops;
-- arbitrary paths, filters, non-rectangular clipping, or complex image effects;
+- arbitrary path clipping, general filters, or complex image/refraction effects (rounded decoration clipping already exists);
 - complete rich text, complex shaping, bidirectional text, or accessibility bridges;
 - general virtual lists, gesture recognition, or spatial indexes;
 - a stable external DSL or macro API.
@@ -36,16 +36,17 @@ Those capabilities require a concrete Harbor use case and profiling evidence.
 
 ## Layer Model
 
-| Layer                       | Lifetime   | Responsibility                                                    |
-| --------------------------- | ---------- | ----------------------------------------------------------------- |
-| `View` / widget description | Short      | Immutable declaration produced during build                       |
-| `Fiber`                     | Long       | Identity, hooks, signal subscriptions, children, and dirty flags  |
-| Layout data                 | Long       | Constraints, logical geometry, clipping, and hit regions          |
-| `SceneItem`                 | Long       | Retained GPU-visible primitive and paint order                    |
-| Renderer resources          | Long       | Pipelines, buffers, text resources, and incremental scene uploads |
-| `WinitAdapter`              | Per window | Event conversion, scheduling, surface state, and frame policy     |
-| `WinitWindowHost`           | Per window | Owned Window, Surface, Runtime, event routing, and presentation   |
-| `SharedGpu`                 | Multi-window | Shared wgpu Instance, Adapter, Device, and Queue                 |
+| Layer                               | Lifetime     | Responsibility                                                    |
+| ----------------------------------- | ------------ | ----------------------------------------------------------------- |
+| `View` / widget description         | Short        | Immutable declaration produced during build                       |
+| `Fiber`                             | Long         | Identity, hooks, signal subscriptions, children, and dirty flags  |
+| Layout data                         | Long         | Constraints, logical geometry, clipping, and hit regions          |
+| `SceneItem`                         | Long         | Retained GPU-visible primitive and paint order                    |
+| Renderer resources                  | Long         | Pipelines, buffers, text resources, and incremental scene uploads |
+| `WinitAdapter`                      | Per window   | Converts native events and tracks platform input/IME state        |
+| Runtime scheduler / frame presenter | Per window   | Coalesces demand and applies surface/frame presentation policy    |
+| `WinitWindowHost`                   | Per window   | Owns Window, Surface, Runtime, adapter and presentation lifecycle |
+| `SharedGpu`                         | Multi-window | Shared wgpu Instance, Adapter, Device, and Queue                  |
 
 ```mermaid
 flowchart TB
@@ -88,9 +89,9 @@ The feature-gated `harbor-widget::winit` adapter owns each native `Window`, its 
 
 The binary `Shell` coordinates `ActiveEventLoop` and `ApplicationHandler` dispatch, multi-window routing, terminal tabs, PTYs, paste safety, and fatal-error policy. For each redraw, `WinitWindowHost`:
 
-1. acquires the `SurfaceTexture`;
-2. creates the command encoder;
-3. updates and encodes the retained widget scene;
+1. resolves runtime updates/layout, external demand and presentation eligibility;
+2. acquires a `SurfaceTexture` when the frame is eligible and the surface is usable;
+3. creates the command encoder and encodes the retained widget scene;
 4. invokes `CustomPaint` handlers in paint order (injecting frame-scoped GPU access);
 5. submits the command buffer;
 6. performs the window pre-present notification and presents;
@@ -103,7 +104,7 @@ Surface policy belongs to the winit integration: lost and outdated surfaces are 
 Each OS window owns an independent:
 
 - `Runtime` and fiber tree;
-- `WinitAdapter` and scheduler;
+- native input adapter, runtime scheduler and frame presenter;
 - focus, hover, pointer capture, modifier, touch, and IME state;
 - surface state and viewport.
 
@@ -117,12 +118,12 @@ Paste confirmation remains a separate winit window by ADR-0007. The application 
 
 Current matching rules are:
 
-1. the same position, widget type, and key reuse the existing fiber and hooks;
-2. a type or key change unmounts the old subtree and creates a new one;
-3. unkeyed siblings match by position;
-4. unmount removes signal subscriptions and transient input references.
+1. a key unique in both old and new sibling lists reuses a compatible widget-type fiber across positions;
+2. unkeyed siblings reuse only a compatible unkeyed fiber at the same position;
+3. a type/key mismatch creates a new fiber; duplicate sibling keys emit diagnostics and do not reuse ambiguous fibers;
+4. unmatched old fibers unmount after new children are selected, removing subscriptions and transient input references.
 
-Stable keyed reordering is not complete: keys currently protect identity at a matched position but do not provide a full sibling reorder algorithm. This is an open architecture gap, not a guaranteed public behavior.
+Keyed sibling reordering is implemented. Evidence: [`reconcile_children_with_externals`](../../crates/harbor-widget/src/fiber/reconcile.rs) and [`child_construction` tests](../../crates/harbor-widget/tests/child_construction.rs), including keyed reorder state preservation. This does not imply dirty-subtree rebuilding or cross-parent state migration.
 
 ## State and Invalidation
 
@@ -145,20 +146,11 @@ The current runtime tracks fiber-level invalidation but may still rebuild from t
 
 Layout uses logical pixels. Physical scaling occurs at the rendering boundary so layout, hit testing, and input coordinates share one coordinate system.
 
-Each node receives `BoxConstraints`, chooses a constrained size, lays out children, and records its logical rectangle. Current containers include:
+Layout uses indexed parent-directed child measurement, bounded corrective passes and an atomic final-geometry commit. See [Flex Layout](../flex-layout.md) for the complete contract; the former child-first layout description no longer applies.
 
-- `SizedBox`
-- `Padding`
-- `Row`
-- `Column`
-- `Stack`
-- `Align`
-- `FocusScope`
-- text labels and buttons
-- `PreviewPane`
-- `CustomPaint`
+Current building blocks include `SizedBox`, `ConstrainedBox`, `Padding`, `Align`, `Row`/`Column` over a shared Flex engine, `Expanded`, `Flexible`, `Spacer`, `Stack`, `Separator`, `ScrollArea` and `LayoutObserver`. Focus wrappers, labels, buttons, `PreviewPane` and `CustomPaint` compose on that foundation.
 
-Flex behavior, constraint clamping, resize, and scale transitions are covered primarily with CPU-side tests.
+The layout observer publishes committed geometry for application coordination; the application still owns PTY resize policy. Generic positioned children, wrapping/grid layout and virtual collections remain separate work. Resize, scale, flex constraints and retained GPU resources have focused CPU/headless tests, not an implied Windows visual acceptance result.
 
 ## Input and Focus
 
@@ -186,6 +178,10 @@ The runtime supports:
 
 The winit adapter owns conversion details such as scale-aware positions, modifier state, touch IDs, mouse-button quarantine after focus loss, and IME commit deduplication.
 
+Reusable `MouseRegion`/`InteractiveRegion`, focus handles, `Shortcuts`/`Actions`, themed `Button`/`IconButton`, and `ThemeProvider` expose current desktop interaction mechanisms. Theme inheritance is not a complete locale/direction/environment system; disabled/focus behavior is not a Windows accessibility bridge.
+
+The native adapter routes IME commit and preedit; the terminal bridge provides a transient preedit overlay and candidate position. A general-purpose editable `TextField` remains unimplemented.
+
 ## Retained Scene and Rendering
 
 Painting produces `SceneItem` values with stable IDs, paint order, clipping, and a `Primitive`. The `SceneGraph` computes a `SceneDelta` of additions, modifications, and removals. The renderer applies that delta to retained GPU data instead of rebuilding the entire scene every frame.
@@ -193,13 +189,13 @@ Painting produces `SceneItem` values with stable IDs, paint order, clipping, and
 Core primitives are:
 
 - colored quads and rounded rectangles;
-- borders;
+- borders and outer shadows;
 - prepared text runs;
 - external draws.
 
 Batching may combine only adjacent items with compatible pipeline, bindings, and clipping. Transparent items must not be reordered across paint boundaries.
 
-Rectangular clips map to GPU scissors. Non-rectangular clipping remains deferred.
+Rectangular clips map to GPU scissors. Rounded decoration clips also affect painting and hit testing, including a rounded mask path for external terminal draws. General arbitrary-path clipping, sampled backdrop filters and liquid refraction are not implemented.
 
 ## CustomPaint and Terminal Integration
 
@@ -227,24 +223,25 @@ The per-window scheduler coalesces external invalidations and selects `Wait`, `W
 
 ## Invariants
 
-| Invariant              | Constraint                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| Resource ownership     | The app owns long-lived window/GPU resources; winit integration borrows them per frame |
-| Runtime isolation      | Each OS window has independent runtime, scheduler, surface, and input state            |
-| Stale-reference safety | Generation IDs prevent callbacks and captures from targeting reused slots              |
-| Event safety           | Event handlers emit commands; ownership mutations occur after routing                  |
-| Paint correctness      | Alpha-sensitive paint order is preserved; only adjacent compatible items batch         |
-| Idle behavior          | No dirty work, deadline, or animation means no redraw request                          |
-| Text consistency       | Terminal and widget rendering share `harbor-text` contracts                            |
-| Extension discipline   | Concurrency, spatial indexing, complex clipping, and animation require measured need   |
+| Invariant              | Constraint                                                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Resource ownership     | `WinitWindowHost` owns per-window native/runtime resources; `SharedGpu` owns shared GPU resources; the app coordinates business policy |
+| Runtime isolation      | Each OS window has independent runtime, scheduler, surface, and input state                                                            |
+| Stale-reference safety | Generation IDs prevent callbacks and captures from targeting reused slots                                                              |
+| Event safety           | Event handlers emit commands; ownership mutations occur after routing                                                                  |
+| Paint correctness      | Alpha-sensitive paint order is preserved; only adjacent compatible items batch                                                         |
+| Idle behavior          | No dirty work, deadline, or animation means no redraw request                                                                          |
+| Text consistency       | Terminal and widget rendering share `harbor-text` contracts                                                                            |
+| Extension discipline   | Concurrency, spatial indexing, complex clipping, and animation require measured need                                                   |
 
 ## Open Architecture Work
 
 The following are intentional follow-ups rather than current guarantees:
 
-- keyed sibling reordering;
 - true dirty-subtree rebuilds;
 - richer clipping and image/path primitives;
 - accessibility integration;
 - complex text shaping;
 - profiling-gated work prioritization or interruptible rendering.
+
+Use the [Widget Capability Plan](../widget-capability-plan.md) for the remaining toolkit catalog and the [Next-Stage Product Plan](../next-stage-plan.md) for pane, command-palette and visual product work. Existing toolkit mechanisms should be reused, not re-planned as missing foundations.

@@ -1,10 +1,21 @@
 # Validation Policy
 
-This document defines the evidence required before Harbor work is called complete. Individual plans link here instead of repeating the same quality gates.
+## What This Document Means
+
+This page defines required evidence, not a report that every gate has passed. [Current Status](current-status.md) records implementation scope; the [Roadmap](roadmap.md) selects release scope; the [Next-Stage Product Plan](next-stage-plan.md) defines upcoming acceptance outcomes.
+
+Distinguish four things:
+
+1. **Implementation exists** in source.
+2. **Focused tests exist** for the behavior.
+3. **A check was executed**, with a recorded revision, environment and result.
+4. **The target application/platform was accepted**, with reproducible runtime evidence.
+
+None automatically proves the next. A configured CI workflow is not a successful CI run. Future-feature acceptance below applies when that feature is delivered; it does not imply it exists today.
 
 ## Standard Quality Gates
 
-Run at each phase boundary and before merging behavior changes:
+Run at phase boundaries and before merging behavior changes:
 
 ```bash
 cargo fmt --check
@@ -14,117 +25,164 @@ python scripts/check_docs.py
 python scripts/checklist_summary.py
 ```
 
-A temporary environment limitation must be recorded in the change description; it is not evidence that a gate passed.
+For documentation-only changes, run the two documentation scripts and inspect the diff, status claims and Markdown fragments. The link checker validates local file targets and language policy, not heading fragments, external websites, factual accuracy, or visual rendering. Run focused code tests if changing coverage claims requires fresh execution evidence; do not claim a workspace pass unless it was run.
 
-## Parser Safety Evidence
+Record environment limitations as **not run** or **blocked**, not as passing. Protocol counts are inventory statistics, not a release-readiness score.
 
-The parser safety boundary is `harbor_parser::Parser` plus its `VtHandler` sink. The
-contract covers arbitrary bytes, progress, and parser-owned logical retention: CSI
-storage, pending UTF-8 bytes, OSC bytes, and DCS/APC/PM/SOS bytes delivered through
-the handler. Handler-owned allocation is not part of this bound; fuzzing uses a
-non-retaining sink. The byte-at-a-time `Parser::advance` API does not expose chunk
-boundaries, so one-shot/chunked equivalence is tested at
-`harbor_terminal::parser::TerminalParser::put_bytes`, where the slice-ingestion call
-and `PutResult` consumed-prefix/alternate-screen behavior are exercised separately.
+## Evidence by Change Type
 
-Run stable property evidence on Windows or any stable Rust host:
+| Change                      | Required evidence                                                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Parser state/transition     | One-shot and fragmented-input tests; malformed, cancellation, over-limit and recovery cases                            |
+| Terminal model              | Focused cells, cursor, modes, margins, history, damage and reset assertions                                            |
+| Terminal reply              | Exact bytes, bounded output, capability honesty; round-trip parsing where applicable                                   |
+| OSC/DCS/APC effect          | Framing/cancellation, payload and decoded-size limits, permission and reset behavior                                   |
+| Keyboard, mouse, focus, IME | Deterministic encoding/routing tests plus Windows runtime smoke                                                        |
+| PTY lifecycle               | Spawn/read/write/resize, failure rollback, child exit, shutdown and leak-safe ownership                                |
+| Configuration               | Loader fallback tests plus application/resource-update behavior; startup and live reload have different error policies |
+| Tabs/panes/session routing  | Identity, independent geometry, focus/capture/IME, late output events, hidden-session progress and shutdown            |
+| Renderer/text               | CPU geometry/model tests, practical GPU encode coverage, visual/runtime evidence and fallback checks                   |
+| Performance change          | Before/after captures under the same scenario while correctness gates remain green                                     |
+| Documentation               | Language/local links, changed fragments, source-backed claims, and plan/status consistency                             |
+
+## Parser Safety
+
+The safety boundary is `harbor_parser::Parser` plus its `VtHandler` sink. The parser-owned logical-retention contract covers CSI, pending UTF-8, OSC, and DCS/APC/PM/SOS framing. Handler-owned allocations need their own limits; the fuzz sink intentionally retains no callbacks.
+
+The byte-at-a-time `Parser::advance` API has no chunk boundary. Chunked/one-shot equivalence is tested at `TerminalParser::put_bytes`, including its consumed-prefix `PutResult` and alternate-screen behavior.
+
+### Stable Property and Regression Tests
 
 ```bash
 cargo test -p harbor-parser
 cargo test -p harbor-terminal
 ```
 
-The standalone cargo-fuzz package, harness, and checked-in corpus are configured. The
-fuzz decoder treats inputs of 32 bytes or fewer as all payload; longer inputs use the
-first 32 bytes as schedule and the remainder as payload. Runtime replay/campaign
-evidence is pending Linux CI. Windows setup alone is not a fuzz runtime result. With
-nightly Rust and `cargo-fuzz` installed, run the replay and bounded campaign from
-`fuzz/` in Linux CI (or another supported libFuzzer host):
+### Fuzz Replay and Campaign
+
+The standalone harness and corpus are checked in. Runtime replay/campaign evidence on a supported libFuzzer host remains distinct from configuration and stable property tests. Windows setup alone is not a fuzz runtime result.
+
+With nightly Rust and `cargo-fuzz`, run from `fuzz/` on Linux CI or another supported host:
 
 ```bash
 cargo +nightly fuzz run parser -- -runs=0 -max_len=16384
 cargo +nightly fuzz run parser -- -max_total_time=600 -timeout=5 -max_len=16384
 ```
 
-A single seed can be reproduced with
-`cargo +nightly fuzz run parser corpus/parser/utf8-fragmentation -- -runs=1` when run
-from `fuzz/`; from the repository root, use
-`cargo +nightly fuzz run parser fuzz/corpus/parser/utf8-fragmentation -- -runs=1`.
-Minimize a discovered corpus with `cargo +nightly fuzz cmin parser`, or minimize one
-crash with `cargo +nightly fuzz tmin parser <artifact>`, then keep the minimized input
-in `fuzz/corpus/parser/`. Every panic, stall, callback divergence, or retention-bound
-violation must also become a named deterministic Rust regression before the
-corresponding checklist claim is marked complete. Until Linux CI records runtime
-replay/campaign evidence, arbitrary-input checklist claims remain unchecked.
+The decoder treats inputs of at most 32 bytes as payload; longer inputs use the first 32 bytes as schedule and the rest as payload. Reproduce a seed from `fuzz/` with:
 
-## Evidence by Change Type
+```bash
+cargo +nightly fuzz run parser corpus/parser/utf8-fragmentation -- -runs=1
+```
 
-| Change                          | Required evidence                                                                          |
-| ------------------------------- | ------------------------------------------------------------------------------------------ |
-| Parser state or transition      | Focused one-shot and fragmented-input tests; malformed, cancellation, and recovery cases   |
-| Terminal model behavior         | Focused screen-state assertions covering cursor, cells, modes, margins, and reset behavior |
-| Terminal reply                  | Exact byte-format test, length bound, and round-trip parsing where applicable              |
-| OSC/DCS or external side effect | Boundary, cancellation, permission, and payload-limit tests                                |
-| Keyboard, mouse, focus, or IME  | Deterministic encoder/routing tests plus a Windows runtime smoke test                      |
-| PTY lifecycle                   | Spawn, read, write, resize, child exit, shutdown, and leak-safe failure behavior           |
-| Startup configuration           | Loader fallback/atomic-color tests, font-size/family tests, shell quoting tests, renderer palette tests, and Windows smoke |
-| Renderer behavior               | CPU-side geometry tests, GPU encode coverage where practical, and visual/runtime evidence  |
-| Performance optimization        | Before/after capture under the same scenario; correctness gates remain green               |
-| Documentation-only change       | Local-link and language-policy checks; code tests are optional unless claims changed       |
+When invoked from the repository root, use the corresponding `fuzz/corpus/parser/utf8-fragmentation` artifact path. Minimize with `cargo +nightly fuzz cmin parser` or `cargo +nightly fuzz tmin parser <artifact>`.
+
+Keep minimized inputs under `fuzz/corpus/parser/`. Every panic, stall, callback divergence or bound violation needs a named deterministic Rust regression. Unchecked arbitrary-input claims must not be promoted based only on a few fixed examples or an unexecuted workflow.
 
 ## Protocol Checklist Rules
 
-[`protocol/checklist.md`](protocol/checklist.md) is the feature-coverage source of truth.
+[The checklist](protocol/checklist.md) owns detailed coverage:
 
-- `[x]` means a clear implementation exists and is backed by focused tests or reproducible runtime evidence.
-- `[ ]` means missing, partial, or insufficiently verified.
-- A roadmap checkbox is not protocol evidence.
-- Broad workspace test success does not prove a specific protocol behavior.
-- Claims about arbitrary input require fuzz or property evidence, not a few fixed byte samples.
+- `[x]` requires a clear implementation plus focused tests or reproducible runtime evidence for the stated scope.
+- `[ ]` means missing, partial, or not sufficiently verified; notes should distinguish these cases.
+- Model/encoder completion does not imply a ConPTY/application path has passed runtime acceptance.
+- Broad workspace success does not prove a particular protocol feature.
+- Capability replies must not advertise unchecked or unsupported behavior.
+- Summary sections must reference detailed coverage rather than maintain contradictory copies.
 
-Calculate current totals with:
+Calculate inventory with `python scripts/checklist_summary.py`; do not hand-maintain percentages in the README or roadmap.
 
-```bash
-python scripts/checklist_summary.py
-```
+## Windows Runtime Acceptance
 
-## Runtime Acceptance
+Windows is the active product target. Changes to PTY, replies, input, rendering, window lifecycle or clipboard policy require Windows smoke evidence. Record Windows build and relevant application/ConPTY versions, including whether the application uses classic Console APIs or VT input.
 
-Windows is the active product target. Any change affecting PTY behavior, replies, rendering, input, window lifecycle, or clipboard policy requires a Windows smoke test. Window-lifecycle smoke for Acrylic includes Windows 10 client acrylic and documents caption degradation per [spec 0008](../.grimoire/spec/0008-windows-acrylic-backdrop.md) E2E; paste confirmation opacity is unchanged.
+### Baseline Application Matrix
 
-The Windows daily-use gate requires recorded sessions with representative workloads such as:
+| Workload                           | Observe                                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `cmd` and PowerShell               | Startup, prompt redraw, command execution, input, resize, exit and crash behavior                             |
+| `nvim`, `less`, `fzf`              | Replies, redraw, alternate-screen transitions, keyboard modes, mouse/focus and search/navigation interactions |
+| WSL/SSH and tmux where used        | The actual transport path and advertised capabilities; distinguish these from native Unix Harbor support      |
+| Colored build output / large files | Throughput, sustained output, review-position stability, memory and responsiveness                            |
+| Clipboard and selection            | Wide text, explicit versus soft newlines, bracketed paste, confirmation and focus restoration                 |
+| IME                                | Preedit positioning, committed text, candidate-window placement, key suppression, focus loss and cancellation |
+| Window lifecycle                   | DPI changes, minimize/restore, backdrop availability/fallback, presentation recovery and shutdown             |
 
-- shell startup, command execution, resize, and exit
-- `nvim`, `less`, `fzf`, and colored build output
-- alternate screen transitions
-- heavy scrollback and sustained output
-- selection, clipboard, bracketed paste, and paste confirmation
+Do not collapse the matrix to a single "terminal works" check. Specify applications and scenarios actually exercised, plus known exclusions.
 
-For startup settings, copy `config.example.toml` to `~/.harbor/config.toml` and verify the configured family/size, `pwsh.exe -NoLogo`, default/ANSI colors, cursor, selection, translucent background, and every documented default keybinding on the first frame. Exercise selected/no-selection copy, bracketed and confirmed paste, primary-screen PageUp/PageDown/Home/End, and alternate-screen pass-through in `nvim` and `tmux`; consumed chords must produce no PTY bytes. Repeat with one valid replacement, one multi-binding command, and one empty-array unbind. Then test an unknown command, malformed chord, duplicate/conflicting chord, invalid keybinding value shape, one invalid scalar field, one invalid color, and invalid TOML: keybinding failures must reset the complete binding table while preserving valid non-keybinding settings, scalar fallback remains local, color failure resets the whole palette, and document failure uses complete defaults. Repeat with Acrylic unavailable and confirm the terminal background does not change the compositor backdrop tint.
+Acrylic smoke includes Windows 10 client behavior and documented caption degradation from [spec 0008](../.grimoire/spec/0008-windows-acrylic-backdrop.md). Paste confirmation remains an opaque separate window. Native Unix acceptance is deferred under M6/N17 and does not block Windows-scoped milestones.
 
-Unix runtime acceptance belongs to roadmap phase P8 and does not block earlier Windows phases.
+### Startup Settings and Keybindings
+
+Copy `config.example.toml` to `~/.harbor/config.toml` and check:
+
+- configured family/size and `pwsh.exe -NoLogo`;
+- default/ANSI colors, cursor, selection and translucent background on the first frame;
+- every documented default shortcut, selected/no-selection copy, bracketed/confirmed paste;
+- main-screen history commands and alternate-screen pass-through; consumed chords must emit no terminal bytes;
+- one replacement binding, multiple bindings for one command and empty-array unbinding;
+- unknown command, malformed binding, duplicate/conflict and invalid binding value shape;
+- one invalid scalar, one invalid color, invalid TOML and a missing/unreadable file.
+
+Expected startup policy: keybinding failure restores the complete default binding table without discarding valid unrelated settings; scalar fallback is local; color failure restores the whole palette; document failure uses complete defaults. Repeat without Acrylic and confirm terminal background configuration does not change compositor tint.
+
+### Next-Stage Acceptance Additions
+
+These extend, rather than replace, the package-specific outcomes in [the product plan](next-stage-plan.md).
+
+| Package                          | Additional evidence                                                                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| N01/N02 — reflow and Unicode     | Repeated width/height changes, content/selection anchors, CJK/combining/emoji, styled blanks, alternate-screen restoration and eviction   |
+| N03 — code pages                 | Reproducible 936/65001/legacy-code-page probes, Console A/W versus byte I/O, input/output, process-start timing and redirection           |
+| N04 — live settings              | Last-valid-state retention, atomic-save/debounce, active/inactive session consistency, failed resource preparation and font-driven resize |
+| N05/N06 — palette/profiles       | Availability and shortcut precedence, no leaked input, quoting/environment/directory validation and unchanged running sessions            |
+| N07 — panes                      | Independent geometry, all-visible scheduling, focused routing, capture/IME/paste gate, hidden output and close/late-event races           |
+| N08/N09 — search/shell workflows | Soft-wrap-aware results, reflow/eviction invalidation, command boundaries and safe directory fallback                                     |
+| N10 — Kitty keyboard             | Negotiation and input traces in both directions through each claimed transport; repeat/release, layouts/AltGr and IME                     |
+| N11/N12 — strings/graphics       | Exact replies, permission/decoded-memory bounds, image clipping/scroll/resize, reset/close reclamation and representative applications    |
+| N13/N14 — glass UI               | Text contrast, opaque/high-contrast and reduced-effect fallback, sample-source constraints, DPI and before/after GPU/frame cost           |
+| N15/N16 — capacity/release       | Multi-session resource budgets, reproducible performance, diagnostics, packaging and recorded dogfood sessions                            |
 
 ## Performance Evidence
 
-Use the procedures in [`performance/profiling-guide.md`](performance/profiling-guide.md). Record at minimum:
+Follow the [Profiling Guide](performance/profiling-guide.md). At minimum record:
 
-- commit and executable profile
-- machine and OS
-- font configuration
-- viewport dimensions
-- workload and dwell time
-- profiling mode
-- before/after metrics
+- revision, executable profile and instrumentation;
+- machine, OS, font configuration, viewport size and scale;
+- workload, active/hidden sessions, history size and dwell time;
+- before/after metrics and capture locations;
+- throughput, frame/upload/atlas/presentation work, input/resize latency, idle CPU/GPU and memory where relevant.
 
-Do not use instrumented DHAT timing as startup-latency evidence.
+Do not use DHAT-instrumented timing as startup/input-latency evidence. Keep historical captures immutable and make clear which revision they describe. Optimizations require comparable evidence, not just fewer lines of code or a renamed cache.
 
-## Release Evidence
+## Evidence Record Format
 
-Before a release is called daily-usable:
+Store durable run records under `docs/verification/` when available, or link a retrievable CI artifact from the relevant work item. Do not invent a pass to fill a table.
 
-- all release-critical checklist exclusions are documented;
-- parser fuzz/property gates pass;
-- replies advertise only implemented capabilities;
-- string and external-effect paths have explicit limits and permission behavior;
-- benchmark and dogfood results are recorded;
-- crashes and fatal GPU/PTY errors produce actionable logs.
+```text
+Revision / dirty-tree scope:
+Environment / Windows and application versions:
+Feature and exact claimed behavior:
+Command or reproducible manual steps:
+Expected result:
+Observed result:
+Outcome: PASS | FAIL | NOT RUN | BLOCKED
+Artifacts / logs / screenshots:
+Known exclusions and follow-up:
+```
+
+For UI/protocol recordings, avoid capturing secrets or unrelated terminal contents. A source-inspection record must identify itself as such and must not masquerade as an execution record.
+
+## Windows Daily-Use Release Gate
+
+Before calling a release daily-usable:
+
+- identify included plan packages and release-critical exclusions;
+- record standard checks and parser safety evidence;
+- keep advertised capabilities consistent with implementation;
+- document string/image/clipboard permission and resource limits;
+- record representative Windows application, lifecycle and dogfood sessions;
+- record current performance and diagnostic behavior;
+- verify installation, configuration behavior and known limitations.
+
+Optional full Kitty coverage, session persistence and liquid-glass refraction are not universal release blockers. Missing evidence for the features actually shipped remains a blocker regardless of visual polish.

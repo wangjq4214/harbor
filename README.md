@@ -1,32 +1,59 @@
 # ⚓ Harbor
 
-🚀 Harbor is a Windows-first, GPU-accelerated terminal emulator written in 🦀 Rust with winit, wgpu, a custom VT parser, and a declarative GPU widget runtime.
+Harbor is a Windows-first, GPU-accelerated terminal emulator written in Rust with winit, wgpu, a custom VT parser, DirectWrite text support, and a declarative widget runtime.
 
-🎯 The current development priority is terminal correctness and Windows stability. Unix PTY support is intentionally deferred until the Windows feature set, performance, and daily-use workflows are stable.
+The priority is a correct, stable daily-use Windows terminal. Native Unix PTY support remains deferred; WSL/SSH compatibility inside the Windows application is a separate concern.
 
-## ✨ Current Capabilities
+## Current Capabilities
 
-- 🧠 Incremental ECMA-48/DEC parser with bounded CSI and string states
-- 🖥️ Cell grid with SGR, scroll regions, margins, alternate screen, protected cells, and scrollback
-- 🎨 Custom wgpu renderer with glyph atlas, incremental damage uploads, decorations, cursor styles, selection, and scrollbar
-- 🪟 Windows ConPTY integration
-- ⌨️ Application cursor/keypad modes, function and editing keys, bracketed paste, clipboard, and paste confirmation
-- 🧩 Declarative `harbor-widget` runtime with retained scenes, event routing, focus, `CustomPaint`, and winit frame integration
-- 🔤 DirectWrite primary-font selection and system fallback
+- 🧠 Incremental, bounded VT parsing; screen editing, colors, margins, alternate screen and scrollback.
+- 🪟 Windows ConPTY sessions, multiple terminal tabs, selection/copy and scrollback controls.
+- ⌨️ Traditional keyboard modes, bracketed paste/confirmation, SGR mouse reporting, focus reporting and IME commit/preedit integration.
+- 🔗 Terminal replies and capability queries; OSC titles, working-directory metadata, hyperlinks, default colors and shell markers.
+- 🎨 Damage-aware wgpu rendering, DirectWrite font fallback, synchronized-output scheduling and cursor/decorations.
+- ⚙️ Startup TOML settings and configurable application keybindings.
+- ✨ Acrylic/backdrop fallback, rounded widget decorations and a retained desktop widget runtime.
 
-🚧 Known gaps include several OSC families, mouse and focus protocols, IME preedit display, combining marks, box-drawing alignment, themes, search, packaging, and runtime performance evidence.
+These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
 
-## 🛠️ Build and Run
+The main gaps are resize reflow, complete combining/grapheme text handling, settings hot reload, split panes, search, profiles, a command palette, Kitty protocols, selected terminal extensions, and release/performance evidence. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
+
+## Build and Run
+
+An operational PTY session currently requires Windows.
 
 ```bash
 cargo run
 ```
 
-🪟 Harbor currently requires Windows for an operational PTY session.
+## Library Crates
 
-### Debug widget hot reload (Windows)
+The reusable subsystems have crate-level usage guides:
 
-Build the reloadable UI library first, then keep it rebuilding in one terminal:
+- [`harbor-widget`](crates/harbor-widget/README.md) — declarative components, state, layout, input, rendering, and optional `winit` hosting.
+- [`harbor-terminal`](crates/harbor-terminal/README.md) — ANSI/VT parsing, screen state, PTY I/O, input encoding, scheduling, and wgpu rendering.
+
+Both crates are currently documented as pre-1.0 workspace libraries. Their READMEs show path-based setup, minimal examples, host integration, feature flags, and ownership boundaries.
+
+### Startup Configuration
+
+Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
+
+Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, and structured per-command keybindings.
+
+- Invalid scalar font/shell fields fall back independently; an invalid supplied color resets the complete palette.
+- Invalid keybinding overrides reset the complete binding table while retaining valid non-keybinding settings. Omitted commands keep defaults; `bindings = []` unbinds a command.
+- Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
+- Missing font family uses DirectWrite system monospace selection. Missing shell program uses `COMSPEC`, then `cmd.exe`; a configured executable that cannot start falls back without its configured arguments.
+- Terminal background alpha is preserved. It does not configure the Windows Acrylic backdrop tint.
+
+Named profiles, environment/working-directory settings, user-selectable themes and configuration reload are planned, not additional current TOML options.
+
+### Debug Widget Hot Reload (Windows)
+
+This is optional development-time UI-library reload, **not user-configuration hot reload**.
+
+Build the reloadable library and keep it rebuilding in one terminal:
 
 ```bash
 cargo install cargo-watch
@@ -34,60 +61,45 @@ cargo build -p harbor-app-ui
 cargo watch -w crates/harbor-app/src/ui.rs -w crates/harbor-app-ui/src -x "build -p harbor-app-ui"
 ```
 
-Run the persistent Runtime Host in another terminal:
+Run the persistent host in another:
 
 ```bash
 cargo run --features widget-hot-reload
 ```
 
-The optional HMR observer, teardown barrier, generation state machine, Runtime root replacement, and redraw scheduling are owned by `harbor-widget::winit`; Harbor only provides the `harbor_app_ui` root factory and transports opaque Host work. This mode retains the Host window, GPU resources, Store-published tab state, terminals, and PTYs while resetting Widget/Fiber-local state. Changes to `harbor-widget`, shared `harbor-app` contract types (including `MainWindowRootInputs`), dependency layout, or exported function signatures require stopping the watcher and fully rebuilding/restarting the Host. Ordinary, release, and unsupported-target builds do not start a reload observer.
+The adapter retains the native host and Host-owned tabs/terminals/PTYs while replacing the application root and resetting Widget/Fiber-local state. Changes to shared contracts, `harbor-widget`, dependencies, or exported signatures require a full rebuild/restart. Release and unsupported-target builds do not start the observer. See [runtime architecture](docs/architecture/widget-runtime.md) for ownership details.
 
-## ⚙️ Startup Configuration
-
-Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
-
-Font family and size, shell program/arguments, default terminal colors, and ANSI colors 0–15 are configurable. Invalid font or shell fields fall back independently. An invalid supplied color resets the entire color palette to defaults. Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
-
-A missing font family falls back to DirectWrite system monospace selection. A missing shell program uses `COMSPEC`, then `cmd.exe`; if a configured executable cannot be started, Harbor retries that default shell without the configured arguments. The terminal background alpha is preserved, but this setting does not alter the Windows Acrylic backdrop tint.
-
-## ✅ Quality Gates
+## Checks
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+python scripts/check_docs.py
+python scripts/checklist_summary.py
 ```
 
-📊 Heap profiling:
+[Validation](docs/validation.md) distinguishes source tests, configured CI, runtime acceptance and release evidence. Heap profiling uses `cargo run --profile dhat --features dhat-heap`; follow the [profiling guide](docs/performance/profiling-guide.md) for comparable captures.
 
-```bash
-cargo run --profile dhat --features dhat-heap
-```
-
-## 🏗️ Architecture
+## Architecture
 
 ```text
-winit events
-    -> Shell ApplicationHandler
-    -> harbor-widget WinitWindowHost (Window, Surface, Runtime, Scheduler, Presentation)
-    -> Terminal CustomPaint
-       -> harbor-parser
-       -> terminal screen and input model
-       -> Windows ConPTY
-       -> wgpu terminal renderer
+Application host: sessions/tabs, commands, paste safety, platform policy
+  -> harbor-widget native adapter: Window / Surface / Runtime / presentation
+    -> terminal widget bridge: layout, input, scheduling, external draw
+      -> harbor-terminal: screen, input, PTY I/O, rendering
+        -> harbor-parser / harbor-text / harbor-pty
 ```
 
-The feature-gated `harbor-widget::winit` integration owns per-window `Window`, `Surface`, `Runtime`, scheduling, presentation, and shared GPU resources ([ADR-0031](.grimoire/adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)). The application shell coordinates `ApplicationHandler`, multi-window routing, terminal tabs, PTYs, paste safety, and business policy. Each OS window has an independent widget runtime.
+The generic native adapter does not own terminal business policy. Each OS window has its own widget runtime; session resources survive ordinary tab switching. See [architecture](docs/architecture/widget-runtime.md) and [ADR-0031](.grimoire/adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
 
-## 📚 Documentation
+## Documentation
 
-Start with [`docs/README.md`](docs/README.md).
+Start at [docs/README.md](docs/README.md). The shortest path is:
 
-- [`docs/roadmap.md`](docs/roadmap.md) — priorities, phases, and release gates
-- [`docs/protocol/checklist.md`](docs/protocol/checklist.md) — protocol coverage source of truth
-- [`docs/architecture/widget-runtime.md`](docs/architecture/widget-runtime.md) — current widget runtime architecture
-- [`docs/performance/`](docs/performance/) — memory evidence, profiling procedure, and remaining optimization work
+1. [Current Status](docs/current-status.md) — what exists and what remains unverified.
+2. [Roadmap](docs/roadmap.md) — delivery order and release scope.
+3. [Next-Stage Product Plan](docs/next-stage-plan.md) — concrete work packages and acceptance boundaries.
+4. [Validation](docs/validation.md) — how to prove a change is ready.
 
-🧭 Detailed architectural decisions and completed implementation records live under [`.grimoire/`](.grimoire/).
-
-> ⚓ Build a reliable terminal first. Turn it into a development environment later.
+Durable decisions and implementation records live under [`.grimoire/`](.grimoire/README.md).

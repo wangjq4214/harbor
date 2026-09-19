@@ -1,64 +1,60 @@
 # Harbor Documentation
 
-This directory contains current project documentation. Historical decisions, specifications, and completed implementation tickets live under [`.grimoire/`](../.grimoire/).
+Start with the question you want to answer. Current implementation, future plans, and verification evidence are deliberately separate.
 
-## Where to Look
+## Reading Guide
 
-| Question                                     | Source of truth                                                        |
-| -------------------------------------------- | ---------------------------------------------------------------------- |
-| What should be implemented next?             | [`roadmap.md`](roadmap.md)                                             |
-| Is a VT sequence or behavior supported?      | [`protocol/checklist.md`](protocol/checklist.md)                       |
-| How does the widget runtime work now?        | [`architecture/widget-runtime.md`](architecture/widget-runtime.md)     |
-| What desktop widget capabilities are planned? | [`widget-capability-plan.md`](widget-capability-plan.md)                         |
-| How does parent-directed Flex layout work?          | [`flex-layout.md`](flex-layout.md)                              |
-| Why was an architectural choice made?        | [`.grimoire/adr/`](../.grimoire/adr/)                                  |
-| What is the measured memory baseline?        | [`performance/memory-baseline.md`](performance/memory-baseline.md)     |
-| How should profiling be run?                 | [`performance/profiling-guide.md`](performance/profiling-guide.md)     |
-| What performance work remains?               | [`performance/optimization-plan.md`](performance/optimization-plan.md) |
-| What evidence is required before completion? | [`validation.md`](validation.md)                                       |
+| Question                                          | Read                                                                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| What is Harbor, and how do I run it?              | [Project README](../README.md)                                                                         |
+| What actually exists, and what is still partial?  | [Current Status](current-status.md)                                                                    |
+| What should we work on next?                      | [Roadmap](roadmap.md)                                                                                  |
+| What is included in the next-stage plan?          | [Next-Stage Product Plan](next-stage-plan.md)                                                          |
+| Is a particular VT behavior supported?            | [Protocol Checklist](protocol/checklist.md)                                                            |
+| What must be tested before calling work complete? | [Validation](validation.md)                                                                            |
+| How do I configure the current release?           | [Startup configuration](../README.md#startup-configuration) and [example TOML](../config.example.toml) |
+
+## Technical References
+
+| Area                                                    | Document                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------- |
+| `harbor-widget` installation and usage                  | [`harbor-widget` README](../crates/harbor-widget/README.md)   |
+| `harbor-terminal` parsing, PTY, input and rendering     | [`harbor-terminal` README](../crates/harbor-terminal/README.md) |
+| Widget/runtime ownership and host integration           | [Widget Runtime Architecture](architecture/widget-runtime.md) |
+| Desktop widget foundations and remaining capabilities   | [Widget Capability Plan](widget-capability-plan.md)           |
+| Parent-directed flex measurement and allocation         | [Flex Layout](flex-layout.md)                                 |
+| Historical memory evidence                              | [Memory Baseline](performance/memory-baseline.md)             |
+| Reproducible performance capture procedure              | [Profiling Guide](performance/profiling-guide.md)             |
+| Remaining measured optimization work                    | [Optimization Plan](performance/optimization-plan.md)         |
+| Terminology, architectural decisions, specs and tickets | [Grimoire](../.grimoire/README.md)                            |
 
 ## Document Responsibilities
 
-### Roadmap
+- **Current Status** is the source-backed product inventory. It distinguishes implementation scope from missing runtime evidence and links to lower-level facts.
+- **Roadmap** owns execution order, dependencies and release scope. It does not declare a feature implemented merely because it has a milestone.
+- **Next-Stage Product Plan** owns the agreed N01–N17 work-package scope, constraints, follow-up increments and acceptance outcomes. It is not a second completion checklist.
+- **Protocol Checklist** owns detailed VT coverage. A checked row requires a clear implementation plus focused tests or reproducible runtime evidence. An open row may mean missing, partial, or not sufficiently verified; its note should say which.
+- **Validation** owns shared quality gates, runtime matrices and evidence-record requirements. A prescribed command is not a recorded successful run.
+- **Architecture documents** describe current boundaries and invariants. **Widget Capability Plan** distinguishes present infrastructure from optional widgets and product integration.
+- **Performance documents** separate historical captures, repeatable procedures and still-open optimization work. Do not rewrite an old measurement to look current.
+- **Grimoire artifacts** preserve terminology, decisions and implementation contracts. Follow their lifecycle rules; do not delete or rewrite historical decisions just because the roadmap changes.
 
-The roadmap owns priorities, dependencies, deliverables, and release gates. It does not duplicate protocol-level checklists, profiling captures, or completed implementation histories.
+## Status and Evidence Rules
 
-### Widget Capability Plan
+Use implementation and validation as separate axes:
 
-The widget capability plan owns the desktop widget taxonomy, dependency order, exclusions, and capability-level acceptance gates. The roadmap still decides when a widget slice enters product delivery.
+- **Implemented / partial / not implemented** describe the stated behavior in source.
+- **Needs runtime evidence** means platform or application acceptance is still unproven, even if model tests exist.
+- **Planned / investigate / deferred** describe future work, not code coverage.
+- **Configured automation** means a workflow or harness exists, not that its latest run passed.
 
-### Protocol Checklist
+When documents disagree, inspect source, focused tests and recorded runs first. Keep applicable architectural decisions explicit, including supersession; a future plan does not override the current implementation. Correct the canonical fact and link summaries to it instead of maintaining contradictory duplicate checklists.
 
-The checklist owns feature-coverage claims. A checked item means the implementation is clear and supported by focused tests or reproducible runtime evidence. Roadmap status never overrides checklist evidence.
+## Maintenance
 
-### Architecture Documents
-
-Architecture documents describe the current design and its invariants. They do not preserve superseded designs; ADRs explain why decisions changed.
-
-### Performance Documents
-
-Measured baselines are immutable evidence. Profiling procedures explain how to reproduce evidence. Optimization plans contain only open or explicitly accepted work.
-
-### Grimoire Artifacts
-
-ADRs, specifications, and tickets preserve decision and delivery history. Their status fields reflect implementation reality, but they are not the current project roadmap.
-
-## Precedence
-
-When documents disagree, use this order:
-
-1. Accepted or implementing ADRs for architectural decisions
-2. Current architecture documents for implemented structure
-3. Protocol checklist for feature coverage
-4. Roadmap for execution priority
-5. Root README for orientation only
-
-## Maintenance Rules
-
-- Keep all project documentation in English.
-- Store a fact in one canonical document and link to it elsewhere.
-- Do not copy volatile test counts into overview documents.
-- Do not mark work complete without the evidence defined in [`validation.md`](validation.md).
-- Move historical measurements out of active plans rather than rewriting them.
-- Update links when files move; `scripts/check_docs.py` validates local Markdown links and language policy.
-- Use `scripts/checklist_summary.py` to calculate protocol coverage instead of maintaining counts manually.
+- Keep project documentation in English.
+- Keep volatile counts out of overviews; use `python scripts/checklist_summary.py` for protocol counts. Those counts are not a release-readiness percentage.
+- Update source-backed status and focused coverage when behavior changes; update roadmap state only when work actually starts or its gate is met.
+- Preserve existing paths/anchors where practical, and repair references when moving or restructuring content.
+- Run `python scripts/check_docs.py` for language and local-file links. It does not validate Markdown fragments or factual claims; inspect those separately.
+- Run both documentation scripts after a documentation-only change. Code/runtime tests are additionally required when implementation or validation claims change.

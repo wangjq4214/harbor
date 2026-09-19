@@ -596,7 +596,7 @@ Project domain concepts and terminology.
   - communicates with Runtime Host
 
 ### Windows Acrylic Backdrop
-- **Definition:** A host/compositor acrylic material behind the Harbor main window, including the caption strip, carrying a unified compositor-level white tint at 6% opacity, with a warm-brown tint drawn by the terminal background layer for default cells, explicit cell colors rendered normally, and unavailable acrylic falling back to an opaque dark-gray window base with an opaque warm-brown terminal background.
+- **Definition:** A host/compositor acrylic material behind Harbor's main window, selected through the platform backdrop backend. Terminal default cells use the active terminal palette independently of compositor tint; when a backdrop is unavailable, the window base and terminal background fall back to opaque fills.
 - **Synonyms:** system acrylic, DWM system backdrop, DesktopAcrylicController backdrop, AccentPolicy backdrop, Windows Terminal-style acrylic
 - **Relationships:**
   - belongs to Runtime Host
@@ -620,26 +620,26 @@ Project domain concepts and terminology.
   - referenced by System Caption Chrome
 
 ### Inverse Default Cell
-- **Definition:** An inverse cell whose foreground and background are both `Color::Default`, filled with opaque default foreground and glyph-painted with the configured `BACKGROUND` RGB.
+- **Definition:** An inverse cell whose foreground and background are both `Color::Default`, filled with the active default foreground and glyph-painted with the active default background RGB. Startup configuration and supported OSC default-color changes supply that palette.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Windows Acrylic Backdrop
 
 ### Default Background Cell
-- **Definition:** A terminal cell whose background is `Color::Default`, filled by the terminal background layer with a backdrop-aware tint (translucent warm brown over acrylic, opaque warm brown otherwise) driven by a startup backdrop flag.
+- **Definition:** A terminal cell whose background is `Color::Default`, revealing the terminal background layer's active palette color. Its alpha is preserved over an available backdrop and forced opaque otherwise; startup TOML and supported OSC default-color sequences determine the color, not a fixed warm-brown constant.
 - **Relationships:**
   - belongs to Terminal
   - referenced by Windows Acrylic Backdrop
 
 ### Terminal Window Inset
-- **Definition:** An application-level layout rule that wraps the terminal root view in uniform 12 logical-pixel padding between the terminal viewport and its window edges.
+- **Definition:** An application-level layout rule that wraps the main workspace (side rail and terminal panel) in uniform 4 logical-pixel padding. The terminal panel's own decoration and grid padding are separate.
 - **Relationships:**
   - depends on Padding Widget
   - wraps Terminal Widget Bridge
   - belongs to Runtime Host
 
 ### Terminal Decoration Preset
-- **Definition:** The application-level terminal appearance uses a 12dp radius, a 25%-opaque black outer shadow with 3dp downward offset and 3dp blur, zero spread, no default fill, and anti-aliased child clipping.
+- **Definition:** The current application-level terminal appearance uses an 8dp radius, a 10%-opaque black outer shadow with 1dp downward offset and 1dp blur, zero spread, no default fill, and anti-aliased child clipping. Earlier specs retain their original preset as historical design intent.
 - **Relationships:**
   - wraps Terminal Widget Bridge
   - contains BoxDecoration
@@ -661,7 +661,7 @@ Project domain concepts and terminology.
   - replaces External Frame Appearance
 
 ### Window Backdrop Tint
-- **Definition:** A compositor-level color overlay (white at 0.06 tint opacity, default luminosity) applied uniformly across the whole main window including the caption strip, with DesktopAcrylicController hosted by the lower target of the Dual Composition Target Stack, AccentPolicy as tier 2, and an opaque #1E1E1E fill as the final fallback.
+- **Definition:** Host-owned compositor styling, separate from terminal palette colors. The WASDK and AccentPolicy paths use `WindowBackdropStyle` (by default white at 0.06 tint opacity); DWM TransientWindow uses the system material. An opaque window-base fill is the final fallback. The WASDK path hosts its controller on the lower Dual Composition Target Stack target.
 - **Relationships:**
   - belongs to Runtime Host
   - implements Windows Acrylic Backdrop
@@ -669,14 +669,14 @@ Project domain concepts and terminology.
   - owns the acrylic-available veil formerly painted by Window Base Fill
 
 ### Window Backdrop Backend
-- **Definition:** A host-layer backend abstraction selected once at bootstrap that applies the unified Window Backdrop Tint without exposing platform details; its WASDK implementation owns the lower DesktopWindowTarget and never exports a visual to the renderer, while other implementations provide AccentPolicy, opaque Windows fallback, or a non-Windows no-op.
+- **Definition:** A host-layer backend abstraction selected at bootstrap without exposing platform resources to terminal rendering. Implementations cover WASDK DesktopAcrylicController, DWM TransientWindow acrylic, AccentPolicy, and opaque fallback; the WASDK implementation owns its lower DesktopWindowTarget and does not export a sampleable desktop visual to the renderer.
 - **Relationships:**
   - belongs to Runtime Host
   - implements Window Backdrop Tint
   - depends on Dual Composition Target Stack
 
 ### Dual Composition Target Stack
-- **Definition:** The Windows main-window composition layout that binds DesktopAcrylicController to the lower `topmost=false` DesktopWindowTarget and renders the transparent wgpu swap chain through a separate upper `topmost=true` DirectComposition target on the same HWND.
+- **Definition:** The WASDK main-window composition path binds DesktopAcrylicController to a lower `topmost=false` DesktopWindowTarget and renders the transparent wgpu swap chain through a separate upper `topmost=true` DirectComposition target on the same HWND. Other backdrop backends do not imply this same controller stack.
 - **Synonyms:** dual-target composition, two-layer composition target stack
 - **Relationships:**
   - belongs to Runtime Host
@@ -766,7 +766,7 @@ Project domain concepts and terminology.
 
 
 ### Terminal Title Policy
-- **Definition:** Each terminal tab falls back to its effective shell executable name. A valid OSC 0/1/2 title replaces that fallback without requiring a user setting; an empty title or terminal reset restores the fallback. OSC title payloads are accepted only as valid UTF-8 without control characters and at no more than 256 Unicode characters; invalid payloads leave the current title unchanged. Every tab updates its own visible tab title, while only the active tab drives the native window title in the form `<title> — Harbor`. Working-directory tracking is deferred to OSC 7 rather than inferred at startup.
+- **Definition:** Each terminal tab falls back to its effective shell executable name. A valid OSC 0/1/2 title replaces that fallback without requiring a user setting; an empty title or terminal reset restores the fallback. OSC title payloads are accepted only as valid UTF-8 without control characters and at no more than 256 Unicode characters; invalid payloads leave the current title unchanged. Every tab updates its own visible tab title, while only the active tab drives the native window title in the form `<title> — Harbor`. Working-directory metadata is tracked separately through OSC 7 rather than inferred from the title or at startup.
 - **Relationships:**
   - belongs to Terminal Tab
   - communicates with Application Business Host

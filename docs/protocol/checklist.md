@@ -1,15 +1,19 @@
 # VT Protocol Implementation Checklist
 
 > Checklist for auditing terminal emulator support for ECMA-48, DEC VT series, and common xterm extensions.
-> Audit baseline (2026-08-01): `[x]` means the current code has a clear implementation; `[ ]` means not implemented, only partially implemented, or insufficient evidence of complete support. Results are based solely on existing source code and unit tests; they do not represent end-to-end compatibility.
+> Source-level coverage checklist; checked items are not end-to-end compatibility claims.
 
 ## Reading Notes
 
-- Each item is independently auditable.
-- `[x]` requires a clear implementation plus focused tests or reproducible runtime evidence.
-- `[ ]` means missing, partial, or insufficiently verified; it does not distinguish those cases.
-- Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `src/app.rs`.
-- This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py` for current coverage.
+- `[x]` requires a clear implementation plus named focused tests or reproducible runtime evidence; `[ ]` means missing, partial, or insufficiently verified.
+- Parsing a sequence, consuming unsupported content, implementing its semantics, and validating it in a Windows application session are separate claims. In particular, 8-bit C1 parsing is opt-in in `harbor-parser`, not enabled by default in the terminal.
+- Sections 1–36 own detailed protocol requirements. Section 37 is a requirement index linking to those owners, not a second set of status markers. Section 38 tracks representative sequence tests; section 39 tracks broader acceptance.
+- An open sample or acceptance item does not negate a checked implementation item. Missing Windows real-machine or fuzz execution evidence is labeled **needs runtime evidence**; test source alone cannot close those gates.
+- Unchanged legacy markers are not a claim that every item was re-audited in this documentation pass. Newly corrected claims cite implementation paths and named tests below.
+- Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
+- Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
+- This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
+- Known exclusions: zero-width/combining characters are ignored by `CellWriter`; resize does not reflow; Kitty keyboard/graphics, OSC 52, and OSC 4 palette operations remain unsupported. IME preedit support does not imply grapheme support (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
 
@@ -123,7 +127,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Executable C0 characters appearing in the CSI parameter area behave correctly
 * [x] NUL and DEL are not displayed as ordinary characters
 * [x] LF is not unconditionally treated as CRLF
-* [ ] SO/SI can switch the currently invoked character set
+- SO/SI character-set invocation requirement: see [5.3](#53-character-set-invocation).
 
 ---
 
@@ -166,11 +170,11 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `ESC M` — RI
 * [x] `ESC N` — SS2
 * [x] `ESC O` — SS3
-* [ ] `ESC Z` — DECID
+- `ESC Z` — DECID: see [21.5](#215-decid).
 * [x] `ESC c` — RIS
 * [x] `ESC =` — DECKPAM
 * [x] `ESC >` — DECKPNM
-* [ ] `ESC \` — ST
+- `ESC \` — ST: see [27](#27-string-sequence-interruption-and-termination).
 
 ### 4.2 ESC Intermediate
 
@@ -276,34 +280,40 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 6.2 Parameter Semantic Differentiation
 
+These distinction requirements concern parameter representation and per-command semantics, not whether SGR reset or cursor movement works at all. The tested reset behavior is tracked in [16.12](#1612-sgr-combinations), and cursor defaults in [7.1](#71-cursor-movement-boundaries); open items here still need focused evidence for their full stated scope.
+
 * [ ] Can distinguish `CSI m`
 * [ ] Can distinguish `CSI 0 m`
 * [ ] Can distinguish `CSI ; m`
 * [ ] Can distinguish `CSI 1;;4 m`
 * [ ] Each command handles 0 and default values per its own rules
-* [ ] Cursor movement commands typically treat 0 as 1
+- Cursor movement commands treat 0 as 1: see [7.1](#71-cursor-movement-boundaries).
 * [x] 0 in SGR is recognized as attribute reset
 
 ### 6.3 Private Marker
 
 * [x] `?`
-* [ ] `>`
-* [ ] `<`
-* [ ] `=`
+* [x] `>`
+* [x] `<`
+* [x] `=`
 * [x] Private Marker is saved separately from regular parameters
 * [x] Different Private Markers are not confused with each other
 
+Evidence: `crates/harbor-parser/src/params.rs` and `src/core.rs`; `should_preserve_each_csi_private_marker_when_prefix_is_present_or_absent` in `crates/harbor-parser/tests/public_api.rs`. Recognition does not imply every command using a marker is supported.
+
 ### 6.4 Sub-parameters
 
-* [ ] Supports colon sub-parameters
-* [ ] Supports empty sub-parameters
-* [ ] Supports multiple sub-parameters
+* [x] Supports colon sub-parameters (parser structure)
+* [x] Supports empty sub-parameters (parser structure)
+* [x] Supports multiple sub-parameters (parser structure)
 * [ ] Supports `38:2::R:G:B`
 * [ ] Supports `48:2::R:G:B`
 * [ ] Supports `58:2::R:G:B`
 * [ ] Supports `4:3`
-* [ ] Semicolon parameters and colon sub-parameters are not confused
+* [x] Semicolon parameters and colon sub-parameters are not confused (parser structure)
 * [ ] Unknown sub-parameter forms can be safely ignored
+
+Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `should_expose_root_api_and_preserve_csi_params_when_private_csi_is_dispatched` in `crates/harbor-parser/tests/public_api.rs` verifies mixed separators and empty sub-parameters. `PenState::set_sgr` in `crates/harbor-terminal/src/screen/edit/pen_state.rs` already has colon-form 38/48 indexed/RGB branches; their exact forms remain unchecked here pending focused semantic evidence, not because all colon color handling is absent. Underline style/color requirements remain separate gaps.
 
 ---
 
@@ -349,8 +359,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Save current character attributes
 * [x] Save Origin Mode
 * [x] Save autowrap state
-* [ ] Save character set state
-* [ ] Save character set invocation state
+- Saved character set and invocation state: see [5.3](#53-character-set-invocation).
 * [x] Save pending wrap state, or handle per target compatibility
 * [x] Coordinates are clamped to the current valid area on restore
 * [x] Main screen and alternate screen saved state are not incorrectly mixed
@@ -750,7 +759,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `CSI ? 1;25;1006 l` can clear multiple modes at once
 * [x] Unknown modes do not affect known modes
 * [x] Multiple modes are processed in order
-* [ ] Querying an unknown mode returns unknown
+- Querying an unknown mode: see [22.2](#222-decrpm-response).
 
 ---
 
@@ -798,7 +807,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] Reset mouse modes
 * [x] Reset bracketed paste
 * [x] Reset focus reporting
-* [ ] Reset synchronized output
+- Reset synchronized output: see [30](#30-synchronized-output).
 * [x] Exit alternate screen
 * [x] Clear pending wrap
 * [x] Clear incomplete control sequence state
@@ -917,10 +926,10 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ### 24.1 OSC Boundaries
 
 * [x] `ESC ]` begins OSC
-* [ ] 8-bit OSC `0x9D`
+* [x] 8-bit OSC `0x9D` (parser opt-in C1 mode; `should_recognize_eight_bit_sequences_only_when_c1_is_enabled` in `crates/harbor-parser/src/core/property_tests.rs`, implementation in `src/core.rs`)
 * [x] BEL terminates
 * [x] ST `ESC \` terminates
-* [ ] 8-bit ST `0x9C` terminates
+* [x] 8-bit ST `0x9C` terminates (parser opt-in C1 mode; same evidence as the 8-bit OSC item)
 * [x] OSC content can span input fragments
 * [x] `ESC` and the following `\` can span input fragments
 * [x] Enters discard state when OSC exceeds length limit
@@ -1027,19 +1036,21 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 25.1 DCS Boundaries
 
-* [ ] `ESC P` begins DCS
-* [ ] 8-bit DCS `0x90`
-* [ ] Supports parameter bytes
-* [ ] Supports Private Marker
-* [ ] Supports Intermediate
-* [ ] Supports Final byte
-* [ ] Supports payload
-* [ ] ST terminates
-* [ ] 8-bit ST terminates
-* [ ] DCS can span input fragments
-* [ ] Oversized DCS can enter discard state
-* [ ] Unsupported DCS can be fully consumed then ignored
-* [ ] DCS payload is not displayed as plain text
+* [x] `ESC P` begins DCS
+* [x] 8-bit DCS `0x90` (parser opt-in C1 mode)
+* [x] Supports parameter bytes
+* [ ] Supports Private Marker — malformed-marker rejection is tested; valid-marker preservation needs focused evidence
+* [x] Supports Intermediate
+* [x] Supports Final byte
+* [x] Supports payload
+* [x] ST terminates
+* [x] 8-bit ST terminates (parser opt-in C1 mode)
+* [x] DCS can span input fragments
+* [x] Oversized DCS can enter discard state
+* [x] Unsupported DCS can be fully consumed then ignored
+* [x] DCS payload is not displayed as plain text
+
+Evidence: `crates/harbor-parser/src/core.rs` and terminal `parser/handlers.rs`; `should_emit_dcs_lifecycle_callbacks_when_payload_is_st_terminated`, `should_preserve_dcs_intermediate_bytes`, and `should_report_dcs_completion_when_eight_bit_st_terminates_payload` in `crates/harbor-parser/tests/public_api.rs`; `should_recognize_eight_bit_sequences_only_when_c1_is_enabled` and `should_bound_and_recover_each_string_family_at_limit_and_overflow` in `crates/harbor-parser/src/core/property_tests.rs`; `decrqss_nonmatching_dcs_is_consume_only` in `crates/harbor-terminal/src/parser/tests.rs`. These tests feed the core byte by byte; no image or other DCS application support is implied.
 
 ### 25.2 DECRQSS
 
@@ -1088,15 +1099,17 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 26.1 Basic Parsing
 
-* [ ] APC: `ESC _ ... ST`
-* [ ] PM: `ESC ^ ... ST`
-* [ ] SOS: `ESC X ... ST`
-* [ ] Supports 8-bit introducer
-* [ ] Supports ST termination
-* [ ] Content can span input fragments
-* [ ] Content is not displayed as plain text
-* [ ] Oversized content enters discard state
-* [ ] Unknown protocols are safely ignored
+* [x] APC: `ESC _ ... ST`
+* [x] PM: `ESC ^ ... ST`
+* [x] SOS: `ESC X ... ST`
+* [ ] Supports 8-bit introducer — APC has focused evidence; PM/SOS need equivalent directed assertions
+* [x] Supports ST termination
+* [x] Content can span input fragments
+* [x] Content is not displayed as plain text
+* [x] Oversized content enters discard state
+* [x] Unknown protocols are safely ignored (consume-only)
+
+Evidence: string states in `crates/harbor-parser/src/core.rs` and consume-only terminal `parser/handlers.rs`; `should_emit_string_lifecycle_callbacks_when_apc_is_st_terminated` and `should_report_string_cancellation_when_can_or_sub_terminates_apc_pm_or_sos` in `crates/harbor-parser/tests/public_api.rs`; `should_bound_and_recover_each_string_family_at_limit_and_overflow` in `crates/harbor-parser/src/core/property_tests.rs`. Generic string consumption does not establish Kitty command recognition, decoding, or rendering.
 
 ### 26.2 Kitty Graphics
 
@@ -1131,6 +1144,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ---
 
 ## 28. Mouse Protocol Output
+
+Tracking modes 1000/1002/1003 currently produce reports only with SGR encoding (1006); legacy `CSI M` is not implemented. Evidence: `crates/harbor-terminal/src/input.rs` and `pointer.rs`; `sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty`, `terminal_mouse_filters_follow_effective_mode_fallback_and_cancel_state`, and `focus_reporting_writes_only_enabled_real_transitions` in `crates/harbor-terminal/src/terminal_tests.rs`. Windows application interoperability remains a separate acceptance gate.
 
 ### 28.1 Mode Priority
 
@@ -1398,73 +1413,35 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ## 37. Minimum Modern Compatibility Set
 
+This index preserves application-oriented coverage requirements without duplicating the detailed status markers. These are protocol prerequisites, not proof that the named applications pass Windows acceptance; see [section 39](#39-final-acceptance).
+
 ### 37.1 Shell Basic Compatibility
 
-* [ ] C0
-* [ ] ESC
-* [x] CSI
-* [x] CUP
-* [x] CUU/CUD/CUF/CUB
-* [x] ED/EL
-* [x] SGR
-* [x] CR/LF/BS/HT
-* [x] DECSTBM
-* [x] DECAWM
-* [x] DECSC/DECRC
-* [ ] DSR
-* [ ] DA1
+- C0 → [2](#2-c0-control-characters); ESC → [4](#4-esc-sequences); CSI → [6](#6-csi-parameter-parsing).
+- CUP, CUU/CUD/CUF/CUB → [7](#7-cursor-movement); ED/EL → [9](#9-erase-operations); SGR → [16](#16-sgr-character-attributes).
+- CR/LF/BS/HT → [2](#2-c0-control-characters); DECSTBM → [12](#12-scrolling-region); DECAWM → [14](#14-autowrap); DECSC/DECRC → [8](#8-save-and-restore-cursor).
+- DSR and DA1 → [21](#21-device-status-reports).
 
 ### 37.2 Vim/Neovim Compatibility
 
-* [x] `?1`
-* [x] `?6`
-* [x] `?7`
-* [x] `?25`
-* [x] `?1049`
-* [x] `?2004`
-* [ ] `?1004`
-* [ ] `?1006`
-* [x] `?2026`
-* [x] ICH
-* [x] DCH
-* [x] IL
-* [x] DL
-* [x] ECH
-* [x] SU
-* [x] SD
-* [x] DECSCUSR
-* [x] 256 colors
-* [x] True Color
-* [ ] Curly underline
-* [ ] Underline color
-* [x] OSC 8
-* [ ] DA1/DA2
-* [ ] CPR
+- `?1`, `?6`, `?7`, `?25`, `?1049`, `?2004`, `?1004`, `?1006`, `?2026` → [17](#17-dec-private-modes).
+- ICH, DCH, ECH → [10](#10-character-insertion-deletion-and-repetition); IL, DL, SU, SD → [11](#11-line-operations-and-scrolling).
+- DECSCUSR → [19](#19-cursor-style); 256 colors, True Color, curly underline, underline color → [16](#16-sgr-character-attributes).
+- OSC 8 → [24.6](#246-hyperlinks); DA1/DA2 and CPR → [21](#21-device-status-reports).
 
 ### 37.3 tmux Compatibility
 
-* [x] XTGETTCAP (evidence: Harbor answers `DCS + q` per §25.3; tmux itself does not emit XTGETTCAP, and the tmux passthrough wrapper is not implemented)
-* [ ] DECRQSS
-* [ ] DECRQM
-* [ ] DA1
-* [ ] DA2
-* [x] OSC 8
-* [ ] OSC 52
-* [x] Bracketed Paste
-* [ ] Focus Reporting
-* [ ] SGR Mouse
-* [x] Application Cursor
-* [x] Application Keypad
-* [x] Alternate Screen
+- XTGETTCAP → [25.3](#253-xtgettcap). Harbor answers `DCS + q`; tmux itself does not emit XTGETTCAP, and the tmux passthrough wrapper is not implemented.
+- DECRQSS → [25.2](#252-decrqss); DECRQM → [22](#22-mode-queries); DA1 and DA2 → [21](#21-device-status-reports).
+- OSC 8 → [24.6](#246-hyperlinks); OSC 52 → [24.7](#247-clipboard).
+- Bracketed Paste → [29](#29-bracketed-paste); Focus Reporting and SGR Mouse → [28](#28-mouse-protocol-output).
+- Application Cursor and Application Keypad → [31](#31-keyboard-mode-related-protocols); Alternate Screen → [17.4](#174-alternate-screen).
 
 ### 37.4 Modern Shell Integration
 
-* [x] OSC 7
-* [x] OSC 8
-* [x] OSC 133
-* [ ] OSC 9/99/777 optional
-* [x] OSC 1337 can be safely ignored
-* [ ] Synchronized Output
+- OSC 7 → [24.5](#245-current-working-directory); OSC 8 → [24.6](#246-hyperlinks); OSC 133 → [24.8](#248-shell-integration).
+- Optional OSC 9/99/777 → [24.9](#249-notification-extensions); safely ignoring OSC 1337 → [24.10](#2410-osc-1337).
+- Synchronized Output → [30](#30-synchronized-output).
 
 ---
 
@@ -1543,22 +1520,26 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 38.7 Queries
 
-* [ ] `\x1b[5n`
-* [ ] `\x1b[6n`
-* [ ] `\x1b[c`
-* [ ] `\x1b[>c`
-* [ ] `\x1b[?25$p`
-* [ ] `\x1bP$qm\x1b\\`
+* [x] `\x1b[5n`
+* [x] `\x1b[6n`
+* [x] `\x1b[c`
+* [x] `\x1b[>c`
+* [x] `\x1b[?25$p`
+* [x] `\x1bP$qm\x1b\\`
+
+Evidence: `crates/harbor-terminal/src/parser/handlers.rs`, `device_attributes.rs`, `mode_query.rs`, and `status_strings.rs`; tests in `crates/harbor-terminal/src/parser/tests.rs`: `dsr_status_report_replies_ok`, `cpr_standard_report_absolute_coordinates`, `should_reply_with_primary_device_attributes_when_query_is_omitted`, `should_reply_with_secondary_device_attributes_when_query_is_omitted`, `should_report_private_mode_states_with_private_marker`, and `decrqss_default_sgr_returns_reset`. Mode-query chunking is also covered by `should_preserve_mode_query_replies_when_stream_is_chunked` in `parser/incremental_tests.rs`.
 
 ### 38.8 OSC
 
-* [ ] `\x1b]0;title\x07`
-* [ ] `\x1b]2;title\x1b\\`
-* [ ] `\x1b]7;file:///tmp\x1b\\`
-* [ ] `\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\`
-* [ ] `\x1b]10;?\x1b\\`
-* [ ] `\x1b]11;?\x1b\\`
-* [ ] `\x1b]52;c;SGVsbG8=\x1b\\`
+* [x] `\x1b]0;title\x07`
+* [x] `\x1b]2;title\x1b\\`
+* [x] `\x1b]7;file:///tmp\x1b\\`
+* [x] `\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\`
+* [x] `\x1b]10;?\x1b\\`
+* [x] `\x1b]11;?\x1b\\`
+* [ ] `\x1b]52;c;SGVsbG8=\x1b\\` — clipboard protocol not implemented
+
+Evidence covers these representative sequence forms, not necessarily identical text payloads: `crates/harbor-terminal/src/parser/handlers.rs`, `osc7.rs`, `osc8.rs`, and `osc_color.rs`; `osc_titles_validate_and_drain_once_in_fifo_order` and `osc7_emits_structured_metadata_in_fifo_order_and_drains_once` in `crates/harbor-terminal/src/terminal_tests.rs`; `osc8_applies_cell_state_and_obeys_close_reset_and_invalid_preservation` and `osc_default_colors_set_query_reset_and_round_trip_all_slots` in `crates/harbor-terminal/src/parser/tests.rs`.
 
 ### 38.9 Character Sets
 
@@ -1577,8 +1558,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] New ESC inserted within CSI
 * [x] Oversized parameter
 * [x] Excessive parameters
-* [ ] Oversized OSC
-* [ ] Oversized DCS
+* [x] Oversized OSC — `should_bound_and_recover_each_string_family_at_limit_and_overflow` in `crates/harbor-parser/src/core/property_tests.rs`; implementation in `src/core.rs`
+* [x] Oversized DCS — same bounded string-family test and implementation
 * [x] Unknown Final
 * [x] Unknown Private Marker
 * [x] Unknown Intermediate combination
@@ -1586,6 +1567,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 ---
 
 ## 39. Final Acceptance
+
+These are end-to-end/release acceptance requirements, not aliases of the source-level checks above. Every open Windows application, rendering, input, hyperlink, and reply check below has status **needs runtime evidence** (Windows real-machine session and reproducible results); it remains open even where directed tests exist. No Windows session or fuzz campaign was executed for this documentation update. Existing checked source-level invariants are not Windows acceptance evidence.
 
 * [ ] All control sequences support arbitrary input fragmentation
 * [ ] All unknown sequences can be safely ignored
@@ -1605,6 +1588,6 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [ ] OSC 8 Hyperlink correct
 * [ ] DSR, DA, DECRQM, DECRQSS responses correct
 * [x] Malformed sequences do not permanently desynchronize the parser
-* [ ] Arbitrary byte input does not panic — fuzz/property evidence required
-* [ ] Arbitrary byte input does not cause infinite loops — fuzz/property evidence required
-* [ ] Arbitrary byte input does not cause unbounded memory growth — fuzz/property evidence required
+* [ ] Arbitrary byte input does not panic — stable property tests passed in the [refresh verification](../verification/documentation-refresh.md); recorded fuzz replay/campaign evidence still pending
+* [ ] Arbitrary byte input does not cause infinite loops — same property-run evidence; bounded fuzz campaign still pending
+* [ ] Arbitrary byte input does not cause unbounded memory growth — same parser-retention property evidence; fuzz runtime evidence and separate handler-owned allocation limits remain required
