@@ -18,6 +18,8 @@ Start with the question you want to answer. Current implementation, future plans
 
 | Area                                                    | Document                                                      |
 | ------------------------------------------------------- | ------------------------------------------------------------- |
+| `harbor-widget` installation and usage                  | [`harbor-widget` README](../crates/harbor-widget/README.md)   |
+| `harbor-terminal` parsing, PTY, input and rendering     | [`harbor-terminal` README](../crates/harbor-terminal/README.md) |
 | Widget/runtime ownership and host integration           | [Widget Runtime Architecture](architecture/widget-runtime.md) |
 | Desktop widget foundations and remaining capabilities   | [Widget Capability Plan](widget-capability-plan.md)           |
 | Parent-directed flex measurement and allocation         | [Flex Layout](flex-layout.md)                                 |
