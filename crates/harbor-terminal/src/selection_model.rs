@@ -6,6 +6,9 @@
 
 use crate::content_anchor::{Affinity, AnchorMutationBatch, ContentAnchor, ContentProjection};
 use crate::model::{SelectionBounds, TerminalSnapshot};
+use crate::primary_reflow::{
+    PreparedPrimaryWidthReflow, PreparedProjection, PreparedSelectionProjection,
+};
 use std::time::{Duration, Instant};
 
 /// Returns whether a character belongs to a double-click word.
@@ -454,6 +457,23 @@ impl SelectionModel {
         self.range = Some(SelectionRange::new(anchor_projection, cursor_projection));
         self.anchored_range = Some(anchored);
         self.range != previous
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prepared_projection(
+        &self,
+        prepared: &PreparedPrimaryWidthReflow,
+    ) -> PreparedProjection<PreparedSelectionProjection> {
+        let Some(anchored) = self.anchored_range else {
+            return PreparedProjection::Absent;
+        };
+        let Some(anchor) = prepared.project_selection(anchored.anchor.anchor) else {
+            return PreparedProjection::Invalid;
+        };
+        let Some(cursor) = prepared.project_selection(anchored.cursor.anchor) else {
+            return PreparedProjection::Invalid;
+        };
+        PreparedProjection::Projected(PreparedSelectionProjection { anchor, cursor })
     }
 
     /// Whether the current selection range is zero-width (anchor == cursor).
@@ -1380,5 +1400,43 @@ mod tests {
         model.drag_to((0, 5), &snapshot);
         assert!(model.has_selection());
         assert!(!model.is_range_empty());
+    }
+
+    #[test]
+    fn prepared_projection_preserves_forward_endpoints_and_fails_closed() {
+        let mut screen = Screen::new(2, 4);
+        for ch in "abcd".chars() {
+            screen.write_char(ch);
+        }
+        let projection = screen.content_projection().unwrap();
+        let mut model = SelectionModel::new();
+        model.range = Some(SelectionRange::new(GenPos::new(0, 1), GenPos::new(0, 3)));
+        assert!(model.commit_anchors(&projection));
+        let prepared = screen.prepare_primary_width_reflow(2).unwrap();
+
+        assert_eq!(
+            model.prepared_projection(&prepared),
+            PreparedProjection::Projected(PreparedSelectionProjection {
+                anchor: crate::primary_reflow::ReflowPosition { row: 0, col: 1 },
+                cursor: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+            })
+        );
+
+        model.range = Some(SelectionRange::new(GenPos::new(0, 3), GenPos::new(0, 1)));
+        assert!(model.commit_anchors(&projection));
+        assert_eq!(
+            model.prepared_projection(&prepared),
+            PreparedProjection::Projected(PreparedSelectionProjection {
+                anchor: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                cursor: crate::primary_reflow::ReflowPosition { row: 0, col: 1 },
+            })
+        );
+
+        model.anchored_range.as_mut().unwrap().cursor.anchor.line_id =
+            crate::normal_buf::LogicalLineId(u64::MAX);
+        assert_eq!(
+            model.prepared_projection(&prepared),
+            PreparedProjection::Invalid
+        );
     }
 }

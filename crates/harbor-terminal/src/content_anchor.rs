@@ -20,6 +20,35 @@ pub(crate) struct ContentAnchor {
     prefer_previous_projection: bool,
 }
 
+impl ContentAnchor {
+    pub(crate) const fn from_logical_parts(
+        line_id: LogicalLineId,
+        offset: LogicalAtomOffset,
+        affinity: Affinity,
+        projection_hint: Option<GenPos>,
+        prefer_previous_projection: bool,
+    ) -> Self {
+        Self {
+            line_id,
+            offset,
+            affinity,
+            projection_hint,
+            prefer_previous_projection,
+        }
+    }
+
+    pub(crate) const fn projection_hint_col(self) -> Option<usize> {
+        match self.projection_hint {
+            Some(position) => Some(position.col),
+            None => None,
+        }
+    }
+
+    pub(crate) const fn prefers_previous_projection(self) -> bool {
+        self.prefer_previous_projection
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectedPosition {
     pub(crate) pos: GenPos,

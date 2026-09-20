@@ -5101,3 +5101,85 @@ fn partial_soft_line_eviction_rebases_surviving_anchor_without_aliasing() {
         Some(crate::GenPos::new(screen.history_start(), 0))
     );
 }
+
+#[test]
+fn prepares_live_and_saved_cursor_without_mutating_screen_geometry() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    screen.save_cursor();
+    let before = screen.terminal_snapshot();
+
+    let prepared = screen
+        .prepare_primary_width_reflow(2)
+        .expect("detached primary width preparation");
+
+    assert_eq!(
+        prepared.live_cursor,
+        crate::primary_reflow::PreparedProjection::Projected(
+            crate::primary_reflow::ProjectedInsertion {
+                position: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                pending_wrap: true,
+            }
+        )
+    );
+    assert_eq!(prepared.saved_cursor, prepared.live_cursor);
+    assert_eq!(screen.terminal_snapshot(), before);
+}
+
+#[test]
+fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() {
+    let mut screen = Screen::new(2, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+
+    let prepared = screen
+        .prepare_primary_width_reflow(4)
+        .expect("preparation reconciles pending saved anchor");
+
+    assert_eq!(
+        prepared.saved_cursor,
+        crate::primary_reflow::PreparedProjection::Projected(
+            crate::primary_reflow::ProjectedInsertion {
+                position: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                pending_wrap: false,
+            }
+        )
+    );
+    assert_eq!(
+        screen.cursor.cursor.saved.as_ref().unwrap().cursor_x,
+        4,
+        "detached preparation must not commit the adjusted source coordinate"
+    );
+}
+
+#[test]
+fn prepares_complete_history_sequence_and_review_anchor() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcdefghi".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 1);
+    screen.normal.set_view_offset(1);
+    let before_offset = screen.view_offset();
+
+    let prepared = screen
+        .prepare_primary_width_reflow(2)
+        .expect("history width preparation");
+
+    assert_eq!(prepared.rows().len(), 5);
+    assert_eq!(
+        prepared.review,
+        crate::primary_reflow::PreparedProjection::Projected(
+            crate::primary_reflow::ReflowPosition { row: 0, col: 0 }
+        )
+    );
+    assert_eq!(screen.view_offset(), before_offset);
+}

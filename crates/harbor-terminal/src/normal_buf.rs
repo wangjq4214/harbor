@@ -536,6 +536,17 @@ impl NormalBuf {
         })
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn prepare_primary_width_reflow(
+        &self,
+        requested_cols: usize,
+    ) -> Result<
+        crate::primary_reflow::PreparedPrimaryWidthReflow,
+        crate::primary_reflow::PreparationError,
+    > {
+        crate::primary_reflow::PreparedPrimaryWidthReflow::prepare(self, requested_cols)
+    }
+
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
     pub fn cells(&self) -> CellsIter<'_> {
         let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
@@ -625,6 +636,13 @@ impl NormalBuf {
     /// of the logical line from the row above.
     pub fn is_wrapped(&self, display_row: usize) -> bool {
         self.row_metadata(display_row).soft_wrapped
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_head_truncated(&mut self, display_row: usize, head_truncated: bool) {
+        debug_assert!(display_row < self.visible_rows);
+        let ring_row = self.display_to_ring(display_row);
+        self.row_metadata[ring_row].head_truncated = head_truncated;
     }
 
     /// Compatibility projection used by existing callers that only sever wraps.

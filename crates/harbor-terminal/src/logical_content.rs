@@ -5,7 +5,7 @@ use std::fmt;
 use unicode_width::UnicodeWidthChar;
 
 use crate::model::SelectionBounds;
-use crate::normal_buf::{LogicalLineId, NormalBuf, RetainedRow};
+use crate::normal_buf::{CellState, LogicalLineId, NormalBuf, RetainedRow};
 use crate::screen::Cell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +23,23 @@ pub(crate) struct LogicalGlyph {
     pub(crate) cell: Cell,
     pub(crate) width: u8,
     pub(crate) meaningful_blank: bool,
+    pub(crate) cell_state: CellState,
+    pub(crate) continuation_state: Option<CellState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LogicalLineGlyph {
+    pub(crate) atom_offset: LogicalAtomOffset,
+    pub(crate) source_span: SourceSpan,
+    pub(crate) glyph: LogicalGlyph,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LogicalLine {
+    pub(crate) line_id: LogicalLineId,
+    pub(crate) head_truncated: bool,
+    pub(crate) generations: Vec<u64>,
+    pub(crate) glyphs: Vec<LogicalLineGlyph>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +60,7 @@ pub(crate) enum DecodeErrorKind {
     OrphanWideContinuation,
     MissingWideContinuation,
     InconsistentSoftWrap,
+    InconsistentLogicalLine,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,12 +160,90 @@ fn decode_row(
                 cell: normalized_cell,
                 width,
                 meaningful_blank: cell.ch == ' ' && row.cell_state[col].is_meaningful(),
+                cell_state: row.cell_state[col],
+                continuation_state: (width == 2).then(|| row.cell_state[col + 1]),
             },
         });
         *atom_offset += 1;
         col += usize::from(width);
     }
     Ok(())
+}
+
+pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, DecodeError> {
+    let rows: Vec<_> = normal.retained_rows().collect();
+    let atoms = decode(normal)?;
+    let mut lines = Vec::new();
+
+    for (index, row) in rows.iter().enumerate() {
+        if index == 0 || !row.metadata.soft_wrapped {
+            lines.push(LogicalLine {
+                line_id: row.metadata.logical_line_id,
+                head_truncated: row.metadata.head_truncated,
+                generations: vec![row.generation],
+                glyphs: Vec::new(),
+            });
+        } else if let Some(line) = lines.last_mut() {
+            line.head_truncated |= row.metadata.head_truncated;
+            line.generations.push(row.generation);
+        }
+    }
+
+    let mut line_index = 0usize;
+    for atom in atoms {
+        match atom {
+            LogicalAtom::HardBreak { after_generation } => {
+                line_index = line_index.checked_add(1).ok_or(DecodeError {
+                    generation: after_generation,
+                    column: 0,
+                    kind: DecodeErrorKind::InconsistentLogicalLine,
+                })?;
+                if line_index >= lines.len() {
+                    return Err(DecodeError {
+                        generation: after_generation,
+                        column: 0,
+                        kind: DecodeErrorKind::InconsistentLogicalLine,
+                    });
+                }
+            }
+            LogicalAtom::Glyph {
+                line_id,
+                atom_offset,
+                source_span,
+                glyph,
+            } => {
+                let Some(line) = lines.get_mut(line_index) else {
+                    return Err(DecodeError {
+                        generation: source_span.generation,
+                        column: source_span.start_col,
+                        kind: DecodeErrorKind::InconsistentLogicalLine,
+                    });
+                };
+                if line.line_id != line_id || atom_offset.0 != line.glyphs.len() {
+                    return Err(DecodeError {
+                        generation: source_span.generation,
+                        column: source_span.start_col,
+                        kind: DecodeErrorKind::InconsistentLogicalLine,
+                    });
+                }
+                line.glyphs.push(LogicalLineGlyph {
+                    atom_offset,
+                    source_span,
+                    glyph,
+                });
+            }
+        }
+    }
+
+    if !lines.is_empty() && line_index + 1 != lines.len() {
+        return Err(DecodeError {
+            generation: rows.last().map_or(0, |row| row.generation),
+            column: 0,
+            kind: DecodeErrorKind::InconsistentLogicalLine,
+        });
+    }
+
+    Ok(lines)
 }
 
 pub(crate) fn selected_text(

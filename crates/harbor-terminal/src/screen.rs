@@ -26,6 +26,7 @@ use crate::content_anchor::{
 };
 use crate::logical_content::{DecodeError, LogicalAtomOffset};
 use crate::normal_buf::{CellsIter, LogicalLineId};
+use crate::primary_reflow::{PreparationError, PreparedPrimaryWidthReflow, PreparedProjection};
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
@@ -378,6 +379,53 @@ impl Screen {
 
     pub(crate) fn content_projection(&self) -> Result<ContentProjection, DecodeError> {
         ContentProjection::build(&self.normal)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prepare_primary_width_reflow(
+        &self,
+        requested_cols: usize,
+    ) -> Result<PreparedPrimaryWidthReflow, PreparationError> {
+        let prepared = self.normal.prepare_primary_width_reflow(requested_cols)?;
+        let live_cursor = prepared
+            .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
+            .ok_or(PreparationError::UnresolvedLiveCursor)?;
+        let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
+        let saved_cursor = match self.cursor.cursor.saved.as_ref() {
+            None => PreparedProjection::Absent,
+            Some(saved) => {
+                let anchor = if let Some(anchor) = saved.anchor {
+                    self.anchor_mutations.apply(anchor)
+                } else {
+                    prepared.source_cursor_anchor(
+                        GenPos::new(
+                            live_top.saturating_add(saved.cursor_y as u64),
+                            saved.cursor_x,
+                        ),
+                        saved.pending_wrap,
+                    )
+                };
+                anchor.map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
+            }
+        };
+        let review = if self.normal.view_offset() == 0 {
+            PreparedProjection::Absent
+        } else if let Some(anchor) = self.review_anchor {
+            self.anchor_mutations
+                .apply(anchor)
+                .map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
+        } else {
+            let generation = self.normal.history_start()
+                + self
+                    .normal
+                    .scroll_count()
+                    .saturating_sub(self.normal.view_offset()) as u64;
+            prepared
+                .source_anchor(GenPos::new(generation, 0), Affinity::Before)
+                .map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
+        };
+
+        prepared.attach_screen_anchors(live_cursor, saved_cursor, review)
     }
 
     fn live_cursor_position(&self) -> GenPos {

@@ -7,6 +7,7 @@ mod model;
 mod normal_buf;
 mod parser;
 mod pointer;
+mod primary_reflow;
 pub mod render;
 mod screen;
 pub mod selection_model;
