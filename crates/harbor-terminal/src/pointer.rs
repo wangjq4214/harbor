@@ -111,11 +111,7 @@ impl PointerInteraction {
         self.saved_primary_selection = prepared.saved_primary_selection;
         self.parked_alt_selection = prepared.parked_alt_selection;
         if prepared.active_invalidated {
-            self.pending_release = self
-                .active
-                .take()
-                .map(ActivePointer::pointer_id)
-                .or(self.pending_release);
+            self.queue_local_release();
             self.mouse_buttons = 0;
         }
     }
@@ -150,11 +146,7 @@ impl PointerInteraction {
 
     fn cancel_active_for_buffer_transition(&mut self) {
         let _ = self.selection.cancel();
-        self.pending_release = self
-            .active
-            .take()
-            .map(ActivePointer::pointer_id)
-            .or(self.pending_release);
+        self.queue_local_release();
         self.mouse_buttons = 0;
     }
 
@@ -198,15 +190,10 @@ impl PointerInteraction {
     }
 
     pub fn clear(&mut self) {
-        self.pending_release = self
-            .active
-            .take()
-            .map(ActivePointer::pointer_id)
-            .or(self.pending_release);
+        self.queue_local_release();
         self.selection.clear();
         self.saved_primary_selection = None;
         self.parked_alt_selection = None;
-        self.active = None;
         self.mouse_buttons = 0;
     }
 
@@ -242,12 +229,7 @@ impl PointerInteraction {
     }
 
     pub fn cancel(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self
-            .active
-            .take()
-            .map(ActivePointer::pointer_id)
-            .or_else(|| self.vt_capture.take())
-            .or_else(|| self.pending_release.take());
+        let release_pointer = self.consume_release_sources();
         self.mouse_buttons = 0;
         let redraw = self.selection.cancel() != SelectionOutcome::None;
         TerminalEventOutcome {
@@ -285,6 +267,26 @@ impl PointerInteraction {
 
     /// Interrupts only local selection/scrollbar capture when VT mouse reporting takes over.
     pub fn cancel_local_pointer(&mut self) -> TerminalEventOutcome {
+        self.local_interruption()
+    }
+
+    fn queue_local_release(&mut self) {
+        self.pending_release = self
+            .active
+            .take()
+            .map(ActivePointer::pointer_id)
+            .or(self.pending_release);
+    }
+
+    fn consume_release_sources(&mut self) -> Option<u64> {
+        self.active
+            .take()
+            .map(ActivePointer::pointer_id)
+            .or_else(|| self.vt_capture.take())
+            .or_else(|| self.pending_release.take())
+    }
+
+    fn local_interruption(&mut self) -> TerminalEventOutcome {
         let release_pointer = self.active.take().map(ActivePointer::pointer_id);
         let redraw = self.selection.cancel() != SelectionOutcome::None;
         TerminalEventOutcome {
@@ -293,6 +295,7 @@ impl PointerInteraction {
             ..TerminalEventOutcome::default()
         }
     }
+
     /// Releases the active pointer and clears button state after a selection interrupt.
     fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
         let release_pointer = self
@@ -317,9 +320,7 @@ impl PointerInteraction {
         let Some(viewport) = self.viewport else {
             return TerminalEventOutcome::default();
         };
-        let snapshot = screen.terminal_snapshot();
         let physical_position = self.physical_position(event.position);
-
         if matches!(
             event.phase,
             TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
@@ -343,18 +344,21 @@ impl PointerInteraction {
             };
         }
 
+        if let TerminalPointerPhase::WheelLine { dy, .. }
+        | TerminalPointerPhase::WheelPixel { dy, .. } = event.phase
+        {
+            let interrupted = self.local_interruption();
+            let is_pixel = matches!(event.phase, TerminalPointerPhase::WheelPixel { .. });
+            let lines = screen.scroll_wheel(dy, is_pixel);
+            return TerminalEventOutcome {
+                redraw: lines != 0 || interrupted.redraw,
+                release_pointer: interrupted.release_pointer,
+                ..TerminalEventOutcome::default()
+            };
+        }
+
+        let snapshot = screen.terminal_snapshot();
         match event.phase {
-            TerminalPointerPhase::WheelLine { dy, .. }
-            | TerminalPointerPhase::WheelPixel { dy, .. } => {
-                let interrupted = self.cancel_local_pointer();
-                let is_pixel = matches!(event.phase, TerminalPointerPhase::WheelPixel { .. });
-                let lines = screen.scroll_wheel(dy, is_pixel);
-                TerminalEventOutcome {
-                    redraw: lines != 0 || interrupted.redraw,
-                    release_pointer: interrupted.release_pointer,
-                    ..TerminalEventOutcome::default()
-                }
-            }
             TerminalPointerPhase::Down if event.button == TerminalPointerButton::Left => {
                 match hit_test(&snapshot, &viewport, physical_position) {
                     ScrollbarHit::Thumb { grab_offset } => {
@@ -540,11 +544,7 @@ impl PointerInteraction {
         let had_selection = self.selection.has_selection();
         let changed = self.selection.reconcile_anchors(mutations, projection);
         if had_selection && !self.selection.has_selection() {
-            self.pending_release = self
-                .active
-                .take()
-                .map(ActivePointer::pointer_id)
-                .or(self.pending_release);
+            self.queue_local_release();
             self.mouse_buttons = 0;
         }
         changed
@@ -843,5 +843,77 @@ mod tests {
             now,
         );
         assert!(replaced.hyperlink_activation.is_none());
+    }
+
+    #[test]
+    fn cancel_consumes_local_vt_and_pending_releases_in_precedence_order() {
+        let mut pointer = PointerInteraction::new();
+        pointer.active = Some(ActivePointer::Scrollbar {
+            pointer_id: 1,
+            grab_offset: 0.0,
+        });
+        pointer.vt_capture = Some(2);
+        pointer.pending_release = Some(3);
+        pointer.mouse_buttons = 7;
+
+        assert_eq!(pointer.cancel().release_pointer, Some(1));
+        assert_eq!(pointer.mouse_buttons, 0);
+        assert_eq!(pointer.cancel().release_pointer, Some(2));
+        assert_eq!(pointer.cancel().release_pointer, Some(3));
+        assert!(!pointer.has_active_pointer());
+    }
+
+    #[test]
+    fn pending_release_precedes_matching_vt_release() {
+        let mut screen = Screen::new(2, 10);
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        pointer.pending_release = Some(7);
+        pointer.begin_vt_capture(7);
+        let now = Instant::now();
+
+        let pending = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Up, 7),
+            now,
+        );
+        assert_eq!(pending.release_pointer, Some(7));
+        assert!(pointer.has_active_pointer());
+
+        let vt = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Cancel, 7),
+            now,
+        );
+        assert_eq!(vt.release_pointer, Some(7));
+        assert!(!pointer.has_active_pointer());
+    }
+
+    #[test]
+    fn wheel_interrupts_only_local_capture() {
+        let mut screen = Screen::new(2, 10);
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let now = Instant::now();
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 11),
+            now,
+        );
+        pointer.begin_vt_capture(22);
+
+        let wheel = pointer.handle_pointer(
+            &mut screen,
+            TerminalPointerEvent::new(
+                (1.0, 1.0),
+                TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
+                TerminalPointerButton::None,
+                33,
+            ),
+            now,
+        );
+
+        assert_eq!(wheel.release_pointer, Some(11));
+        assert_eq!(pointer.cancel().release_pointer, Some(22));
     }
 }

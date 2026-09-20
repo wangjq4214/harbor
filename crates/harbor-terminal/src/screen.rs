@@ -26,7 +26,7 @@ use crate::content_anchor::{
 };
 use crate::logical_content::{DecodeError, LogicalAtomOffset};
 use crate::normal_buf::{CellsIter, LogicalLineId};
-use crate::primary_reflow::{PreparationError, PreparedPrimaryWidthReflow, PreparedProjection};
+use crate::primary_reflow::{PreparationError, PreparedPrimaryResize, PreparedProjection};
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
@@ -56,14 +56,10 @@ pub use harbor_config::Color;
 
 /// State reported by DECRPM for a queried terminal mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-// The permanent DECRPM statuses are reserved for future fixed-mode support.
-#[allow(dead_code)]
 pub(crate) enum ModeStatus {
     Unknown,
     Set,
     Reset,
-    PermanentlySet,
-    PermanentlyReset,
 }
 
 impl ModeStatus {
@@ -72,8 +68,6 @@ impl ModeStatus {
             Self::Unknown => 0,
             Self::Set => 1,
             Self::Reset => 2,
-            Self::PermanentlySet => 3,
-            Self::PermanentlyReset => 4,
         }
     }
 }
@@ -287,10 +281,6 @@ impl Screen {
         self.normal.view_offset()
     }
 
-    pub fn visible_rows(&self) -> usize {
-        self.normal.rows()
-    }
-
     pub fn history_start(&self) -> u64 {
         self.normal.history_start()
     }
@@ -480,7 +470,7 @@ impl Screen {
         &self,
         requested_rows: usize,
         requested_cols: usize,
-    ) -> Result<PreparedPrimaryWidthReflow, PreparationError> {
+    ) -> Result<PreparedPrimaryResize, PreparationError> {
         let prepared = self
             .normal
             .prepare_primary_resize(requested_rows, requested_cols)?;
@@ -581,14 +571,6 @@ impl Screen {
         prepared.attach_screen_anchors(live_cursor, saved_cursor, review)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn prepare_primary_width_reflow(
-        &self,
-        requested_cols: usize,
-    ) -> Result<PreparedPrimaryWidthReflow, PreparationError> {
-        self.prepare_primary_resize(self.normal.rows(), requested_cols)
-    }
-
     fn live_cursor_position(&self) -> GenPos {
         GenPos::new(
             self.normal.history_start()
@@ -596,15 +578,6 @@ impl Screen {
                 + self.cursor.cursor.y as u64,
             self.cursor.cursor.x,
         )
-    }
-
-    fn sync_current_cursor_anchor(&mut self) {
-        let position = self.live_cursor_position();
-        let pending_wrap = self.cursor.modes.pending_wrap;
-        self.cursor.cursor.anchor = self
-            .content_projection()
-            .ok()
-            .and_then(|projection| projection.cursor_anchor(position, pending_wrap));
     }
 
     fn capture_edit_anchor(
@@ -795,7 +768,7 @@ impl Screen {
                         line_id,
                         end: after_start,
                     });
-                } else if !self.anchor_mutations.transforms_line(line_id)
+                } else if !self.anchor_mutations.affects_line(line_id)
                     && let (Some(old_spans), Some(new_spans)) =
                         (before.atom_spans(line_id), projection.atom_spans(line_id))
                 {
@@ -821,7 +794,7 @@ impl Screen {
                     let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
                     let old_generation = live_top.saturating_add(saved.cursor_y as u64);
                     let needs_projection = adjusted != anchor
-                        || mutations.requires_reprojection(adjusted.line_id)
+                        || mutations.affects_line(adjusted.line_id)
                         || !projection.contains_generation(adjusted.line_id, old_generation);
                     if needs_projection {
                         if let Some(projected) = projection.resolve_cursor(adjusted)
@@ -830,9 +803,7 @@ impl Screen {
                             && row < self.normal.rows()
                         {
                             saved.cursor_y = row;
-                            if adjusted != anchor
-                                || mutations.requires_reprojection(adjusted.line_id)
-                            {
+                            if adjusted != anchor || mutations.affects_line(adjusted.line_id) {
                                 saved.cursor_x = projected.pos.col;
                                 saved.pending_wrap = projected.pending_wrap;
                             }
@@ -863,9 +834,6 @@ impl Screen {
             }
         }
 
-        let cursor_position = self.live_cursor_position();
-        let pending_wrap = self.cursor.modes.pending_wrap;
-        self.cursor.cursor.anchor = projection.cursor_anchor(cursor_position, pending_wrap);
         Ok((mutations, projection))
     }
 
@@ -1088,7 +1056,6 @@ impl Screen {
                     .map_err(|_| PreparationError::ArithmeticOverflow)?;
                 cursor.cursor.x = live.position.col;
                 cursor.modes.pending_wrap = live.pending_wrap;
-                cursor.cursor.anchor = projection.cursor_anchor(live.position, live.pending_wrap);
                 match saved_cursor {
                     PreparedProjection::Projected(projected) => {
                         if let Some(saved) = cursor.cursor.saved.as_mut() {
@@ -1164,16 +1131,6 @@ impl Screen {
                 let mut cursor = self.cursor.clone();
                 cursor.clamp_to_grid(rows, cols);
                 let live_top = normal.history_start();
-                let live_position = GenPos::new(
-                    live_top
-                        .checked_add(
-                            u64::try_from(cursor.cursor.y)
-                                .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                        )
-                        .ok_or(PreparationError::ArithmeticOverflow)?,
-                    cursor.cursor.x,
-                );
-                cursor.cursor.anchor = projection.cursor_anchor(live_position, false);
                 if let Some(saved) = cursor.cursor.saved.as_mut() {
                     let saved_position = GenPos::new(
                         live_top
@@ -1326,11 +1283,6 @@ impl Screen {
         self.cursor.set_cursor_row(&self.normal, row_1_based);
     }
 
-    pub fn set_cursor(&mut self, row_1_based: usize, col_1_based: usize) {
-        self.cursor
-            .set_cursor_position(&self.normal, row_1_based, col_1_based);
-    }
-
     pub fn home_cursor(&mut self) {
         self.cursor.home_cursor();
     }
@@ -1387,7 +1339,7 @@ impl Screen {
                 }
             }
             other => {
-                if !self.cursor.set_private_mode(&self.normal, other, enabled) {
+                if !self.cursor.set_private_mode(other, enabled) {
                     tracing::warn!("unsupported private mode: ?{}", other);
                 }
             }
@@ -1677,19 +1629,18 @@ impl Screen {
     // ── cursor save / restore ──────────────────────────────────────────
 
     pub fn save_cursor(&mut self) {
-        self.sync_current_cursor_anchor();
-        self.cursor.save_cursor_position();
+        let position = self.live_cursor_position();
+        let pending_wrap = self.cursor.modes.pending_wrap;
+        let anchor = self
+            .content_projection()
+            .ok()
+            .and_then(|projection| projection.cursor_anchor(position, pending_wrap));
+        self.cursor.save_cursor_position(anchor);
         self.pen_state.save_pen();
     }
 
     pub fn restore_cursor(&mut self) {
         self.cursor.restore_cursor_position();
-        self.cursor.cursor.anchor = self
-            .cursor
-            .cursor
-            .saved
-            .as_ref()
-            .and_then(|saved| saved.anchor);
         self.pen_state.restore_pen();
     }
 

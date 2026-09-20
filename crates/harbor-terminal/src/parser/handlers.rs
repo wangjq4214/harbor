@@ -1,7 +1,7 @@
 //! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
-use super::device_attributes::{PrimaryDeviceAttributes, SecondaryDeviceAttributes};
-use super::mode_query::ModeQuery;
+use super::device_attributes::{PRIMARY_REPLY, SECONDARY_REPLY, accepts_default_query};
+use super::mode_query;
 use super::osc_color;
 use super::osc7;
 use super::osc8;
@@ -10,7 +10,6 @@ use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
-use std::collections::VecDeque;
 
 use crate::TerminalOutputEvent;
 use harbor_parser::{Params, VtHandler};
@@ -20,7 +19,7 @@ pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
     pub decrqss: &'a mut DecrqssRequest,
     pub xtgettcap: &'a mut XtgettcapRequest,
-    pub output_events: &'a mut VecDeque<TerminalOutputEvent>,
+    pub output_events: &'a mut Vec<TerminalOutputEvent>,
 }
 
 impl VtHandler for ScreenHandler<'_> {
@@ -49,10 +48,10 @@ impl VtHandler for ScreenHandler<'_> {
         private_marker: Option<u8>,
     ) {
         if intermediates == b"$" && action == b'p' && matches!(private_marker, None | Some(b'?')) {
-            if let Some(param) = ModeQuery::param(params) {
+            if let Some(param) = mode_query::param(params) {
                 let private = private_marker == Some(b'?');
                 let reply =
-                    ModeQuery::reply(param, self.screen.mode_status(private, param), private);
+                    mode_query::reply(param, self.screen.mode_status(private, param), private);
                 self.screen.push_reply(&reply);
             }
             return;
@@ -88,12 +87,8 @@ impl VtHandler for ScreenHandler<'_> {
                 return;
             }
             Some(b'>') => {
-                if intermediates.is_empty()
-                    && action == b'c'
-                    && SecondaryDeviceAttributes::accepts(params)
-                {
-                    let reply = SecondaryDeviceAttributes::reply();
-                    self.screen.push_reply(&reply);
+                if intermediates.is_empty() && action == b'c' && accepts_default_query(params) {
+                    self.screen.push_reply(SECONDARY_REPLY);
                 }
                 return;
             }
@@ -141,22 +136,15 @@ impl VtHandler for ScreenHandler<'_> {
 
         match action {
             b'c' => {
-                if PrimaryDeviceAttributes::accepts(params) {
-                    let reply = PrimaryDeviceAttributes::reply();
-                    self.screen.push_reply(&reply);
+                if accepts_default_query(params) {
+                    self.screen.push_reply(PRIMARY_REPLY);
                 }
             }
             b'A' => self.screen.cursor_up(params.get_or(0, 1)),
-            b'B' => self.screen.cursor_down(params.get_or(0, 1)),
-            b'e' => {
-                // VPR — Vertical Position Relative (alias of CUD)
-                self.screen.cursor_down(params.get_or(0, 1));
-            }
-            b'C' => self.screen.cursor_right(params.get_or(0, 1)),
-            b'a' => {
-                // HPR — Horizontal Position Relative (alias of CUF)
-                self.screen.cursor_right(params.get_or(0, 1));
-            }
+            // VPR (`e`) is an alias of CUD (`B`).
+            b'B' | b'e' => self.screen.cursor_down(params.get_or(0, 1)),
+            // HPR (`a`) is an alias of CUF (`C`).
+            b'C' | b'a' => self.screen.cursor_right(params.get_or(0, 1)),
             b'D' => self.screen.cursor_left(params.get_or(0, 1)),
             b'E' => {
                 let n = params.get_or(0, 1);
@@ -168,13 +156,8 @@ impl VtHandler for ScreenHandler<'_> {
                 self.screen.cursor_up(n);
                 self.screen.carriage_return();
             }
-            b'G' => {
-                self.screen.set_cursor_col(params.get_or(0, 1));
-            }
-            b'`' => {
-                // HPA — Horizontal Position Absolute (alias of CHA)
-                self.screen.set_cursor_col(params.get_or(0, 1));
-            }
+            // HPA (`` ` ``) is an alias of CHA (`G`).
+            b'G' | b'`' => self.screen.set_cursor_col(params.get_or(0, 1)),
             b'H' | b'f' => {
                 self.screen
                     .set_cursor_position(params.get_or(0, 1), params.get_or(1, 1));
@@ -266,12 +249,11 @@ impl VtHandler for ScreenHandler<'_> {
             }
             b'c' => {
                 self.screen.reset_display();
+                self.output_events.push(TerminalOutputEvent::TitleReset);
                 self.output_events
-                    .push_back(TerminalOutputEvent::TitleReset);
+                    .push(TerminalOutputEvent::WorkingDirectoryReset);
                 self.output_events
-                    .push_back(TerminalOutputEvent::WorkingDirectoryReset);
-                self.output_events
-                    .push_back(TerminalOutputEvent::ShellIntegrationReset);
+                    .push(TerminalOutputEvent::ShellIntegrationReset);
             }
             b'D' => {
                 self.screen.index();
@@ -297,10 +279,7 @@ impl VtHandler for ScreenHandler<'_> {
             b'>' => {
                 self.screen.set_application_keypad(false);
             }
-            b'Z' => {
-                let reply = PrimaryDeviceAttributes::reply();
-                self.screen.push_reply(&reply);
-            }
+            b'Z' => self.screen.push_reply(PRIMARY_REPLY),
             _ => {
                 tracing::warn!("unsupported escape sequence: ESC 0x{byte:02x}");
             }
@@ -339,20 +318,20 @@ impl VtHandler for ScreenHandler<'_> {
         if command == b"7" {
             if payload.is_empty() {
                 self.output_events
-                    .push_back(TerminalOutputEvent::WorkingDirectoryReset);
+                    .push(TerminalOutputEvent::WorkingDirectoryReset);
             } else if let Some(metadata) = osc7::parse(payload) {
                 self.output_events
-                    .push_back(TerminalOutputEvent::WorkingDirectoryChanged(metadata));
+                    .push(TerminalOutputEvent::WorkingDirectoryChanged(metadata));
             }
             return;
         }
         if command == b"133" {
             if payload.is_empty() {
                 self.output_events
-                    .push_back(TerminalOutputEvent::ShellIntegrationReset);
+                    .push(TerminalOutputEvent::ShellIntegrationReset);
             } else if let Some(marker) = osc133::parse(payload) {
                 self.output_events
-                    .push_back(TerminalOutputEvent::ShellIntegration(marker));
+                    .push(TerminalOutputEvent::ShellIntegration(marker));
             }
             return;
         }
@@ -360,8 +339,7 @@ impl VtHandler for ScreenHandler<'_> {
             return;
         }
         if payload.is_empty() {
-            self.output_events
-                .push_back(TerminalOutputEvent::TitleReset);
+            self.output_events.push(TerminalOutputEvent::TitleReset);
             return;
         }
         let Ok(title) = std::str::from_utf8(payload) else {
@@ -372,7 +350,7 @@ impl VtHandler for ScreenHandler<'_> {
             return;
         }
         self.output_events
-            .push_back(TerminalOutputEvent::TitleChanged(title.to_owned()));
+            .push(TerminalOutputEvent::TitleChanged(title.to_owned()));
     }
 
     fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {

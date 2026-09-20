@@ -21,7 +21,6 @@ use crate::screen::Screen;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
 use status_strings::DecrqssRequest;
-use std::collections::VecDeque;
 use xtgettcap::XtgettcapRequest;
 
 /// Streaming terminal parser.
@@ -33,7 +32,7 @@ pub struct TerminalParser {
     inner: Parser,
     decrqss: DecrqssRequest,
     xtgettcap: XtgettcapRequest,
-    output_events: VecDeque<TerminalOutputEvent>,
+    output_events: Vec<TerminalOutputEvent>,
 }
 
 /// Result of feeding bytes through the parser.
@@ -79,6 +78,6 @@ impl TerminalParser {
     }
 
     pub(crate) fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
-        self.output_events.drain(..).collect()
+        std::mem::take(&mut self.output_events)
     }
 }

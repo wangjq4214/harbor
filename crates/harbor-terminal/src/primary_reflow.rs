@@ -33,12 +33,6 @@ pub(crate) struct ProjectedInsertion {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PreparedSelectionProjection {
-    pub(crate) anchor: GenPos,
-    pub(crate) cursor: GenPos,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PreparedProjection<T> {
     Absent,
     Projected(T),
@@ -120,16 +114,10 @@ pub(crate) struct PreparedPrimaryResize {
     pub(crate) review: PreparedProjection<GenPos>,
 }
 
+#[cfg(test)]
 pub(crate) type PreparedPrimaryWidthReflow = PreparedPrimaryResize;
 
 impl PreparedPrimaryResize {
-    pub(crate) fn prepare(
-        normal: &NormalBuf,
-        requested_cols: usize,
-    ) -> Result<Self, PreparationError> {
-        Self::prepare_geometry(normal, normal.rows(), requested_cols)
-    }
-
     pub(crate) fn prepare_geometry(
         normal: &NormalBuf,
         requested_rows: usize,
@@ -884,7 +872,8 @@ mod tests {
             },
         );
 
-        let prepared = PreparedPrimaryWidthReflow::prepare(&normal, 1).unwrap();
+        let prepared =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 1).unwrap();
 
         assert_eq!(prepared.cols(), 2);
         assert_eq!(prepared.rows().len(), 3);
@@ -920,7 +909,8 @@ mod tests {
             write(&mut normal, 0, col, cell);
         }
 
-        let prepared = PreparedPrimaryWidthReflow::prepare(&normal, 2).unwrap();
+        let prepared =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(prepared.rows().len(), 2);
         assert_eq!(prepared.rows()[0].cells[1].ch, ' ');
@@ -954,8 +944,10 @@ mod tests {
             },
         );
 
-        let first = PreparedPrimaryWidthReflow::prepare(&normal, 2).unwrap();
-        let second = PreparedPrimaryWidthReflow::prepare(&normal, 2).unwrap();
+        let first =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
+        let second =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.rows().len(), 4);
@@ -990,8 +982,10 @@ mod tests {
             .to_anchor(GenPos::new(0, 2), Affinity::Before)
             .unwrap();
 
-        let width_three = PreparedPrimaryWidthReflow::prepare(&normal, 3).unwrap();
-        let width_two = PreparedPrimaryWidthReflow::prepare(&normal, 2).unwrap();
+        let width_three =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 3).unwrap();
+        let width_two =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(
             width_three.project_cursor(pending),
@@ -1067,8 +1061,9 @@ mod tests {
         write(&mut normal, 0, 3, continuation_cell(cells[2]));
         write(&mut normal, 0, 4, cells[3]);
 
-        let narrow = PreparedPrimaryWidthReflow::prepare(&normal, 3).unwrap();
-        let wide = PreparedPrimaryWidthReflow::prepare(&normal, 8).unwrap();
+        let narrow =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 3).unwrap();
+        let wide = PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 8).unwrap();
 
         assert_eq!(logical_payload(&narrow), logical_payload(&wide));
         assert_eq!(logical_payload(&wide)[0].1, cells);
@@ -1080,13 +1075,13 @@ mod tests {
     fn zero_width_normalizes_and_unallocatable_width_fails_cleanly() {
         let normal = NormalBuf::new(1, 2);
         assert_eq!(
-            PreparedPrimaryWidthReflow::prepare(&normal, 0)
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 0)
                 .unwrap()
                 .cols(),
             2
         );
         assert_eq!(
-            PreparedPrimaryWidthReflow::prepare(&normal, usize::MAX),
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), usize::MAX,),
             Err(PreparationError::AllocationFailed)
         );
     }
@@ -1276,7 +1271,8 @@ mod tests {
         normal.set_head_truncated(0, true);
         let before = normal.row_metadata(0);
 
-        let prepared = PreparedPrimaryWidthReflow::prepare(&normal, 4).unwrap();
+        let prepared =
+            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 4).unwrap();
         assert!(prepared.rows()[0].metadata.head_truncated);
         assert_eq!(normal.row_metadata(0), before);
     }

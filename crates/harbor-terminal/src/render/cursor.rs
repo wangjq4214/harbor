@@ -62,9 +62,6 @@ pub struct Cursor {
     vertex_count: u32,
     /// Idle blink phase and pending immediate-redraw flag.
     blink: CursorBlinkState,
-    /// Cell dimensions in logical pixels.
-    cell_width: f32,
-    line_height: f32,
     /// Cached state from last prepare call to avoid re-writing vertex buffer.
     last_cursor: Option<LastCursorState>,
     /// Set true when window size changes or metric updates occur.
@@ -77,7 +74,7 @@ impl Cursor {
         self.dirty
     }
 
-    pub fn new(gpu: TerminalGpuAccess<'_>, metrics: TextMetrics, color: Rgba) -> Self {
+    pub fn new(gpu: TerminalGpuAccess<'_>, _metrics: TextMetrics, color: Rgba) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
         let vertex_buffer =
             gpu::create_vertex_buffer(gpu.device(), &[TexturedVertex::default(); 6]);
@@ -86,8 +83,6 @@ impl Cursor {
             vertex_buffer,
             vertex_count: 0,
             blink: CursorBlinkState::new(Instant::now()),
-            cell_width: metrics.cell_width,
-            line_height: metrics.line_height,
             last_cursor: None,
             color,
             dirty: true,
@@ -199,25 +194,25 @@ impl Cursor {
                 CursorShape::Block => (
                     cell_x,
                     cell_y,
-                    cell_x + self.cell_width,
-                    cell_y + self.line_height,
+                    cell_x + viewport.cell_width,
+                    cell_y + viewport.line_height,
                 ),
                 CursorShape::Underline => {
-                    let thickness = (self.line_height * 0.1).max(2.0);
+                    let thickness = (viewport.line_height * 0.1).max(2.0);
                     (
                         cell_x,
-                        cell_y + self.line_height - thickness,
-                        cell_x + self.cell_width,
-                        cell_y + self.line_height,
+                        cell_y + viewport.line_height - thickness,
+                        cell_x + viewport.cell_width,
+                        cell_y + viewport.line_height,
                     )
                 }
                 CursorShape::Bar => {
-                    let thickness = (self.cell_width * 0.15).max(2.0);
+                    let thickness = (viewport.cell_width * 0.15).max(2.0);
                     (
                         cell_x,
                         cell_y,
                         cell_x + thickness,
-                        cell_y + self.line_height,
+                        cell_y + viewport.line_height,
                     )
                 }
             };

@@ -14,7 +14,7 @@ use std::{
 use crate::model::TerminalSize;
 use harbor_pty::PtyControl;
 
-use crate::input::TerminalInputEncoder;
+use crate::input;
 use crate::parser::TerminalParser;
 use crate::pointer::PointerInteraction;
 use crate::screen::Screen;
@@ -141,19 +141,23 @@ impl TerminalIo {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        Self {
-            parser: TerminalParser::default(),
-            pty: Some(TerminalPty::new(pty_read, pty_write, pty_control, wake)),
-            suppress_scroll_snap: false,
-            session_closed: false,
-        }
+        Self::with_pty(Some(TerminalPty::new(
+            pty_read,
+            pty_write,
+            pty_control,
+            wake,
+        )))
     }
 
     /// Creates a headless TerminalIo without PTY resources (for tests).
     pub(crate) fn new_headless() -> Self {
+        Self::with_pty(None)
+    }
+
+    fn with_pty(pty: Option<TerminalPty>) -> Self {
         Self {
             parser: TerminalParser::default(),
-            pty: None,
+            pty,
             suppress_scroll_snap: false,
             session_closed: false,
         }
@@ -308,7 +312,7 @@ impl TerminalIo {
 
         if let TerminalEvent::Focus(focus) = &event {
             if screen.observe_focus(*focus) {
-                self.write_pty(TerminalInputEncoder::encode_focus(*focus))?;
+                self.write_pty(input::encode_focus(*focus))?;
                 return Ok(true);
             }
             return Ok(false);
@@ -317,7 +321,7 @@ impl TerminalIo {
         if matches!(&event, TerminalEvent::Pointer(_))
             && screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
         {
-            if let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) {
+            if let Some(bytes) = input::encode(&event, screen.input_modes()) {
                 self.write_pty(&bytes)?;
                 return Ok(true);
             }
@@ -330,7 +334,7 @@ impl TerminalIo {
             return Ok(false);
         }
 
-        let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) else {
+        let Some(bytes) = input::encode(&event, screen.input_modes()) else {
             return Ok(false);
         };
         // Terminal-bound input resumes the live viewport so typed text and the

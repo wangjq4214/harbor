@@ -82,20 +82,67 @@ pub enum ScrollbarHit {
     TrackAfter,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollbarGeometry {
+    track_top: f32,
+    thumb_height: f32,
+    track_bottom: f32,
+    thumb_rect: [f32; 4],
+}
+
+impl ScrollbarGeometry {
+    fn compute(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Option<Self> {
+        if snap.is_alt || snap.scroll_count == 0 {
+            return None;
+        }
+
+        let (origin_x, origin_y) = viewport.allocation_origin;
+        let alloc_w = viewport.allocation_size.0 as f32;
+        let alloc_h = viewport.allocation_size.1 as f32;
+        let track_top = origin_y + viewport.padding;
+        let track_bottom = origin_y + alloc_h - viewport.padding;
+        let track_height = track_bottom - track_top;
+        if track_height <= 0.0 {
+            return None;
+        }
+
+        let total_rows = snap.rows + snap.scroll_count;
+        let thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
+            .max(SCROLLBAR_MIN_THUMB_HEIGHT)
+            .min(track_height);
+        let scroll_fraction = 1.0 - (snap.view_offset as f32 / snap.scroll_count as f32);
+        let thumb_top = track_top + scroll_fraction * (track_height - thumb_height);
+        let right = origin_x + alloc_w - SCROLLBAR_MARGIN;
+
+        Some(Self {
+            track_top,
+            thumb_height,
+            track_bottom,
+            thumb_rect: [
+                right - SCROLLBAR_WIDTH,
+                thumb_top,
+                right,
+                thumb_top + thumb_height,
+            ],
+        })
+    }
+}
+
 /// Classifies a physical point against the scrollbar track and thumb.
 pub fn hit_test(
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
     point: (f32, f32),
 ) -> ScrollbarHit {
-    let Some([_left, top, right, bottom]) = compute_thumb_rect(snap, viewport) else {
+    let Some(geometry) = ScrollbarGeometry::compute(snap, viewport) else {
         return ScrollbarHit::None;
     };
-    let track_left = right - SCROLLBAR_WIDTH;
-    let track_top = viewport.allocation_origin.1 + viewport.padding;
-    let track_bottom =
-        viewport.allocation_origin.1 + viewport.allocation_size.1 as f32 - viewport.padding;
-    if point.0 < track_left || point.0 > right || point.1 < track_top || point.1 > track_bottom {
+    let [left, top, right, bottom] = geometry.thumb_rect;
+    if point.0 < left
+        || point.0 > right
+        || point.1 < geometry.track_top
+        || point.1 > geometry.track_bottom
+    {
         return ScrollbarHit::None;
     }
     if point.1 < top {
@@ -116,61 +163,25 @@ pub fn offset_for_thumb(
     pointer_y: f32,
     grab_offset: f32,
 ) -> Option<usize> {
-    compute_thumb_rect(snap, viewport)?;
-    let track_top = viewport.allocation_origin.1 + viewport.padding;
-    let track_bottom =
-        viewport.allocation_origin.1 + viewport.allocation_size.1 as f32 - viewport.padding;
-    let track_height = track_bottom - track_top;
-    let total_rows = snap.rows + snap.scroll_count;
-    let actual_thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
-        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
-        .min(track_height);
-    let movable = (track_height - actual_thumb_height).max(0.0);
+    let geometry = ScrollbarGeometry::compute(snap, viewport)?;
+    let movable = (geometry.track_bottom - geometry.track_top - geometry.thumb_height).max(0.0);
     if movable == 0.0 {
         return Some(0);
     }
-    let thumb_top = (pointer_y - grab_offset).clamp(track_top, track_top + movable);
-    let fraction_from_bottom = 1.0 - ((thumb_top - track_top) / movable);
+    let thumb_top =
+        (pointer_y - grab_offset).clamp(geometry.track_top, geometry.track_top + movable);
+    let fraction_from_bottom = 1.0 - ((thumb_top - geometry.track_top) / movable);
     Some((fraction_from_bottom * snap.scroll_count as f32).round() as usize)
 }
 
 pub fn compute_thumb_rect(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Option<[f32; 4]> {
-    if snap.is_alt || snap.scroll_count == 0 {
-        return None;
-    }
-
-    let (origin_x, origin_y) = viewport.allocation_origin;
-    let alloc_w = viewport.allocation_size.0 as f32;
-    let alloc_h = viewport.allocation_size.1 as f32;
-    let padding = viewport.padding;
-
-    let track_top = origin_y + padding;
-    let track_bottom = origin_y + alloc_h - padding;
-    let track_height = track_bottom - track_top;
-    if track_height <= 0.0 {
-        return None;
-    }
-
-    let total_rows = snap.rows + snap.scroll_count;
-    let thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
-        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
-        .min(track_height);
-
-    let max_view_offset = snap.scroll_count;
-    let scroll_fraction = 1.0 - (snap.view_offset as f32 / max_view_offset as f32);
-    let max_thumb_top = track_height - thumb_height;
-    let thumb_top = track_top + scroll_fraction * max_thumb_top;
-
-    let right = origin_x + alloc_w - SCROLLBAR_MARGIN;
-    let left = right - SCROLLBAR_WIDTH;
-
-    Some([left, thumb_top, right, thumb_top + thumb_height])
+    ScrollbarGeometry::compute(snap, viewport).map(|geometry| geometry.thumb_rect)
 }
 
 /// Builds quad vertices for the scrollbar thumb.
-fn build_vertices(snap: &TerminalSnapshot, viewport: &RenderViewport) -> [ColoredVertex; 6] {
+fn build_vertices(rect: Option<[f32; 4]>, viewport: &RenderViewport) -> [ColoredVertex; 6] {
     let (surf_w, surf_h) = viewport.surface_dimensions();
-    match compute_thumb_rect(snap, viewport) {
+    match rect {
         Some([left, top, right, bottom]) => ColoredVertex::from_pixel_rect(
             left,
             top,
@@ -185,10 +196,9 @@ fn build_vertices(snap: &TerminalSnapshot, viewport: &RenderViewport) -> [Colore
 }
 
 /// Computes the uniform data for the scrollbar shader.
-fn compute_uniform(snap: &TerminalSnapshot, viewport: &RenderViewport) -> ScrollbarUniform {
-    let rect = compute_thumb_rect(snap, viewport).unwrap_or([0.0; 4]);
+fn compute_uniform(rect: Option<[f32; 4]>) -> ScrollbarUniform {
     ScrollbarUniform {
-        rect,
+        rect: rect.unwrap_or([0.0; 4]),
         corner_radius: SCROLLBAR_BORDER_RADIUS,
         _padding: [0.0; 3],
     }
@@ -203,8 +213,6 @@ fn compute_uniform(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Scroll
 struct ScrollbarUploadKey {
     /// Visible grid row count from the terminal snapshot.
     rows: usize,
-    /// Visible grid column count from the terminal snapshot.
-    cols: usize,
     /// Number of rows in scrollback (affects thumb height and presence).
     scroll_count: usize,
     /// How far the view is scrolled into scrollback (affects thumb Y).
@@ -219,6 +227,8 @@ struct ScrollbarUploadKey {
     allocation_width: u32,
     /// Allocation height in physical pixels (track spans this height).
     allocation_height: u32,
+    /// Track padding in pixels, stored as `f32::to_bits`.
+    padding_bits: u32,
     /// Full surface width in physical pixels (NDC projection).
     surface_width: u32,
     /// Full surface height in physical pixels (NDC projection).
@@ -229,7 +239,6 @@ impl ScrollbarUploadKey {
     fn from_snapshot(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Self {
         Self {
             rows: snap.rows,
-            cols: snap.cols,
             scroll_count: snap.scroll_count,
             view_offset: snap.view_offset,
             is_alt: snap.is_alt,
@@ -237,6 +246,7 @@ impl ScrollbarUploadKey {
             allocation_origin_y_bits: viewport.allocation_origin.1.to_bits(),
             allocation_width: viewport.allocation_size.0,
             allocation_height: viewport.allocation_size.1,
+            padding_bits: viewport.padding.to_bits(),
             surface_width: viewport.surface_size.0,
             surface_height: viewport.surface_size.1,
         }
@@ -263,10 +273,11 @@ impl Scrollbar {
     ) -> Self {
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format());
 
-        let initial_vertices = build_vertices(snap, viewport);
+        let rect = compute_thumb_rect(snap, viewport);
+        let initial_vertices = build_vertices(rect, viewport);
         let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &initial_vertices);
 
-        let initial_uniform = compute_uniform(snap, viewport);
+        let initial_uniform = compute_uniform(rect);
         let uniform_buffer = gpu
             .device()
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -361,10 +372,6 @@ impl Scrollbar {
         self.visible = true;
     }
 
-    pub fn invalidate_projection(&mut self) {
-        self.last_upload_key = None;
-    }
-
     pub fn prepare(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
@@ -382,10 +389,11 @@ impl Scrollbar {
         }
         self.last_upload_key = Some(key);
 
-        let vertices = build_vertices(snap, viewport);
+        let rect = compute_thumb_rect(snap, viewport);
+        let vertices = build_vertices(rect, viewport);
         gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-        let uniform = compute_uniform(snap, viewport);
+        let uniform = compute_uniform(rect);
         gpu.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
@@ -541,10 +549,12 @@ mod tests {
         terminal.put_str("1\n2\n3\n4\n5\n");
         terminal.scroll_viewport_up(1);
         let snap = terminal.snapshot();
-        let viewport = full_surface_viewport(800, 600);
+        let mut viewport = RenderViewport::with_surface(10.0, 20.0, (400, 300), (800, 600));
+        viewport.allocation_origin = (100.0, 50.0);
         let [_left, top, _right, _bottom] = compute_thumb_rect(&snap, &viewport).unwrap();
-        let track_top = viewport.padding;
-        let track_bottom = viewport.allocation_size.1 as f32 - viewport.padding;
+        let track_top = viewport.allocation_origin.1 + viewport.padding;
+        let track_bottom =
+            viewport.allocation_origin.1 + viewport.allocation_size.1 as f32 - viewport.padding;
 
         // Act
         let round_trip = offset_for_thumb(&snap, &viewport, top, 0.0).unwrap();
@@ -555,5 +565,27 @@ mod tests {
         assert_eq!(round_trip, snap.view_offset);
         assert_eq!(oldest, snap.scroll_count);
         assert_eq!(newest, 0);
+    }
+
+    #[test]
+    fn upload_key_ignores_columns_but_tracks_padding() {
+        let terminal = Terminal::new_headless(2, 5);
+        let snap = terminal.snapshot();
+        let viewport = full_surface_viewport(800, 600);
+        let key = ScrollbarUploadKey::from_snapshot(&snap, &viewport);
+
+        let mut different_cols = snap.clone();
+        different_cols.cols += 1;
+        assert_eq!(
+            key,
+            ScrollbarUploadKey::from_snapshot(&different_cols, &viewport)
+        );
+
+        let mut different_padding = viewport;
+        different_padding.padding += 1.0;
+        assert_ne!(
+            key,
+            ScrollbarUploadKey::from_snapshot(&snap, &different_padding)
+        );
     }
 }

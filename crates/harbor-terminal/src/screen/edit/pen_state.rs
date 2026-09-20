@@ -96,8 +96,8 @@ pub(crate) fn is_supported_charset(charset: u8) -> bool {
     matches!(charset, b'B' | b'0')
 }
 
-impl CharacterSets {
-    pub(crate) fn default() -> Self {
+impl Default for CharacterSets {
+    fn default() -> Self {
         Self {
             last_char: None,
             g0: b'B',
@@ -107,16 +107,6 @@ impl CharacterSets {
             active: 0,
             single_shift: None,
         }
-    }
-
-    pub(crate) fn reset(&mut self) {
-        self.last_char = None;
-        self.g0 = b'B';
-        self.g1 = b'B';
-        self.g2 = b'B';
-        self.g3 = b'B';
-        self.active = 0;
-        self.single_shift = None;
     }
 }
 
@@ -171,7 +161,7 @@ impl PenState {
     /// Resets pen, charsets, tab-stops, and saved-pen snapshot to defaults (RIS).
     pub(crate) fn reset(&mut self, cols: usize) {
         self.pen = Pen::reset();
-        self.charsets.reset();
+        self.charsets = CharacterSets::default();
         self.tab_stops = TabStops::new(cols);
         self.active_hyperlink = None;
         self.saved_pen = None;

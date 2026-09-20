@@ -42,7 +42,6 @@ pub(crate) struct CursorState {
     /// Whether the cursor is visible (DECTCEM).
     pub(crate) visible: bool,
     /// Saved cursor snapshot from DECSC, or `None` before any save.
-    pub(crate) anchor: Option<ContentAnchor>,
     pub(crate) saved: Option<SavedCursor>,
 }
 
@@ -53,7 +52,6 @@ impl CursorState {
             y: 0,
             shape: CursorShape::default(),
             blink: true,
-            anchor: None,
             visible: true,
             saved: None,
         }
@@ -453,12 +451,7 @@ impl CursorEngine {
 
     /// Sets a DEC private mode. Returns `true` if the mode was handled,
     /// `false` if it should be handled by the caller (e.g. alt-screen).
-    pub(crate) fn set_private_mode(
-        &mut self,
-        _normal: &NormalBuf,
-        param: usize,
-        enabled: bool,
-    ) -> bool {
+    pub(crate) fn set_private_mode(&mut self, param: usize, enabled: bool) -> bool {
         match param {
             1 => self.modes.application_cursor = enabled,
             66 => self.modes.application_keypad = enabled,
@@ -524,9 +517,9 @@ impl CursorEngine {
 
     /// Saves cursor position and mode flags (DECSC).
     /// Pen attributes are saved separately via `PenState::save_pen()`.
-    pub(crate) fn save_cursor_position(&mut self) {
+    pub(crate) fn save_cursor_position(&mut self, anchor: Option<ContentAnchor>) {
         self.cursor.saved = Some(SavedCursor {
-            anchor: self.cursor.anchor,
+            anchor,
             cursor_x: self.cursor.x,
             cursor_y: self.cursor.y,
             origin_mode: self.modes.origin,

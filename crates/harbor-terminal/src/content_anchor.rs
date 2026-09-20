@@ -96,7 +96,7 @@ impl AnchorMutationBatch {
         self.mutations.iter().copied()
     }
 
-    pub(crate) fn transforms_line(&self, line_id: LogicalLineId) -> bool {
+    pub(crate) fn affects_line(&self, line_id: LogicalLineId) -> bool {
         self.mutations.iter().any(|mutation| {
             matches!(
                 mutation,
@@ -109,10 +109,6 @@ impl AnchorMutationBatch {
                     if *id == line_id
             ) || matches!(mutation, AnchorMutation::InvalidateAll)
         })
-    }
-
-    pub(crate) fn requires_reprojection(&self, line_id: LogicalLineId) -> bool {
-        self.transforms_line(line_id)
     }
 
     pub(crate) fn apply(&self, anchor: ContentAnchor) -> Option<ContentAnchor> {
@@ -751,7 +747,7 @@ mod tests {
             .finish_anchor_mutations(Some(&before))
             .expect("projection after width-changing overwrite");
 
-        assert!(mutations.requires_reprojection(anchor.line_id));
+        assert!(mutations.affects_line(anchor.line_id));
         let adjusted = mutations.apply(anchor).expect("anchor survives overwrite");
         assert_eq!(
             projection.resolve_selection(adjusted),

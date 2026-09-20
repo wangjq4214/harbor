@@ -52,7 +52,7 @@ fn cursor_movement_does_not_mark_dirty() {
     screen.cursor_left(1);
     screen.cursor_right(1);
     screen.carriage_return();
-    screen.set_cursor(2, 2);
+    screen.set_cursor_position(2, 2);
     assert_eq!(
         screen.dirty_rows().len(),
         0,
@@ -178,7 +178,7 @@ fn decaln_fills_visible_cells_homes_cursor_and_preserves_terminal_state() {
     assert_eq!(screen.dirty_rows().len(), screen.rows());
 
     // The character-set designation is unrelated state and remains active after DECALN.
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     screen.write_char('q');
     assert_eq!(screen.cell(1, 1).ch, '─');
 }
@@ -1704,24 +1704,24 @@ fn test_origin_mode_positioning() {
     screen.cursor.margins.left = 1;
     screen.cursor.margins.right = 3;
 
-    // Origin mode off: set_cursor uses absolute screen coordinates
+    // Origin mode off: set_cursor_position uses absolute screen coordinates
     screen.cursor.modes.origin = false;
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     assert_eq!(screen.cursor.cursor.y, 0);
     assert_eq!(screen.cursor.cursor.x, 0);
 
-    // Origin mode on: set_cursor is relative to scroll region and margins
+    // Origin mode on: set_cursor_position is relative to scroll region and margins
     screen.cursor.modes.origin = true;
-    screen.set_cursor(1, 1); // Top-left of region/margins
+    screen.set_cursor_position(1, 1); // Top-left of region/margins
     assert_eq!(screen.cursor.cursor.y, 1);
     assert_eq!(screen.cursor.cursor.x, 1);
 
-    screen.set_cursor(2, 2);
+    screen.set_cursor_position(2, 2);
     assert_eq!(screen.cursor.cursor.y, 2);
     assert_eq!(screen.cursor.cursor.x, 2);
 
     // Should clamp to the scrolling region boundaries
-    screen.set_cursor(100, 100);
+    screen.set_cursor_position(100, 100);
     assert_eq!(screen.cursor.cursor.y, 3);
     assert_eq!(screen.cursor.cursor.x, 3);
 }
@@ -1738,7 +1738,7 @@ fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
     screen.cursor.modes.origin = true;
 
     // Act
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Assert — row is region-relative; column ignores saved left margin.
     assert_eq!(screen.cursor.cursor.y, 1);
     assert_eq!(screen.cursor.cursor.x, 0);
@@ -1750,7 +1750,7 @@ fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
     assert_eq!(screen.cursor.cursor.x, 0);
 
     // Act
-    screen.set_cursor(2, 3);
+    screen.set_cursor_position(2, 3);
     // Assert
     assert_eq!(screen.cursor.cursor.y, 2);
     assert_eq!(screen.cursor.cursor.x, 2);
@@ -4262,7 +4262,7 @@ fn should_mark_entered_row_when_autowrap_from_last_column() {
 fn should_mark_entered_row_when_wide_char_cannot_fit() {
     // Arrange — cursor parked at the last column, no pending wrap.
     let mut screen = Screen::new(2, 4);
-    screen.set_cursor(1, 4); // row 0, col 3
+    screen.set_cursor_position(1, 4); // row 0, col 3
     // Act
     screen.write_char('中');
     // Assert
@@ -4300,7 +4300,7 @@ fn should_clear_wrapped_marker_when_index_moves_onto_row() {
     screen.write_char('f');
     assert!(screen.is_wrapped(1));
     // Move back to row 0, then IND into the marked row.
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Act
     screen.index();
     // Assert
@@ -4340,7 +4340,7 @@ fn should_clear_wrapped_marker_when_line_feed_moves_onto_row() {
     }
     screen.write_char('f');
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Act
     screen.line_feed();
     // Assert
@@ -4549,7 +4549,7 @@ fn should_clear_wrapped_flag_when_erase_line_full() {
     }
     screen.write_char('f'); // row 1 marked wrapped
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(2, 1); // row 1, col 0
+    screen.set_cursor_position(2, 1); // row 1, col 0
     // Act — EL mode 2 erases the entire line.
     screen.erase_line(2);
     // Assert
@@ -4564,7 +4564,7 @@ fn should_keep_wrapped_flag_when_erase_line_partial() {
     }
     screen.write_char('f'); // row 1 marked wrapped
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(2, 2); // row 1, col 1
+    screen.set_cursor_position(2, 2); // row 1, col 1
     // Act — EL mode 0 erases from cursor to end (partial row).
     screen.erase_line(0);
     // Assert
@@ -5036,17 +5036,22 @@ fn alt_entry_reconciles_pending_primary_saved_cursor_mutations() {
 }
 
 #[test]
-fn pending_wrap_cursor_uses_after_final_atom_anchor() {
+fn pending_wrap_saved_cursor_uses_after_final_atom_anchor() {
     let mut screen = Screen::new(1, 3);
     for ch in "abc".chars() {
         screen.write_char(ch);
     }
     assert!(screen.pending_wrap());
 
-    let (_, projection) = screen
-        .finish_anchor_mutations(None)
-        .expect("valid projection");
-    let anchor = screen.cursor.cursor.anchor.expect("cursor anchor");
+    screen.save_cursor();
+    let projection = screen.content_projection().expect("valid projection");
+    let anchor = screen
+        .cursor
+        .cursor
+        .saved
+        .as_ref()
+        .and_then(|saved| saved.anchor)
+        .expect("saved cursor anchor");
     let projected = projection
         .resolve_cursor(anchor)
         .expect("cursor projection");
@@ -5191,7 +5196,7 @@ fn prepares_live_and_saved_cursor_without_mutating_screen_geometry() {
     let before = screen.terminal_snapshot();
 
     let prepared = screen
-        .prepare_primary_width_reflow(2)
+        .prepare_primary_resize(screen.rows(), 2)
         .expect("detached primary width preparation");
 
     assert_eq!(
@@ -5220,7 +5225,7 @@ fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() 
     screen.write_char('X');
 
     let prepared = screen
-        .prepare_primary_width_reflow(8)
+        .prepare_primary_resize(screen.rows(), 8)
         .expect("preparation reconciles pending saved anchor");
 
     assert_eq!(
@@ -5250,7 +5255,7 @@ fn prepares_complete_history_sequence_and_review_anchor() {
     let before_offset = screen.view_offset();
 
     let prepared = screen
-        .prepare_primary_width_reflow(2)
+        .prepare_primary_resize(screen.rows(), 2)
         .expect("history width preparation");
 
     assert_eq!(prepared.rows().len(), 5);

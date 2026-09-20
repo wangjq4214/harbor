@@ -789,17 +789,6 @@ impl NormalBuf {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn prepare_primary_width_reflow(
-        &self,
-        requested_cols: usize,
-    ) -> Result<
-        crate::primary_reflow::PreparedPrimaryWidthReflow,
-        crate::primary_reflow::PreparationError,
-    > {
-        crate::primary_reflow::PreparedPrimaryWidthReflow::prepare(self, requested_cols)
-    }
-
-    #[allow(dead_code)]
     pub(crate) fn prepare_primary_resize(
         &self,
         requested_rows: usize,

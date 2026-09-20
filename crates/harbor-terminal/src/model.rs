@@ -374,22 +374,7 @@ pub fn safe_preview_line(line: &str) -> String {
 /// Trims any trailing newline sequences (`\r\n`, `\n`, `\r`) from the input,
 /// returning the remaining prefix.
 fn trim_trailing_newlines(text: &str) -> &str {
-    let mut end = text.len();
-    loop {
-        if end >= 2 && text.as_bytes()[end - 2..end] == *b"\r\n" {
-            end -= 2;
-        } else if end >= 1 {
-            let last = text.as_bytes()[end - 1];
-            if last == b'\n' || last == b'\r' {
-                end -= 1;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    &text[..end]
+    text.trim_end_matches(['\r', '\n'])
 }
 
 // ── Terminal worker contract ────────────────────────────────────────────────
