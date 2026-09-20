@@ -11,7 +11,7 @@ use crate::screen::Cell;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LogicalAtomOffset(pub(crate) usize);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SourceSpan {
     pub(crate) generation: u64,
     pub(crate) start_col: usize,

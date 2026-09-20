@@ -21,7 +21,12 @@ mod synchronized_output;
 mod tests;
 
 use self::default_colors::DefaultColors;
-use crate::normal_buf::CellsIter;
+use crate::content_anchor::{
+    Affinity, AnchorMutation, AnchorMutationBatch, ContentAnchor, ContentProjection,
+};
+use crate::logical_content::{DecodeError, LogicalAtomOffset};
+use crate::normal_buf::{CellsIter, LogicalLineId};
+use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
 
@@ -32,6 +37,7 @@ use self::synchronized_output::SynchronizedOutput;
 use harbor_config::{Palette, Rgba};
 use hyperlink::HyperlinkRegistry;
 use std::collections::HashSet;
+use unicode_width::UnicodeWidthChar;
 
 pub(crate) use self::default_colors::DefaultColorSlot;
 pub use self::reader::ScreenReader;
@@ -87,6 +93,10 @@ impl From<bool> for ModeStatus {
 pub struct Screen {
     /// Ring-buffer scrollback storage.
     normal: NormalBuf,
+    /// Ordered semantic edits awaiting terminal-owned selection reconciliation.
+    anchor_mutations: AnchorMutationBatch,
+    /// Canonical top-left retained content while reviewing scrollback.
+    review_anchor: Option<ContentAnchor>,
     /// Cursor position, scroll region, margins, and terminal modes.
     cursor: CursorEngine,
     /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
@@ -110,6 +120,14 @@ pub struct Screen {
     /// Startup and active OSC default colors, owned by the terminal session.
     default_colors: DefaultColors,
 }
+#[derive(Debug)]
+struct EditAnchorCapture {
+    anchor: ContentAnchor,
+    cells: Vec<Cell>,
+    affected_atoms: usize,
+    shifted_atoms: usize,
+    dropped_atoms: Option<(usize, usize)>,
+}
 
 impl Screen {
     pub fn new(rows: usize, cols: usize) -> Self {
@@ -121,6 +139,8 @@ impl Screen {
         let cols = cols.max(1);
         Self {
             normal: NormalBuf::new(rows, cols),
+            anchor_mutations: AnchorMutationBatch::default(),
+            review_anchor: None,
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
             hyperlinks: HyperlinkRegistry::default(),
@@ -356,6 +376,290 @@ impl Screen {
         self.normal.cell_mut(row, col)
     }
 
+    pub(crate) fn content_projection(&self) -> Result<ContentProjection, DecodeError> {
+        ContentProjection::build(&self.normal)
+    }
+
+    fn live_cursor_position(&self) -> GenPos {
+        GenPos::new(
+            self.normal.history_start()
+                + self.normal.scroll_count() as u64
+                + self.cursor.cursor.y as u64,
+            self.cursor.cursor.x,
+        )
+    }
+
+    fn sync_current_cursor_anchor(&mut self) {
+        let position = self.live_cursor_position();
+        let pending_wrap = self.cursor.modes.pending_wrap;
+        self.cursor.cursor.anchor = self
+            .content_projection()
+            .ok()
+            .and_then(|projection| projection.cursor_anchor(position, pending_wrap));
+    }
+
+    fn capture_edit_anchor(
+        &self,
+        affected_cells: usize,
+        dropped_cells: Option<(usize, usize)>,
+    ) -> Option<EditAnchorCapture> {
+        let projection = self.content_projection().ok()?;
+        let position = self.live_cursor_position();
+        let anchor = projection.to_anchor(position, Affinity::Before)?;
+        let cells = projection.line_cells(anchor.line_id)?;
+        let affected_atoms = projection.atom_count_in_cell_range(
+            anchor.line_id,
+            position.generation,
+            position.col,
+            position.col.saturating_add(affected_cells),
+        )?;
+        let dropped_atoms = if let Some((start, end)) = dropped_cells {
+            projection.atom_range_in_cell_range(anchor.line_id, position.generation, start, end)?
+        } else {
+            None
+        };
+        let shifted_atoms = dropped_cells.map_or(0, |(start, _)| {
+            projection
+                .atom_count_in_cell_range(anchor.line_id, position.generation, position.col, start)
+                .unwrap_or(0)
+        });
+        Some(EditAnchorCapture {
+            anchor,
+            cells,
+            affected_atoms,
+            shifted_atoms,
+            dropped_atoms,
+        })
+    }
+
+    fn record_insertion_delta(
+        &mut self,
+        before: Option<EditAnchorCapture>,
+        inserted_atom_capacity: usize,
+        inserted_is_meaningful: bool,
+    ) {
+        let Some(EditAnchorCapture {
+            anchor,
+            shifted_atoms,
+            dropped_atoms,
+            ..
+        }) = before
+        else {
+            return;
+        };
+        let inserted_atoms = if inserted_is_meaningful || shifted_atoms > 0 {
+            inserted_atom_capacity
+        } else {
+            0
+        };
+        if inserted_atoms > 0 {
+            self.anchor_mutations.push(AnchorMutation::Insert {
+                line_id: anchor.line_id,
+                at: anchor.offset,
+                count: inserted_atoms,
+            });
+        }
+        if let Some((dropped_start, dropped_count)) = dropped_atoms {
+            self.anchor_mutations.push(AnchorMutation::Delete {
+                line_id: anchor.line_id,
+                start: LogicalAtomOffset(dropped_start + inserted_atoms),
+                end: LogicalAtomOffset(dropped_start + inserted_atoms + dropped_count),
+            });
+        }
+        self.anchor_mutations
+            .push(AnchorMutation::ReprojectLine(anchor.line_id));
+    }
+
+    fn record_deletion_delta(&mut self, before: Option<EditAnchorCapture>) {
+        let Some(EditAnchorCapture {
+            anchor,
+            cells: before_cells,
+            affected_atoms,
+            ..
+        }) = before
+        else {
+            return;
+        };
+        let Ok(after) = self.content_projection() else {
+            self.anchor_mutations
+                .push(AnchorMutation::InvalidateLine(anchor.line_id));
+            return;
+        };
+        let Some(after_cells) = after.line_cells(anchor.line_id) else {
+            self.anchor_mutations
+                .push(AnchorMutation::InvalidateLine(anchor.line_id));
+            return;
+        };
+        let removed = affected_atoms.min(before_cells.len().saturating_sub(anchor.offset.0));
+        if removed > 0 {
+            self.anchor_mutations.push(AnchorMutation::Delete {
+                line_id: anchor.line_id,
+                start: anchor.offset,
+                end: LogicalAtomOffset(anchor.offset.0 + removed),
+            });
+        }
+        let retained_after_delete = before_cells.len().saturating_sub(removed);
+        let inserted_tail = after_cells.len().saturating_sub(retained_after_delete);
+        if inserted_tail > 0 {
+            self.anchor_mutations.push(AnchorMutation::Insert {
+                line_id: anchor.line_id,
+                at: LogicalAtomOffset(retained_after_delete),
+                count: inserted_tail,
+            });
+        }
+        self.anchor_mutations
+            .push(AnchorMutation::ReprojectLine(anchor.line_id));
+    }
+
+    fn record_structural_atom_delta(
+        &mut self,
+        line_id: LogicalLineId,
+        before: &[(u64, usize, usize)],
+        after: &[(u64, usize, usize)],
+    ) {
+        if before.len() == after.len() {
+            if before
+                .iter()
+                .zip(after)
+                .any(|(old, new)| (old.1, old.2) != (new.1, new.2))
+            {
+                self.anchor_mutations
+                    .push(AnchorMutation::ReprojectLine(line_id));
+            }
+            return;
+        }
+        let prefix = before
+            .iter()
+            .zip(after.iter())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let mut suffix = 0;
+        while suffix < before.len().saturating_sub(prefix)
+            && suffix < after.len().saturating_sub(prefix)
+            && before[before.len() - 1 - suffix] == after[after.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+        let old_count = before.len() - prefix - suffix;
+        let new_count = after.len() - prefix - suffix;
+        self.anchor_mutations.push(AnchorMutation::Replace {
+            line_id,
+            start: LogicalAtomOffset(prefix),
+            old_count,
+            new_count,
+        });
+    }
+
+    fn sync_review_anchor(&mut self) {
+        if self.normal.view_offset() == 0 {
+            self.review_anchor = None;
+            return;
+        }
+        let generation = self.normal.history_start()
+            + self
+                .normal
+                .scroll_count()
+                .saturating_sub(self.normal.view_offset()) as u64;
+        self.review_anchor = self.content_projection().ok().and_then(|projection| {
+            projection.to_anchor(GenPos::new(generation, 0), Affinity::Before)
+        });
+    }
+
+    pub(crate) fn finish_anchor_mutations(
+        &mut self,
+        before: Option<&ContentProjection>,
+    ) -> Result<(AnchorMutationBatch, ContentProjection), DecodeError> {
+        let projection = self.content_projection()?;
+        if let Some(before) = before {
+            for line_id in before.line_ids() {
+                if !projection.contains_line(line_id) {
+                    self.anchor_mutations
+                        .push(AnchorMutation::InvalidateLine(line_id));
+                } else if let Some(first_retained_generation) = projection.first_generation(line_id)
+                    && before.first_generation(line_id) != Some(first_retained_generation)
+                    && projection.history_start() > before.history_start()
+                    && let Some(removed) =
+                        before.atom_count_before_generation(line_id, first_retained_generation)
+                    && removed > 0
+                {
+                    self.anchor_mutations.push(AnchorMutation::EvictPrefix {
+                        line_id,
+                        end: LogicalAtomOffset(removed),
+                    });
+                } else if !self.anchor_mutations.transforms_line(line_id)
+                    && let (Some(old_spans), Some(new_spans)) =
+                        (before.atom_spans(line_id), projection.atom_spans(line_id))
+                {
+                    self.record_structural_atom_delta(line_id, &old_spans, &new_spans);
+                }
+            }
+        }
+
+        let mutations = std::mem::take(&mut self.anchor_mutations);
+        let globally_invalidated = mutations
+            .iter()
+            .any(|mutation| matches!(mutation, AnchorMutation::InvalidateAll));
+        let mut invalidate_saved = false;
+        if !globally_invalidated
+            && let Some(saved) = self.cursor.cursor.saved.as_mut()
+            && let Some(anchor) = saved.anchor
+        {
+            let adjusted = mutations.apply(anchor);
+            saved.anchor = adjusted;
+            match adjusted {
+                None => invalidate_saved = true,
+                Some(adjusted) => {
+                    let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
+                    let old_generation = live_top.saturating_add(saved.cursor_y as u64);
+                    let needs_projection = adjusted != anchor
+                        || mutations.requires_reprojection(adjusted.line_id)
+                        || !projection.contains_generation(adjusted.line_id, old_generation);
+                    if needs_projection {
+                        if let Some(projected) = projection.resolve_cursor(adjusted)
+                            && let Ok(row) =
+                                usize::try_from(projected.pos.generation.saturating_sub(live_top))
+                            && row < self.normal.rows()
+                        {
+                            saved.cursor_y = row;
+                            if adjusted != anchor
+                                || mutations.requires_reprojection(adjusted.line_id)
+                            {
+                                saved.cursor_x = projected.pos.col;
+                                saved.pending_wrap = projected.pending_wrap;
+                            }
+                        } else {
+                            invalidate_saved = true;
+                        }
+                    }
+                }
+            }
+        }
+        if invalidate_saved {
+            self.cursor.cursor.saved = None;
+        }
+
+        if let Some(anchor) = self.review_anchor {
+            self.review_anchor =
+                if globally_invalidated && projection.contains_line(anchor.line_id) {
+                    Some(anchor)
+                } else {
+                    mutations.apply(anchor)
+                }
+                .or_else(|| projection.oldest_anchor());
+            if let Some(offset) = self
+                .review_anchor
+                .and_then(|value| projection.view_offset_for(value))
+            {
+                self.normal.set_view_offset(offset);
+            }
+        }
+
+        let cursor_position = self.live_cursor_position();
+        let pending_wrap = self.cursor.modes.pending_wrap;
+        self.cursor.cursor.anchor = projection.cursor_anchor(cursor_position, pending_wrap);
+        Ok((mutations, projection))
+    }
+
     // ── read-only queries ──────────────────────────────────────────────
 
     /// Returns a `ScreenReader` for snapshot and text-extraction queries.
@@ -405,14 +709,17 @@ impl Screen {
 
     pub fn scroll_up(&mut self, n: usize) {
         self.normal.scroll_up(n);
+        self.sync_review_anchor();
     }
 
     pub fn scroll_down(&mut self, n: usize) {
         self.normal.scroll_down(n);
+        self.sync_review_anchor();
     }
 
     pub fn scroll_to_bottom(&mut self) {
         self.normal.scroll_to_bottom();
+        self.sync_review_anchor();
     }
 
     /// Converts a mouse wheel delta (line or pixel) to row changes and scrolls the primary screen.
@@ -460,6 +767,12 @@ impl Screen {
         if self.is_alt() {
             return;
         }
+        if self.finish_anchor_mutations(None).is_err() {
+            self.cursor.cursor.saved = None;
+            self.review_anchor = None;
+            self.anchor_mutations = AnchorMutationBatch::default();
+        }
+        let pending_mutations = std::mem::take(&mut self.anchor_mutations);
         let rows = self.rows();
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
@@ -484,9 +797,20 @@ impl Screen {
         self.replies = replies;
         self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
+        self.anchor_mutations = pending_mutations;
+        self.anchor_mutations.push(AnchorMutation::InvalidateAll);
     }
 
     pub fn exit_alt(&mut self) {
+        if self.saved_primary.is_none() {
+            return;
+        }
+        if self.finish_anchor_mutations(None).is_err() {
+            self.cursor.cursor.saved = None;
+            self.review_anchor = None;
+            self.anchor_mutations = AnchorMutationBatch::default();
+        }
+        let pending_mutations = std::mem::take(&mut self.anchor_mutations);
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
         let focus_reporting = self.focus_reporting;
@@ -510,17 +834,48 @@ impl Screen {
         self.replies = replies;
         self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
+        self.anchor_mutations = pending_mutations;
+        self.anchor_mutations.push(AnchorMutation::InvalidateAll);
         debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
 
     // ── resize ─────────────────────────────────────────────────────────
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        if self.finish_anchor_mutations(None).is_err() {
+            self.cursor.cursor.saved = None;
+            self.review_anchor = None;
+            self.anchor_mutations = AnchorMutationBatch::default();
+        }
+
         let rows = rows.max(1);
         let cols = cols.max(1);
         self.normal.resize(rows, cols);
         self.cursor.clamp_to_grid(rows, cols);
         self.pen_state.tab_stops.resize(cols);
+
+        if let Ok(projection) = self.content_projection() {
+            let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
+            let cursor_position = GenPos::new(
+                live_top.saturating_add(self.cursor.cursor.y as u64),
+                self.cursor.cursor.x,
+            );
+            self.cursor.cursor.anchor = projection.cursor_anchor(cursor_position, false);
+            if let Some(saved) = &mut self.cursor.cursor.saved {
+                let saved_position = GenPos::new(
+                    live_top.saturating_add(saved.cursor_y as u64),
+                    saved.cursor_x,
+                );
+                saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
+            }
+        } else {
+            self.cursor.cursor.anchor = None;
+            if let Some(saved) = &mut self.cursor.cursor.saved {
+                saved.anchor = None;
+            }
+        }
+        self.sync_review_anchor();
+
         if let Some(saved) = &mut self.saved_primary {
             saved.resize(rows, cols);
         }
@@ -770,23 +1125,46 @@ impl Screen {
     // ── insert / delete ────────────────────────────────────────────────
 
     pub fn insert_chars(&mut self, n: usize) {
+        let requested = n.max(1);
+        let requested_col = self.cursor.cursor.x;
+        let (left, right) = if self.cursor.margins.enabled {
+            (self.cursor.margins.left, self.cursor.margins.right)
+        } else {
+            (0, self.normal.cols().saturating_sub(1))
+        };
+        let base = CellOps::wide_range(&self.normal, self.cursor.cursor.y, requested_col)
+            .map_or(requested_col, |(base, _)| base);
+        let actual = if requested_col >= left && requested_col <= right {
+            requested.min(right - base + 1)
+        } else {
+            0
+        };
+        let dropped_cells = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
+        let before = self.capture_edit_anchor(actual, dropped_cells);
+        let inserted_is_meaningful =
+            actual > 0 && NormalBuf::fill_is_meaningful(self.pen_state.erase_cell());
         let Screen {
             normal,
             cursor,
             pen_state,
             ..
         } = self;
-        CellOps::insert_chars(pen_state, normal, cursor, n);
+        if CellOps::insert_chars(pen_state, normal, cursor, n) {
+            self.record_insertion_delta(before, actual, inserted_is_meaningful);
+        }
     }
 
     pub fn delete_chars(&mut self, n: usize) {
+        let before = self.capture_edit_anchor(n.max(1), None);
         let Screen {
             normal,
             cursor,
             pen_state,
             ..
         } = self;
-        CellOps::delete_chars(pen_state, normal, cursor, n);
+        if CellOps::delete_chars(pen_state, normal, cursor, n) {
+            self.record_deletion_delta(before);
+        }
     }
 
     pub fn insert_lines(&mut self, n: usize) {
@@ -896,18 +1274,62 @@ impl Screen {
     // ── cursor save / restore ──────────────────────────────────────────
 
     pub fn save_cursor(&mut self) {
+        self.sync_current_cursor_anchor();
         self.cursor.save_cursor_position();
         self.pen_state.save_pen();
     }
 
     pub fn restore_cursor(&mut self) {
         self.cursor.restore_cursor_position();
+        self.cursor.cursor.anchor = self
+            .cursor
+            .cursor
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.anchor);
         self.pen_state.restore_pen();
     }
 
     // ── write_char (coordinator) ───────────────────────────────────────
 
     pub fn write_char(&mut self, ch: char) {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let cursor_before = (
+            self.cursor.cursor.x,
+            self.cursor.cursor.y,
+            self.cursor.modes.pending_wrap,
+        );
+        let before_generation = self.live_cursor_position().generation;
+        let right_before_write = if self.cursor.margins.enabled {
+            self.cursor.margins.right
+        } else {
+            self.normal.cols().saturating_sub(1)
+        };
+        let wide_wraps =
+            width == 2 && self.cursor.modes.autowrap && self.cursor.cursor.x == right_before_write;
+        let before = if self.cursor.modes.insert
+            && !self.cursor.modes.pending_wrap
+            && width > 0
+            && !wide_wraps
+        {
+            let requested_col = self.cursor.cursor.x;
+            let (left, right) = if self.cursor.margins.enabled {
+                (self.cursor.margins.left, self.cursor.margins.right)
+            } else {
+                (0, self.normal.cols().saturating_sub(1))
+            };
+            let base = CellOps::wide_range(&self.normal, self.cursor.cursor.y, requested_col)
+                .map_or(requested_col, |(base, _)| base);
+            let actual = if requested_col >= left && requested_col <= right {
+                width.min(right - base + 1)
+            } else {
+                0
+            };
+            let dropped = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
+            self.capture_edit_anchor(actual, dropped)
+        } else {
+            None
+        };
         let Screen {
             normal,
             cursor,
@@ -915,6 +1337,20 @@ impl Screen {
             ..
         } = self;
         CellWriter::write_char(pen_state, normal, cursor, ch);
+        normal.repair_following_soft_chain(cursor.cursor.y);
+        let cursor_after = (
+            self.cursor.cursor.x,
+            self.cursor.cursor.y,
+            self.cursor.modes.pending_wrap,
+        );
+        let inserted_atoms = usize::from(
+            width > 0
+                && cursor_after != cursor_before
+                && self.live_cursor_position().generation == before_generation,
+        );
+        if inserted_atoms > 0 {
+            self.record_insertion_delta(before, inserted_atoms, true);
+        }
     }
 
     // ── horizontal_tab (coordinator) ───────────────────────────────────
@@ -1106,6 +1542,15 @@ impl Screen {
             self.normal.begin_hard_line(self.cursor.cursor.y);
         }
     }
+    pub(crate) fn requires_anchor_baseline(&self) -> bool {
+        self.review_anchor.is_some()
+            || self
+                .cursor
+                .cursor
+                .saved
+                .as_ref()
+                .is_some_and(|saved| saved.anchor.is_some())
+    }
 
     // ── scroll_region_up_one (coordinator) ─────────────────────────────
 
@@ -1175,6 +1620,8 @@ impl Screen {
 
     pub fn reset_display(&mut self) {
         self.synchronized_output.clear();
+        self.anchor_mutations.push(AnchorMutation::InvalidateAll);
+        self.review_anchor = None;
         self.focus_reporting.reset_for_ris();
         self.alt_request = None;
         self.saved_primary = None;

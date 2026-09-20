@@ -5,6 +5,7 @@
 //! into the edit engine live on `Screen` (the coordinator).
 
 use crate::InputModes;
+use crate::content_anchor::ContentAnchor;
 use crate::model::CursorShape;
 use crate::normal_buf::NormalBuf;
 
@@ -17,6 +18,7 @@ use super::edit::Rect;
 #[derive(Debug, Clone)]
 pub(crate) struct SavedCursor {
     pub(crate) cursor_x: usize,
+    pub(crate) anchor: Option<ContentAnchor>,
     pub(crate) cursor_y: usize,
     pub(crate) origin_mode: bool,
     pub(crate) autowrap: bool,
@@ -40,6 +42,7 @@ pub(crate) struct CursorState {
     /// Whether the cursor is visible (DECTCEM).
     pub(crate) visible: bool,
     /// Saved cursor snapshot from DECSC, or `None` before any save.
+    pub(crate) anchor: Option<ContentAnchor>,
     pub(crate) saved: Option<SavedCursor>,
 }
 
@@ -50,6 +53,7 @@ impl CursorState {
             y: 0,
             shape: CursorShape::default(),
             blink: true,
+            anchor: None,
             visible: true,
             saved: None,
         }
@@ -202,8 +206,13 @@ impl CursorEngine {
         self.margins.clamp(cols);
         self.scroll_region = ScrollRegion::full(rows);
         if let Some(ref mut saved) = self.cursor.saved {
-            saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
-            saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
+            let clamped_x = saved.cursor_x.min(cols.saturating_sub(1));
+            let clamped_y = saved.cursor_y.min(rows.saturating_sub(1));
+            if clamped_x != saved.cursor_x || clamped_y != saved.cursor_y {
+                saved.pending_wrap = false;
+            }
+            saved.cursor_x = clamped_x;
+            saved.cursor_y = clamped_y;
         }
     }
 
@@ -517,6 +526,7 @@ impl CursorEngine {
     /// Pen attributes are saved separately via `PenState::save_pen()`.
     pub(crate) fn save_cursor_position(&mut self) {
         self.cursor.saved = Some(SavedCursor {
+            anchor: self.cursor.anchor,
             cursor_x: self.cursor.x,
             cursor_y: self.cursor.y,
             origin_mode: self.modes.origin,

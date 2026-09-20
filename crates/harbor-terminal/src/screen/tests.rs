@@ -1146,6 +1146,26 @@ fn resize_preserves_saved_cursor() {
     assert_eq!(screen.cursor.cursor.y, 1, "original y preserved");
 }
 
+#[test]
+fn resize_refreshes_clamped_saved_cursor_anchor_before_later_edits() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.cursor.cursor.x = 5;
+    screen.save_cursor();
+
+    screen.resize(1, 4);
+    screen.cursor.cursor.x = 0;
+    screen.delete_chars(1);
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 2);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
 // ── selected_text ──────────────────────────────────────────────
 
 fn set_semantic_cell(screen: &mut Screen, row: usize, col: usize, ch: char) {
@@ -3886,6 +3906,22 @@ fn alt_screen_exit_when_not_in_alt_keeps_primary() {
 }
 
 #[test]
+fn alt_screen_exit_when_not_in_alt_preserves_content_anchors() {
+    let mut screen = Screen::new(2, 4);
+    screen.write_char('A');
+    let (_, before) = screen.finish_anchor_mutations(None).unwrap();
+    let anchor = before
+        .to_anchor(GenPos::new(0, 0), Affinity::Before)
+        .unwrap();
+
+    screen.exit_alt();
+
+    let (mutations, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
+    let adjusted = mutations.apply(anchor).expect("anchor remains valid");
+    assert_eq!(after.resolve_selection(adjusted), Some(GenPos::new(0, 0)));
+}
+
+#[test]
 fn private_mode_1048_saves_and_restores_cursor() {
     let mut screen = Screen::new(5, 20);
     screen.set_cursor_position(2, 3); // 1-based → 0-based (y=1, x=2)
@@ -4864,5 +4900,204 @@ fn primary_and_alternate_screens_resolve_overlapping_ids_in_their_own_registries
             .hyperlink_at_generation(screen.history_start(), 0)
             .map(|(_, uri)| uri),
         Some("https://alternate.test")
+    );
+}
+
+#[test]
+fn saved_cursor_anchor_adjusts_for_insert_before_saved_position() {
+    let mut screen = Screen::new(1, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    assert!(
+        screen
+            .cursor
+            .cursor
+            .saved
+            .as_ref()
+            .unwrap()
+            .anchor
+            .is_some()
+    );
+
+    let before = screen.content_projection().unwrap();
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 5);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
+fn alt_entry_reconciles_pending_primary_saved_cursor_mutations() {
+    let mut screen = Screen::new(1, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+    screen.enter_alt(true);
+    screen.exit_alt();
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 5);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
+fn pending_wrap_cursor_uses_after_final_atom_anchor() {
+    let mut screen = Screen::new(1, 3);
+    for ch in "abc".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+
+    let (_, projection) = screen
+        .finish_anchor_mutations(None)
+        .expect("valid projection");
+    let anchor = screen.cursor.cursor.anchor.expect("cursor anchor");
+    let projected = projection
+        .resolve_cursor(anchor)
+        .expect("cursor projection");
+
+    assert_eq!(projected.pos, crate::GenPos::new(0, 2));
+    assert!(projected.pending_wrap);
+}
+
+#[test]
+fn review_anchor_tracks_retained_top_and_falls_back_after_eviction() {
+    let mut screen = Screen::new(2, 2);
+    screen.normal.scroll_up_full_screen(2, Cell::default());
+    screen.scroll_up(1);
+    let retained_anchor = screen.review_anchor.expect("review anchor");
+    let before = screen.content_projection().unwrap();
+
+    screen.normal.scroll_up_full_screen(1, Cell::default());
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid retained projection");
+    assert_eq!(screen.review_anchor, Some(retained_anchor));
+    assert_eq!(screen.view_offset(), 2);
+
+    let before_eviction = screen.content_projection().unwrap();
+    for _ in 0..=screen.normal.max_scrollback() {
+        screen.normal.scroll_up_full_screen(1, Cell::default());
+    }
+    let (_, projection) = screen
+        .finish_anchor_mutations(Some(&before_eviction))
+        .expect("valid projection after eviction");
+    let fallback = screen.review_anchor.expect("oldest retained fallback");
+    assert_ne!(fallback.line_id, retained_anchor.line_id);
+    assert!(projection.resolve_selection(fallback).is_some());
+    assert_eq!(screen.view_offset(), screen.scroll_count());
+}
+
+#[test]
+fn saved_cursor_anchor_reprojects_after_identity_preserving_row_movement() {
+    let mut screen = Screen::new(3, 4);
+    screen.cursor.cursor.y = 1;
+    screen.write_char('x');
+    screen.cursor.cursor.x = 0;
+    screen.save_cursor();
+    let before = screen.content_projection().unwrap();
+
+    screen.cursor.cursor.y = 0;
+    screen.insert_lines(1);
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after row movement");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_y(), 2);
+    assert_eq!(screen.cursor_x(), 0);
+}
+
+#[test]
+fn structural_erase_emits_atom_deletion_without_payload_heuristics() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    let before = screen.content_projection().unwrap();
+    let endpoint = before
+        .to_anchor(
+            crate::GenPos::new(0, 4),
+            crate::content_anchor::Affinity::After,
+        )
+        .expect("endpoint anchor");
+    screen.cursor.cursor.x = 3;
+
+    screen.erase_chars(2);
+    let (mutations, projection) = screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after erase");
+    let adjusted = mutations.apply(endpoint).expect("later atom survives");
+
+    assert_eq!(adjusted.offset.0, 3);
+    assert_eq!(
+        projection.resolve_selection(adjusted),
+        Some(crate::GenPos::new(0, 5))
+    );
+}
+
+#[test]
+fn saved_cursor_preserves_unwritten_column_when_blank_row_moves() {
+    let mut screen = Screen::new(3, 6);
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    let before = screen.content_projection().unwrap();
+
+    screen.cursor.cursor.y = 0;
+    screen.insert_lines(1);
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after blank row movement");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_y(), 2);
+    assert_eq!(screen.cursor_x(), 4);
+}
+
+#[test]
+fn partial_soft_line_eviction_rebases_surviving_anchor_without_aliasing() {
+    let mut screen = Screen::new(2, 1);
+    let capacity = screen.normal.max_scrollback() + screen.rows();
+    for _ in 0..capacity {
+        screen.write_char('x');
+    }
+    let before = screen.content_projection().unwrap();
+    let stale_offset = before
+        .to_anchor(
+            crate::GenPos::new(screen.history_start() + 1, 0),
+            crate::content_anchor::Affinity::Before,
+        )
+        .expect("second retained atom anchor");
+    assert_eq!(stale_offset.offset.0, 1);
+
+    screen.write_char('x');
+    let (mutations, projection) = screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after partial eviction");
+    let rebased = mutations
+        .apply(stale_offset)
+        .expect("surviving atom remains anchored");
+
+    assert_eq!(rebased.offset.0, 0);
+    assert_eq!(
+        projection.resolve_selection(rebased),
+        Some(crate::GenPos::new(screen.history_start(), 0))
     );
 }

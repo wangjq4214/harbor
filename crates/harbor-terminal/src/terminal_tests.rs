@@ -3164,6 +3164,244 @@ fn explicit_scroll_command_clears_selection_even_at_viewport_boundary() {
     assert_eq!(outcome.release_pointer, Some(41));
     assert!(!terminal.has_non_empty_selection());
 }
+#[test]
+fn parser_insert_before_selection_reprojects_canonical_endpoints() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdefgh");
+    let now = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            71,
+        ))
+    };
+    terminal
+        .handle_event(now(TerminalPointerPhase::Down, 41.0))
+        .unwrap();
+    terminal
+        .handle_event(now(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(now(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "efg");
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[4hX\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 5,
+            end_row: 0,
+            end_col: 7,
+        })
+    );
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[P");
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 4,
+            end_row: 0,
+            end_col: 6,
+        })
+    );
+
+    terminal.put_bytes(b"\x1b[1;2HZ");
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 4,
+            end_row: 0,
+            end_col: 6,
+        })
+    );
+}
+
+#[test]
+fn replacing_one_selected_logical_line_clears_the_whole_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdefgh");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            72,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    assert!(terminal.has_non_empty_selection());
+
+    terminal.put_bytes(b"\r\x1b[2K");
+
+    assert!(!terminal.has_non_empty_selection());
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn trailing_blank_selection_preserves_columns_when_its_row_moves() {
+    let mut terminal = Terminal::new_headless(2, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            69,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 51.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1H\x1b[L");
+
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 1,
+            start_col: 5,
+            end_row: 1,
+            end_col: 6,
+        })
+    );
+}
+
+#[test]
+fn trailing_blank_selection_keeps_its_physical_projection_after_unrelated_ingest() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            73,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 51.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+    let expected = terminal.pointer.bounds();
+
+    terminal.put_bytes(b"\x1b[1;1H");
+
+    assert_eq!(terminal.pointer.bounds(), expected);
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn repeated_content_insert_uses_semantic_transform_not_payload_diffing() {
+    let mut terminal = Terminal::new_headless(1, 5);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("aaaaB");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            74,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1H\x1b[4ha\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "aaa");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 4,
+        })
+    );
+}
+
+#[test]
+fn equal_boundary_insertion_is_drag_direction_independent() {
+    fn selected(reverse: bool, pointer_id: u64) -> Terminal {
+        let mut terminal = Terminal::new_headless(1, 10);
+        terminal
+            .pointer
+            .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+        terminal.put_str("abcdefgh");
+        let (start, end) = if reverse { (61.0, 41.0) } else { (41.0, 61.0) };
+        let event = |phase, x| {
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (x, 1.0),
+                phase,
+                TerminalPointerButton::Left,
+                pointer_id,
+            ))
+        };
+        terminal
+            .handle_event(event(TerminalPointerPhase::Down, start))
+            .unwrap();
+        terminal
+            .handle_event(event(TerminalPointerPhase::Move, end))
+            .unwrap();
+        terminal
+            .handle_event(event(TerminalPointerPhase::Up, end))
+            .unwrap();
+        terminal.put_bytes(b"\x1b[1;5H\x1b[4hX\x1b[4l");
+        terminal
+    }
+
+    let forward = selected(false, 75);
+    let reverse = selected(true, 76);
+    assert_eq!(forward.pointer.bounds(), reverse.pointer.bounds());
+    assert_eq!(forward.selection_text(), reverse.selection_text());
+    assert_eq!(forward.selection_text(), "Xefg");
+}
 
 #[test]
 fn explicit_scroll_command_observes_queued_alt_screen_transition() {
@@ -3216,6 +3454,112 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
         }))
         .unwrap();
     assert!(!written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn default_blank_insert_reprojects_selection_to_shifted_source_cells() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcde");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            70,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;2H\x1b[@");
+
+    assert_eq!(terminal.selection_text(), "cd");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 3,
+            end_row: 0,
+            end_col: 4,
+        })
+    );
+}
+
+#[test]
+fn margin_insert_drops_margin_tail_without_aliasing_fixed_exterior_selection() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("ABCDEFGH");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            71,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 71.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 71.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[?69h\x1b[3;6s\x1b[1;3H\x1b[@");
+
+    assert_eq!(terminal.selection_text(), "GH");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 6,
+            end_row: 0,
+            end_col: 7,
+        })
+    );
+}
+
+#[test]
+fn output_between_pointer_down_and_up_keeps_click_zero_width() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdef");
+    let down = TerminalEvent::Pointer(TerminalPointerEvent::new(
+        (21.0, 1.0),
+        TerminalPointerPhase::Down,
+        TerminalPointerButton::Left,
+        72,
+    ));
+    terminal.handle_event(down).unwrap();
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[4hX\x1b[4l");
+    let up = TerminalEvent::Pointer(TerminalPointerEvent::new(
+        (21.0, 1.0),
+        TerminalPointerPhase::Up,
+        TerminalPointerButton::Left,
+        72,
+    ));
+    terminal.handle_event(up).unwrap();
+
+    assert!(!terminal.has_non_empty_selection());
+    assert_eq!(terminal.selection_text(), "");
 }
 
 #[test]
@@ -3452,6 +3796,86 @@ fn queued_output_updates_modes_before_input_encoding() {
         .unwrap();
 
     assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOA\x1bOq");
+}
+
+#[test]
+fn irm_wide_wrap_does_not_mutate_anchors_on_the_source_row() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcd");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            67,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;4H\x1b[4h");
+    terminal.put_str("界");
+    terminal.put_bytes(b"\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "cd");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 3,
+        })
+    );
+}
+
+#[test]
+fn width_changing_overwrite_preserves_selection_of_later_content() {
+    let mut terminal = Terminal::new_headless(1, 5);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("界xy");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            68,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1Hab");
+
+    assert_eq!(terminal.selection_text(), "xy");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 3,
+        })
+    );
 }
 
 #[test]

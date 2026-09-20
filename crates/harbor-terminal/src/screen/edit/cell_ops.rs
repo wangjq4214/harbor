@@ -580,6 +580,7 @@ impl CellOps {
 
         normal.fill_linear_range_with(row_start + col, row_start + col + n, pen_state.erase_cell());
         Self::normalize_row_region(pen_state, normal, cursor.cursor.y, left, right);
+        normal.repair_following_soft_chain(cursor.cursor.y);
         true
     }
 
@@ -588,7 +589,7 @@ impl CellOps {
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         n: usize,
-    ) {
+    ) -> bool {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
@@ -599,14 +600,14 @@ impl CellOps {
         };
         normal.mark_range_dirty(cursor.cursor.y, col.saturating_sub(1), right + 1);
         if col < left || col > right {
-            return;
+            return false;
         }
         let n = n.min(right - col + 1);
         if n == 0 {
-            return;
+            return false;
         }
         if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
-            return;
+            return false;
         }
         let (delete_start, delete_end) =
             Self::normalize_touched_range(normal, cursor.cursor.y, col, col + n, left, right);
@@ -626,6 +627,8 @@ impl CellOps {
             pen_state.erase_cell(),
         );
         Self::normalize_row_region(pen_state, normal, cursor.cursor.y, left, right);
+        normal.repair_following_soft_chain(cursor.cursor.y);
+        true
     }
 
     // ── insert / delete lines ─────────────────────────────────────

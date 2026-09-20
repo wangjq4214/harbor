@@ -4,6 +4,8 @@
 //! snapshots and extracted text without mutation. This separates
 //! the read path from the mutation methods on `Screen`.
 
+use crate::content_anchor::ContentProjection;
+use crate::logical_content::DecodeError;
 use crate::model::{SelectionBounds, TerminalSnapshot};
 
 use super::Screen;
@@ -47,6 +49,10 @@ impl<'a> ScreenReader<'a> {
             input_modes: self.screen.input_modes(),
             dirty_ranges: self.screen.dirty_ranges(),
         }
+    }
+
+    pub(crate) fn content_projection(&self) -> Result<ContentProjection, DecodeError> {
+        self.screen.content_projection()
     }
 
     /// Extracts logical text between two inclusive generation/column coordinates.

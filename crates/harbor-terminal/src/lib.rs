@@ -1,3 +1,4 @@
+mod content_anchor;
 mod damage;
 mod input;
 mod io;
@@ -362,7 +363,23 @@ impl Terminal {
 
     fn ingest_screen<R>(&mut self, ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R) -> R {
         let was_eligible = self.screen.ordinary_present_eligible();
+        let before_projection = (self.pointer.has_selection_state()
+            || self.screen.requires_anchor_baseline())
+        .then(|| self.screen.content_projection().ok())
+        .flatten();
         let result = ingest(&mut self.io, &mut self.screen);
+        match self
+            .screen
+            .finish_anchor_mutations(before_projection.as_ref())
+        {
+            Ok((mutations, projection)) => {
+                self.pointer.reconcile_selection(&mutations, &projection);
+            }
+            Err(error) => {
+                tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
+                self.pointer.clear();
+            }
+        }
         if !was_eligible && self.screen.ordinary_present_eligible() {
             self.pending_ordinary_present = true;
         }

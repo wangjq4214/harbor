@@ -6,8 +6,8 @@ use unicode_width::UnicodeWidthChar;
 ///
 /// IDs are local to one `NormalBuf`; they are never derived from ring positions
 /// and are never reused by that buffer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalLineId(u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct LogicalLineId(pub(crate) u64);
 
 /// Metadata carried atomically with one physical ring row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,6 +186,9 @@ impl NormalBuf {
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
+    pub(crate) fn fill_is_meaningful(cell: Cell) -> bool {
+        CellState::fresh_fill(cell).is_meaningful()
+    }
 
     // ── row/col accessors (for write_char, avoiding manual index math) ──
 
@@ -272,7 +275,7 @@ impl NormalBuf {
     /// Restores identity and offsets for a contiguous live soft-wrapped chain.
     /// The replaced row remains a hard boundary while continuations are rebased
     /// onto its new identity.
-    fn repair_following_soft_chain(&mut self, display_row: usize) {
+    pub(crate) fn repair_following_soft_chain(&mut self, display_row: usize) {
         let mut next_row = display_row + 1;
         if next_row >= self.visible_rows {
             return;
@@ -653,6 +656,10 @@ impl NormalBuf {
     /// Snap the viewport back to the live bottom.
     pub fn scroll_to_bottom(&mut self) {
         self.view_offset = 0;
+        self.mark_all_dirty();
+    }
+    pub(crate) fn set_view_offset(&mut self, offset: usize) {
+        self.view_offset = offset.min(self.scroll_count);
         self.mark_all_dirty();
     }
 
