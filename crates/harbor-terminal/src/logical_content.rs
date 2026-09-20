@@ -38,6 +38,8 @@ pub(crate) struct LogicalLineGlyph {
 pub(crate) struct LogicalLine {
     pub(crate) line_id: LogicalLineId,
     pub(crate) head_truncated: bool,
+    pub(crate) atom_start: LogicalAtomOffset,
+    pub(crate) cell_start: usize,
     pub(crate) generations: Vec<u64>,
     pub(crate) glyphs: Vec<LogicalLineGlyph>,
 }
@@ -95,6 +97,7 @@ pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError
                     .checked_add(prior.metadata.meaningful_extent);
                 if row.metadata.logical_line_id != prior.metadata.logical_line_id
                     || expected_start != Some(row.metadata.logical_start)
+                    || row.metadata.logical_atom_start != atom_offset
                 {
                     return Err(DecodeError {
                         generation: row.generation,
@@ -106,8 +109,17 @@ pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError
                 atoms.push(LogicalAtom::HardBreak {
                     after_generation: prior.generation,
                 });
-                atom_offset = 0;
+                atom_offset = row.metadata.logical_atom_start;
             }
+        } else {
+            if row.metadata.soft_wrapped && !row.metadata.head_truncated {
+                return Err(DecodeError {
+                    generation: row.generation,
+                    column: 0,
+                    kind: DecodeErrorKind::InconsistentSoftWrap,
+                });
+            }
+            atom_offset = row.metadata.logical_atom_start;
         }
 
         decode_row(row, &mut atom_offset, &mut atoms)?;
@@ -180,6 +192,8 @@ pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, Decod
             lines.push(LogicalLine {
                 line_id: row.metadata.logical_line_id,
                 head_truncated: row.metadata.head_truncated,
+                atom_start: LogicalAtomOffset(row.metadata.logical_atom_start),
+                cell_start: row.metadata.logical_start,
                 generations: vec![row.generation],
                 glyphs: Vec::new(),
             });
@@ -219,7 +233,8 @@ pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, Decod
                         kind: DecodeErrorKind::InconsistentLogicalLine,
                     });
                 };
-                if line.line_id != line_id || atom_offset.0 != line.glyphs.len() {
+                let expected_offset = line.atom_start.0.checked_add(line.glyphs.len());
+                if line.line_id != line_id || expected_offset != Some(atom_offset.0) {
                     return Err(DecodeError {
                         generation: source_span.generation,
                         column: source_span.start_col,
@@ -469,6 +484,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decode_preserves_absolute_atom_offsets_for_truncated_mixed_width_suffix() {
+        let mut normal = NormalBuf::new(2, 4);
+        write(
+            &mut normal,
+            0,
+            0,
+            Cell {
+                ch: '界',
+                ..Cell::default()
+            },
+        );
+        write(
+            &mut normal,
+            0,
+            1,
+            Cell {
+                wide_continuation: true,
+                ..Cell::default()
+            },
+        );
+        write(
+            &mut normal,
+            0,
+            2,
+            Cell {
+                ch: 'x',
+                ..Cell::default()
+            },
+        );
+        normal.set_wrapped(0, true);
+        normal.set_head_truncated(0, true);
+        normal.set_logical_starts(0, 5, 3);
+        let source = normal.live_row_metadata(0);
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: 'y',
+                ..Cell::default()
+            },
+        );
+        normal.continue_logical_line(1, source);
+
+        let line = decode_lines(&normal).unwrap().pop().unwrap();
+        assert!(line.head_truncated);
+        assert_eq!(line.atom_start, LogicalAtomOffset(3));
+        assert_eq!(line.cell_start, 5);
+        assert_eq!(
+            line.glyphs
+                .iter()
+                .map(|glyph| glyph.atom_offset)
+                .collect::<Vec<_>>(),
+            vec![
+                LogicalAtomOffset(3),
+                LogicalAtomOffset(4),
+                LogicalAtomOffset(5)
+            ]
+        );
+        assert_eq!(normal.live_row_metadata(1).logical_atom_start, 5);
+    }
     #[test]
     fn physical_selection_uses_wide_lead_and_preserves_empty_line_count() {
         let mut normal = NormalBuf::new(3, 3);

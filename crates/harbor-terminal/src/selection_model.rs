@@ -1417,8 +1417,8 @@ mod tests {
         assert_eq!(
             model.prepared_projection(&prepared),
             PreparedProjection::Projected(PreparedSelectionProjection {
-                anchor: crate::primary_reflow::ReflowPosition { row: 0, col: 1 },
-                cursor: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                anchor: GenPos::new(2, 1),
+                cursor: GenPos::new(3, 1),
             })
         );
 
@@ -1427,13 +1427,45 @@ mod tests {
         assert_eq!(
             model.prepared_projection(&prepared),
             PreparedProjection::Projected(PreparedSelectionProjection {
-                anchor: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
-                cursor: crate::primary_reflow::ReflowPosition { row: 0, col: 1 },
+                anchor: GenPos::new(3, 1),
+                cursor: GenPos::new(2, 1),
             })
         );
 
         model.anchored_range.as_mut().unwrap().cursor.anchor.line_id =
             crate::normal_buf::LogicalLineId(u64::MAX);
+        assert_eq!(
+            model.prepared_projection(&prepared),
+            PreparedProjection::Invalid
+        );
+    }
+
+    #[test]
+    fn prepared_projection_invalidates_both_endpoints_when_capacity_evicts_one() {
+        let mut normal = crate::normal_buf::NormalBuf::new_for_test(2, 4, 0);
+        for row in 0..2 {
+            for col in 0..4 {
+                normal.write_meaningful_cell(
+                    row,
+                    col,
+                    crate::screen::Cell {
+                        ch: (b'a' + (row * 4 + col) as u8) as char,
+                        ..crate::screen::Cell::default()
+                    },
+                );
+            }
+            if row == 1 {
+                let source = normal.live_row_metadata(0);
+                normal.continue_logical_line(1, source);
+            }
+        }
+        let projection = crate::content_anchor::ContentProjection::build(&normal).unwrap();
+        let mut model = SelectionModel::new();
+        model.range = Some(SelectionRange::new(GenPos::new(0, 0), GenPos::new(1, 3)));
+        assert!(model.commit_anchors(&projection));
+        let prepared =
+            crate::primary_reflow::PreparedPrimaryResize::prepare_geometry(&normal, 1, 2).unwrap();
+
         assert_eq!(
             model.prepared_projection(&prepared),
             PreparedProjection::Invalid

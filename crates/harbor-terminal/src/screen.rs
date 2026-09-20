@@ -382,11 +382,14 @@ impl Screen {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn prepare_primary_width_reflow(
+    pub(crate) fn prepare_primary_resize(
         &self,
+        requested_rows: usize,
         requested_cols: usize,
     ) -> Result<PreparedPrimaryWidthReflow, PreparationError> {
-        let prepared = self.normal.prepare_primary_width_reflow(requested_cols)?;
+        let prepared = self
+            .normal
+            .prepare_primary_resize(requested_rows, requested_cols)?;
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
             .ok_or(PreparationError::UnresolvedLiveCursor)?;
@@ -426,6 +429,14 @@ impl Screen {
         };
 
         prepared.attach_screen_anchors(live_cursor, saved_cursor, review)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prepare_primary_width_reflow(
+        &self,
+        requested_cols: usize,
+    ) -> Result<PreparedPrimaryWidthReflow, PreparationError> {
+        self.prepare_primary_resize(self.normal.rows(), requested_cols)
     }
 
     fn live_cursor_position(&self) -> GenPos {
@@ -626,13 +637,13 @@ impl Screen {
                 } else if let Some(first_retained_generation) = projection.first_generation(line_id)
                     && before.first_generation(line_id) != Some(first_retained_generation)
                     && projection.history_start() > before.history_start()
-                    && let Some(removed) =
-                        before.atom_count_before_generation(line_id, first_retained_generation)
-                    && removed > 0
+                    && let (Some(before_start), Some(after_start)) =
+                        (before.atom_start(line_id), projection.atom_start(line_id))
+                    && after_start.0 > before_start.0
                 {
                     self.anchor_mutations.push(AnchorMutation::EvictPrefix {
                         line_id,
-                        end: LogicalAtomOffset(removed),
+                        end: after_start,
                     });
                 } else if !self.anchor_mutations.transforms_line(line_id)
                     && let (Some(old_spans), Some(new_spans)) =

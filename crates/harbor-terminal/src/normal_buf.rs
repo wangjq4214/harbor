@@ -13,7 +13,10 @@ pub(crate) struct LogicalLineId(pub(crate) u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RowMetadata {
     pub(crate) logical_line_id: LogicalLineId,
+    /// Absolute cell offset of this physical row within its logical line.
     pub(crate) logical_start: usize,
+    /// Absolute logical-atom offset of this physical row within its logical line.
+    pub(crate) logical_atom_start: usize,
     pub(crate) meaningful_extent: usize,
     pub(crate) soft_wrapped: bool,
     pub(crate) head_truncated: bool,
@@ -77,7 +80,7 @@ pub(crate) struct RetainedRow<'a> {
 /// (`view_offset == 0`), the ring head advances O(1) on full-screen scroll
 /// — no cell copies, just a pointer bump and blank-fill of the newly
 /// exposed row(s).
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NormalBuf {
     /// Ring buffer: `total_rows * cols` cells — accessible via helper methods.
     cells: Vec<Cell>,
@@ -112,9 +115,12 @@ impl NormalBuf {
     const DEFAULT_MAX_SCROLLBACK: usize = 1000;
 
     pub fn new(rows: usize, cols: usize) -> Self {
+        Self::with_max_scrollback(rows, cols, Self::DEFAULT_MAX_SCROLLBACK)
+    }
+
+    fn with_max_scrollback(rows: usize, cols: usize, max_scrollback: usize) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
-        let max_scrollback = Self::DEFAULT_MAX_SCROLLBACK;
         let total_rows = max_scrollback
             .checked_add(rows)
             .expect("terminal row count overflow");
@@ -127,6 +133,7 @@ impl NormalBuf {
             .map(|id| RowMetadata {
                 logical_line_id: LogicalLineId(id as u64),
                 logical_start: 0,
+                logical_atom_start: 0,
                 meaningful_extent: 0,
                 soft_wrapped: false,
                 head_truncated: false,
@@ -147,6 +154,11 @@ impl NormalBuf {
             history_start: 0,
             damage_tracker: DamageTracker::new(rows, cols),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(rows: usize, cols: usize, max_scrollback: usize) -> Self {
+        Self::with_max_scrollback(rows, cols, max_scrollback)
     }
 
     // ── read-only accessors ─────────────────────────────────────────
@@ -205,6 +217,7 @@ impl NormalBuf {
         RowMetadata {
             logical_line_id: self.allocate_logical_line_id(),
             logical_start: 0,
+            logical_atom_start: 0,
             meaningful_extent: 0,
             soft_wrapped: false,
             head_truncated: false,
@@ -239,6 +252,15 @@ impl NormalBuf {
             .rposition(|state| state.is_meaningful())
             .map_or(0, |col| col + 1);
         self.row_metadata[ring_row].meaningful_extent = extent;
+    }
+
+    fn logical_atom_count(&self, ring_row: usize) -> usize {
+        let start = ring_row * self.cols;
+        let extent = self.row_metadata[ring_row].meaningful_extent.min(self.cols);
+        self.cells[start..start + extent]
+            .iter()
+            .filter(|cell| !cell.wide_continuation)
+            .count()
     }
 
     pub(crate) fn recompute_row_extent(&mut self, display_row: usize) {
@@ -287,10 +309,15 @@ impl NormalBuf {
             let logical_start = source
                 .logical_start
                 .checked_add(source.meaningful_extent)
-                .expect("logical line offset overflow");
+                .expect("logical line cell offset overflow");
+            let logical_atom_start = source
+                .logical_atom_start
+                .checked_add(self.logical_atom_count(self.display_to_ring(next_row - 1)))
+                .expect("logical line atom offset overflow");
             let metadata = &mut self.row_metadata[ring_row];
             metadata.logical_line_id = source.logical_line_id;
             metadata.logical_start = logical_start;
+            metadata.logical_atom_start = logical_atom_start;
             metadata.soft_wrapped = true;
             metadata.head_truncated = false;
             source = *metadata;
@@ -317,6 +344,10 @@ impl NormalBuf {
                 .logical_start
                 .checked_add(source.meaningful_extent)
                 .expect("logical line offset overflow"),
+            logical_atom_start: source
+                .logical_atom_start
+                .checked_add(self.logical_atom_count(self.display_to_ring(display_row - 1)))
+                .expect("logical line atom offset overflow"),
             meaningful_extent: self.row_metadata[ring_row].meaningful_extent,
             soft_wrapped: true,
             head_truncated: false,
@@ -536,6 +567,112 @@ impl NormalBuf {
         })
     }
 
+    pub(crate) fn next_logical_line_id(&self) -> u64 {
+        self.next_logical_line_id
+    }
+
+    pub(crate) fn newest_generation_exclusive(&self) -> Option<u64> {
+        let retained = self.scroll_count.checked_add(self.visible_rows)?;
+        self.history_start
+            .checked_add(u64::try_from(retained).ok()?)
+    }
+
+    pub(crate) fn from_reflowed_rows(
+        retained: &[crate::primary_reflow::ReflowedRow],
+        visible_rows: usize,
+        cols: usize,
+        max_scrollback: usize,
+        mut next_logical_line_id: u64,
+        history_start: u64,
+        view_offset: usize,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::PreparationError;
+
+        let total_rows = max_scrollback
+            .checked_add(visible_rows)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        if visible_rows == 0
+            || cols == 0
+            || retained.len() < visible_rows
+            || retained.len() > total_rows
+        {
+            return Err(PreparationError::Invariant(
+                "invalid detached ring dimensions",
+            ));
+        }
+        let cell_count = total_rows
+            .checked_mul(cols)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let retained_generation_count =
+            u64::try_from(retained.len()).map_err(|_| PreparationError::ArithmeticOverflow)?;
+        history_start
+            .checked_add(retained_generation_count)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(cell_count)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        cells.resize(cell_count, Cell::default());
+        let mut cell_state = Vec::new();
+        cell_state
+            .try_reserve_exact(cell_count)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        cell_state.resize(cell_count, CellState::default());
+
+        let mut row_metadata = Vec::new();
+        row_metadata
+            .try_reserve_exact(total_rows)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        for _ in 0..total_rows {
+            let id = LogicalLineId(next_logical_line_id);
+            next_logical_line_id = next_logical_line_id
+                .checked_add(1)
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            row_metadata.push(RowMetadata {
+                logical_line_id: id,
+                logical_start: 0,
+                logical_atom_start: 0,
+                meaningful_extent: 0,
+                soft_wrapped: false,
+                head_truncated: false,
+            });
+        }
+
+        let scroll_count = retained.len() - visible_rows;
+        let visible_start = max_scrollback;
+        let first_ring_row = visible_start
+            .checked_add(total_rows)
+            .and_then(|value| value.checked_sub(scroll_count))
+            .ok_or(PreparationError::ArithmeticOverflow)?
+            % total_rows;
+        for (offset, row) in retained.iter().enumerate() {
+            if row.cells.len() != cols || row.cell_state.len() != cols {
+                return Err(PreparationError::Invariant("detached row width mismatch"));
+            }
+            let ring_row = (first_ring_row + offset) % total_rows;
+            let start = ring_row * cols;
+            cells[start..start + cols].copy_from_slice(&row.cells);
+            cell_state[start..start + cols].copy_from_slice(&row.cell_state);
+            row_metadata[ring_row] = row.metadata;
+        }
+
+        Ok(Self {
+            cells,
+            cell_state,
+            row_metadata,
+            next_logical_line_id,
+            total_rows,
+            visible_rows,
+            cols,
+            visible_start,
+            scroll_count,
+            view_offset: view_offset.min(scroll_count),
+            damage_tracker: DamageTracker::new(visible_rows, cols),
+            max_scrollback,
+            history_start,
+        })
+    }
+
     #[allow(dead_code)]
     pub(crate) fn prepare_primary_width_reflow(
         &self,
@@ -545,6 +682,20 @@ impl NormalBuf {
         crate::primary_reflow::PreparationError,
     > {
         crate::primary_reflow::PreparedPrimaryWidthReflow::prepare(self, requested_cols)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prepare_primary_resize(
+        &self,
+        requested_rows: usize,
+        requested_cols: usize,
+    ) -> Result<crate::primary_reflow::PreparedPrimaryResize, crate::primary_reflow::PreparationError>
+    {
+        crate::primary_reflow::PreparedPrimaryResize::prepare_geometry(
+            self,
+            requested_rows,
+            requested_cols,
+        )
     }
 
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
@@ -645,6 +796,23 @@ impl NormalBuf {
         self.row_metadata[ring_row].head_truncated = head_truncated;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_logical_starts(
+        &mut self,
+        display_row: usize,
+        logical_start: usize,
+        logical_atom_start: usize,
+    ) {
+        let ring_row = self.display_to_ring(display_row);
+        self.row_metadata[ring_row].logical_start = logical_start;
+        self.row_metadata[ring_row].logical_atom_start = logical_atom_start;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_history_start_for_test(&mut self, history_start: u64) {
+        self.history_start = history_start;
+    }
+
     /// Compatibility projection used by existing callers that only sever wraps.
     #[cfg(test)]
     pub(crate) fn set_wrapped(&mut self, display_row: usize, wrapped: bool) {
@@ -653,6 +821,7 @@ impl NormalBuf {
         self.row_metadata[ring_row].soft_wrapped = wrapped;
         if !wrapped {
             self.row_metadata[ring_row].logical_start = 0;
+            self.row_metadata[ring_row].logical_atom_start = 0;
             self.row_metadata[ring_row].head_truncated = false;
         }
     }
@@ -696,10 +865,25 @@ impl NormalBuf {
 
         let n = n.min(self.visible_rows);
         let old_sc = self.scroll_count;
+        let overflow = old_sc.saturating_add(n).saturating_sub(self.max_scrollback);
+        let truncated_head_ring = if overflow > 0 {
+            let oldest_ring = (self.visible_start + self.total_rows - old_sc) % self.total_rows;
+            let last_removed_ring = (oldest_ring + overflow - 1) % self.total_rows;
+            let new_oldest_ring = (oldest_ring + overflow) % self.total_rows;
+            let removed = self.row_metadata[last_removed_ring];
+            let retained = self.row_metadata[new_oldest_ring];
+            (removed.logical_line_id == retained.logical_line_id && retained.soft_wrapped)
+                .then_some(new_oldest_ring)
+        } else {
+            None
+        };
         self.scroll_count = (self.scroll_count + n).min(self.max_scrollback);
         self.visible_start = (self.visible_start + n) % self.total_rows;
         if old_sc + n > self.max_scrollback {
             self.history_start += (old_sc + n - self.max_scrollback) as u64;
+        }
+        if let Some(ring_row) = truncated_head_ring {
+            self.row_metadata[ring_row].head_truncated = true;
         }
         // Blank newly exposed rows and give each reused slot a never-before-used ID.
         let state = CellState::fresh_fill(cell);

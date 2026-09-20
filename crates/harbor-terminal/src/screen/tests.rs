@@ -5072,7 +5072,7 @@ fn saved_cursor_preserves_unwritten_column_when_blank_row_moves() {
 }
 
 #[test]
-fn partial_soft_line_eviction_rebases_surviving_anchor_without_aliasing() {
+fn partial_soft_line_eviction_preserves_absolute_surviving_anchor_without_aliasing() {
     let mut screen = Screen::new(2, 1);
     let capacity = screen.normal.max_scrollback() + screen.rows();
     for _ in 0..capacity {
@@ -5095,7 +5095,7 @@ fn partial_soft_line_eviction_rebases_surviving_anchor_without_aliasing() {
         .apply(stale_offset)
         .expect("surviving atom remains anchored");
 
-    assert_eq!(rebased.offset.0, 0);
+    assert_eq!(rebased.offset.0, 1);
     assert_eq!(
         projection.resolve_selection(rebased),
         Some(crate::GenPos::new(screen.history_start(), 0))
@@ -5119,7 +5119,7 @@ fn prepares_live_and_saved_cursor_without_mutating_screen_geometry() {
         prepared.live_cursor,
         crate::primary_reflow::PreparedProjection::Projected(
             crate::primary_reflow::ProjectedInsertion {
-                position: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                position: crate::GenPos::new(3, 1),
                 pending_wrap: true,
             }
         )
@@ -5141,14 +5141,14 @@ fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() 
     screen.write_char('X');
 
     let prepared = screen
-        .prepare_primary_width_reflow(4)
+        .prepare_primary_width_reflow(8)
         .expect("preparation reconciles pending saved anchor");
 
     assert_eq!(
         prepared.saved_cursor,
         crate::primary_reflow::PreparedProjection::Projected(
             crate::primary_reflow::ProjectedInsertion {
-                position: crate::primary_reflow::ReflowPosition { row: 1, col: 1 },
+                position: crate::GenPos::new(2, 5),
                 pending_wrap: false,
             }
         )
@@ -5177,9 +5177,28 @@ fn prepares_complete_history_sequence_and_review_anchor() {
     assert_eq!(prepared.rows().len(), 5);
     assert_eq!(
         prepared.review,
-        crate::primary_reflow::PreparedProjection::Projected(
-            crate::primary_reflow::ReflowPosition { row: 0, col: 0 }
-        )
+        crate::primary_reflow::PreparedProjection::Projected(crate::GenPos::new(3, 0))
     );
     assert_eq!(screen.view_offset(), before_offset);
+}
+
+#[test]
+fn prepares_height_growth_with_review_clamped_to_new_live_top() {
+    let mut screen = Screen::new(2, 2);
+    screen.normal.scroll_up_full_screen(2, Cell::default());
+    screen.normal.set_view_offset(1);
+    let before = screen.terminal_snapshot();
+
+    let prepared = screen
+        .prepare_primary_resize(4, 2)
+        .expect("detached height growth preparation");
+
+    assert_eq!(prepared.target_rows(), 4);
+    assert_eq!(prepared.normal().scroll_count(), 0);
+    assert_eq!(prepared.normal().view_offset(), 0);
+    assert_eq!(
+        prepared.review,
+        crate::primary_reflow::PreparedProjection::Projected(crate::GenPos::new(4, 0))
+    );
+    assert_eq!(screen.terminal_snapshot(), before);
 }
