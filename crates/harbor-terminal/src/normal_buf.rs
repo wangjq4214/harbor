@@ -55,9 +55,18 @@ impl CellState {
         }
     }
 
-    fn is_meaningful(self) -> bool {
+    pub(crate) fn is_meaningful(self) -> bool {
         self.0 != 0
     }
+}
+
+/// Semantic view of one retained ring row in generation order.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RetainedRow<'a> {
+    pub(crate) generation: u64,
+    pub(crate) metadata: RowMetadata,
+    pub(crate) cells: &'a [Cell],
+    pub(crate) cell_state: &'a [CellState],
 }
 
 /// Ring-buffer backed scrollback buffer.
@@ -506,6 +515,22 @@ impl NormalBuf {
     /// Iterates every retained ring-buffer cell, including scrollback.
     pub(crate) fn retained_cells(&self) -> impl Iterator<Item = &Cell> {
         self.cells.iter()
+    }
+
+    /// Iterates all retained rows, oldest to newest, without exposing ring coordinates.
+    pub(crate) fn retained_rows(&self) -> impl ExactSizeIterator<Item = RetainedRow<'_>> {
+        let retained_count = self.scroll_count + self.visible_rows;
+        (0..retained_count).map(move |offset| {
+            let ring_row = (self.visible_start + self.total_rows - self.scroll_count + offset)
+                % self.total_rows;
+            let start = ring_row * self.cols;
+            RetainedRow {
+                generation: self.history_start + offset as u64,
+                metadata: self.row_metadata[ring_row],
+                cells: &self.cells[start..start + self.cols],
+                cell_state: &self.cell_state[start..start + self.cols],
+            }
+        })
     }
 
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
@@ -1443,6 +1468,34 @@ mod tests {
             assert!(!ids_before_reset.contains(&metadata.logical_line_id));
             assert_eq!(metadata.meaningful_extent, 0);
             assert!(!metadata.head_truncated);
+        }
+    }
+
+    #[test]
+    fn retained_rows_are_bounded_and_generation_ordered_after_rotation() {
+        let mut buf = NormalBuf::new(3, 2);
+        buf.write_meaningful_cell(
+            1,
+            0,
+            Cell {
+                ch: 'Z',
+                ..Cell::default()
+            },
+        );
+        for _ in 0..=buf.max_scrollback() {
+            buf.scroll_up_full_screen(1, Cell::default());
+        }
+
+        let rows: Vec<_> = buf.retained_rows().collect();
+        assert_eq!(rows.len(), buf.max_scrollback() + buf.rows());
+        assert_eq!(rows[0].generation, buf.history_start());
+        assert_eq!(rows[0].generation, 1);
+        assert_eq!(rows[0].cells[0].ch, 'Z');
+        assert!(rows[0].cell_state[0].is_meaningful());
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.generation, buf.history_start() + index as u64);
+            assert_eq!(row.cells.len(), buf.cols());
+            assert_eq!(row.cell_state.len(), buf.cols());
         }
     }
 }

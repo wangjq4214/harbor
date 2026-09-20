@@ -1,6 +1,7 @@
 mod damage;
 mod input;
 mod io;
+mod logical_content;
 mod model;
 mod normal_buf;
 mod parser;

@@ -1148,13 +1148,22 @@ fn resize_preserves_saved_cursor() {
 
 // ── selected_text ──────────────────────────────────────────────
 
+fn set_semantic_cell(screen: &mut Screen, row: usize, col: usize, ch: char) {
+    screen.normal.write_meaningful_cell(
+        row,
+        col,
+        Cell {
+            ch,
+            ..Cell::default()
+        },
+    );
+}
+
 #[test]
 fn selected_text_single_row() {
     let mut screen = Screen::new(3, 11);
-    // Fill row 1 with "hello world" (some chars repeated to fill)
-    let text: Vec<char> = "hello world".chars().collect();
-    for (col, ch) in text.iter().enumerate() {
-        screen.cell_mut(1, col).ch = *ch;
+    for (col, ch) in "hello world".chars().enumerate() {
+        set_semantic_cell(&mut screen, 1, col, ch);
     }
     let result = screen.selected_text(SelectionBounds {
         start_row: 1,
@@ -1168,10 +1177,9 @@ fn selected_text_single_row() {
 #[test]
 fn selected_text_multi_row() {
     let mut screen = Screen::new(3, 4);
-    let rows = ["ab", "cd", "ef"];
-    for (r, line) in rows.iter().enumerate() {
-        for (c, ch) in line.chars().enumerate() {
-            screen.cell_mut(r, c).ch = ch;
+    for (row, line) in ["ab", "cd", "ef"].iter().enumerate() {
+        for (col, ch) in line.chars().enumerate() {
+            set_semantic_cell(&mut screen, row, col, ch);
         }
     }
     // Select rows 0-1, full row 0 and partial row 1 (only col 0)
@@ -1185,36 +1193,34 @@ fn selected_text_multi_row() {
 }
 
 #[test]
-fn selected_text_skips_wide_continuation() {
+fn selected_text_copies_wide_glyph_once() {
     let mut screen = Screen::new(1, 4);
-    // Simulate a double-width character at col 0: set ch at 0, continuation at 1.
-    screen.cell_mut(0, 0).ch = 'A';
-    screen.cell_mut(0, 1).wide_continuation = true;
-    screen.cell_mut(0, 2).ch = 'B';
-    screen.cell_mut(0, 3).ch = 'C';
+    screen.write_char('界');
+    screen.write_char('B');
+    screen.write_char('C');
     let result = screen.selected_text(SelectionBounds {
         start_row: 0,
         start_col: 0,
         end_row: 0,
         end_col: 3,
     });
-    assert_eq!(result, "ABC");
+    assert_eq!(result, "界BC");
 }
 
 #[test]
-fn selected_text_trims_trailing_whitespace() {
+fn selected_text_preserves_meaningful_trailing_whitespace() {
     let mut screen = Screen::new(2, 5);
-    screen.cell_mut(0, 0).ch = 'a';
-    screen.cell_mut(0, 1).ch = ' ';
-    screen.cell_mut(0, 2).ch = ' ';
-    screen.cell_mut(1, 0).ch = 'b';
+    set_semantic_cell(&mut screen, 0, 0, 'a');
+    set_semantic_cell(&mut screen, 0, 1, ' ');
+    set_semantic_cell(&mut screen, 0, 2, ' ');
+    set_semantic_cell(&mut screen, 1, 0, 'b');
     let result = screen.selected_text(SelectionBounds {
         start_row: 0,
         start_col: 0,
         end_row: 1,
         end_col: 1,
     });
-    assert_eq!(result, "a\nb");
+    assert_eq!(result, "a  \nb");
 }
 
 #[test]
@@ -1226,6 +1232,118 @@ fn selected_text_empty_selection() {
         end_row: 1,
         end_col: 1,
     });
+    assert_eq!(result, "");
+}
+
+#[test]
+fn selected_text_pending_wrap_does_not_invent_a_row_boundary() {
+    let mut screen = Screen::new(2, 3);
+    for ch in "abc".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "abc");
+}
+
+#[test]
+fn selected_text_keeps_current_zero_width_character_exclusion() {
+    let mut screen = Screen::new(1, 3);
+    screen.write_char('a');
+    screen.write_char('\u{0301}');
+    screen.write_char('\u{fe0f}');
+    screen.write_char('\u{200d}');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "a");
+}
+
+#[test]
+fn selected_text_joins_long_colored_hyperlinked_soft_wraps() {
+    let mut screen = Screen::new(3, 3);
+    screen.set_sgr_slice(&[Some(1), Some(31)]);
+    screen.open_hyperlink("https://example.test/not-copied".to_owned(), None);
+    for ch in "abcdefg".chars() {
+        screen.write_char(ch);
+    }
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 2,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "abcdefg");
+}
+
+#[test]
+fn selected_text_preserves_styled_and_hyperlinked_trailing_blanks() {
+    let mut screen = Screen::new(1, 4);
+    screen.write_char('a');
+    screen.set_sgr_slice(&[Some(44)]);
+    screen.write_char(' ');
+    screen.open_hyperlink("https://example.test/not-copied".to_owned(), None);
+    screen.write_char(' ');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 3,
+    });
+
+    assert_eq!(result, "a  ");
+}
+
+#[test]
+fn selected_text_omits_generated_wide_edge_padding() {
+    let mut screen = Screen::new(2, 3);
+    screen.cursor.cursor.x = 2;
+    screen.write_char('界');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 1,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "界");
+}
+
+#[test]
+fn selected_text_fails_closed_for_malformed_wide_state() {
+    let mut screen = Screen::new(1, 2);
+    screen.normal.write_meaningful_cell(
+        0,
+        0,
+        Cell {
+            wide_continuation: true,
+            ..Cell::default()
+        },
+    );
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 1,
+    });
+
     assert_eq!(result, "");
 }
 
@@ -3555,15 +3673,15 @@ fn alt_screen_restores_all_state_groups() {
 fn selected_text_across_scrollback_generations() {
     let mut screen = Screen::new(5, 3);
     // Write identifiable content to display rows.
-    screen.cell_mut(0, 0).ch = 'A';
-    screen.cell_mut(1, 0).ch = 'B';
-    screen.cell_mut(2, 0).ch = 'C';
+    set_semantic_cell(&mut screen, 0, 0, 'A');
+    set_semantic_cell(&mut screen, 1, 0, 'B');
+    set_semantic_cell(&mut screen, 2, 0, 'C');
     // Push into scrollback.
     screen.normal.scroll_up_full_screen(3, Cell::default());
     // Now gen 0 = 'A', gen 1 = 'B', gen 2 = 'C'.
     // Write fresh content to new visible rows.
-    screen.cell_mut(0, 0).ch = 'X'; // gen 3
-    screen.cell_mut(1, 0).ch = 'Y'; // gen 4
+    set_semantic_cell(&mut screen, 0, 0, 'X'); // gen 3
+    set_semantic_cell(&mut screen, 1, 0, 'Y'); // gen 4
 
     // Select gens 0-4 — spans scrollback + visible.
     let result = screen.selected_text(SelectionBounds {
@@ -3599,7 +3717,7 @@ fn selected_text_evicted_generation_skipped() {
     let max = screen.normal.max_scrollback();
 
     // Write a marker at gen 0.
-    screen.cell_mut(0, 0).ch = 'M';
+    set_semantic_cell(&mut screen, 0, 0, 'M');
     // Fill the ring until gen 0 is evicted (max+1 scrolls).
     for _ in 0..max + 1 {
         screen.normal.scroll_up_full_screen(1, Cell::default());
@@ -3607,7 +3725,7 @@ fn selected_text_evicted_generation_skipped() {
     // gen 0 is now evicted (history_start = 1).
 
     // Write fresh content to new display rows.
-    screen.cell_mut(0, 0).ch = 'N'; // gen = history_start + scroll_count - view_offset + 0
+    set_semantic_cell(&mut screen, 0, 0, 'N'); // current first visible generation
 
     // Selecting gen 0 should skip it (not panic).
     let result = screen.selected_text(SelectionBounds {
@@ -3640,7 +3758,7 @@ fn selected_text_evicted_start_clamped_no_blank_lines() {
     let max = screen.normal.max_scrollback();
 
     // Write a distinct marker at display row 1 (generation 1: hist_start=0, scroll_count=0, row=1).
-    screen.cell_mut(1, 0).ch = 'Z';
+    set_semantic_cell(&mut screen, 1, 0, 'Z');
     // One scroll pushes gen 0 into scrollback; 'Z' lands at gen 1 display row 0.
     screen.normal.scroll_up_full_screen(1, Cell::default());
     // Fill the ring to evict gen 0 (max more scrolls → total = max+1).
