@@ -83,6 +83,15 @@ impl Default for Cell {
 }
 
 impl Cell {
+    /// Whether a blank cell paints pixels in the current renderer.
+    ///
+    /// Foreground-only and glyph decorations do not make a space visible: the
+    /// renderer skips space glyphs, underlines, hyperlinks, and strikethroughs.
+    /// A non-default background or inverse video does paint the cell rectangle.
+    pub(crate) fn is_visibly_meaningful_blank(&self) -> bool {
+        self.ch == ' ' && (self.bg != Color::Default || self.attrs.contains(CellAttrs::INVERSE))
+    }
+
     /// Sets the public cell fields and clears any screen-local hyperlink identity.
     pub fn set(&mut self, ch: char, fg: Color, bg: Color, attrs: CellAttrs, protected: bool) {
         self.set_with_hyperlink(ch, fg, bg, attrs, protected, None);

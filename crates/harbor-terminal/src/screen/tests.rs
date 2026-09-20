@@ -2202,6 +2202,38 @@ fn test_rectangular_area_operations() {
 }
 
 #[test]
+fn attribute_rectangles_preserve_explicit_blanks_and_recompute_style_only_blanks() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 4);
+    screen.write_char(' ');
+
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;41$r");
+    assert!(screen.normal.cell_is_meaningful(0, 0));
+    assert!(screen.normal.cell_is_meaningful(0, 1));
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;49$r");
+    assert!(
+        screen.normal.cell_is_meaningful(0, 0),
+        "printed default blank must retain explicit provenance"
+    );
+    assert!(
+        !screen.normal.cell_is_meaningful(0, 1),
+        "unused blank must lose style-only meaning with its background"
+    );
+
+    parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;7$r");
+    assert!(screen.normal.cell_is_meaningful(0, 2));
+    parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;27$r");
+    assert!(!screen.normal.cell_is_meaningful(0, 2));
+
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;1;;1;4$v");
+    parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;49$r");
+    assert!(
+        screen.normal.cell_is_meaningful(0, 3),
+        "DECCRA must copy explicit provenance with a printed blank"
+    );
+}
+
+#[test]
 fn should_normalize_wide_pairs_when_edits_touch_active_margins() {
     // Arrange — place sentinels outside the active horizontal margins and a wide glyph inside.
     let mut screen = Screen::new(1, 8);
@@ -4050,10 +4082,7 @@ fn should_preserve_wrapped_marker_when_index_is_noop_below_scroll_region() {
     screen.cursor.scroll_region.top = 0;
     screen.cursor.scroll_region.bottom = 1;
     screen.cursor.cursor.y = 2;
-    for ch in "abcde".chars() {
-        screen.write_char(ch);
-    }
-    screen.write_char('f'); // wraps in place: row 2 is marked wrapped
+    screen.normal.set_wrapped(2, true);
     assert!(screen.is_wrapped(2));
     let y_before = screen.cursor.cursor.y;
     // Act — IND below the region at the last row does not move or scroll.
@@ -4104,6 +4133,34 @@ fn should_keep_prior_markers_and_mark_new_row_when_wrap_scrolls_at_bottom() {
     assert_eq!(screen.row_text(1), "k    ");
     assert!(screen.is_wrapped(0), "prior marker preserved across scroll");
     assert!(screen.is_wrapped(1), "newly entered row is marked");
+}
+
+#[test]
+fn output_wrap_uses_live_metadata_while_viewport_is_scrolled_back() {
+    let mut screen = Screen::new(2, 3);
+    for ch in "abcdefghi".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+    screen.scroll_up(1);
+    assert_eq!(screen.view_offset(), 1);
+
+    let source = screen.normal.live_row_metadata(1);
+    assert_ne!(
+        screen.normal.row_metadata(1).logical_start,
+        source.logical_start,
+        "displayed metadata should differ from the writable live row in this fixture"
+    );
+
+    screen.write_char('j');
+
+    let continuation = screen.normal.live_row_metadata(1);
+    assert!(continuation.soft_wrapped);
+    assert_eq!(continuation.logical_line_id, source.logical_line_id);
+    assert_eq!(
+        continuation.logical_start,
+        source.logical_start + source.meaningful_extent
+    );
 }
 
 #[test]
@@ -4214,7 +4271,7 @@ fn should_carry_wrapped_flag_when_scroll_down_region() {
 }
 
 #[test]
-fn should_carry_wrapped_flag_on_margin_rect_scroll_up() {
+fn should_preserve_wrapped_flags_on_margin_rect_scroll_up() {
     let mut screen = Screen::new(4, 5);
     screen.set_private_mode(69, true); // DECSLRM
     screen.set_left_right_margins(2, 4); // 0-based left=1, right=3
@@ -4225,12 +4282,12 @@ fn should_carry_wrapped_flag_on_margin_rect_scroll_up() {
     screen.scroll_up_region(1);
     // Assert
     assert!(
-        screen.is_wrapped(1),
-        "flag carried row-wise within margin rect"
+        !screen.is_wrapped(1),
+        "partial-row movement must preserve the destination hard-break relationship"
     );
     assert!(
-        !screen.is_wrapped(2),
-        "blanked bottom row must be unwrapped"
+        screen.is_wrapped(2),
+        "partial-row blanking must preserve the destination wrap relationship"
     );
 }
 

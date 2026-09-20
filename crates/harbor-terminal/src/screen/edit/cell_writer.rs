@@ -130,10 +130,12 @@ impl CellWriter {
     ) -> bool {
         // Handle pending wrap if autowrap is on.
         if cursor.modes.autowrap && cursor.modes.pending_wrap {
+            let source = normal.live_row_metadata(cursor.cursor.y);
             cursor.carriage_return();
-            Self::newline_inner(pen_state, normal, cursor);
+            if Self::newline_inner(pen_state, normal, cursor) {
+                normal.continue_logical_line(cursor.cursor.y, source);
+            }
             cursor.modes.pending_wrap = false;
-            normal.set_wrapped(cursor.cursor.y, true);
         }
 
         // Ignore writes outside active horizontal bounds.
@@ -149,10 +151,12 @@ impl CellWriter {
             if !cursor.modes.autowrap {
                 return false;
             }
+            let source = normal.live_row_metadata(cursor.cursor.y);
             cursor.carriage_return();
-            Self::newline_inner(pen_state, normal, cursor);
+            if Self::newline_inner(pen_state, normal, cursor) {
+                normal.continue_logical_line(cursor.cursor.y, source);
+            }
             cursor.modes.pending_wrap = false;
-            normal.set_wrapped(cursor.cursor.y, true);
         }
 
         let start_x = cursor.cursor.x;
@@ -212,26 +216,31 @@ impl CellWriter {
             );
         }
 
-        let cell = normal.live_cell_mut(cursor.cursor.y, cursor.cursor.x);
-        cell.set_with_hyperlink(
+        let cell = crate::Cell {
             ch,
-            pen_state.pen.fg,
-            pen_state.pen.bg,
-            pen_state.pen.attrs,
-            pen_state.pen.protected,
-            pen_state.active_hyperlink,
-        );
+            wide_continuation: false,
+            fg: pen_state.pen.fg,
+            bg: pen_state.pen.bg,
+            attrs: pen_state.pen.attrs,
+            protected: pen_state.pen.protected,
+            hyperlink: pen_state.active_hyperlink,
+        };
+        normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x, cell);
 
         if width == 2 && cursor.cursor.x < right_limit {
-            *normal.cell_mut(cursor.cursor.y, cursor.cursor.x + 1) = crate::Cell {
-                ch: ' ',
-                wide_continuation: true,
-                fg: pen_state.pen.fg,
-                bg: pen_state.pen.bg,
-                attrs: pen_state.pen.attrs,
-                protected: pen_state.pen.protected,
-                hyperlink: pen_state.active_hyperlink,
-            };
+            normal.write_meaningful_cell(
+                cursor.cursor.y,
+                cursor.cursor.x + 1,
+                crate::Cell {
+                    ch: ' ',
+                    wide_continuation: true,
+                    fg: pen_state.pen.fg,
+                    bg: pen_state.pen.bg,
+                    attrs: pen_state.pen.attrs,
+                    protected: pen_state.pen.protected,
+                    hyperlink: pen_state.active_hyperlink,
+                },
+            );
         }
     }
 
@@ -254,11 +263,19 @@ impl CellWriter {
     // ── helpers for write_char ────────────────────────────────────
 
     /// Internal helper: handles the line-feed / index portion of newline for write_char.
-    fn newline_inner(pen_state: &mut PenState, normal: &mut NormalBuf, cursor: &mut CursorEngine) {
+    /// Returns whether the cursor moved or the region scrolled.
+    fn newline_inner(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+    ) -> bool {
+        let before = cursor.cursor.y;
         if cursor.index_needs_scroll() {
             CellOps::scroll_region_up_one_inner(pen_state, normal, cursor);
+            true
         } else {
             cursor.index_advance(normal);
+            cursor.cursor.y != before
         }
     }
 
@@ -275,11 +292,11 @@ impl CellWriter {
             if base < left || continuation > right {
                 return;
             }
-            *normal.cell_mut(row, base) = crate::Cell::default();
-            *normal.cell_mut(row, continuation) = crate::Cell::default();
+            normal.erase_cell(row, base, crate::Cell::default());
+            normal.erase_cell(row, continuation, crate::Cell::default());
             return;
         }
 
-        *normal.cell_mut(row, col) = crate::Cell::default();
+        normal.erase_cell(row, col, crate::Cell::default());
     }
 }

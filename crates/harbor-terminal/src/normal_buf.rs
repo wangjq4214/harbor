@@ -1,5 +1,64 @@
 use crate::damage::{DamageTracker, DirtyRange};
 use crate::screen::Cell;
+use unicode_width::UnicodeWidthChar;
+
+/// Stable identity of retained content belonging to one logical terminal line.
+///
+/// IDs are local to one `NormalBuf`; they are never derived from ring positions
+/// and are never reused by that buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LogicalLineId(u64);
+
+/// Metadata carried atomically with one physical ring row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RowMetadata {
+    pub(crate) logical_line_id: LogicalLineId,
+    pub(crate) logical_start: usize,
+    pub(crate) meaningful_extent: usize,
+    pub(crate) soft_wrapped: bool,
+    pub(crate) head_truncated: bool,
+}
+
+/// Compact retained-content provenance for one cell.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CellState(u8);
+
+impl CellState {
+    const EXPLICIT: u8 = 1 << 0;
+    const STYLE_VISIBLE: u8 = 1 << 1;
+
+    fn explicit(cell: Cell) -> Self {
+        Self(Self::EXPLICIT | Self::style_visible_bit(cell))
+    }
+
+    pub(crate) fn erase(cell: Cell) -> Self {
+        Self(Self::style_visible_bit(cell))
+    }
+
+    fn fresh_fill(cell: Cell) -> Self {
+        if cell.ch != ' ' || cell.wide_continuation || cell.hyperlink.is_some() {
+            Self::explicit(cell)
+        } else {
+            Self::erase(cell)
+        }
+    }
+
+    fn with_recomputed_style(self, cell: Cell) -> Self {
+        Self((self.0 & Self::EXPLICIT) | Self::style_visible_bit(cell))
+    }
+
+    fn style_visible_bit(cell: Cell) -> u8 {
+        if cell.is_visibly_meaningful_blank() {
+            Self::STYLE_VISIBLE
+        } else {
+            0
+        }
+    }
+
+    fn is_meaningful(self) -> bool {
+        self.0 != 0
+    }
+}
 
 /// Ring-buffer backed scrollback buffer.
 ///
@@ -13,6 +72,12 @@ use crate::screen::Cell;
 pub struct NormalBuf {
     /// Ring buffer: `total_rows * cols` cells — accessible via helper methods.
     cells: Vec<Cell>,
+    /// Compact provenance and style visibility state parallel to `cells`.
+    cell_state: Vec<CellState>,
+    /// One metadata record per physical ring row.
+    row_metadata: Vec<RowMetadata>,
+    /// Next never-before-issued logical line identity.
+    next_logical_line_id: u64,
     /// Ring capacity in rows = `max_scrollback + visible_rows`.
     total_rows: usize,
     /// Viewport height (visible row count).
@@ -32,29 +97,6 @@ pub struct NormalBuf {
     /// Monotonically increasing scrollback generation base.
     /// Incremented when ring-buffer wraparound evicts old rows.
     history_start: u64,
-    /// Per-ring-row soft-wrap flags, parallel to `cells`. `true` means this row
-    /// is a continuation of the logical line from the row above.
-    wrapped: Vec<bool>,
-}
-
-/// Copies a linear slice range with ring-buffer wraparound handling.
-///
-/// When `src_start <= src_end` the range is contiguous; otherwise it is split
-/// into two parts `[src_start, ring_end)` and `[0, src_end)`, copied in order.
-fn copy_ring_slice<T: Copy>(
-    slice: &mut [T],
-    src_start: usize,
-    src_end: usize,
-    dst: usize,
-    ring_end: usize,
-) {
-    if src_start <= src_end {
-        slice.copy_within(src_start..src_end, dst);
-    } else {
-        let first_len = ring_end - src_start;
-        slice.copy_within(src_start..ring_end, dst);
-        slice.copy_within(0..src_end, dst + first_len);
-    }
 }
 
 impl NormalBuf {
@@ -70,10 +112,23 @@ impl NormalBuf {
         let cell_count = total_rows
             .checked_mul(cols)
             .expect("terminal cell count overflow");
+        let next_logical_line_id =
+            u64::try_from(total_rows).expect("terminal row count exceeds logical ID space");
+        let row_metadata = (0..total_rows)
+            .map(|id| RowMetadata {
+                logical_line_id: LogicalLineId(id as u64),
+                logical_start: 0,
+                meaningful_extent: 0,
+                soft_wrapped: false,
+                head_truncated: false,
+            })
+            .collect();
         Self {
             total_rows,
             cells: vec![Cell::default(); cell_count],
-            wrapped: vec![false; total_rows],
+            cell_state: vec![CellState::default(); cell_count],
+            row_metadata,
+            next_logical_line_id,
             visible_rows: rows,
             cols,
             visible_start: max_scrollback,
@@ -125,13 +180,192 @@ impl NormalBuf {
 
     // ── row/col accessors (for write_char, avoiding manual index math) ──
 
-    /// Returns a mutable reference to the cell at `(display_row, col)`
-    /// in the **live** view (no scrollback offset).
-    pub fn live_cell_mut(&mut self, display_row: usize, col: usize) -> &mut Cell {
-        self.cell_mut(display_row, col)
+    fn allocate_logical_line_id(&mut self) -> LogicalLineId {
+        let id = LogicalLineId(self.next_logical_line_id);
+        self.next_logical_line_id = self
+            .next_logical_line_id
+            .checked_add(1)
+            .expect("logical line ID space exhausted");
+        id
     }
 
-    /// Fills a row range `[start_col, end_col)` with a cell value and marks it dirty.
+    fn fresh_metadata(&mut self) -> RowMetadata {
+        RowMetadata {
+            logical_line_id: self.allocate_logical_line_id(),
+            logical_start: 0,
+            meaningful_extent: 0,
+            soft_wrapped: false,
+            head_truncated: false,
+        }
+    }
+
+    fn normalize_wide_row(cells: &mut [Cell], states: &mut [CellState]) {
+        let mut col = 0;
+        while col < cells.len() {
+            if cells[col].wide_continuation {
+                cells[col] = Cell::default();
+                states[col] = CellState::default();
+                col += 1;
+            } else if UnicodeWidthChar::width(cells[col].ch).unwrap_or(0) == 2 {
+                if col + 1 < cells.len() && cells[col + 1].wide_continuation {
+                    col += 2;
+                } else {
+                    cells[col] = Cell::default();
+                    states[col] = CellState::default();
+                    col += 1;
+                }
+            } else {
+                col += 1;
+            }
+        }
+    }
+
+    fn recompute_ring_row_extent(&mut self, ring_row: usize) {
+        let start = ring_row * self.cols;
+        let extent = self.cell_state[start..start + self.cols]
+            .iter()
+            .rposition(|state| state.is_meaningful())
+            .map_or(0, |col| col + 1);
+        self.row_metadata[ring_row].meaningful_extent = extent;
+    }
+
+    pub(crate) fn recompute_row_extent(&mut self, display_row: usize) {
+        let ring_row = self.display_to_ring(display_row);
+        self.recompute_ring_row_extent(ring_row);
+    }
+
+    /// Metadata for a displayed row, including the current scrollback offset.
+    pub(crate) fn row_metadata(&self, display_row: usize) -> RowMetadata {
+        debug_assert!(display_row < self.visible_rows);
+        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
+        self.row_metadata[(top + display_row) % self.total_rows]
+    }
+
+    /// Metadata for the live writable row, independent of the displayed scrollback offset.
+    pub(crate) fn live_row_metadata(&self, display_row: usize) -> RowMetadata {
+        debug_assert!(display_row < self.visible_rows);
+        self.row_metadata[self.display_to_ring(display_row)]
+    }
+
+    pub(crate) fn cell_state(&self, display_row: usize, col: usize) -> CellState {
+        debug_assert!(display_row < self.visible_rows);
+        debug_assert!(col < self.cols);
+        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
+        let ring_row = (top + display_row) % self.total_rows;
+        self.cell_state[ring_row * self.cols + col]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cell_is_meaningful(&self, display_row: usize, col: usize) -> bool {
+        self.cell_state(display_row, col).is_meaningful()
+    }
+
+    /// Restores identity and offsets for a contiguous live soft-wrapped chain.
+    /// The replaced row remains a hard boundary while continuations are rebased
+    /// onto its new identity.
+    fn repair_following_soft_chain(&mut self, display_row: usize) {
+        let mut next_row = display_row + 1;
+        if next_row >= self.visible_rows {
+            return;
+        }
+
+        let mut source = self.live_row_metadata(display_row);
+        while next_row < self.visible_rows && self.live_row_metadata(next_row).soft_wrapped {
+            let ring_row = self.display_to_ring(next_row);
+            let logical_start = source
+                .logical_start
+                .checked_add(source.meaningful_extent)
+                .expect("logical line offset overflow");
+            let metadata = &mut self.row_metadata[ring_row];
+            metadata.logical_line_id = source.logical_line_id;
+            metadata.logical_start = logical_start;
+            metadata.soft_wrapped = true;
+            metadata.head_truncated = false;
+            source = *metadata;
+            next_row += 1;
+        }
+    }
+
+    /// Gives an actually-entered row an independent hard-line identity.
+    pub(crate) fn begin_hard_line(&mut self, display_row: usize) {
+        let ring_row = self.display_to_ring(display_row);
+        let extent = self.row_metadata[ring_row].meaningful_extent;
+        let mut metadata = self.fresh_metadata();
+        metadata.meaningful_extent = extent;
+        self.row_metadata[ring_row] = metadata;
+        self.repair_following_soft_chain(display_row);
+    }
+
+    /// Binds an actually-entered row to the source logical line after autowrap.
+    pub(crate) fn continue_logical_line(&mut self, display_row: usize, source: RowMetadata) {
+        let ring_row = self.display_to_ring(display_row);
+        self.row_metadata[ring_row] = RowMetadata {
+            logical_line_id: source.logical_line_id,
+            logical_start: source
+                .logical_start
+                .checked_add(source.meaningful_extent)
+                .expect("logical line offset overflow"),
+            meaningful_extent: self.row_metadata[ring_row].meaningful_extent,
+            soft_wrapped: true,
+            head_truncated: false,
+        };
+        self.repair_following_soft_chain(display_row);
+    }
+
+    pub(crate) fn write_cell(
+        &mut self,
+        display_row: usize,
+        col: usize,
+        cell: Cell,
+        state: CellState,
+    ) {
+        debug_assert!(display_row < self.visible_rows);
+        debug_assert!(col < self.cols);
+        let ring_row = self.display_to_ring(display_row);
+        let index = ring_row * self.cols + col;
+        self.cells[index] = cell;
+        self.cell_state[index] = state;
+        self.recompute_ring_row_extent(ring_row);
+        self.mark_range_dirty(display_row, col, col + 1);
+    }
+
+    pub(crate) fn write_meaningful_cell(&mut self, display_row: usize, col: usize, cell: Cell) {
+        self.write_cell(display_row, col, cell, CellState::explicit(cell));
+    }
+
+    pub(crate) fn erase_cell(&mut self, display_row: usize, col: usize, cell: Cell) {
+        self.write_cell(display_row, col, cell, CellState::erase(cell));
+    }
+
+    pub(crate) fn copy_cell(
+        &mut self,
+        src_row: usize,
+        src_col: usize,
+        dst_row: usize,
+        dst_col: usize,
+    ) {
+        let src_ring_row = self.display_to_ring(src_row);
+        let src_index = src_ring_row * self.cols + src_col;
+        let cell = self.cells[src_index];
+        let state = self.cell_state[src_index];
+        self.write_cell(dst_row, dst_col, cell, state);
+    }
+
+    pub(crate) fn mutate_cell_semantics(
+        &mut self,
+        display_row: usize,
+        col: usize,
+        mutate: impl FnOnce(&mut Cell),
+    ) {
+        let ring_row = self.display_to_ring(display_row);
+        let index = ring_row * self.cols + col;
+        mutate(&mut self.cells[index]);
+        self.cell_state[index] = self.cell_state[index].with_recomputed_style(self.cells[index]);
+        self.recompute_ring_row_extent(ring_row);
+        self.mark_range_dirty(display_row, col, col + 1);
+    }
+
+    /// Fills a row range with erase-state cells while retaining row identity.
     pub fn fill_row_range(&mut self, row: usize, start_col: usize, end_col: usize, cell: Cell) {
         let start_col = start_col.min(self.cols);
         let end_col = end_col.min(self.cols);
@@ -142,10 +376,12 @@ impl NormalBuf {
         let start = ring_row * self.cols + start_col;
         let end = ring_row * self.cols + end_col;
         self.cells[start..end].fill(cell);
+        self.cell_state[start..end].fill(CellState::erase(cell));
+        self.recompute_ring_row_extent(ring_row);
         self.mark_range_dirty(row, start_col, end_col);
     }
 
-    /// Selectively erases unprotected cells in a row range `[start_col, end_col)` and marks it dirty.
+    /// Selectively erases unprotected cells and their retained-content state.
     pub fn selective_erase_row_range(
         &mut self,
         row: usize,
@@ -161,34 +397,70 @@ impl NormalBuf {
         let ring_row = self.display_to_ring(row);
         let start = ring_row * self.cols + start_col;
         let end = ring_row * self.cols + end_col;
+        let erase_state = CellState::erase(erase);
         for idx in start..end {
             if !self.cells[idx].protected {
                 self.cells[idx] = erase;
+                self.cell_state[idx] = erase_state;
             }
         }
+        self.recompute_ring_row_extent(ring_row);
         self.mark_range_dirty(row, start_col, end_col);
     }
 
-    /// Fills a contiguous range of cells with a specific cell value.
+    /// Fills a contiguous cell range with erase-state content and provenance.
     pub(crate) fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
         self.cells[start..end].fill(cell);
+        self.cell_state[start..end].fill(CellState::erase(cell));
+        if start < end {
+            for ring_row in (start / self.cols)..=((end - 1) / self.cols) {
+                self.recompute_ring_row_extent(ring_row);
+            }
+        }
     }
 
-    /// Copies cells within the ring buffer by linear index range.
+    /// Copies cells and their retained-content state within the ring buffer.
     pub(crate) fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
         self.cells.copy_within(src_start..src_end, dst);
+        self.cell_state.copy_within(src_start..src_end, dst);
+        let len = src_end - src_start;
+        if len > 0 {
+            for ring_row in (dst / self.cols)..=((dst + len - 1) / self.cols) {
+                self.recompute_ring_row_extent(ring_row);
+            }
+        }
     }
 
-    /// Copies a linear range `[src_start, src_end)` to `dst`, correctly
-    /// handling the case where the source range wraps around the end of
-    /// the ring buffer. All three arguments are linear cell indices.
-    ///
-    /// When `src_start <= src_end` the range is contiguous; otherwise
-    /// it is split into two parts: `[src_start, ring_end)` and
-    /// `[0, src_end)`, and both are copied in order.
-    pub(crate) fn copy_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
-        let ring_end = self.total_rows * self.cols;
-        copy_ring_slice(&mut self.cells[..], src_start, src_end, dst, ring_end);
+    /// Moves complete rows atomically, including cells, provenance, and metadata.
+    /// Both source and destination ranges may wrap around the physical ring.
+    pub(crate) fn copy_ring_rows(&mut self, src_start: usize, src_end: usize, dst: usize) {
+        debug_assert!(src_start < self.total_rows);
+        debug_assert!(src_end < self.total_rows);
+        debug_assert!(dst < self.total_rows);
+        let row_count = if src_start <= src_end {
+            src_end - src_start
+        } else {
+            self.total_rows - src_start + src_end
+        };
+        let snapshot: Vec<_> = (0..row_count)
+            .map(|offset| {
+                let ring_row = (src_start + offset) % self.total_rows;
+                let start = ring_row * self.cols;
+                (
+                    self.cells[start..start + self.cols].to_vec(),
+                    self.cell_state[start..start + self.cols].to_vec(),
+                    self.row_metadata[ring_row],
+                )
+            })
+            .collect();
+
+        for (offset, (cells, states, metadata)) in snapshot.into_iter().enumerate() {
+            let ring_row = (dst + offset) % self.total_rows;
+            let start = ring_row * self.cols;
+            self.cells[start..start + self.cols].copy_from_slice(&cells);
+            self.cell_state[start..start + self.cols].copy_from_slice(&states);
+            self.row_metadata[ring_row] = metadata;
+        }
     }
 
     /// Returns the text content of a display row as a string.
@@ -318,29 +590,25 @@ impl NormalBuf {
 
     pub fn is_wrapped_at_generation(&self, generation: u64) -> Option<bool> {
         let ring_row = self.ring_row_at_generation(generation)?;
-        Some(self.wrapped[ring_row])
+        Some(self.row_metadata[ring_row].soft_wrapped)
     }
 
     /// Returns whether the given display row is a soft-wrapped continuation
     /// of the logical line from the row above.
     pub fn is_wrapped(&self, display_row: usize) -> bool {
-        debug_assert!(display_row < self.visible_rows);
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
-        self.wrapped[(top + display_row) % self.total_rows]
+        self.row_metadata(display_row).soft_wrapped
     }
 
-    /// Sets the soft-wrap flag for a live display row.
+    /// Compatibility projection used by existing callers that only sever wraps.
+    #[cfg(test)]
     pub(crate) fn set_wrapped(&mut self, display_row: usize, wrapped: bool) {
         debug_assert!(display_row < self.visible_rows);
         let ring_row = self.display_to_ring(display_row);
-        self.wrapped[ring_row] = wrapped;
-    }
-
-    /// Copies soft-wrap flags for a row range, mirroring `copy_ring_range`
-    /// but operating on ring-row indices and handling ring-buffer wraparound.
-    pub(crate) fn copy_wrapped_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
-        let ring_end = self.total_rows;
-        copy_ring_slice(&mut self.wrapped[..], src_start, src_end, dst, ring_end);
+        self.row_metadata[ring_row].soft_wrapped = wrapped;
+        if !wrapped {
+            self.row_metadata[ring_row].logical_start = 0;
+            self.row_metadata[ring_row].head_truncated = false;
+        }
     }
 
     // ── viewport scroll (user scrolling through history) ────────────
@@ -383,11 +651,18 @@ impl NormalBuf {
         if old_sc + n > self.max_scrollback {
             self.history_start += (old_sc + n - self.max_scrollback) as u64;
         }
-        // Blank the newly exposed rows at the bottom of the viewport.
+        // Blank newly exposed rows and give each reused slot a never-before-used ID.
+        let state = CellState::fresh_fill(cell);
         for i in 0..n {
-            let row = (self.visible_start + self.visible_rows - 1 - i) % self.total_rows;
-            self.cells[row * self.cols..(row + 1) * self.cols].fill(cell);
-            self.wrapped[row] = false;
+            let display_row = self.visible_rows - 1 - i;
+            let row = self.display_to_ring(display_row);
+            let start = row * self.cols;
+            self.cells[start..start + self.cols].fill(cell);
+            self.cell_state[start..start + self.cols].fill(state);
+            let mut metadata = self.fresh_metadata();
+            metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
+            self.row_metadata[row] = metadata;
+            self.repair_following_soft_chain(display_row);
         }
         if self.view_offset > 0 {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
@@ -407,8 +682,7 @@ impl NormalBuf {
 
     /// Rebuilds the ring buffer for a new viewport size while retaining available scrollback.
     ///
-    /// Rows are copied without reflow.  When the viewport is scrolled back, the existing
-    /// generation coordinates and displayed history remain valid up to the new capacity.
+    /// Rows are copied without reflow. Cells, meaning, and row metadata move together.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -444,37 +718,62 @@ impl NormalBuf {
             .checked_mul(cols)
             .expect("terminal cell count overflow");
         let old_cells = std::mem::take(&mut self.cells);
-        let old_wrapped = std::mem::take(&mut self.wrapped);
+        let old_cell_state = std::mem::take(&mut self.cell_state);
+        let old_metadata = std::mem::take(&mut self.row_metadata);
         let mut new_cells = vec![Cell::default(); new_cell_count];
-        let mut new_wrapped = vec![false; new_total];
+        let mut new_cell_state = vec![CellState::default(); new_cell_count];
+        let mut new_metadata = vec![None; new_total];
 
-        // Copy the retained history in generation order immediately before the live viewport.
-        for history_index in 0..keep_history {
-            let old_sequence_index = old_scroll_count - keep_history + history_index;
-            let old_ring_row =
-                (old_visible_start + old_total - old_scroll_count + old_sequence_index) % old_total;
-            let new_ring_row = (self.max_scrollback - keep_history + history_index) % new_total;
-            let old_start = old_ring_row * old_cols;
-            let new_start = new_ring_row * cols;
-            new_cells[new_start..new_start + copied_cols]
-                .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
-            new_wrapped[new_ring_row] = old_wrapped[old_ring_row];
+        {
+            let mut copy_row = |old_ring_row: usize, new_ring_row: usize| {
+                let old_start = old_ring_row * old_cols;
+                let new_start = new_ring_row * cols;
+                new_cells[new_start..new_start + copied_cols]
+                    .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
+                new_cell_state[new_start..new_start + copied_cols]
+                    .copy_from_slice(&old_cell_state[old_start..old_start + copied_cols]);
+                Self::normalize_wide_row(
+                    &mut new_cells[new_start..new_start + cols],
+                    &mut new_cell_state[new_start..new_start + cols],
+                );
+                let mut metadata = old_metadata[old_ring_row];
+                metadata.meaningful_extent = new_cell_state[new_start..new_start + cols]
+                    .iter()
+                    .rposition(|state| state.is_meaningful())
+                    .map_or(0, |col| col + 1);
+                new_metadata[new_ring_row] = Some(metadata);
+            };
+
+            // Copy retained history in generation order immediately before the live viewport.
+            for history_index in 0..keep_history {
+                let old_sequence_index = old_scroll_count - keep_history + history_index;
+                let old_ring_row = (old_visible_start + old_total - old_scroll_count
+                    + old_sequence_index)
+                    % old_total;
+                let new_ring_row = (self.max_scrollback - keep_history + history_index) % new_total;
+                copy_row(old_ring_row, new_ring_row);
+            }
+
+            // Preserve the top-left live rectangle; newly exposed rows remain blank.
+            for live_row in 0..copied_live_rows {
+                let old_ring_row = (old_visible_start + live_row) % old_total;
+                let new_ring_row = (self.max_scrollback + live_row) % new_total;
+                copy_row(old_ring_row, new_ring_row);
+            }
         }
-
-        // Preserve the top-left rectangle of the live viewport; newly exposed rows are blank.
-        for live_row in 0..copied_live_rows {
-            let old_ring_row = (old_visible_start + live_row) % old_total;
-            let new_ring_row = (self.max_scrollback + live_row) % new_total;
-            let old_start = old_ring_row * old_cols;
-            let new_start = new_ring_row * cols;
-            new_cells[new_start..new_start + copied_cols]
-                .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
-            new_wrapped[new_ring_row] = old_wrapped[old_ring_row];
+        for metadata in &mut new_metadata {
+            if metadata.is_none() {
+                *metadata = Some(self.fresh_metadata());
+            }
         }
 
         self.total_rows = new_total;
         self.cells = new_cells;
-        self.wrapped = new_wrapped;
+        self.cell_state = new_cell_state;
+        self.row_metadata = new_metadata
+            .into_iter()
+            .map(|metadata| metadata.expect("all resized rows initialized"))
+            .collect();
         self.visible_rows = rows;
         self.cols = cols;
         self.visible_start = self.max_scrollback;
@@ -501,7 +800,7 @@ impl NormalBuf {
         self.fill_row_with(display_row, Cell::default());
     }
 
-    /// Fills one display row with a specific cell value.
+    /// Replaces a display row and assigns a fresh independent identity.
     #[inline]
     pub fn fill_row_with(&mut self, display_row: usize, cell: Cell) {
         let ring_row = self.display_to_ring(display_row);
@@ -510,24 +809,43 @@ impl NormalBuf {
             display_row,
             ring_row,
             cols = self.cols,
-            "fill_row_with: clearing row"
+            "fill_row_with: replacing row"
         );
 
         let start = ring_row * self.cols;
+        let state = CellState::fresh_fill(cell);
         self.cells[start..start + self.cols].fill(cell);
-        self.wrapped[ring_row] = false;
+        self.cell_state[start..start + self.cols].fill(state);
+        let mut metadata = self.fresh_metadata();
+        metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
+        self.row_metadata[ring_row] = metadata;
+        self.repair_following_soft_chain(display_row);
     }
 
-    /// Fill every visible row with the supplied cell value.
+    /// Replaces every visible row with fresh independent metadata.
     pub fn fill_all_with(&mut self, cell: Cell) {
         tracing::debug!(
             visible_rows = self.visible_rows,
             "fill_all_with: replacing all visible rows"
         );
 
-        for d in 0..self.visible_rows {
-            self.fill_row_with(d, cell);
+        for display_row in 0..self.visible_rows {
+            self.fill_row_with(display_row, cell);
         }
+    }
+
+    /// RIS replacement of every retained ring slot without rewinding the allocator.
+    pub(crate) fn reset_all_retained(&mut self) {
+        self.cells.fill(Cell::default());
+        self.cell_state.fill(CellState::default());
+        for ring_row in 0..self.total_rows {
+            let metadata = self.fresh_metadata();
+            self.row_metadata[ring_row] = metadata;
+        }
+        self.visible_start = self.max_scrollback;
+        self.scroll_count = 0;
+        self.view_offset = 0;
+        self.history_start = 0;
     }
 
     /// Fill every visible row with default cells.
@@ -666,10 +984,24 @@ mod tests {
     fn resize_preserves_scrollback_generations() {
         let mut buf = NormalBuf::new(2, 3);
         for ch in ['A', 'B', 'C'] {
-            buf.live_cell_mut(0, 0).ch = ch;
+            buf.write_meaningful_cell(
+                0,
+                0,
+                Cell {
+                    ch,
+                    ..Cell::default()
+                },
+            );
             buf.scroll_up_full_screen(1, Cell::default());
         }
-        buf.live_cell_mut(0, 0).ch = 'D';
+        buf.write_meaningful_cell(
+            0,
+            0,
+            Cell {
+                ch: 'D',
+                ..Cell::default()
+            },
+        );
         buf.scroll_up(2);
         let displayed = buf.row_text(0);
         let history_start = buf.history_start();
@@ -729,7 +1061,14 @@ mod tests {
         let mut buf = NormalBuf::new(2, 2);
         let max = buf.max_scrollback();
         for index in 0..max + 7 {
-            buf.live_cell_mut(0, 0).ch = (b'a' + (index % 26) as u8) as char;
+            buf.write_meaningful_cell(
+                0,
+                0,
+                Cell {
+                    ch: (b'a' + (index % 26) as u8) as char,
+                    ..Cell::default()
+                },
+            );
             buf.scroll_up_full_screen(1, Cell::default());
         }
         buf.scroll_up(1);
@@ -771,7 +1110,14 @@ mod tests {
     #[test]
     fn cell_at_generation_returns_correct_content() {
         let mut buf = NormalBuf::new(5, 3);
-        buf.live_cell_mut(0, 0).ch = 'X';
+        buf.write_meaningful_cell(
+            0,
+            0,
+            Cell {
+                ch: 'X',
+                ..Cell::default()
+            },
+        );
         let cell = buf
             .cell_at_generation(0, 0)
             .expect("valid gen should return cell");
@@ -884,21 +1230,219 @@ mod tests {
     }
 
     #[test]
-    fn should_handle_ring_wraparound_when_copy_wrapped_ring_range() {
-        // Arrange — mark ring rows on both sides of the wraparound boundary.
+    fn copy_ring_rows_snapshots_source_and_wraps_destination_after_rotation() {
         let mut buf = NormalBuf::new(2, 3);
         let total = buf.total_rows();
-        buf.wrapped[total - 2] = true;
-        buf.wrapped[total - 1] = true;
-        buf.wrapped[0] = true;
-        buf.wrapped[1] = true;
-        // Act — copy [total-2, total) then [0, 2) into dst = 2.
-        buf.copy_wrapped_ring_range(total - 2, 2, 2);
-        // Assert — the two segments land contiguously at dst.
-        assert!(buf.wrapped[2]);
-        assert!(buf.wrapped[3]);
-        assert!(buf.wrapped[4]);
-        assert!(buf.wrapped[5]);
-        assert!(!buf.wrapped[6], "no write beyond the destination range");
+        buf.scroll_up_full_screen(1, Cell::default());
+        assert_eq!(buf.visible_start(), total - 1, "ring must be rotated");
+
+        let src_start = total - 2;
+        let src_end = 1;
+        for (offset, ch) in ['a', 'b', 'c'].into_iter().enumerate() {
+            let ring_row = (src_start + offset) % total;
+            let index = ring_row * buf.cols + offset;
+            let cell = Cell {
+                ch,
+                ..Cell::default()
+            };
+            buf.cells[index] = cell;
+            buf.cell_state[index] = CellState::explicit(cell);
+            buf.row_metadata[ring_row].logical_start = 10 + offset;
+            buf.row_metadata[ring_row].soft_wrapped = offset != 0;
+            buf.recompute_ring_row_extent(ring_row);
+        }
+        let expected: Vec<_> = (0..3)
+            .map(|offset| {
+                let ring_row = (src_start + offset) % total;
+                let start = ring_row * buf.cols;
+                (
+                    buf.cells[start..start + buf.cols].to_vec(),
+                    buf.cell_state[start..start + buf.cols].to_vec(),
+                    buf.row_metadata[ring_row],
+                )
+            })
+            .collect();
+
+        let dst = total - 1;
+        buf.copy_ring_rows(src_start, src_end, dst);
+
+        for (offset, (cells, states, metadata)) in expected.into_iter().enumerate() {
+            let ring_row = (dst + offset) % total;
+            let start = ring_row * buf.cols;
+            assert_eq!(&buf.cells[start..start + buf.cols], cells.as_slice());
+            assert_eq!(&buf.cell_state[start..start + buf.cols], states.as_slice());
+            assert_eq!(buf.row_metadata[ring_row], metadata);
+        }
+    }
+
+    #[test]
+    fn retained_metadata_initializes_with_distinct_independent_rows() {
+        let buf = NormalBuf::new(3, 4);
+        let metadata: Vec<_> = (0..buf.rows()).map(|row| buf.row_metadata(row)).collect();
+
+        assert_ne!(metadata[0].logical_line_id, metadata[1].logical_line_id);
+        assert_ne!(metadata[1].logical_line_id, metadata[2].logical_line_id);
+        for row in 0..buf.rows() {
+            let metadata = buf.row_metadata(row);
+            assert_eq!(metadata.logical_start, 0);
+            assert_eq!(metadata.meaningful_extent, 0);
+            assert!(!metadata.soft_wrapped);
+            assert!(!metadata.head_truncated);
+            for col in 0..buf.cols() {
+                assert!(!buf.cell_is_meaningful(row, col));
+            }
+        }
+    }
+
+    #[test]
+    fn attribute_mutation_preserves_explicit_provenance_and_recomputes_style_visibility() {
+        let mut buf = NormalBuf::new(1, 4);
+
+        buf.write_meaningful_cell(0, 0, Cell::default());
+        buf.mutate_cell_semantics(0, 0, |cell| cell.apply_sgr(41));
+        assert!(buf.cell_is_meaningful(0, 0));
+        buf.mutate_cell_semantics(0, 0, |cell| cell.apply_sgr(49));
+        assert!(
+            buf.cell_is_meaningful(0, 0),
+            "a printed default blank remains explicit after background removal"
+        );
+
+        buf.mutate_cell_semantics(0, 1, |cell| cell.apply_sgr(41));
+        assert!(buf.cell_is_meaningful(0, 1));
+        buf.mutate_cell_semantics(0, 1, |cell| cell.apply_sgr(49));
+        assert!(
+            !buf.cell_is_meaningful(0, 1),
+            "an unused blank is meaningful only while its background is visible"
+        );
+
+        buf.mutate_cell_semantics(0, 2, |cell| cell.apply_sgr(7));
+        assert!(buf.cell_is_meaningful(0, 2));
+        buf.mutate_cell_semantics(0, 2, |cell| cell.apply_sgr(27));
+        assert!(
+            !buf.cell_is_meaningful(0, 2),
+            "an unused blank is meaningful only while inverse is active"
+        );
+
+        let hyperlink = crate::model::HyperlinkId::from_nonzero(
+            std::num::NonZeroU32::new(1).expect("non-zero hyperlink ID"),
+        );
+        buf.write_meaningful_cell(
+            0,
+            3,
+            Cell {
+                hyperlink: Some(hyperlink),
+                ..Cell::default()
+            },
+        );
+        buf.mutate_cell_semantics(0, 3, |cell| cell.apply_sgr(49));
+        assert!(
+            buf.cell_is_meaningful(0, 3),
+            "a hyperlinked printed blank retains explicit provenance"
+        );
+        assert_eq!(buf.row_metadata(0).meaningful_extent, 4);
+    }
+
+    #[test]
+    fn fresh_row_identity_repairs_a_three_row_soft_wrapped_chain() {
+        let mut buf = NormalBuf::new(3, 4);
+        for (row, col) in [(0, 3), (1, 1), (2, 2)] {
+            buf.write_meaningful_cell(
+                row,
+                col,
+                Cell {
+                    ch: 'x',
+                    ..Cell::default()
+                },
+            );
+        }
+        let first = buf.live_row_metadata(0);
+        buf.continue_logical_line(1, first);
+        let second = buf.live_row_metadata(1);
+        buf.continue_logical_line(2, second);
+
+        buf.begin_hard_line(0);
+
+        let head = buf.live_row_metadata(0);
+        let middle = buf.live_row_metadata(1);
+        let tail = buf.live_row_metadata(2);
+        assert!(!head.soft_wrapped);
+        assert_eq!(middle.logical_line_id, head.logical_line_id);
+        assert_eq!(middle.logical_start, head.meaningful_extent);
+        assert_eq!(tail.logical_line_id, head.logical_line_id);
+        assert_eq!(
+            tail.logical_start,
+            middle.logical_start + middle.meaningful_extent
+        );
+
+        buf.fill_row_with(0, Cell::default());
+
+        let blank = buf.live_row_metadata(0);
+        let middle = buf.live_row_metadata(1);
+        let tail = buf.live_row_metadata(2);
+        assert!(!blank.soft_wrapped, "fresh blank row is a hard boundary");
+        assert!(middle.soft_wrapped);
+        assert_eq!(middle.logical_line_id, blank.logical_line_id);
+        assert_eq!(middle.logical_start, blank.meaningful_extent);
+        assert_eq!(tail.logical_line_id, blank.logical_line_id);
+        assert_eq!(
+            tail.logical_start,
+            middle.logical_start + middle.meaningful_extent
+        );
+        assert!(tail.soft_wrapped);
+    }
+
+    #[test]
+    fn resize_clears_a_wide_glyph_when_its_continuation_is_clipped() {
+        let mut buf = NormalBuf::new(1, 3);
+        let base = Cell {
+            ch: '界',
+            ..Cell::default()
+        };
+        let continuation = Cell {
+            wide_continuation: true,
+            ..Cell::default()
+        };
+        buf.write_meaningful_cell(0, 1, base);
+        buf.write_meaningful_cell(0, 2, continuation);
+
+        buf.resize(1, 2);
+
+        assert_eq!(buf.cell(0, 1), &Cell::default());
+        assert!(!buf.cell_is_meaningful(0, 1));
+        assert_eq!(buf.live_row_metadata(0).meaningful_extent, 0);
+    }
+
+    #[test]
+    fn reset_allocates_fresh_ids_and_resize_preserves_surviving_metadata() {
+        let mut buf = NormalBuf::new(2, 4);
+        buf.write_meaningful_cell(
+            0,
+            3,
+            Cell {
+                ch: 'x',
+                ..Cell::default()
+            },
+        );
+        let before_resize = buf.row_metadata(0);
+
+        buf.resize(3, 2);
+        let after_resize = buf.row_metadata(0);
+        assert_eq!(after_resize.logical_line_id, before_resize.logical_line_id);
+        assert_eq!(
+            after_resize.meaningful_extent, 0,
+            "clipped meaning repairs extent"
+        );
+        assert!(!after_resize.head_truncated);
+        let ids_before_reset: Vec<_> = (0..buf.rows())
+            .map(|row| buf.row_metadata(row).logical_line_id)
+            .collect();
+
+        buf.reset_all_retained();
+        for row in 0..buf.rows() {
+            let metadata = buf.row_metadata(row);
+            assert!(!ids_before_reset.contains(&metadata.logical_line_id));
+            assert_eq!(metadata.meaningful_extent, 0);
+            assert!(!metadata.head_truncated);
+        }
     }
 }

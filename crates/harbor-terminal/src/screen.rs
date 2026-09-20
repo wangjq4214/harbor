@@ -1045,7 +1045,7 @@ impl Screen {
         // actually moved or a scroll occurred; a no-op index (cursor pinned at
         // the bottom below the scroll region) must not clear an existing flag.
         if scrolled || self.cursor.cursor.y != before {
-            self.normal.set_wrapped(self.cursor.cursor.y, false);
+            self.normal.begin_hard_line(self.cursor.cursor.y);
         }
     }
 
@@ -1053,6 +1053,8 @@ impl Screen {
 
     pub fn reverse_index(&mut self) {
         self.cursor.clear_pending_wrap();
+        let before = self.cursor.cursor.y;
+        let mut transitioned = false;
         tracing::debug!(
             cursor_y = self.cursor.cursor.y,
             scroll_top = self.cursor.scroll_region.top,
@@ -1065,6 +1067,7 @@ impl Screen {
         if self.cursor.cursor.y == self.cursor.scroll_region.top
             && self.cursor.cursor.y <= self.cursor.scroll_region.bottom
         {
+            transitioned = true;
             self.mark_rows_dirty(
                 self.cursor.scroll_region.top,
                 self.cursor.scroll_region.bottom.saturating_add(1),
@@ -1091,14 +1094,16 @@ impl Screen {
                 let src_start = ((vis + self.cursor.scroll_region.top) % tr) * c;
                 let src_end = ((vis + self.cursor.scroll_region.bottom) % tr) * c;
                 let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
-                self.normal.copy_ring_range(src_start, src_end, dst);
                 self.normal
-                    .copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+                    .copy_ring_rows(src_start / c, src_end / c, dst / c);
                 self.normal
                     .fill_row_with(self.cursor.scroll_region.top, self.pen_state.erase_cell());
             }
         } else if self.cursor.cursor.y > 0 {
             self.cursor.cursor.y -= 1;
+        }
+        if transitioned || self.cursor.cursor.y != before {
+            self.normal.begin_hard_line(self.cursor.cursor.y);
         }
     }
 
@@ -1145,9 +1150,8 @@ impl Screen {
             let src_start = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
             let src_end = ((vis + self.cursor.scroll_region.bottom + 1) % tr) * c;
             let dst = ((vis + self.cursor.scroll_region.top) % tr) * c;
-            self.normal.copy_ring_range(src_start, src_end, dst);
             self.normal
-                .copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+                .copy_ring_rows(src_start / c, src_end / c, dst / c);
             self.normal.fill_row_with(
                 self.cursor.scroll_region.bottom,
                 self.pen_state.erase_cell(),
@@ -1178,7 +1182,7 @@ impl Screen {
 
         let rows = self.normal.rows();
         let cols = self.normal.cols();
-        self.normal.fill_all();
+        self.normal.reset_all_retained();
         self.cursor.reset(rows, cols);
         self.pen_state.reset(cols);
         self.hyperlinks.clear();
