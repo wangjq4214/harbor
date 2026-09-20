@@ -5,7 +5,9 @@
 //! render viewport supplied by the terminal host.
 
 use crate::content_anchor::{AnchorMutationBatch, ContentProjection};
+use crate::model::AltScreenAction;
 use crate::render::{RenderViewport, ScrollbarHit, hit_test, offset_for_thumb};
+use crate::screen::PreparedScreenResize;
 use crate::{AutoScroll, GenPos, Screen, SelectionBounds, SelectionModel, SelectionOutcome};
 use crate::{
     TerminalEventOutcome, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
@@ -38,9 +40,17 @@ impl ActivePointer {
         }
     }
 }
+pub(crate) struct PreparedPointerResize {
+    selection: SelectionModel,
+    saved_primary_selection: Option<SelectionModel>,
+    parked_alt_selection: Option<SelectionModel>,
+    active_invalidated: bool,
+}
 
 pub struct PointerInteraction {
     selection: SelectionModel,
+    saved_primary_selection: Option<SelectionModel>,
+    parked_alt_selection: Option<SelectionModel>,
     active: Option<ActivePointer>,
     viewport: Option<RenderViewport>,
     input_scale: f32,
@@ -59,6 +69,8 @@ impl PointerInteraction {
     pub fn new() -> Self {
         Self {
             selection: SelectionModel::new(),
+            saved_primary_selection: None,
+            parked_alt_selection: None,
             active: None,
             viewport: None,
             input_scale: 1.0,
@@ -66,6 +78,84 @@ impl PointerInteraction {
             vt_capture: None,
             pending_release: None,
         }
+    }
+
+    pub(crate) fn prepare_resize(&self, screen: &PreparedScreenResize) -> PreparedPointerResize {
+        let (selection, active_invalidated) = self
+            .selection
+            .prepared_against(|anchor| screen.project_active_selection(anchor));
+        let saved_primary_selection = self.saved_primary_selection.as_ref().and_then(|selection| {
+            screen.has_saved_primary().then(|| {
+                selection
+                    .prepared_against(|anchor| screen.project_saved_primary_selection(anchor))
+                    .0
+            })
+        });
+        let parked_alt_selection = self.parked_alt_selection.as_ref().and_then(|selection| {
+            screen.has_parked_alt().then(|| {
+                selection
+                    .prepared_against(|anchor| screen.project_parked_alt_selection(anchor))
+                    .0
+            })
+        });
+        PreparedPointerResize {
+            selection,
+            saved_primary_selection,
+            parked_alt_selection,
+            active_invalidated,
+        }
+    }
+
+    pub(crate) fn commit_resize(&mut self, prepared: PreparedPointerResize) {
+        self.selection = prepared.selection;
+        self.saved_primary_selection = prepared.saved_primary_selection;
+        self.parked_alt_selection = prepared.parked_alt_selection;
+        if prepared.active_invalidated {
+            self.pending_release = self
+                .active
+                .take()
+                .map(ActivePointer::pointer_id)
+                .or(self.pending_release);
+            self.mouse_buttons = 0;
+        }
+    }
+
+    pub(crate) fn apply_alt_transition(&mut self, screen: &mut Screen, action: AltScreenAction) {
+        match action {
+            AltScreenAction::Enter { clear } if !screen.is_alt() => {
+                self.cancel_active_for_buffer_transition();
+                let alternate = if clear {
+                    self.parked_alt_selection = None;
+                    SelectionModel::new()
+                } else if screen.has_parked_alt() {
+                    self.parked_alt_selection.take().unwrap_or_default()
+                } else {
+                    self.parked_alt_selection = None;
+                    SelectionModel::new()
+                };
+                let primary = std::mem::replace(&mut self.selection, alternate);
+                self.saved_primary_selection = Some(primary);
+                screen.enter_alt(clear);
+            }
+            AltScreenAction::Exit if screen.is_alt() => {
+                self.cancel_active_for_buffer_transition();
+                let primary = self.saved_primary_selection.take().unwrap_or_default();
+                let alternate = std::mem::replace(&mut self.selection, primary);
+                self.parked_alt_selection = Some(alternate);
+                screen.exit_alt();
+            }
+            _ => {}
+        }
+    }
+
+    fn cancel_active_for_buffer_transition(&mut self) {
+        let _ = self.selection.cancel();
+        self.pending_release = self
+            .active
+            .take()
+            .map(ActivePointer::pointer_id)
+            .or(self.pending_release);
+        self.mouse_buttons = 0;
     }
 
     pub fn set_viewport(&mut self, viewport: RenderViewport) {
@@ -114,6 +204,8 @@ impl PointerInteraction {
             .map(ActivePointer::pointer_id)
             .or(self.pending_release);
         self.selection.clear();
+        self.saved_primary_selection = None;
+        self.parked_alt_selection = None;
         self.active = None;
         self.mouse_buttons = 0;
     }

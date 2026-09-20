@@ -282,7 +282,7 @@ impl Terminal {
         self.pointer.set_input_scale(target.scale_factor);
         let grid = viewport.compute_grid_size();
         let grid_changed = self.resize_if_changed(grid);
-        self.ingest_and_blink(|io, screen| io.drain(screen));
+        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);
         let snap = self.screen.terminal_snapshot();
@@ -362,25 +362,12 @@ impl Terminal {
         demand
     }
 
-    fn ingest_screen<R>(&mut self, ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R) -> R {
+    fn ingest_screen<R>(
+        &mut self,
+        ingest: impl FnOnce(&mut TerminalIo, &mut Screen, &mut PointerInteraction) -> R,
+    ) -> R {
         let was_eligible = self.screen.ordinary_present_eligible();
-        let before_projection = (self.pointer.has_selection_state()
-            || self.screen.requires_anchor_baseline())
-        .then(|| self.screen.content_projection().ok())
-        .flatten();
-        let result = ingest(&mut self.io, &mut self.screen);
-        match self
-            .screen
-            .finish_anchor_mutations(before_projection.as_ref())
-        {
-            Ok((mutations, projection)) => {
-                self.pointer.reconcile_selection(&mutations, &projection);
-            }
-            Err(error) => {
-                tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
-                self.pointer.clear();
-            }
-        }
+        let result = ingest(&mut self.io, &mut self.screen, &mut self.pointer);
         if !was_eligible && self.screen.ordinary_present_eligible() {
             self.pending_ordinary_present = true;
         }
@@ -388,7 +375,10 @@ impl Terminal {
     }
 
     /// Ingests PTY/parser work and resets blink when the cursor moved.
-    fn ingest_and_blink<R>(&mut self, ingest: impl FnOnce(&mut TerminalIo, &mut Screen) -> R) -> R {
+    fn ingest_and_blink<R>(
+        &mut self,
+        ingest: impl FnOnce(&mut TerminalIo, &mut Screen, &mut PointerInteraction) -> R,
+    ) -> R {
         let before = self.cursor_pos();
         let result = self.ingest_screen(ingest);
         self.maybe_reset_blink(before, false);
@@ -429,17 +419,19 @@ impl Terminal {
 
     /// Feeds raw PTY bytes through the streaming parser.
     pub fn put_bytes(&mut self, bytes: &[u8]) {
-        self.ingest_and_blink(|io, screen| io.feed_pty_output(screen, bytes));
+        self.ingest_and_blink(|io, screen, pointer| io.feed_pty_output(screen, pointer, bytes));
     }
 
     /// Feeds raw PTY bytes into the terminal parser, snapping to bottom first.
     pub fn process_output(&mut self, output: &[u8]) {
-        self.ingest_and_blink(|io, screen| io.feed_pty_output_snapped(screen, output));
+        self.ingest_and_blink(|io, screen, pointer| {
+            io.feed_pty_output_snapped(screen, pointer, output)
+        });
     }
 
     /// Drains all reader-thread output in FIFO order into the terminal parser.
     pub fn drain_pty(&mut self) -> bool {
-        self.ingest_and_blink(|io, screen| io.drain(screen))
+        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer))
     }
     /// Drains parser side effects exactly once in FIFO order.
     pub fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
@@ -495,8 +487,8 @@ impl Terminal {
                     {
                         reported.position = position;
                     }
-                    let wrote = self.ingest_screen(|io, screen| {
-                        io.handle_event(screen, TerminalEvent::Pointer(reported))
+                    let wrote = self.ingest_screen(|io, screen, pointer| {
+                        io.handle_event(screen, pointer, TerminalEvent::Pointer(reported))
                     })?;
                     outcome.capture_pointer = match pointer.phase {
                         TerminalPointerPhase::Down => {
@@ -520,7 +512,7 @@ impl Terminal {
                 // Preserve the review position while applying local pointer
                 // intent; queued output must not snap it before hit testing.
                 self.io.set_suppress_scroll_snap(true);
-                self.ingest_screen(|io, screen| io.drain(screen));
+                self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
                 outcome = self
                     .pointer
                     .handle_pointer(&mut self.screen, *pointer, Instant::now());
@@ -533,8 +525,9 @@ impl Terminal {
             }
             TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(_)) => {
                 outcome.redraw = self.clear_preedit();
-                let wrote =
-                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                let wrote = self.ingest_screen(|io, screen, pointer| {
+                    io.handle_event(screen, pointer, event.clone())
+                })?;
                 self.maybe_reset_blink(before, wrote);
                 return Ok(outcome);
             }
@@ -549,8 +542,9 @@ impl Terminal {
                     if outcome.release_pointer.is_some() {
                         self.io.set_suppress_scroll_snap(false);
                     }
-                    let wrote =
-                        self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                    let wrote = self.ingest_screen(|io, screen, pointer| {
+                        io.handle_event(screen, pointer, event.clone())
+                    })?;
                     self.maybe_reset_blink(before, wrote);
                     return Ok(outcome);
                 }
@@ -561,14 +555,16 @@ impl Terminal {
                     outcome.redraw |= self.clear_preedit();
                     self.io.set_suppress_scroll_snap(false);
                 }
-                let wrote =
-                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                let wrote = self.ingest_screen(|io, screen, pointer| {
+                    io.handle_event(screen, pointer, event.clone())
+                })?;
                 self.maybe_reset_blink(before, wrote);
                 return Ok(outcome);
             }
             _ => {
-                let wrote =
-                    self.ingest_screen(|io, screen| io.handle_event(screen, event.clone()))?;
+                let wrote = self.ingest_screen(|io, screen, pointer| {
+                    io.handle_event(screen, pointer, event.clone())
+                })?;
                 self.maybe_reset_blink(before, wrote);
                 return Ok(outcome);
             }
@@ -632,7 +628,7 @@ impl Terminal {
 
     /// Drains pending PTY output before returning the current terminal snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
-        self.ingest_and_blink(|io, screen| io.drain(screen));
+        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         self.snapshot()
     }
 
@@ -666,25 +662,42 @@ impl Terminal {
 
     /// Resizes the PTY and terminal grid atomically from the caller's perspective.
     ///
-    /// The PTY is resized first; if that fails, in-memory geometry remains unchanged.
+    /// Preparation is detached; PTY success is followed only by infallible ownership moves.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
+        Self::try_resize_transaction(
+            &mut self.screen,
+            &mut self.pointer,
+            &mut self.io,
+            new_size,
+            |io, size| io.resize_pty(size),
+        )
+    }
+
+    fn try_resize_transaction(
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        io: &mut TerminalIo,
+        new_size: TerminalSize,
+        resize_pty: impl FnOnce(&mut TerminalIo, TerminalSize) -> anyhow::Result<()>,
+    ) -> anyhow::Result<bool> {
         let new_size = TerminalSize {
             rows: new_size.rows.max(1),
-            cols: new_size.cols.max(1),
+            cols: new_size.cols.max(2),
         };
         let current = TerminalSize {
-            rows: self.screen.rows(),
-            cols: self.screen.cols(),
+            rows: screen.rows(),
+            cols: screen.cols(),
         };
-
         if new_size == current {
             return Ok(false);
         }
 
-        self.io.resize_pty(new_size)?;
-        self.screen.resize(new_size.rows, new_size.cols);
-        self.pointer.clear();
-        self.io.reset_scroll_snap();
+        let prepared_screen = screen.prepare_resize(new_size.rows, new_size.cols)?;
+        let prepared_pointer = pointer.prepare_resize(&prepared_screen);
+        resize_pty(io, new_size)?;
+        screen.commit_resize(prepared_screen);
+        pointer.commit_resize(prepared_pointer);
+        io.reset_scroll_snap();
         Ok(true)
     }
 

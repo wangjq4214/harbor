@@ -58,16 +58,6 @@ impl TabStops {
         }
         Self(stops)
     }
-
-    pub(crate) fn resize(&mut self, cols: usize) {
-        let old_len = self.0.len();
-        self.0.resize(cols, false);
-        for col in old_len..cols {
-            if col % 8 == 0 {
-                self.0[col] = true;
-            }
-        }
-    }
 }
 
 /// Character set single shift target for the immediate next graphic character.
@@ -131,7 +121,7 @@ impl CharacterSets {
 }
 
 /// Owns pen state, tab stops, character-set designations, and saved-pen snapshot.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PenState {
     pub(crate) pen: Pen,
     pub(crate) tab_stops: TabStops,
@@ -149,6 +139,33 @@ impl PenState {
             active_hyperlink: None,
             saved_pen: None,
         }
+    }
+
+    pub(crate) fn prepare_resize(
+        &self,
+        cols: usize,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::PreparationError;
+
+        let mut stops = Vec::new();
+        stops
+            .try_reserve_exact(cols)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        stops.resize(cols, false);
+        let retained = self.tab_stops.0.len().min(cols);
+        stops[..retained].copy_from_slice(&self.tab_stops.0[..retained]);
+        for (col, stop) in stops.iter_mut().enumerate().skip(retained) {
+            if col % 8 == 0 {
+                *stop = true;
+            }
+        }
+        Ok(Self {
+            pen: self.pen,
+            tab_stops: TabStops(stops),
+            charsets: self.charsets,
+            active_hyperlink: self.active_hyperlink,
+            saved_pen: self.saved_pen,
+        })
     }
 
     /// Resets pen, charsets, tab-stops, and saved-pen snapshot to defaults (RIS).

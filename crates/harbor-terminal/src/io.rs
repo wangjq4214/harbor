@@ -11,11 +11,12 @@ use std::{
     thread::JoinHandle,
 };
 
-use crate::model::{AltScreenAction, TerminalSize};
+use crate::model::TerminalSize;
 use harbor_pty::PtyControl;
 
 use crate::input::TerminalInputEncoder;
 use crate::parser::TerminalParser;
+use crate::pointer::PointerInteraction;
 use crate::screen::Screen;
 use crate::types::{TerminalEvent, TerminalPointerPhase};
 
@@ -161,23 +162,43 @@ impl TerminalIo {
     // ── byte processing ───────────────────────────────────────────────
 
     /// Feeds raw PTY bytes through the streaming parser.
-    pub(crate) fn feed_pty_output(&mut self, screen: &mut Screen, bytes: &[u8]) {
+    pub(crate) fn feed_pty_output(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        bytes: &[u8],
+    ) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
+            let before_projection = (pointer.has_selection_state()
+                || screen.requires_anchor_baseline())
+            .then(|| screen.content_projection().ok())
+            .flatten();
             let result = self.parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
+            match screen.finish_anchor_mutations(before_projection.as_ref()) {
+                Ok((mutations, projection)) => {
+                    pointer.reconcile_selection(&mutations, &projection);
+                }
+                Err(error) => {
+                    tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
+                    pointer.clear();
+                }
+            }
             if let Some(action) = result.alt_request {
                 self.suppress_scroll_snap = false;
-                match action {
-                    AltScreenAction::Enter { clear } => screen.enter_alt(clear),
-                    AltScreenAction::Exit => screen.exit_alt(),
-                }
+                pointer.apply_alt_transition(screen, action);
             }
         }
     }
 
     /// Feeds PTY output with an automatic scroll-to-bottom snap (unless suppressed).
-    pub(crate) fn feed_pty_output_snapped(&mut self, screen: &mut Screen, output: &[u8]) {
+    pub(crate) fn feed_pty_output_snapped(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        output: &[u8],
+    ) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
@@ -185,7 +206,7 @@ impl TerminalIo {
         if !screen.is_alt() && !self.suppress_scroll_snap {
             screen.scroll_to_bottom();
         }
-        self.feed_pty_output(screen, output);
+        self.feed_pty_output(screen, pointer, output);
     }
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
@@ -199,7 +220,7 @@ impl TerminalIo {
     /// receive after clearing the flag closes the producer/consumer race: bytes
     /// queued just before the clear are consumed here, while later bytes post a
     /// fresh wake.
-    pub(crate) fn drain(&mut self, screen: &mut Screen) -> bool {
+    pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
         // Collect all available chunks first, then feed them. This avoids
         // overlapping borrows between self.pty (for reading) and the parser
         // (for feeding).
@@ -235,7 +256,7 @@ impl TerminalIo {
             }
         }
         for chunk in &chunks {
-            self.feed_pty_output_snapped(screen, chunk);
+            self.feed_pty_output_snapped(screen, pointer, chunk);
             let replies = screen.drain_replies();
             if !replies.is_empty()
                 && let Err(error) = self.write_pty(&replies)
@@ -280,9 +301,10 @@ impl TerminalIo {
     pub(crate) fn handle_event(
         &mut self,
         screen: &mut Screen,
+        pointer: &mut PointerInteraction,
         event: TerminalEvent,
     ) -> anyhow::Result<bool> {
-        self.drain(screen);
+        self.drain(screen, pointer);
 
         if let TerminalEvent::Focus(focus) = &event {
             if screen.observe_focus(*focus) {

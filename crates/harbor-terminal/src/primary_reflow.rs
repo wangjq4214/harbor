@@ -321,6 +321,22 @@ impl PreparedPrimaryResize {
         self.normal
     }
 
+    pub(crate) fn into_screen_parts(
+        self,
+    ) -> (
+        NormalBuf,
+        PreparedProjection<ProjectedInsertion>,
+        PreparedProjection<ProjectedInsertion>,
+        PreparedProjection<GenPos>,
+    ) {
+        (
+            self.normal,
+            self.live_cursor,
+            self.saved_cursor,
+            self.review,
+        )
+    }
+
     pub(crate) fn source_anchor(
         &self,
         position: GenPos,

@@ -476,6 +476,39 @@ impl SelectionModel {
         PreparedProjection::Projected(PreparedSelectionProjection { anchor, cursor })
     }
 
+    pub(crate) fn prepared_against(
+        &self,
+        project: impl Fn(ContentAnchor) -> Option<(GenPos, ContentAnchor)>,
+    ) -> (Self, bool) {
+        let mut prepared = self.clone();
+        let Some(mut anchored) = prepared.anchored_range else {
+            let invalidated = prepared.range.is_some();
+            if invalidated {
+                prepared.clear();
+            }
+            return (prepared, invalidated);
+        };
+        let Some((anchor_projection, anchor)) = project(anchored.anchor.anchor) else {
+            prepared.clear();
+            return (prepared, true);
+        };
+        let Some((cursor_projection, cursor)) = project(anchored.cursor.anchor) else {
+            prepared.clear();
+            return (prepared, true);
+        };
+        anchored.anchor = AnchoredSelectionEndpoint {
+            anchor,
+            projection: anchor_projection,
+        };
+        anchored.cursor = AnchoredSelectionEndpoint {
+            anchor: cursor,
+            projection: cursor_projection,
+        };
+        prepared.range = Some(SelectionRange::new(anchor_projection, cursor_projection));
+        prepared.anchored_range = Some(anchored);
+        (prepared, false)
+    }
+
     /// Whether the current selection range is zero-width (anchor == cursor).
     pub fn is_range_empty(&self) -> bool {
         self.range.is_some_and(|sel| sel.anchor == sel.cursor)

@@ -172,7 +172,7 @@ impl TerminalModes {
 }
 
 /// Owns cursor position, scroll region, margins, and terminal modes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CursorEngine {
     pub(crate) cursor: CursorState,
     pub(crate) scroll_region: ScrollRegion,

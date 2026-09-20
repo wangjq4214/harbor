@@ -577,6 +577,121 @@ impl NormalBuf {
             .checked_add(u64::try_from(retained).ok()?)
     }
 
+    pub(crate) fn prepare_rectangular_resize(
+        &self,
+        requested_rows: usize,
+        requested_cols: usize,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::{PreparationError, ReflowedRow};
+
+        let rows = requested_rows.max(1);
+        let cols = requested_cols.max(2);
+        let copy_rows = self.visible_rows.min(rows);
+        let copy_cols = self.cols.min(cols);
+        let mut prepared_rows = Vec::new();
+        prepared_rows
+            .try_reserve_exact(rows)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        let mut next_logical_line_id = self.next_logical_line_id;
+
+        for source in self.retained_rows().skip(self.scroll_count).take(copy_rows) {
+            let mut cells = Vec::new();
+            cells
+                .try_reserve_exact(cols)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            cells.resize(cols, Cell::default());
+            cells[..copy_cols].copy_from_slice(&source.cells[..copy_cols]);
+
+            let mut cell_state = Vec::new();
+            cell_state
+                .try_reserve_exact(cols)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            cell_state.resize(cols, CellState::default());
+            cell_state[..copy_cols].copy_from_slice(&source.cell_state[..copy_cols]);
+            Self::normalize_wide_row(&mut cells, &mut cell_state);
+
+            let mut metadata = source.metadata;
+            metadata.meaningful_extent = cell_state
+                .iter()
+                .rposition(|state| state.is_meaningful())
+                .map_or(0, |col| col + 1);
+            prepared_rows.push(ReflowedRow {
+                cells,
+                cell_state,
+                metadata,
+            });
+        }
+
+        while prepared_rows.len() < rows {
+            let line_id = LogicalLineId(next_logical_line_id);
+            next_logical_line_id = next_logical_line_id
+                .checked_add(1)
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            let mut cells = Vec::new();
+            cells
+                .try_reserve_exact(cols)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            cells.resize(cols, Cell::default());
+            let mut cell_state = Vec::new();
+            cell_state
+                .try_reserve_exact(cols)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            cell_state.resize(cols, CellState::default());
+            prepared_rows.push(ReflowedRow {
+                cells,
+                cell_state,
+                metadata: RowMetadata {
+                    logical_line_id: line_id,
+                    logical_start: 0,
+                    logical_atom_start: 0,
+                    meaningful_extent: 0,
+                    soft_wrapped: false,
+                    head_truncated: false,
+                },
+            });
+        }
+
+        let mut previous: Option<(RowMetadata, usize)> = None;
+        for row in &mut prepared_rows {
+            let atom_count = row.cells[..row.metadata.meaningful_extent]
+                .iter()
+                .filter(|cell| !cell.wide_continuation)
+                .count();
+            if row.metadata.soft_wrapped {
+                if let Some((prior, prior_atom_count)) = previous
+                    && row.metadata.logical_line_id == prior.logical_line_id
+                {
+                    row.metadata.logical_start = prior
+                        .logical_start
+                        .checked_add(prior.meaningful_extent)
+                        .ok_or(PreparationError::ArithmeticOverflow)?;
+                    row.metadata.logical_atom_start = prior
+                        .logical_atom_start
+                        .checked_add(prior_atom_count)
+                        .ok_or(PreparationError::ArithmeticOverflow)?;
+                } else {
+                    row.metadata.head_truncated = true;
+                }
+            }
+            previous = Some((row.metadata, atom_count));
+        }
+
+        let history_start = self
+            .newest_generation_exclusive()
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let mut detached = Self::from_reflowed_rows(
+            &prepared_rows,
+            rows,
+            cols,
+            0,
+            next_logical_line_id,
+            history_start,
+            0,
+        )?;
+        detached.mark_all_dirty();
+        Ok(detached)
+    }
+
     pub(crate) fn from_reflowed_rows(
         retained: &[crate::primary_reflow::ReflowedRow],
         visible_rows: usize,

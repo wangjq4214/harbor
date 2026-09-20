@@ -129,6 +129,94 @@ struct EditAnchorCapture {
     shifted_atoms: usize,
     dropped_atoms: Option<(usize, usize)>,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BufferRole {
+    Primary,
+    Alternate,
+}
+
+struct RectangularSelectionProjection {
+    source: ContentProjection,
+    source_live_top: u64,
+    target_live_top: u64,
+    rows: usize,
+    cols: usize,
+    retained_cells: Vec<bool>,
+}
+
+pub(crate) struct PreparedScreenResize {
+    normal: NormalBuf,
+    anchor_mutations: AnchorMutationBatch,
+    review_anchor: Option<ContentAnchor>,
+    cursor: CursorEngine,
+    pen_state: PenState,
+    hyperlinks: HyperlinkRegistry,
+    projection: ContentProjection,
+    rectangular_selection: Option<RectangularSelectionProjection>,
+    saved_primary: Vec<PreparedScreenResize>,
+    parked_alt: Vec<PreparedScreenResize>,
+}
+
+impl PreparedScreenResize {
+    fn project_selection(&self, anchor: ContentAnchor) -> Option<(GenPos, ContentAnchor)> {
+        let position = if let Some(rectangular) = &self.rectangular_selection {
+            let source = rectangular.source.resolve_selection(anchor)?;
+            let row = usize::try_from(source.generation.checked_sub(rectangular.source_live_top)?)
+                .ok()?;
+            if row >= rectangular.rows || source.col >= rectangular.cols {
+                return None;
+            }
+            let index = row.checked_mul(rectangular.cols)?.checked_add(source.col)?;
+            if !rectangular
+                .retained_cells
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            GenPos::new(
+                rectangular
+                    .target_live_top
+                    .checked_add(u64::try_from(row).ok()?)?,
+                source.col,
+            )
+        } else {
+            self.projection.resolve_selection(anchor)?
+        };
+        let refreshed = self.projection.to_anchor(position, anchor.affinity)?;
+        Some((position, refreshed))
+    }
+
+    pub(crate) fn project_active_selection(
+        &self,
+        anchor: ContentAnchor,
+    ) -> Option<(GenPos, ContentAnchor)> {
+        self.project_selection(anchor)
+    }
+
+    pub(crate) fn project_saved_primary_selection(
+        &self,
+        anchor: ContentAnchor,
+    ) -> Option<(GenPos, ContentAnchor)> {
+        self.saved_primary.first()?.project_selection(anchor)
+    }
+
+    pub(crate) fn project_parked_alt_selection(
+        &self,
+        anchor: ContentAnchor,
+    ) -> Option<(GenPos, ContentAnchor)> {
+        self.parked_alt.first()?.project_selection(anchor)
+    }
+
+    pub(crate) fn has_saved_primary(&self) -> bool {
+        !self.saved_primary.is_empty()
+    }
+
+    pub(crate) fn has_parked_alt(&self) -> bool {
+        !self.parked_alt.is_empty()
+    }
+}
 
 impl Screen {
     pub fn new(rows: usize, cols: usize) -> Self {
@@ -393,6 +481,62 @@ impl Screen {
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
             .ok_or(PreparationError::UnresolvedLiveCursor)?;
+        let target_live_top = prepared
+            .normal()
+            .history_start()
+            .checked_add(
+                u64::try_from(prepared.normal().scroll_count())
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+            )
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let target_live_end = target_live_top
+            .checked_add(
+                u64::try_from(requested_rows.max(1))
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+            )
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let live_is_retained = prepared
+            .project_cursor(live_cursor)
+            .is_some_and(|projection| {
+                projection.position.generation >= target_live_top
+                    && projection.position.generation < target_live_end
+            });
+        let live_cursor = if !live_is_retained
+            && self
+                .normal
+                .live_row_metadata(self.cursor.cursor.y)
+                .meaningful_extent
+                == 0
+        {
+            let source_live_top = self
+                .normal
+                .history_start()
+                .checked_add(
+                    u64::try_from(self.normal.scroll_count())
+                        .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                )
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            let fallback_generation = source_live_top
+                .checked_add(
+                    u64::try_from(self.normal.rows().saturating_sub(1))
+                        .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                )
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            prepared
+                .source_cursor_anchor(
+                    GenPos::new(
+                        fallback_generation,
+                        self.cursor
+                            .cursor
+                            .x
+                            .min(self.normal.cols().saturating_sub(1)),
+                    ),
+                    false,
+                )
+                .ok_or(PreparationError::UnresolvedLiveCursor)?
+        } else {
+            live_cursor
+        };
         let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
         let saved_cursor = match self.cursor.cursor.saved.as_ref() {
             None => PreparedProjection::Absent,
@@ -806,6 +950,10 @@ impl Screen {
         self.saved_primary.is_some()
     }
 
+    pub(crate) fn has_parked_alt(&self) -> bool {
+        self.parked_alt.is_some()
+    }
+
     pub fn request_alt_enter(&mut self, clear: bool) {
         self.alt_request = Some(AltScreenAction::Enter { clear });
     }
@@ -831,7 +979,6 @@ impl Screen {
             self.review_anchor = None;
             self.anchor_mutations = AnchorMutationBatch::default();
         }
-        let pending_mutations = std::mem::take(&mut self.anchor_mutations);
         let rows = self.rows();
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
@@ -856,8 +1003,6 @@ impl Screen {
         self.replies = replies;
         self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
-        self.anchor_mutations = pending_mutations;
-        self.anchor_mutations.push(AnchorMutation::InvalidateAll);
     }
 
     pub fn exit_alt(&mut self) {
@@ -869,7 +1014,6 @@ impl Screen {
             self.review_anchor = None;
             self.anchor_mutations = AnchorMutationBatch::default();
         }
-        let pending_mutations = std::mem::take(&mut self.anchor_mutations);
         let replies = std::mem::take(&mut self.replies);
         let sync = self.synchronized_output;
         let focus_reporting = self.focus_reporting;
@@ -893,53 +1037,247 @@ impl Screen {
         self.replies = replies;
         self.focus_reporting = focus_reporting;
         self.synchronized_output = sync;
-        self.anchor_mutations = pending_mutations;
-        self.anchor_mutations.push(AnchorMutation::InvalidateAll);
         debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
 
     // ── resize ─────────────────────────────────────────────────────────
 
-    pub fn resize(&mut self, rows: usize, cols: usize) {
-        if self.finish_anchor_mutations(None).is_err() {
-            self.cursor.cursor.saved = None;
-            self.review_anchor = None;
-            self.anchor_mutations = AnchorMutationBatch::default();
-        }
-
-        let rows = rows.max(1);
-        let cols = cols.max(1);
-        self.normal.resize(rows, cols);
-        self.cursor.clamp_to_grid(rows, cols);
-        self.pen_state.tab_stops.resize(cols);
-
-        if let Ok(projection) = self.content_projection() {
-            let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
-            let cursor_position = GenPos::new(
-                live_top.saturating_add(self.cursor.cursor.y as u64),
-                self.cursor.cursor.x,
-            );
-            self.cursor.cursor.anchor = projection.cursor_anchor(cursor_position, false);
-            if let Some(saved) = &mut self.cursor.cursor.saved {
-                let saved_position = GenPos::new(
-                    live_top.saturating_add(saved.cursor_y as u64),
-                    saved.cursor_x,
-                );
-                saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
-            }
+    pub(crate) fn prepare_resize(
+        &self,
+        rows: usize,
+        cols: usize,
+    ) -> Result<PreparedScreenResize, PreparationError> {
+        let role = if self.is_alt() {
+            BufferRole::Alternate
         } else {
-            self.cursor.cursor.anchor = None;
-            if let Some(saved) = &mut self.cursor.cursor.saved {
-                saved.anchor = None;
-            }
-        }
-        self.sync_review_anchor();
+            BufferRole::Primary
+        };
+        self.prepare_resize_for_role(rows.max(1), cols.max(2), role)
+    }
 
-        if let Some(saved) = &mut self.saved_primary {
-            saved.resize(rows, cols);
+    fn prepare_resize_for_role(
+        &self,
+        rows: usize,
+        cols: usize,
+        role: BufferRole,
+    ) -> Result<PreparedScreenResize, PreparationError> {
+        let (mut normal, cursor, review_anchor, rectangular_selection) = match role {
+            BufferRole::Primary => {
+                let prepared = self.prepare_primary_resize(rows, cols)?;
+                let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
+                let projection = ContentProjection::build(&normal)?;
+                let live_top = normal
+                    .history_start()
+                    .checked_add(
+                        u64::try_from(normal.scroll_count())
+                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                let mut cursor = self.cursor.clone();
+                cursor.clamp_to_grid(rows, cols);
+                let PreparedProjection::Projected(live) = live_cursor else {
+                    return Err(PreparationError::UnresolvedLiveCursor);
+                };
+                cursor.cursor.y = usize::try_from(live.position.generation - live_top)
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?;
+                cursor.cursor.x = live.position.col;
+                cursor.modes.pending_wrap = live.pending_wrap;
+                cursor.cursor.anchor = projection.cursor_anchor(live.position, live.pending_wrap);
+                match saved_cursor {
+                    PreparedProjection::Projected(projected) => {
+                        if let Some(saved) = cursor.cursor.saved.as_mut() {
+                            saved.cursor_y =
+                                usize::try_from(projected.position.generation - live_top)
+                                    .map_err(|_| PreparationError::ArithmeticOverflow)?;
+                            saved.cursor_x = projected.position.col;
+                            saved.pending_wrap = projected.pending_wrap;
+                            saved.anchor = projection
+                                .cursor_anchor(projected.position, projected.pending_wrap);
+                        }
+                    }
+                    PreparedProjection::Absent | PreparedProjection::Invalid => {
+                        cursor.cursor.saved = None;
+                    }
+                }
+                let review_anchor = match review {
+                    PreparedProjection::Projected(position) => {
+                        projection.to_anchor(position, Affinity::Before)
+                    }
+                    PreparedProjection::Absent | PreparedProjection::Invalid => None,
+                };
+                (normal, cursor, review_anchor, None)
+            }
+            BufferRole::Alternate => {
+                let normal = self.normal.prepare_rectangular_resize(rows, cols)?;
+                let projection = ContentProjection::build(&normal)?;
+                let source_projection = ContentProjection::build(&self.normal)?;
+                let source_live_top = self
+                    .normal
+                    .history_start()
+                    .checked_add(
+                        u64::try_from(self.normal.scroll_count())
+                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                let target_live_top = normal.history_start();
+                let copied_rows = self.normal.rows().min(rows);
+                let copied_cols = self.normal.cols().min(cols);
+                let retained_count = copied_rows
+                    .checked_mul(copied_cols)
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                let mut retained_cells = Vec::new();
+                retained_cells
+                    .try_reserve_exact(retained_count)
+                    .map_err(|_| PreparationError::AllocationFailed)?;
+                for row in 0..copied_rows {
+                    let source_generation = source_live_top
+                        .checked_add(
+                            u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?,
+                        )
+                        .ok_or(PreparationError::ArithmeticOverflow)?;
+                    let target_generation = target_live_top
+                        .checked_add(
+                            u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?,
+                        )
+                        .ok_or(PreparationError::ArithmeticOverflow)?;
+                    for col in 0..copied_cols {
+                        retained_cells.push(
+                            self.normal.cell_at_generation(source_generation, col)
+                                == normal.cell_at_generation(target_generation, col),
+                        );
+                    }
+                }
+                let rectangular_selection = Some(RectangularSelectionProjection {
+                    source: source_projection,
+                    source_live_top,
+                    target_live_top,
+                    rows: copied_rows,
+                    cols: copied_cols,
+                    retained_cells,
+                });
+                let mut cursor = self.cursor.clone();
+                cursor.clamp_to_grid(rows, cols);
+                let live_top = normal.history_start();
+                let live_position = GenPos::new(
+                    live_top
+                        .checked_add(
+                            u64::try_from(cursor.cursor.y)
+                                .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                        )
+                        .ok_or(PreparationError::ArithmeticOverflow)?,
+                    cursor.cursor.x,
+                );
+                cursor.cursor.anchor = projection.cursor_anchor(live_position, false);
+                if let Some(saved) = cursor.cursor.saved.as_mut() {
+                    let saved_position = GenPos::new(
+                        live_top
+                            .checked_add(
+                                u64::try_from(saved.cursor_y)
+                                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                            )
+                            .ok_or(PreparationError::ArithmeticOverflow)?,
+                        saved.cursor_x,
+                    );
+                    saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
+                }
+                (normal, cursor, None, rectangular_selection)
+            }
+        };
+        normal.mark_all_dirty();
+        let pen_state = self.pen_state.prepare_resize(cols)?;
+        let mut reachable = HashSet::new();
+        let reachable_cells = normal
+            .retained_rows()
+            .flat_map(|row| row.cells.iter())
+            .filter(|cell| cell.hyperlink.is_some())
+            .count();
+        reachable
+            .try_reserve(
+                reachable_cells
+                    .checked_add(2)
+                    .ok_or(PreparationError::ArithmeticOverflow)?,
+            )
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        reachable.extend(
+            normal
+                .retained_rows()
+                .flat_map(|row| row.cells.iter())
+                .filter_map(|cell| cell.hyperlink),
+        );
+        reachable.extend(pen_state.hyperlink_ids());
+        let hyperlinks = self.hyperlinks.prepare_retained(&reachable)?;
+        let projection = ContentProjection::build(&normal)?;
+
+        let mut saved_primary = Vec::new();
+        if let Some(saved) = self.saved_primary.as_deref() {
+            saved_primary
+                .try_reserve_exact(1)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            saved_primary.push(saved.prepare_resize_for_role(rows, cols, BufferRole::Primary)?);
         }
-        if let Some(alt) = &mut self.parked_alt {
-            alt.resize(rows, cols);
+        let mut parked_alt = Vec::new();
+        if let Some(alt) = self.parked_alt.as_deref() {
+            parked_alt
+                .try_reserve_exact(1)
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            parked_alt.push(alt.prepare_resize_for_role(rows, cols, BufferRole::Alternate)?);
+        }
+
+        Ok(PreparedScreenResize {
+            normal,
+            anchor_mutations: AnchorMutationBatch::default(),
+            review_anchor,
+            cursor,
+            pen_state,
+            hyperlinks,
+            projection,
+            rectangular_selection,
+            saved_primary,
+            parked_alt,
+        })
+    }
+
+    pub(crate) fn commit_resize(&mut self, prepared: PreparedScreenResize) {
+        let PreparedScreenResize {
+            normal,
+            anchor_mutations,
+            review_anchor,
+            cursor,
+            pen_state,
+            hyperlinks,
+            projection: _,
+            rectangular_selection: _,
+            mut saved_primary,
+            mut parked_alt,
+        } = prepared;
+        self.normal = normal;
+        self.anchor_mutations = anchor_mutations;
+        self.review_anchor = review_anchor;
+        self.cursor = cursor;
+        self.pen_state = pen_state;
+        self.hyperlinks = hyperlinks;
+
+        match (self.saved_primary.as_deref_mut(), saved_primary.pop()) {
+            (Some(screen), Some(prepared)) => screen.commit_resize(prepared),
+            (None, None) => {}
+            _ => debug_assert!(false, "saved primary changed during resize preparation"),
+        }
+        match (self.parked_alt.as_deref_mut(), parked_alt.pop()) {
+            (Some(screen), Some(prepared)) => screen.commit_resize(prepared),
+            (None, None) => {}
+            _ => debug_assert!(false, "parked alternate changed during resize preparation"),
+        }
+    }
+
+    /// Resizes this standalone model through the same detached preparation path as `Terminal`.
+    ///
+    /// Callers that also own a PTY should use `Terminal` so PTY and model commit transactionally.
+    pub fn resize(&mut self, rows: usize, cols: usize) {
+        match self.prepare_resize(rows, cols) {
+            Ok(prepared) => self.commit_resize(prepared),
+            Err(error) => {
+                tracing::error!(?error, "failed to prepare standalone screen resize");
+            }
         }
     }
 

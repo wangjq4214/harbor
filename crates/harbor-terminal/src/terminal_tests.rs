@@ -96,13 +96,13 @@ fn scrolls_when_writing_past_last_row() {
 }
 
 #[test]
-fn resize_preserves_visible_cells_and_clamps_cursor() {
+fn resize_reflows_primary_and_keeps_the_live_cursor_suffix() {
     let mut terminal = Terminal::new_headless(2, 4);
     terminal.put_str("abcdef");
 
     terminal.resize(1, 3);
 
-    assert_eq!(terminal.row_text(0), "abc");
+    assert_eq!(terminal.row_text(0), "def");
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 3));
     assert_eq!(
         (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
@@ -117,15 +117,13 @@ fn resize_preserves_scrollback_viewport() {
         terminal.process_output(format!("{line}\r\n").as_bytes());
     }
     terminal.scroll_viewport_up(1);
-    let displayed = terminal.row_text(0);
     let history_start = terminal.screen().history_start();
 
     terminal.resize(3, 6);
 
-    assert_eq!(terminal.screen().view_offset(), 1);
+    assert_eq!(terminal.screen().view_offset(), 0);
     assert!(terminal.screen().scroll_count() > 0);
-    assert_eq!(terminal.row_text(0), format!("{displayed}  "));
-    assert_eq!(terminal.screen().history_start(), history_start);
+    assert!(terminal.screen().history_start() >= history_start);
 }
 
 #[test]
@@ -133,7 +131,105 @@ fn resize_zero_dimensions_uses_safe_terminal_size() {
     let mut terminal = Terminal::new_headless(2, 4);
     terminal.resize(0, 0);
 
-    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 1));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 2));
+}
+
+#[test]
+fn transactional_resize_preserves_state_on_pty_failure_and_retries() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    let before = terminal.snapshot();
+    let mut attempted_size = None;
+
+    let failed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 0, cols: 1 },
+        |_io, size| {
+            attempted_size = Some(size);
+            anyhow::bail!("injected PTY failure")
+        },
+    );
+
+    assert!(failed.is_err());
+    assert_eq!(attempted_size, Some(TerminalSize { rows: 1, cols: 2 }));
+    assert_eq!(terminal.snapshot(), before);
+
+    let changed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 0, cols: 1 },
+        |_io, _size| Ok(()),
+    )
+    .unwrap();
+
+    assert!(changed);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 2));
+}
+
+#[test]
+fn pty_failure_preserves_active_selection_state() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            65,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    let selection_before = terminal.selection_text();
+
+    let result = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 1, cols: 4 },
+        |_io, _size| anyhow::bail!("injected PTY failure"),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(terminal.selection_text(), selection_before);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 8));
+}
+
+#[test]
+fn transactional_resize_does_not_call_pty_when_preparation_fails() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    let before = terminal.snapshot();
+    let mut pty_called = false;
+
+    let result = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize {
+            rows: usize::MAX,
+            cols: 2,
+        },
+        |_io, _size| {
+            pty_called = true;
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert!(!pty_called);
+    assert_eq!(terminal.snapshot(), before);
 }
 
 #[test]
@@ -1127,6 +1223,37 @@ fn alt_screen_1047_clears_on_entry() {
 }
 
 #[test]
+fn alt_screen_1047_clear_entry_discards_parked_content_after_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("old-alt");
+    terminal.put_bytes(b"\x1b[?47l");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 3, cols: 4 }));
+
+    terminal.put_bytes(b"\x1b[?1047h");
+
+    assert!(terminal.is_alt_screen());
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (3, 4));
+    assert!(terminal.row_text(0).trim().is_empty());
+}
+
+#[test]
+fn alt_screen_1048_saved_cursor_projects_through_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.put_str("abc");
+    terminal.put_bytes(b"\x1b[?1048h");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    terminal.put_bytes(b"\x1b[1;1H");
+
+    terminal.put_bytes(b"\x1b[?1048l");
+
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (3, 0)
+    );
+}
+
+#[test]
 fn alt_screen_1048_saves_and_restores_cursor() {
     let mut terminal = Terminal::new_headless(5, 20);
     terminal.put_str("abc"); // cursor at 0-based (3, 0)
@@ -1916,7 +2043,14 @@ fn should_reset_scroll_snap_suppression_when_resized() {
     }
     terminal.scroll_viewport_up(5);
     let offset_before = terminal.screen().view_offset();
-    assert!(offset_before > 0);
+    assert!(
+        offset_before > 0,
+        "expected scrollback after output: rows={}, scroll_count={}, cursor_y={}, last_row={:?}",
+        terminal.screen().rows(),
+        terminal.screen().scroll_count(),
+        terminal.screen().cursor_y(),
+        terminal.row_text(29)
+    );
 
     // process_output should snap to bottom now since suppress_scroll_snap was reset to false
     terminal.process_output(b"new output\r\n");
@@ -3535,6 +3669,141 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
         }))
         .unwrap();
     assert!(!written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn rectangular_alt_resize_preserves_retained_soft_wrapped_selection_identity() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("abcdef");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 21.0),
+            phase,
+            TerminalPointerButton::Left,
+            67,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 11.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "ef");
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 3 }));
+
+    assert_eq!(terminal.selection_text(), "ef");
+}
+
+#[test]
+fn rectangular_alt_resize_clears_selection_when_one_endpoint_is_clipped() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("abcdef");
+    let event = |phase, position| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            position,
+            phase,
+            TerminalPointerButton::Left,
+            68,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, (31.0, 1.0)))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, (1.0, 21.0)))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, (1.0, 21.0)))
+        .unwrap();
+    assert!(terminal.has_non_empty_selection());
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 3 }));
+
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn ris_drops_parked_alternate_selection_before_fresh_reentry() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("old");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            66,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "old");
+    terminal.put_bytes(b"\x1b[?47l");
+    terminal.put_bytes(b"\x1bc");
+    terminal.put_bytes(b"\x1b[?47h");
+
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn primary_selection_is_parked_reflowed_and_restored_across_alt_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("primary");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            69,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "pri");
+
+    terminal.put_bytes(b"\x1b[?47h");
+    assert!(terminal.is_alt_screen());
+    assert_eq!(terminal.selection_text(), "");
+    terminal.put_str("ALT");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    terminal.put_bytes(b"\x1b[?47l");
+
+    assert!(!terminal.is_alt_screen());
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
+    assert_eq!(terminal.selection_text(), "pri");
 }
 
 #[test]

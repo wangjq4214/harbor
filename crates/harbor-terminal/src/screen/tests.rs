@@ -684,7 +684,8 @@ fn resize_clamps_margins_and_updates_tab_stops() {
     screen.clear_tab_stops(3);
     screen.pen_state.tab_stops.0[4] = true;
 
-    screen.resize(2, 6);
+    let prepared = screen.prepare_resize(2, 6).unwrap();
+    screen.commit_resize(prepared);
     assert_eq!(
         (screen.cursor.margins.left, screen.cursor.margins.right),
         (5, 5)
@@ -694,7 +695,8 @@ fn resize_clamps_margins_and_updates_tab_stops() {
         vec![false, false, false, false, true, false]
     );
 
-    screen.resize(2, 18);
+    let prepared = screen.prepare_resize(2, 18).unwrap();
+    screen.commit_resize(prepared);
     assert!(
         screen.pen_state.tab_stops.0[4],
         "existing tab stops must be preserved"
@@ -1129,8 +1131,14 @@ fn resize_preserves_saved_cursor() {
     screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.resize(3, 5); // smaller — saved cursor must be clamped
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 0, "saved x clamped to 0.min(4)");
-    assert_eq!(screen.cursor.cursor.y, 0, "saved y clamped to 0.min(2)");
+    assert_eq!(
+        screen.cursor.cursor.x, 4,
+        "invalidated saved cursor leaves the clamped live cursor in place"
+    );
+    assert_eq!(
+        screen.cursor.cursor.y, 2,
+        "invalidated saved cursor leaves the clamped live cursor in place"
+    );
     assert_eq!(screen.pen_state.pen.fg, Color::Default);
     assert_eq!(screen.pen_state.pen.bg, Color::Default);
     assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
@@ -1162,7 +1170,7 @@ fn resize_refreshes_clamped_saved_cursor_anchor_before_later_edits() {
     screen.finish_anchor_mutations(None).unwrap();
     screen.restore_cursor();
 
-    assert_eq!(screen.cursor_x(), 2);
+    assert_eq!(screen.cursor_x(), 1);
     assert_eq!(screen.cursor_y(), 0);
 }
 
@@ -1667,13 +1675,13 @@ fn should_clear_markers_when_full_height_edits_blank_rows() {
 }
 
 #[test]
-fn should_clear_pending_wrap_on_resize_and_preserve_surviving_marker() {
+fn should_project_pending_wrap_on_resize_and_preserve_surviving_marker() {
     let mut screen = screen_with_pending_wrap();
     screen.normal.set_wrapped(1, true);
 
     screen.resize(2, 6);
 
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(screen.cursor.modes.pending_wrap);
     assert!(screen.is_wrapped(1));
 }
 
@@ -3946,6 +3954,77 @@ fn alt_screen_resize_while_parked_resizes_persisted_buffer() {
     screen.enter_alt(false);
     assert_eq!((screen.rows(), screen.cols()), (5, 20));
     assert_eq!(screen.row_text(0).trim(), "A");
+}
+
+#[test]
+fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_drops_history() {
+    let mut screen = Screen::new(2, 4);
+    screen.enter_alt(false);
+    screen.set_cursor_position(1, 3);
+    screen.write_char('界');
+    for _ in 0..4 {
+        screen.newline();
+    }
+    assert!(screen.scroll_count() > 0);
+
+    let prepared = screen.prepare_resize(1, 3).unwrap();
+    screen.commit_resize(prepared);
+
+    assert!(screen.is_alt());
+    assert_eq!((screen.rows(), screen.cols()), (1, 3));
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.cell(0, 2), &Cell::default());
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![crate::DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 3,
+        }]
+    );
+}
+
+#[test]
+fn prepared_resize_reflows_saved_primary_while_alt_is_active() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.enter_alt(false);
+    screen.write_char('A');
+
+    let prepared = screen.prepare_resize(1, 3).unwrap();
+    screen.commit_resize(prepared);
+    assert_eq!(screen.row_text(0), "A  ");
+
+    screen.exit_alt();
+    assert_eq!((screen.rows(), screen.cols()), (1, 3));
+    assert_eq!(screen.row_text(0), "def");
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 0));
+}
+
+#[test]
+fn prepared_resize_retains_only_reachable_hyperlinks() {
+    let mut screen = Screen::new(2, 8);
+    screen.open_hyperlink("https://retained.example".into(), None);
+    screen.write_char('R');
+    let retained_id = screen.cell(0, 0).hyperlink.unwrap();
+    screen.close_hyperlink();
+    screen.open_hyperlink("https://stale.example".into(), None);
+    screen.close_hyperlink();
+    assert_eq!(screen.hyperlinks.len(), 2);
+
+    let prepared = screen.prepare_resize(2, 4).unwrap();
+    screen.commit_resize(prepared);
+
+    assert_eq!(screen.hyperlinks.len(), 1);
+    assert_eq!(
+        screen
+            .hyperlinks
+            .get(retained_id)
+            .map(|link| link.uri.as_str()),
+        Some("https://retained.example")
+    );
 }
 
 #[test]

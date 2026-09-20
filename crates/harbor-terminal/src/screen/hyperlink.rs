@@ -11,7 +11,7 @@ pub(super) struct Hyperlink {
 }
 
 /// Screen-local ownership for OSC 8 values referenced by compact cell IDs.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct HyperlinkRegistry {
     entries: HashMap<HyperlinkId, Hyperlink>,
     next_id: u32,
@@ -47,6 +47,49 @@ impl HyperlinkRegistry {
 
     pub(super) fn get(&self, id: HyperlinkId) -> Option<&Hyperlink> {
         self.entries.get(&id)
+    }
+    pub(super) fn prepare_retained(
+        &self,
+        reachable: &HashSet<HyperlinkId>,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::PreparationError;
+
+        let mut entries = HashMap::new();
+        entries
+            .try_reserve(reachable.len().min(self.entries.len()))
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        for (&id, hyperlink) in &self.entries {
+            if !reachable.contains(&id) {
+                continue;
+            }
+            let mut uri = String::new();
+            uri.try_reserve_exact(hyperlink.uri.len())
+                .map_err(|_| PreparationError::AllocationFailed)?;
+            uri.push_str(&hyperlink.uri);
+            let external_id = match &hyperlink.id {
+                Some(value) => {
+                    let mut cloned = String::new();
+                    cloned
+                        .try_reserve_exact(value.len())
+                        .map_err(|_| PreparationError::AllocationFailed)?;
+                    cloned.push_str(value);
+                    Some(cloned)
+                }
+                None => None,
+            };
+            entries.insert(
+                id,
+                Hyperlink {
+                    uri,
+                    id: external_id,
+                },
+            );
+        }
+        Ok(Self {
+            entries,
+            next_id: self.next_id,
+            allocations_since_cleanup: self.allocations_since_cleanup,
+        })
     }
 
     pub(super) fn clear(&mut self) {

@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec 0014](../../spec/0014-content-preserving-resize-reflow.md), GitHub #170
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
