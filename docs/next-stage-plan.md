@@ -12,7 +12,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 
 | ID  | Work package                                  | Starting point                                          | Main dependency                                     |
 | --- | --------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------- |
-| N01 | Resize reflow and stable content anchors      | Planned; resize is currently non-reflow                 | Logical-line, width, and coordinate contracts       |
+| N01 | Resize reflow and stable content anchors      | Source/tests delivered; runtime/performance acceptance open | Windows shell/clipboard/`nvim` and measured cost evidence |
 | N02 | Unicode text correctness                      | Planned; wide cells exist, combining text is incomplete | Coordinate contract shared with N01                 |
 | N03 | `chcp` and legacy Windows compatibility       | Investigate; no specific Harbor defect assumed          | Reproducible ConPTY probes                          |
 | N04 | Configuration hot reload                      | Planned; startup TOML exists                            | Live-update boundary; N01 for font-driven resize    |
@@ -36,6 +36,8 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 
 **First delivery**
 
+Source implementation and automated regressions cover this delivery. N01 acceptance remains open: interactive Windows shell/clipboard/`nvim` and release latency/DHAT records are **NOT RUN**; see the [automation](verification/content-preserving-resize-automation.md), [Windows](verification/content-preserving-resize-windows.md), and [performance](verification/content-preserving-resize-performance.md) records.
+
 - Re-wrap retained main-screen and scrollback logical lines when column count changes; preserve explicit newlines rather than concatenating every physical row.
 - Define meaningful trailing blanks, styled blank cells, wide-character boundary padding, hyperlinks, and cell attributes. Do not use unconditional text trimming as the reflow algorithm.
 - Map the live cursor, saved cursor where applicable, viewport review position, and selection endpoints to the new geometry.
@@ -45,9 +47,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 
 **Design boundary**
 
-Current selections use physical-row generation coordinates. A width change alters physical-row count, so retaining the old generation/column pair is not a content-preserving mapping. Decide on logical anchors or an explicit remapping result before implementing search and command navigation. This does not require replacing the entire ring buffer with a new storage architecture.
-
-The current non-reflow decision in [ADR-0018](../.grimoire/adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) remains the implemented behavior until a follow-up decision and implementation replace it.
+Selections and viewport review positions now use content anchors that are remapped through transactional resize. The implementation follows the buffer-specific approach described by [ADR-0042](../.grimoire/adr/0042-content-anchors-and-buffer-specific-resize.md); [ADR-0018](../.grimoire/adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) remains historical and ADR-0042 remains unpromoted until the outstanding runtime and performance acceptance is executed.
 
 **Acceptance**
 
@@ -249,7 +249,7 @@ Sixel and unrelated extension families are not prerequisites for the first Kitty
 
 Open three bounded work items:
 
-1. **N01/N02 contract and reflow regressions**, followed by the first reflow implementation.
+1. **Close N01 acceptance and begin N02:** execute the recorded Windows shell/clipboard/`nvim` and release latency/DHAT procedures without weakening the gates; independently start the bounded combining-text contract.
 2. **N03/N10/N12 ConPTY probes**, recording code-page and extension-transport feasibility before committing to large implementations.
 3. **N04 manual configuration reload**, initially colors and keybindings, with last-valid-state retention.
 

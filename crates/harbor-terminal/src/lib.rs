@@ -680,6 +680,7 @@ impl Terminal {
         new_size: TerminalSize,
         resize_pty: impl FnOnce(&mut TerminalIo, TerminalSize) -> anyhow::Result<()>,
     ) -> anyhow::Result<bool> {
+        let started = Instant::now();
         let new_size = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(2),
@@ -688,16 +689,87 @@ impl Terminal {
             rows: screen.rows(),
             cols: screen.cols(),
         };
+        let active_history_rows = screen.scroll_count();
+        let saved_primary_history_rows = screen.saved_primary_scroll_count();
         if new_size == current {
+            tracing::debug!(
+                old_rows = current.rows,
+                old_cols = current.cols,
+                new_rows = new_size.rows,
+                new_cols = new_size.cols,
+                active_history_rows,
+                saved_primary_history_rows,
+                total_us = started.elapsed().as_micros() as u64,
+                outcome = "unchanged",
+                "terminal resize transaction"
+            );
             return Ok(false);
         }
 
-        let prepared_screen = screen.prepare_resize(new_size.rows, new_size.cols)?;
+        let prepare_started = Instant::now();
+        let prepared_screen = match screen.prepare_resize(new_size.rows, new_size.cols) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::debug!(
+                    old_rows = current.rows,
+                    old_cols = current.cols,
+                    new_rows = new_size.rows,
+                    new_cols = new_size.cols,
+                    active_history_rows,
+                    saved_primary_history_rows,
+                    prepare_us = prepare_started.elapsed().as_micros() as u64,
+                    total_us = started.elapsed().as_micros() as u64,
+                    failed_stage = "prepare",
+                    error = %error,
+                    outcome = "error",
+                    "terminal resize transaction"
+                );
+                return Err(error.into());
+            }
+        };
         let prepared_pointer = pointer.prepare_resize(&prepared_screen);
-        resize_pty(io, new_size)?;
+        let prepare_us = prepare_started.elapsed().as_micros() as u64;
+
+        let pty_started = Instant::now();
+        if let Err(error) = resize_pty(io, new_size) {
+            tracing::debug!(
+                old_rows = current.rows,
+                old_cols = current.cols,
+                new_rows = new_size.rows,
+                new_cols = new_size.cols,
+                active_history_rows,
+                saved_primary_history_rows,
+                prepare_us,
+                pty_us = pty_started.elapsed().as_micros() as u64,
+                total_us = started.elapsed().as_micros() as u64,
+                failed_stage = "pty",
+                error = %format_args!("{error:#}"),
+                outcome = "error",
+                "terminal resize transaction"
+            );
+            return Err(error);
+        }
+        let pty_us = pty_started.elapsed().as_micros() as u64;
+
+        let commit_started = Instant::now();
         screen.commit_resize(prepared_screen);
         pointer.commit_resize(prepared_pointer);
         io.reset_scroll_snap();
+        let commit_us = commit_started.elapsed().as_micros() as u64;
+        tracing::debug!(
+            old_rows = current.rows,
+            old_cols = current.cols,
+            new_rows = new_size.rows,
+            new_cols = new_size.cols,
+            active_history_rows,
+            saved_primary_history_rows,
+            prepare_us,
+            pty_us,
+            commit_us,
+            total_us = started.elapsed().as_micros() as u64,
+            outcome = "changed",
+            "terminal resize transaction"
+        );
         Ok(true)
     }
 

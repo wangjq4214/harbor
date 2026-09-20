@@ -233,6 +233,77 @@ fn transactional_resize_does_not_call_pty_when_preparation_fails() {
 }
 
 #[test]
+fn repeated_mixed_resize_preserves_selection_and_primary_across_alt_and_retry() {
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[31mABC\x1b[0m");
+    terminal.put_str("界DEF  \r\n\r\nTAIL");
+
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            70,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "ABC");
+
+    for (index, size) in [
+        TerminalSize { rows: 4, cols: 8 },
+        TerminalSize { rows: 6, cols: 8 },
+        TerminalSize { rows: 3, cols: 6 },
+        TerminalSize { rows: 4, cols: 12 },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(terminal.resize_if_changed(size));
+        terminal.put_str(&format!("\r\n\x1b[3{}mstep{index}\x1b[0m界", index + 1));
+        assert_eq!(terminal.selection_text(), "ABC");
+    }
+
+    let before_failure = terminal.snapshot();
+    let selection_before_failure = terminal.selection_text();
+    let failed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 5, cols: 10 },
+        |_io, _size| anyhow::bail!("injected PTY failure"),
+    );
+    assert!(failed.is_err());
+    assert_eq!(terminal.snapshot(), before_failure);
+    assert_eq!(terminal.selection_text(), selection_before_failure);
+
+    terminal.put_bytes(b"\x1b[?1049h");
+    assert_eq!(terminal.screen().scroll_count(), 0);
+    assert!(terminal.screen().saved_primary_scroll_count() > 0);
+    terminal.put_str("ALT");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 5, cols: 10 }));
+    terminal.put_bytes(b"\x1b[?1049l");
+
+    assert!(!terminal.is_alt_screen());
+    assert_eq!(
+        (terminal.screen().rows(), terminal.screen().cols()),
+        (5, 10)
+    );
+    assert_eq!(terminal.selection_text(), "ABC");
+    assert!(terminal.screen().scroll_count() > 0);
+}
+
+#[test]
 fn sgr_sets_fg_color_on_written_cells() {
     let mut terminal = Terminal::new_headless(1, 8);
 
@@ -4820,4 +4891,66 @@ fn should_record_backdrop_availability_through_the_setter() {
 
     terminal.set_backdrop_available(false);
     assert!(!terminal.backdrop_available);
+}
+
+#[test]
+fn width_round_trip_preserves_cjk_hard_breaks_and_meaningful_trailing_blanks() {
+    fn retained_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    let mut terminal = Terminal::new_headless(4, 8);
+    terminal.put_str("A界  \r\n\r\nB");
+    let expected = retained_text(&terminal);
+    assert!(expected.contains("A界  \n\nB"));
+
+    for cols in [6, 10, 8] {
+        assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
+        assert_eq!(retained_text(&terminal), expected);
+    }
+}
+
+#[test]
+fn mixed_resize_keeps_review_content_and_cursor_meaning_for_short_lines() {
+    fn reviewed_first_line(terminal: &Terminal) -> String {
+        let snapshot = terminal.snapshot();
+        snapshot.cells[..snapshot.cols]
+            .iter()
+            .map(|cell| cell.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    let mut terminal = Terminal::new_headless(3, 8);
+    terminal.put_str("L0\r\nL1\r\nL2\r\nL3\r\nL4");
+    assert!(terminal.screen().scroll_count() >= 2);
+    terminal.scroll_viewport_up(1);
+    let reviewed_line = reviewed_first_line(&terminal);
+    assert!(terminal.screen().view_offset() > 0);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 8 }));
+    assert_eq!(reviewed_first_line(&terminal), reviewed_line);
+    assert!(terminal.screen().view_offset() > 0);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 6 }));
+    assert_eq!(reviewed_first_line(&terminal), reviewed_line);
+    assert!(terminal.screen().view_offset() > 0);
+    terminal.put_str("Z");
+    let screen = terminal.screen();
+    let retained_rows = screen.scroll_count() + screen.rows();
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + retained_rows as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert!(text.contains("L4Z"));
 }

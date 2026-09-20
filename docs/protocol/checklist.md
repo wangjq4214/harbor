@@ -13,7 +13,7 @@
 - Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
 - Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
 - This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
-- Known exclusions: zero-width/combining characters are ignored by `CellWriter`; resize does not reflow; Kitty keyboard/graphics, OSC 52, and OSC 4 palette operations remain unsupported. IME preedit support does not imply grapheme support (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
+- Known exclusions: zero-width/combining characters are ignored by `CellWriter`; Kitty keyboard/graphics, OSC 52, and OSC 4 palette operations remain unsupported. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply grapheme support (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
 
@@ -558,7 +558,7 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Scrolling is correct when autowrap triggers at the bottom of the scrolling region
 * [x] LF, IND, NEL and RI clear pending wrap on movement, scroll and boundary no-op paths
 * [x] Accepted erase and line-edit commands clear pending wrap before early returns
-* [x] Resize clears pending wrap without reflowing rows
+* [x] Resize clears pending wrap before transactional content-preserving reflow; see the [automated evidence](../verification/content-preserving-resize-automation.md)
 * [x] DECSTR clears pending wrap while preserving screen content and soft-wrap markers
 
 ---

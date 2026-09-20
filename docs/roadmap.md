@@ -9,14 +9,14 @@ Harbor is Windows-first. The next goal is a reliable daily-use terminal with liv
 - **What is supported at protocol level:** [Protocol Checklist](protocol/checklist.md).
 - **What counts as verified:** [Validation](validation.md).
 
-The N01–N17 identifiers below refer to work packages in the product plan. They are planning commitments, not claims that implementation has started.
+The N01–N17 identifiers below refer to work packages in the product plan. Their states are tracked explicitly; a source/test delivery is not the same as runtime or release acceptance.
 
 ## Delivery Order
 
 | Milestone                          | Outcome                                                                                          | Work packages                                 | State / entry condition                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
 | M0 — Establish evidence            | Reproducible Windows application matrix, code-page/extension probes, honest baseline             | N03; feasibility portions of N10/N12; N16     | **Next, bounded investigation**; can run alongside M1                            |
-| M1 — Preserve content              | Resize reflow, coherent text/coordinate semantics, first Unicode correctness slice               | N01, N02; history semantics from N15          | **Next, primary implementation**                                                 |
+| M1 — Preserve content              | Resize reflow, coherent text/coordinate semantics, first Unicode correctness slice               | N01, N02; history semantics from N15          | **In progress**; N01 source/tests delivered, Windows/performance acceptance open; N02 planned |
 | M2 — Configure and discover        | Manual then watched reload, command palette, named profiles                                      | N04, N05, N06                                 | **Planned**; simple live settings can start before font/reflow integration       |
 | M3 — Work in panes                 | Independent panes, scrollback search, shell-integration workflows                                | N07, N08, N09; multi-session budgets from N15 | **Planned**; requires stable content anchors and session ownership               |
 | M4 — Extend compatibility          | Kitty keyboard, selected terminal gaps, bounded static Kitty graphics                            | N10, N11, N12                                 | **Planned / transport-gated**; independent slices may start earlier after probes |
@@ -50,7 +50,7 @@ These are dependency constraints, not a requirement to finish every item in one 
 
 ## First Three Work Items
 
-1. Define N01/N02 content and coordinate semantics, add resize regressions, then implement reflow. Preserve the existing non-reflow behavior until the replacement has explicit tests.
+1. Close N01 with the recorded Windows shell/clipboard/`nvim` and release latency/DHAT evidence; do not treat automated reflow coverage as runtime acceptance. Begin the bounded N02 combining-text contract independently.
 2. Build the N03/N10/N12 ConPTY probes. Treat `chcp` as a compatibility investigation, and verify Kitty negotiation/data in both directions before promising support.
 3. Deliver N04 manual reload for colors and keybindings, retaining the last valid live configuration on errors. File watching and font-resource transitions follow.
 

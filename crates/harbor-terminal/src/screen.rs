@@ -277,6 +277,12 @@ impl Screen {
         self.normal.scroll_count()
     }
 
+    pub(crate) fn saved_primary_scroll_count(&self) -> usize {
+        self.saved_primary
+            .as_deref()
+            .map_or(0, Screen::scroll_count)
+    }
+
     pub fn view_offset(&self) -> usize {
         self.normal.view_offset()
     }
