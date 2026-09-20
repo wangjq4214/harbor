@@ -3084,6 +3084,87 @@ fn ctrl_shift_c_is_encoded_after_copy_migration() {
     assert_eq!(outcome.clipboard_text, None);
     assert_eq!(written.lock().unwrap().as_slice(), b"\x03");
 }
+
+#[test]
+fn copy_selection_returns_text_and_clears_completed_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    for phase in [
+        TerminalPointerPhase::Down,
+        TerminalPointerPhase::Move,
+        TerminalPointerPhase::Up,
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                if matches!(phase, TerminalPointerPhase::Down) {
+                    (1.0, 1.0)
+                } else {
+                    (21.0, 1.0)
+                },
+                phase,
+                TerminalPointerButton::Left,
+                80,
+            )))
+            .unwrap();
+    }
+    assert_eq!(terminal.selection_text(), "sel");
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some("sel"));
+    assert!(outcome.release_pointer.is_none());
+    assert!(outcome.redraw);
+    assert!(!terminal.pointer.has_selection_state());
+}
+
+#[test]
+fn copy_selection_returns_text_clears_highlight_and_releases_pointer() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            81,
+        )))
+        .unwrap();
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (21.0, 1.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Left,
+            81,
+        )))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "sel");
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some("sel"));
+    assert_eq!(outcome.release_pointer, Some(81));
+    assert!(outcome.redraw);
+    assert!(!terminal.pointer.has_selection_state());
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn copy_selection_preserves_empty_copy_without_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some(""));
+    assert!(!outcome.redraw);
+    assert!(outcome.release_pointer.is_none());
+    assert!(!terminal.pointer.has_selection_state());
+}
 #[test]
 fn bare_navigation_keys_encode_after_scroll_migration() {
     let reader = ScriptedReader {

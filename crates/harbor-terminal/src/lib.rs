@@ -700,6 +700,19 @@ impl Terminal {
             .unwrap_or_default()
     }
 
+    /// Copies the current selection and clears all terminal-owned selection state.
+    ///
+    /// The host remains responsible for applying the returned clipboard and pointer effects.
+    pub fn command_copy_selection(&mut self) -> TerminalEventOutcome {
+        let text = self.selection_text();
+        let mut outcome = self.pointer.clear_selection_outcome();
+        if outcome.release_pointer.is_some() {
+            self.io.set_suppress_scroll_snap(false);
+        }
+        outcome.clipboard_text = Some(text);
+        outcome
+    }
+
     // ── viewport scroll ───────────────────────────────────────────────
 
     pub fn scroll_viewport_up(&mut self, n: usize) {

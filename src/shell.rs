@@ -191,17 +191,28 @@ impl ActiveSession {
                     }
                 }
                 AppCommand::Copy | AppCommand::CopyOrInterrupt => {
-                    let text = self.tabs.active_terminal().and_then(|terminal| {
+                    let copy_outcome = self.tabs.active_terminal().and_then(|terminal| {
                         terminal
                             .lock()
                             .ok()
-                            .map(|terminal| terminal.selection_text())
+                            .map(|mut terminal| terminal.command_copy_selection())
                     });
-                    if let Some(text) = text {
-                        Self::merge_wait(
-                            &mut result.wait,
-                            self.main_host.write_clipboard(text).wait,
-                        );
+                    if let Some(outcome) = copy_outcome {
+                        if let Some(text) = outcome.clipboard_text {
+                            Self::merge_wait(
+                                &mut result.wait,
+                                self.main_host.write_clipboard(text).wait,
+                            );
+                        }
+                        if outcome.release_pointer.is_some() {
+                            Self::merge_wait(
+                                &mut result.wait,
+                                self.main_host.cancel_active_input_ownership().wait,
+                            );
+                        }
+                        if outcome.redraw {
+                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                        }
                     }
                 }
                 AppCommand::Paste => {

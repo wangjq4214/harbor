@@ -306,13 +306,13 @@ Project domain concepts and terminology.
   - implements Terminal Selection Granularity
 
 ### Terminal Selection Copy Policy
-- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY.
+- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY. Every successful copy clears the terminal selection.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - communicates with Terminal
 
 ### Terminal Selection Lifecycle
-- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows, and an existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
+- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - references Logical Line
