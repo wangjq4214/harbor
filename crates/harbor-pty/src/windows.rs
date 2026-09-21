@@ -161,7 +161,8 @@ impl Pty {
     pub fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
-        self._pseudo_console.as_mut().unwrap().resize(size)
+        self._pseudo_console.as_mut().unwrap().resize(size)?;
+        Ok(())
     }
 
     /// Starts termination of the shell process tree without blocking the caller.
@@ -626,20 +627,20 @@ impl Drop for OwnedHandle {
 /// RAII wrapper for the ConPTY handle, which has a different close API than HANDLE.
 struct PseudoConsole(HPCON);
 
+/// ConPTY creation flag instructing the console host to defer resize reflow and repainting
+/// to the terminal emulator, preventing duplicate full-screen redraw artifacts on window resize.
+const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
+
 impl PseudoConsole {
     fn create(size: PtySize, input: HANDLE, output: HANDLE) -> anyhow::Result<Self> {
-        let pseudo_console = unsafe {
-            CreatePseudoConsole(
-                COORD {
-                    X: size.cols,
-                    Y: size.rows,
-                },
-                input,
-                output,
-                0,
-            )
-        }
-        .context("failed to create pseudo console")?;
+        let coord = COORD {
+            X: size.cols,
+            Y: size.rows,
+        };
+        let pseudo_console =
+            unsafe { CreatePseudoConsole(coord, input, output, PSEUDOCONSOLE_RESIZE_QUIRK) }
+                .or_else(|_| unsafe { CreatePseudoConsole(coord, input, output, 0) })
+                .context("failed to create pseudo console")?;
         tracing::info!(rows = size.rows, cols = size.cols, "pseudo console ready");
 
         Ok(Self(pseudo_console))
@@ -769,10 +770,9 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use ::windows::Win32::System::Pipes::PeekNamedPipe;
-
     use super::*;
 
+    use ::windows::Win32::System::Pipes::PeekNamedPipe;
     #[test]
     fn cancelled_read_maps_to_interrupted_io_error() {
         let error =

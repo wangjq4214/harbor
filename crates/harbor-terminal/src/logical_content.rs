@@ -83,7 +83,14 @@ impl fmt::Display for DecodeError {
 }
 
 pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError> {
-    let rows: Vec<_> = normal.retained_rows().collect();
+    decode_active(normal, normal.scroll_count() + normal.rows())
+}
+
+pub(crate) fn decode_active(
+    normal: &NormalBuf,
+    active_count: usize,
+) -> Result<Vec<LogicalAtom>, DecodeError> {
+    let rows: Vec<_> = normal.retained_rows_bounded(active_count).collect();
     let mut atoms = Vec::new();
     let mut previous: Option<RetainedRow<'_>> = None;
     let mut atom_offset = 0usize;
@@ -181,10 +188,17 @@ fn decode_row(
     }
     Ok(())
 }
-
+#[cfg(test)]
 pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, DecodeError> {
-    let rows: Vec<_> = normal.retained_rows().collect();
-    let atoms = decode(normal)?;
+    decode_lines_active(normal, normal.scroll_count() + normal.rows())
+}
+
+pub(crate) fn decode_lines_active(
+    normal: &NormalBuf,
+    active_count: usize,
+) -> Result<Vec<LogicalLine>, DecodeError> {
+    let rows: Vec<_> = normal.retained_rows_bounded(active_count).collect();
+    let atoms = decode_active(normal, active_count)?;
     let mut lines = Vec::new();
 
     for (index, row) in rows.iter().enumerate() {

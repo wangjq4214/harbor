@@ -664,6 +664,7 @@ impl CellOps {
             cursor.cursor.x = 0;
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == max_n {
             for row in cursor.cursor.y..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -678,6 +679,7 @@ impl CellOps {
         let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
         let dst = ((vis + cursor.cursor.y + n) % tr) * c;
         normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.cursor.y + n);
         for i in 0..n {
             normal.fill_row_with(cursor.cursor.y + i, pen_state.erase_cell());
         }
@@ -718,6 +720,7 @@ impl CellOps {
             cursor.cursor.x = 0;
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == max_n {
             for row in cursor.cursor.y..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -732,6 +735,7 @@ impl CellOps {
         let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
         let dst = ((vis + cursor.cursor.y) % tr) * c;
         normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.cursor.y);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
         }
@@ -767,6 +771,7 @@ impl CellOps {
             );
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == region_height {
             for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -780,6 +785,7 @@ impl CellOps {
         let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
         let dst = ((vis + cursor.scroll_region.top) % tr) * c;
         normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.scroll_region.top);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
         }
@@ -812,6 +818,7 @@ impl CellOps {
             );
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == region_height {
             for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -825,6 +832,7 @@ impl CellOps {
         let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
         let dst = ((vis + cursor.scroll_region.top + n) % tr) * c;
         normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.scroll_region.top + n);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.top + i, pen_state.erase_cell());
         }
@@ -857,6 +865,7 @@ impl CellOps {
         {
             normal.scroll_up_full_screen(1, pen_state.erase_cell());
         } else {
+            normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
             let tr = normal.total_rows();
             let vis = normal.visible_start();
             let c = normal.cols();
@@ -864,6 +873,7 @@ impl CellOps {
             let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
             let dst = ((vis + cursor.scroll_region.top) % tr) * c;
             normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+            normal.sever_soft_wrap(cursor.scroll_region.top);
             normal.fill_row_with(cursor.scroll_region.bottom, pen_state.erase_cell());
         }
         if !cursor.margins.enabled {

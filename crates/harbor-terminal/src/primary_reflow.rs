@@ -116,16 +116,26 @@ pub(crate) struct PreparedPrimaryResize {
 
 #[cfg(test)]
 pub(crate) type PreparedPrimaryWidthReflow = PreparedPrimaryResize;
-
 impl PreparedPrimaryResize {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn prepare_geometry(
         normal: &NormalBuf,
         requested_rows: usize,
         requested_cols: usize,
     ) -> Result<Self, PreparationError> {
+        Self::prepare_geometry_with_cursor_floor(normal, requested_rows, requested_cols, None)
+    }
+
+    pub(crate) fn prepare_geometry_with_cursor_floor(
+        normal: &NormalBuf,
+        requested_rows: usize,
+        requested_cols: usize,
+        cursor_floor: Option<usize>,
+    ) -> Result<Self, PreparationError> {
         let target_rows = requested_rows.max(1);
         let cols = requested_cols.max(MIN_REFLOW_COLS);
-        let logical_lines = logical_content::decode_lines(normal)?;
+        let active_count = normal.active_retained_row_count(cursor_floor);
+        let logical_lines = logical_content::decode_lines_active(normal, active_count)?;
         let projected_row_bound = logical_lines
             .iter()
             .try_fold(0usize, |total, line| {
@@ -203,16 +213,33 @@ impl PreparedPrimaryResize {
             .max_scrollback()
             .checked_add(target_rows)
             .ok_or(PreparationError::ArithmeticOverflow)?;
-        let dropped_rows = rows.len().saturating_sub(budget);
+        let capacity_dropped_rows = rows.len().saturating_sub(budget);
+        let live_start = rows.len().saturating_sub(target_rows);
+        let cutoff_splits_line = capacity_dropped_rows > 0
+            && capacity_dropped_rows < rows.len()
+            && rows[capacity_dropped_rows - 1].metadata.logical_line_id
+                == rows[capacity_dropped_rows].metadata.logical_line_id;
+        let mut dropped_rows = capacity_dropped_rows;
+        let mut partial_head = cutoff_splits_line;
+        if cutoff_splits_line {
+            let partial_line_id = rows[capacity_dropped_rows].metadata.logical_line_id;
+            let partial_line_end = rows[capacity_dropped_rows..]
+                .iter()
+                .position(|row| row.metadata.logical_line_id != partial_line_id)
+                .map_or(rows.len(), |offset| capacity_dropped_rows + offset);
+            // Do not expose an orphaned suffix as the oldest history entry. A line that
+            // reaches the live viewport cannot be removed without discarding live content,
+            // so that case keeps the prefix-truncation fallback.
+            if partial_line_end <= live_start {
+                dropped_rows = partial_line_end;
+                partial_head = false;
+            }
+        }
         if dropped_rows > rows.len().saturating_sub(target_rows) {
             return Err(PreparationError::Invariant(
                 "capacity eviction entered live viewport",
             ));
         }
-        let partial_head = dropped_rows > 0
-            && dropped_rows < rows.len()
-            && rows[dropped_rows - 1].metadata.logical_line_id
-                == rows[dropped_rows].metadata.logical_line_id;
         if dropped_rows > 0 {
             rows.drain(0..dropped_rows);
         }
@@ -1110,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_evicts_exact_oldest_rows_and_reflow_is_repeatable() {
+    fn capacity_evicts_prefix_when_oversized_line_reaches_live_viewport() {
         let mut normal = NormalBuf::new_for_test(3, 4, 2);
         let mut ch = b'a';
         for row in 0..3 {
@@ -1178,6 +1205,36 @@ mod tests {
         assert_eq!(repeated.rows()[0].metadata.logical_start, 4);
         assert_eq!(repeated.rows()[0].metadata.logical_atom_start, 4);
         assert_eq!(repeated.normal().history_start(), 7);
+    }
+
+    #[test]
+    fn capacity_evicts_complete_historical_line_instead_of_exposing_suffix() {
+        let mut normal = NormalBuf::new_for_test(4, 4, 2);
+        for (row, text) in ["abcd", "efgh", "x", "y"].into_iter().enumerate() {
+            for (col, ch) in text.chars().enumerate() {
+                write(
+                    &mut normal,
+                    row,
+                    col,
+                    Cell {
+                        ch,
+                        ..Cell::default()
+                    },
+                );
+            }
+        }
+        let source = normal.live_row_metadata(0);
+        let source_atoms = normal.live_row_logical_atom_count(0);
+        normal.continue_logical_line(1, source, source_atoms);
+
+        let prepared = PreparedPrimaryResize::prepare_geometry(&normal, 2, 2).unwrap();
+
+        assert_eq!(prepared.dropped_rows(), 4);
+        assert_eq!(prepared.rows().len(), 2);
+        assert_eq!(prepared.normal().scroll_count(), 0);
+        assert!(!prepared.rows()[0].metadata.head_truncated);
+        assert_eq!(prepared.rows()[0].cells[0].ch, 'x');
+        assert_eq!(prepared.rows()[1].cells[0].ch, 'y');
     }
 
     #[test]

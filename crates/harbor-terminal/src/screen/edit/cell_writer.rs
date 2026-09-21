@@ -130,10 +130,15 @@ impl CellWriter {
     ) -> bool {
         // Handle pending wrap if autowrap is on.
         if cursor.modes.autowrap && cursor.modes.pending_wrap {
-            let source = normal.live_row_metadata(cursor.cursor.y);
-            let source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
+            let mut source = normal.live_row_metadata(cursor.cursor.y);
+            let mut source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
             cursor.carriage_return();
             if Self::newline_inner(pen_state, normal, cursor) {
+                if !cursor.margins.enabled && cursor.cursor.y > 0 {
+                    let source_row = cursor.cursor.y - 1;
+                    source = normal.live_row_metadata(source_row);
+                    source_atom_count = normal.live_row_logical_atom_count(source_row);
+                }
                 normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
             }
             cursor.modes.pending_wrap = false;
@@ -152,10 +157,15 @@ impl CellWriter {
             if !cursor.modes.autowrap {
                 return false;
             }
-            let source = normal.live_row_metadata(cursor.cursor.y);
-            let source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
+            let mut source = normal.live_row_metadata(cursor.cursor.y);
+            let mut source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
             cursor.carriage_return();
             if Self::newline_inner(pen_state, normal, cursor) {
+                if !cursor.margins.enabled && cursor.cursor.y > 0 {
+                    let source_row = cursor.cursor.y - 1;
+                    source = normal.live_row_metadata(source_row);
+                    source_atom_count = normal.live_row_logical_atom_count(source_row);
+                }
                 normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
             }
             cursor.modes.pending_wrap = false;

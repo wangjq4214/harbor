@@ -2,6 +2,7 @@
 //! I/O lifecycle from screen state and GPU rendering.
 
 use std::{
+    borrow::Cow,
     io::{Read, Write},
     sync::{
         Arc,
@@ -246,6 +247,232 @@ fn service_reader_commands(
     }
 }
 
+// ── ConPTY Redraw Filter ──────────────────────────────────────────────
+
+/// Filters unsolicited full-screen redraw bursts emitted by Windows ConPTY on resize.
+///
+/// Because Harbor performs client-side reflow and maintains its own scrollback ring buffer,
+/// ConPTY's post-resize redraw (which homes the cursor with `\x1b[H` and rewrites lines with `\r\n`)
+/// would corrupt the reflowed layout and scroll lines into scrollback as hard linebreaks.
+#[derive(Debug)]
+pub(crate) struct ConptyRedrawFilter {
+    state: ConptyRedrawState,
+    tail_buffer: Vec<u8>,
+    /// Resize notifications not yet matched to the start of a redraw burst.
+    pending_redraws: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConptyRedrawState {
+    Idle,
+    Armed { armed_at: Instant },
+    Suppressing { started_at: Instant },
+}
+
+impl ConptyRedrawFilter {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: ConptyRedrawState::Idle,
+            tail_buffer: Vec::new(),
+            pending_redraws: 0,
+        }
+    }
+
+    pub(crate) fn arm(&mut self) {
+        self.pending_redraws = self.pending_redraws.saturating_add(1);
+        let now = Instant::now();
+        match self.state {
+            ConptyRedrawState::Idle => {
+                self.tail_buffer.clear();
+                self.state = ConptyRedrawState::Armed { armed_at: now };
+            }
+            ConptyRedrawState::Armed { .. } => {
+                self.state = ConptyRedrawState::Armed { armed_at: now };
+            }
+            ConptyRedrawState::Suppressing { .. } => {
+                // A rapid follow-up resize must not expose the unfinished prior redraw.
+                self.state = ConptyRedrawState::Suppressing { started_at: now };
+            }
+        }
+    }
+
+    pub(crate) fn filter<'a>(&mut self, bytes: &'a [u8]) -> Cow<'a, [u8]> {
+        const TIMEOUT: Duration = Duration::from_millis(500);
+
+        match self.state {
+            ConptyRedrawState::Idle => Cow::Borrowed(bytes),
+            ConptyRedrawState::Armed { armed_at } => {
+                if armed_at.elapsed() > TIMEOUT {
+                    self.state = ConptyRedrawState::Idle;
+                    self.pending_redraws = 0;
+                    if self.tail_buffer.is_empty() {
+                        return Cow::Borrowed(bytes);
+                    }
+                    let mut released = std::mem::take(&mut self.tail_buffer);
+                    released.extend_from_slice(bytes);
+                    return Cow::Owned(released);
+                }
+                self.filter_armed(bytes)
+            }
+            ConptyRedrawState::Suppressing { started_at } => {
+                if started_at.elapsed() > TIMEOUT {
+                    self.state = ConptyRedrawState::Idle;
+                    self.pending_redraws = 0;
+                    self.tail_buffer.clear();
+                    return Cow::Borrowed(bytes);
+                }
+                self.filter_suppressing(bytes)
+            }
+        }
+    }
+
+    fn filter_armed<'a>(&mut self, bytes: &'a [u8]) -> Cow<'a, [u8]> {
+        if self.tail_buffer.is_empty() {
+            if let Some(start) = conpty_redraw_start(bytes) {
+                self.pending_redraws = self.pending_redraws.saturating_sub(1);
+                self.state = ConptyRedrawState::Suppressing {
+                    started_at: Instant::now(),
+                };
+                let resumed = self.filter_suppressing(&bytes[start..]);
+                if start == 0 {
+                    return resumed;
+                }
+                let mut output = bytes[..start].to_vec();
+                output.extend_from_slice(resumed.as_ref());
+                return Cow::Owned(output);
+            }
+
+            let keep = possible_redraw_start_suffix(bytes);
+            if keep == 0 {
+                return Cow::Borrowed(bytes);
+            }
+            self.tail_buffer
+                .extend_from_slice(&bytes[bytes.len() - keep..]);
+            return Cow::Borrowed(&bytes[..bytes.len() - keep]);
+        }
+
+        let mut combined = std::mem::take(&mut self.tail_buffer);
+        combined.extend_from_slice(bytes);
+        if let Some(start) = conpty_redraw_start(&combined) {
+            self.pending_redraws = self.pending_redraws.saturating_sub(1);
+            self.state = ConptyRedrawState::Suppressing {
+                started_at: Instant::now(),
+            };
+            let resumed = self.filter_suppressing(&combined[start..]);
+            let mut output = combined[..start].to_vec();
+            output.extend_from_slice(resumed.as_ref());
+            return Cow::Owned(output);
+        }
+
+        let keep = possible_redraw_start_suffix(&combined);
+        let emit_end = combined.len() - keep;
+        self.tail_buffer.extend_from_slice(&combined[emit_end..]);
+        Cow::Owned(combined[..emit_end].to_vec())
+    }
+
+    fn filter_suppressing<'a>(&mut self, bytes: &'a [u8]) -> Cow<'a, [u8]> {
+        const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
+
+        // Check if CURSOR_SHOW was split across tail_buffer and bytes
+        if !self.tail_buffer.is_empty() {
+            let mut combined = self.tail_buffer.clone();
+            let check_len = (CURSOR_SHOW.len() - 1).min(bytes.len());
+            combined.extend_from_slice(&bytes[..check_len]);
+            if let Some(pos) = find_subsequence(&combined, CURSOR_SHOW) {
+                let match_end = pos + CURSOR_SHOW.len();
+                let consumed_from_bytes = match_end.saturating_sub(self.tail_buffer.len());
+                self.tail_buffer.clear();
+                return self.finish_suppression(&bytes[consumed_from_bytes.min(bytes.len())..]);
+            }
+            self.tail_buffer.clear();
+        }
+
+        if let Some(pos) = find_subsequence(bytes, CURSOR_SHOW) {
+            let resume_idx = pos + CURSOR_SHOW.len();
+            self.tail_buffer.clear();
+            self.finish_suppression(&bytes[resume_idx..])
+        } else {
+            let keep = (CURSOR_SHOW.len() - 1).min(bytes.len());
+            self.tail_buffer.clear();
+            self.tail_buffer
+                .extend_from_slice(&bytes[bytes.len() - keep..]);
+            Cow::Borrowed(&[])
+        }
+    }
+
+    fn finish_suppression<'a>(&mut self, bytes: &'a [u8]) -> Cow<'a, [u8]> {
+        if self.pending_redraws == 0 {
+            self.state = ConptyRedrawState::Idle;
+            return Cow::Borrowed(bytes);
+        }
+        self.state = ConptyRedrawState::Armed {
+            armed_at: Instant::now(),
+        };
+        self.filter_armed(bytes)
+    }
+}
+
+const CONPTY_REDRAW_STARTS: [&[u8]; 7] = [
+    b"\x1b[H",
+    b"\x1b[1;1H",
+    b"\x1b[;H",
+    b"\x1b[0;0H",
+    b"\x1b[1H",
+    b"\x1b[2J",
+    b"\x1b[?25l",
+];
+
+fn conpty_redraw_start(bytes: &[u8]) -> Option<usize> {
+    let marker_start = CONPTY_REDRAW_STARTS
+        .iter()
+        .filter_map(|marker| find_subsequence(bytes, marker))
+        .min()?;
+    let mut prefix = &bytes[..marker_start];
+    while let Some(rest) = strip_leading_redraw_prefix(prefix) {
+        prefix = rest;
+    }
+    Some(if prefix.is_empty() { 0 } else { marker_start })
+}
+
+fn possible_redraw_start_suffix(bytes: &[u8]) -> usize {
+    let max_prefix = CONPTY_REDRAW_STARTS
+        .iter()
+        .map(|marker| marker.len().saturating_sub(1))
+        .max()
+        .unwrap_or(0)
+        .min(bytes.len());
+    (1..=max_prefix)
+        .rev()
+        .find(|&length| {
+            let suffix = &bytes[bytes.len() - length..];
+            CONPTY_REDRAW_STARTS
+                .iter()
+                .any(|marker| marker.starts_with(suffix))
+        })
+        .unwrap_or(0)
+}
+
+fn strip_leading_redraw_prefix(bytes: &[u8]) -> Option<&[u8]> {
+    if let Some(rest) = bytes.strip_prefix(b"\x1b[0m") {
+        Some(rest)
+    } else if let Some(rest) = bytes.strip_prefix(b"\x1b[m") {
+        Some(rest)
+    } else if let Some(rest) = bytes.strip_prefix(b"\r") {
+        Some(rest)
+    } else if let Some(rest) = bytes.strip_prefix(b"\n") {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 // ── TerminalIo ────────────────────────────────────────────────────────
 
 /// PTY I/O and ANSI/VT parsing — owns the parser, PTY endpoints, and input encoding.
@@ -260,6 +487,8 @@ pub(crate) struct TerminalIo {
     suppress_scroll_snap: bool,
     /// Set on the first observed reader/session disconnect so close clears once.
     session_closed: bool,
+    /// Filter for ConPTY unsolicited full-screen redraw burst on resize.
+    conpty_filter: ConptyRedrawFilter,
 }
 
 impl TerminalIo {
@@ -309,6 +538,7 @@ impl TerminalIo {
             pty,
             suppress_scroll_snap: false,
             session_closed: false,
+            conpty_filter: ConptyRedrawFilter::new(),
         }
     }
 
@@ -541,18 +771,27 @@ impl TerminalIo {
         control.interrupt_reader(reader)
     }
 
+    pub(crate) fn arm_conpty_resize_redraw_filter(&mut self) {
+        if cfg!(windows) || cfg!(test) {
+            self.conpty_filter.arm();
+        }
+    }
+
     fn process_reader_bytes(
         &mut self,
         screen: &mut Screen,
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
-        self.feed_pty_output_snapped(screen, pointer, bytes);
-        let replies = screen.drain_replies();
-        if !replies.is_empty()
-            && let Err(error) = self.write_pty(&replies)
-        {
-            tracing::warn!(error = %error, "failed to write terminal replies to pty");
+        let filtered = self.conpty_filter.filter(bytes);
+        if !filtered.is_empty() {
+            self.feed_pty_output_snapped(screen, pointer, filtered.as_ref());
+            let replies = screen.drain_replies();
+            if !replies.is_empty()
+                && let Err(error) = self.write_pty(&replies)
+            {
+                tracing::warn!(error = %error, "failed to write terminal replies to pty");
+            }
         }
     }
 
@@ -811,5 +1050,115 @@ mod tests {
         ));
         drop(commands);
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn conpty_filter_passes_through_when_idle() {
+        let mut filter = ConptyRedrawFilter::new();
+        let data = b"hello world\r\n";
+        assert_eq!(filter.filter(data).as_ref(), data);
+    }
+
+    #[test]
+    fn conpty_filter_suppresses_redraw_in_single_chunk() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        let redraw = b"\x1b[?25l\x1b[HMicrosoft Windows [Version 10.0]\r\n(c) Microsoft Corporation.\r\n\x1b[?25h";
+        assert_eq!(filter.filter(redraw).as_ref(), b"");
+        // Filter is now disarmed back to Idle
+        let normal_data = b"subsequent user input";
+        assert_eq!(filter.filter(normal_data).as_ref(), normal_data);
+    }
+
+    #[test]
+    fn conpty_filter_preserves_post_redraw_bytes_in_same_chunk() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        let data = b"\x1b[?25l\x1b[1;1HMicrosoft Windows\r\n\x1b[?25hprompt> ";
+        assert_eq!(filter.filter(data).as_ref(), b"prompt> ");
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_suppresses_across_multiple_chunks() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        let chunk1 = b"\x1b[?25l\x1b[Hchunk one of redraw\r\n";
+        assert_eq!(filter.filter(chunk1).as_ref(), b"");
+        assert!(matches!(
+            filter.state,
+            ConptyRedrawState::Suppressing { .. }
+        ));
+
+        let chunk2 = b"chunk two of redraw\r\n\x1b[?25hnormal output";
+        assert_eq!(filter.filter(chunk2).as_ref(), b"normal output");
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_handles_split_cursor_show_marker() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        // CURSOR_SHOW is \x1b[?25h (6 bytes). Split between \x1b[?25 and h.
+        let chunk1 = b"\x1b[?25l\x1b[Hpart1\x1b[?25";
+        assert_eq!(filter.filter(chunk1).as_ref(), b"");
+
+        let chunk2 = b"hafter_split";
+        assert_eq!(filter.filter(chunk2).as_ref(), b"after_split");
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_remains_armed_after_non_redraw_output() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        let normal = b"C:\\Users> ";
+        assert_eq!(filter.filter(normal).as_ref(), normal);
+        assert!(matches!(filter.state, ConptyRedrawState::Armed { .. }));
+
+        let redraw = b"\x1b[?25l\x1b[Hredraw\x1b[?25h";
+        assert_eq!(filter.filter(redraw).as_ref(), b"");
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_handles_split_redraw_start_marker() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+
+        assert_eq!(filter.filter(b"ordinary\x1b[?2").as_ref(), b"ordinary");
+        assert!(matches!(filter.state, ConptyRedrawState::Armed { .. }));
+        assert_eq!(
+            filter.filter(b"5l\x1b[Hredraw\x1b[?25hafter").as_ref(),
+            b"after"
+        );
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_preserves_suppression_across_overlapping_resizes() {
+        let mut filter = ConptyRedrawFilter::new();
+        filter.arm();
+        assert_eq!(filter.filter(b"\x1b[?25l\x1b[Hfirst redraw").as_ref(), b"");
+
+        filter.arm();
+        assert!(matches!(
+            filter.state,
+            ConptyRedrawState::Suppressing { .. }
+        ));
+        assert_eq!(
+            filter
+                .filter(b"\x1b[?25h\x1b[?25l\x1b[Hsecond redraw\x1b[?25hnormal")
+                .as_ref(),
+            b"normal"
+        );
+        assert_eq!(filter.state, ConptyRedrawState::Idle);
+    }
+
+    #[test]
+    fn conpty_filter_does_not_suppress_cls_when_idle() {
+        let mut filter = ConptyRedrawFilter::new();
+        let cls = b"\x1b[2J\x1b[H";
+        assert_eq!(filter.filter(cls).as_ref(), cls);
     }
 }

@@ -685,6 +685,9 @@ impl Terminal {
             |io, size| io.resize_pty(size),
         );
         drop(barrier);
+        if result.as_ref().is_ok_and(|&changed| changed) && !self.screen.is_alt() {
+            self.io.arm_conpty_resize_redraw_filter();
+        }
         result
     }
 

@@ -471,9 +471,17 @@ impl Screen {
         requested_rows: usize,
         requested_cols: usize,
     ) -> Result<PreparedPrimaryResize, PreparationError> {
-        let prepared = self
-            .normal
-            .prepare_primary_resize(requested_rows, requested_cols)?;
+        let cursor_floor = Some(
+            self.cursor
+                .cursor
+                .y
+                .max(self.cursor.cursor.saved.as_ref().map_or(0, |s| s.cursor_y)),
+        );
+        let prepared = self.normal.prepare_primary_resize_with_cursor_floor(
+            requested_rows,
+            requested_cols,
+            cursor_floor,
+        )?;
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
             .ok_or(PreparationError::UnresolvedLiveCursor)?;
@@ -512,9 +520,14 @@ impl Screen {
                         .map_err(|_| PreparationError::ArithmeticOverflow)?,
                 )
                 .ok_or(PreparationError::ArithmeticOverflow)?;
+            let active_visible = self
+                .normal
+                .active_retained_row_count(cursor_floor)
+                .saturating_sub(self.normal.scroll_count());
+            let fallback_row = active_visible.min(self.normal.rows()).saturating_sub(1);
             let fallback_generation = source_live_top
                 .checked_add(
-                    u64::try_from(self.normal.rows().saturating_sub(1))
+                    u64::try_from(fallback_row)
                         .map_err(|_| PreparationError::ArithmeticOverflow)?,
                 )
                 .ok_or(PreparationError::ArithmeticOverflow)?;
@@ -1878,6 +1891,8 @@ impl Screen {
                     1,
                 );
             } else {
+                self.normal
+                    .sever_soft_wrap_after(self.cursor.scroll_region.bottom);
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
                 let c = self.normal.cols();
@@ -1886,6 +1901,8 @@ impl Screen {
                 let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
                 self.normal
                     .copy_ring_rows(src_start / c, src_end / c, dst / c);
+                self.normal
+                    .sever_soft_wrap(self.cursor.scroll_region.top + 1);
                 self.normal
                     .fill_row_with(self.cursor.scroll_region.top, self.pen_state.erase_cell());
             }
@@ -1943,6 +1960,8 @@ impl Screen {
             self.normal
                 .scroll_up_full_screen(1, self.pen_state.erase_cell());
         } else {
+            self.normal
+                .sever_soft_wrap_after(self.cursor.scroll_region.bottom);
             let tr = self.normal.total_rows();
             let vis = self.normal.visible_start();
             let c = self.normal.cols();
@@ -1951,6 +1970,7 @@ impl Screen {
             let dst = ((vis + self.cursor.scroll_region.top) % tr) * c;
             self.normal
                 .copy_ring_rows(src_start / c, src_end / c, dst / c);
+            self.normal.sever_soft_wrap(self.cursor.scroll_region.top);
             self.normal.fill_row_with(
                 self.cursor.scroll_region.bottom,
                 self.pen_state.erase_cell(),

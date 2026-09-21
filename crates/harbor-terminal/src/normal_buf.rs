@@ -339,6 +339,24 @@ impl NormalBuf {
         self.repair_following_soft_chain(display_row);
     }
 
+    /// Severs a continuation whose predecessor did not move with it.
+    /// Existing hard-line identities remain stable for content anchors.
+    pub(crate) fn sever_soft_wrap(&mut self, display_row: usize) {
+        if self.live_row_metadata(display_row).soft_wrapped {
+            self.begin_hard_line(display_row);
+        }
+    }
+
+    /// Severs the unchanged row after a region whose last row was replaced.
+    pub(crate) fn sever_soft_wrap_after(&mut self, display_row: usize) {
+        if let Some(next_row) = display_row
+            .checked_add(1)
+            .filter(|row| *row < self.visible_rows)
+        {
+            self.sever_soft_wrap(next_row);
+        }
+    }
+
     /// Binds an actually-entered row to the source logical line after autowrap.
     pub(crate) fn continue_logical_line(
         &mut self,
@@ -561,9 +579,37 @@ impl NormalBuf {
         self.cells.iter()
     }
 
-    /// Iterates all retained rows, oldest to newest, without exposing ring coordinates.
-    pub(crate) fn retained_rows(&self) -> impl ExactSizeIterator<Item = RetainedRow<'_>> {
-        let retained_count = self.scroll_count + self.visible_rows;
+    pub(crate) fn display_row_has_meaningful_content(&self, row: usize) -> bool {
+        if row >= self.visible_rows {
+            return false;
+        }
+        let ring_row = self.display_to_ring(row);
+        let meta = self.row_metadata[ring_row];
+        meta.meaningful_extent > 0 || meta.soft_wrapped
+    }
+
+    pub(crate) fn last_meaningful_display_row(&self) -> Option<usize> {
+        (0..self.visible_rows)
+            .rev()
+            .find(|&row| self.display_row_has_meaningful_content(row))
+    }
+
+    pub(crate) fn active_retained_row_count(&self, cursor_floor: Option<usize>) -> usize {
+        let last_meaningful = self.last_meaningful_display_row();
+        let active_visible = match (cursor_floor, last_meaningful) {
+            (Some(c), Some(m)) => c.max(m) + 1,
+            (Some(c), None) => c + 1,
+            (None, Some(m)) => m + 1,
+            (None, None) => self.visible_rows,
+        };
+        self.scroll_count + active_visible.min(self.visible_rows)
+    }
+
+    pub(crate) fn retained_rows_bounded(
+        &self,
+        count: usize,
+    ) -> impl ExactSizeIterator<Item = RetainedRow<'_>> {
+        let retained_count = count.min(self.scroll_count + self.visible_rows);
         (0..retained_count).map(move |offset| {
             let ring_row = (self.visible_start + self.total_rows - self.scroll_count + offset)
                 % self.total_rows;
@@ -575,6 +621,11 @@ impl NormalBuf {
                 cell_state: &self.cell_state[start..start + self.cols],
             }
         })
+    }
+
+    /// Iterates all retained rows, oldest to newest, without exposing ring coordinates.
+    pub(crate) fn retained_rows(&self) -> impl ExactSizeIterator<Item = RetainedRow<'_>> {
+        self.retained_rows_bounded(self.scroll_count + self.visible_rows)
     }
 
     pub(crate) fn next_logical_line_id(&self) -> u64 {
@@ -805,10 +856,21 @@ impl NormalBuf {
         requested_cols: usize,
     ) -> Result<crate::primary_reflow::PreparedPrimaryResize, crate::primary_reflow::PreparationError>
     {
-        crate::primary_reflow::PreparedPrimaryResize::prepare_geometry(
+        self.prepare_primary_resize_with_cursor_floor(requested_rows, requested_cols, None)
+    }
+
+    pub(crate) fn prepare_primary_resize_with_cursor_floor(
+        &self,
+        requested_rows: usize,
+        requested_cols: usize,
+        cursor_floor: Option<usize>,
+    ) -> Result<crate::primary_reflow::PreparedPrimaryResize, crate::primary_reflow::PreparationError>
+    {
+        crate::primary_reflow::PreparedPrimaryResize::prepare_geometry_with_cursor_floor(
             self,
             requested_rows,
             requested_cols,
+            cursor_floor,
         )
     }
 
@@ -1739,6 +1801,29 @@ mod tests {
             middle.logical_start + middle.meaningful_extent
         );
         assert!(tail.soft_wrapped);
+    }
+
+    #[test]
+    fn sever_soft_wrap_changes_only_a_continuation_identity() {
+        let mut buf = NormalBuf::new(3, 4);
+        let hard_id = buf.live_row_metadata(0).logical_line_id;
+
+        buf.sever_soft_wrap(0);
+        assert_eq!(
+            buf.live_row_metadata(0).logical_line_id,
+            hard_id,
+            "an existing hard line must keep its anchor identity"
+        );
+
+        let source = buf.live_row_metadata(0);
+        let source_atoms = buf.live_row_logical_atom_count(0);
+        buf.continue_logical_line(1, source, source_atoms);
+        let old_continuation_id = buf.live_row_metadata(1).logical_line_id;
+        buf.sever_soft_wrap(1);
+
+        let severed = buf.live_row_metadata(1);
+        assert!(!severed.soft_wrapped);
+        assert_ne!(severed.logical_line_id, old_continuation_id);
     }
 
     #[test]

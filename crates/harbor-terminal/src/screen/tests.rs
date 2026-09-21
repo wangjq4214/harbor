@@ -4435,72 +4435,192 @@ fn should_preserve_wrapped_markers_when_soft_reset() {
     assert_eq!(screen.row_text(1), "f    ");
 }
 
-// ── soft-wrap flag propagation through row-moving ops ───────────
+// ── soft-wrap propagation through row-moving ops ────────────────
+
+fn screen_with_soft_line(rows: usize) -> Screen {
+    let mut screen = Screen::new(rows, 4);
+    for row in 0..rows {
+        let ch = char::from(b'a' + row as u8);
+        screen.normal.write_meaningful_cell(
+            row,
+            0,
+            Cell {
+                ch,
+                ..Cell::default()
+            },
+        );
+        if row > 0 {
+            let source = screen.normal.live_row_metadata(row - 1);
+            let source_atoms = screen.normal.live_row_logical_atom_count(row - 1);
+            screen
+                .normal
+                .continue_logical_line(row, source, source_atoms);
+        }
+    }
+    screen
+}
+
+fn assert_narrow_reflow_prepares(screen: &Screen) {
+    screen
+        .prepare_resize(screen.rows(), 2)
+        .expect("row movement must leave logical metadata valid for narrow reflow");
+}
+
+fn assert_moved_suffix_starts_hard_and_keeps_internal_wraps(
+    screen: &Screen,
+    first_moved_row: usize,
+    continued_row: usize,
+) {
+    let first = screen.normal.live_row_metadata(first_moved_row);
+    let continued = screen.normal.live_row_metadata(continued_row);
+    assert!(
+        !first.soft_wrapped,
+        "moved suffix must start at a hard boundary"
+    );
+    assert!(
+        continued.soft_wrapped,
+        "wraps inside the moved block must survive"
+    );
+    assert_eq!(continued.logical_line_id, first.logical_line_id);
+    assert_eq!(
+        continued.logical_start,
+        first.logical_start + first.meaningful_extent
+    );
+    assert_narrow_reflow_prepares(screen);
+}
 
 #[test]
-fn should_carry_wrapped_flag_when_insert_lines() {
-    let mut screen = Screen::new(4, 4);
+fn insert_lines_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
     screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(1, true);
+    screen.cursor.scroll_region.bottom = 3;
     screen.cursor.cursor.y = 1;
-    // Act
+
     screen.insert_lines(1);
-    // Assert
-    assert!(!screen.is_wrapped(1), "blanked row must be unwrapped");
-    assert!(
-        screen.is_wrapped(2),
-        "flag travels down with the shifted row"
-    );
+
+    assert!(!screen.is_wrapped(1), "inserted row must be unwrapped");
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_delete_lines() {
-    let mut screen = Screen::new(4, 4);
+fn delete_lines_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
     screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(2, true);
+    screen.cursor.scroll_region.bottom = 3;
     screen.cursor.cursor.y = 1;
-    // Act
+
     screen.delete_lines(1);
-    // Assert
-    assert!(screen.is_wrapped(1), "flag travels up with the shifted row");
-    assert!(!screen.is_wrapped(2), "blanked row must be unwrapped");
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    assert!(!screen.is_wrapped(3), "blanked row must be unwrapped");
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_scroll_up_region() {
-    let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(2, true);
-    // Act
+fn scroll_up_region_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+
     screen.scroll_up_region(1);
-    // Assert
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
     assert!(
-        screen.is_wrapped(1),
-        "flag travels up with the scrolled row"
-    );
-    assert!(
-        !screen.is_wrapped(2),
+        !screen.is_wrapped(3),
         "blanked bottom row must be unwrapped"
     );
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_scroll_down_region() {
-    let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(0, true);
-    // Act
+fn scroll_down_region_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+
     screen.scroll_down_region(1);
-    // Assert
+
+    assert!(!screen.is_wrapped(1), "blanked top row must be unwrapped");
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
+}
+
+#[test]
+fn index_scroll_severs_the_partial_region_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+
+    screen.index();
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    assert!(!screen.is_wrapped(3), "new index row must be a hard line");
+}
+
+#[test]
+fn autowrap_scroll_rebases_the_continuation_after_severing_the_region_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 3;
+    screen.cursor.modes.pending_wrap = true;
+
+    screen.write_char('z');
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    let prior = screen.normal.live_row_metadata(2);
+    let wrapped = screen.normal.live_row_metadata(3);
+    assert!(wrapped.soft_wrapped);
+    assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
+    assert_narrow_reflow_prepares(&screen);
+}
+
+#[test]
+fn wide_glyph_wrap_rebases_the_continuation_after_partial_region_scroll() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 3;
+
+    screen.write_char('界');
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    let prior = screen.normal.live_row_metadata(2);
+    let wrapped = screen.normal.live_row_metadata(3);
+    assert!(wrapped.soft_wrapped);
+    assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
+    assert_narrow_reflow_prepares(&screen);
+}
+
+#[test]
+fn reverse_index_severs_the_partial_region_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 1;
+
+    screen.reverse_index();
+
     assert!(
-        screen.is_wrapped(1),
-        "flag travels down with the scrolled row"
+        !screen.is_wrapped(1),
+        "new reverse-index row must be unwrapped"
     );
-    assert!(!screen.is_wrapped(0), "blanked top row must be unwrapped");
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
+}
+
+#[test]
+fn partial_region_move_severs_the_unchanged_tail_from_its_replaced_predecessor() {
+    let mut screen = screen_with_soft_line(5);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    let old_tail_id = screen.normal.live_row_metadata(4).logical_line_id;
+
+    screen.scroll_up_region(1);
+
+    let tail = screen.normal.live_row_metadata(4);
+    assert!(!tail.soft_wrapped);
+    assert_ne!(tail.logical_line_id, old_tail_id);
+    assert_narrow_reflow_prepares(&screen);
 }
 
 #[test]
@@ -5285,4 +5405,157 @@ fn prepares_height_growth_with_review_clamped_to_new_live_top() {
         crate::primary_reflow::PreparedProjection::Projected(crate::GenPos::new(4, 0))
     );
     assert_eq!(screen.terminal_snapshot(), before);
+}
+
+#[test]
+fn narrowing_with_trailing_unwritten_rows_does_not_push_to_scrollback() {
+    let mut screen = Screen::new(24, 80);
+    for line in 0..7 {
+        screen.cursor.cursor.y = line;
+        screen.cursor.cursor.x = 0;
+        for ch in "123456789012345678901234567890".chars() {
+            screen.write_char(ch);
+        }
+    }
+    screen.cursor.cursor.y = 7;
+    screen.cursor.cursor.x = 0;
+    assert_eq!(screen.scroll_count(), 0);
+
+    let prepared = screen
+        .prepare_primary_resize(24, 20)
+        .expect("narrowing resize");
+
+    assert_eq!(prepared.normal().scroll_count(), 0);
+    assert_eq!(prepared.normal().rows(), 24);
+    assert_eq!(prepared.dropped_rows(), 0);
+    assert_eq!(prepared.normal().cell(0, 0).ch, '1');
+    assert_eq!(prepared.normal().cell(0, 1).ch, '2');
+
+    screen.resize(24, 20);
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+
+    screen.resize(24, 80);
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+}
+
+#[test]
+fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history() {
+    let mut screen = Screen::new(5, 60);
+    // Write 4 lines of text:
+    // Line 0: "Microsoft Windows [Version 10.0.22621.4317]" (43 chars)
+    // Line 1: "(c) Microsoft Corporation. All rights reserved." (47 chars)
+    // Line 2: "" (empty)
+    // Line 3: "C:\Users\test>" (14 chars)
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 0;
+    for ch in "Microsoft Windows [Version 10.0.22621.4317]".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 0;
+    for ch in "(c) Microsoft Corporation. All rights reserved.".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 2;
+    screen.cursor.cursor.x = 0;
+
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 0;
+    for ch in "C:\\Users\\test>".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 0);
+
+    // Narrow to 10 columns: lines will wrap heavily and overflow 5 rows into scrollback
+    screen.resize(5, 10);
+    assert!(
+        screen.scroll_count() > 0,
+        "scrollback should be non-zero after severe narrowing"
+    );
+
+    // Widen back to 40 columns: should unwrap cleanly back into viewport with 0 scrollback
+    // Widen back to 60 columns: should unwrap cleanly back into viewport with 0 scrollback
+    screen.resize(5, 60);
+    assert_eq!(
+        screen.scroll_count(),
+        0,
+        "scrollback should return to 0 after widening"
+    );
+    assert_eq!(screen.cursor.cursor.y, 3);
+    assert!(
+        screen
+            .row_text(0)
+            .starts_with("Microsoft Windows [Version 10.0.22621.4317]")
+    );
+    assert!(
+        screen
+            .row_text(1)
+            .starts_with("(c) Microsoft Corporation. All rights reserved.")
+    );
+    assert_eq!(screen.row_text(2).trim(), "");
+    assert!(screen.row_text(3).starts_with("C:\\Users\\test>"));
+}
+
+#[test]
+fn narrowing_past_viewport_into_scrollback_and_widening_restores_chinese_windows_banner() {
+    let mut screen = Screen::new(24, 80);
+    // Write the exact Windows console banner with Chinese characters:
+    // Line 0: "Microsoft Windows [版本 10.0.22621.4317]"
+    // Line 1: "(c) Microsoft Corporation。保留所有权利。"
+    // Line 2: "" (empty)
+    // Line 3: "C:\Users\Administrator>"
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 0;
+    for ch in "Microsoft Windows [版本 10.0.22621.4317]".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 0;
+    for ch in "(c) Microsoft Corporation。保留所有权利。".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 2;
+    screen.cursor.cursor.x = 0;
+
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 0;
+    for ch in "C:\\Users\\Administrator>".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 0);
+
+    // Compress to 30 columns
+    screen.resize(24, 30);
+    // Compress to 15 columns
+    screen.resize(24, 15);
+    // Compress to 8 columns and height 5 so lines overflow into scrollback
+    screen.resize(5, 8);
+    assert!(
+        screen.scroll_count() > 0,
+        "scrollback should be non-zero after severe narrowing and shortening"
+    );
+
+    // Widen back to 24 rows, 80 columns
+    screen.resize(24, 80);
+    assert_eq!(
+        screen.scroll_count(),
+        0,
+        "scrollback should return to 0 after returning to 24x80"
+    );
+    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.cursor.cursor.x, 23);
+    assert!(
+        screen
+            .row_text(0)
+            .starts_with("Microsoft Windows [版 本  10.0.22621.4317]")
+    );
+    assert!(
+        screen
+            .row_text(1)
+            .starts_with("(c) Microsoft Corporation。 保 留 所 有 权 利 。")
+    );
+    assert_eq!(screen.row_text(2).trim(), "");
+    assert!(screen.row_text(3).starts_with("C:\\Users\\Administrator>"));
 }
