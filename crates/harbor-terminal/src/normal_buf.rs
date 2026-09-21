@@ -263,6 +263,10 @@ impl NormalBuf {
             .count()
     }
 
+    pub(crate) fn live_row_logical_atom_count(&self, display_row: usize) -> usize {
+        self.logical_atom_count(self.display_to_ring(display_row))
+    }
+
     pub(crate) fn recompute_row_extent(&mut self, display_row: usize) {
         let ring_row = self.display_to_ring(display_row);
         self.recompute_ring_row_extent(ring_row);
@@ -336,7 +340,12 @@ impl NormalBuf {
     }
 
     /// Binds an actually-entered row to the source logical line after autowrap.
-    pub(crate) fn continue_logical_line(&mut self, display_row: usize, source: RowMetadata) {
+    pub(crate) fn continue_logical_line(
+        &mut self,
+        display_row: usize,
+        source: RowMetadata,
+        source_atom_count: usize,
+    ) {
         let ring_row = self.display_to_ring(display_row);
         self.row_metadata[ring_row] = RowMetadata {
             logical_line_id: source.logical_line_id,
@@ -346,7 +355,7 @@ impl NormalBuf {
                 .expect("logical line offset overflow"),
             logical_atom_start: source
                 .logical_atom_start
-                .checked_add(self.logical_atom_count(self.display_to_ring(display_row - 1)))
+                .checked_add(source_atom_count)
                 .expect("logical line atom offset overflow"),
             meaningful_extent: self.row_metadata[ring_row].meaningful_extent,
             soft_wrapped: true,
@@ -510,7 +519,8 @@ impl NormalBuf {
     #[allow(dead_code)]
     pub fn row_text(&self, row: usize) -> String {
         assert!(row < self.visible_rows, "terminal row out of bounds");
-        let ring_row = self.display_to_ring(row);
+        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
+        let ring_row = (top + row) % self.total_rows;
         let start = ring_row * self.cols;
         self.cells[start..start + self.cols]
             .iter()
@@ -1694,9 +1704,11 @@ mod tests {
             );
         }
         let first = buf.live_row_metadata(0);
-        buf.continue_logical_line(1, first);
+        let first_atoms = buf.live_row_logical_atom_count(0);
+        buf.continue_logical_line(1, first, first_atoms);
         let second = buf.live_row_metadata(1);
-        buf.continue_logical_line(2, second);
+        let second_atoms = buf.live_row_logical_atom_count(1);
+        buf.continue_logical_line(2, second, second_atoms);
 
         buf.begin_hard_line(0);
 

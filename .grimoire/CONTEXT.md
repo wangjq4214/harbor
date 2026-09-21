@@ -600,11 +600,20 @@ Project domain concepts and terminology.
 
 
 ### Transactional Terminal Resize
-- **Definition:** A resize commit protocol that first prepares all model buffers and coordinate mappings, then resizes the PTY, discards the prepared state on PTY failure, and otherwise installs it with an allocation-free, infallible ownership swap.
+- **Definition:** A resize commit protocol that first acquires an acknowledged PTY-reader barrier, parses all preceding reader chunks under the old geometry, prepares all model buffers and coordinate mappings, resizes the PTY, and installs the result with an allocation-free, infallible ownership swap. Barrier acquisition uses a bounded wait; failure resumes the reader, preserves the prior geometry, and permits retry.
 - **Synonyms:** prepared resize, resize transaction
 - **Relationships:**
   - belongs to Screen Resize
   - consumes Reflow
+  - preserves Terminal geometry consistency
+
+
+### PTY Resize Barrier
+- **Definition:** An epoch-qualified synchronization boundary in which the PTY reader publishes every chunk from reads completed before its acknowledgement, then pauses until the resize transaction explicitly resumes it. The terminal waits for acknowledgement only for a bounded interval and parses all preceding chunks under the old geometry.
+- **Synonyms:** acknowledged reader barrier, resize output barrier
+- **Relationships:**
+  - belongs to Transactional Terminal Resize
+  - extends Synchronous PTY I/O
   - preserves Terminal geometry consistency
 
 ### Canonical Selection Anchor

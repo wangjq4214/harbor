@@ -664,13 +664,28 @@ impl Terminal {
     ///
     /// Preparation is detached; PTY success is followed only by infallible ownership moves.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
-        Self::try_resize_transaction(
+        let normalized = TerminalSize {
+            rows: new_size.rows.max(1),
+            cols: new_size.cols.max(2),
+        };
+        let barrier = if normalized
+            != (TerminalSize {
+                rows: self.screen.rows(),
+                cols: self.screen.cols(),
+            }) {
+            self.ingest_and_blink(|io, screen, pointer| io.acquire_resize_barrier(screen, pointer))?
+        } else {
+            None
+        };
+        let result = Self::try_resize_transaction(
             &mut self.screen,
             &mut self.pointer,
             &mut self.io,
-            new_size,
+            normalized,
             |io, size| io.resize_pty(size),
-        )
+        );
+        drop(barrier);
+        result
     }
 
     fn try_resize_transaction(

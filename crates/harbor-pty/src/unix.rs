@@ -1,4 +1,4 @@
-use std::thread::JoinHandle;
+use std::{io, thread::JoinHandle};
 
 use anyhow::bail;
 
@@ -31,10 +31,18 @@ impl Pty {
         Ok(0)
     }
 
+    pub(crate) fn interrupt_reader(&self, _reader: &JoinHandle<()>) -> anyhow::Result<()> {
+        anyhow::bail!("PTY reader interruption is not implemented on unix")
+    }
+
     pub(crate) fn shutdown(_pty: Self, reader: JoinHandle<()>, reader_shutdown: ReaderShutdown) {
         reader_shutdown.request_stop();
         let _ = reader.join();
     }
+}
+
+pub(crate) fn reader_io_error(error: anyhow::Error) -> io::Error {
+    io::Error::other(error)
 }
 
 impl PtyWriter {

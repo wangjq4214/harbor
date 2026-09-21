@@ -361,7 +361,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        normal.continue_logical_line(1, source);
+        normal.continue_logical_line(1, source, normal.live_row_logical_atom_count(0));
 
         let atoms = decode(&normal).unwrap();
 
@@ -527,7 +527,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        normal.continue_logical_line(1, source);
+        normal.continue_logical_line(1, source, normal.live_row_logical_atom_count(0));
 
         let line = decode_lines(&normal).unwrap().pop().unwrap();
         assert!(line.head_truncated);

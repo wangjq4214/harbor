@@ -131,9 +131,10 @@ impl CellWriter {
         // Handle pending wrap if autowrap is on.
         if cursor.modes.autowrap && cursor.modes.pending_wrap {
             let source = normal.live_row_metadata(cursor.cursor.y);
+            let source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
             cursor.carriage_return();
             if Self::newline_inner(pen_state, normal, cursor) {
-                normal.continue_logical_line(cursor.cursor.y, source);
+                normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
             }
             cursor.modes.pending_wrap = false;
         }
@@ -152,9 +153,10 @@ impl CellWriter {
                 return false;
             }
             let source = normal.live_row_metadata(cursor.cursor.y);
+            let source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
             cursor.carriage_return();
             if Self::newline_inner(pen_state, normal, cursor) {
-                normal.continue_logical_line(cursor.cursor.y, source);
+                normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
             }
             cursor.modes.pending_wrap = false;
         }

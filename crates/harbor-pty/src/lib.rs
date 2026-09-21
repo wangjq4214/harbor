@@ -18,9 +18,9 @@ use std::{
     thread::JoinHandle,
 };
 #[cfg(unix)]
-use unix::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
+use unix::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter, reader_io_error};
 #[cfg(windows)]
-use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter};
+use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter, reader_io_error};
 
 use anyhow::ensure;
 
@@ -205,7 +205,7 @@ impl Drop for PtyEndpoints {
 
 impl Read for PtyReaderEndpoint {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buffer).map_err(endpoint_io_error)
+        self.reader.read(buffer).map_err(reader_io_error)
     }
 }
 
@@ -220,6 +220,16 @@ impl Write for PtyWriter {
 }
 
 impl PtyControl {
+    /// Interrupts the reader thread's current blocking read without terminating the PTY.
+    ///
+    /// The reader protocol decides whether the interruption is a resize barrier or shutdown.
+    pub fn interrupt_reader(&self, reader: &JoinHandle<()>) -> anyhow::Result<()> {
+        self.pty
+            .as_ref()
+            .expect("pty control is unavailable during shutdown")
+            .interrupt_reader(reader)
+    }
+
     /// Resizes the live pseudo terminal.
     pub fn resize(&mut self, size: TerminalSize) -> anyhow::Result<()> {
         self.pty

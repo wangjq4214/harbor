@@ -1,5 +1,6 @@
 use std::{
     ffi::{OsStr, OsString},
+    io,
     mem::size_of,
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     sync::{Arc, Mutex, mpsc},
@@ -9,7 +10,10 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, WAIT_FAILED, WAIT_TIMEOUT},
+        Foundation::{
+            CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
+            WAIT_TIMEOUT,
+        },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
             Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
@@ -250,7 +254,12 @@ impl Pty {
         deadline: Instant,
     ) -> bool {
         loop {
-            Self::shutdown_reader(reader.as_raw_handle());
+            if let Err(error) = Self::cancel_reader(reader.as_raw_handle()) {
+                tracing::error!(
+                    ?error,
+                    "failed to interrupt terminal reader during shutdown"
+                );
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
@@ -285,7 +294,9 @@ impl Pty {
                 // The reaper retains the complete graph until the same acknowledgement is
                 // observed, then performs the only JoinHandle::join call.
                 while !reader_shutdown.wait_for_completion(Duration::from_millis(10)) {
-                    Self::shutdown_reader(reader.as_raw_handle());
+                    if let Err(error) = Self::cancel_reader(reader.as_raw_handle()) {
+                        tracing::error!(?error, "failed to interrupt terminal reader in reaper");
+                    }
                 }
                 Self::finish_shutdown(pty, reader);
             });
@@ -301,18 +312,34 @@ impl Pty {
         }
     }
 
-    /// Requests cancellation of the reader's current synchronous I/O operation. ERROR_NOT_FOUND
-    /// only means the reader is between reads; the reaper retries until it receives its ack.
-    fn shutdown_reader(reader_handle: std::os::windows::io::RawHandle) {
+    /// Requests cancellation of the reader's current synchronous I/O operation.
+    /// `ERROR_NOT_FOUND` means the reader is between reads and is not an error.
+    pub(crate) fn interrupt_reader(&self, reader: &JoinHandle<()>) -> anyhow::Result<()> {
+        Self::cancel_reader(reader.as_raw_handle())
+    }
+
+    fn cancel_reader(reader_handle: std::os::windows::io::RawHandle) -> anyhow::Result<()> {
         unsafe {
-            if let Err(err) = CancelSynchronousIo(HANDLE(reader_handle as *mut _)) {
-                if err.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
+            if let Err(error) = CancelSynchronousIo(HANDLE(reader_handle as *mut _)) {
+                if error.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
                     tracing::debug!("reader had no synchronous I/O to cancel");
                 } else {
-                    tracing::error!(error = ?err, "CancelSynchronousIo on reader thread failed");
+                    return Err(error).context("failed to cancel terminal reader I/O");
                 }
             }
         }
+        Ok(())
+    }
+}
+
+pub(crate) fn reader_io_error(error: anyhow::Error) -> io::Error {
+    if error
+        .downcast_ref::<::windows::core::Error>()
+        .is_some_and(|error| error.code() == HRESULT::from_win32(ERROR_OPERATION_ABORTED.0))
+    {
+        io::Error::from(io::ErrorKind::Interrupted)
+    } else {
+        io::Error::other(error)
     }
 }
 
@@ -746,6 +773,16 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn cancelled_read_maps_to_interrupted_io_error() {
+        let error =
+            ::windows::core::Error::from_hresult(HRESULT::from_win32(ERROR_OPERATION_ABORTED.0));
+
+        assert_eq!(
+            reader_io_error(anyhow::Error::new(error)).kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
     #[test]
     fn rejects_empty_size() {
         let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }, &ShellCommand::default())

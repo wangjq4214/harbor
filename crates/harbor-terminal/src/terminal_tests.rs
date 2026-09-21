@@ -111,6 +111,23 @@ fn resize_reflows_primary_and_keeps_the_live_cursor_suffix() {
 }
 
 #[test]
+fn one_row_autowrap_keeps_scrolled_source_metadata() {
+    let mut terminal = Terminal::new_headless(1, 4);
+
+    terminal.put_str("abcd界ef");
+
+    let screen = terminal.screen();
+    let retained_rows = screen.scroll_count() + screen.rows();
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + retained_rows as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert_eq!(text, "abcd界ef");
+}
+
+#[test]
 fn resize_preserves_scrollback_viewport() {
     let mut terminal = Terminal::new_headless(2, 4);
     for line in ["A", "B", "C", "D"] {
@@ -2157,6 +2174,20 @@ fn wait_for_pty_wake(wake_rx: &std::sync::mpsc::Receiver<()>) {
         .expect("reader should wake for queued output");
 }
 
+fn wait_for_pty_bytes(terminal: &mut Terminal, wake_rx: &std::sync::mpsc::Receiver<()>) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if terminal.drain_pty() {
+            return;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "reader should publish resumed output");
+        wake_rx
+            .recv_timeout(deadline.saturating_duration_since(now))
+            .expect("reader should wake for resumed output");
+    }
+}
+
 struct ScriptedReader {
     chunks: std::collections::VecDeque<Vec<u8>>,
 }
@@ -2214,6 +2245,306 @@ where
     (terminal, bytes, wake_rx)
 }
 
+#[test]
+fn resize_rejects_active_reader_without_interrupt_capability() {
+    let output = b"L00:abcdefgh\r\nL01:ijklmnop\r\nL02:qrstuvwx".to_vec();
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([output]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enqueue output before resize");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("an active reader without interrupt control cannot resize safely");
+
+    assert!(error.to_string().contains("no interrupt capability"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+    assert!(terminal.drain_pty());
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'L'));
+}
+struct BarrierTestReader {
+    state: u8,
+    initial: Vec<u8>,
+    blocked: std::sync::mpsc::Sender<()>,
+    interrupted: std::sync::mpsc::Receiver<()>,
+    after_resume: Vec<u8>,
+}
+
+impl std::io::Read for BarrierTestReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.state {
+            0 => {
+                self.state = 1;
+                buffer[..self.initial.len()].copy_from_slice(&self.initial);
+                Ok(self.initial.len())
+            }
+            1 => {
+                self.state = 2;
+                self.blocked.send(()).unwrap();
+                self.interrupted.recv().unwrap();
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
+            2 if !self.after_resume.is_empty() => {
+                self.state = 3;
+                buffer[..self.after_resume.len()].copy_from_slice(&self.after_resume);
+                Ok(self.after_resume.len())
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+fn select_visible_viewport(terminal: &mut Terminal, pointer_id: u64) -> String {
+    let cols = terminal.screen().cols();
+    assert!(terminal.screen().rows() >= 6);
+    let end = ((cols.saturating_sub(1) as f32 * 10.0) + 5.0, 70.0);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    for (phase, position) in [
+        (TerminalPointerPhase::Down, (5.0, 50.0)),
+        (TerminalPointerPhase::Move, end),
+        (TerminalPointerPhase::Up, end),
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                position,
+                phase,
+                TerminalPointerButton::Left,
+                pointer_id,
+            )))
+            .unwrap();
+    }
+    terminal
+        .command_copy_selection()
+        .clipboard_text
+        .expect("completed selection should be copied")
+}
+
+fn scroll_to_review_seam(terminal: &mut Terminal, next_marker: &str) {
+    terminal.scroll_viewport_to_top();
+    let max_steps = terminal.screen().scroll_count();
+    for _ in 0..=max_steps {
+        if terminal.row_text(2).trim_end() == "cdefg"
+            && terminal.row_text(3).starts_with(next_marker)
+        {
+            return;
+        }
+        terminal.scroll_viewport_down(1);
+    }
+    panic!("review seam before {next_marker} was not retained");
+}
+
+#[test]
+fn barrier_resize_preserves_single_narrow_review_and_copy_without_duplication() {
+    let initial: Vec<u8> = (0..12)
+        .flat_map(|line| format!("L{line:02}:abcdefg\r\n").into_bytes())
+        .collect();
+    let after_resume: Vec<u8> = (12..24)
+        .flat_map(|line| format!("L{line:02}:abcdefg\r\n").into_bytes())
+        .collect();
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: initial.clone(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: after_resume.clone(),
+    };
+    let bytes = Default::default();
+    let writer = RecordingWriter {
+        bytes,
+        max_write: usize::MAX,
+    };
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| interrupt_tx.send(()).map_err(Into::into),
+        std::time::Duration::from_secs(1),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should block after publishing the old-geometry chunk");
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 6, cols: 6 }));
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    scroll_to_review_seam(&mut terminal, "L12:");
+    let copied = select_visible_viewport(&mut terminal, 91);
+
+    let mut reference = Terminal::new_headless(4, 12);
+    reference.put_str(std::str::from_utf8(&initial).unwrap());
+    assert!(reference.resize_if_changed(TerminalSize { rows: 6, cols: 6 }));
+    reference.process_output(&after_resume);
+    scroll_to_review_seam(&mut reference, "L12:");
+    let expected = select_visible_viewport(&mut reference, 92);
+
+    assert_eq!(copied, expected);
+    assert!(
+        copied.contains("L12"),
+        "copied viewport must cross from old-geometry rows into post-resume output: {copied:?}; rows={:?}",
+        [terminal.row_text(2), terminal.row_text(3)]
+    );
+    let markers: Vec<_> = copied
+        .split_whitespace()
+        .filter(|word| word.starts_with('L'))
+        .collect();
+    assert!(
+        !markers.is_empty(),
+        "copied review region must contain line markers"
+    );
+    let unique: std::collections::HashSet<_> = markers.iter().copied().collect();
+    assert_eq!(markers.len(), unique.len(), "copied lines were duplicated");
+}
+
+#[test]
+fn barrier_timeout_preserves_geometry_and_late_ack_cannot_block_retry() {
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: b"old".to_vec(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: b"after".to_vec(),
+    };
+    let bytes = Default::default();
+    let writer = RecordingWriter {
+        bytes,
+        max_write: usize::MAX,
+    };
+    let allow_interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_flag = std::sync::Arc::clone(&allow_interrupt);
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| {
+            if callback_flag.load(std::sync::atomic::Ordering::Acquire) {
+                interrupt_tx.send(()).map_err(Into::into)
+            } else {
+                Ok(())
+            }
+        },
+        std::time::Duration::from_millis(25),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enter its blocking read");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("the first barrier should time out");
+    assert!(error.to_string().contains("timed out"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+
+    allow_interrupt.store(true, std::sync::atomic::Ordering::Release);
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'a'));
+}
+#[test]
+fn barrier_interrupt_failure_preserves_geometry_and_resumes_late_reader() {
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: b"old".to_vec(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: b"resumed".to_vec(),
+    };
+    let writer = RecordingWriter {
+        bytes: Default::default(),
+        max_write: usize::MAX,
+    };
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| anyhow::bail!("injected interrupt failure"),
+        std::time::Duration::from_secs(1),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enter its blocking read");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("interrupt failure must reject resize");
+    assert!(error.to_string().contains("injected interrupt failure"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+
+    interrupt_tx.send(()).unwrap();
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'r'));
+}
+
+#[cfg(windows)]
+#[test]
+fn live_conpty_resize_barrier_resumes_output() {
+    let size = harbor_pty::TerminalSize { rows: 4, cols: 40 };
+    let endpoints =
+        harbor_pty::PtyEndpoints::spawn_shell(size, &harbor_pty::ShellCommand::default())
+            .expect("ConPTY shell should start");
+    let (reader, writer, control) = endpoints.into_parts();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
+    terminal.io = crate::io::TerminalIo::new(reader, writer, Some(control), move || {
+        wake_tx.send(()).is_ok()
+    });
+
+    let started = Instant::now();
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 5, cols: 32 }));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "ConPTY should acknowledge the resize barrier within its bound"
+    );
+
+    terminal
+        .io
+        .write_pty(b"echo HARBOR_BARRIER_RESUMED\r")
+        .expect("resumed PTY should accept input");
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let now = Instant::now();
+        assert!(now < deadline, "resumed reader should publish shell output");
+        let _ = wake_rx.recv_timeout(
+            deadline
+                .saturating_duration_since(now)
+                .min(std::time::Duration::from_millis(100)),
+        );
+        terminal.drain_pty();
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        let text = screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        });
+        if text.contains("HARBOR_BARRIER_RESUMED") {
+            break;
+        }
+    }
+}
 #[test]
 fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
     let reader = ScriptedReader {
@@ -4915,6 +5246,129 @@ fn width_round_trip_preserves_cjk_hard_breaks_and_meaningful_trailing_blanks() {
         assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
         assert_eq!(retained_text(&terminal), expected);
     }
+}
+
+#[test]
+fn live_bottom_resize_round_trip_preserves_every_scrollback_view() {
+    fn retained_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    fn reviewed_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let top = screen.history_start() + (screen.scroll_count() - screen.view_offset()) as u64;
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + screen.rows() as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    fn scrollback_views(terminal: &mut Terminal) -> Vec<(Vec<String>, Vec<bool>)> {
+        terminal.scroll_viewport_to_bottom();
+        let mut views = Vec::new();
+        loop {
+            let snapshot = terminal.snapshot();
+            let rows = snapshot
+                .cells
+                .chunks(snapshot.cols)
+                .map(|row| row.iter().map(|cell| cell.ch).collect())
+                .collect();
+            let queried_rows: Vec<String> = (0..snapshot.rows)
+                .map(|row| terminal.row_text(row))
+                .collect();
+            assert_eq!(
+                queried_rows, rows,
+                "row_text must follow the reviewed viewport"
+            );
+            views.push((rows, snapshot.wrapped));
+            if snapshot.view_offset == snapshot.scroll_count {
+                break;
+            }
+            terminal.scroll_viewport_up(1);
+        }
+        terminal.scroll_viewport_to_bottom();
+        views
+    }
+
+    let output: String = (0..24)
+        .map(|line| format!("L{line:02}:abcdef界ghij\r\n"))
+        .collect();
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal.put_str(&output);
+    assert_eq!(terminal.screen().view_offset(), 0);
+    let expected_text = retained_text(&terminal);
+    let expected_views = scrollback_views(&mut terminal);
+
+    let mut narrow_reference = Terminal::new_headless(2, 6);
+    narrow_reference.put_str(&output);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 6 }));
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert_eq!(retained_text(&terminal), retained_text(&narrow_reference));
+    terminal.scroll_viewport_up(3);
+    narrow_reference.scroll_viewport_up(3);
+    assert_eq!(reviewed_text(&terminal), reviewed_text(&narrow_reference));
+    assert_eq!(
+        scrollback_views(&mut terminal),
+        scrollback_views(&mut narrow_reference)
+    );
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols: 12 }));
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    assert_eq!(retained_text(&terminal), expected_text);
+    assert_eq!(scrollback_views(&mut terminal), expected_views);
+}
+
+#[test]
+fn narrow_resize_near_capacity_does_not_duplicate_logical_lines() {
+    use std::collections::HashSet;
+
+    let mut terminal = Terminal::new_headless(6, 24);
+    for line in 0..300 {
+        terminal.put_str(&format!("L{line:03}:abcdefghijklmnop\r\n"));
+    }
+
+    for cols in [18, 12, 6] {
+        assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
+    }
+    let text = {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    };
+    let markers: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix('L'))
+        .filter_map(|line| line.get(..3))
+        .map(str::to_owned)
+        .collect();
+    let unique: HashSet<_> = markers.iter().collect();
+
+    assert!(!markers.is_empty());
+    assert_eq!(
+        unique.len(),
+        markers.len(),
+        "logical lines were duplicated: {markers:?}"
+    );
+    assert!(
+        markers.windows(2).all(|pair| pair[0] < pair[1]),
+        "logical lines must remain ordered: {markers:?}"
+    );
 }
 
 #[test]

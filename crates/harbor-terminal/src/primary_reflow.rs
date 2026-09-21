@@ -1128,7 +1128,8 @@ mod tests {
             }
             if row > 0 {
                 let source = normal.live_row_metadata(row - 1);
-                normal.continue_logical_line(row, source);
+                let source_atoms = normal.live_row_logical_atom_count(row - 1);
+                normal.continue_logical_line(row, source, source_atoms);
             }
         }
         let source_before = normal.clone();
