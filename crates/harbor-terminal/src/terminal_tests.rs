@@ -2499,6 +2499,80 @@ fn barrier_interrupt_failure_preserves_geometry_and_resumes_late_reader() {
 
 #[cfg(windows)]
 #[test]
+fn live_conpty_rapid_resize_preserves_history_and_prompt() {
+    let size = harbor_pty::TerminalSize { rows: 24, cols: 80 };
+    let command = harbor_pty::ShellCommand::new(
+        Some(format!(
+            r"{}\System32\cmd.exe",
+            std::env::var("SystemRoot").unwrap()
+        )),
+        Vec::new(),
+    );
+    let endpoints = harbor_pty::PtyEndpoints::spawn_shell(size, &command).unwrap();
+    assert_eq!(endpoints.shell_name().to_ascii_lowercase(), "cmd");
+    let (reader, writer, control) = endpoints.into_parts();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
+    terminal.io = crate::io::TerminalIo::new(reader, writer, Some(control), move || {
+        wake_tx.send(()).is_ok()
+    });
+    terminal.io.write_pty(b"@echo off\rcls & (for /L %i in (1,1,20) do @echo harbor-profile-%i 0123456789 abcdefghijklmnopqrstuvwxyz) & set /p answer=READY:&echo ACK:&set /p answer=\r").unwrap();
+    let retained_text = |terminal: &Terminal| {
+        let s = terminal.screen();
+        s.selected_text(crate::SelectionBounds {
+            start_row: s.history_start(),
+            start_col: 0,
+            end_row: s.history_start() + (s.scroll_count() + s.rows()) as u64 - 1,
+            end_col: s.cols() - 1,
+        })
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !terminal.row_text(20).starts_with("READY:") {
+        assert!(
+            Instant::now() < deadline,
+            "fixture should finish startup: {:?}",
+            retained_text(&terminal)
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    let before = retained_text(&terminal);
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (20, 6)
+    );
+    for _ in 0..5 {
+        for cols in [30, 12, 50, 8, 80] {
+            terminal
+                .try_resize_if_changed(TerminalSize { rows: 24, cols })
+                .unwrap();
+        }
+    }
+    // Let asynchronous ConPTY output settle; service queries throughout the wait.
+    let deadline = Instant::now() + std::time::Duration::from_millis(750);
+    while Instant::now() < deadline {
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    assert_eq!(retained_text(&terminal), before);
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (20, 6)
+    );
+    terminal.io.write_pty(b"\r").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while !retained_text(&terminal).contains("ACK:") {
+        assert!(
+            Instant::now() < deadline,
+            "output after resize must survive"
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn live_conpty_resize_barrier_resumes_output() {
     let size = harbor_pty::TerminalSize { rows: 4, cols: 40 };
     let endpoints =

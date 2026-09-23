@@ -297,23 +297,16 @@ impl ContentProjection {
     }
 
     pub(crate) fn cursor_anchor(&self, pos: GenPos, pending_wrap: bool) -> Option<ContentAnchor> {
-        let line = self
-            .lines
-            .iter()
-            .find(|line| line.generations.contains(&pos.generation))?;
-        if pending_wrap {
-            return Some(ContentAnchor {
-                line_id: line.line_id,
-                offset: line
-                    .atoms
-                    .last()
-                    .map_or(line.atom_start, |atom| atom.offset),
-                affinity: Affinity::After,
-                projection_hint: None,
-                prefer_previous_projection: false,
-            });
-        }
-        self.to_anchor(pos, Affinity::Before)
+        // Saving a pending-wrap cursor must retain its physical source cell,
+        // not jump past any continuation rows later in the logical line.
+        self.to_anchor(
+            pos,
+            if pending_wrap {
+                Affinity::After
+            } else {
+                Affinity::Before
+            },
+        )
     }
 
     pub(crate) fn resolve_selection(&self, anchor: ContentAnchor) -> Option<GenPos> {

@@ -1,3 +1,6 @@
+mod conpty;
+
+use conpty::ConptyApi;
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -16,7 +19,7 @@ use ::windows::{
         },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
-            Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            Console::{COORD, HPCON},
             IO::CancelSynchronousIo,
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -625,11 +628,10 @@ impl Drop for OwnedHandle {
 }
 
 /// RAII wrapper for the ConPTY handle, which has a different close API than HANDLE.
-struct PseudoConsole(HPCON);
-
-/// ConPTY creation flag instructing the console host to defer resize reflow and repainting
-/// to the terminal emulator, preventing duplicate full-screen redraw artifacts on window resize.
-const PSEUDOCONSOLE_RESIZE_QUIRK: u32 = 0x2;
+struct PseudoConsole {
+    handle: HPCON,
+    api: &'static ConptyApi,
+}
 
 impl PseudoConsole {
     fn create(size: PtySize, input: HANDLE, output: HANDLE) -> anyhow::Result<Self> {
@@ -637,17 +639,23 @@ impl PseudoConsole {
             X: size.cols,
             Y: size.rows,
         };
-        let pseudo_console =
-            unsafe { CreatePseudoConsole(coord, input, output, PSEUDOCONSOLE_RESIZE_QUIRK) }
-                .or_else(|_| unsafe { CreatePseudoConsole(coord, input, output, 0) })
-                .context("failed to create pseudo console")?;
-        tracing::info!(rows = size.rows, cols = size.cols, "pseudo console ready");
+        let api = ConptyApi::get()?;
+        let mut handle = HPCON::default();
+        // SAFETY: The pipe handles and output pointer are valid for this call.
+        unsafe { (api.create)(coord, input, output, 0, &mut handle) }
+            .ok()
+            .context("failed to create bundled pseudo console")?;
+        tracing::info!(
+            rows = size.rows,
+            cols = size.cols,
+            "bundled pseudo console ready"
+        );
 
-        Ok(Self(pseudo_console))
+        Ok(Self { handle, api })
     }
 
     fn handle(&self) -> HPCON {
-        self.0
+        self.handle
     }
 
     fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
@@ -657,29 +665,30 @@ impl PseudoConsole {
             "resizing pseudo console"
         );
         unsafe {
-            ResizePseudoConsole(
-                self.0,
+            (self.api.resize)(
+                self.handle,
                 COORD {
                     X: size.cols,
                     Y: size.rows,
                 },
             )
         }
+        .ok()
         .context("failed to resize pseudo console")
     }
 }
 
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
-        if !self.0.is_invalid() {
+        if !self.handle.is_invalid() {
             let (tx, rx) = mpsc::channel();
-            let hpcon_val = self.0.0;
+            let hpcon_val = self.handle.0;
+            let api = self.api;
 
             let _ = std::thread::spawn(move || {
                 unsafe {
-                    use ::windows::Win32::System::Console::ClosePseudoConsole;
-                    use ::windows::Win32::System::Console::HPCON;
-                    ClosePseudoConsole(HPCON(hpcon_val));
+                    // The library is process-owned and outlives this worker.
+                    (api.close)(HPCON(hpcon_val));
                 }
                 let _ = tx.send(());
             });
@@ -883,10 +892,11 @@ mod tests {
 
     #[test]
     fn shell_prompt_output_is_readable_through_pseudoconsole() {
-        let (_pty, mut reader, _shell_name) =
+        let (pty, mut reader, _shell_name) =
             Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &ShellCommand::default()).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
+        let mut replied_to_attributes = false;
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while !contains_shell_prompt(&output) && Instant::now() < deadline {
@@ -900,6 +910,16 @@ mod tests {
                 break;
             }
             output.extend_from_slice(&buffer[..bytes]);
+            if !replied_to_attributes && output.windows(3).any(|bytes| bytes == b"\x1b[c") {
+                // This transport-only test acts as a minimal VT220 terminal. The
+                // bundled host waits for DA1; production replies through TerminalParser.
+                let reply = b"\x1b[?62c";
+                assert_eq!(
+                    pty._input_write.as_ref().unwrap().write(reply).unwrap(),
+                    reply.len()
+                );
+                replied_to_attributes = true;
+            }
         }
 
         let text = String::from_utf8_lossy(&output);

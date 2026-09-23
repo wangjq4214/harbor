@@ -885,6 +885,7 @@ name = "harbor-pty"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libloading",
  "parking_lot",
  "tracing",
  "windows",

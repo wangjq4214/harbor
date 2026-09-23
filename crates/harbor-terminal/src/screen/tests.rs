@@ -5181,6 +5181,46 @@ fn pending_wrap_saved_cursor_uses_after_final_atom_anchor() {
 }
 
 #[test]
+fn resize_pending_wrap_follows_current_physical_row_not_logical_line_end() {
+    for (text, overwrite) in [("abcdefgh", "cd"), ("ab中efgh", "中")] {
+        let mut screen = Screen::new(4, 4);
+        for ch in text.chars() {
+            screen.write_char(ch);
+        }
+        screen.set_cursor_position(1, 3);
+        for ch in overwrite.chars() {
+            screen.write_char(ch);
+        }
+        assert!(screen.pending_wrap());
+        screen.resize(4, 8);
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (0, 4));
+        assert!(!screen.pending_wrap());
+        screen.write_char('!');
+        assert_eq!(screen.cell_char(0, 4), '!');
+        assert_eq!(screen.cursor_y(), 0);
+    }
+}
+
+#[test]
+fn resize_saved_pending_wrap_follows_current_physical_row() {
+    let mut screen = Screen::new(4, 4);
+    for ch in "abcdefgh".chars() {
+        screen.write_char(ch);
+    }
+    screen.set_cursor_position(1, 4);
+    screen.write_char('X');
+    screen.save_cursor();
+    screen.set_cursor_position(2, 2);
+    screen.resize(4, 8);
+    screen.restore_cursor();
+    assert_eq!((screen.cursor_y(), screen.cursor_x()), (0, 4));
+    assert!(!screen.pending_wrap());
+    screen.write_char('!');
+    assert_eq!(screen.cell_char(0, 4), '!');
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
 fn review_anchor_tracks_retained_top_and_falls_back_after_eviction() {
     let mut screen = Screen::new(2, 2);
     screen.normal.scroll_up_full_screen(2, Cell::default());
@@ -5468,21 +5508,21 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history()
     }
     assert_eq!(screen.scroll_count(), 0);
 
-    // Narrow to 10 columns: lines will wrap heavily and overflow 5 rows into scrollback
-    screen.resize(5, 10);
-    assert!(
-        screen.scroll_count() > 0,
-        "scrollback should be non-zero after severe narrowing"
-    );
-
-    // Widen back to 40 columns: should unwrap cleanly back into viewport with 0 scrollback
-    // Widen back to 60 columns: should unwrap cleanly back into viewport with 0 scrollback
-    screen.resize(5, 60);
-    assert_eq!(
-        screen.scroll_count(),
-        0,
-        "scrollback should return to 0 after widening"
-    );
+    for _ in 0..5 {
+        // Narrowing pushes wrapped pieces of the live viewport into physical
+        // scrollback, but those pieces must not become permanent history.
+        screen.resize(5, 10);
+        assert!(
+            screen.scroll_count() > 0,
+            "scrollback should be non-zero after severe narrowing"
+        );
+        screen.resize(5, 60);
+        assert_eq!(
+            screen.scroll_count(),
+            0,
+            "temporary reflow rows should return to the viewport after widening"
+        );
+    }
     assert_eq!(screen.cursor.cursor.y, 3);
     assert!(
         screen
@@ -5496,6 +5536,49 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history()
     );
     assert_eq!(screen.row_text(2).trim(), "");
     assert!(screen.row_text(3).starts_with("C:\\Users\\test>"));
+}
+
+#[test]
+fn narrow_output_then_widen_restores_cursor_above_trailing_blank_rows() {
+    let mut screen = Screen::new(24, 80);
+    let mut parser = TerminalParser::default();
+    let line = "harbor-profile-burst 0123456789 abcdefghijklmnopqrstuvwxyz";
+    let output = format!("{line}\r\n").repeat(20);
+    let result = parser.put_bytes(&mut screen, output.as_bytes());
+    assert_eq!(result.consumed, output.len());
+    assert!(result.alt_request.is_none());
+
+    for _ in 0..19 {
+        screen.resize(24, 2);
+        screen.resize(24, 80);
+    }
+
+    screen.resize(24, 2);
+    let prompt = b"\r\nharbor> ";
+    let result = parser.put_bytes(&mut screen, prompt);
+    assert_eq!(result.consumed, prompt.len());
+    assert!(result.alt_request.is_none());
+    screen.resize(24, 80);
+
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (8, 21));
+    assert_eq!(screen.scroll_count(), 0);
+    assert!(screen.row_text(21).starts_with("harbor> "));
+    assert_eq!(screen.row_text(22).trim(), "");
+    assert_eq!(screen.row_text(23).trim(), "");
+
+    let preserved = crate::logical_content::decode_lines(&screen.normal)
+        .expect("reflowed profile output should remain decodable")
+        .into_iter()
+        .filter(|logical_line| {
+            logical_line
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.glyph.cell.ch)
+                .collect::<String>()
+                == line
+        })
+        .count();
+    assert_eq!(preserved, 20);
 }
 
 #[test]

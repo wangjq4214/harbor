@@ -22,9 +22,17 @@ The main gaps are resize reflow, complete combining/grapheme text handling, sett
 
 An operational PTY session currently requires Windows.
 
-```bash
+```powershell
+./scripts/fetch_conpty.ps1
 cargo run
 ```
+
+Run the fetch script once after cloning, and again when the pinned runtime changes.
+Windows builds stage the pinned [Microsoft ConPTY runtime](third_party/conpty/README.md)
+in `target/<profile>/conpty/`. When distributing or moving `harbor.exe`, include
+the complete adjacent `conpty/` directory (DLL, hosts, version and license).
+An incomplete bundle is reported as a PTY startup error rather than falling back
+to an older Windows console host with incompatible resize behavior.
 
 ## Library Crates
 

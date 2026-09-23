@@ -181,6 +181,11 @@ impl PreparedPrimaryResize {
             }
         }
 
+        // `active_retained_row_count` already removes unwritten blank rows below
+        // the cursor before logical lines are decoded. After reflow, restore only
+        // the rows needed to fill the viewport. Keeping the visible region as the
+        // final `target_rows` rows provides bottom gravity when widening and avoids
+        // turning temporary narrow-width wraps into permanent scrollback.
         let blank_count = target_rows.saturating_sub(rows.len());
         rows.try_reserve_exact(blank_count)
             .map_err(|_| PreparationError::AllocationFailed)?;
@@ -398,24 +403,16 @@ impl PreparedPrimaryResize {
         position: GenPos,
         pending_wrap: bool,
     ) -> Option<ContentAnchor> {
-        let (line_id, line) = self
-            .lines
-            .iter()
-            .find(|(_, line)| line.source_generations.contains(&position.generation))?;
-        if pending_wrap {
-            let offset = line
-                .atoms
-                .last()
-                .map_or(line.atom_start, |atom| atom.atom_offset);
-            return Some(ContentAnchor::from_logical_parts(
-                *line_id,
-                offset,
-                Affinity::After,
-                None,
-                false,
-            ));
-        }
-        self.source_anchor(position, Affinity::Before)
+        // Pending wrap is the insertion point after the cell under the cursor,
+        // which can be on an earlier physical row of a longer logical line.
+        self.source_anchor(
+            position,
+            if pending_wrap {
+                Affinity::After
+            } else {
+                Affinity::Before
+            },
+        )
     }
 
     pub(crate) fn project_selection(&self, anchor: ContentAnchor) -> Option<GenPos> {

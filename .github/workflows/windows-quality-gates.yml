@@ -27,6 +27,9 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Restore pinned ConPTY runtime
+        run: ./scripts/fetch_conpty.ps1
+
       - name: Check formatting
         run: cargo fmt --check
 
