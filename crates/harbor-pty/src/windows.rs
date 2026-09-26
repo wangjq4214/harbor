@@ -1,5 +1,9 @@
+mod conpty;
+
+use conpty::ConptyApi;
 use std::{
     ffi::{OsStr, OsString},
+    io,
     mem::size_of,
     os::windows::{ffi::OsStrExt, io::AsRawHandle},
     sync::{Arc, Mutex, mpsc},
@@ -9,10 +13,13 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, WAIT_FAILED, WAIT_TIMEOUT},
+        Foundation::{
+            CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
+            WAIT_TIMEOUT,
+        },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
-            Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            Console::{COORD, HPCON},
             IO::CancelSynchronousIo,
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -157,7 +164,8 @@ impl Pty {
     pub fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
-        self._pseudo_console.as_mut().unwrap().resize(size)
+        self._pseudo_console.as_mut().unwrap().resize(size)?;
+        Ok(())
     }
 
     /// Starts termination of the shell process tree without blocking the caller.
@@ -250,7 +258,12 @@ impl Pty {
         deadline: Instant,
     ) -> bool {
         loop {
-            Self::shutdown_reader(reader.as_raw_handle());
+            if let Err(error) = Self::cancel_reader(reader.as_raw_handle()) {
+                tracing::error!(
+                    ?error,
+                    "failed to interrupt terminal reader during shutdown"
+                );
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
@@ -285,7 +298,9 @@ impl Pty {
                 // The reaper retains the complete graph until the same acknowledgement is
                 // observed, then performs the only JoinHandle::join call.
                 while !reader_shutdown.wait_for_completion(Duration::from_millis(10)) {
-                    Self::shutdown_reader(reader.as_raw_handle());
+                    if let Err(error) = Self::cancel_reader(reader.as_raw_handle()) {
+                        tracing::error!(?error, "failed to interrupt terminal reader in reaper");
+                    }
                 }
                 Self::finish_shutdown(pty, reader);
             });
@@ -301,18 +316,34 @@ impl Pty {
         }
     }
 
-    /// Requests cancellation of the reader's current synchronous I/O operation. ERROR_NOT_FOUND
-    /// only means the reader is between reads; the reaper retries until it receives its ack.
-    fn shutdown_reader(reader_handle: std::os::windows::io::RawHandle) {
+    /// Requests cancellation of the reader's current synchronous I/O operation.
+    /// `ERROR_NOT_FOUND` means the reader is between reads and is not an error.
+    pub(crate) fn interrupt_reader(&self, reader: &JoinHandle<()>) -> anyhow::Result<()> {
+        Self::cancel_reader(reader.as_raw_handle())
+    }
+
+    fn cancel_reader(reader_handle: std::os::windows::io::RawHandle) -> anyhow::Result<()> {
         unsafe {
-            if let Err(err) = CancelSynchronousIo(HANDLE(reader_handle as *mut _)) {
-                if err.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
+            if let Err(error) = CancelSynchronousIo(HANDLE(reader_handle as *mut _)) {
+                if error.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
                     tracing::debug!("reader had no synchronous I/O to cancel");
                 } else {
-                    tracing::error!(error = ?err, "CancelSynchronousIo on reader thread failed");
+                    return Err(error).context("failed to cancel terminal reader I/O");
                 }
             }
         }
+        Ok(())
+    }
+}
+
+pub(crate) fn reader_io_error(error: anyhow::Error) -> io::Error {
+    if error
+        .downcast_ref::<::windows::core::Error>()
+        .is_some_and(|error| error.code() == HRESULT::from_win32(ERROR_OPERATION_ABORTED.0))
+    {
+        io::Error::from(io::ErrorKind::Interrupted)
+    } else {
+        io::Error::other(error)
     }
 }
 
@@ -597,29 +628,34 @@ impl Drop for OwnedHandle {
 }
 
 /// RAII wrapper for the ConPTY handle, which has a different close API than HANDLE.
-struct PseudoConsole(HPCON);
+struct PseudoConsole {
+    handle: HPCON,
+    api: &'static ConptyApi,
+}
 
 impl PseudoConsole {
     fn create(size: PtySize, input: HANDLE, output: HANDLE) -> anyhow::Result<Self> {
-        let pseudo_console = unsafe {
-            CreatePseudoConsole(
-                COORD {
-                    X: size.cols,
-                    Y: size.rows,
-                },
-                input,
-                output,
-                0,
-            )
-        }
-        .context("failed to create pseudo console")?;
-        tracing::info!(rows = size.rows, cols = size.cols, "pseudo console ready");
+        let coord = COORD {
+            X: size.cols,
+            Y: size.rows,
+        };
+        let api = ConptyApi::get()?;
+        let mut handle = HPCON::default();
+        // SAFETY: The pipe handles and output pointer are valid for this call.
+        unsafe { (api.create)(coord, input, output, 0, &mut handle) }
+            .ok()
+            .context("failed to create bundled pseudo console")?;
+        tracing::info!(
+            rows = size.rows,
+            cols = size.cols,
+            "bundled pseudo console ready"
+        );
 
-        Ok(Self(pseudo_console))
+        Ok(Self { handle, api })
     }
 
     fn handle(&self) -> HPCON {
-        self.0
+        self.handle
     }
 
     fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
@@ -629,29 +665,30 @@ impl PseudoConsole {
             "resizing pseudo console"
         );
         unsafe {
-            ResizePseudoConsole(
-                self.0,
+            (self.api.resize)(
+                self.handle,
                 COORD {
                     X: size.cols,
                     Y: size.rows,
                 },
             )
         }
+        .ok()
         .context("failed to resize pseudo console")
     }
 }
 
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
-        if !self.0.is_invalid() {
+        if !self.handle.is_invalid() {
             let (tx, rx) = mpsc::channel();
-            let hpcon_val = self.0.0;
+            let hpcon_val = self.handle.0;
+            let api = self.api;
 
             let _ = std::thread::spawn(move || {
                 unsafe {
-                    use ::windows::Win32::System::Console::ClosePseudoConsole;
-                    use ::windows::Win32::System::Console::HPCON;
-                    ClosePseudoConsole(HPCON(hpcon_val));
+                    // The library is process-owned and outlives this worker.
+                    (api.close)(HPCON(hpcon_val));
                 }
                 let _ = tx.send(());
             });
@@ -742,10 +779,19 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use ::windows::Win32::System::Pipes::PeekNamedPipe;
-
     use super::*;
 
+    use ::windows::Win32::System::Pipes::PeekNamedPipe;
+    #[test]
+    fn cancelled_read_maps_to_interrupted_io_error() {
+        let error =
+            ::windows::core::Error::from_hresult(HRESULT::from_win32(ERROR_OPERATION_ABORTED.0));
+
+        assert_eq!(
+            reader_io_error(anyhow::Error::new(error)).kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
     #[test]
     fn rejects_empty_size() {
         let error = match Pty::spawn_shell(PtySize { rows: 0, cols: 80 }, &ShellCommand::default())
@@ -846,10 +892,11 @@ mod tests {
 
     #[test]
     fn shell_prompt_output_is_readable_through_pseudoconsole() {
-        let (_pty, mut reader, _shell_name) =
+        let (pty, mut reader, _shell_name) =
             Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &ShellCommand::default()).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
+        let mut replied_to_attributes = false;
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while !contains_shell_prompt(&output) && Instant::now() < deadline {
@@ -863,6 +910,16 @@ mod tests {
                 break;
             }
             output.extend_from_slice(&buffer[..bytes]);
+            if !replied_to_attributes && output.windows(3).any(|bytes| bytes == b"\x1b[c") {
+                // This transport-only test acts as a minimal VT220 terminal. The
+                // bundled host waits for DA1; production replies through TerminalParser.
+                let reply = b"\x1b[?62c";
+                assert_eq!(
+                    pty._input_write.as_ref().unwrap().write(reply).unwrap(),
+                    reply.len()
+                );
+                replied_to_attributes = true;
+            }
         }
 
         let text = String::from_utf8_lossy(&output);

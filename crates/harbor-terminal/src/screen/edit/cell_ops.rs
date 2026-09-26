@@ -5,7 +5,7 @@
 //! `&CursorEngine` for read-only cursor access).
 
 use crate::model::Cell;
-use crate::normal_buf::NormalBuf;
+use crate::normal_buf::{CellState, NormalBuf};
 use harbor_parser::Params;
 use unicode_width::UnicodeWidthChar;
 
@@ -88,7 +88,7 @@ impl CellOps {
             }
             let cell = normal.cell(row, col);
             if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
-                *normal.cell_mut(row, col) = pen_state.erase_cell();
+                normal.erase_cell(row, col, pen_state.erase_cell());
             }
             col += 1;
         }
@@ -113,9 +113,32 @@ impl CellOps {
         pen_state: &PenState,
         normal: &mut NormalBuf,
         row: usize,
+        range: (usize, usize),
+        bounds: (usize, usize),
+        selective: bool,
+    ) {
+        Self::erase_row_range_with_policy(pen_state, normal, row, range, bounds, selective, true);
+    }
+
+    fn erase_rectangle_row_range(
+        pen_state: &PenState,
+        normal: &mut NormalBuf,
+        row: usize,
+        range: (usize, usize),
+        bounds: (usize, usize),
+        selective: bool,
+    ) {
+        Self::erase_row_range_with_policy(pen_state, normal, row, range, bounds, selective, false);
+    }
+
+    fn erase_row_range_with_policy(
+        pen_state: &PenState,
+        normal: &mut NormalBuf,
+        row: usize,
         (start, end): (usize, usize),
         (left, right): (usize, usize),
         selective: bool,
+        sever_line: bool,
     ) {
         // Only an erase spanning the physical row can sever its logical-line
         // continuation. Erasing a complete horizontal-margin region is still
@@ -139,21 +162,24 @@ impl CellOps {
                     || (!normal.cell(row, base).protected
                         && !normal.cell(row, continuation).protected)
                 {
-                    *normal.cell_mut(row, base) = erase;
-                    *normal.cell_mut(row, continuation) = erase;
+                    normal.erase_cell(row, base, erase);
+                    normal.erase_cell(row, continuation, erase);
                 }
                 col = continuation + 1;
             } else {
                 if !selective || !normal.cell(row, col).protected {
-                    *normal.cell_mut(row, col) = erase;
+                    normal.erase_cell(row, col, erase);
                 }
                 col += 1;
             }
         }
-        if full_row {
-            normal.set_wrapped(row, false);
+        if sever_line && full_row {
+            normal.begin_hard_line(row);
         }
         Self::normalize_row_region(pen_state, normal, row, left, right);
+        // A partial erase can shorten this row without severing its logical line.
+        // Keep continuation offsets aligned with its final meaningful extent.
+        normal.repair_following_soft_chain(row);
     }
 
     // ── margin-rect scroll helpers ────────────────────────────────
@@ -171,21 +197,15 @@ impl CellOps {
             for dst_row in top..=(bottom - n) {
                 let src_row = dst_row + n;
                 for col in cursor.margins.left..=cursor.margins.right {
-                    let cell = *normal.cell(src_row, col);
-                    *normal.cell_mut(dst_row, col) = cell;
+                    normal.copy_cell(src_row, col, dst_row, col);
                 }
-                // Wrap flag follows the row (not the margin columns): under
-                // DECSLRM this is a documented approximation of the row's
-                // wrapped state, since wrap semantics inside margins are ambiguous.
-                normal.set_wrapped(dst_row, normal.is_wrapped(src_row));
             }
         }
         let blank = pen_state.erase_cell();
         for row in (bottom + 1 - n)..=bottom {
             for col in cursor.margins.left..=cursor.margins.right {
-                *normal.cell_mut(row, col) = blank;
+                normal.erase_cell(row, col, blank);
             }
-            normal.set_wrapped(row, false);
         }
         for row in top..=bottom {
             Self::normalize_row_region(
@@ -195,6 +215,7 @@ impl CellOps {
                 cursor.margins.left,
                 cursor.margins.right,
             );
+            normal.recompute_row_extent(row);
         }
     }
 
@@ -211,21 +232,15 @@ impl CellOps {
             for dst_row in ((top + n)..=bottom).rev() {
                 let src_row = dst_row - n;
                 for col in cursor.margins.left..=cursor.margins.right {
-                    let cell = *normal.cell(src_row, col);
-                    *normal.cell_mut(dst_row, col) = cell;
+                    normal.copy_cell(src_row, col, dst_row, col);
                 }
-                // Wrap flag follows the row (not the margin columns): under
-                // DECSLRM this is a documented approximation of the row's
-                // wrapped state, since wrap semantics inside margins are ambiguous.
-                normal.set_wrapped(dst_row, normal.is_wrapped(src_row));
             }
         }
         let blank = pen_state.erase_cell();
         for row in top..(top + n) {
             for col in cursor.margins.left..=cursor.margins.right {
-                *normal.cell_mut(row, col) = blank;
+                normal.erase_cell(row, col, blank);
             }
-            normal.set_wrapped(row, false);
         }
         for row in top..=bottom {
             Self::normalize_row_region(
@@ -235,6 +250,7 @@ impl CellOps {
                 cursor.margins.left,
                 cursor.margins.right,
             );
+            normal.recompute_row_extent(row);
         }
     }
 
@@ -567,6 +583,7 @@ impl CellOps {
 
         normal.fill_linear_range_with(row_start + col, row_start + col + n, pen_state.erase_cell());
         Self::normalize_row_region(pen_state, normal, cursor.cursor.y, left, right);
+        normal.repair_following_soft_chain(cursor.cursor.y);
         true
     }
 
@@ -575,7 +592,7 @@ impl CellOps {
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         n: usize,
-    ) {
+    ) -> bool {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
@@ -586,14 +603,14 @@ impl CellOps {
         };
         normal.mark_range_dirty(cursor.cursor.y, col.saturating_sub(1), right + 1);
         if col < left || col > right {
-            return;
+            return false;
         }
         let n = n.min(right - col + 1);
         if n == 0 {
-            return;
+            return false;
         }
         if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
-            return;
+            return false;
         }
         let (delete_start, delete_end) =
             Self::normalize_touched_range(normal, cursor.cursor.y, col, col + n, left, right);
@@ -613,6 +630,8 @@ impl CellOps {
             pen_state.erase_cell(),
         );
         Self::normalize_row_region(pen_state, normal, cursor.cursor.y, left, right);
+        normal.repair_following_soft_chain(cursor.cursor.y);
+        true
     }
 
     // ── insert / delete lines ─────────────────────────────────────
@@ -648,6 +667,7 @@ impl CellOps {
             cursor.cursor.x = 0;
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == max_n {
             for row in cursor.cursor.y..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -661,8 +681,8 @@ impl CellOps {
         let src_start = ((vis + cursor.cursor.y) % tr) * c;
         let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
         let dst = ((vis + cursor.cursor.y + n) % tr) * c;
-        normal.copy_ring_range(src_start, src_end, dst);
-        normal.copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.cursor.y + n);
         for i in 0..n {
             normal.fill_row_with(cursor.cursor.y + i, pen_state.erase_cell());
         }
@@ -703,6 +723,7 @@ impl CellOps {
             cursor.cursor.x = 0;
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == max_n {
             for row in cursor.cursor.y..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -716,8 +737,8 @@ impl CellOps {
         let src_start = ((vis + cursor.cursor.y + n) % tr) * c;
         let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
         let dst = ((vis + cursor.cursor.y) % tr) * c;
-        normal.copy_ring_range(src_start, src_end, dst);
-        normal.copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.cursor.y);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
         }
@@ -753,6 +774,7 @@ impl CellOps {
             );
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == region_height {
             for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -765,8 +787,8 @@ impl CellOps {
         let src_start = ((vis + cursor.scroll_region.top + n) % tr) * c;
         let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
         let dst = ((vis + cursor.scroll_region.top) % tr) * c;
-        normal.copy_ring_range(src_start, src_end, dst);
-        normal.copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.scroll_region.top);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
         }
@@ -799,6 +821,7 @@ impl CellOps {
             );
             return;
         }
+        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
         if n == region_height {
             for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
                 normal.fill_row_with(row, pen_state.erase_cell());
@@ -811,8 +834,8 @@ impl CellOps {
         let src_start = ((vis + cursor.scroll_region.top) % tr) * c;
         let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
         let dst = ((vis + cursor.scroll_region.top + n) % tr) * c;
-        normal.copy_ring_range(src_start, src_end, dst);
-        normal.copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+        normal.sever_soft_wrap(cursor.scroll_region.top + n);
         for i in 0..n {
             normal.fill_row_with(cursor.scroll_region.top + i, pen_state.erase_cell());
         }
@@ -845,14 +868,15 @@ impl CellOps {
         {
             normal.scroll_up_full_screen(1, pen_state.erase_cell());
         } else {
+            normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
             let tr = normal.total_rows();
             let vis = normal.visible_start();
             let c = normal.cols();
             let src_start = ((vis + cursor.scroll_region.top + 1) % tr) * c;
             let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
             let dst = ((vis + cursor.scroll_region.top) % tr) * c;
-            normal.copy_ring_range(src_start, src_end, dst);
-            normal.copy_wrapped_ring_range(src_start / c, src_end / c, dst / c);
+            normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+            normal.sever_soft_wrap(cursor.scroll_region.top);
             normal.fill_row_with(cursor.scroll_region.bottom, pen_state.erase_cell());
         }
         if !cursor.margins.enabled {
@@ -886,7 +910,7 @@ impl CellOps {
             return;
         };
         for row in t..=b {
-            Self::erase_row_range(
+            Self::erase_rectangle_row_range(
                 pen_state,
                 normal,
                 row,
@@ -918,7 +942,7 @@ impl CellOps {
             return;
         };
         for row in t..=b {
-            Self::erase_row_range(
+            Self::erase_rectangle_row_range(
                 pen_state,
                 normal,
                 row,
@@ -970,7 +994,7 @@ impl CellOps {
             let (start, end) =
                 Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
-                *normal.cell_mut(row, col) = cell;
+                normal.write_meaningful_cell(row, col, cell);
             }
             Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
         }
@@ -1020,6 +1044,7 @@ impl CellOps {
         let width = sr - sl + 1;
 
         let erase = pen_state.erase_cell();
+        let erase_state = CellState::erase(erase);
         let mut temp = Vec::with_capacity(height * width);
         for row in st..=sb {
             for col in sl..=sr {
@@ -1031,9 +1056,9 @@ impl CellOps {
                     }
                 };
                 temp.push(if complete {
-                    *normal.cell(row, col)
+                    (*normal.cell(row, col), normal.cell_state(row, col))
                 } else {
-                    erase
+                    (erase, erase_state)
                 });
             }
         }
@@ -1069,7 +1094,7 @@ impl CellOps {
 
         for dest_row in row_start..row_end {
             let h = dest_row - dt_start;
-            Self::erase_row_range(
+            Self::erase_rectangle_row_range(
                 pen_state,
                 normal,
                 dest_row,
@@ -1084,7 +1109,7 @@ impl CellOps {
                 ) {
                     continue;
                 }
-                let mut cell = temp[h * width + w];
+                let (mut cell, mut state) = temp[h * width + w];
                 if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
                     let pair_in_bounds = if cell.wide_continuation {
                         dest_col > col_start && dest_col > dest_left
@@ -1093,9 +1118,10 @@ impl CellOps {
                     };
                     if !pair_in_bounds {
                         cell = erase;
+                        state = erase_state;
                     }
                 }
-                *normal.cell_mut(dest_row, dest_col) = cell;
+                normal.write_cell(dest_row, dest_col, cell, state);
             }
             Self::normalize_row_region(pen_state, normal, dest_row, dest_left, dest_right);
         }
@@ -1121,10 +1147,11 @@ impl CellOps {
             let (start, end) =
                 Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
-                let cell = normal.cell_mut(row, col);
-                for code in params.iter_flat().skip(4).flatten() {
-                    cell.apply_sgr(code);
-                }
+                normal.mutate_cell_semantics(row, col, |cell| {
+                    for code in params.iter_flat().skip(4).flatten() {
+                        cell.apply_sgr(code);
+                    }
+                });
             }
         }
     }
@@ -1149,10 +1176,11 @@ impl CellOps {
             let (start, end) =
                 Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
-                let cell = normal.cell_mut(row, col);
-                for code in params.iter_flat().skip(4).flatten() {
-                    cell.toggle_sgr(code);
-                }
+                normal.mutate_cell_semantics(row, col, |cell| {
+                    for code in params.iter_flat().skip(4).flatten() {
+                        cell.toggle_sgr(code);
+                    }
+                });
             }
         }
     }

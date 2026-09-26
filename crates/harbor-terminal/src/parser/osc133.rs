@@ -16,23 +16,14 @@ pub(super) fn parse(payload: &[u8]) -> Option<ShellIntegrationMarker> {
     let subcommand = parts.next()?;
 
     match subcommand {
-        b"A" => {
-            if parts.next().is_some() {
-                return None;
-            }
-            Some(ShellIntegrationMarker::PromptStart)
-        }
-        b"B" => {
-            if parts.next().is_some() {
-                return None;
-            }
-            Some(ShellIntegrationMarker::PromptEnd)
-        }
-        b"C" => {
-            if parts.next().is_some() {
-                return None;
-            }
-            Some(ShellIntegrationMarker::CommandExecuted)
+        b"A" | b"B" | b"C" => {
+            let marker = match subcommand {
+                b"A" => ShellIntegrationMarker::PromptStart,
+                b"B" => ShellIntegrationMarker::PromptEnd,
+                b"C" => ShellIntegrationMarker::CommandExecuted,
+                _ => unreachable!(),
+            };
+            parts.next().is_none().then_some(marker)
         }
         b"D" => match parts.next() {
             None => Some(ShellIntegrationMarker::CommandFinished(None)),

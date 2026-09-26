@@ -6,32 +6,71 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, TryRecvError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
-use crate::model::{AltScreenAction, TerminalSize};
+use crate::model::TerminalSize;
 use harbor_pty::PtyControl;
 
-use crate::input::TerminalInputEncoder;
+use crate::input;
 use crate::parser::TerminalParser;
+use crate::pointer::PointerInteraction;
 use crate::screen::Screen;
 use crate::types::{TerminalEvent, TerminalPointerPhase};
 
-/// The maximum number of parser chunks buffered between the blocking PTY reader
-/// and the UI thread. Backpressure here bounds memory without ever blocking UI.
+/// The maximum number of parser events buffered between the blocking PTY reader
+/// and the UI thread. Backpressure here bounds memory without blocking UI.
 pub(crate) const PTY_QUEUE_CAPACITY: usize = 32;
 
+const RESIZE_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
+const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
+
+type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static>;
+#[derive(Debug)]
+enum ReaderEvent {
+    Bytes(Vec<u8>),
+    BarrierAck(u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReaderCommand {
+    Barrier(u64),
+    Resume(u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReaderCommandStatus {
+    Idle,
+    Resumed,
+    Disconnected,
+}
+
+pub(crate) struct ResizeBarrier {
+    commands: Sender<ReaderCommand>,
+    epoch: u64,
+}
+
+impl Drop for ResizeBarrier {
+    fn drop(&mut self) {
+        let _ = self.commands.send(ReaderCommand::Resume(self.epoch));
+    }
+}
 // ── TerminalPty ───────────────────────────────────────────────────────
 
 /// I/O and shutdown resources sharing the terminal's lifetime.
 struct TerminalPty {
-    output: Receiver<Vec<u8>>,
+    output: Receiver<ReaderEvent>,
+    commands: Sender<ReaderCommand>,
     writer: Box<dyn Write + Send>,
     reader: Option<JoinHandle<()>>,
     control: Option<PtyControl>,
     wake_pending: Arc<AtomicBool>,
+    next_barrier_epoch: u64,
+    test_interrupt: Option<ReaderInterrupt>,
+    barrier_timeout: Duration,
 }
 
 impl TerminalPty {
@@ -46,18 +85,31 @@ impl TerminalPty {
         W: Write + Send + 'static,
     {
         let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+        let (commands, reader_commands) = mpsc::channel();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let reader_wake_pending = Arc::clone(&wake_pending);
         let reader = std::thread::Builder::new()
             .name("harbor-terminal-reader".into())
-            .spawn(move || pump_reader(reader, output_tx, reader_wake_pending, wake))
+            .spawn(move || {
+                pump_reader(
+                    reader,
+                    output_tx,
+                    reader_commands,
+                    reader_wake_pending,
+                    wake,
+                )
+            })
             .expect("failed to start terminal PTY reader");
         Self {
             output,
+            commands,
             writer: Box::new(writer),
             reader: Some(reader),
             control,
             wake_pending,
+            next_barrier_epoch: 1,
+            test_interrupt: None,
+            barrier_timeout: RESIZE_BARRIER_TIMEOUT,
         }
     }
 }
@@ -80,28 +132,76 @@ impl Drop for TerminalPty {
     }
 }
 
+#[cfg(test)]
+impl TerminalPty {
+    fn set_test_barrier(
+        &mut self,
+        interrupt: impl Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static,
+        timeout: Duration,
+    ) {
+        self.test_interrupt = Some(Arc::new(interrupt));
+        self.barrier_timeout = timeout;
+    }
+}
+
 fn pump_reader<R>(
-    mut reader: R,
-    output: mpsc::SyncSender<Vec<u8>>,
+    reader: R,
+    output: mpsc::SyncSender<ReaderEvent>,
+    commands: Receiver<ReaderCommand>,
     wake_pending: Arc<AtomicBool>,
     wake: impl Fn() -> bool,
 ) where
     R: Read,
 {
+    pump_reader_with_after_read(reader, output, commands, wake_pending, wake, || {});
+}
+
+fn pump_reader_with_after_read<R>(
+    mut reader: R,
+    output: mpsc::SyncSender<ReaderEvent>,
+    commands: Receiver<ReaderCommand>,
+    wake_pending: Arc<AtomicBool>,
+    wake: impl Fn() -> bool,
+    mut after_read: impl FnMut(),
+) where
+    R: Read,
+{
+    let notify = || {
+        if !wake_pending.swap(true, Ordering::AcqRel) {
+            wake()
+        } else {
+            true
+        }
+    };
     let mut buffer = [0; 4096];
-    loop {
+    while let Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Resumed) =
+        service_reader_commands(&commands, &output, &notify)
+    {
         let length = match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(length) => length,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                match service_reader_commands(&commands, &output, &notify) {
+                    Ok(ReaderCommandStatus::Resumed) => continue,
+                    Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Disconnected) | Err(()) => {
+                        tracing::warn!(error = %error, "terminal pty reader stopped after unexpected interruption");
+                        break;
+                    }
+                }
+            }
             Err(error) => {
                 tracing::warn!(error = %error, "terminal pty reader stopped after read error");
                 break;
             }
         };
-        if output.send(buffer[..length].to_vec()).is_err() {
+        after_read();
+        if output
+            .send(ReaderEvent::Bytes(buffer[..length].to_vec()))
+            .is_err()
+        {
             break;
         }
-        if !wake_pending.swap(true, Ordering::AcqRel) && !wake() {
+        if !notify() {
             break;
         }
     }
@@ -109,6 +209,40 @@ fn pump_reader<R>(
     // and release synchronized-output suppression without waiting for recovery.
     if !wake_pending.swap(true, Ordering::AcqRel) {
         let _ = wake();
+    }
+}
+
+/// Services at most one pending barrier and returns whether the reader may continue.
+fn service_reader_commands(
+    commands: &Receiver<ReaderCommand>,
+    output: &mpsc::SyncSender<ReaderEvent>,
+    notify: &impl Fn() -> bool,
+) -> Result<ReaderCommandStatus, ()> {
+    loop {
+        let command = match commands.try_recv() {
+            Ok(command) => command,
+            Err(TryRecvError::Empty) => return Ok(ReaderCommandStatus::Idle),
+            Err(TryRecvError::Disconnected) => {
+                return Ok(ReaderCommandStatus::Disconnected);
+            }
+        };
+        let ReaderCommand::Barrier(epoch) = command else {
+            continue;
+        };
+        output
+            .send(ReaderEvent::BarrierAck(epoch))
+            .map_err(|_| ())?;
+        if !notify() {
+            return Err(());
+        }
+        loop {
+            match commands.recv() {
+                Ok(ReaderCommand::Resume(resume_epoch)) if resume_epoch == epoch => break,
+                Ok(_) => {}
+                Err(_) => return Ok(ReaderCommandStatus::Disconnected),
+            }
+        }
+        return Ok(ReaderCommandStatus::Resumed);
     }
 }
 
@@ -140,19 +274,39 @@ impl TerminalIo {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        Self {
-            parser: TerminalParser::default(),
-            pty: Some(TerminalPty::new(pty_read, pty_write, pty_control, wake)),
-            suppress_scroll_snap: false,
-            session_closed: false,
-        }
+        Self::with_pty(Some(TerminalPty::new(
+            pty_read,
+            pty_write,
+            pty_control,
+            wake,
+        )))
+    }
+    #[cfg(test)]
+    pub(crate) fn new_with_test_barrier<R, W>(
+        pty_read: R,
+        pty_write: W,
+        interrupt: impl Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static,
+        timeout: Duration,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> Self
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        let mut pty = TerminalPty::new(pty_read, pty_write, None, wake);
+        pty.set_test_barrier(interrupt, timeout);
+        Self::with_pty(Some(pty))
     }
 
     /// Creates a headless TerminalIo without PTY resources (for tests).
     pub(crate) fn new_headless() -> Self {
+        Self::with_pty(None)
+    }
+
+    fn with_pty(pty: Option<TerminalPty>) -> Self {
         Self {
             parser: TerminalParser::default(),
-            pty: None,
+            pty,
             suppress_scroll_snap: false,
             session_closed: false,
         }
@@ -161,23 +315,43 @@ impl TerminalIo {
     // ── byte processing ───────────────────────────────────────────────
 
     /// Feeds raw PTY bytes through the streaming parser.
-    pub(crate) fn feed_pty_output(&mut self, screen: &mut Screen, bytes: &[u8]) {
+    pub(crate) fn feed_pty_output(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        bytes: &[u8],
+    ) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
+            let before_projection = (pointer.has_selection_state()
+                || screen.requires_anchor_baseline())
+            .then(|| screen.content_projection().ok())
+            .flatten();
             let result = self.parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
+            match screen.finish_anchor_mutations(before_projection.as_ref()) {
+                Ok((mutations, projection)) => {
+                    pointer.reconcile_selection(&mutations, &projection);
+                }
+                Err(error) => {
+                    tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
+                    pointer.clear();
+                }
+            }
             if let Some(action) = result.alt_request {
                 self.suppress_scroll_snap = false;
-                match action {
-                    AltScreenAction::Enter { clear } => screen.enter_alt(clear),
-                    AltScreenAction::Exit => screen.exit_alt(),
-                }
+                pointer.apply_alt_transition(screen, action);
             }
         }
     }
 
     /// Feeds PTY output with an automatic scroll-to-bottom snap (unless suppressed).
-    pub(crate) fn feed_pty_output_snapped(&mut self, screen: &mut Screen, output: &[u8]) {
+    pub(crate) fn feed_pty_output_snapped(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        output: &[u8],
+    ) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
@@ -185,7 +359,7 @@ impl TerminalIo {
         if !screen.is_alt() && !self.suppress_scroll_snap {
             screen.scroll_to_bottom();
         }
-        self.feed_pty_output(screen, output);
+        self.feed_pty_output(screen, pointer, output);
     }
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
@@ -199,11 +373,8 @@ impl TerminalIo {
     /// receive after clearing the flag closes the producer/consumer race: bytes
     /// queued just before the clear are consumed here, while later bytes post a
     /// fresh wake.
-    pub(crate) fn drain(&mut self, screen: &mut Screen) -> bool {
-        // Collect all available chunks first, then feed them. This avoids
-        // overlapping borrows between self.pty (for reading) and the parser
-        // (for feeding).
-        let mut chunks: Vec<Vec<u8>> = Vec::new();
+    pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
+        let mut events = Vec::new();
         let mut disconnected = false;
         {
             let Some(pty) = self.pty.as_ref() else {
@@ -211,11 +382,11 @@ impl TerminalIo {
             };
             loop {
                 match pty.output.try_recv() {
-                    Ok(bytes) => chunks.push(bytes),
+                    Ok(event) => events.push(event),
                     Err(TryRecvError::Empty) => {
                         pty.wake_pending.store(false, Ordering::Release);
                         match pty.output.try_recv() {
-                            Ok(bytes) => chunks.push(bytes),
+                            Ok(event) => events.push(event),
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => {
                                 disconnected = true;
@@ -225,8 +396,8 @@ impl TerminalIo {
                     }
                     Err(TryRecvError::Disconnected) => {
                         pty.wake_pending.store(false, Ordering::Release);
-                        while let Ok(bytes) = pty.output.try_recv() {
-                            chunks.push(bytes);
+                        while let Ok(event) = pty.output.try_recv() {
+                            events.push(event);
                         }
                         disconnected = true;
                         break;
@@ -234,20 +405,166 @@ impl TerminalIo {
                 }
             }
         }
-        for chunk in &chunks {
-            self.feed_pty_output_snapped(screen, chunk);
-            let replies = screen.drain_replies();
-            if !replies.is_empty()
-                && let Err(error) = self.write_pty(&replies)
-            {
-                tracing::warn!(error = %error, "failed to write terminal replies to pty");
+        let mut consumed_bytes = false;
+        for event in events {
+            if let ReaderEvent::Bytes(bytes) = event {
+                consumed_bytes = true;
+                self.process_reader_bytes(screen, pointer, &bytes);
             }
         }
-        if disconnected && !self.session_closed {
+        if disconnected {
+            self.observe_reader_disconnect(screen);
+        }
+        consumed_bytes
+    }
+
+    /// Pauses a live PTY reader at an acknowledged event-stream boundary.
+    pub(crate) fn acquire_resize_barrier(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+    ) -> anyhow::Result<Option<ResizeBarrier>> {
+        let Some(pty) = self.pty.as_mut() else {
+            return Ok(None);
+        };
+        if pty.control.is_none() && pty.test_interrupt.is_none() {
+            anyhow::bail!(
+                "cannot resize a terminal with an active reader but no interrupt capability"
+            );
+        }
+
+        let epoch = pty.next_barrier_epoch;
+        pty.next_barrier_epoch = pty
+            .next_barrier_epoch
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("PTY resize barrier epoch exhausted"))?;
+        let commands = pty.commands.clone();
+        commands
+            .send(ReaderCommand::Barrier(epoch))
+            .map_err(|_| anyhow::anyhow!("terminal reader stopped before resize barrier"))?;
+        let barrier = ResizeBarrier { commands, epoch };
+
+        let deadline = Instant::now() + pty.barrier_timeout;
+        let mut acquisition = self.interrupt_reader_for_barrier();
+        let mut chunks = Vec::new();
+        let mut acknowledged = false;
+        let mut disconnected = false;
+        while acquisition.is_ok() && !acknowledged {
+            let now = Instant::now();
+            if now >= deadline {
+                acquisition = Err(anyhow::anyhow!(
+                    "timed out waiting for PTY resize barrier {epoch}"
+                ));
+                break;
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(BARRIER_INTERRUPT_RETRY);
+            let event = {
+                let pty = self
+                    .pty
+                    .as_ref()
+                    .expect("active PTY must remain owned during resize barrier");
+                pty.output.recv_timeout(wait)
+            };
+            match event {
+                Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
+                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
+                    acknowledged = true;
+                    if let Some(pty) = self.pty.as_ref() {
+                        pty.wake_pending.store(false, Ordering::Release);
+                    }
+                }
+                Ok(ReaderEvent::BarrierAck(_)) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    acquisition = self.interrupt_reader_for_barrier();
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    acquisition = Err(anyhow::anyhow!(
+                        "terminal reader stopped before resize barrier {epoch}"
+                    ));
+                }
+            }
+        }
+
+        // Close the wake flag/queue race before returning on either success or failure.
+        // A failed interrupt can leave the reader publishing one final pre-barrier chunk;
+        // consume it under the unchanged old geometry or let a later publish post a fresh wake.
+        if let Some(pty) = self.pty.as_ref() {
+            pty.wake_pending.store(false, Ordering::Release);
+            loop {
+                match pty.output.try_recv() {
+                    Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
+                    Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
+                        acknowledged = true;
+                    }
+                    Ok(ReaderEvent::BarrierAck(_)) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Parsing and synchronous terminal replies happen only after the reader-side
+        // wait has completed, so they cannot extend the barrier acquisition deadline.
+        for bytes in chunks {
+            self.process_reader_bytes(screen, pointer, &bytes);
+        }
+        if disconnected {
+            self.observe_reader_disconnect(screen);
+        }
+        acquisition?;
+        debug_assert!(acknowledged);
+        Ok(Some(barrier))
+    }
+
+    fn interrupt_reader_for_barrier(&self) -> anyhow::Result<()> {
+        let pty = self
+            .pty
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal has no active PTY"))?;
+        let reader = pty
+            .reader
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal PTY reader is unavailable"))?;
+        if let Some(interrupt) = &pty.test_interrupt {
+            return interrupt(reader);
+        }
+        let control = pty
+            .control
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal PTY has no reader control"))?;
+        control.interrupt_reader(reader)
+    }
+
+    fn process_reader_bytes(
+        &mut self,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        bytes: &[u8],
+    ) {
+        // Resize does not provide an output-stream boundary. Clear/home/cursor
+        // sequences are also ordinary application output, so never discard bytes
+        // by guessing their source. Keep partial sequences in the VT parser and
+        // service queries (including ConPTY cursor synchronization) as usual.
+        self.feed_pty_output_snapped(screen, pointer, bytes);
+        let replies = screen.drain_replies();
+        if !replies.is_empty()
+            && let Err(error) = self.write_pty(&replies)
+        {
+            tracing::warn!(error = %error, "failed to write terminal replies to pty");
+        }
+    }
+
+    fn observe_reader_disconnect(&mut self, screen: &mut Screen) {
+        if !self.session_closed {
             self.session_closed = true;
             screen.clear_synchronized_output();
         }
-        !chunks.is_empty()
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.
@@ -280,13 +597,14 @@ impl TerminalIo {
     pub(crate) fn handle_event(
         &mut self,
         screen: &mut Screen,
+        pointer: &mut PointerInteraction,
         event: TerminalEvent,
     ) -> anyhow::Result<bool> {
-        self.drain(screen);
+        self.drain(screen, pointer);
 
         if let TerminalEvent::Focus(focus) = &event {
             if screen.observe_focus(*focus) {
-                self.write_pty(TerminalInputEncoder::encode_focus(*focus))?;
+                self.write_pty(input::encode_focus(*focus))?;
                 return Ok(true);
             }
             return Ok(false);
@@ -295,7 +613,7 @@ impl TerminalIo {
         if matches!(&event, TerminalEvent::Pointer(_))
             && screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
         {
-            if let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) {
+            if let Some(bytes) = input::encode(&event, screen.input_modes()) {
                 self.write_pty(&bytes)?;
                 return Ok(true);
             }
@@ -308,7 +626,7 @@ impl TerminalIo {
             return Ok(false);
         }
 
-        let Some(bytes) = TerminalInputEncoder::encode(&event, screen.input_modes()) else {
+        let Some(bytes) = input::encode(&event, screen.input_modes()) else {
             return Ok(false);
         };
         // Terminal-bound input resumes the live viewport so typed text and the
@@ -343,5 +661,197 @@ impl TerminalIo {
 
     pub(crate) fn reset_scroll_snap(&mut self) {
         self.suppress_scroll_snap = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_resize_output_matches_parser(chunks: &[&[u8]], sizes: &[usize]) {
+        let mut terminal = crate::Terminal::new_headless(4, 20);
+        let mut expected = crate::Terminal::new_headless(4, 20);
+        for cols in sizes {
+            terminal.resize(4, *cols);
+            expected.resize(4, *cols);
+        }
+        for chunk in chunks {
+            terminal
+                .io
+                .process_reader_bytes(&mut terminal.screen, &mut terminal.pointer, chunk);
+        }
+        expected.process_output(&chunks.concat());
+        assert_eq!(terminal.snapshot(), expected.snapshot());
+    }
+
+    #[test]
+    fn resize_preserves_application_clear_and_following_output() {
+        assert_resize_output_matches_parser(&[b"\x1b[2J\x1b[Hhello", b" world"], &[16]);
+    }
+
+    #[test]
+    fn resize_preserves_multiple_application_redraws() {
+        assert_resize_output_matches_parser(
+            &[b"\x1b[?25l\x1b[Hfirst\x1b[?25h\r\n\x1b[?25lsecond\x1b[?25h"],
+            &[16, 12],
+        );
+    }
+
+    #[test]
+    fn resize_output_is_independent_of_read_chunk_boundaries() {
+        let bytes = b"\x1b[?25l\x1b[Hhello\x1b[?25hNORMAL";
+        for chunk_size in 1..=bytes.len() {
+            let chunks: Vec<_> = bytes.chunks(chunk_size).collect();
+            assert_resize_output_matches_parser(&chunks, &[16, 12]);
+        }
+    }
+
+    struct CompletedBeforePublishReader {
+        state: u8,
+    }
+
+    impl Read for CompletedBeforePublishReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            match self.state {
+                0 => {
+                    self.state = 1;
+                    buffer[..3].copy_from_slice(b"old");
+                    Ok(3)
+                }
+                1 => {
+                    self.state = 2;
+                    buffer[..3].copy_from_slice(b"new");
+                    Ok(3)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    struct InterruptibleTestReader {
+        state: u8,
+        blocked: Sender<()>,
+        interrupt: Receiver<()>,
+    }
+
+    impl Read for InterruptibleTestReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            match self.state {
+                0 => {
+                    self.state = 1;
+                    self.blocked.send(()).unwrap();
+                    self.interrupt.recv().unwrap();
+                    Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                }
+                1 => {
+                    self.state = 2;
+                    buffer[..3].copy_from_slice(b"new");
+                    Ok(3)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    fn spawn_test_pump<R: Read + Send + 'static>(
+        reader: R,
+    ) -> (Sender<ReaderCommand>, Receiver<ReaderEvent>, JoinHandle<()>) {
+        let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+        let (commands, command_rx) = mpsc::channel();
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn(move || {
+            pump_reader(reader, output_tx, command_rx, wake_pending, || true);
+        });
+        (commands, output, thread)
+    }
+
+    fn spawn_test_pump_with_after_read<R: Read + Send + 'static, F: FnMut() + Send + 'static>(
+        reader: R,
+        after_read: F,
+    ) -> (Sender<ReaderCommand>, Receiver<ReaderEvent>, JoinHandle<()>) {
+        let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+        let (commands, command_rx) = mpsc::channel();
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn(move || {
+            pump_reader_with_after_read(
+                reader,
+                output_tx,
+                command_rx,
+                wake_pending,
+                || true,
+                after_read,
+            );
+        });
+        (commands, output, thread)
+    }
+
+    #[test]
+    fn completed_read_is_published_before_barrier_ack_and_resume() {
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let reader = CompletedBeforePublishReader { state: 0 };
+        let mut first_read = true;
+        let (commands, output, thread) = spawn_test_pump_with_after_read(reader, move || {
+            if first_read {
+                first_read = false;
+                completed_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }
+        });
+
+        completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        commands.send(ReaderCommand::Barrier(7)).unwrap();
+        release_tx.send(()).unwrap();
+
+        assert!(matches!(
+            output.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ReaderEvent::Bytes(bytes) if bytes == b"old"
+        ));
+        assert!(matches!(
+            output.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ReaderEvent::BarrierAck(7)
+        ));
+        assert!(output.recv_timeout(Duration::from_millis(20)).is_err());
+
+        commands.send(ReaderCommand::Resume(7)).unwrap();
+        assert!(matches!(
+            output.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ReaderEvent::Bytes(bytes) if bytes == b"new"
+        ));
+        drop(commands);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn interrupted_blocking_read_acknowledges_then_waits_for_resume() {
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let (interrupt_tx, interrupt_rx) = mpsc::channel();
+        let reader = InterruptibleTestReader {
+            state: 0,
+            blocked: blocked_tx,
+            interrupt: interrupt_rx,
+        };
+        let (commands, output, thread) = spawn_test_pump(reader);
+
+        blocked_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        commands.send(ReaderCommand::Barrier(11)).unwrap();
+        interrupt_tx.send(()).unwrap();
+
+        assert!(matches!(
+            output.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ReaderEvent::BarrierAck(11)
+        ));
+        assert!(output.recv_timeout(Duration::from_millis(20)).is_err());
+
+        commands.send(ReaderCommand::Resume(12)).unwrap();
+        assert!(output.recv_timeout(Duration::from_millis(20)).is_err());
+
+        commands.send(ReaderCommand::Resume(11)).unwrap();
+        assert!(matches!(
+            output.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ReaderEvent::Bytes(bytes) if bytes == b"new"
+        ));
+        drop(commands);
+        thread.join().unwrap();
     }
 }

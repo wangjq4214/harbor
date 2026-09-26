@@ -5,6 +5,7 @@
 //! into the edit engine live on `Screen` (the coordinator).
 
 use crate::InputModes;
+use crate::content_anchor::ContentAnchor;
 use crate::model::CursorShape;
 use crate::normal_buf::NormalBuf;
 
@@ -17,6 +18,7 @@ use super::edit::Rect;
 #[derive(Debug, Clone)]
 pub(crate) struct SavedCursor {
     pub(crate) cursor_x: usize,
+    pub(crate) anchor: Option<ContentAnchor>,
     pub(crate) cursor_y: usize,
     pub(crate) origin_mode: bool,
     pub(crate) autowrap: bool,
@@ -168,7 +170,7 @@ impl TerminalModes {
 }
 
 /// Owns cursor position, scroll region, margins, and terminal modes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CursorEngine {
     pub(crate) cursor: CursorState,
     pub(crate) scroll_region: ScrollRegion,
@@ -202,8 +204,13 @@ impl CursorEngine {
         self.margins.clamp(cols);
         self.scroll_region = ScrollRegion::full(rows);
         if let Some(ref mut saved) = self.cursor.saved {
-            saved.cursor_x = saved.cursor_x.min(cols.saturating_sub(1));
-            saved.cursor_y = saved.cursor_y.min(rows.saturating_sub(1));
+            let clamped_x = saved.cursor_x.min(cols.saturating_sub(1));
+            let clamped_y = saved.cursor_y.min(rows.saturating_sub(1));
+            if clamped_x != saved.cursor_x || clamped_y != saved.cursor_y {
+                saved.pending_wrap = false;
+            }
+            saved.cursor_x = clamped_x;
+            saved.cursor_y = clamped_y;
         }
     }
 
@@ -444,12 +451,7 @@ impl CursorEngine {
 
     /// Sets a DEC private mode. Returns `true` if the mode was handled,
     /// `false` if it should be handled by the caller (e.g. alt-screen).
-    pub(crate) fn set_private_mode(
-        &mut self,
-        _normal: &NormalBuf,
-        param: usize,
-        enabled: bool,
-    ) -> bool {
+    pub(crate) fn set_private_mode(&mut self, param: usize, enabled: bool) -> bool {
         match param {
             1 => self.modes.application_cursor = enabled,
             66 => self.modes.application_keypad = enabled,
@@ -515,8 +517,9 @@ impl CursorEngine {
 
     /// Saves cursor position and mode flags (DECSC).
     /// Pen attributes are saved separately via `PenState::save_pen()`.
-    pub(crate) fn save_cursor_position(&mut self) {
+    pub(crate) fn save_cursor_position(&mut self, anchor: Option<ContentAnchor>) {
         self.cursor.saved = Some(SavedCursor {
+            anchor,
             cursor_x: self.cursor.x,
             cursor_y: self.cursor.y,
             origin_mode: self.modes.origin,

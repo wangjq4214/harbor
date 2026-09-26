@@ -58,16 +58,6 @@ impl TabStops {
         }
         Self(stops)
     }
-
-    pub(crate) fn resize(&mut self, cols: usize) {
-        let old_len = self.0.len();
-        self.0.resize(cols, false);
-        for col in old_len..cols {
-            if col % 8 == 0 {
-                self.0[col] = true;
-            }
-        }
-    }
 }
 
 /// Character set single shift target for the immediate next graphic character.
@@ -106,8 +96,8 @@ pub(crate) fn is_supported_charset(charset: u8) -> bool {
     matches!(charset, b'B' | b'0')
 }
 
-impl CharacterSets {
-    pub(crate) fn default() -> Self {
+impl Default for CharacterSets {
+    fn default() -> Self {
         Self {
             last_char: None,
             g0: b'B',
@@ -118,20 +108,10 @@ impl CharacterSets {
             single_shift: None,
         }
     }
-
-    pub(crate) fn reset(&mut self) {
-        self.last_char = None;
-        self.g0 = b'B';
-        self.g1 = b'B';
-        self.g2 = b'B';
-        self.g3 = b'B';
-        self.active = 0;
-        self.single_shift = None;
-    }
 }
 
 /// Owns pen state, tab stops, character-set designations, and saved-pen snapshot.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PenState {
     pub(crate) pen: Pen,
     pub(crate) tab_stops: TabStops,
@@ -151,10 +131,37 @@ impl PenState {
         }
     }
 
+    pub(crate) fn prepare_resize(
+        &self,
+        cols: usize,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::PreparationError;
+
+        let mut stops = Vec::new();
+        stops
+            .try_reserve_exact(cols)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        stops.resize(cols, false);
+        let retained = self.tab_stops.0.len().min(cols);
+        stops[..retained].copy_from_slice(&self.tab_stops.0[..retained]);
+        for (col, stop) in stops.iter_mut().enumerate().skip(retained) {
+            if col % 8 == 0 {
+                *stop = true;
+            }
+        }
+        Ok(Self {
+            pen: self.pen,
+            tab_stops: TabStops(stops),
+            charsets: self.charsets,
+            active_hyperlink: self.active_hyperlink,
+            saved_pen: self.saved_pen,
+        })
+    }
+
     /// Resets pen, charsets, tab-stops, and saved-pen snapshot to defaults (RIS).
     pub(crate) fn reset(&mut self, cols: usize) {
         self.pen = Pen::reset();
-        self.charsets.reset();
+        self.charsets = CharacterSets::default();
         self.tab_stops = TabStops::new(cols);
         self.active_hyperlink = None;
         self.saved_pen = None;

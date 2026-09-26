@@ -240,6 +240,28 @@ impl Default for TexturedVertex {
     }
 }
 
+fn pixel_rect_positions(
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    surf_w: f32,
+    surf_h: f32,
+) -> [[f32; 2]; 6] {
+    let left = left / surf_w * 2.0 - 1.0;
+    let right = right / surf_w * 2.0 - 1.0;
+    let top = 1.0 - top / surf_h * 2.0;
+    let bottom = 1.0 - bottom / surf_h * 2.0;
+    [
+        [left, top],
+        [left, bottom],
+        [right, bottom],
+        [left, top],
+        [right, bottom],
+        [right, top],
+    ]
+}
+
 impl TexturedVertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
         wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
@@ -275,45 +297,20 @@ impl TexturedVertex {
         surf_w: f32,
         surf_h: f32,
     ) -> [Self; 6] {
-        // Pixel → NDC [-1, 1]: linear x mapping, y-flip (screen is y-down, NDC is y-up).
-        let ndc_left = left / surf_w * 2.0 - 1.0;
-        let ndc_right = right / surf_w * 2.0 - 1.0;
-        let ndc_top = 1.0 - top / surf_h * 2.0;
-        let ndc_bottom = 1.0 - bottom / surf_h * 2.0;
-
-        // Two triangles forming a quad: TL → BL → BR, TL → BR → TR.
-        [
-            Self {
-                position: [ndc_left, ndc_top],
-                tex_coords: [uv_l, uv_t],
-                color,
-            },
-            Self {
-                position: [ndc_left, ndc_bottom],
-                tex_coords: [uv_l, uv_b],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_bottom],
-                tex_coords: [uv_r, uv_b],
-                color,
-            },
-            Self {
-                position: [ndc_left, ndc_top],
-                tex_coords: [uv_l, uv_t],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_bottom],
-                tex_coords: [uv_r, uv_b],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_top],
-                tex_coords: [uv_r, uv_t],
-                color,
-            },
-        ]
+        let positions = pixel_rect_positions(left, top, right, bottom, surf_w, surf_h);
+        let tex_coords = [
+            [uv_l, uv_t],
+            [uv_l, uv_b],
+            [uv_r, uv_b],
+            [uv_l, uv_t],
+            [uv_r, uv_b],
+            [uv_r, uv_t],
+        ];
+        std::array::from_fn(|index| Self {
+            position: positions[index],
+            tex_coords: tex_coords[index],
+            color,
+        })
     }
 }
 
@@ -364,37 +361,8 @@ impl ColoredVertex {
         surf_w: f32,
         surf_h: f32,
     ) -> [Self; 6] {
-        let ndc_left = left / surf_w * 2.0 - 1.0;
-        let ndc_right = right / surf_w * 2.0 - 1.0;
-        let ndc_top = 1.0 - top / surf_h * 2.0;
-        let ndc_bottom = 1.0 - bottom / surf_h * 2.0;
-
-        [
-            Self {
-                position: [ndc_left, ndc_top],
-                color,
-            },
-            Self {
-                position: [ndc_left, ndc_bottom],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_bottom],
-                color,
-            },
-            Self {
-                position: [ndc_left, ndc_top],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_bottom],
-                color,
-            },
-            Self {
-                position: [ndc_right, ndc_top],
-                color,
-            },
-        ]
+        pixel_rect_positions(left, top, right, bottom, surf_w, surf_h)
+            .map(|position| Self { position, color })
     }
 }
 

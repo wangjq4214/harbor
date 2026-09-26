@@ -4,6 +4,8 @@
 //! snapshots and extracted text without mutation. This separates
 //! the read path from the mutation methods on `Screen`.
 
+use crate::content_anchor::ContentProjection;
+use crate::logical_content::DecodeError;
 use crate::model::{SelectionBounds, TerminalSnapshot};
 
 use super::Screen;
@@ -49,61 +51,18 @@ impl<'a> ScreenReader<'a> {
         }
     }
 
-    /// Extracts text between two generation coordinates, trimming trailing
-    /// whitespace from each row and joining with newlines.
+    pub(crate) fn content_projection(&self) -> Result<ContentProjection, DecodeError> {
+        self.screen.content_projection()
+    }
+
+    /// Extracts logical text between two inclusive generation/column coordinates.
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
-        let SelectionBounds {
-            start_row,
-            start_col,
-            end_row,
-            end_col,
-        } = bounds;
-        let cols = self.screen.cols();
-        let hist_start = self.screen.history_start();
-        let scroll_count = self.screen.scroll_count();
-        let visible_rows = self.screen.visible_rows();
-        let retained_rows = scroll_count + visible_rows;
-        let max_gen = hist_start + retained_rows as u64 - 1;
-
-        let orig_start = start_row;
-        let orig_end = end_row;
-        let start_row = start_row.max(hist_start);
-        let end_row = end_row.min(max_gen);
-        if start_row > end_row {
-            return String::new();
-        }
-
-        let mut buf = String::new();
-
-        for generation in start_row..=end_row {
-            let col_start = if generation == orig_start {
-                start_col
-            } else {
-                0
-            };
-            let col_end = if generation == orig_end {
-                end_col
-            } else {
-                cols.saturating_sub(1)
-            };
-
-            let row_len_before = buf.len();
-            for col in col_start..=col_end {
-                let Some(cell) = self.screen.cell_at_generation(generation, col) else {
-                    continue;
-                };
-                if cell.wide_continuation {
-                    continue;
-                }
-                buf.push(cell.ch);
-            }
-            let row_text = &buf[row_len_before..];
-            let trim_len = row_text.trim_end().len();
-            buf.truncate(row_len_before + trim_len);
-            if generation < end_row && !self.screen.is_wrapped_at_generation(generation + 1) {
-                buf.push('\n');
+        match crate::logical_content::selected_text(&self.screen.normal, bounds) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "selected text decode failed");
+                String::new()
             }
         }
-        buf
     }
 }

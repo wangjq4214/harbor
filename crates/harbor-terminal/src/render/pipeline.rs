@@ -12,7 +12,6 @@ use std::time::Instant;
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
     viewport: RenderViewport,
-    _colored_quad_pipeline: Arc<wgpu::RenderPipeline>,
     pub background: Background,
     pub text: Text,
     pub decoration: Decoration,
@@ -63,13 +62,12 @@ impl TerminalRenderPipeline {
             metrics,
             palette,
         );
-        let selection = Selection::new(gpu, Arc::clone(&colored_quad_pipeline), palette.selection);
+        let selection = Selection::new(gpu, colored_quad_pipeline, palette.selection);
         let cursor = Cursor::new(gpu, metrics, palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
             viewport,
-            _colored_quad_pipeline: colored_quad_pipeline,
             background,
             text,
             decoration,
@@ -79,16 +77,15 @@ impl TerminalRenderPipeline {
             palette,
         })
     }
-    pub fn sync_palette(&mut self, palette: Palette) -> bool {
+    pub fn sync_palette(&mut self, palette: Palette) {
         if self.palette == palette {
-            return false;
+            return;
         }
         self.palette = palette;
         self.background.set_palette(palette);
         self.text.set_palette(palette);
         self.decoration.set_palette(palette);
         self.cursor.set_color(palette.cursor);
-        true
     }
 
     pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) {
@@ -100,7 +97,6 @@ impl TerminalRenderPipeline {
             self.decoration.invalidate_projection();
             self.selection.invalidate_projection();
             self.cursor.invalidate_projection();
-            self.scrollbar.invalidate_projection();
         }
     }
 

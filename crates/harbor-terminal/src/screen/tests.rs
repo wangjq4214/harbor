@@ -52,7 +52,7 @@ fn cursor_movement_does_not_mark_dirty() {
     screen.cursor_left(1);
     screen.cursor_right(1);
     screen.carriage_return();
-    screen.set_cursor(2, 2);
+    screen.set_cursor_position(2, 2);
     assert_eq!(
         screen.dirty_rows().len(),
         0,
@@ -178,7 +178,7 @@ fn decaln_fills_visible_cells_homes_cursor_and_preserves_terminal_state() {
     assert_eq!(screen.dirty_rows().len(), screen.rows());
 
     // The character-set designation is unrelated state and remains active after DECALN.
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     screen.write_char('q');
     assert_eq!(screen.cell(1, 1).ch, '─');
 }
@@ -684,7 +684,8 @@ fn resize_clamps_margins_and_updates_tab_stops() {
     screen.clear_tab_stops(3);
     screen.pen_state.tab_stops.0[4] = true;
 
-    screen.resize(2, 6);
+    let prepared = screen.prepare_resize(2, 6).unwrap();
+    screen.commit_resize(prepared);
     assert_eq!(
         (screen.cursor.margins.left, screen.cursor.margins.right),
         (5, 5)
@@ -694,7 +695,8 @@ fn resize_clamps_margins_and_updates_tab_stops() {
         vec![false, false, false, false, true, false]
     );
 
-    screen.resize(2, 18);
+    let prepared = screen.prepare_resize(2, 18).unwrap();
+    screen.commit_resize(prepared);
     assert!(
         screen.pen_state.tab_stops.0[4],
         "existing tab stops must be preserved"
@@ -1129,8 +1131,14 @@ fn resize_preserves_saved_cursor() {
     screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.resize(3, 5); // smaller — saved cursor must be clamped
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 0, "saved x clamped to 0.min(4)");
-    assert_eq!(screen.cursor.cursor.y, 0, "saved y clamped to 0.min(2)");
+    assert_eq!(
+        screen.cursor.cursor.x, 4,
+        "invalidated saved cursor leaves the clamped live cursor in place"
+    );
+    assert_eq!(
+        screen.cursor.cursor.y, 2,
+        "invalidated saved cursor leaves the clamped live cursor in place"
+    );
     assert_eq!(screen.pen_state.pen.fg, Color::Default);
     assert_eq!(screen.pen_state.pen.bg, Color::Default);
     assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
@@ -1146,15 +1154,85 @@ fn resize_preserves_saved_cursor() {
     assert_eq!(screen.cursor.cursor.y, 1, "original y preserved");
 }
 
+#[test]
+fn resize_preserves_live_and_saved_cursor_in_unwritten_suffix() {
+    let mut screen = Screen::new(1, 4);
+    screen.write_char('a');
+    screen.cursor.cursor.x = 3;
+    screen.save_cursor();
+
+    screen.resize(1, 6);
+    assert_eq!(screen.cursor_x(), 3);
+    screen.cursor.cursor.x = 0;
+    screen.restore_cursor();
+    assert_eq!(screen.cursor_x(), 3);
+    screen.write_char('b');
+    assert_eq!(screen.row_text(0), "a  b  ");
+}
+
+#[test]
+fn partial_erase_rebases_following_soft_wrap_for_copy_and_resize() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 2;
+    screen.erase_line(0);
+
+    assert!(screen.content_projection().is_ok());
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+        }),
+        "abe"
+    );
+    screen.resize(2, 3);
+    assert_eq!(screen.rows(), 2);
+    assert_eq!(screen.cols(), 3);
+}
+
+#[test]
+fn resize_refreshes_clamped_saved_cursor_anchor_before_later_edits() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.cursor.cursor.x = 5;
+    screen.save_cursor();
+
+    screen.resize(1, 4);
+    screen.cursor.cursor.x = 0;
+    screen.delete_chars(1);
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 1);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
 // ── selected_text ──────────────────────────────────────────────
+
+fn set_semantic_cell(screen: &mut Screen, row: usize, col: usize, ch: char) {
+    screen.normal.write_meaningful_cell(
+        row,
+        col,
+        Cell {
+            ch,
+            ..Cell::default()
+        },
+    );
+}
 
 #[test]
 fn selected_text_single_row() {
     let mut screen = Screen::new(3, 11);
-    // Fill row 1 with "hello world" (some chars repeated to fill)
-    let text: Vec<char> = "hello world".chars().collect();
-    for (col, ch) in text.iter().enumerate() {
-        screen.cell_mut(1, col).ch = *ch;
+    for (col, ch) in "hello world".chars().enumerate() {
+        set_semantic_cell(&mut screen, 1, col, ch);
     }
     let result = screen.selected_text(SelectionBounds {
         start_row: 1,
@@ -1168,10 +1246,9 @@ fn selected_text_single_row() {
 #[test]
 fn selected_text_multi_row() {
     let mut screen = Screen::new(3, 4);
-    let rows = ["ab", "cd", "ef"];
-    for (r, line) in rows.iter().enumerate() {
-        for (c, ch) in line.chars().enumerate() {
-            screen.cell_mut(r, c).ch = ch;
+    for (row, line) in ["ab", "cd", "ef"].iter().enumerate() {
+        for (col, ch) in line.chars().enumerate() {
+            set_semantic_cell(&mut screen, row, col, ch);
         }
     }
     // Select rows 0-1, full row 0 and partial row 1 (only col 0)
@@ -1185,36 +1262,34 @@ fn selected_text_multi_row() {
 }
 
 #[test]
-fn selected_text_skips_wide_continuation() {
+fn selected_text_copies_wide_glyph_once() {
     let mut screen = Screen::new(1, 4);
-    // Simulate a double-width character at col 0: set ch at 0, continuation at 1.
-    screen.cell_mut(0, 0).ch = 'A';
-    screen.cell_mut(0, 1).wide_continuation = true;
-    screen.cell_mut(0, 2).ch = 'B';
-    screen.cell_mut(0, 3).ch = 'C';
+    screen.write_char('界');
+    screen.write_char('B');
+    screen.write_char('C');
     let result = screen.selected_text(SelectionBounds {
         start_row: 0,
         start_col: 0,
         end_row: 0,
         end_col: 3,
     });
-    assert_eq!(result, "ABC");
+    assert_eq!(result, "界BC");
 }
 
 #[test]
-fn selected_text_trims_trailing_whitespace() {
+fn selected_text_preserves_meaningful_trailing_whitespace() {
     let mut screen = Screen::new(2, 5);
-    screen.cell_mut(0, 0).ch = 'a';
-    screen.cell_mut(0, 1).ch = ' ';
-    screen.cell_mut(0, 2).ch = ' ';
-    screen.cell_mut(1, 0).ch = 'b';
+    set_semantic_cell(&mut screen, 0, 0, 'a');
+    set_semantic_cell(&mut screen, 0, 1, ' ');
+    set_semantic_cell(&mut screen, 0, 2, ' ');
+    set_semantic_cell(&mut screen, 1, 0, 'b');
     let result = screen.selected_text(SelectionBounds {
         start_row: 0,
         start_col: 0,
         end_row: 1,
         end_col: 1,
     });
-    assert_eq!(result, "a\nb");
+    assert_eq!(result, "a  \nb");
 }
 
 #[test]
@@ -1226,6 +1301,118 @@ fn selected_text_empty_selection() {
         end_row: 1,
         end_col: 1,
     });
+    assert_eq!(result, "");
+}
+
+#[test]
+fn selected_text_pending_wrap_does_not_invent_a_row_boundary() {
+    let mut screen = Screen::new(2, 3);
+    for ch in "abc".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "abc");
+}
+
+#[test]
+fn selected_text_keeps_current_zero_width_character_exclusion() {
+    let mut screen = Screen::new(1, 3);
+    screen.write_char('a');
+    screen.write_char('\u{0301}');
+    screen.write_char('\u{fe0f}');
+    screen.write_char('\u{200d}');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "a");
+}
+
+#[test]
+fn selected_text_joins_long_colored_hyperlinked_soft_wraps() {
+    let mut screen = Screen::new(3, 3);
+    screen.set_sgr_slice(&[Some(1), Some(31)]);
+    screen.open_hyperlink("https://example.test/not-copied".to_owned(), None);
+    for ch in "abcdefg".chars() {
+        screen.write_char(ch);
+    }
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 2,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "abcdefg");
+}
+
+#[test]
+fn selected_text_preserves_styled_and_hyperlinked_trailing_blanks() {
+    let mut screen = Screen::new(1, 4);
+    screen.write_char('a');
+    screen.set_sgr_slice(&[Some(44)]);
+    screen.write_char(' ');
+    screen.open_hyperlink("https://example.test/not-copied".to_owned(), None);
+    screen.write_char(' ');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 3,
+    });
+
+    assert_eq!(result, "a  ");
+}
+
+#[test]
+fn selected_text_omits_generated_wide_edge_padding() {
+    let mut screen = Screen::new(2, 3);
+    screen.cursor.cursor.x = 2;
+    screen.write_char('界');
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 1,
+        end_col: 2,
+    });
+
+    assert_eq!(result, "界");
+}
+
+#[test]
+fn selected_text_fails_closed_for_malformed_wide_state() {
+    let mut screen = Screen::new(1, 2);
+    screen.normal.write_meaningful_cell(
+        0,
+        0,
+        Cell {
+            wide_continuation: true,
+            ..Cell::default()
+        },
+    );
+
+    let result = screen.selected_text(SelectionBounds {
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 1,
+    });
+
     assert_eq!(result, "");
 }
 
@@ -1529,13 +1716,13 @@ fn should_clear_markers_when_full_height_edits_blank_rows() {
 }
 
 #[test]
-fn should_clear_pending_wrap_on_resize_and_preserve_surviving_marker() {
+fn should_project_pending_wrap_on_resize_and_preserve_surviving_marker() {
     let mut screen = screen_with_pending_wrap();
     screen.normal.set_wrapped(1, true);
 
     screen.resize(2, 6);
 
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(screen.cursor.modes.pending_wrap);
     assert!(screen.is_wrapped(1));
 }
 
@@ -1558,24 +1745,24 @@ fn test_origin_mode_positioning() {
     screen.cursor.margins.left = 1;
     screen.cursor.margins.right = 3;
 
-    // Origin mode off: set_cursor uses absolute screen coordinates
+    // Origin mode off: set_cursor_position uses absolute screen coordinates
     screen.cursor.modes.origin = false;
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     assert_eq!(screen.cursor.cursor.y, 0);
     assert_eq!(screen.cursor.cursor.x, 0);
 
-    // Origin mode on: set_cursor is relative to scroll region and margins
+    // Origin mode on: set_cursor_position is relative to scroll region and margins
     screen.cursor.modes.origin = true;
-    screen.set_cursor(1, 1); // Top-left of region/margins
+    screen.set_cursor_position(1, 1); // Top-left of region/margins
     assert_eq!(screen.cursor.cursor.y, 1);
     assert_eq!(screen.cursor.cursor.x, 1);
 
-    screen.set_cursor(2, 2);
+    screen.set_cursor_position(2, 2);
     assert_eq!(screen.cursor.cursor.y, 2);
     assert_eq!(screen.cursor.cursor.x, 2);
 
     // Should clamp to the scrolling region boundaries
-    screen.set_cursor(100, 100);
+    screen.set_cursor_position(100, 100);
     assert_eq!(screen.cursor.cursor.y, 3);
     assert_eq!(screen.cursor.cursor.x, 3);
 }
@@ -1592,7 +1779,7 @@ fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
     screen.cursor.modes.origin = true;
 
     // Act
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Assert — row is region-relative; column ignores saved left margin.
     assert_eq!(screen.cursor.cursor.y, 1);
     assert_eq!(screen.cursor.cursor.x, 0);
@@ -1604,7 +1791,7 @@ fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
     assert_eq!(screen.cursor.cursor.x, 0);
 
     // Act
-    screen.set_cursor(2, 3);
+    screen.set_cursor_position(2, 3);
     // Assert
     assert_eq!(screen.cursor.cursor.y, 2);
     assert_eq!(screen.cursor.cursor.x, 2);
@@ -2198,6 +2385,38 @@ fn test_rectangular_area_operations() {
     assert!(
         !screen.cell(1, 1).attrs.contains(CellAttrs::BOLD),
         "bold should be toggled off"
+    );
+}
+
+#[test]
+fn attribute_rectangles_preserve_explicit_blanks_and_recompute_style_only_blanks() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(1, 4);
+    screen.write_char(' ');
+
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;41$r");
+    assert!(screen.normal.cell_is_meaningful(0, 0));
+    assert!(screen.normal.cell_is_meaningful(0, 1));
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;49$r");
+    assert!(
+        screen.normal.cell_is_meaningful(0, 0),
+        "printed default blank must retain explicit provenance"
+    );
+    assert!(
+        !screen.normal.cell_is_meaningful(0, 1),
+        "unused blank must lose style-only meaning with its background"
+    );
+
+    parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;7$r");
+    assert!(screen.normal.cell_is_meaningful(0, 2));
+    parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;27$r");
+    assert!(!screen.normal.cell_is_meaningful(0, 2));
+
+    parser.put_bytes(&mut screen, b"\x1b[1;1;1;1;;1;4$v");
+    parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;49$r");
+    assert!(
+        screen.normal.cell_is_meaningful(0, 3),
+        "DECCRA must copy explicit provenance with a printed blank"
     );
 }
 
@@ -3523,15 +3742,15 @@ fn alt_screen_restores_all_state_groups() {
 fn selected_text_across_scrollback_generations() {
     let mut screen = Screen::new(5, 3);
     // Write identifiable content to display rows.
-    screen.cell_mut(0, 0).ch = 'A';
-    screen.cell_mut(1, 0).ch = 'B';
-    screen.cell_mut(2, 0).ch = 'C';
+    set_semantic_cell(&mut screen, 0, 0, 'A');
+    set_semantic_cell(&mut screen, 1, 0, 'B');
+    set_semantic_cell(&mut screen, 2, 0, 'C');
     // Push into scrollback.
     screen.normal.scroll_up_full_screen(3, Cell::default());
     // Now gen 0 = 'A', gen 1 = 'B', gen 2 = 'C'.
     // Write fresh content to new visible rows.
-    screen.cell_mut(0, 0).ch = 'X'; // gen 3
-    screen.cell_mut(1, 0).ch = 'Y'; // gen 4
+    set_semantic_cell(&mut screen, 0, 0, 'X'); // gen 3
+    set_semantic_cell(&mut screen, 1, 0, 'Y'); // gen 4
 
     // Select gens 0-4 — spans scrollback + visible.
     let result = screen.selected_text(SelectionBounds {
@@ -3567,7 +3786,7 @@ fn selected_text_evicted_generation_skipped() {
     let max = screen.normal.max_scrollback();
 
     // Write a marker at gen 0.
-    screen.cell_mut(0, 0).ch = 'M';
+    set_semantic_cell(&mut screen, 0, 0, 'M');
     // Fill the ring until gen 0 is evicted (max+1 scrolls).
     for _ in 0..max + 1 {
         screen.normal.scroll_up_full_screen(1, Cell::default());
@@ -3575,7 +3794,7 @@ fn selected_text_evicted_generation_skipped() {
     // gen 0 is now evicted (history_start = 1).
 
     // Write fresh content to new display rows.
-    screen.cell_mut(0, 0).ch = 'N'; // gen = history_start + scroll_count - view_offset + 0
+    set_semantic_cell(&mut screen, 0, 0, 'N'); // current first visible generation
 
     // Selecting gen 0 should skip it (not panic).
     let result = screen.selected_text(SelectionBounds {
@@ -3608,7 +3827,7 @@ fn selected_text_evicted_start_clamped_no_blank_lines() {
     let max = screen.normal.max_scrollback();
 
     // Write a distinct marker at display row 1 (generation 1: hist_start=0, scroll_count=0, row=1).
-    screen.cell_mut(1, 0).ch = 'Z';
+    set_semantic_cell(&mut screen, 1, 0, 'Z');
     // One scroll pushes gen 0 into scrollback; 'Z' lands at gen 1 display row 0.
     screen.normal.scroll_up_full_screen(1, Cell::default());
     // Fill the ring to evict gen 0 (max more scrolls → total = max+1).
@@ -3736,6 +3955,22 @@ fn alt_screen_exit_when_not_in_alt_keeps_primary() {
 }
 
 #[test]
+fn alt_screen_exit_when_not_in_alt_preserves_content_anchors() {
+    let mut screen = Screen::new(2, 4);
+    screen.write_char('A');
+    let (_, before) = screen.finish_anchor_mutations(None).unwrap();
+    let anchor = before
+        .to_anchor(GenPos::new(0, 0), Affinity::Before)
+        .unwrap();
+
+    screen.exit_alt();
+
+    let (mutations, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
+    let adjusted = mutations.apply(anchor).expect("anchor remains valid");
+    assert_eq!(after.resolve_selection(adjusted), Some(GenPos::new(0, 0)));
+}
+
+#[test]
 fn private_mode_1048_saves_and_restores_cursor() {
     let mut screen = Screen::new(5, 20);
     screen.set_cursor_position(2, 3); // 1-based → 0-based (y=1, x=2)
@@ -3760,6 +3995,77 @@ fn alt_screen_resize_while_parked_resizes_persisted_buffer() {
     screen.enter_alt(false);
     assert_eq!((screen.rows(), screen.cols()), (5, 20));
     assert_eq!(screen.row_text(0).trim(), "A");
+}
+
+#[test]
+fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_drops_history() {
+    let mut screen = Screen::new(2, 4);
+    screen.enter_alt(false);
+    screen.set_cursor_position(1, 3);
+    screen.write_char('界');
+    for _ in 0..4 {
+        screen.newline();
+    }
+    assert!(screen.scroll_count() > 0);
+
+    let prepared = screen.prepare_resize(1, 3).unwrap();
+    screen.commit_resize(prepared);
+
+    assert!(screen.is_alt());
+    assert_eq!((screen.rows(), screen.cols()), (1, 3));
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.cell(0, 2), &Cell::default());
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![crate::DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 3,
+        }]
+    );
+}
+
+#[test]
+fn prepared_resize_reflows_saved_primary_while_alt_is_active() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.enter_alt(false);
+    screen.write_char('A');
+
+    let prepared = screen.prepare_resize(1, 3).unwrap();
+    screen.commit_resize(prepared);
+    assert_eq!(screen.row_text(0), "A  ");
+
+    screen.exit_alt();
+    assert_eq!((screen.rows(), screen.cols()), (1, 3));
+    assert_eq!(screen.row_text(0), "def");
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 0));
+}
+
+#[test]
+fn prepared_resize_retains_only_reachable_hyperlinks() {
+    let mut screen = Screen::new(2, 8);
+    screen.open_hyperlink("https://retained.example".into(), None);
+    screen.write_char('R');
+    let retained_id = screen.cell(0, 0).hyperlink.unwrap();
+    screen.close_hyperlink();
+    screen.open_hyperlink("https://stale.example".into(), None);
+    screen.close_hyperlink();
+    assert_eq!(screen.hyperlinks.len(), 2);
+
+    let prepared = screen.prepare_resize(2, 4).unwrap();
+    screen.commit_resize(prepared);
+
+    assert_eq!(screen.hyperlinks.len(), 1);
+    assert_eq!(
+        screen
+            .hyperlinks
+            .get(retained_id)
+            .map(|link| link.uri.as_str()),
+        Some("https://retained.example")
+    );
 }
 
 #[test]
@@ -3997,7 +4303,7 @@ fn should_mark_entered_row_when_autowrap_from_last_column() {
 fn should_mark_entered_row_when_wide_char_cannot_fit() {
     // Arrange — cursor parked at the last column, no pending wrap.
     let mut screen = Screen::new(2, 4);
-    screen.set_cursor(1, 4); // row 0, col 3
+    screen.set_cursor_position(1, 4); // row 0, col 3
     // Act
     screen.write_char('中');
     // Assert
@@ -4035,7 +4341,7 @@ fn should_clear_wrapped_marker_when_index_moves_onto_row() {
     screen.write_char('f');
     assert!(screen.is_wrapped(1));
     // Move back to row 0, then IND into the marked row.
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Act
     screen.index();
     // Assert
@@ -4050,10 +4356,7 @@ fn should_preserve_wrapped_marker_when_index_is_noop_below_scroll_region() {
     screen.cursor.scroll_region.top = 0;
     screen.cursor.scroll_region.bottom = 1;
     screen.cursor.cursor.y = 2;
-    for ch in "abcde".chars() {
-        screen.write_char(ch);
-    }
-    screen.write_char('f'); // wraps in place: row 2 is marked wrapped
+    screen.normal.set_wrapped(2, true);
     assert!(screen.is_wrapped(2));
     let y_before = screen.cursor.cursor.y;
     // Act — IND below the region at the last row does not move or scroll.
@@ -4078,7 +4381,7 @@ fn should_clear_wrapped_marker_when_line_feed_moves_onto_row() {
     }
     screen.write_char('f');
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(1, 1);
+    screen.set_cursor_position(1, 1);
     // Act
     screen.line_feed();
     // Assert
@@ -4104,6 +4407,34 @@ fn should_keep_prior_markers_and_mark_new_row_when_wrap_scrolls_at_bottom() {
     assert_eq!(screen.row_text(1), "k    ");
     assert!(screen.is_wrapped(0), "prior marker preserved across scroll");
     assert!(screen.is_wrapped(1), "newly entered row is marked");
+}
+
+#[test]
+fn output_wrap_uses_live_metadata_while_viewport_is_scrolled_back() {
+    let mut screen = Screen::new(2, 3);
+    for ch in "abcdefghi".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+    screen.scroll_up(1);
+    assert_eq!(screen.view_offset(), 1);
+
+    let source = screen.normal.live_row_metadata(1);
+    assert_ne!(
+        screen.normal.row_metadata(1).logical_start,
+        source.logical_start,
+        "displayed metadata should differ from the writable live row in this fixture"
+    );
+
+    screen.write_char('j');
+
+    let continuation = screen.normal.live_row_metadata(1);
+    assert!(continuation.soft_wrapped);
+    assert_eq!(continuation.logical_line_id, source.logical_line_id);
+    assert_eq!(
+        continuation.logical_start,
+        source.logical_start + source.meaningful_extent
+    );
 }
 
 #[test]
@@ -4145,76 +4476,196 @@ fn should_preserve_wrapped_markers_when_soft_reset() {
     assert_eq!(screen.row_text(1), "f    ");
 }
 
-// ── soft-wrap flag propagation through row-moving ops ───────────
+// ── soft-wrap propagation through row-moving ops ────────────────
+
+fn screen_with_soft_line(rows: usize) -> Screen {
+    let mut screen = Screen::new(rows, 4);
+    for row in 0..rows {
+        let ch = char::from(b'a' + row as u8);
+        screen.normal.write_meaningful_cell(
+            row,
+            0,
+            Cell {
+                ch,
+                ..Cell::default()
+            },
+        );
+        if row > 0 {
+            let source = screen.normal.live_row_metadata(row - 1);
+            let source_atoms = screen.normal.live_row_logical_atom_count(row - 1);
+            screen
+                .normal
+                .continue_logical_line(row, source, source_atoms);
+        }
+    }
+    screen
+}
+
+fn assert_narrow_reflow_prepares(screen: &Screen) {
+    screen
+        .prepare_resize(screen.rows(), 2)
+        .expect("row movement must leave logical metadata valid for narrow reflow");
+}
+
+fn assert_moved_suffix_starts_hard_and_keeps_internal_wraps(
+    screen: &Screen,
+    first_moved_row: usize,
+    continued_row: usize,
+) {
+    let first = screen.normal.live_row_metadata(first_moved_row);
+    let continued = screen.normal.live_row_metadata(continued_row);
+    assert!(
+        !first.soft_wrapped,
+        "moved suffix must start at a hard boundary"
+    );
+    assert!(
+        continued.soft_wrapped,
+        "wraps inside the moved block must survive"
+    );
+    assert_eq!(continued.logical_line_id, first.logical_line_id);
+    assert_eq!(
+        continued.logical_start,
+        first.logical_start + first.meaningful_extent
+    );
+    assert_narrow_reflow_prepares(screen);
+}
 
 #[test]
-fn should_carry_wrapped_flag_when_insert_lines() {
-    let mut screen = Screen::new(4, 4);
+fn insert_lines_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
     screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(1, true);
+    screen.cursor.scroll_region.bottom = 3;
     screen.cursor.cursor.y = 1;
-    // Act
+
     screen.insert_lines(1);
-    // Assert
-    assert!(!screen.is_wrapped(1), "blanked row must be unwrapped");
-    assert!(
-        screen.is_wrapped(2),
-        "flag travels down with the shifted row"
-    );
+
+    assert!(!screen.is_wrapped(1), "inserted row must be unwrapped");
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_delete_lines() {
-    let mut screen = Screen::new(4, 4);
+fn delete_lines_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
     screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(2, true);
+    screen.cursor.scroll_region.bottom = 3;
     screen.cursor.cursor.y = 1;
-    // Act
+
     screen.delete_lines(1);
-    // Assert
-    assert!(screen.is_wrapped(1), "flag travels up with the shifted row");
-    assert!(!screen.is_wrapped(2), "blanked row must be unwrapped");
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    assert!(!screen.is_wrapped(3), "blanked row must be unwrapped");
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_scroll_up_region() {
-    let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(2, true);
-    // Act
+fn scroll_up_region_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+
     screen.scroll_up_region(1);
-    // Assert
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
     assert!(
-        screen.is_wrapped(1),
-        "flag travels up with the scrolled row"
-    );
-    assert!(
-        !screen.is_wrapped(2),
+        !screen.is_wrapped(3),
         "blanked bottom row must be unwrapped"
     );
 }
 
 #[test]
-fn should_carry_wrapped_flag_when_scroll_down_region() {
-    let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.normal.set_wrapped(0, true);
-    // Act
+fn scroll_down_region_severs_only_the_moved_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+
     screen.scroll_down_region(1);
-    // Assert
-    assert!(
-        screen.is_wrapped(1),
-        "flag travels down with the scrolled row"
-    );
-    assert!(!screen.is_wrapped(0), "blanked top row must be unwrapped");
+
+    assert!(!screen.is_wrapped(1), "blanked top row must be unwrapped");
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
 }
 
 #[test]
-fn should_carry_wrapped_flag_on_margin_rect_scroll_up() {
+fn index_scroll_severs_the_partial_region_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+
+    screen.index();
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    assert!(!screen.is_wrapped(3), "new index row must be a hard line");
+}
+
+#[test]
+fn autowrap_scroll_rebases_the_continuation_after_severing_the_region_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 3;
+    screen.cursor.modes.pending_wrap = true;
+
+    screen.write_char('z');
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    let prior = screen.normal.live_row_metadata(2);
+    let wrapped = screen.normal.live_row_metadata(3);
+    assert!(wrapped.soft_wrapped);
+    assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
+    assert_narrow_reflow_prepares(&screen);
+}
+
+#[test]
+fn wide_glyph_wrap_rebases_the_continuation_after_partial_region_scroll() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 3;
+
+    screen.write_char('界');
+
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
+    let prior = screen.normal.live_row_metadata(2);
+    let wrapped = screen.normal.live_row_metadata(3);
+    assert!(wrapped.soft_wrapped);
+    assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
+    assert_narrow_reflow_prepares(&screen);
+}
+
+#[test]
+fn reverse_index_severs_the_partial_region_soft_wrap_boundary() {
+    let mut screen = screen_with_soft_line(4);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    screen.cursor.cursor.y = 1;
+
+    screen.reverse_index();
+
+    assert!(
+        !screen.is_wrapped(1),
+        "new reverse-index row must be unwrapped"
+    );
+    assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 2, 3);
+}
+
+#[test]
+fn partial_region_move_severs_the_unchanged_tail_from_its_replaced_predecessor() {
+    let mut screen = screen_with_soft_line(5);
+    screen.cursor.scroll_region.top = 1;
+    screen.cursor.scroll_region.bottom = 3;
+    let old_tail_id = screen.normal.live_row_metadata(4).logical_line_id;
+
+    screen.scroll_up_region(1);
+
+    let tail = screen.normal.live_row_metadata(4);
+    assert!(!tail.soft_wrapped);
+    assert_ne!(tail.logical_line_id, old_tail_id);
+    assert_narrow_reflow_prepares(&screen);
+}
+
+#[test]
+fn should_preserve_wrapped_flags_on_margin_rect_scroll_up() {
     let mut screen = Screen::new(4, 5);
     screen.set_private_mode(69, true); // DECSLRM
     screen.set_left_right_margins(2, 4); // 0-based left=1, right=3
@@ -4225,12 +4676,12 @@ fn should_carry_wrapped_flag_on_margin_rect_scroll_up() {
     screen.scroll_up_region(1);
     // Assert
     assert!(
-        screen.is_wrapped(1),
-        "flag carried row-wise within margin rect"
+        !screen.is_wrapped(1),
+        "partial-row movement must preserve the destination hard-break relationship"
     );
     assert!(
-        !screen.is_wrapped(2),
-        "blanked bottom row must be unwrapped"
+        screen.is_wrapped(2),
+        "partial-row blanking must preserve the destination wrap relationship"
     );
 }
 
@@ -4259,7 +4710,7 @@ fn should_clear_wrapped_flag_when_erase_line_full() {
     }
     screen.write_char('f'); // row 1 marked wrapped
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(2, 1); // row 1, col 0
+    screen.set_cursor_position(2, 1); // row 1, col 0
     // Act — EL mode 2 erases the entire line.
     screen.erase_line(2);
     // Assert
@@ -4274,7 +4725,7 @@ fn should_keep_wrapped_flag_when_erase_line_partial() {
     }
     screen.write_char('f'); // row 1 marked wrapped
     assert!(screen.is_wrapped(1));
-    screen.set_cursor(2, 2); // row 1, col 1
+    screen.set_cursor_position(2, 2); // row 1, col 1
     // Act — EL mode 0 erases from cursor to end (partial row).
     screen.erase_line(0);
     // Assert
@@ -4690,4 +5141,545 @@ fn primary_and_alternate_screens_resolve_overlapping_ids_in_their_own_registries
             .map(|(_, uri)| uri),
         Some("https://alternate.test")
     );
+}
+
+#[test]
+fn saved_cursor_anchor_adjusts_for_insert_before_saved_position() {
+    let mut screen = Screen::new(1, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    assert!(
+        screen
+            .cursor
+            .cursor
+            .saved
+            .as_ref()
+            .unwrap()
+            .anchor
+            .is_some()
+    );
+
+    let before = screen.content_projection().unwrap();
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 5);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
+fn alt_entry_reconciles_pending_primary_saved_cursor_mutations() {
+    let mut screen = Screen::new(1, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+    screen.enter_alt(true);
+    screen.exit_alt();
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_x(), 5);
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
+fn pending_wrap_saved_cursor_uses_after_final_atom_anchor() {
+    let mut screen = Screen::new(1, 3);
+    for ch in "abc".chars() {
+        screen.write_char(ch);
+    }
+    assert!(screen.pending_wrap());
+
+    screen.save_cursor();
+    let projection = screen.content_projection().expect("valid projection");
+    let anchor = screen
+        .cursor
+        .cursor
+        .saved
+        .as_ref()
+        .and_then(|saved| saved.anchor)
+        .expect("saved cursor anchor");
+    let projected = projection
+        .resolve_cursor(anchor)
+        .expect("cursor projection");
+
+    assert_eq!(projected.pos, crate::GenPos::new(0, 2));
+    assert!(projected.pending_wrap);
+}
+
+#[test]
+fn resize_pending_wrap_follows_current_physical_row_not_logical_line_end() {
+    for (text, overwrite) in [("abcdefgh", "cd"), ("ab中efgh", "中")] {
+        let mut screen = Screen::new(4, 4);
+        for ch in text.chars() {
+            screen.write_char(ch);
+        }
+        screen.set_cursor_position(1, 3);
+        for ch in overwrite.chars() {
+            screen.write_char(ch);
+        }
+        assert!(screen.pending_wrap());
+        screen.resize(4, 8);
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (0, 4));
+        assert!(!screen.pending_wrap());
+        screen.write_char('!');
+        assert_eq!(screen.cell_char(0, 4), '!');
+        assert_eq!(screen.cursor_y(), 0);
+    }
+}
+
+#[test]
+fn resize_saved_pending_wrap_follows_current_physical_row() {
+    let mut screen = Screen::new(4, 4);
+    for ch in "abcdefgh".chars() {
+        screen.write_char(ch);
+    }
+    screen.set_cursor_position(1, 4);
+    screen.write_char('X');
+    screen.save_cursor();
+    screen.set_cursor_position(2, 2);
+    screen.resize(4, 8);
+    screen.restore_cursor();
+    assert_eq!((screen.cursor_y(), screen.cursor_x()), (0, 4));
+    assert!(!screen.pending_wrap());
+    screen.write_char('!');
+    assert_eq!(screen.cell_char(0, 4), '!');
+    assert_eq!(screen.cursor_y(), 0);
+}
+
+#[test]
+fn review_anchor_tracks_retained_top_and_falls_back_after_eviction() {
+    let mut screen = Screen::new(2, 2);
+    screen.normal.scroll_up_full_screen(2, Cell::default());
+    screen.scroll_up(1);
+    let retained_anchor = screen.review_anchor.expect("review anchor");
+    let before = screen.content_projection().unwrap();
+
+    screen.normal.scroll_up_full_screen(1, Cell::default());
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid retained projection");
+    assert_eq!(screen.review_anchor, Some(retained_anchor));
+    assert_eq!(screen.view_offset(), 2);
+
+    let before_eviction = screen.content_projection().unwrap();
+    for _ in 0..=screen.normal.max_scrollback() {
+        screen.normal.scroll_up_full_screen(1, Cell::default());
+    }
+    let (_, projection) = screen
+        .finish_anchor_mutations(Some(&before_eviction))
+        .expect("valid projection after eviction");
+    let fallback = screen.review_anchor.expect("oldest retained fallback");
+    assert_ne!(fallback.line_id, retained_anchor.line_id);
+    assert!(projection.resolve_selection(fallback).is_some());
+    assert_eq!(screen.view_offset(), screen.scroll_count());
+}
+
+#[test]
+fn saved_cursor_anchor_reprojects_after_identity_preserving_row_movement() {
+    let mut screen = Screen::new(3, 4);
+    screen.cursor.cursor.y = 1;
+    screen.write_char('x');
+    screen.cursor.cursor.x = 0;
+    screen.save_cursor();
+    let before = screen.content_projection().unwrap();
+
+    screen.cursor.cursor.y = 0;
+    screen.insert_lines(1);
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after row movement");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_y(), 2);
+    assert_eq!(screen.cursor_x(), 0);
+}
+
+#[test]
+fn structural_erase_emits_atom_deletion_without_payload_heuristics() {
+    let mut screen = Screen::new(1, 6);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    let before = screen.content_projection().unwrap();
+    let endpoint = before
+        .to_anchor(
+            crate::GenPos::new(0, 4),
+            crate::content_anchor::Affinity::After,
+        )
+        .expect("endpoint anchor");
+    screen.cursor.cursor.x = 3;
+
+    screen.erase_chars(2);
+    let (mutations, projection) = screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after erase");
+    let adjusted = mutations.apply(endpoint).expect("later atom survives");
+
+    assert_eq!(adjusted.offset.0, 3);
+    assert_eq!(
+        projection.resolve_selection(adjusted),
+        Some(crate::GenPos::new(0, 5))
+    );
+}
+
+#[test]
+fn saved_cursor_preserves_unwritten_column_when_blank_row_moves() {
+    let mut screen = Screen::new(3, 6);
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    let before = screen.content_projection().unwrap();
+
+    screen.cursor.cursor.y = 0;
+    screen.insert_lines(1);
+    screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after blank row movement");
+    screen.restore_cursor();
+
+    assert_eq!(screen.cursor_y(), 2);
+    assert_eq!(screen.cursor_x(), 4);
+}
+
+#[test]
+fn partial_soft_line_eviction_preserves_absolute_surviving_anchor_without_aliasing() {
+    let mut screen = Screen::new(2, 1);
+    let capacity = screen.normal.max_scrollback() + screen.rows();
+    for _ in 0..capacity {
+        screen.write_char('x');
+    }
+    let before = screen.content_projection().unwrap();
+    let stale_offset = before
+        .to_anchor(
+            crate::GenPos::new(screen.history_start() + 1, 0),
+            crate::content_anchor::Affinity::Before,
+        )
+        .expect("second retained atom anchor");
+    assert_eq!(stale_offset.offset.0, 1);
+
+    screen.write_char('x');
+    let (mutations, projection) = screen
+        .finish_anchor_mutations(Some(&before))
+        .expect("valid projection after partial eviction");
+    let rebased = mutations
+        .apply(stale_offset)
+        .expect("surviving atom remains anchored");
+
+    assert_eq!(rebased.offset.0, 1);
+    assert_eq!(
+        projection.resolve_selection(rebased),
+        Some(crate::GenPos::new(screen.history_start(), 0))
+    );
+}
+
+#[test]
+fn prepares_live_and_saved_cursor_without_mutating_screen_geometry() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    screen.save_cursor();
+    let before = screen.terminal_snapshot();
+
+    let prepared = screen
+        .prepare_primary_resize(screen.rows(), 2)
+        .expect("detached primary width preparation");
+
+    assert_eq!(
+        prepared.live_cursor,
+        crate::primary_reflow::PreparedProjection::Projected(
+            crate::primary_reflow::ProjectedInsertion {
+                position: crate::GenPos::new(3, 1),
+                pending_wrap: true,
+            }
+        )
+    );
+    assert_eq!(prepared.saved_cursor, prepared.live_cursor);
+    assert_eq!(screen.terminal_snapshot(), before);
+}
+
+#[test]
+fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() {
+    let mut screen = Screen::new(2, 10);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+
+    let prepared = screen
+        .prepare_primary_resize(screen.rows(), 8)
+        .expect("preparation reconciles pending saved anchor");
+
+    assert_eq!(
+        prepared.saved_cursor,
+        crate::primary_reflow::PreparedProjection::Projected(
+            crate::primary_reflow::ProjectedInsertion {
+                position: crate::GenPos::new(2, 5),
+                pending_wrap: false,
+            }
+        )
+    );
+    assert_eq!(
+        screen.cursor.cursor.saved.as_ref().unwrap().cursor_x,
+        4,
+        "detached preparation must not commit the adjusted source coordinate"
+    );
+}
+
+#[test]
+fn prepares_complete_history_sequence_and_review_anchor() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcdefghi".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 1);
+    screen.normal.set_view_offset(1);
+    let before_offset = screen.view_offset();
+
+    let prepared = screen
+        .prepare_primary_resize(screen.rows(), 2)
+        .expect("history width preparation");
+
+    assert_eq!(prepared.rows().len(), 5);
+    assert_eq!(
+        prepared.review,
+        crate::primary_reflow::PreparedProjection::Projected(crate::GenPos::new(3, 0))
+    );
+    assert_eq!(screen.view_offset(), before_offset);
+}
+
+#[test]
+fn prepares_height_growth_with_review_clamped_to_new_live_top() {
+    let mut screen = Screen::new(2, 2);
+    screen.normal.scroll_up_full_screen(2, Cell::default());
+    screen.normal.set_view_offset(1);
+    let before = screen.terminal_snapshot();
+
+    let prepared = screen
+        .prepare_primary_resize(4, 2)
+        .expect("detached height growth preparation");
+
+    assert_eq!(prepared.target_rows(), 4);
+    assert_eq!(prepared.normal().scroll_count(), 0);
+    assert_eq!(prepared.normal().view_offset(), 0);
+    assert_eq!(
+        prepared.review,
+        crate::primary_reflow::PreparedProjection::Projected(crate::GenPos::new(4, 0))
+    );
+    assert_eq!(screen.terminal_snapshot(), before);
+}
+
+#[test]
+fn narrowing_with_trailing_unwritten_rows_does_not_push_to_scrollback() {
+    let mut screen = Screen::new(24, 80);
+    for line in 0..7 {
+        screen.cursor.cursor.y = line;
+        screen.cursor.cursor.x = 0;
+        for ch in "123456789012345678901234567890".chars() {
+            screen.write_char(ch);
+        }
+    }
+    screen.cursor.cursor.y = 7;
+    screen.cursor.cursor.x = 0;
+    assert_eq!(screen.scroll_count(), 0);
+
+    let prepared = screen
+        .prepare_primary_resize(24, 20)
+        .expect("narrowing resize");
+
+    assert_eq!(prepared.normal().scroll_count(), 0);
+    assert_eq!(prepared.normal().rows(), 24);
+    assert_eq!(prepared.dropped_rows(), 0);
+    assert_eq!(prepared.normal().cell(0, 0).ch, '1');
+    assert_eq!(prepared.normal().cell(0, 1).ch, '2');
+
+    screen.resize(24, 20);
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+
+    screen.resize(24, 80);
+    assert_eq!(screen.scroll_count(), 0);
+    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+}
+
+#[test]
+fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history() {
+    let mut screen = Screen::new(5, 60);
+    // Write 4 lines of text:
+    // Line 0: "Microsoft Windows [Version 10.0.22621.4317]" (43 chars)
+    // Line 1: "(c) Microsoft Corporation. All rights reserved." (47 chars)
+    // Line 2: "" (empty)
+    // Line 3: "C:\Users\test>" (14 chars)
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 0;
+    for ch in "Microsoft Windows [Version 10.0.22621.4317]".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 0;
+    for ch in "(c) Microsoft Corporation. All rights reserved.".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 2;
+    screen.cursor.cursor.x = 0;
+
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 0;
+    for ch in "C:\\Users\\test>".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 0);
+
+    for _ in 0..5 {
+        // Narrowing pushes wrapped pieces of the live viewport into physical
+        // scrollback, but those pieces must not become permanent history.
+        screen.resize(5, 10);
+        assert!(
+            screen.scroll_count() > 0,
+            "scrollback should be non-zero after severe narrowing"
+        );
+        screen.resize(5, 60);
+        assert_eq!(
+            screen.scroll_count(),
+            0,
+            "temporary reflow rows should return to the viewport after widening"
+        );
+    }
+    assert_eq!(screen.cursor.cursor.y, 3);
+    assert!(
+        screen
+            .row_text(0)
+            .starts_with("Microsoft Windows [Version 10.0.22621.4317]")
+    );
+    assert!(
+        screen
+            .row_text(1)
+            .starts_with("(c) Microsoft Corporation. All rights reserved.")
+    );
+    assert_eq!(screen.row_text(2).trim(), "");
+    assert!(screen.row_text(3).starts_with("C:\\Users\\test>"));
+}
+
+#[test]
+fn narrow_output_then_widen_restores_cursor_above_trailing_blank_rows() {
+    let mut screen = Screen::new(24, 80);
+    let mut parser = TerminalParser::default();
+    let line = "harbor-profile-burst 0123456789 abcdefghijklmnopqrstuvwxyz";
+    let output = format!("{line}\r\n").repeat(20);
+    let result = parser.put_bytes(&mut screen, output.as_bytes());
+    assert_eq!(result.consumed, output.len());
+    assert!(result.alt_request.is_none());
+
+    for _ in 0..19 {
+        screen.resize(24, 2);
+        screen.resize(24, 80);
+    }
+
+    screen.resize(24, 2);
+    let prompt = b"\r\nharbor> ";
+    let result = parser.put_bytes(&mut screen, prompt);
+    assert_eq!(result.consumed, prompt.len());
+    assert!(result.alt_request.is_none());
+    screen.resize(24, 80);
+
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (8, 21));
+    assert_eq!(screen.scroll_count(), 0);
+    assert!(screen.row_text(21).starts_with("harbor> "));
+    assert_eq!(screen.row_text(22).trim(), "");
+    assert_eq!(screen.row_text(23).trim(), "");
+
+    let preserved = crate::logical_content::decode_lines(&screen.normal)
+        .expect("reflowed profile output should remain decodable")
+        .into_iter()
+        .filter(|logical_line| {
+            logical_line
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.glyph.cell.ch)
+                .collect::<String>()
+                == line
+        })
+        .count();
+    assert_eq!(preserved, 20);
+}
+
+#[test]
+fn narrowing_past_viewport_into_scrollback_and_widening_restores_chinese_windows_banner() {
+    let mut screen = Screen::new(24, 80);
+    // Write the exact Windows console banner with Chinese characters:
+    // Line 0: "Microsoft Windows [版本 10.0.22621.4317]"
+    // Line 1: "(c) Microsoft Corporation。保留所有权利。"
+    // Line 2: "" (empty)
+    // Line 3: "C:\Users\Administrator>"
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 0;
+    for ch in "Microsoft Windows [版本 10.0.22621.4317]".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 1;
+    screen.cursor.cursor.x = 0;
+    for ch in "(c) Microsoft Corporation。保留所有权利。".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 2;
+    screen.cursor.cursor.x = 0;
+
+    screen.cursor.cursor.y = 3;
+    screen.cursor.cursor.x = 0;
+    for ch in "C:\\Users\\Administrator>".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.scroll_count(), 0);
+
+    // Compress to 30 columns
+    screen.resize(24, 30);
+    // Compress to 15 columns
+    screen.resize(24, 15);
+    // Compress to 8 columns and height 5 so lines overflow into scrollback
+    screen.resize(5, 8);
+    assert!(
+        screen.scroll_count() > 0,
+        "scrollback should be non-zero after severe narrowing and shortening"
+    );
+
+    // Widen back to 24 rows, 80 columns
+    screen.resize(24, 80);
+    assert_eq!(
+        screen.scroll_count(),
+        0,
+        "scrollback should return to 0 after returning to 24x80"
+    );
+    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.cursor.cursor.x, 23);
+    assert!(
+        screen
+            .row_text(0)
+            .starts_with("Microsoft Windows [版 本  10.0.22621.4317]")
+    );
+    assert!(
+        screen
+            .row_text(1)
+            .starts_with("(c) Microsoft Corporation。 保 留 所 有 权 利 。")
+    );
+    assert_eq!(screen.row_text(2).trim(), "");
+    assert!(screen.row_text(3).starts_with("C:\\Users\\Administrator>"));
 }

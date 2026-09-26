@@ -96,18 +96,35 @@ fn scrolls_when_writing_past_last_row() {
 }
 
 #[test]
-fn resize_preserves_visible_cells_and_clamps_cursor() {
+fn resize_reflows_primary_and_keeps_the_live_cursor_suffix() {
     let mut terminal = Terminal::new_headless(2, 4);
     terminal.put_str("abcdef");
 
     terminal.resize(1, 3);
 
-    assert_eq!(terminal.row_text(0), "abc");
+    assert_eq!(terminal.row_text(0), "def");
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 3));
     assert_eq!(
         (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
         (2, 0)
     );
+}
+
+#[test]
+fn one_row_autowrap_keeps_scrolled_source_metadata() {
+    let mut terminal = Terminal::new_headless(1, 4);
+
+    terminal.put_str("abcd界ef");
+
+    let screen = terminal.screen();
+    let retained_rows = screen.scroll_count() + screen.rows();
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + retained_rows as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert_eq!(text, "abcd界ef");
 }
 
 #[test]
@@ -117,15 +134,13 @@ fn resize_preserves_scrollback_viewport() {
         terminal.process_output(format!("{line}\r\n").as_bytes());
     }
     terminal.scroll_viewport_up(1);
-    let displayed = terminal.row_text(0);
     let history_start = terminal.screen().history_start();
 
     terminal.resize(3, 6);
 
-    assert_eq!(terminal.screen().view_offset(), 1);
+    assert_eq!(terminal.screen().view_offset(), 0);
     assert!(terminal.screen().scroll_count() > 0);
-    assert_eq!(terminal.row_text(0), format!("{displayed}  "));
-    assert_eq!(terminal.screen().history_start(), history_start);
+    assert!(terminal.screen().history_start() >= history_start);
 }
 
 #[test]
@@ -133,7 +148,176 @@ fn resize_zero_dimensions_uses_safe_terminal_size() {
     let mut terminal = Terminal::new_headless(2, 4);
     terminal.resize(0, 0);
 
-    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 1));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 2));
+}
+
+#[test]
+fn transactional_resize_preserves_state_on_pty_failure_and_retries() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    let before = terminal.snapshot();
+    let mut attempted_size = None;
+
+    let failed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 0, cols: 1 },
+        |_io, size| {
+            attempted_size = Some(size);
+            anyhow::bail!("injected PTY failure")
+        },
+    );
+
+    assert!(failed.is_err());
+    assert_eq!(attempted_size, Some(TerminalSize { rows: 1, cols: 2 }));
+    assert_eq!(terminal.snapshot(), before);
+
+    let changed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 0, cols: 1 },
+        |_io, _size| Ok(()),
+    )
+    .unwrap();
+
+    assert!(changed);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 2));
+}
+
+#[test]
+fn pty_failure_preserves_active_selection_state() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            65,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    let selection_before = terminal.selection_text();
+
+    let result = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 1, cols: 4 },
+        |_io, _size| anyhow::bail!("injected PTY failure"),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(terminal.selection_text(), selection_before);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 8));
+}
+
+#[test]
+fn transactional_resize_does_not_call_pty_when_preparation_fails() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    let before = terminal.snapshot();
+    let mut pty_called = false;
+
+    let result = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize {
+            rows: usize::MAX,
+            cols: 2,
+        },
+        |_io, _size| {
+            pty_called = true;
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert!(!pty_called);
+    assert_eq!(terminal.snapshot(), before);
+}
+
+#[test]
+fn repeated_mixed_resize_preserves_selection_and_primary_across_alt_and_retry() {
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[31mABC\x1b[0m");
+    terminal.put_str("界DEF  \r\n\r\nTAIL");
+
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            70,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "ABC");
+
+    for (index, size) in [
+        TerminalSize { rows: 4, cols: 8 },
+        TerminalSize { rows: 6, cols: 8 },
+        TerminalSize { rows: 3, cols: 6 },
+        TerminalSize { rows: 4, cols: 12 },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(terminal.resize_if_changed(size));
+        terminal.put_str(&format!("\r\n\x1b[3{}mstep{index}\x1b[0m界", index + 1));
+        assert_eq!(terminal.selection_text(), "ABC");
+    }
+
+    let before_failure = terminal.snapshot();
+    let selection_before_failure = terminal.selection_text();
+    let failed = Terminal::try_resize_transaction(
+        &mut terminal.screen,
+        &mut terminal.pointer,
+        &mut terminal.io,
+        TerminalSize { rows: 5, cols: 10 },
+        |_io, _size| anyhow::bail!("injected PTY failure"),
+    );
+    assert!(failed.is_err());
+    assert_eq!(terminal.snapshot(), before_failure);
+    assert_eq!(terminal.selection_text(), selection_before_failure);
+
+    terminal.put_bytes(b"\x1b[?1049h");
+    assert_eq!(terminal.screen().scroll_count(), 0);
+    assert!(terminal.screen().saved_primary_scroll_count() > 0);
+    terminal.put_str("ALT");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 5, cols: 10 }));
+    terminal.put_bytes(b"\x1b[?1049l");
+
+    assert!(!terminal.is_alt_screen());
+    assert_eq!(
+        (terminal.screen().rows(), terminal.screen().cols()),
+        (5, 10)
+    );
+    assert_eq!(terminal.selection_text(), "ABC");
+    assert!(terminal.screen().scroll_count() > 0);
 }
 
 #[test]
@@ -1127,6 +1311,37 @@ fn alt_screen_1047_clears_on_entry() {
 }
 
 #[test]
+fn alt_screen_1047_clear_entry_discards_parked_content_after_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("old-alt");
+    terminal.put_bytes(b"\x1b[?47l");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 3, cols: 4 }));
+
+    terminal.put_bytes(b"\x1b[?1047h");
+
+    assert!(terminal.is_alt_screen());
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (3, 4));
+    assert!(terminal.row_text(0).trim().is_empty());
+}
+
+#[test]
+fn alt_screen_1048_saved_cursor_projects_through_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.put_str("abc");
+    terminal.put_bytes(b"\x1b[?1048h");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    terminal.put_bytes(b"\x1b[1;1H");
+
+    terminal.put_bytes(b"\x1b[?1048l");
+
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        (3, 0)
+    );
+}
+
+#[test]
 fn alt_screen_1048_saves_and_restores_cursor() {
     let mut terminal = Terminal::new_headless(5, 20);
     terminal.put_str("abc"); // cursor at 0-based (3, 0)
@@ -1916,7 +2131,14 @@ fn should_reset_scroll_snap_suppression_when_resized() {
     }
     terminal.scroll_viewport_up(5);
     let offset_before = terminal.screen().view_offset();
-    assert!(offset_before > 0);
+    assert!(
+        offset_before > 0,
+        "expected scrollback after output: rows={}, scroll_count={}, cursor_y={}, last_row={:?}",
+        terminal.screen().rows(),
+        terminal.screen().scroll_count(),
+        terminal.screen().cursor_y(),
+        terminal.row_text(29)
+    );
 
     // process_output should snap to bottom now since suppress_scroll_snap was reset to false
     terminal.process_output(b"new output\r\n");
@@ -1950,6 +2172,20 @@ fn wait_for_pty_wake(wake_rx: &std::sync::mpsc::Receiver<()>) {
     wake_rx
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("reader should wake for queued output");
+}
+
+fn wait_for_pty_bytes(terminal: &mut Terminal, wake_rx: &std::sync::mpsc::Receiver<()>) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if terminal.drain_pty() {
+            return;
+        }
+        let now = Instant::now();
+        assert!(now < deadline, "reader should publish resumed output");
+        wake_rx
+            .recv_timeout(deadline.saturating_duration_since(now))
+            .expect("reader should wake for resumed output");
+    }
 }
 
 struct ScriptedReader {
@@ -2009,6 +2245,380 @@ where
     (terminal, bytes, wake_rx)
 }
 
+#[test]
+fn resize_rejects_active_reader_without_interrupt_capability() {
+    let output = b"L00:abcdefgh\r\nL01:ijklmnop\r\nL02:qrstuvwx".to_vec();
+    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+    let reader = CompletedScriptedReader {
+        chunks: std::collections::VecDeque::from([output]),
+        completed: completed_tx,
+    };
+    let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
+    wait_for_pty_wake(&wake_rx);
+    completed_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enqueue output before resize");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("an active reader without interrupt control cannot resize safely");
+
+    assert!(error.to_string().contains("no interrupt capability"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+    assert!(terminal.drain_pty());
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'L'));
+}
+struct BarrierTestReader {
+    state: u8,
+    initial: Vec<u8>,
+    blocked: std::sync::mpsc::Sender<()>,
+    interrupted: std::sync::mpsc::Receiver<()>,
+    after_resume: Vec<u8>,
+}
+
+impl std::io::Read for BarrierTestReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.state {
+            0 => {
+                self.state = 1;
+                buffer[..self.initial.len()].copy_from_slice(&self.initial);
+                Ok(self.initial.len())
+            }
+            1 => {
+                self.state = 2;
+                self.blocked.send(()).unwrap();
+                self.interrupted.recv().unwrap();
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
+            2 if !self.after_resume.is_empty() => {
+                self.state = 3;
+                buffer[..self.after_resume.len()].copy_from_slice(&self.after_resume);
+                Ok(self.after_resume.len())
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+fn select_visible_viewport(terminal: &mut Terminal, pointer_id: u64) -> String {
+    let cols = terminal.screen().cols();
+    assert!(terminal.screen().rows() >= 6);
+    let end = ((cols.saturating_sub(1) as f32 * 10.0) + 5.0, 70.0);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    for (phase, position) in [
+        (TerminalPointerPhase::Down, (5.0, 50.0)),
+        (TerminalPointerPhase::Move, end),
+        (TerminalPointerPhase::Up, end),
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                position,
+                phase,
+                TerminalPointerButton::Left,
+                pointer_id,
+            )))
+            .unwrap();
+    }
+    terminal
+        .command_copy_selection()
+        .clipboard_text
+        .expect("completed selection should be copied")
+}
+
+fn scroll_to_review_seam(terminal: &mut Terminal, next_marker: &str) {
+    terminal.scroll_viewport_to_top();
+    let max_steps = terminal.screen().scroll_count();
+    for _ in 0..=max_steps {
+        if terminal.row_text(2).trim_end() == "cdefg"
+            && terminal.row_text(3).starts_with(next_marker)
+        {
+            return;
+        }
+        terminal.scroll_viewport_down(1);
+    }
+    panic!("review seam before {next_marker} was not retained");
+}
+
+#[test]
+fn barrier_resize_preserves_single_narrow_review_and_copy_without_duplication() {
+    let initial: Vec<u8> = (0..12)
+        .flat_map(|line| format!("L{line:02}:abcdefg\r\n").into_bytes())
+        .collect();
+    let after_resume: Vec<u8> = (12..24)
+        .flat_map(|line| format!("L{line:02}:abcdefg\r\n").into_bytes())
+        .collect();
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: initial.clone(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: after_resume.clone(),
+    };
+    let bytes = Default::default();
+    let writer = RecordingWriter {
+        bytes,
+        max_write: usize::MAX,
+    };
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| interrupt_tx.send(()).map_err(Into::into),
+        std::time::Duration::from_secs(1),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should block after publishing the old-geometry chunk");
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 6, cols: 6 }));
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    scroll_to_review_seam(&mut terminal, "L12:");
+    let copied = select_visible_viewport(&mut terminal, 91);
+
+    let mut reference = Terminal::new_headless(4, 12);
+    reference.put_str(std::str::from_utf8(&initial).unwrap());
+    assert!(reference.resize_if_changed(TerminalSize { rows: 6, cols: 6 }));
+    reference.process_output(&after_resume);
+    scroll_to_review_seam(&mut reference, "L12:");
+    let expected = select_visible_viewport(&mut reference, 92);
+
+    assert_eq!(copied, expected);
+    assert!(
+        copied.contains("L12"),
+        "copied viewport must cross from old-geometry rows into post-resume output: {copied:?}; rows={:?}",
+        [terminal.row_text(2), terminal.row_text(3)]
+    );
+    let markers: Vec<_> = copied
+        .split_whitespace()
+        .filter(|word| word.starts_with('L'))
+        .collect();
+    assert!(
+        !markers.is_empty(),
+        "copied review region must contain line markers"
+    );
+    let unique: std::collections::HashSet<_> = markers.iter().copied().collect();
+    assert_eq!(markers.len(), unique.len(), "copied lines were duplicated");
+}
+
+#[test]
+fn barrier_timeout_preserves_geometry_and_late_ack_cannot_block_retry() {
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: b"old".to_vec(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: b"after".to_vec(),
+    };
+    let bytes = Default::default();
+    let writer = RecordingWriter {
+        bytes,
+        max_write: usize::MAX,
+    };
+    let allow_interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_flag = std::sync::Arc::clone(&allow_interrupt);
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| {
+            if callback_flag.load(std::sync::atomic::Ordering::Acquire) {
+                interrupt_tx.send(()).map_err(Into::into)
+            } else {
+                Ok(())
+            }
+        },
+        std::time::Duration::from_millis(25),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enter its blocking read");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("the first barrier should time out");
+    assert!(error.to_string().contains("timed out"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+
+    allow_interrupt.store(true, std::sync::atomic::Ordering::Release);
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'a'));
+}
+#[test]
+fn barrier_interrupt_failure_preserves_geometry_and_resumes_late_reader() {
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+    let reader = BarrierTestReader {
+        state: 0,
+        initial: b"old".to_vec(),
+        blocked: blocked_tx,
+        interrupted: interrupt_rx,
+        after_resume: b"resumed".to_vec(),
+    };
+    let writer = RecordingWriter {
+        bytes: Default::default(),
+        max_write: usize::MAX,
+    };
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+        reader,
+        writer,
+        move |_| anyhow::bail!("injected interrupt failure"),
+        std::time::Duration::from_secs(1),
+        move || wake_tx.send(()).is_ok(),
+    );
+    wait_for_pty_wake(&wake_rx);
+    blocked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("reader should enter its blocking read");
+
+    let error = terminal
+        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+        .expect_err("interrupt failure must reject resize");
+    assert!(error.to_string().contains("injected interrupt failure"));
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
+
+    interrupt_tx.send(()).unwrap();
+    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'r'));
+}
+
+#[cfg(windows)]
+#[test]
+fn live_conpty_rapid_resize_preserves_history_and_prompt() {
+    let size = harbor_pty::TerminalSize { rows: 24, cols: 80 };
+    let command = harbor_pty::ShellCommand::new(
+        Some(format!(
+            r"{}\System32\cmd.exe",
+            std::env::var("SystemRoot").unwrap()
+        )),
+        Vec::new(),
+    );
+    let endpoints = harbor_pty::PtyEndpoints::spawn_shell(size, &command).unwrap();
+    assert_eq!(endpoints.shell_name().to_ascii_lowercase(), "cmd");
+    let (reader, writer, control) = endpoints.into_parts();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
+    terminal.io = crate::io::TerminalIo::new(reader, writer, Some(control), move || {
+        wake_tx.send(()).is_ok()
+    });
+    terminal.io.write_pty(b"@echo off\rcls & (for /L %i in (1,1,20) do @echo harbor-profile-%i 0123456789 abcdefghijklmnopqrstuvwxyz) & set /p answer=READY:&echo ACK:&set /p answer=\r").unwrap();
+    let retained_text = |terminal: &Terminal| {
+        let s = terminal.screen();
+        s.selected_text(crate::SelectionBounds {
+            start_row: s.history_start(),
+            start_col: 0,
+            end_row: s.history_start() + (s.scroll_count() + s.rows()) as u64 - 1,
+            end_col: s.cols() - 1,
+        })
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !terminal.row_text(20).starts_with("READY:") {
+        assert!(
+            Instant::now() < deadline,
+            "fixture should finish startup: {:?}",
+            retained_text(&terminal)
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    let before = retained_text(&terminal);
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (20, 6)
+    );
+    for _ in 0..5 {
+        for cols in [30, 12, 50, 8, 80] {
+            terminal
+                .try_resize_if_changed(TerminalSize { rows: 24, cols })
+                .unwrap();
+        }
+    }
+    // Let asynchronous ConPTY output settle; service queries throughout the wait.
+    let deadline = Instant::now() + std::time::Duration::from_millis(750);
+    while Instant::now() < deadline {
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    assert_eq!(retained_text(&terminal), before);
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (20, 6)
+    );
+    terminal.io.write_pty(b"\r").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while !retained_text(&terminal).contains("ACK:") {
+        assert!(
+            Instant::now() < deadline,
+            "output after resize must survive"
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn live_conpty_resize_barrier_resumes_output() {
+    let size = harbor_pty::TerminalSize { rows: 4, cols: 40 };
+    let endpoints =
+        harbor_pty::PtyEndpoints::spawn_shell(size, &harbor_pty::ShellCommand::default())
+            .expect("ConPTY shell should start");
+    let (reader, writer, control) = endpoints.into_parts();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
+    terminal.io = crate::io::TerminalIo::new(reader, writer, Some(control), move || {
+        wake_tx.send(()).is_ok()
+    });
+
+    let started = Instant::now();
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 5, cols: 32 }));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "ConPTY should acknowledge the resize barrier within its bound"
+    );
+
+    terminal
+        .io
+        .write_pty(b"echo HARBOR_BARRIER_RESUMED\r")
+        .expect("resumed PTY should accept input");
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let now = Instant::now();
+        assert!(now < deadline, "resumed reader should publish shell output");
+        let _ = wake_rx.recv_timeout(
+            deadline
+                .saturating_duration_since(now)
+                .min(std::time::Duration::from_millis(100)),
+        );
+        terminal.drain_pty();
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        let text = screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        });
+        if text.contains("HARBOR_BARRIER_RESUMED") {
+            break;
+        }
+    }
+}
 #[test]
 fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
     let reader = ScriptedReader {
@@ -2088,6 +2698,41 @@ fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
         .unwrap();
     assert_eq!(local.capture_pointer, Some(10));
     assert_eq!(written.lock().unwrap().len(), before);
+}
+
+#[test]
+fn vt_mouse_release_consumes_pending_local_capture_after_alt_transition() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, _written, _wake_rx) = terminal_with_io(reader);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    let event = |phase| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            7,
+        ))
+    };
+    assert_eq!(
+        terminal
+            .handle_event_with_outcome(event(TerminalPointerPhase::Down))
+            .unwrap()
+            .capture_pointer,
+        Some(7)
+    );
+    terminal.process_output(b"\x1b[?1049h\x1b[?1000;1006h");
+    assert_eq!(
+        terminal
+            .handle_event_with_outcome(event(TerminalPointerPhase::Up))
+            .unwrap()
+            .release_pointer,
+        Some(7)
+    );
+    assert!(!terminal.pointer.has_active_pointer());
 }
 
 #[test]
@@ -3084,6 +3729,87 @@ fn ctrl_shift_c_is_encoded_after_copy_migration() {
     assert_eq!(outcome.clipboard_text, None);
     assert_eq!(written.lock().unwrap().as_slice(), b"\x03");
 }
+
+#[test]
+fn copy_selection_returns_text_and_clears_completed_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    for phase in [
+        TerminalPointerPhase::Down,
+        TerminalPointerPhase::Move,
+        TerminalPointerPhase::Up,
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                if matches!(phase, TerminalPointerPhase::Down) {
+                    (1.0, 1.0)
+                } else {
+                    (21.0, 1.0)
+                },
+                phase,
+                TerminalPointerButton::Left,
+                80,
+            )))
+            .unwrap();
+    }
+    assert_eq!(terminal.selection_text(), "sel");
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some("sel"));
+    assert!(outcome.release_pointer.is_none());
+    assert!(outcome.redraw);
+    assert!(!terminal.pointer.has_selection_state());
+}
+
+#[test]
+fn copy_selection_returns_text_clears_highlight_and_releases_pointer() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("selection");
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            TerminalPointerPhase::Down,
+            TerminalPointerButton::Left,
+            81,
+        )))
+        .unwrap();
+    terminal
+        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (21.0, 1.0),
+            TerminalPointerPhase::Move,
+            TerminalPointerButton::Left,
+            81,
+        )))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "sel");
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some("sel"));
+    assert_eq!(outcome.release_pointer, Some(81));
+    assert!(outcome.redraw);
+    assert!(!terminal.pointer.has_selection_state());
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn copy_selection_preserves_empty_copy_without_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+
+    let outcome = terminal.command_copy_selection();
+
+    assert_eq!(outcome.clipboard_text.as_deref(), Some(""));
+    assert!(!outcome.redraw);
+    assert!(outcome.release_pointer.is_none());
+    assert!(!terminal.pointer.has_selection_state());
+}
 #[test]
 fn bare_navigation_keys_encode_after_scroll_migration() {
     let reader = ScriptedReader {
@@ -3164,6 +3890,244 @@ fn explicit_scroll_command_clears_selection_even_at_viewport_boundary() {
     assert_eq!(outcome.release_pointer, Some(41));
     assert!(!terminal.has_non_empty_selection());
 }
+#[test]
+fn parser_insert_before_selection_reprojects_canonical_endpoints() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdefgh");
+    let now = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            71,
+        ))
+    };
+    terminal
+        .handle_event(now(TerminalPointerPhase::Down, 41.0))
+        .unwrap();
+    terminal
+        .handle_event(now(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(now(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "efg");
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[4hX\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 5,
+            end_row: 0,
+            end_col: 7,
+        })
+    );
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[P");
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 4,
+            end_row: 0,
+            end_col: 6,
+        })
+    );
+
+    terminal.put_bytes(b"\x1b[1;2HZ");
+    assert_eq!(terminal.selection_text(), "efg");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 4,
+            end_row: 0,
+            end_col: 6,
+        })
+    );
+}
+
+#[test]
+fn replacing_one_selected_logical_line_clears_the_whole_selection() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdefgh");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            72,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    assert!(terminal.has_non_empty_selection());
+
+    terminal.put_bytes(b"\r\x1b[2K");
+
+    assert!(!terminal.has_non_empty_selection());
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn trailing_blank_selection_preserves_columns_when_its_row_moves() {
+    let mut terminal = Terminal::new_headless(2, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            69,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 51.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1H\x1b[L");
+
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 1,
+            start_col: 5,
+            end_row: 1,
+            end_col: 6,
+        })
+    );
+}
+
+#[test]
+fn trailing_blank_selection_keeps_its_physical_projection_after_unrelated_ingest() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            73,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 51.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 61.0))
+        .unwrap();
+    let expected = terminal.pointer.bounds();
+
+    terminal.put_bytes(b"\x1b[1;1H");
+
+    assert_eq!(terminal.pointer.bounds(), expected);
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn repeated_content_insert_uses_semantic_transform_not_payload_diffing() {
+    let mut terminal = Terminal::new_headless(1, 5);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("aaaaB");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            74,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1H\x1b[4ha\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "aaa");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 4,
+        })
+    );
+}
+
+#[test]
+fn equal_boundary_insertion_is_drag_direction_independent() {
+    fn selected(reverse: bool, pointer_id: u64) -> Terminal {
+        let mut terminal = Terminal::new_headless(1, 10);
+        terminal
+            .pointer
+            .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+        terminal.put_str("abcdefgh");
+        let (start, end) = if reverse { (61.0, 41.0) } else { (41.0, 61.0) };
+        let event = |phase, x| {
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (x, 1.0),
+                phase,
+                TerminalPointerButton::Left,
+                pointer_id,
+            ))
+        };
+        terminal
+            .handle_event(event(TerminalPointerPhase::Down, start))
+            .unwrap();
+        terminal
+            .handle_event(event(TerminalPointerPhase::Move, end))
+            .unwrap();
+        terminal
+            .handle_event(event(TerminalPointerPhase::Up, end))
+            .unwrap();
+        terminal.put_bytes(b"\x1b[1;5H\x1b[4hX\x1b[4l");
+        terminal
+    }
+
+    let forward = selected(false, 75);
+    let reverse = selected(true, 76);
+    assert_eq!(forward.pointer.bounds(), reverse.pointer.bounds());
+    assert_eq!(forward.selection_text(), reverse.selection_text());
+    assert_eq!(forward.selection_text(), "Xefg");
+}
 
 #[test]
 fn explicit_scroll_command_observes_queued_alt_screen_transition() {
@@ -3216,6 +4180,247 @@ fn modified_or_alt_screen_navigation_encodes_to_pty() {
         }))
         .unwrap();
     assert!(!written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn rectangular_alt_resize_preserves_retained_soft_wrapped_selection_identity() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("abcdef");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 21.0),
+            phase,
+            TerminalPointerButton::Left,
+            67,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 11.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 11.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "ef");
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 3 }));
+
+    assert_eq!(terminal.selection_text(), "ef");
+}
+
+#[test]
+fn rectangular_alt_resize_clears_selection_when_one_endpoint_is_clipped() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("abcdef");
+    let event = |phase, position| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            position,
+            phase,
+            TerminalPointerButton::Left,
+            68,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, (31.0, 1.0)))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, (1.0, 21.0)))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, (1.0, 21.0)))
+        .unwrap();
+    assert!(terminal.has_non_empty_selection());
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 3 }));
+
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn ris_drops_parked_alternate_selection_before_fresh_reentry() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_bytes(b"\x1b[?47h");
+    terminal.put_str("old");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            66,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "old");
+    terminal.put_bytes(b"\x1b[?47l");
+    terminal.put_bytes(b"\x1bc");
+    terminal.put_bytes(b"\x1b[?47h");
+
+    assert_eq!(terminal.selection_text(), "");
+}
+
+#[test]
+fn primary_selection_is_parked_reflowed_and_restored_across_alt_resize() {
+    let mut terminal = Terminal::new_headless(2, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("primary");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            69,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 21.0))
+        .unwrap();
+    assert_eq!(terminal.selection_text(), "pri");
+
+    terminal.put_bytes(b"\x1b[?47h");
+    assert!(terminal.is_alt_screen());
+    assert_eq!(terminal.selection_text(), "");
+    terminal.put_str("ALT");
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    terminal.put_bytes(b"\x1b[?47l");
+
+    assert!(!terminal.is_alt_screen());
+    assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
+    assert_eq!(terminal.selection_text(), "pri");
+}
+
+#[test]
+fn default_blank_insert_reprojects_selection_to_shifted_source_cells() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcde");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            70,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;2H\x1b[@");
+
+    assert_eq!(terminal.selection_text(), "cd");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 3,
+            end_row: 0,
+            end_col: 4,
+        })
+    );
+}
+
+#[test]
+fn margin_insert_drops_margin_tail_without_aliasing_fixed_exterior_selection() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("ABCDEFGH");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            71,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 61.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 71.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 71.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[?69h\x1b[3;6s\x1b[1;3H\x1b[@");
+
+    assert_eq!(terminal.selection_text(), "GH");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 6,
+            end_row: 0,
+            end_col: 7,
+        })
+    );
+}
+
+#[test]
+fn output_between_pointer_down_and_up_keeps_click_zero_width() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdef");
+    let down = TerminalEvent::Pointer(TerminalPointerEvent::new(
+        (21.0, 1.0),
+        TerminalPointerPhase::Down,
+        TerminalPointerButton::Left,
+        72,
+    ));
+    terminal.handle_event(down).unwrap();
+
+    terminal.put_bytes(b"\x1b[1;3H\x1b[4hX\x1b[4l");
+    let up = TerminalEvent::Pointer(TerminalPointerEvent::new(
+        (21.0, 1.0),
+        TerminalPointerPhase::Up,
+        TerminalPointerButton::Left,
+        72,
+    ));
+    terminal.handle_event(up).unwrap();
+
+    assert!(!terminal.has_non_empty_selection());
+    assert_eq!(terminal.selection_text(), "");
 }
 
 #[test]
@@ -3452,6 +4657,86 @@ fn queued_output_updates_modes_before_input_encoding() {
         .unwrap();
 
     assert_eq!(written.lock().unwrap().as_slice(), b"\x1bOA\x1bOq");
+}
+
+#[test]
+fn irm_wide_wrap_does_not_mutate_anchors_on_the_source_row() {
+    let mut terminal = Terminal::new_headless(2, 4);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcd");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            67,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;4H\x1b[4h");
+    terminal.put_str("界");
+    terminal.put_bytes(b"\x1b[4l");
+
+    assert_eq!(terminal.selection_text(), "cd");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 3,
+        })
+    );
+}
+
+#[test]
+fn width_changing_overwrite_preserves_selection_of_later_content() {
+    let mut terminal = Terminal::new_headless(1, 5);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("界xy");
+    let event = |phase, x| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            68,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 21.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 31.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 31.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1Hab");
+
+    assert_eq!(terminal.selection_text(), "xy");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 2,
+            end_row: 0,
+            end_col: 3,
+        })
+    );
 }
 
 #[test]
@@ -4046,4 +5331,189 @@ fn should_record_backdrop_availability_through_the_setter() {
 
     terminal.set_backdrop_available(false);
     assert!(!terminal.backdrop_available);
+}
+
+#[test]
+fn width_round_trip_preserves_cjk_hard_breaks_and_meaningful_trailing_blanks() {
+    fn retained_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    let mut terminal = Terminal::new_headless(4, 8);
+    terminal.put_str("A界  \r\n\r\nB");
+    let expected = retained_text(&terminal);
+    assert!(expected.contains("A界  \n\nB"));
+
+    for cols in [6, 10, 8] {
+        assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
+        assert_eq!(retained_text(&terminal), expected);
+    }
+}
+
+#[test]
+fn live_bottom_resize_round_trip_preserves_every_scrollback_view() {
+    fn retained_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    fn reviewed_text(terminal: &Terminal) -> String {
+        let screen = terminal.screen();
+        let top = screen.history_start() + (screen.scroll_count() - screen.view_offset()) as u64;
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + screen.rows() as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    }
+
+    fn scrollback_views(terminal: &mut Terminal) -> Vec<(Vec<String>, Vec<bool>)> {
+        terminal.scroll_viewport_to_bottom();
+        let mut views = Vec::new();
+        loop {
+            let snapshot = terminal.snapshot();
+            let rows = snapshot
+                .cells
+                .chunks(snapshot.cols)
+                .map(|row| row.iter().map(|cell| cell.ch).collect())
+                .collect();
+            let queried_rows: Vec<String> = (0..snapshot.rows)
+                .map(|row| terminal.row_text(row))
+                .collect();
+            assert_eq!(
+                queried_rows, rows,
+                "row_text must follow the reviewed viewport"
+            );
+            views.push((rows, snapshot.wrapped));
+            if snapshot.view_offset == snapshot.scroll_count {
+                break;
+            }
+            terminal.scroll_viewport_up(1);
+        }
+        terminal.scroll_viewport_to_bottom();
+        views
+    }
+
+    let output: String = (0..24)
+        .map(|line| format!("L{line:02}:abcdef界ghij\r\n"))
+        .collect();
+    let mut terminal = Terminal::new_headless(4, 12);
+    terminal.put_str(&output);
+    assert_eq!(terminal.screen().view_offset(), 0);
+    let expected_text = retained_text(&terminal);
+    let expected_views = scrollback_views(&mut terminal);
+
+    let mut narrow_reference = Terminal::new_headless(2, 6);
+    narrow_reference.put_str(&output);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 6 }));
+    assert_eq!(terminal.screen().view_offset(), 0);
+    assert_eq!(retained_text(&terminal), retained_text(&narrow_reference));
+    terminal.scroll_viewport_up(3);
+    narrow_reference.scroll_viewport_up(3);
+    assert_eq!(reviewed_text(&terminal), reviewed_text(&narrow_reference));
+    assert_eq!(
+        scrollback_views(&mut terminal),
+        scrollback_views(&mut narrow_reference)
+    );
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols: 12 }));
+    assert_eq!(terminal.screen().view_offset(), 0);
+
+    assert_eq!(retained_text(&terminal), expected_text);
+    assert_eq!(scrollback_views(&mut terminal), expected_views);
+}
+
+#[test]
+fn narrow_resize_near_capacity_does_not_duplicate_logical_lines() {
+    use std::collections::HashSet;
+
+    let mut terminal = Terminal::new_headless(6, 24);
+    for line in 0..300 {
+        terminal.put_str(&format!("L{line:03}:abcdefghijklmnop\r\n"));
+    }
+
+    for cols in [18, 12, 6] {
+        assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
+    }
+    let text = {
+        let screen = terminal.screen();
+        let retained_rows = screen.scroll_count() + screen.rows();
+        screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + retained_rows as u64 - 1,
+            end_col: screen.cols() - 1,
+        })
+    };
+    let markers: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix('L'))
+        .filter_map(|line| line.get(..3))
+        .map(str::to_owned)
+        .collect();
+    let unique: HashSet<_> = markers.iter().collect();
+
+    assert!(!markers.is_empty());
+    assert_eq!(
+        unique.len(),
+        markers.len(),
+        "logical lines were duplicated: {markers:?}"
+    );
+    assert!(
+        markers.windows(2).all(|pair| pair[0] < pair[1]),
+        "logical lines must remain ordered: {markers:?}"
+    );
+}
+
+#[test]
+fn mixed_resize_keeps_review_content_and_cursor_meaning_for_short_lines() {
+    fn reviewed_first_line(terminal: &Terminal) -> String {
+        let snapshot = terminal.snapshot();
+        snapshot.cells[..snapshot.cols]
+            .iter()
+            .map(|cell| cell.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    let mut terminal = Terminal::new_headless(3, 8);
+    terminal.put_str("L0\r\nL1\r\nL2\r\nL3\r\nL4");
+    assert!(terminal.screen().scroll_count() >= 2);
+    terminal.scroll_viewport_up(1);
+    let reviewed_line = reviewed_first_line(&terminal);
+    assert!(terminal.screen().view_offset() > 0);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 8 }));
+    assert_eq!(reviewed_first_line(&terminal), reviewed_line);
+    assert!(terminal.screen().view_offset() > 0);
+
+    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 6 }));
+    assert_eq!(reviewed_first_line(&terminal), reviewed_line);
+    assert!(terminal.screen().view_offset() > 0);
+    terminal.put_str("Z");
+    let screen = terminal.screen();
+    let retained_rows = screen.scroll_count() + screen.rows();
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + retained_rows as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert!(text.contains("L4Z"));
 }

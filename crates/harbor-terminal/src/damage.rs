@@ -7,7 +7,7 @@ use bitvec::prelude::BitVec;
 /// Always mark damage (dirty) *before* writing/modifying cell data in the screen buffer,
 /// because the damage range calculation may need to read the old state of the cells
 /// (e.g. to inspect wide glyph continuation flags).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DamageTracker {
     rows: usize,
     cols: usize,

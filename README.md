@@ -16,15 +16,23 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 
 These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
 
-The main gaps are resize reflow, complete combining/grapheme text handling, settings hot reload, split panes, search, profiles, a command palette, Kitty protocols, selected terminal extensions, and release/performance evidence. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
+The main gaps are interactive Windows/performance acceptance for the implemented resize reflow, complete combining/grapheme text handling, settings hot reload, split panes, search, profiles, a command palette, Kitty protocols, and selected terminal extensions. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
 
 ## Build and Run
 
 An operational PTY session currently requires Windows.
 
-```bash
+```powershell
+./scripts/fetch_conpty.ps1
 cargo run
 ```
+
+Run the fetch script once after cloning, and again when the pinned runtime changes.
+Windows builds stage the pinned [Microsoft ConPTY runtime](third_party/conpty/README.md)
+in `target/<profile>/conpty/`. When distributing or moving `harbor.exe`, include
+the complete adjacent `conpty/` directory (DLL, hosts, version and license).
+An incomplete bundle is reported as a PTY startup error rather than falling back
+to an older Windows console host with incompatible resize behavior.
 
 ## Library Crates
 

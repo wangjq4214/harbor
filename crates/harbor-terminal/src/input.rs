@@ -7,191 +7,149 @@ use crate::types::{
     TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
 };
 
-/// Encodes supported terminal input events for the direct PTY path.
-pub(super) struct TerminalInputEncoder;
+pub(super) const fn encode_focus(event: TerminalFocusEvent) -> &'static [u8] {
+    match event {
+        TerminalFocusEvent::Gained => b"\x1b[I",
+        TerminalFocusEvent::Lost => b"\x1b[O",
+    }
+}
 
-impl TerminalInputEncoder {
-    pub(super) const fn encode_focus(event: TerminalFocusEvent) -> &'static [u8] {
-        match event {
-            TerminalFocusEvent::Gained => b"\x1b[I",
-            TerminalFocusEvent::Lost => b"\x1b[O",
+pub(super) fn encode(event: &TerminalEvent, modes: InputModes) -> Option<Vec<u8>> {
+    match event {
+        TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
+            encode_key(*key, *modifiers, modes)
         }
+        TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)) if !text.is_empty() => {
+            Some(text.as_bytes().to_vec())
+        }
+        TerminalEvent::Pointer(pointer) => encode_pointer(pointer, modes),
+        _ => None,
+    }
+}
+
+fn encode_pointer(pointer: &TerminalPointerEvent, modes: InputModes) -> Option<Vec<u8>> {
+    if matches!(pointer.phase, TerminalPointerPhase::Cancel) {
+        return None;
+    }
+    let tracking = modes.mouse_tracking;
+    let is_motion = matches!(pointer.phase, TerminalPointerPhase::Move);
+    let should_report = match tracking {
+        MouseTrackingMode::Disabled => false,
+        MouseTrackingMode::Button => !is_motion,
+        MouseTrackingMode::ButtonMotion => {
+            !is_motion || pointer.button != TerminalPointerButton::None
+        }
+        MouseTrackingMode::AnyMotion => true,
+    };
+    if !should_report {
+        return None;
     }
 
-    pub(super) fn encode(event: &TerminalEvent, modes: InputModes) -> Option<Vec<u8>> {
-        match event {
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, modifiers }) => {
-                Self::encode_key(*key, *modifiers, modes)
-            }
-            TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(text)) if !text.is_empty() => {
-                Some(text.as_bytes().to_vec())
-            }
-            TerminalEvent::Pointer(pointer) => Self::encode_pointer(pointer, modes),
-            _ => None,
-        }
-    }
-
-    fn encode_pointer(pointer: &TerminalPointerEvent, modes: InputModes) -> Option<Vec<u8>> {
-        if matches!(pointer.phase, TerminalPointerPhase::Cancel) {
+    let mut button = match pointer.button {
+        TerminalPointerButton::None => 3u8,
+        TerminalPointerButton::Left => 0,
+        TerminalPointerButton::Middle => 1,
+        TerminalPointerButton::Right => 2,
+    };
+    let wheel_delta = match pointer.phase {
+        TerminalPointerPhase::WheelLine { dy, .. }
+        | TerminalPointerPhase::WheelPixel { dy, .. } => Some(dy),
+        _ => None,
+    };
+    if let Some(dy) = wheel_delta {
+        if dy == 0.0 {
             return None;
         }
-        let tracking = modes.mouse_tracking;
-        let is_motion = matches!(pointer.phase, TerminalPointerPhase::Move);
-        let should_report = match tracking {
-            MouseTrackingMode::Disabled => false,
-            MouseTrackingMode::Button => !is_motion,
-            MouseTrackingMode::ButtonMotion => {
-                !is_motion || pointer.button != TerminalPointerButton::None
-            }
-            MouseTrackingMode::AnyMotion => true,
-        };
-        if !should_report {
-            return None;
-        }
+        button = if dy > 0.0 { 64 } else { 65 };
+    }
+    button |= mouse_modifier_code(pointer.modifiers);
+    if is_motion {
+        button = button.saturating_add(32);
+    }
+    let release = matches!(pointer.phase, TerminalPointerPhase::Up);
+    let suffix = if release { 'm' } else { 'M' };
+    let col = pointer.position.0.max(0.0) as u32 + 1;
+    let row = pointer.position.1.max(0.0) as u32 + 1;
+    modes
+        .mouse_sgr
+        .then(|| format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes())
+}
 
-        let mut button = match pointer.button {
-            TerminalPointerButton::None => 3u8,
-            TerminalPointerButton::Left => 0,
-            TerminalPointerButton::Middle => 1,
-            TerminalPointerButton::Right => 2,
-        };
-        let wheel_delta = match pointer.phase {
-            TerminalPointerPhase::WheelLine { dy, .. }
-            | TerminalPointerPhase::WheelPixel { dy, .. } => Some(dy),
-            _ => None,
-        };
-        if let Some(dy) = wheel_delta {
-            if dy == 0.0 {
-                return None;
-            }
-            button = if dy > 0.0 { 64 } else { 65 };
-        }
-        button |= mouse_modifier_code(pointer.modifiers);
-        if is_motion {
-            button = button.saturating_add(32);
-        }
-        let release = matches!(pointer.phase, TerminalPointerPhase::Up);
-        let suffix = if release { 'm' } else { 'M' };
-        let col = pointer.position.0.max(0.0) as u32 + 1;
-        let row = pointer.position.1.max(0.0) as u32 + 1;
-        modes
-            .mouse_sgr
-            .then(|| format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes())
+fn encode_key(
+    key: TerminalKey,
+    modifiers: TerminalModifiers,
+    modes: InputModes,
+) -> Option<Vec<u8>> {
+    let modifier_code = modifier_code(modifiers);
+    let (key, is_numpad) = match key {
+        TerminalKey::NumpadCharacter(character) => (TerminalKey::Character(character), true),
+        TerminalKey::NumpadEnter => (TerminalKey::Enter, true),
+        key => (key, false),
+    };
+
+    if modes.application_keypad
+        && is_numpad
+        && modifier_code == 1
+        && let Some(sequence) = keypad_sequence(key)
+    {
+        return Some(sequence.to_vec());
     }
 
-    fn encode_key(
-        key: TerminalKey,
-        modifiers: TerminalModifiers,
-        modes: InputModes,
-    ) -> Option<Vec<u8>> {
-        let modifier_code = modifier_code(modifiers);
-        let (key, is_numpad) = match key {
-            TerminalKey::NumpadCharacter(character) => (TerminalKey::Character(character), true),
-            TerminalKey::NumpadEnter => (TerminalKey::Enter, true),
-            key => (key, false),
-        };
+    if modifiers.ctrl
+        && let TerminalKey::Character(character) = key
+        && let Some(control) = ctrl_key_to_byte(character)
+    {
+        return Some(if modifiers.alt {
+            vec![0x1b, control]
+        } else {
+            vec![control]
+        });
+    }
 
-        if modes.application_keypad
-            && is_numpad
-            && modifier_code == 1
-            && let Some(sequence) = keypad_sequence(key)
-        {
-            return Some(sequence.to_vec());
-        }
-
-        if modifiers.ctrl
-            && let TerminalKey::Character(character) = key
-            && let Some(control) = ctrl_key_to_byte(character)
-        {
-            return Some(if modifiers.alt {
-                vec![0x1b, control]
-            } else {
-                vec![control]
-            });
-        }
-
-        match key {
-            TerminalKey::Tab => Some(if modifiers.shift {
-                b"\x1b[Z".to_vec()
-            } else {
-                b"\t".to_vec()
-            }),
-            TerminalKey::Enter => Some(b"\r".to_vec()),
-            TerminalKey::Space => Some(b" ".to_vec()),
-            TerminalKey::Escape => Some(b"\x1b".to_vec()),
-            TerminalKey::Backspace => Some(b"\x7f".to_vec()),
-            TerminalKey::Insert => csi_tilde("2", modifier_code),
-            TerminalKey::Delete => csi_tilde("3", modifier_code),
-            TerminalKey::F1 => cursor_key(b'P', false, b"\x1bOP", b"\x1bOP", modifier_code),
-            TerminalKey::F2 => cursor_key(b'Q', false, b"\x1bOQ", b"\x1bOQ", modifier_code),
-            TerminalKey::F3 => cursor_key(b'R', false, b"\x1bOR", b"\x1bOR", modifier_code),
-            TerminalKey::F4 => cursor_key(b'S', false, b"\x1bOS", b"\x1bOS", modifier_code),
-            TerminalKey::F5 => csi_tilde("15", modifier_code),
-            TerminalKey::F6 => csi_tilde("17", modifier_code),
-            TerminalKey::F7 => csi_tilde("18", modifier_code),
-            TerminalKey::F8 => csi_tilde("19", modifier_code),
-            TerminalKey::F9 => csi_tilde("20", modifier_code),
-            TerminalKey::F10 => csi_tilde("21", modifier_code),
-            TerminalKey::F11 => csi_tilde("23", modifier_code),
-            TerminalKey::F12 => csi_tilde("24", modifier_code),
-            TerminalKey::PageUp => csi_tilde("5", modifier_code),
-            TerminalKey::PageDown => csi_tilde("6", modifier_code),
-            TerminalKey::ArrowUp => cursor_key(
-                b'A',
-                modes.application_cursor,
-                b"\x1b[A",
-                b"\x1bOA",
-                modifier_code,
-            ),
-            TerminalKey::ArrowDown => cursor_key(
-                b'B',
-                modes.application_cursor,
-                b"\x1b[B",
-                b"\x1bOB",
-                modifier_code,
-            ),
-            TerminalKey::ArrowRight => cursor_key(
-                b'C',
-                modes.application_cursor,
-                b"\x1b[C",
-                b"\x1bOC",
-                modifier_code,
-            ),
-            TerminalKey::ArrowLeft => cursor_key(
-                b'D',
-                modes.application_cursor,
-                b"\x1b[D",
-                b"\x1bOD",
-                modifier_code,
-            ),
-            TerminalKey::Home => cursor_key(
-                b'H',
-                modes.application_cursor,
-                b"\x1b[H",
-                b"\x1bOH",
-                modifier_code,
-            ),
-            TerminalKey::End => cursor_key(
-                b'F',
-                modes.application_cursor,
-                b"\x1b[F",
-                b"\x1bOF",
-                modifier_code,
-            ),
-            TerminalKey::Character('\0') => None,
-            TerminalKey::Character(character) => {
-                let mut bytes =
-                    Vec::with_capacity(character.len_utf8() + usize::from(modifiers.alt));
-                if modifiers.alt {
-                    bytes.push(0x1b);
-                }
-                let mut text = [0; 4];
-                bytes.extend_from_slice(character.encode_utf8(&mut text).as_bytes());
-                Some(bytes)
+    match key {
+        TerminalKey::Tab => Some(if modifiers.shift {
+            b"\x1b[Z".to_vec()
+        } else {
+            b"\t".to_vec()
+        }),
+        TerminalKey::Enter => Some(b"\r".to_vec()),
+        TerminalKey::Space => Some(b" ".to_vec()),
+        TerminalKey::Escape => Some(b"\x1b".to_vec()),
+        TerminalKey::Backspace => Some(b"\x7f".to_vec()),
+        TerminalKey::Insert => csi_tilde("2", modifier_code),
+        TerminalKey::Delete => csi_tilde("3", modifier_code),
+        TerminalKey::F1 => cursor_key(b'P', true, modifier_code),
+        TerminalKey::F2 => cursor_key(b'Q', true, modifier_code),
+        TerminalKey::F3 => cursor_key(b'R', true, modifier_code),
+        TerminalKey::F4 => cursor_key(b'S', true, modifier_code),
+        TerminalKey::F5 => csi_tilde("15", modifier_code),
+        TerminalKey::F6 => csi_tilde("17", modifier_code),
+        TerminalKey::F7 => csi_tilde("18", modifier_code),
+        TerminalKey::F8 => csi_tilde("19", modifier_code),
+        TerminalKey::F9 => csi_tilde("20", modifier_code),
+        TerminalKey::F10 => csi_tilde("21", modifier_code),
+        TerminalKey::F11 => csi_tilde("23", modifier_code),
+        TerminalKey::F12 => csi_tilde("24", modifier_code),
+        TerminalKey::PageUp => csi_tilde("5", modifier_code),
+        TerminalKey::PageDown => csi_tilde("6", modifier_code),
+        TerminalKey::ArrowUp => cursor_key(b'A', modes.application_cursor, modifier_code),
+        TerminalKey::ArrowDown => cursor_key(b'B', modes.application_cursor, modifier_code),
+        TerminalKey::ArrowRight => cursor_key(b'C', modes.application_cursor, modifier_code),
+        TerminalKey::ArrowLeft => cursor_key(b'D', modes.application_cursor, modifier_code),
+        TerminalKey::Home => cursor_key(b'H', modes.application_cursor, modifier_code),
+        TerminalKey::End => cursor_key(b'F', modes.application_cursor, modifier_code),
+        TerminalKey::Character('\0') => None,
+        TerminalKey::Character(character) => {
+            let mut bytes = Vec::with_capacity(character.len_utf8() + usize::from(modifiers.alt));
+            if modifiers.alt {
+                bytes.push(0x1b);
             }
-            TerminalKey::NumpadCharacter(_) | TerminalKey::NumpadEnter => {
-                unreachable!("numpad keys normalized above")
-            }
+            let mut text = [0; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut text).as_bytes());
+            Some(bytes)
+        }
+        TerminalKey::NumpadCharacter(_) | TerminalKey::NumpadEnter => {
+            unreachable!("numpad keys normalized above")
         }
     }
 }
@@ -247,19 +205,15 @@ fn keypad_sequence(key: TerminalKey) -> Option<&'static [u8]> {
     }
 }
 
-fn cursor_key(
-    suffix: u8,
-    application_cursor: bool,
-    normal: &'static [u8],
-    application: &'static [u8],
-    modifier_code: u8,
-) -> Option<Vec<u8>> {
+fn cursor_key(suffix: u8, application_cursor: bool, modifier_code: u8) -> Option<Vec<u8>> {
     if modifier_code > 1 {
         Some(format!("\x1b[1;{}{}", modifier_code, suffix as char).into_bytes())
-    } else if application_cursor {
-        Some(application.to_vec())
     } else {
-        Some(normal.to_vec())
+        Some(vec![
+            b'\x1b',
+            if application_cursor { b'O' } else { b'[' },
+            suffix,
+        ])
     }
 }
 
@@ -290,14 +244,8 @@ mod tests {
 
     #[test]
     fn should_encode_focus_transitions_as_fixed_csi_sequences() {
-        assert_eq!(
-            TerminalInputEncoder::encode_focus(TerminalFocusEvent::Gained),
-            b"\x1b[I"
-        );
-        assert_eq!(
-            TerminalInputEncoder::encode_focus(TerminalFocusEvent::Lost),
-            b"\x1b[O"
-        );
+        assert_eq!(encode_focus(TerminalFocusEvent::Gained), b"\x1b[I");
+        assert_eq!(encode_focus(TerminalFocusEvent::Lost), b"\x1b[O");
     }
 
     #[test]
@@ -320,7 +268,7 @@ mod tests {
 
         for &(key, sequence) in expected {
             assert_eq!(
-                TerminalInputEncoder::encode(
+                encode(
                     &key_down(key, TerminalModifiers::default()),
                     InputModes {
                         application_cursor: true,
@@ -357,7 +305,7 @@ mod tests {
 
         for &(key, sequence) in expected {
             assert_eq!(
-                TerminalInputEncoder::encode(&key_down(key, modifiers), InputModes::default()),
+                encode(&key_down(key, modifiers), InputModes::default()),
                 Some(sequence.to_vec()),
                 "unexpected modified sequence for {key:?}",
             );
@@ -392,9 +340,9 @@ mod tests {
         ));
 
         // Act
-        let encoded_press = TerminalInputEncoder::encode(&press, modes);
-        let encoded_move = TerminalInputEncoder::encode(&move_event, modes);
-        let encoded_release = TerminalInputEncoder::encode(&release, modes);
+        let encoded_press = encode(&press, modes);
+        let encoded_move = encode(&move_event, modes);
+        let encoded_release = encode(&release, modes);
 
         // Assert
         assert_eq!(encoded_press, Some(b"\x1b[<0;3;4M".to_vec()));
@@ -422,10 +370,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            TerminalInputEncoder::encode(&wheel, modes),
-            Some(b"\x1b[<68;1;1M".to_vec())
-        );
+        assert_eq!(encode(&wheel, modes), Some(b"\x1b[<68;1;1M".to_vec()));
     }
 
     #[test]
@@ -450,8 +395,8 @@ mod tests {
         ));
 
         // Act
-        let encoded_motion = TerminalInputEncoder::encode(&motion, modes);
-        let encoded_wheel = TerminalInputEncoder::encode(&wheel, modes);
+        let encoded_motion = encode(&motion, modes);
+        let encoded_wheel = encode(&wheel, modes);
 
         // Assert
         assert_eq!(encoded_motion, Some(b"\x1b[<34;501;1M".to_vec()));
@@ -475,24 +420,24 @@ mod tests {
             (TerminalPointerButton::Right, 2),
         ] {
             assert_eq!(
-                TerminalInputEncoder::encode(&pointer(TerminalPointerPhase::Down, button), modes),
+                encode(&pointer(TerminalPointerPhase::Down, button), modes),
                 Some(format!("\x1b[<{code};2;3M").into_bytes())
             );
             assert_eq!(
-                TerminalInputEncoder::encode(&pointer(TerminalPointerPhase::Up, button), modes),
+                encode(&pointer(TerminalPointerPhase::Up, button), modes),
                 Some(format!("\x1b[<{code};2;3m").into_bytes())
             );
         }
 
         assert_eq!(
-            TerminalInputEncoder::encode(
+            encode(
                 &pointer(TerminalPointerPhase::Move, TerminalPointerButton::None),
                 modes
             ),
             Some(b"\x1b[<35;2;3M".to_vec())
         );
         assert_eq!(
-            TerminalInputEncoder::encode(
+            encode(
                 &pointer(
                     TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
                     TerminalPointerButton::Left,
@@ -525,7 +470,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            TerminalInputEncoder::encode(&modified, sgr_modes),
+            encode(&modified, sgr_modes),
             Some(b"\x1b[<60;1;1M".to_vec())
         );
 
@@ -548,10 +493,7 @@ mod tests {
                 )
                 .with_modifiers(modifiers),
             );
-            assert_eq!(
-                TerminalInputEncoder::encode(&press, sgr_modes),
-                Some(b"\x1b[<8;1;1M".to_vec())
-            );
+            assert_eq!(encode(&press, sgr_modes), Some(b"\x1b[<8;1;1M".to_vec()));
         }
 
         for event in [
@@ -574,7 +516,7 @@ mod tests {
                 1,
             )),
         ] {
-            assert_eq!(TerminalInputEncoder::encode(&event, sgr_modes), None);
+            assert_eq!(encode(&event, sgr_modes), None);
         }
 
         let no_sgr = InputModes {
@@ -587,6 +529,6 @@ mod tests {
             TerminalPointerButton::Left,
             1,
         ));
-        assert_eq!(TerminalInputEncoder::encode(&press, no_sgr), None);
+        assert_eq!(encode(&press, no_sgr), None);
     }
 }

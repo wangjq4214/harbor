@@ -4,6 +4,7 @@
 //! auto-scroll scheduling.  No GPU or window dependencies — testable without
 //! a rendering context.
 
+use crate::content_anchor::{Affinity, AnchorMutationBatch, ContentAnchor, ContentProjection};
 use crate::model::{SelectionBounds, TerminalSnapshot};
 use std::time::{Duration, Instant};
 
@@ -126,6 +127,17 @@ impl SelectionRange {
         (start.generation, start.col, end.generation, end.col)
     }
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AnchoredSelectionEndpoint {
+    anchor: ContentAnchor,
+    projection: GenPos,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AnchoredSelectionRange {
+    anchor: AnchoredSelectionEndpoint,
+    cursor: AnchoredSelectionEndpoint,
+}
 
 /// Pure domain model for text selection state.
 ///
@@ -136,6 +148,8 @@ impl SelectionRange {
 pub struct SelectionModel {
     /// None = no active selection.
     range: Option<SelectionRange>,
+    /// Canonical endpoints for terminal-owned selections; `range` is their current projection.
+    anchored_range: Option<AnchoredSelectionRange>,
     /// True while left mouse button is held.
     dragging: bool,
     /// Current selection granularity (Character / Word / Line).
@@ -164,6 +178,7 @@ impl SelectionModel {
             range: None,
             dragging: false,
             granularity: SelectionGranularity::default(),
+            anchored_range: None,
             last_click_at: None,
             last_click_cell: None,
             click_count: 0,
@@ -243,6 +258,7 @@ impl SelectionModel {
             }
         }
 
+        self.anchored_range = None;
         self.dragging = true;
         SelectionOutcome::DragActive
     }
@@ -267,6 +283,7 @@ impl SelectionModel {
         };
         let changed = sel.cursor != new_cursor;
         sel.cursor = new_cursor;
+        self.anchored_range = None;
 
         // ── Auto-scroll direction detection ────────────────
         let rows = screen.rows;
@@ -303,6 +320,7 @@ impl SelectionModel {
         let is_zero_width = self.range.is_some_and(|sel| sel.anchor == sel.cursor);
         if is_zero_width {
             self.range = None;
+            self.anchored_range = None;
         }
         SelectionOutcome::DragEnded
     }
@@ -320,6 +338,7 @@ impl SelectionModel {
     /// Clear all selection state (terminal resize).
     pub fn clear(&mut self) {
         self.range = None;
+        self.anchored_range = None;
         self.dragging = false;
         self.stop_auto_scroll();
         self.click_count = 0;
@@ -332,6 +351,7 @@ impl SelectionModel {
     pub fn on_key_press(&mut self) -> bool {
         let had_selection = self.range.is_some() || self.dragging;
         self.range = None;
+        self.anchored_range = None;
         self.dragging = false;
         self.stop_auto_scroll();
         had_selection
@@ -347,6 +367,126 @@ impl SelectionModel {
             end_row,
             end_col,
         })
+    }
+    pub(crate) fn commit_anchors(&mut self, projection: &ContentProjection) -> bool {
+        let Some(range) = self.range else {
+            self.anchored_range = None;
+            return true;
+        };
+        let (anchor_affinity, cursor_affinity) = if range.anchor == range.cursor {
+            (Affinity::Before, Affinity::Before)
+        } else if range.anchor < range.cursor {
+            (Affinity::Before, Affinity::After)
+        } else {
+            (Affinity::After, Affinity::Before)
+        };
+        let Some(anchor) = projection.to_anchor(range.anchor, anchor_affinity) else {
+            self.clear();
+            return false;
+        };
+        let Some(cursor) = projection.to_anchor(range.cursor, cursor_affinity) else {
+            self.clear();
+            return false;
+        };
+        self.anchored_range = Some(AnchoredSelectionRange {
+            anchor: AnchoredSelectionEndpoint {
+                anchor,
+                projection: range.anchor,
+            },
+            cursor: AnchoredSelectionEndpoint {
+                anchor: cursor,
+                projection: range.cursor,
+            },
+        });
+        true
+    }
+
+    pub(crate) fn reconcile_anchors(
+        &mut self,
+        mutations: &AnchorMutationBatch,
+        projection: &ContentProjection,
+    ) -> bool {
+        let Some(mut anchored) = self.anchored_range else {
+            if self.range.is_some() {
+                self.clear();
+                return true;
+            }
+            return false;
+        };
+        let previous = self.range;
+        let Some(anchor) = mutations.apply(anchored.anchor.anchor) else {
+            self.clear();
+            return true;
+        };
+        let Some(cursor) = mutations.apply(anchored.cursor.anchor) else {
+            self.clear();
+            return true;
+        };
+        let project_endpoint = |adjusted: ContentAnchor, old: AnchoredSelectionEndpoint| {
+            if adjusted == old.anchor && !mutations.affects_line(adjusted.line_id) {
+                if projection.contains_generation(adjusted.line_id, old.projection.generation) {
+                    Some(old.projection)
+                } else {
+                    projection
+                        .resolve_selection(adjusted)
+                        .map(|position| GenPos::new(position.generation, old.projection.col))
+                }
+            } else {
+                projection.resolve_selection(adjusted)
+            }
+        };
+        let anchor_projection = project_endpoint(anchor, anchored.anchor);
+        let cursor_projection = project_endpoint(cursor, anchored.cursor);
+        let (Some(anchor_projection), Some(cursor_projection)) =
+            (anchor_projection, cursor_projection)
+        else {
+            self.clear();
+            return true;
+        };
+        anchored.anchor = AnchoredSelectionEndpoint {
+            anchor,
+            projection: anchor_projection,
+        };
+        anchored.cursor = AnchoredSelectionEndpoint {
+            anchor: cursor,
+            projection: cursor_projection,
+        };
+        self.range = Some(SelectionRange::new(anchor_projection, cursor_projection));
+        self.anchored_range = Some(anchored);
+        self.range != previous
+    }
+
+    pub(crate) fn prepared_against(
+        &self,
+        project: impl Fn(ContentAnchor) -> Option<(GenPos, ContentAnchor)>,
+    ) -> (Self, bool) {
+        let mut prepared = self.clone();
+        let Some(mut anchored) = prepared.anchored_range else {
+            let invalidated = prepared.range.is_some();
+            if invalidated {
+                prepared.clear();
+            }
+            return (prepared, invalidated);
+        };
+        let Some((anchor_projection, anchor)) = project(anchored.anchor.anchor) else {
+            prepared.clear();
+            return (prepared, true);
+        };
+        let Some((cursor_projection, cursor)) = project(anchored.cursor.anchor) else {
+            prepared.clear();
+            return (prepared, true);
+        };
+        anchored.anchor = AnchoredSelectionEndpoint {
+            anchor,
+            projection: anchor_projection,
+        };
+        anchored.cursor = AnchoredSelectionEndpoint {
+            anchor: cursor,
+            projection: cursor_projection,
+        };
+        prepared.range = Some(SelectionRange::new(anchor_projection, cursor_projection));
+        prepared.anchored_range = Some(anchored);
+        (prepared, false)
     }
 
     /// Whether the current selection range is zero-width (anchor == cursor).

@@ -306,13 +306,13 @@ Project domain concepts and terminology.
   - implements Terminal Selection Granularity
 
 ### Terminal Selection Copy Policy
-- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY.
+- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY. Every successful copy clears the terminal selection.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - communicates with Terminal
 
 ### Terminal Selection Lifecycle
-- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows, and an existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
+- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - references Logical Line
@@ -542,6 +542,87 @@ Project domain concepts and terminology.
 - **Relationships:**
   - consumes Soft-Wrap Marker
   - belongs to Screen Resize
+
+### Meaningful Blank
+- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful. A default-style erase produces non-meaningful blank capacity, while an erase with visible non-default styling produces a meaningful blank.
+- **Synonyms:** content blank, retained blank
+- **Relationships:**
+  - belongs to Logical Line
+  - preserved by Reflow
+  - referenced by Terminal Text Selection
+
+### Logical Line Identity
+- **Definition:** A monotonic, non-reused identity shared by all physical rows of one retained Logical Line. It remains stable across reflow and character edits; explicit newline, independent-row clearing, reset, and alternate-screen creation establish new identities as applicable.
+- **Synonyms:** logical line ID
+- **Relationships:**
+  - belongs to Logical Line
+  - referenced by Content Anchor
+  - preserved by Reflow
+
+### Content Anchor
+- **Definition:** Harbor's durable logical-position coordinate, composed of Logical Line Identity, an offset within that line, and before/after affinity. Overwrite preserves its offset, insertion or deletion before it adjusts the offset according to affinity, row movement and reflow preserve it, and destruction or eviction of its logical line invalidates it. Physical generation/column coordinates are derived display projections.
+- **Synonyms:** logical anchor, stable content anchor
+- **Relationships:**
+  - references Logical Line
+  - consumes Logical Line Identity
+  - consumed by Reflow
+  - referenced by Terminal Text Selection
+  - referenced by Terminal Scrollbar
+
+### Reflow Capacity Eviction
+- **Definition:** The resize policy that applies the existing physical-row capacity after reflow, evicts oldest physical rows first, marks a partially retained logical line as head-truncated, invalidates anchors into evicted content, and moves an evicted review anchor to the oldest retained position.
+- **Synonyms:** reflow eviction
+- **Relationships:**
+  - belongs to Reflow
+  - references Content Anchor
+  - references Logical Line Identity
+### Logical Reflow Atom
+- **Definition:** A temporary shared reflow/copy representation containing either a one- or two-cell glyph with style, hyperlink, and meaningful-blank state, or a hard break for an explicit line boundary. Wide continuation cells and generated edge padding are projection details rather than independent logical atoms.
+- **Synonyms:** reflow atom, logical atom stream
+- **Relationships:**
+  - belongs to Reflow
+  - contains Meaningful Blank
+  - references Soft-Wrap Marker
+  - references Wide Cell
+
+### Primary Height Resize Policy
+- **Definition:** A main-screen resize policy that keeps the live bottom and cursor anchored, moves removed top viewport rows into scrollback when shrinking, pulls newest history back when growing, and preserves a scrolled-back viewport through its Content Anchor. Simultaneous resize reflows width before selecting the new history/live boundary.
+- **Relationships:**
+  - belongs to Screen Resize
+  - references Content Anchor
+  - differs from Alternate-Screen Buffer Isolation
+
+### Minimum Terminal Width
+- **Definition:** Harbor normalizes terminal, model, and PTY geometry to at least two columns so every retained width-two glyph has a valid physical projection without replacement or hidden overflow storage; row count remains at least one.
+- **Relationships:**
+  - constrains Screen Resize
+  - preserves Wide Cell Invariant
+
+
+### Transactional Terminal Resize
+- **Definition:** A resize commit protocol that first acquires an acknowledged PTY-reader barrier, parses all preceding reader chunks under the old geometry, prepares all model buffers and coordinate mappings, resizes the PTY, and installs the result with an allocation-free, infallible ownership swap. Barrier acquisition uses a bounded wait; failure resumes the reader, preserves the prior geometry, and permits retry.
+- **Synonyms:** prepared resize, resize transaction
+- **Relationships:**
+  - belongs to Screen Resize
+  - consumes Reflow
+  - preserves Terminal geometry consistency
+
+
+### PTY Resize Barrier
+- **Definition:** An epoch-qualified synchronization boundary in which the PTY reader publishes every chunk from reads completed before its acknowledgement, then pauses until the resize transaction explicitly resumes it. The terminal waits for acknowledgement only for a bounded interval and parses all preceding chunks under the old geometry.
+- **Synonyms:** acknowledged reader barrier, resize output barrier
+- **Relationships:**
+  - belongs to Transactional Terminal Resize
+  - extends Synchronous PTY I/O
+  - preserves Terminal geometry consistency
+
+### Canonical Selection Anchor
+- **Definition:** The Terminal Text Selection policy in which each endpoint stores a Content Anchor as its durable state and treats `GenPos` as a cached projection for the current physical geometry. Loss of either endpoint's logical content invalidates the complete selection.
+- **Relationships:**
+  - belongs to Terminal Text Selection
+  - consumes Content Anchor
+  - projects to physical generation/column coordinates
+
 
 ### RIS
 - **Definition:** The "Reset to Initial State" control sequence (`ESC c`) that performs a hard reset, clearing the screen and resetting cursor, modes, margins, scroll region, pen state, and tab stops.

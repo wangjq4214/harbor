@@ -83,6 +83,15 @@ impl Default for Cell {
 }
 
 impl Cell {
+    /// Whether a blank cell paints pixels in the current renderer.
+    ///
+    /// Foreground-only and glyph decorations do not make a space visible: the
+    /// renderer skips space glyphs, underlines, hyperlinks, and strikethroughs.
+    /// A non-default background or inverse video does paint the cell rectangle.
+    pub(crate) fn is_visibly_meaningful_blank(&self) -> bool {
+        self.ch == ' ' && (self.bg != Color::Default || self.attrs.contains(CellAttrs::INVERSE))
+    }
+
     /// Sets the public cell fields and clears any screen-local hyperlink identity.
     pub fn set(&mut self, ch: char, fg: Color, bg: Color, attrs: CellAttrs, protected: bool) {
         self.set_with_hyperlink(ch, fg, bg, attrs, protected, None);
@@ -365,22 +374,7 @@ pub fn safe_preview_line(line: &str) -> String {
 /// Trims any trailing newline sequences (`\r\n`, `\n`, `\r`) from the input,
 /// returning the remaining prefix.
 fn trim_trailing_newlines(text: &str) -> &str {
-    let mut end = text.len();
-    loop {
-        if end >= 2 && text.as_bytes()[end - 2..end] == *b"\r\n" {
-            end -= 2;
-        } else if end >= 1 {
-            let last = text.as_bytes()[end - 1];
-            if last == b'\n' || last == b'\r' {
-                end -= 1;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    &text[..end]
+    text.trim_end_matches(['\r', '\n'])
 }
 
 // ── Terminal worker contract ────────────────────────────────────────────────

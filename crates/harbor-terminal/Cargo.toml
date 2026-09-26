@@ -9,7 +9,6 @@ harbor-pty = { workspace = true }
 harbor-config = { workspace = true }
 harbor-text = { workspace = true }
 anyhow = { workspace = true }
-arboard = { workspace = true }
 bitvec = { workspace = true }
 bytemuck = { workspace = true }
 tracing = { workspace = true }

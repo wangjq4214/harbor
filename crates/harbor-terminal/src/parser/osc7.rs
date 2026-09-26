@@ -16,7 +16,7 @@ pub(super) fn parse(payload: &[u8]) -> Option<WorkingDirectoryMetadata> {
 
     let path_bytes = strict_percent_decode(raw_path)?;
     let path = std::str::from_utf8(&path_bytes).ok()?;
-    if !path.starts_with('/') || path.chars().any(char::is_control) {
+    if path.chars().any(char::is_control) {
         return None;
     }
 
