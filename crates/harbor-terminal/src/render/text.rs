@@ -210,6 +210,14 @@ impl GpuGlyphAtlas {
 
 // ── TextLayer ────────────────────────────────────────────────────────────────
 
+// The scalar atlas cannot shape a whole emoji sequence. Draw the base glyph
+// within its assigned cells, plus combining marks; selectors and ZWJ are
+// retained for copy but have no independent visual glyph. A joined emoji may
+// therefore appear as its first pictograph, not a color/ligature emoji.
+fn is_selector(ch: char) -> bool {
+    matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+}
+
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.wide_continuation {
@@ -222,7 +230,11 @@ fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.ch != ' ' {
         chars.push(cell.ch);
     }
-    chars.extend(cell.suffix.chars());
+    chars.extend(cell.suffix.chars().filter(|&ch| {
+        ch != '\u{200d}'
+            && !is_selector(ch)
+            && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
+    }));
     chars
 }
 
@@ -403,19 +415,39 @@ impl Text {
 
                 let color = glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
 
-                verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                    glyph_left,
-                    glyph_top,
-                    glyph_right,
-                    glyph_bottom,
-                    glyph.uv.left,
-                    glyph.uv.top,
-                    glyph.uv.right,
-                    glyph.uv.bottom,
-                    color,
-                    surf_w,
-                    surf_h,
-                ));
+                // Scalar fallback never paints outside the unit's assigned cells.
+                let clip_left = glyph_left.max(cell_x);
+                let clip_right = glyph_right
+                    .min(cell_x + self.metrics.cell_width * f32::from(cell.grid_width()));
+                let clip_top = glyph_top.max(cell_y);
+                let clip_bottom = glyph_bottom.min(cell_y + self.metrics.line_height);
+                if clip_left < clip_right && clip_top < clip_bottom {
+                    let u = |x: f32| {
+                        glyph.uv.left
+                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left)
+                                / glyph.width as f32
+                    };
+                    let v = |y: f32| {
+                        glyph.uv.top
+                            + (glyph.uv.bottom - glyph.uv.top) * (y - glyph_top)
+                                / glyph.height as f32
+                    };
+                    verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
+                        clip_left,
+                        clip_top,
+                        clip_right,
+                        clip_bottom,
+                        u(clip_left),
+                        v(clip_top),
+                        u(clip_right),
+                        v(clip_bottom),
+                        color,
+                        surf_w,
+                        surf_h,
+                    ));
+                } else {
+                    verts.extend(std::iter::repeat_n(TexturedVertex::default(), 6));
+                }
                 continue;
             }
             verts.extend(std::iter::repeat_n(
@@ -538,6 +570,11 @@ impl Text {
                 for mark in cell
                     .suffix
                     .chars()
+                    .filter(|&ch| {
+                        ch != '\u{200d}'
+                            && !is_selector(ch)
+                            && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
+                    })
                     .chain(cell.isolated_mark.then_some(cell.ch))
                 {
                     append_overlay_glyph(
@@ -793,6 +830,33 @@ fn atlas_gpu_sync(result: &harbor_text::RasterizeResult) -> AtlasGpuSync {
 mod tests {
     use super::*;
     use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
+
+    #[test]
+    fn sequence_fallback_rasterizes_base_not_format_or_joined_scalars() {
+        let mut heart = Cell::default();
+        heart.set(
+            '♥',
+            Color::Default,
+            Color::Default,
+            CellAttrs::default(),
+            false,
+        );
+        heart.suffix.push('\u{fe0f}');
+        heart.width = 2;
+        assert_eq!(paint_chars(&heart), ['♥']);
+        assert_eq!(heart.raw_text(), "♥️");
+        let mut joined = Cell::default();
+        joined.set(
+            '👩',
+            Color::Default,
+            Color::Default,
+            CellAttrs::default(),
+            false,
+        );
+        joined.suffix.push_str("\u{200d}💻");
+        assert_eq!(paint_chars(&joined), ['👩']);
+        assert_eq!(joined.raw_text(), "👩‍💻");
+    }
 
     #[test]
     fn combining_overlay_emits_mark_and_display_only_cue_quads() {

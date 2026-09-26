@@ -1323,7 +1323,7 @@ fn selected_text_pending_wrap_does_not_invent_a_row_boundary() {
 }
 
 #[test]
-fn selected_text_retains_combining_marks_but_not_out_of_scope_format_scalars() {
+fn selected_text_retains_combining_and_presentation_scalars() {
     let mut screen = Screen::new(1, 3);
     screen.write_char('a');
     screen.write_char('\u{0301}');
@@ -1337,7 +1337,7 @@ fn selected_text_retains_combining_marks_but_not_out_of_scope_format_scalars() {
         end_col: 2,
     });
 
-    assert_eq!(result, "a\u{0301}");
+    assert_eq!(result, "a\u{0301}\u{fe0f}\u{200d}");
 }
 
 #[test]
