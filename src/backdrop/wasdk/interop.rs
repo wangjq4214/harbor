@@ -2,7 +2,7 @@
 //!
 //! This API is exported by FrameworkUdk, not described by WinRT metadata, so
 //! windows-bindgen cannot generate it. The ABI and export name below follow
-//! `.tools/wasdk/interactive/include/Microsoft.UI.Interop.h` (SDK 1.8).
+//! `third_party/wasdk/interactive/include/Microsoft.UI.Interop.h` (SDK 1.8).
 
 use windows::Win32::Foundation::HWND;
 use windows_core::{Error, HRESULT, Result, w};

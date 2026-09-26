@@ -4,7 +4,8 @@
 dhat-heap.json
 
 # Local tooling & agent runtime artifacts
-.pi/tasks/
+.pi/
+.vscode/
 .tools/qa/
 
 third_party/*
@@ -13,3 +14,4 @@ third_party/*
 third_party/conpty/*
 !third_party/conpty/README.md
 !third_party/conpty/LICENSE
+!third_party/wasdk/

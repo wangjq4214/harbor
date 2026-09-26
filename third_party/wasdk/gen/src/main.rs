@@ -1,16 +1,16 @@
 //! Regenerates vendored Windows App SDK bindings for the Harbor backdrop tiers.
 //!
-//! Usage (run from `.tools/wasdk/gen`):
-//!   cargo run -- --out ../../../src/app/window_backdrop/wasdk/generated.rs
+//! Usage (run from `third_party/wasdk/gen`):
+//!   cargo run -- --out ../../../src/backdrop/wasdk/generated.rs
 //!
-//! Metadata source: pinned NuGet packages downloaded into `.tools/wasdk/`:
+//! Metadata source: pinned NuGet packages downloaded into `third_party/wasdk/`:
 //!   Microsoft.WindowsAppSDK.InteractiveExperiences 1.8.260708001
 //!   Microsoft.WindowsAppSDK.Foundation 1.8.260803002
-//! See `.tools/wasdk/pinned-version.txt` for the pinned SDK version.
+//! See `third_party/wasdk/pinned-version.txt` for the pinned SDK version.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let out_default = "../../../src/app/window_backdrop/wasdk/generated.rs".to_string();
+    let out_default = "../../../src/backdrop/wasdk/generated.rs".to_string();
 
     let mut argv: Vec<&str> = vec![
         "--in",

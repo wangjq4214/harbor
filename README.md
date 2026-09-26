@@ -34,6 +34,10 @@ the complete adjacent `conpty/` directory (DLL, hosts, version and license).
 An incomplete bundle is reported as a PTY startup error rather than falling back
 to an older Windows console host with incompatible resize behavior.
 
+To regenerate the checked-in Windows App SDK bindings, restore the pinned build-time
+[WASDK metadata](third_party/wasdk/README.md) with `./scripts/fetch_wasdk.ps1`.
+Normal builds do not require this download.
+
 ## Library Crates
 
 The reusable subsystems have crate-level usage guides:
