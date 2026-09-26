@@ -1,7 +1,7 @@
 //! Windows App SDK tier-1 wiring (ADR 0026).
 //!
 //! `generated.rs` is vendored from the pinned Windows App SDK 1.8 metadata;
-//! regenerate it with `.tools/wasdk/gen` (see the generator's module docs).
+//! regenerate it with `third_party/wasdk/gen` (see the generator's module docs).
 
 mod generated;
 mod interop;

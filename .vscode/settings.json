@@ -1,7 +1,0 @@
-{
-  "rust-analyzer.inlayHints.typeHints.enable": false,
-  "cSpell.words": [
-    "wgpu",
-    "winit"
-  ]
-}
