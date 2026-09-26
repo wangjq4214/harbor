@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-use unicode_width::UnicodeWidthChar;
-
 use crate::model::SelectionBounds;
 use crate::normal_buf::{CellState, LogicalLineId, NormalBuf, RetainedRow};
 use crate::screen::Cell;
@@ -18,7 +16,7 @@ pub(crate) struct SourceSpan {
     pub(crate) end_col: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LogicalGlyph {
     pub(crate) cell: Cell,
     pub(crate) width: u8,
@@ -27,7 +25,7 @@ pub(crate) struct LogicalGlyph {
     pub(crate) continuation_state: Option<CellState>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LogicalLineGlyph {
     pub(crate) atom_offset: LogicalAtomOffset,
     pub(crate) source_span: SourceSpan,
@@ -44,7 +42,7 @@ pub(crate) struct LogicalLine {
     pub(crate) glyphs: Vec<LogicalLineGlyph>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LogicalAtom {
     Glyph {
         line_id: LogicalLineId,
@@ -144,7 +142,7 @@ fn decode_row(
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let mut col = 0;
     while col < extent {
-        let cell = row.cells[col];
+        let cell = row.cells[col].clone();
         if cell.wide_continuation {
             return Err(DecodeError {
                 generation: row.generation,
@@ -153,7 +151,7 @@ fn decode_row(
             });
         }
 
-        let width = if UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+        let width = if cell.grid_width() == 2 {
             if col + 1 >= extent || !row.cells[col + 1].wide_continuation {
                 return Err(DecodeError {
                     generation: row.generation,
@@ -165,6 +163,8 @@ fn decode_row(
         } else {
             1
         };
+        let meaningful_blank =
+            cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
         let mut normalized_cell = cell;
         normalized_cell.wide_continuation = false;
         atoms.push(LogicalAtom::Glyph {
@@ -178,7 +178,7 @@ fn decode_row(
             glyph: LogicalGlyph {
                 cell: normalized_cell,
                 width,
-                meaningful_blank: cell.ch == ' ' && row.cell_state[col].is_meaningful(),
+                meaningful_blank,
                 cell_state: row.cell_state[col],
                 continuation_state: (width == 2).then(|| row.cell_state[col + 1]),
             },
@@ -313,7 +313,7 @@ pub(crate) fn selected_text(
                     last_col
                 };
                 if source_span.start_col >= start_col && source_span.start_col <= end_col {
-                    text.push(glyph.cell.ch);
+                    text.push_str(&glyph.cell.raw_text());
                 }
             }
             LogicalAtom::HardBreak { after_generation }
@@ -354,7 +354,7 @@ mod tests {
             hyperlink: Some(hyperlink),
             ..Cell::default()
         };
-        write(&mut normal, 0, 0, styled);
+        write(&mut normal, 0, 0, styled.clone());
         write(&mut normal, 0, 1, Cell::default());
         let source = normal.live_row_metadata(0);
         write(
@@ -385,7 +385,7 @@ mod tests {
             atom_offset,
             source_span,
             glyph,
-        } = atoms[0]
+        } = atoms[0].clone()
         else {
             panic!("expected glyph");
         };
@@ -405,7 +405,7 @@ mod tests {
 
         let LogicalAtom::Glyph {
             atom_offset, glyph, ..
-        } = atoms[1]
+        } = atoms[1].clone()
         else {
             panic!("expected blank glyph");
         };
@@ -418,7 +418,7 @@ mod tests {
             atom_offset,
             source_span,
             glyph,
-        } = atoms[2]
+        } = atoms[2].clone()
         else {
             panic!("expected wide glyph");
         };

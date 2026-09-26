@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-use unicode_width::UnicodeWidthChar;
-
 use crate::content_anchor::{Affinity, ContentAnchor};
 use crate::logical_content::{
     self, DecodeError, LogicalAtomOffset, LogicalGlyph, LogicalLine, SourceSpan,
@@ -648,14 +646,14 @@ impl PreparedPrimaryResize {
             let mut col = 0usize;
             let mut atom_count = 0usize;
             while col < row.metadata.meaningful_extent {
-                let cell = row.cells[col];
+                let cell = &row.cells[col];
                 if cell.wide_continuation {
                     return Err(PreparationError::Invariant("orphan projected continuation"));
                 }
                 atom_count = atom_count
                     .checked_add(1)
                     .ok_or(PreparationError::ArithmeticOverflow)?;
-                if UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+                if cell.grid_width() == 2 {
                     if col + 1 >= row.metadata.meaningful_extent
                         || !row.cells[col + 1].wide_continuation
                     {
@@ -735,7 +733,7 @@ fn pack_line(
                 "non-monotonic logical atom offset",
             ));
         }
-        let glyph = logical.glyph;
+        let glyph = &logical.glyph;
         validate_glyph(glyph)?;
         let width = usize::from(glyph.width);
         let used = row.metadata.meaningful_extent;
@@ -759,10 +757,10 @@ fn pack_line(
         }
 
         let col = row.metadata.meaningful_extent;
-        row.cells[col] = glyph.cell;
+        row.cells[col] = glyph.cell.clone();
         row.cell_state[col] = glyph.cell_state;
         if width == 2 {
-            row.cells[col + 1] = continuation_cell(glyph.cell);
+            row.cells[col + 1] = continuation_cell(&glyph.cell);
             row.cell_state[col + 1] = glyph
                 .continuation_state
                 .ok_or(PreparationError::Invariant("wide glyph provenance missing"))?;
@@ -787,11 +785,11 @@ fn pack_line(
     Ok(atoms)
 }
 
-fn validate_glyph(glyph: LogicalGlyph) -> Result<(), PreparationError> {
+fn validate_glyph(glyph: &LogicalGlyph) -> Result<(), PreparationError> {
     if !matches!(glyph.width, 1 | 2) {
         return Err(PreparationError::Invariant("unsupported glyph width"));
     }
-    if (glyph.width == 2) != (UnicodeWidthChar::width(glyph.cell.ch).unwrap_or(0) == 2) {
+    if glyph.width != glyph.cell.grid_width() {
         return Err(PreparationError::Invariant(
             "glyph width disagrees with payload",
         ));
@@ -804,9 +802,12 @@ fn validate_glyph(glyph: LogicalGlyph) -> Result<(), PreparationError> {
     Ok(())
 }
 
-fn continuation_cell(base: Cell) -> Cell {
+fn continuation_cell(base: &Cell) -> Cell {
     Cell {
         ch: ' ',
+        suffix: String::new(),
+        width: 0,
+        isolated_mark: false,
         wide_continuation: true,
         fg: base.fg,
         bg: base.bg,
@@ -884,8 +885,8 @@ mod tests {
             hyperlink: Some(hyperlink),
             ..Cell::default()
         };
-        write(&mut normal, 0, 1, wide);
-        write(&mut normal, 0, 2, continuation_cell(wide));
+        write(&mut normal, 0, 1, wide.clone());
+        write(&mut normal, 0, 2, continuation_cell(&wide));
         write(
             &mut normal,
             0,
@@ -905,7 +906,7 @@ mod tests {
         assert_eq!(prepared.rows()[0].cells[1], Cell::default());
         assert!(!prepared.rows()[0].cell_state[1].is_meaningful());
         assert_eq!(prepared.rows()[1].cells[0], wide);
-        assert_eq!(prepared.rows()[1].cells[1], continuation_cell(wide));
+        assert_eq!(prepared.rows()[1].cells[1], continuation_cell(&wide));
         assert_eq!(prepared.rows()[1].metadata.logical_start, 1);
         assert_eq!(prepared.rows()[2].metadata.logical_start, 3);
         assert!(prepared.rows()[1].metadata.soft_wrapped);
@@ -1043,7 +1044,7 @@ mod tests {
             let cells = &mut lines.last_mut().unwrap().1;
             for cell in &row.cells[..row.metadata.meaningful_extent] {
                 if !cell.wide_continuation {
-                    cells.push(*cell);
+                    cells.push(cell.clone());
                 }
             }
         }
@@ -1079,11 +1080,11 @@ mod tests {
                 ..Cell::default()
             },
         ];
-        write(&mut normal, 0, 0, cells[0]);
-        write(&mut normal, 0, 1, cells[1]);
-        write(&mut normal, 0, 2, cells[2]);
-        write(&mut normal, 0, 3, continuation_cell(cells[2]));
-        write(&mut normal, 0, 4, cells[3]);
+        write(&mut normal, 0, 0, cells[0].clone());
+        write(&mut normal, 0, 1, cells[1].clone());
+        write(&mut normal, 0, 2, cells[2].clone());
+        write(&mut normal, 0, 3, continuation_cell(&cells[2]));
+        write(&mut normal, 0, 4, cells[3].clone());
 
         let narrow =
             PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 3).unwrap();

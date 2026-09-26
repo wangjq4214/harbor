@@ -1660,7 +1660,12 @@ impl Screen {
     // ── write_char (coordinator) ───────────────────────────────────────
 
     pub fn write_char(&mut self, ch: char) {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let mut width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if CellWriter::is_combining_mark(ch)
+            && CellWriter::combining_base(&self.normal, &self.cursor).is_none()
+        {
+            width = 1; // Isolated mark writes a new logical atom in insert mode.
+        }
         let cursor_before = (
             self.cursor.cursor.x,
             self.cursor.cursor.y,

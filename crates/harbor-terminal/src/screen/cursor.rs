@@ -176,6 +176,8 @@ pub(crate) struct CursorEngine {
     pub(crate) scroll_region: ScrollRegion,
     pub(crate) margins: Margins,
     pub(crate) modes: TerminalModes,
+    /// A base was just printed at the clamped right margin with autowrap off.
+    pub(crate) last_clamped_write: bool,
 }
 
 impl CursorEngine {
@@ -185,6 +187,7 @@ impl CursorEngine {
             scroll_region: ScrollRegion::full(rows),
             margins: Margins::full(cols),
             modes: TerminalModes::default(),
+            last_clamped_write: false,
         }
     }
 
@@ -193,6 +196,7 @@ impl CursorEngine {
     /// Clears the deferred autowrap transition without changing cursor position.
     pub(crate) fn clear_pending_wrap(&mut self) {
         self.modes.pending_wrap = false;
+        self.last_clamped_write = false;
     }
 
     /// Clamps cursor position, margins, and scroll region into the new grid
@@ -464,7 +468,10 @@ impl CursorEngine {
                 self.modes.origin = enabled;
                 self.home_cursor();
             }
-            7 => self.modes.autowrap = enabled,
+            7 => {
+                self.modes.autowrap = enabled;
+                self.last_clamped_write = false;
+            }
             25 => self.cursor.visible = enabled,
             69 => {
                 self.margins.enabled = enabled;
@@ -531,6 +538,7 @@ impl CursorEngine {
     /// Restores cursor position and mode flags (DECRC).
     /// Pen attributes are restored separately via `PenState::restore_pen()`.
     pub(crate) fn restore_cursor_position(&mut self) {
+        self.last_clamped_write = false;
         if let Some(saved) = &self.cursor.saved {
             self.cursor.x = saved.cursor_x;
             self.cursor.y = saved.cursor_y;
@@ -552,6 +560,7 @@ impl CursorEngine {
         self.scroll_region = ScrollRegion::full(rows);
         self.margins = Margins::full(cols);
         self.modes = TerminalModes::default();
+        self.last_clamped_write = false;
     }
 
     // ── helpers for cross-engine methods ──────────────────────────

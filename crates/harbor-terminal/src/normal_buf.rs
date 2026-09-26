@@ -1,6 +1,5 @@
 use crate::damage::{DamageTracker, DirtyRange};
 use crate::screen::Cell;
-use unicode_width::UnicodeWidthChar;
 
 /// Stable identity of retained content belonging to one logical terminal line.
 ///
@@ -30,15 +29,15 @@ impl CellState {
     const EXPLICIT: u8 = 1 << 0;
     const STYLE_VISIBLE: u8 = 1 << 1;
 
-    fn explicit(cell: Cell) -> Self {
+    fn explicit(cell: &Cell) -> Self {
         Self(Self::EXPLICIT | Self::style_visible_bit(cell))
     }
 
-    pub(crate) fn erase(cell: Cell) -> Self {
+    pub(crate) fn erase(cell: &Cell) -> Self {
         Self(Self::style_visible_bit(cell))
     }
 
-    fn fresh_fill(cell: Cell) -> Self {
+    fn fresh_fill(cell: &Cell) -> Self {
         if cell.ch != ' ' || cell.wide_continuation || cell.hyperlink.is_some() {
             Self::explicit(cell)
         } else {
@@ -46,11 +45,11 @@ impl CellState {
         }
     }
 
-    fn with_recomputed_style(self, cell: Cell) -> Self {
+    fn with_recomputed_style(self, cell: &Cell) -> Self {
         Self((self.0 & Self::EXPLICIT) | Self::style_visible_bit(cell))
     }
 
-    fn style_visible_bit(cell: Cell) -> u8 {
+    fn style_visible_bit(cell: &Cell) -> u8 {
         if cell.is_visibly_meaningful_blank() {
             Self::STYLE_VISIBLE
         } else {
@@ -60,6 +59,10 @@ impl CellState {
 
     pub(crate) fn is_meaningful(self) -> bool {
         self.0 != 0
+    }
+
+    pub(crate) fn is_explicit(self) -> bool {
+        self.0 & Self::EXPLICIT != 0
     }
 }
 
@@ -199,7 +202,7 @@ impl NormalBuf {
         self.max_scrollback
     }
     pub(crate) fn fill_is_meaningful(cell: Cell) -> bool {
-        CellState::fresh_fill(cell).is_meaningful()
+        CellState::fresh_fill(&cell).is_meaningful()
     }
 
     // ── row/col accessors (for write_char, avoiding manual index math) ──
@@ -231,7 +234,7 @@ impl NormalBuf {
                 cells[col] = Cell::default();
                 states[col] = CellState::default();
                 col += 1;
-            } else if UnicodeWidthChar::width(cells[col].ch).unwrap_or(0) == 2 {
+            } else if cells[col].grid_width() == 2 {
                 if col + 1 < cells.len() && cells[col + 1].wide_continuation {
                     col += 2;
                 } else {
@@ -400,11 +403,13 @@ impl NormalBuf {
     }
 
     pub(crate) fn write_meaningful_cell(&mut self, display_row: usize, col: usize, cell: Cell) {
-        self.write_cell(display_row, col, cell, CellState::explicit(cell));
+        let state = CellState::explicit(&cell);
+        self.write_cell(display_row, col, cell, state);
     }
 
     pub(crate) fn erase_cell(&mut self, display_row: usize, col: usize, cell: Cell) {
-        self.write_cell(display_row, col, cell, CellState::erase(cell));
+        let state = CellState::erase(&cell);
+        self.write_cell(display_row, col, cell, state);
     }
 
     pub(crate) fn copy_cell(
@@ -416,7 +421,7 @@ impl NormalBuf {
     ) {
         let src_ring_row = self.display_to_ring(src_row);
         let src_index = src_ring_row * self.cols + src_col;
-        let cell = self.cells[src_index];
+        let cell = self.cells[src_index].clone();
         let state = self.cell_state[src_index];
         self.write_cell(dst_row, dst_col, cell, state);
     }
@@ -430,7 +435,7 @@ impl NormalBuf {
         let ring_row = self.display_to_ring(display_row);
         let index = ring_row * self.cols + col;
         mutate(&mut self.cells[index]);
-        self.cell_state[index] = self.cell_state[index].with_recomputed_style(self.cells[index]);
+        self.cell_state[index] = self.cell_state[index].with_recomputed_style(&self.cells[index]);
         self.recompute_ring_row_extent(ring_row);
         self.mark_range_dirty(display_row, col, col + 1);
     }
@@ -445,8 +450,8 @@ impl NormalBuf {
         let ring_row = self.display_to_ring(row);
         let start = ring_row * self.cols + start_col;
         let end = ring_row * self.cols + end_col;
+        self.cell_state[start..end].fill(CellState::erase(&cell));
         self.cells[start..end].fill(cell);
-        self.cell_state[start..end].fill(CellState::erase(cell));
         self.recompute_ring_row_extent(ring_row);
         self.mark_range_dirty(row, start_col, end_col);
     }
@@ -467,10 +472,10 @@ impl NormalBuf {
         let ring_row = self.display_to_ring(row);
         let start = ring_row * self.cols + start_col;
         let end = ring_row * self.cols + end_col;
-        let erase_state = CellState::erase(erase);
+        let erase_state = CellState::erase(&erase);
         for idx in start..end {
             if !self.cells[idx].protected {
-                self.cells[idx] = erase;
+                self.cells[idx] = erase.clone();
                 self.cell_state[idx] = erase_state;
             }
         }
@@ -480,8 +485,8 @@ impl NormalBuf {
 
     /// Fills a contiguous cell range with erase-state content and provenance.
     pub(crate) fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
+        self.cell_state[start..end].fill(CellState::erase(&cell));
         self.cells[start..end].fill(cell);
-        self.cell_state[start..end].fill(CellState::erase(cell));
         if start < end {
             for ring_row in (start / self.cols)..=((end - 1) / self.cols) {
                 self.recompute_ring_row_extent(ring_row);
@@ -491,7 +496,8 @@ impl NormalBuf {
 
     /// Copies cells and their retained-content state within the ring buffer.
     pub(crate) fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
-        self.cells.copy_within(src_start..src_end, dst);
+        let source = self.cells[src_start..src_end].to_vec();
+        self.cells[dst..dst + source.len()].clone_from_slice(&source);
         self.cell_state.copy_within(src_start..src_end, dst);
         let len = src_end - src_start;
         if len > 0 {
@@ -527,7 +533,7 @@ impl NormalBuf {
         for (offset, (cells, states, metadata)) in snapshot.into_iter().enumerate() {
             let ring_row = (dst + offset) % self.total_rows;
             let start = ring_row * self.cols;
-            self.cells[start..start + self.cols].copy_from_slice(&cells);
+            self.cells[start..start + self.cols].clone_from_slice(&cells);
             self.cell_state[start..start + self.cols].copy_from_slice(&states);
             self.row_metadata[ring_row] = metadata;
         }
@@ -661,7 +667,7 @@ impl NormalBuf {
                 .try_reserve_exact(cols)
                 .map_err(|_| PreparationError::AllocationFailed)?;
             cells.resize(cols, Cell::default());
-            cells[..copy_cols].copy_from_slice(&source.cells[..copy_cols]);
+            cells[..copy_cols].clone_from_slice(&source.cells[..copy_cols]);
 
             let mut cell_state = Vec::new();
             cell_state
@@ -827,7 +833,7 @@ impl NormalBuf {
             }
             let ring_row = (first_ring_row + offset) % total_rows;
             let start = ring_row * cols;
-            cells[start..start + cols].copy_from_slice(&row.cells);
+            cells[start..start + cols].clone_from_slice(&row.cells);
             cell_state[start..start + cols].copy_from_slice(&row.cell_state);
             row_metadata[ring_row] = row.metadata;
         }
@@ -1062,12 +1068,12 @@ impl NormalBuf {
             self.row_metadata[ring_row].head_truncated = true;
         }
         // Blank newly exposed rows and give each reused slot a never-before-used ID.
-        let state = CellState::fresh_fill(cell);
+        let state = CellState::fresh_fill(&cell);
         for i in 0..n {
             let display_row = self.visible_rows - 1 - i;
             let row = self.display_to_ring(display_row);
             let start = row * self.cols;
-            self.cells[start..start + self.cols].fill(cell);
+            self.cells[start..start + self.cols].fill(cell.clone());
             self.cell_state[start..start + self.cols].fill(state);
             let mut metadata = self.fresh_metadata();
             metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
@@ -1139,7 +1145,7 @@ impl NormalBuf {
                 let old_start = old_ring_row * old_cols;
                 let new_start = new_ring_row * cols;
                 new_cells[new_start..new_start + copied_cols]
-                    .copy_from_slice(&old_cells[old_start..old_start + copied_cols]);
+                    .clone_from_slice(&old_cells[old_start..old_start + copied_cols]);
                 new_cell_state[new_start..new_start + copied_cols]
                     .copy_from_slice(&old_cell_state[old_start..old_start + copied_cols]);
                 Self::normalize_wide_row(
@@ -1223,7 +1229,7 @@ impl NormalBuf {
         );
 
         let start = ring_row * self.cols;
-        let state = CellState::fresh_fill(cell);
+        let state = CellState::fresh_fill(&cell);
         self.cells[start..start + self.cols].fill(cell);
         self.cell_state[start..start + self.cols].fill(state);
         let mut metadata = self.fresh_metadata();
@@ -1240,7 +1246,7 @@ impl NormalBuf {
         );
 
         for display_row in 0..self.visible_rows {
-            self.fill_row_with(display_row, cell);
+            self.fill_row_with(display_row, cell.clone());
         }
     }
 
@@ -1586,7 +1592,7 @@ mod tests {
         };
 
         // Act
-        buf.fill_all_with(cell);
+        buf.fill_all_with(cell.clone());
 
         // Assert
         for row in 0..buf.rows() {
@@ -1655,8 +1661,8 @@ mod tests {
                 ch,
                 ..Cell::default()
             };
+            buf.cell_state[index] = CellState::explicit(&cell);
             buf.cells[index] = cell;
-            buf.cell_state[index] = CellState::explicit(cell);
             buf.row_metadata[ring_row].logical_start = 10 + offset;
             buf.row_metadata[ring_row].soft_wrapped = offset != 0;
             buf.recompute_ring_row_extent(ring_row);

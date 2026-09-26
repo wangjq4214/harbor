@@ -48,6 +48,36 @@ impl CellWriter {
         let width = UnicodeWidthChar::width(ch).unwrap_or(0).min(2);
         Self::write_decoded_char(pen_state, normal, cursor, ch, width);
     }
+    /// Only Unicode marks participate in T0001's combining behavior. Format
+    /// controls and presentation selectors have separate sequence semantics (T0002).
+    pub(crate) fn is_combining_mark(ch: char) -> bool {
+        use icu_properties::CodePointMapData;
+        use icu_properties::props::{GeneralCategory, GeneralCategoryGroup};
+        UnicodeWidthChar::width(ch) == Some(0)
+            && !matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+            && GeneralCategoryGroup::Mark
+                .contains(CodePointMapData::<GeneralCategory>::new().get(ch))
+    }
+
+    /// The lead cell a mark can extend at the current insertion boundary.
+    pub(crate) fn combining_base(
+        normal: &NormalBuf,
+        cursor: &CursorEngine,
+    ) -> Option<(usize, usize)> {
+        let row = cursor.cursor.y;
+        let col = if cursor.modes.pending_wrap || cursor.last_clamped_write {
+            Some(cursor.cursor.x)
+        } else {
+            cursor.cursor.x.checked_sub(1)
+        }?;
+        let base = if normal.cell(row, col).wide_continuation {
+            col.checked_sub(1)?
+        } else {
+            col
+        };
+        (normal.cell_state(row, base).is_explicit() && !normal.cell(row, base).wide_continuation)
+            .then_some((row, base))
+    }
 
     fn write_decoded_char(
         pen_state: &mut PenState,
@@ -57,7 +87,31 @@ impl CellWriter {
         width: usize,
     ) -> bool {
         if width == 0 {
-            return false;
+            if !Self::is_combining_mark(ch) {
+                return false;
+            }
+            if let Some((row, base_col)) = Self::combining_base(normal, cursor) {
+                normal.mutate_cell_semantics(row, base_col, |cell| cell.suffix.push(ch));
+                return true;
+            }
+            // A mark at the start of a line has its own one-cell projection.
+            let (left, right) = if cursor.margins.enabled {
+                (cursor.margins.left, cursor.margins.right)
+            } else {
+                (0, normal.cols() - 1)
+            };
+            if cursor.cursor.x < left || cursor.cursor.x > right {
+                return false;
+            }
+            if !Self::prepare_position(normal, cursor, pen_state, ch, 1, (left, right)) {
+                return false;
+            }
+            Self::commit_cell(pen_state, normal, cursor, ch, 1, (left, right));
+            normal.mutate_cell_semantics(cursor.cursor.y, cursor.cursor.x, |cell| {
+                cell.isolated_mark = true;
+            });
+            Self::advance_cursor(cursor, 1, (left, right));
+            return true;
         }
 
         let (left_limit, right_limit) = if cursor.margins.enabled {
@@ -230,6 +284,9 @@ impl CellWriter {
 
         let cell = crate::Cell {
             ch,
+            suffix: String::new(),
+            width: width as u8,
+            isolated_mark: false,
             wide_continuation: false,
             fg: pen_state.pen.fg,
             bg: pen_state.pen.bg,
@@ -245,6 +302,9 @@ impl CellWriter {
                 cursor.cursor.x + 1,
                 crate::Cell {
                     ch: ' ',
+                    suffix: String::new(),
+                    width: 0,
+                    isolated_mark: false,
                     wide_continuation: true,
                     fg: pen_state.pen.fg,
                     bg: pen_state.pen.bg,
@@ -263,6 +323,7 @@ impl CellWriter {
         width: usize,
         (_left_limit, right_limit): (usize, usize),
     ) {
+        cursor.last_clamped_write = !cursor.modes.autowrap && cursor.cursor.x + width > right_limit;
         cursor.cursor.x += width;
         if cursor.cursor.x > right_limit {
             cursor.cursor.x = right_limit;

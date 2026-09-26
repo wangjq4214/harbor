@@ -1,4 +1,4 @@
-use crate::model::TerminalSnapshot;
+use crate::model::{Cell, TerminalSnapshot};
 use harbor_config::Palette;
 
 use anyhow::Result;
@@ -210,6 +210,22 @@ impl GpuGlyphAtlas {
 
 // ── TextLayer ────────────────────────────────────────────────────────────────
 
+/// Scalars needed by both the initial atlas and incremental dirty uploads.
+fn paint_chars(cell: &Cell) -> Vec<char> {
+    if cell.wide_continuation {
+        return Vec::new();
+    }
+    let mut chars = Vec::new();
+    if cell.isolated_mark {
+        chars.push('\u{25cc}');
+    }
+    if cell.ch != ' ' {
+        chars.push(cell.ch);
+    }
+    chars.extend(cell.suffix.chars());
+    chars
+}
+
 /// Text rendering: glyph atlas + vertex buffer for every grid cell.
 pub struct Text {
     fonts: FontBook,
@@ -316,11 +332,7 @@ impl Text {
     }
 
     fn collect_all_chars(snap: &TerminalSnapshot) -> Vec<char> {
-        let mut chars: Vec<char> = snap
-            .cells
-            .iter()
-            .filter_map(|cell| if cell.ch != ' ' { Some(cell.ch) } else { None })
-            .collect();
+        let mut chars: Vec<char> = snap.cells.iter().flat_map(paint_chars).collect();
         chars.sort_unstable();
         chars.dedup();
         chars
@@ -333,10 +345,8 @@ impl Text {
         let mut chars: Vec<char> = dirty_ranges
             .iter()
             .flat_map(|range| {
-                (range.start_col..range.end_col).filter_map(move |col| {
-                    let ch = snap.cell_char(range.row, col);
-                    if ch != ' ' { Some(ch) } else { None }
-                })
+                (range.start_col..range.end_col)
+                    .flat_map(move |col| paint_chars(snap.cell(range.row, col)))
             })
             .collect();
         chars.sort_unstable();
@@ -372,6 +382,8 @@ impl Text {
         for col in range.start_col..range.end_col {
             let cell = snap.cell(range.row, col);
             if cell.ch != ' '
+                && !cell.isolated_mark
+                && !cell.wide_continuation
                 && let Some(glyph) = self.atlas.glyph_by_char(cell.ch)
                 && glyph.width > 0
                 && glyph.height > 0
@@ -480,17 +492,16 @@ impl Text {
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) {
-        let Some(preedit) = preedit.filter(|preedit| !preedit.is_empty()) else {
-            self.overlay_vertex_count = 0;
-            return;
-        };
-
-        let layout = layout_preedit(
-            preedit,
-            (snap.cursor_x, snap.cursor_y),
-            snap.rows,
-            snap.cols,
-        );
+        let layout = preedit
+            .filter(|preedit| !preedit.is_empty())
+            .map(|preedit| {
+                layout_preedit(
+                    preedit,
+                    (snap.cursor_x, snap.cursor_y),
+                    snap.rows,
+                    snap.cols,
+                )
+            });
         let (surf_w, surf_h) = viewport.surface_dimensions();
         let color = glyph_color_with_palette(
             &self.palette,
@@ -498,8 +509,49 @@ impl Text {
             Color::Default,
             CellAttrs::default(),
         );
-        let mut vertices = Vec::with_capacity(layout.glyphs.len().saturating_mul(6));
-        for positioned in layout.glyphs {
+        let mut vertices = Vec::new();
+        for row in 0..snap.rows {
+            for col in 0..snap.cols {
+                let cell = snap.cell(row, col);
+                if cell.wide_continuation {
+                    continue;
+                }
+                let (cell_x, cell_y) = viewport.cell_pos(row, col);
+                let baseline = cell_y + self.metrics.ascent.ceil();
+                let cell_view = OverlayCell {
+                    x: cell_x,
+                    baseline,
+                    color: glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs),
+                    surface: (surf_w, surf_h),
+                    width: cell.grid_width(),
+                };
+                if cell.isolated_mark {
+                    append_overlay_glyph(
+                        &self.atlas,
+                        &self.metrics,
+                        &mut vertices,
+                        '\u{25cc}',
+                        &cell_view,
+                        false,
+                    );
+                }
+                for mark in cell
+                    .suffix
+                    .chars()
+                    .chain(cell.isolated_mark.then_some(cell.ch))
+                {
+                    append_overlay_glyph(
+                        &self.atlas,
+                        &self.metrics,
+                        &mut vertices,
+                        mark,
+                        &cell_view,
+                        true,
+                    );
+                }
+            }
+        }
+        for positioned in layout.into_iter().flat_map(|layout| layout.glyphs) {
             let Some(glyph) = self.atlas.glyph_by_char(positioned.ch) else {
                 continue;
             };
@@ -658,6 +710,64 @@ impl Text {
     }
 }
 
+/// Position and bounds shared by all extra glyphs painted over one grid cell.
+struct OverlayCell {
+    x: f32,
+    baseline: f32,
+    color: [f32; 4],
+    surface: (f32, f32),
+    width: u8,
+}
+
+/// Appends one actual atlas glyph quad at the originating grid cell.
+fn append_overlay_glyph(
+    atlas: &GlyphAtlas,
+    metrics: &TextMetrics,
+    vertices: &mut Vec<TexturedVertex>,
+    ch: char,
+    cell: &OverlayCell,
+    center: bool,
+) {
+    let Some(glyph) = atlas.glyph_by_char(ch) else {
+        return;
+    };
+    if glyph.width == 0 || glyph.height == 0 {
+        return;
+    }
+    let left = if center {
+        cell.x + (metrics.cell_width * cell.width as f32 - glyph.width as f32) * 0.5
+    } else {
+        cell.x + glyph.bearing_x as f32
+    };
+    let bottom = cell.baseline - glyph.bearing_y as f32;
+    let top = bottom - glyph.height as f32;
+    let right = left + glyph.width as f32;
+    let clip_left = left.max(cell.x);
+    let clip_right = right.min(cell.x + metrics.cell_width * cell.width as f32);
+    let clip_top = top.max(cell.baseline - metrics.ascent.ceil());
+    let clip_bottom = bottom.min(cell.baseline - metrics.ascent.ceil() + metrics.line_height);
+    if clip_left >= clip_right || clip_top >= clip_bottom {
+        return;
+    }
+    let u =
+        |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / glyph.width as f32;
+    let v =
+        |y: f32| glyph.uv.top + (glyph.uv.bottom - glyph.uv.top) * (y - top) / glyph.height as f32;
+    vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
+        clip_left,
+        clip_top,
+        clip_right,
+        clip_bottom,
+        u(clip_left),
+        v(clip_top),
+        u(clip_right),
+        v(clip_bottom),
+        cell.color,
+        cell.surface.0,
+        cell.surface.1,
+    ));
+}
+
 /// GPU atlas upload decision derived from a CPU [`harbor_text::RasterizeResult`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AtlasGpuSync {
@@ -683,6 +793,68 @@ fn atlas_gpu_sync(result: &harbor_text::RasterizeResult) -> AtlasGpuSync {
 mod tests {
     use super::*;
     use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
+
+    #[test]
+    fn combining_overlay_emits_mark_and_display_only_cue_quads() {
+        let fonts = harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: None,
+            size: 16.0,
+        })
+        .unwrap();
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let mut atlas = GlyphAtlas::new();
+        atlas.rebuild(&fonts, &['e', '\u{0301}', '\u{25cc}']);
+        let mut base = Cell::default();
+        base.set(
+            'e',
+            Color::Default,
+            Color::Default,
+            CellAttrs::default(),
+            false,
+        );
+        base.suffix.push('\u{0301}');
+        let mut isolated = Cell::default();
+        isolated.set(
+            '\u{0301}',
+            Color::Default,
+            Color::Default,
+            CellAttrs::default(),
+            false,
+        );
+        isolated.isolated_mark = true;
+        assert_eq!(paint_chars(&base), ['e', '\u{0301}']);
+        assert_eq!(paint_chars(&isolated), ['\u{25cc}', '\u{0301}']);
+        let mut verts = Vec::new();
+        let cell_view = OverlayCell {
+            x: 0.0,
+            baseline: metrics.ascent,
+            color: [1.0; 4],
+            surface: (100.0, 100.0),
+            width: 1,
+        };
+        for ch in paint_chars(&isolated) {
+            append_overlay_glyph(
+                &atlas,
+                &metrics,
+                &mut verts,
+                ch,
+                &cell_view,
+                ch != '\u{25cc}',
+            );
+        }
+        assert_eq!(
+            verts.len(),
+            12,
+            "cue and mark must each contribute a real atlas quad"
+        );
+        verts.clear();
+        append_overlay_glyph(&atlas, &metrics, &mut verts, '\u{0301}', &cell_view, true);
+        assert_eq!(
+            verts.len(),
+            6,
+            "combined mark must be painted over its base"
+        );
+    }
 
     #[test]
     fn inverse_default_glyph_uses_background_rgb() {

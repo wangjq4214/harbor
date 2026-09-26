@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0015 R1/R3/R4](../../spec/0015-unicode-terminal-text-correctness.md), [ADR-0044](../../adr/0044-unicode-text-unit-and-presentation-width-policy.md), [ADR-0042](../../adr/0042-content-anchors-and-buffer-specific-resize.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -29,12 +29,14 @@ Do not commit to a storage container, shaping library, or extra orphan contexts 
 
 ## Acceptance
 
-- [ ] A stream containing `e` then U+0301, whether in one or separate PTY reads, displays the accent on the base, advances only one cell, and copies exactly `e` + U+0301.
-- [ ] A line-start U+0301 occupies one cell, shows a synthetic dotted-circle cue, and copies only U+0301; the cue is absent from retained logical text.
-- [ ] Selection, copy, and primary reflow preserve combined text and style/hyperlink/meaningful-blank semantics across soft wraps, explicit breaks, repeated resize and documented capacity eviction; alternate-screen resize remains rectangular.
-- [ ] Overwrite, insert, erase, protected-cell and wide-cell/right-edge cases maintain complete grid units, cursor/pending-wrap and content-anchor/selection projections without retaining discarded marks or splitting wide bases.
-- [ ] Mutating a previously rendered base with a mark dirties the affected grid range and redraws it; focused tests cover the renderer path and split reads. Existing ordinary and wide-character tests remain passing.
-- [ ] Focused tests and reproducible steps are recorded for this increment; runtime presentation is not claimed solely from parser/model tests.
+Completion basis: automated checks passed and the user explicitly accepted T0001, reporting that the remaining behavior has no issues. The runtime details were not supplied; checkbox closure records user sign-off, not independently captured evidence for every matrix row. See `docs/verification/combining-text-t0001.md`.
+
+- [x] A stream containing `e` then U+0301, whether in one or separate PTY reads, displays the accent on the base, advances only one cell, and copies exactly `e` + U+0301.
+- [x] A line-start U+0301 occupies one cell, shows a synthetic dotted-circle cue, and copies only U+0301; the cue is absent from retained logical text.
+- [x] Selection, copy, and primary reflow preserve combined text and style/hyperlink/meaningful-blank semantics across soft wraps, explicit breaks, repeated resize and documented capacity eviction; alternate-screen resize remains rectangular.
+- [x] Overwrite, insert, erase, protected-cell and wide-cell/right-edge cases maintain complete grid units, cursor/pending-wrap and content-anchor/selection projections without retaining discarded marks or splitting wide bases.
+- [x] Mutating a previously rendered base with a mark dirties the affected grid range and redraws it; focused tests cover the renderer path and split reads. Existing ordinary and wide-character tests remain passing.
+- [x] Focused tests and reproducible steps are recorded for this increment; runtime presentation is not claimed solely from parser/model tests.
 
 ## Out of scope
 
