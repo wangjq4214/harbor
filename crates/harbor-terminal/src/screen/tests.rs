@@ -1155,6 +1155,47 @@ fn resize_preserves_saved_cursor() {
 }
 
 #[test]
+fn resize_preserves_live_and_saved_cursor_in_unwritten_suffix() {
+    let mut screen = Screen::new(1, 4);
+    screen.write_char('a');
+    screen.cursor.cursor.x = 3;
+    screen.save_cursor();
+
+    screen.resize(1, 6);
+    assert_eq!(screen.cursor_x(), 3);
+    screen.cursor.cursor.x = 0;
+    screen.restore_cursor();
+    assert_eq!(screen.cursor_x(), 3);
+    screen.write_char('b');
+    assert_eq!(screen.row_text(0), "a  b  ");
+}
+
+#[test]
+fn partial_erase_rebases_following_soft_wrap_for_copy_and_resize() {
+    let mut screen = Screen::new(2, 4);
+    for ch in "abcde".chars() {
+        screen.write_char(ch);
+    }
+    screen.cursor.cursor.y = 0;
+    screen.cursor.cursor.x = 2;
+    screen.erase_line(0);
+
+    assert!(screen.content_projection().is_ok());
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+        }),
+        "abe"
+    );
+    screen.resize(2, 3);
+    assert_eq!(screen.rows(), 2);
+    assert_eq!(screen.cols(), 3);
+}
+
+#[test]
 fn resize_refreshes_clamped_saved_cursor_anchor_before_later_edits() {
     let mut screen = Screen::new(1, 6);
     for ch in "abcdef".chars() {

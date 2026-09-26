@@ -10,9 +10,23 @@ $cache = Join-Path $repoRoot "target/conpty-download/$version"
 New-Item -ItemType Directory -Force $cache | Out-Null
 if (-not $PackagePath) {
     $PackagePath = Join-Path $cache 'conpty.nupkg'
+    # A canceled download must not poison subsequent bootstrap attempts.
+    if ((Test-Path -LiteralPath $PackagePath) -and
+        (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash -ne $packageSha256) {
+        Remove-Item -LiteralPath $PackagePath -Force
+    }
     if (-not (Test-Path -LiteralPath $PackagePath)) {
         $url = "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$version/microsoft.windows.console.conpty.$version.nupkg"
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $PackagePath
+        $temporary = Join-Path $cache ([IO.Path]::GetRandomFileName())
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $temporary
+            if ((Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash -ne $packageSha256) {
+                throw 'ConPTY package SHA256 does not match the pinned version; no runtime files were changed.'
+            }
+            Move-Item -LiteralPath $temporary -Destination $PackagePath -Force
+        } finally {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 if ((Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash -ne $packageSha256) {

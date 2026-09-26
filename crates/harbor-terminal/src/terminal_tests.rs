@@ -2701,6 +2701,41 @@ fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
 }
 
 #[test]
+fn vt_mouse_release_consumes_pending_local_capture_after_alt_transition() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, _written, _wake_rx) = terminal_with_io(reader);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    let event = |phase| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            7,
+        ))
+    };
+    assert_eq!(
+        terminal
+            .handle_event_with_outcome(event(TerminalPointerPhase::Down))
+            .unwrap()
+            .capture_pointer,
+        Some(7)
+    );
+    terminal.process_output(b"\x1b[?1049h\x1b[?1000;1006h");
+    assert_eq!(
+        terminal
+            .handle_event_with_outcome(event(TerminalPointerPhase::Up))
+            .unwrap()
+            .release_pointer,
+        Some(7)
+    );
+    assert!(!terminal.pointer.has_active_pointer());
+}
+
+#[test]
 fn tracking_without_sgr_consumes_wheel_until_tracking_is_disabled() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),

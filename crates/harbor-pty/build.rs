@@ -21,6 +21,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "x86" => "x86",
         other => return Err(format!("no bundled ConPTY runtime for {other}").into()),
     };
+    let required = std::iter::once(source.join(arch).join("conpty.dll"))
+        .chain(["x64", "arm64", "x86"].map(|host| source.join(host).join("OpenConsole.exe")))
+        .chain(["LICENSE", "VERSION"].map(|name| source.join(name)));
+    for file in required {
+        if !file.is_file() {
+            return Err(format!(
+                "missing bundled ConPTY runtime {}. Run ./scripts/fetch_conpty.ps1 before building (or pass -PackagePath for an offline package)",
+                file.display()
+            )
+            .into());
+        }
+    }
     let out_dir = env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?;
     // OUT_DIR is <profile>/build/<package>/out, including custom target directories.
     let profile = Path::new(&out_dir)

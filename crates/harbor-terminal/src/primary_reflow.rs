@@ -219,27 +219,12 @@ impl PreparedPrimaryResize {
             .checked_add(target_rows)
             .ok_or(PreparationError::ArithmeticOverflow)?;
         let capacity_dropped_rows = rows.len().saturating_sub(budget);
-        let live_start = rows.len().saturating_sub(target_rows);
         let cutoff_splits_line = capacity_dropped_rows > 0
             && capacity_dropped_rows < rows.len()
             && rows[capacity_dropped_rows - 1].metadata.logical_line_id
                 == rows[capacity_dropped_rows].metadata.logical_line_id;
-        let mut dropped_rows = capacity_dropped_rows;
-        let mut partial_head = cutoff_splits_line;
-        if cutoff_splits_line {
-            let partial_line_id = rows[capacity_dropped_rows].metadata.logical_line_id;
-            let partial_line_end = rows[capacity_dropped_rows..]
-                .iter()
-                .position(|row| row.metadata.logical_line_id != partial_line_id)
-                .map_or(rows.len(), |offset| capacity_dropped_rows + offset);
-            // Do not expose an orphaned suffix as the oldest history entry. A line that
-            // reaches the live viewport cannot be removed without discarding live content,
-            // so that case keeps the prefix-truncation fallback.
-            if partial_line_end <= live_start {
-                dropped_rows = partial_line_end;
-                partial_head = false;
-            }
-        }
+        let dropped_rows = capacity_dropped_rows;
+        let partial_head = cutoff_splits_line;
         if dropped_rows > rows.len().saturating_sub(target_rows) {
             return Err(PreparationError::Invariant(
                 "capacity eviction entered live viewport",
@@ -528,13 +513,28 @@ impl PreparedPrimaryResize {
         }
         let end_offset = line.atom_start.0.checked_add(line.atoms.len())?;
         if anchor.offset.0 == end_offset {
-            return line
+            let atom = line
                 .atoms
                 .iter()
                 .rev()
-                .find(|atom| atom.position.is_some())
-                .copied()
-                .and_then(|atom| self.insertion_after(atom));
+                .find(|atom| atom.position.is_some())?;
+            let mut insertion = self.insertion_after(*atom)?;
+            // An insertion point beyond the last written atom can be parked in
+            // unwritten cells; keep that gap when the target row has room.
+            if let Some(hint) = anchor.projection_hint()
+                && hint.generation == atom.source_span.generation
+                && let Some(source_after) = atom.source_span.end_col.checked_add(1)
+                && hint.col > source_after
+            {
+                let gap = hint.col - source_after;
+                insertion.position.col = insertion
+                    .position
+                    .col
+                    .saturating_add(gap)
+                    .min(self.cols.saturating_sub(1));
+                insertion.pending_wrap = false;
+            }
+            return Some(insertion);
         }
         None
     }
@@ -1205,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_evicts_complete_historical_line_instead_of_exposing_suffix() {
+    fn capacity_retains_head_truncated_historical_suffix() {
         let mut normal = NormalBuf::new_for_test(4, 4, 2);
         for (row, text) in ["abcd", "efgh", "x", "y"].into_iter().enumerate() {
             for (col, ch) in text.chars().enumerate() {
@@ -1226,12 +1226,23 @@ mod tests {
 
         let prepared = PreparedPrimaryResize::prepare_geometry(&normal, 2, 2).unwrap();
 
-        assert_eq!(prepared.dropped_rows(), 4);
-        assert_eq!(prepared.rows().len(), 2);
-        assert_eq!(prepared.normal().scroll_count(), 0);
-        assert!(!prepared.rows()[0].metadata.head_truncated);
-        assert_eq!(prepared.rows()[0].cells[0].ch, 'x');
-        assert_eq!(prepared.rows()[1].cells[0].ch, 'y');
+        assert_eq!(prepared.dropped_rows(), 2);
+        assert_eq!(prepared.rows().len(), 4);
+        assert_eq!(prepared.normal().scroll_count(), 2);
+        assert!(prepared.rows()[0].metadata.head_truncated);
+        assert_eq!(prepared.rows()[0].metadata.logical_start, 4);
+        assert_eq!(prepared.rows()[0].cells[0].ch, 'e');
+        assert_eq!(prepared.rows()[1].cells[0].ch, 'g');
+        assert_eq!(prepared.rows()[2].cells[0].ch, 'x');
+        assert_eq!(prepared.rows()[3].cells[0].ch, 'y');
+        let prefix = prepared
+            .source_anchor(GenPos::new(0, 0), Affinity::Before)
+            .unwrap();
+        let suffix = prepared
+            .source_anchor(GenPos::new(1, 0), Affinity::Before)
+            .unwrap();
+        assert_eq!(prepared.project_selection(prefix), None);
+        assert!(prepared.project_selection(suffix).is_some());
     }
 
     #[test]

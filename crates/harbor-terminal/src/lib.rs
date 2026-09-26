@@ -499,7 +499,7 @@ impl Terminal {
                     };
                     let vt_release = match pointer.phase {
                         TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
-                            if self.pointer.end_vt_capture(pointer.pointer_id) =>
+                            if self.pointer.release_vt_or_pending(pointer.pointer_id) =>
                         {
                             Some(pointer.pointer_id)
                         }

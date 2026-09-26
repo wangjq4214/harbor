@@ -177,6 +177,9 @@ impl CellOps {
             normal.begin_hard_line(row);
         }
         Self::normalize_row_region(pen_state, normal, row, left, right);
+        // A partial erase can shorten this row without severing its logical line.
+        // Keep continuation offsets aligned with its final meaningful extent.
+        normal.repair_following_soft_chain(row);
     }
 
     // ── margin-rect scroll helpers ────────────────────────────────

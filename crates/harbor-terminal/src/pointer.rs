@@ -179,6 +179,17 @@ impl PointerInteraction {
         }
     }
 
+    /// A local capture may have been queued for release before VT reporting turned on.
+    pub(crate) fn release_vt_or_pending(&mut self, pointer_id: u64) -> bool {
+        let captured = self.end_vt_capture(pointer_id);
+        if self.pending_release == Some(pointer_id) {
+            self.pending_release = None;
+            true
+        } else {
+            captured
+        }
+    }
+
     pub fn report_position(
         &self,
         position: (f32, f32),

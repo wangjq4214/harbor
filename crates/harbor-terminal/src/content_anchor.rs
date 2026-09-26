@@ -44,6 +44,10 @@ impl ContentAnchor {
         }
     }
 
+    pub(crate) const fn projection_hint(self) -> Option<GenPos> {
+        self.projection_hint
+    }
+
     pub(crate) const fn prefers_previous_projection(self) -> bool {
         self.prefer_previous_projection
     }
