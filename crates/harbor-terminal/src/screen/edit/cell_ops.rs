@@ -7,7 +7,6 @@
 use crate::model::Cell;
 use crate::normal_buf::{CellState, NormalBuf};
 use harbor_parser::Params;
-use unicode_width::UnicodeWidthChar;
 
 use super::super::cursor::CursorEngine;
 use super::pen_state::PenState;
@@ -33,12 +32,9 @@ impl CellOps {
         let cell = normal.cell(row, col);
         if cell.wide_continuation {
             let base = col.checked_sub(1)?;
-            return (UnicodeWidthChar::width(normal.cell(row, base).ch).unwrap_or(0) == 2)
-                .then_some((base, col));
+            return (normal.cell(row, base).grid_width() == 2).then_some((base, col));
         }
-        (UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2
-            && col + 1 < cols
-            && normal.cell(row, col + 1).wide_continuation)
+        (cell.grid_width() == 2 && col + 1 < cols && normal.cell(row, col + 1).wide_continuation)
             .then_some((col, col + 1))
     }
 
@@ -87,7 +83,7 @@ impl CellOps {
                 continue;
             }
             let cell = normal.cell(row, col);
-            if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+            if cell.wide_continuation || cell.grid_width() == 2 {
                 normal.erase_cell(row, col, pen_state.erase_cell());
             }
             col += 1;
@@ -162,13 +158,13 @@ impl CellOps {
                     || (!normal.cell(row, base).protected
                         && !normal.cell(row, continuation).protected)
                 {
-                    normal.erase_cell(row, base, erase);
-                    normal.erase_cell(row, continuation, erase);
+                    normal.erase_cell(row, base, erase.clone());
+                    normal.erase_cell(row, continuation, erase.clone());
                 }
                 col = continuation + 1;
             } else {
                 if !selective || !normal.cell(row, col).protected {
-                    normal.erase_cell(row, col, erase);
+                    normal.erase_cell(row, col, erase.clone());
                 }
                 col += 1;
             }
@@ -204,7 +200,7 @@ impl CellOps {
         let blank = pen_state.erase_cell();
         for row in (bottom + 1 - n)..=bottom {
             for col in cursor.margins.left..=cursor.margins.right {
-                normal.erase_cell(row, col, blank);
+                normal.erase_cell(row, col, blank.clone());
             }
         }
         for row in top..=bottom {
@@ -239,7 +235,7 @@ impl CellOps {
         let blank = pen_state.erase_cell();
         for row in top..(top + n) {
             for col in cursor.margins.left..=cursor.margins.right {
-                normal.erase_cell(row, col, blank);
+                normal.erase_cell(row, col, blank.clone());
             }
         }
         for row in top..=bottom {
@@ -982,6 +978,9 @@ impl CellOps {
 
         let cell = Cell {
             ch: fill_char,
+            suffix: String::new(),
+            width: 1,
+            isolated_mark: false,
             wide_continuation: false,
             fg: pen_state.pen.fg,
             bg: pen_state.pen.bg,
@@ -994,7 +993,7 @@ impl CellOps {
             let (start, end) =
                 Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
             for col in start..end {
-                normal.write_meaningful_cell(row, col, cell);
+                normal.write_meaningful_cell(row, col, cell.clone());
             }
             Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
         }
@@ -1044,7 +1043,7 @@ impl CellOps {
         let width = sr - sl + 1;
 
         let erase = pen_state.erase_cell();
-        let erase_state = CellState::erase(erase);
+        let erase_state = CellState::erase(&erase);
         let mut temp = Vec::with_capacity(height * width);
         for row in st..=sb {
             for col in sl..=sr {
@@ -1052,13 +1051,13 @@ impl CellOps {
                     Some((base, continuation)) => base >= sl && continuation <= sr,
                     None => {
                         !normal.cell(row, col).wide_continuation
-                            && UnicodeWidthChar::width(normal.cell(row, col).ch).unwrap_or(0) != 2
+                            && normal.cell(row, col).grid_width() != 2
                     }
                 };
                 temp.push(if complete {
-                    (*normal.cell(row, col), normal.cell_state(row, col))
+                    (normal.cell(row, col).clone(), normal.cell_state(row, col))
                 } else {
-                    (erase, erase_state)
+                    (erase.clone(), erase_state)
                 });
             }
         }
@@ -1109,15 +1108,15 @@ impl CellOps {
                 ) {
                     continue;
                 }
-                let (mut cell, mut state) = temp[h * width + w];
-                if cell.wide_continuation || UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+                let (mut cell, mut state) = temp[h * width + w].clone();
+                if cell.wide_continuation || cell.grid_width() == 2 {
                     let pair_in_bounds = if cell.wide_continuation {
                         dest_col > col_start && dest_col > dest_left
                     } else {
                         dest_col + 1 < col_end && dest_col < dest_right
                     };
                     if !pair_in_bounds {
-                        cell = erase;
+                        cell = erase.clone();
                         state = erase_state;
                     }
                 }

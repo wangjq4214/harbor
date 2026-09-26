@@ -33,6 +33,378 @@ fn move_to(parser: &mut TerminalParser, screen: &mut Screen, row: usize, col: us
 }
 
 #[test]
+fn combining_utf8_split_across_reads_extends_base_and_dirties_it() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(2, 3);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abc");
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, &[0xcc]);
+    assert!(screen.dirty_ranges().is_empty());
+    feed(&mut parser, &mut screen, &[0x81]);
+    assert_eq!(screen.cell(0, 2).raw_text(), "c\u{0301}");
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 0));
+    assert!(
+        screen
+            .dirty_ranges()
+            .iter()
+            .any(|r| r.row == 0 && r.start_col <= 2 && r.end_col > 2)
+    );
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 2
+        }),
+        "abc\u{0301}"
+    );
+    feed(&mut parser, &mut screen, b"d");
+    assert_eq!(screen.cell(1, 0).raw_text(), "d");
+}
+
+#[test]
+fn combining_mark_at_clamped_right_margin_extends_written_base() {
+    let mut screen = Screen::new(1, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?7labcd");
+    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    assert_eq!(screen.cell(0, 3).raw_text(), "d\u{0301}");
+    assert_eq!(screen.cell(0, 2).raw_text(), "c");
+    assert_eq!(screen.cursor_x(), 3);
+    // After an ordinary advance *to* the occupied margin, the preceding
+    // freshly written cell is still the attachment target.
+    feed(&mut parser, &mut screen, b"\rabc");
+    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    assert_eq!(screen.cell(0, 2).raw_text(), "c\u{0301}");
+    assert_eq!(screen.cell(0, 3).raw_text(), "d\u{0301}");
+}
+
+#[test]
+fn zero_width_format_is_ignored_but_isolated_selector_is_retained() {
+    let mut screen = Screen::new(1, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "\u{200b}\u{e0100}".as_bytes());
+    assert_eq!(screen.cursor_x(), 1);
+    assert_eq!(screen.cell(0, 0).raw_text(), "\u{e0100}");
+    assert!(!screen.cell(0, 0).isolated_mark);
+    feed(&mut parser, &mut screen, "e\u{0301}\u{200b}".as_bytes());
+    assert_eq!(screen.cell(0, 1).raw_text(), "e\u{0301}");
+    feed(&mut parser, &mut screen, "\r\u{200d}".as_bytes());
+    assert_eq!(screen.cell(0, 0).raw_text(), "\u{200d}");
+    assert_eq!(screen.cell(0, 0).grid_width(), 1);
+}
+
+#[test]
+fn emoji_sequences_preserve_width_copy_and_dirty_across_split_reads() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(2, 10);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "♥".as_bytes());
+    assert_eq!(screen.cell(0, 0).grid_width(), 1);
+    feed(&mut parser, &mut screen, "♥".as_bytes());
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, &[0xef, 0xb8]);
+    assert!(screen.dirty_ranges().is_empty());
+    feed(&mut parser, &mut screen, &[0x8f]);
+    assert_eq!(screen.cell(0, 1).raw_text(), "♥️");
+    assert_eq!(screen.cell(0, 1).grid_width(), 2);
+    assert!(screen.cell(0, 2).wide_continuation);
+    assert!(
+        screen
+            .dirty_ranges()
+            .iter()
+            .any(|r| r.row == 0 && r.start_col <= 1 && r.end_col >= 3)
+    );
+    feed(&mut parser, &mut screen, "👩".as_bytes());
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, "‍".as_bytes());
+    assert!(
+        screen
+            .dirty_ranges()
+            .iter()
+            .any(|r| r.row == 0 && r.start_col <= 3 && r.end_col > 3)
+    );
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, "💻".as_bytes());
+    assert!(
+        screen
+            .dirty_ranges()
+            .iter()
+            .any(|r| r.row == 0 && r.start_col <= 3 && r.end_col > 3)
+    );
+    assert_eq!(screen.cell(0, 3).raw_text(), "👩‍💻");
+    assert_eq!(screen.cell(0, 3).grid_width(), 2);
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (5, 0));
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 4,
+        }),
+        "♥♥️👩‍💻"
+    );
+}
+
+#[test]
+fn selector_promotes_at_right_edge_without_splitting_or_losing_style() {
+    let mut screen = Screen::new(2, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abc\x1b[31m");
+    feed(&mut parser, &mut screen, "♥".as_bytes());
+    feed(&mut parser, &mut screen, "️".as_bytes());
+    assert_eq!(screen.cell(0, 3).raw_text(), " ");
+    assert_eq!(screen.cell(1, 0).raw_text(), "♥️");
+    assert_eq!(screen.cell(1, 0).grid_width(), 2);
+    assert!(screen.cell(1, 1).wide_continuation);
+    assert_eq!(screen.cell(1, 0).fg, crate::Color::Named(1));
+    feed(&mut parser, &mut screen, b"Z");
+    assert_eq!(screen.cell(1, 2).raw_text(), "Z");
+    assert_eq!(
+        screen.selected_text(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 1,
+        }),
+        "abc♥️"
+    );
+}
+
+#[test]
+fn no_wrap_edge_keeps_selector_text_without_corrupting_neighbors() {
+    let mut screen = Screen::new(1, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"\x1b[?7labc");
+    feed(&mut parser, &mut screen, "♥️".as_bytes());
+    assert_eq!(screen.cell(0, 3).raw_text(), "♥️");
+    assert_eq!(screen.cell(0, 2).raw_text(), "c");
+    // No second cell exists in the active margin; this is a documented limit.
+    assert_eq!(screen.cell(0, 3).grid_width(), 1);
+}
+
+#[test]
+fn promotion_reports_neighbor_deletion_to_content_anchors() {
+    use crate::content_anchor::{Affinity, AnchorMutation};
+    use crate::selection_model::GenPos;
+    let mut screen = Screen::new(1, 6);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"abX");
+    let (_, before) = screen.finish_anchor_mutations(None).unwrap();
+    let x = before
+        .to_anchor(GenPos::new(0, 2), Affinity::Before)
+        .unwrap();
+    feed(&mut parser, &mut screen, b"\r\x1b[2G");
+    feed(&mut parser, &mut screen, "♥️".as_bytes());
+    let (changes, _) = screen.finish_anchor_mutations(Some(&before)).unwrap();
+    assert!(changes.iter().any(|change| matches!(change,
+        AnchorMutation::Delete { line_id, start, end }
+        if line_id == x.line_id && start == x.offset && end.0 == x.offset.0 + 1
+    )));
+}
+
+#[test]
+fn insert_mode_promotion_keeps_the_neighboring_atom() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(1, 7);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"aX");
+    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[4h");
+    feed(&mut parser, &mut screen, "♥".as_bytes());
+    let (_, before) = screen.finish_anchor_mutations(None).unwrap();
+    let x = before
+        .to_anchor(
+            crate::selection_model::GenPos::new(0, 2),
+            crate::content_anchor::Affinity::Before,
+        )
+        .unwrap();
+    feed(&mut parser, &mut screen, "️".as_bytes());
+    let (changes, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
+    assert_eq!(
+        after.resolve_selection(changes.apply(x).unwrap()),
+        Some(crate::selection_model::GenPos::new(0, 3))
+    );
+    assert_eq!(screen.cell(0, 1).raw_text(), "♥️");
+    assert!(screen.cell(0, 2).wide_continuation);
+    assert_eq!(screen.cell(0, 3).raw_text(), "X");
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 3,
+        }),
+        "a♥️X"
+    );
+}
+
+#[test]
+fn joined_emoji_survives_reflow_and_whole_unit_erase() {
+    let mut screen = Screen::new(3, 6);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "ab👩‍💻z".as_bytes());
+    for width in [4, 7, 5] {
+        let prepared = screen.prepare_resize(3, width).unwrap();
+        screen.commit_resize(prepared);
+        let units: Vec<_> = (0..screen.rows())
+            .flat_map(|r| (0..screen.cols()).map(move |c| (r, c)))
+            .filter(|&(r, c)| screen.cell(r, c).ch == '👩')
+            .map(|(r, c)| screen.cell(r, c).raw_text())
+            .collect();
+        assert_eq!(units, ["👩‍💻"]);
+    }
+    let copied = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + 2,
+        end_col: screen.cols() - 1,
+    });
+    assert!(copied.contains("👩‍💻"), "reflowed copy: {copied:?}");
+    feed(&mut parser, &mut screen, b"\r\x1b[3G\x1b[2X");
+    assert_eq!(screen.cell(0, 2).raw_text(), " ");
+    assert!(!screen.cell(0, 3).wide_continuation);
+}
+
+#[test]
+fn emoji_units_keep_metadata_across_insert_and_alternate_resize() {
+    let mut screen = Screen::new(2, 7);
+    let mut parser = TerminalParser::default();
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[31m\x1b[1\"q\x1b]8;;https://example.test\x07",
+    );
+    feed(&mut parser, &mut screen, "a♥️👩‍💻".as_bytes());
+    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[@");
+    assert_eq!(screen.cell(0, 2).raw_text(), "♥️");
+    assert_eq!(screen.cell(0, 2).grid_width(), 2);
+    assert!(screen.cell(0, 2).protected);
+    assert!(screen.cell(0, 2).hyperlink.is_some());
+    assert_eq!(screen.cell(0, 4).raw_text(), "👩‍💻");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+    feed(&mut parser, &mut screen, "♥️".as_bytes());
+    let prepared = screen.prepare_resize(2, 5).unwrap();
+    screen.commit_resize(prepared);
+    assert_eq!(screen.cell(0, 0).raw_text(), "♥️");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+    assert!(screen.cell(0, 0).raw_text().contains('a'));
+    assert!(
+        (0..screen.rows())
+            .flat_map(|r| (0..screen.cols()).map(move |c| (r, c)))
+            .any(|(r, c)| screen.cell(r, c).raw_text() == "♥️")
+    );
+}
+#[test]
+fn insert_before_combined_wide_unit_preserves_atomic_text_and_style() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(1, 7);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "ab界\u{0301}z".as_bytes());
+    feed(&mut parser, &mut screen, b"\r\x1b[3G\x1b[@");
+    assert_eq!(screen.cell(0, 3).raw_text(), "界\u{0301}");
+    assert_eq!(screen.cell(0, 3).grid_width(), 2);
+    assert!(screen.cell(0, 4).wide_continuation);
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 6,
+        }),
+        "ab 界\u{0301}z"
+    );
+}
+
+#[test]
+fn isolated_mark_is_cued_but_copies_only_source_and_erases_whole_unit() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(1, 4);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    assert!(screen.cell(0, 0).isolated_mark);
+    assert_eq!(screen.cell(0, 0).width, 1);
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 0
+        }),
+        "\u{0301}"
+    );
+    feed(&mut parser, &mut screen, b"\r\x1b[X");
+    assert_eq!(screen.cell(0, 0).raw_text(), " ");
+    assert!(!screen.cell(0, 0).isolated_mark);
+}
+#[test]
+fn combining_unit_survives_primary_reflow_and_alternate_rectangular_resize() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(2, 5);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "ab界\u{0301}z".as_bytes());
+    assert_eq!(screen.cell(0, 2).raw_text(), "界\u{0301}");
+    for cols in [3, 6, 5] {
+        let prepared = screen.prepare_resize(2, cols).unwrap();
+        screen.commit_resize(prepared);
+        let retained: Vec<_> = (0..screen.rows())
+            .flat_map(|row| (0..screen.cols()).map(move |col| (row, col)))
+            .filter(|&(row, col)| screen.cell(row, col).ch == '界')
+            .map(|(row, col)| screen.cell(row, col).raw_text())
+            .collect();
+        assert_eq!(retained, ["界\u{0301}"]);
+    }
+    assert!(
+        screen
+            .selected_text(SelectionBounds {
+                start_row: screen.history_start(),
+                start_col: 0,
+                end_row: screen.history_start() + 1,
+                end_col: 4
+            })
+            .contains("界\u{0301}")
+    );
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+    feed(&mut parser, &mut screen, "e\u{0301}".as_bytes());
+    let prepared = screen.prepare_resize(2, 3).unwrap();
+    screen.commit_resize(prepared);
+    assert_eq!(screen.cell(0, 0).raw_text(), "e\u{0301}");
+    feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
+}
+
+#[test]
+fn overwrite_and_erase_do_not_leave_detached_marks() {
+    use crate::SelectionBounds;
+    let mut screen = Screen::new(2, 5);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, "e\u{0301}界\u{0301}".as_bytes());
+    assert_eq!(screen.cell(0, 1).width, 2);
+    assert_eq!(screen.cell(0, 1).raw_text(), "界\u{0301}");
+    feed(&mut parser, &mut screen, b"\rZ");
+    assert_eq!(screen.cell(0, 0).raw_text(), "Z");
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 2
+        }),
+        "Z界\u{0301}"
+    );
+    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[2X");
+    assert_eq!(screen.cell(0, 1).raw_text(), " ");
+    assert_eq!(
+        screen.selected_text(SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 3
+        }),
+        "Z"
+    );
+}
+
+#[test]
 fn decaln_fills_active_screen_and_preserves_saved_primary_screen() {
     let mut screen = Screen::new(2, 4);
     let mut parser = TerminalParser::default();

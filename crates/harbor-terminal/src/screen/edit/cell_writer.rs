@@ -48,7 +48,71 @@ impl CellWriter {
         let width = UnicodeWidthChar::width(ch).unwrap_or(0).min(2);
         Self::write_decoded_char(pen_state, normal, cursor, ch, width);
     }
+    pub(crate) fn is_combining_mark(ch: char) -> bool {
+        use icu_properties::CodePointMapData;
+        use icu_properties::props::{GeneralCategory, GeneralCategoryGroup};
+        UnicodeWidthChar::width(ch) == Some(0)
+            && !Self::is_selector(ch)
+            && GeneralCategoryGroup::Mark
+                .contains(CodePointMapData::<GeneralCategory>::new().get(ch))
+    }
 
+    /// Selectors and joiners have no independent advance. A pictograph after a
+    /// retained ZWJ completes that same text unit, even across parser reads.
+    pub(crate) fn is_selector(ch: char) -> bool {
+        matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+    }
+
+    pub(crate) fn continuation_base(
+        normal: &NormalBuf,
+        cursor: &CursorEngine,
+        ch: char,
+    ) -> Option<(usize, usize)> {
+        let base = Self::combining_base(normal, cursor)?;
+        (Self::is_combining_mark(ch)
+            || Self::is_selector(ch)
+            || ch == '\u{200d}'
+            || (normal.cell(base.0, base.1).suffix.ends_with('\u{200d}') && Self::is_emoji(ch)))
+        .then_some(base)
+    }
+
+    fn is_emoji(ch: char) -> bool {
+        use icu_properties::{CodePointSetData, props::ExtendedPictographic};
+        CodePointSetData::new::<ExtendedPictographic>().contains(ch)
+    }
+
+    pub(crate) fn promotion_base(
+        normal: &NormalBuf,
+        cursor: &CursorEngine,
+        ch: char,
+    ) -> Option<(usize, usize)> {
+        let (row, col) = Self::continuation_base(normal, cursor, ch)?;
+        let base = normal.cell(row, col);
+        (base.grid_width() == 1
+            && ((ch == '\u{fe0f}' && Self::is_emoji(base.ch))
+                || (base.suffix.ends_with('\u{200d}') && Self::is_emoji(ch))))
+        .then_some((row, col))
+    }
+
+    /// The lead cell a mark or sequence member can extend at the insertion boundary.
+    pub(crate) fn combining_base(
+        normal: &NormalBuf,
+        cursor: &CursorEngine,
+    ) -> Option<(usize, usize)> {
+        let row = cursor.cursor.y;
+        let col = if cursor.modes.pending_wrap || cursor.last_clamped_write {
+            Some(cursor.cursor.x)
+        } else {
+            cursor.cursor.x.checked_sub(1)
+        }?;
+        let base = if normal.cell(row, col).wide_continuation {
+            col.checked_sub(1)?
+        } else {
+            col
+        };
+        (normal.cell_state(row, base).is_explicit() && !normal.cell(row, base).wide_continuation)
+            .then_some((row, base))
+    }
     fn write_decoded_char(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
@@ -56,10 +120,46 @@ impl CellWriter {
         ch: char,
         width: usize,
     ) -> bool {
-        if width == 0 {
-            return false;
+        if let Some((row, base_col)) = Self::continuation_base(normal, cursor, ch) {
+            let promote = Self::promotion_base(normal, cursor, ch).is_some();
+            if promote {
+                if !Self::promote_unit(pen_state, normal, cursor, row, base_col) {
+                    // Preserve source text even when DECAWM is disabled at the margin.
+                    normal.mutate_cell_semantics(row, base_col, |cell| cell.suffix.push(ch));
+                    return true;
+                }
+                let (row, col) = Self::combining_base(normal, cursor).expect("promoted unit");
+                normal.mutate_cell_semantics(row, col, |cell| cell.suffix.push(ch));
+            } else {
+                normal.mutate_cell_semantics(row, base_col, |cell| cell.suffix.push(ch));
+            }
+            return true;
         }
-
+        if width == 0 {
+            if !Self::is_combining_mark(ch) && !Self::is_selector(ch) && ch != '\u{200d}' {
+                return false;
+            }
+            // An unattached mark or format member retains its source in one cell.
+            let (left, right) = if cursor.margins.enabled {
+                (cursor.margins.left, cursor.margins.right)
+            } else {
+                (0, normal.cols() - 1)
+            };
+            if cursor.cursor.x < left || cursor.cursor.x > right {
+                return false;
+            }
+            if !Self::prepare_position(normal, cursor, pen_state, ch, 1, (left, right)) {
+                return false;
+            }
+            Self::commit_cell(pen_state, normal, cursor, ch, 1, (left, right));
+            if Self::is_combining_mark(ch) {
+                normal.mutate_cell_semantics(cursor.cursor.y, cursor.cursor.x, |cell| {
+                    cell.isolated_mark = true;
+                });
+            }
+            Self::advance_cursor(cursor, 1, (left, right));
+            return true;
+        }
         let (left_limit, right_limit) = if cursor.margins.enabled {
             (cursor.margins.left, cursor.margins.right)
         } else {
@@ -90,6 +190,70 @@ impl CellWriter {
 
         // 4. Advance cursor and set pending_wrap.
         Self::advance_cursor(cursor, width, (left_limit, right_limit));
+        true
+    }
+
+    /// Promote an already printed one-cell unit without creating a second atom.
+    /// The source cell's style and hyperlink travel with it across an edge wrap.
+    fn promote_unit(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        row: usize,
+        col: usize,
+    ) -> bool {
+        let (left, right) = if cursor.margins.enabled {
+            (cursor.margins.left, cursor.margins.right)
+        } else {
+            (0, normal.cols() - 1)
+        };
+        if col == right {
+            if !cursor.modes.autowrap || right - left < 1 {
+                return false;
+            }
+            let mut cell = normal.cell(row, col).clone();
+            normal.erase_cell(row, col, crate::Cell::default());
+            cursor.cursor.x = col;
+            cursor.modes.pending_wrap = false;
+            cursor.last_clamped_write = false;
+            if !Self::prepare_position(normal, cursor, pen_state, cell.ch, 2, (left, right)) {
+                return false;
+            }
+            Self::commit_cell(pen_state, normal, cursor, cell.ch, 2, (left, right));
+            cell.width = 2;
+            normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x, cell.clone());
+            let mut trailing = cell;
+            trailing.ch = ' ';
+            trailing.suffix.clear();
+            trailing.width = 0;
+            trailing.isolated_mark = false;
+            trailing.wide_continuation = true;
+            normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x + 1, trailing);
+            Self::advance_cursor(cursor, 2, (left, right));
+        } else {
+            if CellOps::wide_range(normal, row, col + 1)
+                .is_some_and(|(_, continuation)| continuation > right)
+            {
+                return false;
+            }
+            if cursor.modes.insert {
+                if !CellOps::insert_chars(pen_state, normal, cursor, 1) {
+                    return false;
+                }
+            } else {
+                Self::clear_cell_for_write(normal, row, col + 1, left, right);
+            }
+            let mut cell = normal.cell(row, col).clone();
+            cell.width = 2;
+            normal.write_meaningful_cell(row, col, cell.clone());
+            cell.ch = ' ';
+            cell.suffix.clear();
+            cell.width = 0;
+            cell.isolated_mark = false;
+            cell.wide_continuation = true;
+            normal.write_meaningful_cell(row, col + 1, cell);
+            Self::advance_cursor(cursor, 1, (left, right));
+        }
         true
     }
 
@@ -230,6 +394,9 @@ impl CellWriter {
 
         let cell = crate::Cell {
             ch,
+            suffix: String::new(),
+            width: width as u8,
+            isolated_mark: false,
             wide_continuation: false,
             fg: pen_state.pen.fg,
             bg: pen_state.pen.bg,
@@ -245,6 +412,9 @@ impl CellWriter {
                 cursor.cursor.x + 1,
                 crate::Cell {
                     ch: ' ',
+                    suffix: String::new(),
+                    width: 0,
+                    isolated_mark: false,
                     wide_continuation: true,
                     fg: pen_state.pen.fg,
                     bg: pen_state.pen.bg,
@@ -263,6 +433,7 @@ impl CellWriter {
         width: usize,
         (_left_limit, right_limit): (usize, usize),
     ) {
+        cursor.last_clamped_write = !cursor.modes.autowrap && cursor.cursor.x + width > right_limit;
         cursor.cursor.x += width;
         if cursor.cursor.x > right_limit {
             cursor.cursor.x = right_limit;

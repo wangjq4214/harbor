@@ -180,6 +180,9 @@ impl PenState {
     pub(crate) fn erase_cell(&self) -> Cell {
         Cell {
             ch: ' ',
+            suffix: String::new(),
+            width: 1,
+            isolated_mark: false,
             wide_continuation: false,
             fg: self.pen.fg,
             bg: self.pen.bg,

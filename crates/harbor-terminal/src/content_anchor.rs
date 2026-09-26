@@ -419,7 +419,7 @@ impl ContentProjection {
             self.line(line_id)?
                 .atoms
                 .iter()
-                .map(|atom| atom.cell)
+                .map(|atom| atom.cell.clone())
                 .collect(),
         )
     }

@@ -50,10 +50,16 @@ impl HyperlinkId {
 // ── Cell ──────────────────────────────────────────────────────────────────────
 
 /// One visible terminal grid cell.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
-    /// Character currently displayed in this cell.
+    /// Leading scalar; retained source after it is stored in `suffix`.
     pub ch: char,
+    /// Original trailing scalars, never including a synthetic presentation cue.
+    pub suffix: String,
+    /// Assigned grid width of this text unit (zero for a wide continuation).
+    pub width: u8,
+    /// An isolated combining mark needs a display-only dotted-circle cue.
+    pub isolated_mark: bool,
     /// True when this cell is the hidden trailing half of a double-width character.
     pub wide_continuation: bool,
     /// Foreground color.
@@ -72,6 +78,9 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             ch: ' ',
+            suffix: String::new(),
+            width: 1,
+            isolated_mark: false,
             wide_continuation: false,
             fg: Color::Default,
             bg: Color::Default,
@@ -83,6 +92,24 @@ impl Default for Cell {
 }
 
 impl Cell {
+    /// Grid width, including legacy callers constructing a wide `ch` directly.
+    pub fn grid_width(&self) -> u8 {
+        if self.width == 1 && unicode_width::UnicodeWidthChar::width(self.ch) == Some(2) {
+            2
+        } else {
+            self.width
+        }
+    }
+
+    pub fn raw_text(&self) -> String {
+        if self.wide_continuation {
+            return String::new();
+        }
+        let mut text = self.ch.to_string();
+        text.push_str(&self.suffix);
+        text
+    }
+
     /// Whether a blank cell paints pixels in the current renderer.
     ///
     /// Foreground-only and glyph decorations do not make a space visible: the
@@ -107,6 +134,11 @@ impl Cell {
         hyperlink: Option<HyperlinkId>,
     ) {
         self.ch = ch;
+        self.suffix.clear();
+        self.width = unicode_width::UnicodeWidthChar::width(ch)
+            .unwrap_or(1)
+            .clamp(1, 2) as u8;
+        self.isolated_mark = false;
         self.wide_continuation = false;
         self.fg = fg;
         self.bg = bg;

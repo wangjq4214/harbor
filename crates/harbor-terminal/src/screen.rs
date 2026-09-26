@@ -1660,7 +1660,38 @@ impl Screen {
     // ── write_char (coordinator) ───────────────────────────────────────
 
     pub fn write_char(&mut self, ch: char) {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let mut width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if CellWriter::continuation_base(&self.normal, &self.cursor, ch).is_some() {
+            width = 0; // An existing logical atom, even if promotion moves its projection.
+        } else if (CellWriter::is_combining_mark(ch)
+            || CellWriter::is_selector(ch)
+            || ch == '\u{200d}')
+            && CellWriter::combining_base(&self.normal, &self.cursor).is_none()
+        {
+            width = 1; // An isolated zero-width scalar writes a new atom.
+        }
+        // Width promotion consumes the neighboring physical cell. Capture its
+        // content identity before the writer shifts or overwrites it.
+        let promotion =
+            CellWriter::promotion_base(&self.normal, &self.cursor, ch).filter(|&(_, col)| {
+                let right = if self.cursor.margins.enabled {
+                    self.cursor.margins.right
+                } else {
+                    self.normal.cols() - 1
+                };
+                col < right
+            });
+        let promoted_before = promotion.and_then(|_| {
+            let dropped = self.cursor.modes.insert.then(|| {
+                let right = if self.cursor.margins.enabled {
+                    self.cursor.margins.right
+                } else {
+                    self.normal.cols() - 1
+                };
+                (right, right + 1)
+            });
+            self.capture_edit_anchor(1, dropped)
+        });
         let cursor_before = (
             self.cursor.cursor.x,
             self.cursor.cursor.y,
@@ -1717,6 +1748,25 @@ impl Screen {
         );
         if inserted_atoms > 0 {
             self.record_insertion_delta(before, inserted_atoms, true);
+        }
+        if let Some((row, col)) = promotion
+            && self.normal.cell(row, col).grid_width() == 2
+        {
+            if self.cursor.modes.insert {
+                if let Some(capture) = promoted_before {
+                    if let Some((start, count)) = capture.dropped_atoms {
+                        self.anchor_mutations.push(AnchorMutation::Delete {
+                            line_id: capture.anchor.line_id,
+                            start: LogicalAtomOffset(start),
+                            end: LogicalAtomOffset(start + count),
+                        });
+                    }
+                    self.anchor_mutations
+                        .push(AnchorMutation::ReprojectLine(capture.anchor.line_id));
+                }
+            } else {
+                self.record_deletion_delta(promoted_before);
+            }
         }
     }
 

@@ -1323,7 +1323,7 @@ fn selected_text_pending_wrap_does_not_invent_a_row_boundary() {
 }
 
 #[test]
-fn selected_text_keeps_current_zero_width_character_exclusion() {
+fn selected_text_retains_combining_and_presentation_scalars() {
     let mut screen = Screen::new(1, 3);
     screen.write_char('a');
     screen.write_char('\u{0301}');
@@ -1337,7 +1337,7 @@ fn selected_text_keeps_current_zero_width_character_exclusion() {
         end_col: 2,
     });
 
-    assert_eq!(result, "a");
+    assert_eq!(result, "a\u{0301}\u{fe0f}\u{200d}");
 }
 
 #[test]
@@ -2099,13 +2099,17 @@ fn should_preserve_cell_state_when_forward_tabulation_moves_cursor() {
     screen.cell_mut(0, 0).attrs.set(CellAttrs::BOLD);
     screen.cell_mut(0, 0).protected = true;
     screen.clear_dirty();
-    let before: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    let before: Vec<Cell> = (0..screen.cols())
+        .map(|col| screen.cell(0, col).clone())
+        .collect();
 
     // Act
     screen.forward_tab(1);
 
     // Assert
-    let after: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    let after: Vec<Cell> = (0..screen.cols())
+        .map(|col| screen.cell(0, col).clone())
+        .collect();
     assert_eq!(screen.cursor_x(), 8);
     assert_eq!(after, before);
     assert!(screen.dirty_rows().is_empty());
@@ -2122,13 +2126,17 @@ fn should_preserve_cell_state_when_backward_tabulation_moves_cursor() {
     screen.cell_mut(0, 16).attrs.set(CellAttrs::BOLD);
     screen.cell_mut(0, 16).protected = true;
     screen.clear_dirty();
-    let before: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    let before: Vec<Cell> = (0..screen.cols())
+        .map(|col| screen.cell(0, col).clone())
+        .collect();
 
     // Act
     screen.backward_tab(1);
 
     // Assert
-    let after: Vec<Cell> = (0..screen.cols()).map(|col| *screen.cell(0, col)).collect();
+    let after: Vec<Cell> = (0..screen.cols())
+        .map(|col| screen.cell(0, col).clone())
+        .collect();
     assert_eq!(screen.cursor_x(), 8);
     assert_eq!(after, before);
     assert!(screen.dirty_rows().is_empty());
@@ -2154,6 +2162,20 @@ fn test_erase_background_filling() {
 }
 
 #[test]
+fn selective_erase_preserves_protected_combined_wide_unit() {
+    let mut screen = Screen::new(1, 5);
+    screen.set_character_protection(crate::model::CharacterProtection::Protected);
+    screen.write_char('界');
+    screen.write_char('\u{0301}');
+    screen.set_character_protection(crate::model::CharacterProtection::Unprotected);
+    screen.write_char('x');
+    screen.selective_erase_line(2);
+    assert_eq!(screen.cell(0, 0).raw_text(), "界\u{0301}");
+    assert!(screen.cell(0, 1).wide_continuation);
+    assert_eq!(screen.cell(0, 2).raw_text(), " ");
+}
+
+#[test]
 fn test_selective_erase_protection() {
     let mut screen = Screen::new(1, 5);
 
@@ -2171,7 +2193,7 @@ fn test_selective_erase_protection() {
     screen.cursor.cursor.x = 0;
     let mut screen_copy = Screen::new(1, 5);
     for col in 0..5 {
-        *screen_copy.cell_mut(0, col) = *screen.cell(0, col);
+        *screen_copy.cell_mut(0, col) = screen.cell(0, col).clone();
     }
     screen_copy.erase_line(2);
     assert_eq!(screen_copy.row_text(0), "     ");
@@ -3110,7 +3132,7 @@ fn screen_cells(screen: &Screen) -> Vec<Cell> {
     let mut cells = Vec::with_capacity(screen.rows() * screen.cols());
     for row in 0..screen.rows() {
         for col in 0..screen.cols() {
-            cells.push(*screen.cell(row, col));
+            cells.push(screen.cell(row, col).clone());
         }
     }
     cells

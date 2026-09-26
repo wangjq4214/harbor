@@ -14,14 +14,14 @@ use crate::{
 };
 use std::time::Instant;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct HyperlinkPress {
     cell: GenPos,
     hyperlink: crate::model::HyperlinkId,
     pressed_cell: crate::Cell,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ActivePointer {
     Selection {
         pointer_id: u64,
@@ -409,7 +409,7 @@ impl PointerInteraction {
                         pressed_cell.hyperlink.map(|hyperlink| HyperlinkPress {
                             cell,
                             hyperlink,
-                            pressed_cell: *pressed_cell,
+                            pressed_cell: pressed_cell.clone(),
                         })
                     });
                 let outcome = self.selection.press(cell, now, &snapshot);
@@ -430,7 +430,7 @@ impl PointerInteraction {
                 }
             }
             TerminalPointerPhase::Move => {
-                let Some(active) = self.active else {
+                let Some(active) = self.active.clone() else {
                     return TerminalEventOutcome::default();
                 };
                 match active {
@@ -483,7 +483,7 @@ impl PointerInteraction {
                 let Some(active) = self.active.take() else {
                     return TerminalEventOutcome::default();
                 };
-                if active.pointer_id() != event.pointer_id {
+                if active.clone().pointer_id() != event.pointer_id {
                     self.active = Some(active);
                     return TerminalEventOutcome::default();
                 }

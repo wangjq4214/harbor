@@ -29,7 +29,7 @@ impl<'a> ScreenReader<'a> {
         let mut cells = Vec::with_capacity(rows * cols);
         for r in 0..rows {
             for c in 0..cols {
-                cells.push(*self.screen.cell(r, c));
+                cells.push(self.screen.cell(r, c).clone());
             }
         }
         TerminalSnapshot {
