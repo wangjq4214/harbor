@@ -722,7 +722,11 @@ impl Terminal {
         }
 
         let prepare_started = Instant::now();
-        let prepared_screen = match screen.prepare_resize(new_size.rows, new_size.cols) {
+        let prepared_screen = match screen.prepare_resize_with_viewport(
+            new_size.rows,
+            new_size.cols,
+            io.reflow_viewport(),
+        ) {
             Ok(prepared) => prepared,
             Err(error) => {
                 tracing::debug!(

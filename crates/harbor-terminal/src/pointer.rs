@@ -139,6 +139,14 @@ impl PointerInteraction {
                 let alternate = std::mem::replace(&mut self.selection, primary);
                 self.parked_alt_selection = Some(alternate);
                 screen.exit_alt();
+                // ConPTY may have deferred the primary resize until this exit.
+                // Reproject saved logical endpoints only against the final geometry.
+                match screen.content_projection() {
+                    Ok(projection) => {
+                        self.reconcile_selection(&AnchorMutationBatch::default(), &projection);
+                    }
+                    Err(_) => self.selection.clear(),
+                }
             }
             _ => {}
         }

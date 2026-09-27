@@ -1171,6 +1171,100 @@ fn resize_preserves_live_and_saved_cursor_in_unwritten_suffix() {
 }
 
 #[test]
+fn repeated_resize_preserves_prompt_cursor_and_next_print() {
+    for prompt in [
+        "PS D:\\Code\\harbor> ",
+        "prompt> 中文输入 ",
+        "12345678901234567890",
+    ] {
+        let mut screen = Screen::new(8, 40);
+        for ch in prompt.chars() {
+            screen.write_char(ch);
+        }
+        let expected_x = screen.cursor_x();
+        for _ in 0..5 {
+            for cols in [20, 9, 41, 13, 40] {
+                screen.resize(8, cols);
+                assert_eq!(screen.cols(), cols);
+            }
+            assert_eq!(
+                (screen.cursor_y(), screen.cursor_x()),
+                (0, expected_x),
+                "{prompt:?}"
+            );
+            assert!(!screen.pending_wrap());
+        }
+        screen.write_char('!');
+        assert_eq!(screen.cell_char(0, expected_x), '!');
+    }
+}
+
+#[test]
+fn conpty_resize_keeps_partial_history_line_outside_live_viewport() {
+    let mut screen = Screen::new(3, 12);
+    for ch in "abcdefghijkl".chars() {
+        screen.write_char(ch);
+    }
+    screen.carriage_return();
+    screen.line_feed();
+    screen.write_char('>');
+
+    for cols in [5, 6] {
+        let prepared = screen
+            .prepare_resize_with_viewport(3, cols, ReflowViewport::PreserveLiveTop)
+            .unwrap();
+        screen.commit_resize(prepared);
+    }
+
+    // ConPTY retained only the suffix beginning at 'f' after narrowing.
+    // Joining it back to the historical 'abcde' would shift the prompt up.
+    assert_eq!(screen.row_text(0), "fghijk");
+    assert_eq!(screen.row_text(1), "l     ");
+    assert_eq!(screen.row_text(2), ">     ");
+    assert_eq!((screen.cursor_y(), screen.cursor_x()), (2, 1));
+    assert_eq!(screen.scroll_count(), 1);
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + (screen.scroll_count() + screen.rows()) as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert_eq!(text, "abcdefghijkl\n>");
+    screen.write_char('x');
+    assert_eq!(screen.row_text(2), ">x    ");
+}
+
+#[test]
+fn conpty_alt_resize_uses_original_primary_and_only_final_dimensions() {
+    for final_cols in [6, 12] {
+        let mut screen = Screen::new(3, 12);
+        for ch in "abcdefghijkl".chars() {
+            screen.write_char(ch);
+        }
+        screen.carriage_return();
+        screen.line_feed();
+        screen.write_char('>');
+        screen.enter_alt(false);
+        for cols in [5, 2, 9, final_cols] {
+            let prepared = screen
+                .prepare_resize_with_viewport(3, cols, ReflowViewport::PreserveLiveTop)
+                .unwrap();
+            screen.commit_resize(prepared);
+            assert_eq!(screen.saved_primary.as_ref().unwrap().cols(), 12);
+        }
+        screen.exit_alt();
+        assert_eq!(screen.cols(), final_cols);
+        assert_eq!(screen.scroll_count(), 0);
+        let row = if final_cols == 6 { 2 } else { 1 };
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (row, 1));
+        assert!(screen.row_text(row).starts_with('>'));
+        screen.write_char('x');
+        assert!(screen.row_text(row).starts_with(">x"));
+        assert!(screen.deferred_primary_resize.is_empty());
+    }
+}
+
+#[test]
 fn partial_erase_rebases_following_soft_wrap_for_copy_and_resize() {
     let mut screen = Screen::new(2, 4);
     for ch in "abcde".chars() {

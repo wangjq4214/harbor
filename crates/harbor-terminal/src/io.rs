@@ -575,6 +575,15 @@ impl TerminalIo {
         pty.writer.write_all(bytes).map_err(Into::into)
     }
 
+    pub(crate) fn reflow_viewport(&self) -> crate::primary_reflow::ReflowViewport {
+        use crate::primary_reflow::ReflowViewport;
+        if cfg!(windows) && self.pty.as_ref().is_some_and(|pty| pty.control.is_some()) {
+            ReflowViewport::PreserveLiveTop
+        } else {
+            ReflowViewport::PullHistory
+        }
+    }
+
     /// Resizes the PTY to the given terminal dimensions.
     pub(crate) fn resize_pty(&mut self, size: TerminalSize) -> anyhow::Result<()> {
         if let Some(pty) = self.pty.as_mut()

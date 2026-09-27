@@ -26,7 +26,9 @@ use crate::content_anchor::{
 };
 use crate::logical_content::{DecodeError, LogicalAtomOffset};
 use crate::normal_buf::{CellsIter, LogicalLineId};
-use crate::primary_reflow::{PreparationError, PreparedPrimaryResize, PreparedProjection};
+use crate::primary_reflow::{
+    PreparationError, PreparedPrimaryResize, PreparedProjection, ReflowViewport,
+};
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
@@ -103,6 +105,9 @@ pub struct Screen {
     /// Primary screen saved while the alternate screen is active.
     /// Invariant: `Some` iff in alt screen (`is_alt()` is true).
     saved_primary: Option<Box<Screen>>,
+    /// Latest prepared primary geometry while ConPTY defers resize in alt mode.
+    /// The original saved primary remains the source for every intervening resize.
+    deferred_primary_resize: Vec<PreparedScreenResize>,
     /// Alternate screen parked across `?47` exit/re-enter.
     /// Invariant: parked buffers keep `saved_primary = None`.
     parked_alt: Option<Box<Screen>>,
@@ -129,6 +134,7 @@ enum BufferRole {
     Alternate,
 }
 
+#[derive(Debug)]
 struct RectangularSelectionProjection {
     source: ContentProjection,
     source_live_top: u64,
@@ -138,6 +144,7 @@ struct RectangularSelectionProjection {
     retained_cells: Vec<bool>,
 }
 
+#[derive(Debug)]
 pub(crate) struct PreparedScreenResize {
     normal: NormalBuf,
     anchor_mutations: AnchorMutationBatch,
@@ -148,6 +155,7 @@ pub(crate) struct PreparedScreenResize {
     projection: ContentProjection,
     rectangular_selection: Option<RectangularSelectionProjection>,
     saved_primary: Vec<PreparedScreenResize>,
+    deferred_primary_source: Option<ContentProjection>,
     parked_alt: Vec<PreparedScreenResize>,
 }
 
@@ -193,6 +201,10 @@ impl PreparedScreenResize {
         &self,
         anchor: ContentAnchor,
     ) -> Option<(GenPos, ContentAnchor)> {
+        if let Some(source) = &self.deferred_primary_source {
+            let position = source.resolve_selection(anchor)?;
+            return Some((position, source.to_anchor(position, anchor.affinity)?));
+        }
         self.saved_primary.first()?.project_selection(anchor)
     }
 
@@ -229,6 +241,7 @@ impl Screen {
             hyperlinks: HyperlinkRegistry::default(),
             alt_request: None,
             saved_primary: None,
+            deferred_primary_resize: Vec::new(),
             parked_alt: None,
             replies: Vec::new(),
             focus_reporting: FocusReporting::default(),
@@ -471,16 +484,31 @@ impl Screen {
         requested_rows: usize,
         requested_cols: usize,
     ) -> Result<PreparedPrimaryResize, PreparationError> {
+        self.prepare_primary_resize_with_viewport(
+            requested_rows,
+            requested_cols,
+            ReflowViewport::PullHistory,
+        )
+    }
+
+    fn prepare_primary_resize_with_viewport(
+        &self,
+        requested_rows: usize,
+        requested_cols: usize,
+        viewport: ReflowViewport,
+    ) -> Result<PreparedPrimaryResize, PreparationError> {
         let cursor_floor = Some(
             self.cursor
                 .cursor
                 .y
                 .max(self.cursor.cursor.saved.as_ref().map_or(0, |s| s.cursor_y)),
         );
-        let prepared = self.normal.prepare_primary_resize_with_cursor_floor(
+        let prepared = PreparedPrimaryResize::prepare_geometry_with_viewport(
+            &self.normal,
             requested_rows,
             requested_cols,
             cursor_floor,
+            viewport,
         )?;
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
@@ -1035,6 +1063,11 @@ impl Screen {
         let sync = self.synchronized_output;
         let focus_reporting = self.focus_reporting;
         let default_colors = self.default_colors;
+        if let Some(prepared) = self.deferred_primary_resize.pop()
+            && let Some(primary) = self.saved_primary.as_deref_mut()
+        {
+            primary.commit_resize(prepared);
+        }
         if let Some(primary) = self.saved_primary.take() {
             // Preserve the alternate-screen contents for a later `?47` re-entry.
             let rows = self.rows();
@@ -1064,12 +1097,21 @@ impl Screen {
         rows: usize,
         cols: usize,
     ) -> Result<PreparedScreenResize, PreparationError> {
+        self.prepare_resize_with_viewport(rows, cols, ReflowViewport::PullHistory)
+    }
+
+    pub(crate) fn prepare_resize_with_viewport(
+        &self,
+        rows: usize,
+        cols: usize,
+        viewport: ReflowViewport,
+    ) -> Result<PreparedScreenResize, PreparationError> {
         let role = if self.is_alt() {
             BufferRole::Alternate
         } else {
             BufferRole::Primary
         };
-        self.prepare_resize_for_role(rows.max(1), cols.max(2), role)
+        self.prepare_resize_for_role(rows.max(1), cols.max(2), role, viewport)
     }
 
     fn prepare_resize_for_role(
@@ -1077,10 +1119,11 @@ impl Screen {
         rows: usize,
         cols: usize,
         role: BufferRole,
+        viewport: ReflowViewport,
     ) -> Result<PreparedScreenResize, PreparationError> {
         let (mut normal, cursor, review_anchor, rectangular_selection) = match role {
             BufferRole::Primary => {
-                let prepared = self.prepare_primary_resize(rows, cols)?;
+                let prepared = self.prepare_primary_resize_with_viewport(rows, cols, viewport)?;
                 let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
                 let projection = ContentProjection::build(&normal)?;
                 let live_top = normal
@@ -1214,19 +1257,37 @@ impl Screen {
         let hyperlinks = self.hyperlinks.prepare_retained(&reachable)?;
         let projection = ContentProjection::build(&normal)?;
 
+        let deferred_primary_source = if viewport == ReflowViewport::PreserveLiveTop {
+            self.saved_primary
+                .as_deref()
+                .map(Screen::content_projection)
+                .transpose()?
+        } else {
+            None
+        };
         let mut saved_primary = Vec::new();
         if let Some(saved) = self.saved_primary.as_deref() {
             saved_primary
                 .try_reserve_exact(1)
                 .map_err(|_| PreparationError::AllocationFailed)?;
-            saved_primary.push(saved.prepare_resize_for_role(rows, cols, BufferRole::Primary)?);
+            saved_primary.push(saved.prepare_resize_for_role(
+                rows,
+                cols,
+                BufferRole::Primary,
+                viewport,
+            )?);
         }
         let mut parked_alt = Vec::new();
         if let Some(alt) = self.parked_alt.as_deref() {
             parked_alt
                 .try_reserve_exact(1)
                 .map_err(|_| PreparationError::AllocationFailed)?;
-            parked_alt.push(alt.prepare_resize_for_role(rows, cols, BufferRole::Alternate)?);
+            parked_alt.push(alt.prepare_resize_for_role(
+                rows,
+                cols,
+                BufferRole::Alternate,
+                viewport,
+            )?);
         }
 
         Ok(PreparedScreenResize {
@@ -1239,6 +1300,7 @@ impl Screen {
             projection,
             rectangular_selection,
             saved_primary,
+            deferred_primary_source,
             parked_alt,
         })
     }
@@ -1254,6 +1316,7 @@ impl Screen {
             projection: _,
             rectangular_selection: _,
             mut saved_primary,
+            deferred_primary_source,
             mut parked_alt,
         } = prepared;
         self.normal = normal;
@@ -1263,10 +1326,15 @@ impl Screen {
         self.pen_state = pen_state;
         self.hyperlinks = hyperlinks;
 
-        match (self.saved_primary.as_deref_mut(), saved_primary.pop()) {
-            (Some(screen), Some(prepared)) => screen.commit_resize(prepared),
-            (None, None) => {}
-            _ => debug_assert!(false, "saved primary changed during resize preparation"),
+        if deferred_primary_source.is_some() {
+            self.deferred_primary_resize = saved_primary;
+        } else {
+            self.deferred_primary_resize.clear();
+            match (self.saved_primary.as_deref_mut(), saved_primary.pop()) {
+                (Some(screen), Some(prepared)) => screen.commit_resize(prepared),
+                (None, None) => {}
+                _ => debug_assert!(false, "saved primary changed during resize preparation"),
+            }
         }
         match (self.parked_alt.as_deref_mut(), parked_alt.pop()) {
             (Some(screen), Some(prepared)) => screen.commit_resize(prepared),
@@ -2033,6 +2101,7 @@ impl Screen {
         self.focus_reporting.reset_for_ris();
         self.alt_request = None;
         self.saved_primary = None;
+        self.deferred_primary_resize.clear();
         self.parked_alt = None;
 
         let rows = self.normal.rows();

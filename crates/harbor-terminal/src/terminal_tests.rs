@@ -2542,10 +2542,34 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
         (20, 6)
     );
     for _ in 0..5 {
-        for cols in [30, 12, 50, 8, 80] {
+        for (rows, cols) in [(24, 30), (24, 12), (29, 50), (20, 8), (24, 80)] {
             terminal
-                .try_resize_if_changed(TerminalSize { rows: 24, cols })
+                .try_resize_if_changed(TerminalSize { rows, cols })
                 .unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_millis(30);
+            while Instant::now() < deadline {
+                let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(5));
+                terminal.drain_pty();
+            }
+            let row = terminal.screen().cursor_y();
+            terminal.io.write_pty(b"x").unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(3);
+            while !terminal.row_text(row).starts_with("READY:x") {
+                assert!(
+                    Instant::now() < deadline,
+                    "echo at {cols} columns, row {row}: {:?}",
+                    retained_text(&terminal)
+                );
+                let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(10));
+                terminal.drain_pty();
+            }
+            terminal.io.write_pty(b"\x08").unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(3);
+            while terminal.row_text(row).starts_with("READY:x") {
+                assert!(Instant::now() < deadline, "backspace after resize");
+                let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(10));
+                terminal.drain_pty();
+            }
         }
     }
     // Let asynchronous ConPTY output settle; service queries throughout the wait.
@@ -2554,10 +2578,24 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
         let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
         terminal.drain_pty();
     }
-    assert_eq!(retained_text(&terminal), before);
+    assert_eq!(retained_text(&terminal).trim_end(), before.trim_end());
+    let prompt_row = terminal.screen().cursor_y();
+    assert!(terminal.row_text(prompt_row).starts_with("READY:"));
+    assert_eq!(terminal.screen().cursor_x(), 6);
+    terminal.io.write_pty(b"x").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while !terminal.row_text(prompt_row).starts_with("READY:x") {
+        assert!(
+            Instant::now() < deadline,
+            "input must follow prompt: {:?}",
+            retained_text(&terminal)
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
     assert_eq!(
         (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
-        (20, 6)
+        (prompt_row, 7)
     );
     terminal.io.write_pty(b"\r").unwrap();
     let deadline = Instant::now() + std::time::Duration::from_secs(3);
@@ -2569,6 +2607,82 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
         let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
         terminal.drain_pty();
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn live_conpty_alt_resize_restores_primary_input_position() {
+    let size = harbor_pty::TerminalSize { rows: 3, cols: 12 };
+    struct Script(std::path::PathBuf);
+    impl Drop for Script {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let script =
+        Script(std::env::temp_dir().join(format!("harbor-alt-resize-{}.cmd", std::process::id())));
+    std::fs::write(&script.0, b"@echo off\r\ncls\r\necho abcdefghijkl\r\necho mnopqrstuvwx\r\n<nul set /p =P:\r\n<nul set /p =\x1b[?1049h\r\nset /p answer=ALT:\r\n<nul set /p =\x1b[?1049l\r\nset /p answer=\r\n").unwrap();
+    let command = harbor_pty::ShellCommand::new(
+        Some(format!(
+            r"{}\System32\cmd.exe",
+            std::env::var("SystemRoot").unwrap()
+        )),
+        vec![
+            "/d".into(),
+            "/q".into(),
+            "/c".into(),
+            script.0.to_string_lossy().into_owned(),
+        ],
+    );
+    let endpoints = harbor_pty::PtyEndpoints::spawn_shell(size, &command).unwrap();
+    let (reader, writer, control) = endpoints.into_parts();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(size.rows, size.cols);
+    terminal.io = crate::io::TerminalIo::new(reader, writer, Some(control), move || {
+        wake_tx.send(()).is_ok()
+    });
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !terminal.is_alt_screen() || !terminal.row_text(0).starts_with("ALT:") {
+        assert!(
+            Instant::now() < deadline,
+            "alternate fixture startup: {:?}",
+            terminal.snapshot()
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    for cols in [5, 2, 9, 12] {
+        terminal
+            .try_resize_if_changed(TerminalSize { rows: 3, cols })
+            .unwrap();
+    }
+    terminal.io.write_pty(b"\r").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while terminal.is_alt_screen() {
+        assert!(Instant::now() < deadline, "alternate fixture exit");
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    assert_eq!(terminal.row_text(0), "abcdefghijkl");
+    assert_eq!(terminal.row_text(1), "mnopqrstuvwx");
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (2, 2)
+    );
+    terminal.io.write_pty(b"x").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while !terminal.row_text(2).starts_with("P:x") {
+        assert!(
+            Instant::now() < deadline,
+            "primary echo must follow its prompt"
+        );
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(20));
+        terminal.drain_pty();
+    }
+    assert_eq!(
+        (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+        (2, 3)
+    );
 }
 
 #[cfg(windows)]
@@ -4315,6 +4429,49 @@ fn primary_selection_is_parked_reflowed_and_restored_across_alt_resize() {
     assert!(!terminal.is_alt_screen());
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
     assert_eq!(terminal.selection_text(), "pri");
+}
+
+#[test]
+fn conpty_deferred_primary_resize_preserves_selection_until_alt_exit() {
+    for final_cols in [6, 12] {
+        let mut terminal = Terminal::new_headless(3, 12);
+        terminal
+            .pointer
+            .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+        terminal.put_str("abcdefghijkl\r\n>");
+        for (phase, x) in [
+            (TerminalPointerPhase::Down, 1.0),
+            (TerminalPointerPhase::Move, 111.0),
+            (TerminalPointerPhase::Up, 111.0),
+        ] {
+            terminal
+                .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                    (x, 1.0),
+                    phase,
+                    TerminalPointerButton::Left,
+                    69,
+                )))
+                .unwrap();
+        }
+        assert_eq!(terminal.selection_text(), "abcdefghijkl");
+        terminal.put_bytes(b"\x1b[?47h");
+        for cols in [5, 2, 9, final_cols] {
+            let prepared = terminal
+                .screen
+                .prepare_resize_with_viewport(
+                    3,
+                    cols,
+                    crate::primary_reflow::ReflowViewport::PreserveLiveTop,
+                )
+                .unwrap();
+            let pointer = terminal.pointer.prepare_resize(&prepared);
+            terminal.screen.commit_resize(prepared);
+            terminal.pointer.commit_resize(pointer);
+        }
+        terminal.put_bytes(b"\x1b[?47l");
+        assert_eq!(terminal.screen.cols(), final_cols);
+        assert_eq!(terminal.selection_text(), "abcdefghijkl");
+    }
 }
 
 #[test]
