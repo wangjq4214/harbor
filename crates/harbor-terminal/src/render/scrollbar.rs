@@ -1,10 +1,7 @@
 use crate::model::TerminalSnapshot;
 use wgpu::util::DeviceExt;
 
-use harbor_config::{
-    SCROLLBAR_BORDER_RADIUS, SCROLLBAR_COLOR, SCROLLBAR_MARGIN, SCROLLBAR_MIN_THUMB_HEIGHT,
-    SCROLLBAR_WIDTH,
-};
+use harbor_config::{SCROLLBAR_BORDER_RADIUS, SCROLLBAR_COLOR};
 
 use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use crate::render::RenderViewport;
@@ -68,115 +65,8 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 "#;
 
 // ── Helper functions (testable without GPU handles) ──────────────────────────
-
-/// Computes the thumb bounding rectangle (left, top, right, bottom) in pixel coordinates.
-/// Returns None when the thumb should not be drawn (alt screen or no scrollback).
-///
-/// Track geometry is relative to the render allocation, not the full surface, so
-/// inset CustomPaint regions keep the scrollbar on the allocation's right edge.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ScrollbarHit {
-    None,
-    Thumb { grab_offset: f32 },
-    TrackBefore,
-    TrackAfter,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ScrollbarGeometry {
-    track_top: f32,
-    thumb_height: f32,
-    track_bottom: f32,
-    thumb_rect: [f32; 4],
-}
-
-impl ScrollbarGeometry {
-    fn compute(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Option<Self> {
-        if snap.is_alt || snap.scroll_count == 0 {
-            return None;
-        }
-
-        let (origin_x, origin_y) = viewport.allocation_origin;
-        let alloc_w = viewport.allocation_size.0 as f32;
-        let alloc_h = viewport.allocation_size.1 as f32;
-        let track_top = origin_y + viewport.padding;
-        let track_bottom = origin_y + alloc_h - viewport.padding;
-        let track_height = track_bottom - track_top;
-        if track_height <= 0.0 {
-            return None;
-        }
-
-        let total_rows = snap.rows + snap.scroll_count;
-        let thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
-            .max(SCROLLBAR_MIN_THUMB_HEIGHT)
-            .min(track_height);
-        let scroll_fraction = 1.0 - (snap.view_offset as f32 / snap.scroll_count as f32);
-        let thumb_top = track_top + scroll_fraction * (track_height - thumb_height);
-        let right = origin_x + alloc_w - SCROLLBAR_MARGIN;
-
-        Some(Self {
-            track_top,
-            thumb_height,
-            track_bottom,
-            thumb_rect: [
-                right - SCROLLBAR_WIDTH,
-                thumb_top,
-                right,
-                thumb_top + thumb_height,
-            ],
-        })
-    }
-}
-
-/// Classifies a physical point against the scrollbar track and thumb.
-pub fn hit_test(
-    snap: &TerminalSnapshot,
-    viewport: &RenderViewport,
-    point: (f32, f32),
-) -> ScrollbarHit {
-    let Some(geometry) = ScrollbarGeometry::compute(snap, viewport) else {
-        return ScrollbarHit::None;
-    };
-    let [left, top, right, bottom] = geometry.thumb_rect;
-    if point.0 < left
-        || point.0 > right
-        || point.1 < geometry.track_top
-        || point.1 > geometry.track_bottom
-    {
-        return ScrollbarHit::None;
-    }
-    if point.1 < top {
-        ScrollbarHit::TrackBefore
-    } else if point.1 > bottom {
-        ScrollbarHit::TrackAfter
-    } else {
-        ScrollbarHit::Thumb {
-            grab_offset: (point.1 - top).clamp(0.0, bottom - top),
-        }
-    }
-}
-
-/// Maps a thumb drag position back to a clamped scrollback offset.
-pub fn offset_for_thumb(
-    snap: &TerminalSnapshot,
-    viewport: &RenderViewport,
-    pointer_y: f32,
-    grab_offset: f32,
-) -> Option<usize> {
-    let geometry = ScrollbarGeometry::compute(snap, viewport)?;
-    let movable = (geometry.track_bottom - geometry.track_top - geometry.thumb_height).max(0.0);
-    if movable == 0.0 {
-        return Some(0);
-    }
-    let thumb_top =
-        (pointer_y - grab_offset).clamp(geometry.track_top, geometry.track_top + movable);
-    let fraction_from_bottom = 1.0 - ((thumb_top - geometry.track_top) / movable);
-    Some((fraction_from_bottom * snap.scroll_count as f32).round() as usize)
-}
-
-pub fn compute_thumb_rect(snap: &TerminalSnapshot, viewport: &RenderViewport) -> Option<[f32; 4]> {
-    ScrollbarGeometry::compute(snap, viewport).map(|geometry| geometry.thumb_rect)
-}
+// Geometry lives with the GPU-free pointer interaction boundary.
+pub use crate::scrollbar_geometry::{ScrollbarHit, compute_thumb_rect, hit_test, offset_for_thumb};
 
 /// Builds quad vertices for the scrollbar thumb.
 fn build_vertices(rect: Option<[f32; 4]>, viewport: &RenderViewport) -> [ColoredVertex; 6] {
@@ -414,6 +304,7 @@ mod tests {
     use super::*;
     use crate::Terminal;
     use crate::render::RenderViewport;
+    use harbor_config::{SCROLLBAR_MARGIN, SCROLLBAR_WIDTH};
 
     fn full_surface_viewport(width: u32, height: u32) -> RenderViewport {
         RenderViewport::with_surface(10.0, 20.0, (width, height), (width, height))

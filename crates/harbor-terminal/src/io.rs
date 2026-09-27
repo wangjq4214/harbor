@@ -132,7 +132,7 @@ impl Drop for TerminalPty {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "renderer"))]
 impl TerminalPty {
     fn set_test_barrier(
         &mut self,
@@ -281,7 +281,7 @@ impl TerminalIo {
             wake,
         )))
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "renderer"))]
     pub(crate) fn new_with_test_barrier<R, W>(
         pty_read: R,
         pty_write: W,

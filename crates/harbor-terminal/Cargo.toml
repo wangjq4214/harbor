@@ -3,6 +3,10 @@ name = "harbor-terminal"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["renderer"]
+renderer = ["dep:wgpu"]
+
 [dependencies]
 harbor-parser = { workspace = true }
 harbor-pty = { workspace = true }
@@ -14,7 +18,7 @@ bytemuck = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
 icu_properties = { workspace = true }
-wgpu = { workspace = true }
+wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

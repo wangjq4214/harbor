@@ -1,9 +1,9 @@
 pub mod background;
 pub mod cursor;
-pub mod cursor_blink;
+pub use crate::cursor_blink;
 pub mod decoration;
 pub mod gpu;
-pub mod layout;
+pub use crate::layout;
 pub mod pipeline;
 pub mod scrollbar;
 pub mod selection;

@@ -7,7 +7,6 @@ use crate::render::{
 use harbor_config::Palette;
 use harbor_text::{FontBook, TextMetrics};
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
@@ -111,7 +110,7 @@ impl TerminalRenderPipeline {
         snap: &TerminalSnapshot,
         damage: Option<&UpdateDamage>,
         preedit: Option<&Preedit>,
-        now: Instant,
+        blink_visible: bool,
         selection_bounds: Option<crate::model::SelectionBounds>,
         tint: [f32; 4],
     ) {
@@ -146,7 +145,7 @@ impl TerminalRenderPipeline {
         self.selection.set_bounds(selection_bounds);
         self.selection.prepare(gpu, Some(snap), &viewport);
         self.cursor
-            .prepare(gpu, Some(snap), &viewport, preedit.is_some(), now);
+            .prepare(gpu, Some(snap), &viewport, preedit.is_some(), blink_visible);
         self.scrollbar.prepare(gpu, Some(snap), &viewport);
     }
 

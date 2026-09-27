@@ -4,11 +4,10 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    FrameDemand, InputModes, PasteDisposition, Preedit, ShellIntegrationMarker, Terminal,
-    TerminalAppearance, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
-    TerminalPointerPhase, TerminalSize, WorkingDirectoryMetadata, safe_preview_line,
-    should_confirm_multiline,
+    InputModes, PasteDisposition, Preedit, ShellIntegrationMarker, Terminal, TerminalAppearance,
+    TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
+    TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    TerminalSize, WorkingDirectoryMetadata, safe_preview_line, should_confirm_multiline,
 };
 use harbor_config::{Palette, Rgba};
 use std::borrow::Cow;
@@ -5143,15 +5142,14 @@ fn should_return_empty_frame_demand_when_headless() {
     let demand = terminal.frame_demand(now);
 
     // Assert
-    assert_eq!(demand, FrameDemand::empty());
     assert!(!demand.redraw_now);
-    assert!(demand.deadline.is_none());
+    assert!(demand.deadline.is_some());
     assert!(demand.ordinary_present_eligible);
 }
 
 #[test]
 fn should_keep_empty_demand_after_cursor_move_when_headless() {
-    // Arrange — CUP moves the cursor; without a renderer reset is a no-op
+    // Arrange — CUP moves the cursor and resets engine-owned blink timing.
     let mut terminal = Terminal::new_headless(5, 10);
     let before = (terminal.screen().cursor_x(), terminal.screen().cursor_y());
     assert_eq!(before, (0, 0));
@@ -5164,7 +5162,8 @@ fn should_keep_empty_demand_after_cursor_move_when_headless() {
     // Assert
     assert_eq!(after, (3, 2));
     assert_ne!(before, after);
-    assert_eq!(demand, FrameDemand::empty());
+    assert!(demand.redraw_now);
+    assert!(demand.deadline.is_some());
 }
 
 #[test]
@@ -5180,7 +5179,8 @@ fn should_keep_empty_demand_after_non_moving_print_when_headless() {
 
     // Assert
     assert_eq!(before, after);
-    assert_eq!(demand, FrameDemand::empty());
+    assert!(!demand.redraw_now);
+    assert!(demand.deadline.is_some());
 }
 
 #[test]
@@ -5202,7 +5202,8 @@ fn should_keep_empty_demand_after_input_write_when_headless() {
 
     // Assert
     assert_eq!(written.lock().unwrap().as_slice(), b"a");
-    assert_eq!(demand, FrameDemand::empty());
+    assert!(demand.redraw_now);
+    assert!(demand.deadline.is_some());
 }
 
 #[test]
@@ -5269,6 +5270,8 @@ fn should_not_set_spurious_redraw_now_when_demand_is_polled_with_empty_queue() {
     let (mut terminal, _written, wake_rx) = terminal_with_io(reader);
     wait_for_pty_wake(&wake_rx);
     let _ = terminal.frame_demand(Instant::now());
+    let prepared = terminal.read_update(Instant::now());
+    assert!(terminal.acknowledge_update(&prepared));
 
     // Act
     let idle = terminal.frame_demand(Instant::now());
@@ -5384,6 +5387,8 @@ fn should_not_set_redraw_now_when_demand_is_repolled_after_release_notify() {
     terminal.process_output(b"\x1b[?2026l");
     let _ = terminal.frame_demand(Instant::now());
 
+    let prepared = terminal.read_update(Instant::now());
+    assert!(terminal.acknowledge_update(&prepared));
     // Act
     let idle = terminal.frame_demand(Instant::now());
 
@@ -5486,6 +5491,8 @@ fn should_not_set_redraw_now_when_demand_is_repolled_after_pty_eof_release() {
     wait_for_reader_exit(&exited_rx);
     let _ = terminal.frame_demand(Instant::now());
 
+    let prepared = terminal.read_update(Instant::now());
+    assert!(terminal.acknowledge_update(&prepared));
     // Act
     let idle = terminal.frame_demand(Instant::now());
 

@@ -116,7 +116,7 @@ pub struct FrameDemand {
 }
 
 impl FrameDemand {
-    /// Empty demand used when no Cursor/renderer is available.
+    /// Empty scheduling demand.
     pub const fn empty() -> Self {
         Self {
             redraw_now: false,

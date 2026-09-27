@@ -1,12 +1,9 @@
 use crate::model::TerminalSnapshot;
 use harbor_config::Rgba;
 use harbor_text::TextMetrics;
-use std::time::Instant;
 
-use super::cursor_blink::CursorBlinkState;
 use super::gpu::{self, TerminalGpuAccess, TexturedVertex};
 use crate::CursorShape;
-use crate::FrameDemand;
 use crate::render::RenderViewport;
 
 const CURSOR_SHADER: &str = r#"
@@ -51,7 +48,7 @@ fn should_render_cursor(
     !preedit_active && snap.cursor_visible && (!snap.cursor_blink || blink_visible)
 }
 
-/// Combined cursor rendering + blink state machine.
+/// Concrete GPU cursor projection; blink timing belongs to the engine.
 pub struct Cursor {
     /// wgpu render pipeline for the solid-color cursor quad.
     pipeline: wgpu::RenderPipeline,
@@ -60,8 +57,6 @@ pub struct Cursor {
     vertex_buffer: wgpu::Buffer,
     /// Number of vertices to draw (0 when cursor is off-snap or hidden).
     vertex_count: u32,
-    /// Idle blink phase and pending immediate-redraw flag.
-    blink: CursorBlinkState,
     /// Cached state from last prepare call to avoid re-writing vertex buffer.
     last_cursor: Option<LastCursorState>,
     /// Set true when window size changes or metric updates occur.
@@ -82,7 +77,6 @@ impl Cursor {
             pipeline,
             vertex_buffer,
             vertex_count: 0,
-            blink: CursorBlinkState::new(Instant::now()),
             last_cursor: None,
             color,
             dirty: true,
@@ -94,29 +88,8 @@ impl Cursor {
         self.dirty = true;
     }
 
-    /// Resets the blink timer (makes cursor solid-on immediately).
-    pub fn reset_blink(&mut self, now: Instant) {
-        self.blink.reset(now);
-        self.dirty = true;
-    }
-
-    /// Host-neutral frame demand derived from blink state and screen cursor flags.
-    pub fn frame_demand(&self, snap: &TerminalSnapshot, now: Instant) -> FrameDemand {
-        let deadline = if snap.cursor_visible && snap.cursor_blink {
-            Some(self.blink.next_deadline(now))
-        } else {
-            None
-        };
-        FrameDemand {
-            redraw_now: self.blink.pending_redraw(),
-            deadline,
-            ordinary_present_eligible: true,
-        }
-    }
-
     pub fn commit_frame(&mut self) {
         self.dirty = false;
-        self.blink.take_pending_redraw();
     }
 
     fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -164,7 +137,7 @@ impl Cursor {
         snap: Option<&TerminalSnapshot>,
         viewport: &RenderViewport,
         preedit_active: bool,
-        now: Instant,
+        blink_visible: bool,
     ) {
         let Some(snap) = snap else {
             self.vertex_count = 0;
@@ -172,7 +145,7 @@ impl Cursor {
             return;
         };
 
-        let visible = should_render_cursor(snap, self.blink.phase_visible(now), preedit_active);
+        let visible = should_render_cursor(snap, blink_visible, preedit_active);
         let shape = snap.cursor_shape;
 
         let state_changed = self.last_cursor.is_none_or(|last| {

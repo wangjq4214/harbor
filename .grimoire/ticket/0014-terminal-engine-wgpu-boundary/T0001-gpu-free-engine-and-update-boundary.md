@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), [ADR-0045](../../adr/0045-gpu-independent-terminal-core-boundary.md), [#176](https://github.com/wangjq4214/harbor/issues/176)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -27,11 +27,13 @@ Start with feature isolation inside the existing crate. Do not claim a core-only
 
 ## Acceptance
 
-- [ ] Before changing the existing render/session boundary, capture a reproducible baseline dependency graph and one-/multi-session performance measurements for T0005's comparison.
-- [ ] Core-only check and tests compile and exercise parser, screen state, input, selection, damage and timing without wgpu, arboard, winit or `harbor-widget` in the dependency graph; record the reproducible commands and graph.
-- [ ] A coherent engine update is available without a mutable parser/screen handle; reading it does not clear unconsumed visual changes.
-- [ ] Frame demand and cursor blink reset still work without creating GPU resources, including input/cursor movement, preedit and synchronized-output eligibility behavior.
-- [ ] Existing rendered configuration and facade callers continue to build during migration; no PTY/resize or visual semantics change is introduced by the isolation itself.
+- [x] Before changing the existing render/session boundary, capture a reproducible baseline dependency graph and one-/multi-session performance measurements for T0005's comparison.
+- [x] Core-only check and tests compile and exercise parser, screen state, input, selection, damage and timing without wgpu, arboard, winit or `harbor-widget` in the dependency graph; record the reproducible commands and graph.
+- [x] A coherent engine update is available without a mutable parser/screen handle; reading it does not clear unconsumed visual changes.
+- [x] Frame demand and cursor blink reset still work without creating GPU resources, including input/cursor movement, preedit and synchronized-output eligibility behavior.
+- [x] Existing rendered configuration and facade callers continue to build during migration; no PTY/resize or visual semantics change is introduced by the isolation itself.
+
+Evidence: [T0001 core-boundary verification](../../../docs/verification/terminal-core-boundary-t0001.md). The recorded performance baseline is a CPU-side proxy; GPU/ConPTY runtime and post-T0004 comparison remain T0005 work.
 
 ## Out of Scope
 

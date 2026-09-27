@@ -1,3 +1,5 @@
+#![cfg(feature = "renderer")]
+
 //! External contract tests for terminal-owned boundary types.
 //!
 //! Imports only public `harbor_terminal` types — no `harbor_widget` dependency.

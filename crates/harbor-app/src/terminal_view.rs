@@ -971,7 +971,7 @@ mod tests {
 
     #[test]
     fn should_map_headless_frame_demand_to_empty_schedule_demand() {
-        // Arrange — headless Terminal has no Cursor/renderer
+        // Arrange — headless engine still owns cursor blink timing.
         let terminal = headless_terminal(2, 4);
         let now = std::time::Instant::now();
 
@@ -979,7 +979,8 @@ mod tests {
         let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
 
         // Assert
-        assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(!demand.redraw_now);
+        assert!(demand.deadline.is_some());
         assert!(demand.ordinary_present_eligible);
     }
 
@@ -1038,10 +1039,13 @@ mod tests {
         let _ = rt.update(now);
         let idle = rt.update(now + Duration::from_millis(1));
 
-        // Assert — headless demand yields no WaitUntil / no blink Poll
+        // Assert — blink timing is scheduled even for a headless engine.
         assert!(!idle.request_redraw);
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
-        assert!(idle.control_flow.is_none() || idle.control_flow == Some(ControlFlowEffect::Wait));
+        assert!(matches!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(_))
+        ));
     }
 
     #[test]
@@ -1137,7 +1141,10 @@ mod tests {
         assert!(due.request_redraw);
         assert!(due.force_present);
         assert!(due.has_deferred_externals);
-        assert_eq!(due.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(matches!(
+            due.control_flow,
+            Some(ControlFlowEffect::WaitUntil(_))
+        ));
         assert!(
             !terminal
                 .lock()

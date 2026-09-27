@@ -5,9 +5,10 @@
 //! render viewport supplied by the terminal host.
 
 use crate::content_anchor::{AnchorMutationBatch, ContentProjection};
+use crate::layout::RenderViewport;
 use crate::model::AltScreenAction;
-use crate::render::{RenderViewport, ScrollbarHit, hit_test, offset_for_thumb};
 use crate::screen::PreparedScreenResize;
+use crate::scrollbar_geometry::{ScrollbarHit, hit_test, offset_for_thumb};
 use crate::{AutoScroll, GenPos, Screen, SelectionBounds, SelectionModel, SelectionOutcome};
 use crate::{
     TerminalEventOutcome, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
@@ -622,7 +623,7 @@ impl PointerInteraction {
 mod tests {
     use super::*;
     use crate::content_anchor::AnchorMutation;
-    use crate::render::RenderViewport;
+    use crate::layout::RenderViewport;
 
     fn viewport() -> RenderViewport {
         RenderViewport::with_padding(10.0, 20.0, 0.0)

@@ -1,26 +1,38 @@
 mod content_anchor;
+#[cfg(all(test, not(feature = "renderer")))]
+mod core_tests;
+#[path = "render/cursor_blink.rs"]
+pub mod cursor_blink;
 mod damage;
 mod input;
 mod io;
+#[path = "render/layout.rs"]
+pub mod layout;
 mod logical_content;
 mod model;
 mod normal_buf;
 mod parser;
 mod pointer;
 mod primary_reflow;
+#[cfg(feature = "renderer")]
 pub mod render;
 mod screen;
+mod scrollbar_geometry;
 pub mod selection_model;
-#[cfg(test)]
+#[cfg(all(test, feature = "renderer"))]
 mod terminal_tests;
 mod types;
+mod update;
 
 // Re-exports for the main crate.
+pub use cursor_blink::CursorBlinkState;
 pub use harbor_config::Color;
 use harbor_config::Palette;
+#[cfg(feature = "renderer")]
 use harbor_pty::{PtyControl, PtyEndpoints};
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
+pub use layout::RenderViewport;
 pub use model::DirtyRange;
 pub use model::should_confirm_multiline;
 pub use model::{
@@ -30,8 +42,9 @@ pub use model::{
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
 pub use pointer::PointerInteraction;
+#[cfg(feature = "renderer")]
 pub use render::{
-    Background, Cursor, Decoration, RenderViewport, Scrollbar, Selection, TerminalGpuAccess,
+    Background, Cursor, Decoration, Scrollbar, Selection, TerminalGpuAccess,
     TerminalRenderPipeline, Text, UploadMode, UploadPlan, UploadPolicy,
     alpha_mode_supports_transparency,
 };
@@ -50,14 +63,16 @@ pub use types::{
     TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
     TerminalPointerPhase, WorkingDirectoryMetadata,
 };
+pub use update::TerminalUpdate;
 
-/// Stateful terminal engine owning screen state, I/O, and rendering.
+/// Terminal engine and transitional rendered facade. Core state builds without a GPU.
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
     screen: Screen,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
     /// Encapsulated GPU render pipeline.
+    #[cfg(feature = "renderer")]
     renderer: Option<TerminalRenderPipeline>,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
@@ -69,7 +84,15 @@ pub struct Terminal {
     /// Terminal-owned transient IME composition presentation state.
     preedit: Option<Preedit>,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
+    /// GPU-independent cursor blink and redraw timing.
+    blink: CursorBlinkState,
     pending_ordinary_present: bool,
+    /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
+    pending_preedit_redraw: bool,
+    /// True until a renderer explicitly acknowledges a coherent update.
+    update_needs_full: bool,
+    /// Invalidates acknowledgements read before a renderer projection was lost.
+    projection_epoch: u64,
 }
 
 impl Terminal {
@@ -79,6 +102,7 @@ impl Terminal {
     /// synchronously by UI-thread input handling. `pty_control` is the concrete
     /// platform lifecycle owner that preserves resize and safe reader reaping.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "renderer")]
     pub fn new<R, W>(
         size: TerminalSize,
         pty_read: R,
@@ -110,6 +134,7 @@ impl Terminal {
 
     /// Creates a rendered terminal with an explicitly owned appearance policy.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "renderer")]
     pub fn new_with_appearance<R, W>(
         size: TerminalSize,
         pty_read: R,
@@ -140,6 +165,7 @@ impl Terminal {
         )
         .expect("terminal render pipeline init");
 
+        terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
         terminal
@@ -150,6 +176,7 @@ impl Terminal {
     /// Renderer construction happens before [`PtyEndpoints::into_parts`], so a renderer error
     /// drops the intact endpoint bundle through its safe unstarted-session shutdown path.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "renderer")]
     pub fn try_new_with_appearance_from_endpoints(
         size: TerminalSize,
         endpoints: PtyEndpoints,
@@ -172,12 +199,14 @@ impl Terminal {
             appearance.palette(),
         )?;
         let (pty_read, pty_write, pty_control) = endpoints.into_parts();
+        terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
         Ok(terminal)
     }
 
     /// Calculates the grid dimensions used by a rendered terminal at an explicit surface size.
+    #[cfg(feature = "renderer")]
     pub fn terminal_size_for(surface_size: (u32, u32), metrics: &TextMetrics) -> TerminalSize {
         RenderViewport::with_surface(
             metrics.cell_width,
@@ -201,12 +230,17 @@ impl Terminal {
         Self {
             screen: Screen::with_palette(rows, cols, appearance.palette()),
             io: TerminalIo::new_headless(),
+            #[cfg(feature = "renderer")]
             renderer: None,
             pointer: PointerInteraction::new(),
             appearance,
             backdrop_available: false,
             preedit: None,
+            blink: CursorBlinkState::new(Instant::now()),
             pending_ordinary_present: false,
+            pending_preedit_redraw: false,
+            update_needs_full: true,
+            projection_epoch: 0,
         }
     }
 
@@ -248,6 +282,7 @@ impl Terminal {
     }
 
     /// Prepares GPU resources for all render components.
+    #[cfg(feature = "renderer")]
     pub fn prepare(&mut self, gpu: TerminalGpuAccess<'_>, damage: Option<&UpdateDamage>) {
         let now = Instant::now();
         let snap = self.screen.terminal_snapshot();
@@ -260,14 +295,18 @@ impl Terminal {
                 &snap,
                 damage,
                 self.preedit.as_ref(),
-                now,
+                self.blink.phase_visible(now),
                 self.pointer.bounds(),
                 tint,
             );
+            self.blink.take_pending_redraw();
+            self.pending_ordinary_present = false;
+            self.pending_preedit_redraw = false;
         }
     }
 
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
+    #[cfg(feature = "renderer")]
     pub fn render(
         &mut self,
         target: RenderTarget,
@@ -296,10 +335,13 @@ impl Terminal {
                 &snap,
                 None,
                 self.preedit.as_ref(),
-                now,
+                self.blink.phase_visible(now),
                 self.pointer.bounds(),
                 tint,
             );
+            self.blink.take_pending_redraw();
+            self.pending_ordinary_present = false;
+            self.pending_preedit_redraw = false;
             renderer.draw(pass);
         }
     }
@@ -308,6 +350,7 @@ impl Terminal {
     ///
     /// Falls back to a live encode when viewport or grid geometry changed so
     /// the terminal rect matches the new allocation.
+    #[cfg(feature = "renderer")]
     pub fn draw_retained(
         &mut self,
         target: RenderTarget,
@@ -323,6 +366,7 @@ impl Terminal {
         }
     }
 
+    #[cfg(feature = "renderer")]
     fn retain_geometry_changed(&self, target: RenderTarget) -> bool {
         retain_geometry_changed(
             self.renderer.as_ref().map(|renderer| renderer.viewport()),
@@ -337,14 +381,18 @@ impl Terminal {
 
     /// Host-neutral frame demand from ingested PTY, Cursor blink, and screen cursor flags.
     ///
-    /// Without a renderer/Cursor, returns an empty demand aside from synchronized-output
-    /// eligibility and a redraw notify when this ingest released ordinary presentation.
+    /// The engine owns blink timing even without a GPU renderer.
     pub fn frame_demand(&mut self, now: Instant) -> FrameDemand {
         let drained = self.drain_pty();
         let snap = self.snapshot();
-        let mut demand = match &self.renderer {
-            Some(renderer) => renderer.cursor.frame_demand(&snap, now),
-            None => FrameDemand::empty(),
+        let mut demand = FrameDemand {
+            redraw_now: self.screen.ordinary_present_eligible()
+                && (self.blink.pending_redraw()
+                    || self.pending_ordinary_present
+                    || self.pending_preedit_redraw),
+            deadline: (snap.cursor_visible && snap.cursor_blink)
+                .then(|| self.blink.next_deadline(now)),
+            ordinary_present_eligible: true,
         };
         if let Some(deadline) = self.pointer.auto_scroll_deadline() {
             demand.redraw_now |= deadline <= now;
@@ -355,7 +403,7 @@ impl Terminal {
             );
         }
         demand.ordinary_present_eligible = self.screen.ordinary_present_eligible();
-        let released = std::mem::take(&mut self.pending_ordinary_present);
+        let released = self.pending_ordinary_present;
         if demand.ordinary_present_eligible && (drained || released) {
             demand.redraw_now = true;
         }
@@ -393,9 +441,7 @@ impl Terminal {
         if !(input_wrote || before != self.cursor_pos()) {
             return;
         }
-        if let Some(renderer) = &mut self.renderer {
-            renderer.cursor.reset_blink(Instant::now());
-        }
+        self.blink.reset(Instant::now());
     }
 
     // ── resize ────────────────────────────────────────────────────────
@@ -407,6 +453,7 @@ impl Terminal {
 
     // ── text / glyphs ─────────────────────────────────────────────────
 
+    #[cfg(feature = "renderer")]
     pub fn text_metrics(&self) -> Option<&TextMetrics> {
         self.renderer.as_ref().map(|r| r.metrics())
     }
@@ -468,6 +515,7 @@ impl Terminal {
                         self.io.set_suppress_scroll_snap(false);
                     }
                     outcome.redraw = self.preedit.as_ref() != Some(next);
+                    self.pending_preedit_redraw |= outcome.redraw;
                     self.preedit = Some(next.clone());
                 }
                 return Ok(outcome);
@@ -591,11 +639,77 @@ impl Terminal {
         self.screen.terminal_snapshot()
     }
 
+    /// Reads a complete engine projection without consuming damage or pending redraw.
+    /// The first projection and projections after `invalidate_update` require a full upload.
+    /// Call `acknowledge_update` only once the renderer has prepared this exact state.
+    pub fn read_update(&self, now: Instant) -> TerminalUpdate {
+        let snapshot = self.snapshot();
+        let damage = if self.update_needs_full {
+            UpdateDamage::FullUpload
+        } else {
+            UpdateDamage::Ranges(snapshot.dirty_ranges.clone())
+        };
+        let mut frame_demand = FrameDemand {
+            redraw_now: self.screen.ordinary_present_eligible()
+                && (self.blink.pending_redraw()
+                    || self.pending_ordinary_present
+                    || self.pending_preedit_redraw),
+            deadline: (snapshot.cursor_visible && snapshot.cursor_blink)
+                .then(|| self.blink.next_deadline(now)),
+            ordinary_present_eligible: self.screen.ordinary_present_eligible(),
+        };
+        if let Some(deadline) = self.pointer.auto_scroll_deadline() {
+            frame_demand.redraw_now |= deadline <= now;
+            frame_demand.deadline =
+                Some(frame_demand.deadline.map_or(deadline, |d| d.min(deadline)));
+        }
+        TerminalUpdate {
+            snapshot,
+            damage,
+            selection: self.pointer.bounds(),
+            preedit: self.preedit.clone(),
+            appearance: TerminalAppearance::from_palette(self.screen.active_palette()),
+            backdrop_available: self.backdrop_available,
+            frame_demand,
+            projection_epoch: self.projection_epoch,
+        }
+    }
+
+    /// Acknowledge only an update whose content still matches the current engine.
+    /// Returns false on intervening changes, so a later read can replay them.
+    pub fn acknowledge_update(&mut self, update: &TerminalUpdate) -> bool {
+        if self.projection_epoch != update.projection_epoch {
+            return false;
+        }
+        if self.snapshot() != update.snapshot
+            || self.pointer.bounds() != update.selection
+            || self.preedit != update.preedit
+            || TerminalAppearance::from_palette(self.screen.active_palette()) != update.appearance
+            || self.backdrop_available != update.backdrop_available
+        {
+            return false;
+        }
+        self.screen.clear_dirty();
+        self.update_needs_full = false;
+        self.blink.take_pending_redraw();
+        self.pending_ordinary_present = false;
+        self.pending_preedit_redraw = false;
+        self.projection_epoch = self.projection_epoch.wrapping_add(1);
+        true
+    }
+
+    /// Request a full reconstruction when a renderer's retained projection is uncertain.
+    pub fn invalidate_update(&mut self) {
+        self.update_needs_full = true;
+        self.projection_epoch = self.projection_epoch.wrapping_add(1);
+    }
+
     /// Clears transient IME composition without affecting terminal protocol state.
     pub fn clear_preedit(&mut self) -> bool {
         let cleared = self.preedit.take().is_some();
-        if cleared && let Some(renderer) = &mut self.renderer {
-            renderer.cursor.reset_blink(Instant::now());
+        if cleared {
+            self.blink.reset(Instant::now());
+            self.pending_preedit_redraw = true;
         }
         cleared
     }
@@ -606,12 +720,13 @@ impl Terminal {
     }
 
     /// Computes the physical candidate-window anchor from the current live cursor.
+    #[cfg(feature = "renderer")]
     pub fn ime_candidate_position(&self, target: RenderTarget) -> Option<(f32, f32)> {
         let preedit = self.preedit.as_ref()?;
         let metrics = self.text_metrics()?;
         let viewport = RenderViewport::from_target(target, metrics);
         let snap = self.screen.terminal_snapshot();
-        let layout = crate::render::layout_preedit(
+        let layout = crate::layout::layout_preedit(
             preedit,
             (snap.cursor_x, snap.cursor_y),
             snap.rows,
@@ -881,6 +996,7 @@ fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4
     TerminalAppearance::from_palette(palette).clear_rgba(backdrop_available)
 }
 
+#[cfg(feature = "renderer")]
 fn retain_geometry_changed(
     current_viewport: Option<RenderViewport>,
     current_grid: TerminalSize,
@@ -895,7 +1011,7 @@ fn retain_geometry_changed(
     viewport != current_viewport || grid != current_grid
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "renderer"))]
 mod retain_geometry_tests {
     use super::*;
     use harbor_text::TextMetrics;
