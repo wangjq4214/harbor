@@ -2,12 +2,10 @@
 
 use super::device_attributes::{PRIMARY_REPLY, SECONDARY_REPLY, accepts_default_query};
 use super::mode_query;
-use super::osc_color;
-use super::osc7;
-use super::osc8;
-use super::osc133;
+use super::osc::{self, Action};
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
+use super::{osc_color, osc_title, osc7, osc8, osc133};
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 
@@ -287,70 +285,44 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
-        if matches!(command, b"10" | b"11" | b"12" | b"110" | b"111" | b"112") {
-            match osc_color::parse(command, payload) {
-                Some(osc_color::Action::Set(slot, rgb)) => {
-                    self.screen.set_default_color_rgb(slot, rgb);
-                }
-                Some(osc_color::Action::Query(slot)) => {
-                    let reply = osc_color::format_query(
-                        slot,
-                        self.screen.default_color(slot),
-                        bell_terminated,
-                    );
-                    self.screen.push_reply(reply.as_bytes());
-                }
-                Some(osc_color::Action::Reset(slot)) => {
-                    self.screen.reset_default_color(slot);
-                }
-                None => {}
-            }
-            return;
-        }
-        if command == b"8" {
-            match osc8::parse(payload) {
-                Some(osc8::Action::Open { uri, id }) => self.screen.open_hyperlink(uri, id),
-                Some(osc8::Action::Close) => self.screen.close_hyperlink(),
-                None => {}
-            }
-            return;
-        }
-        if command == b"7" {
-            if payload.is_empty() {
-                self.output_events
-                    .push(TerminalOutputEvent::WorkingDirectoryReset);
-            } else if let Some(metadata) = osc7::parse(payload) {
-                self.output_events
-                    .push(TerminalOutputEvent::WorkingDirectoryChanged(metadata));
-            }
-            return;
-        }
-        if command == b"133" {
-            if payload.is_empty() {
-                self.output_events
-                    .push(TerminalOutputEvent::ShellIntegrationReset);
-            } else if let Some(marker) = osc133::parse(payload) {
-                self.output_events
-                    .push(TerminalOutputEvent::ShellIntegration(marker));
-            }
-            return;
-        }
-        if !matches!(command, b"0" | b"1" | b"2") {
-            return;
-        }
-        if payload.is_empty() {
-            self.output_events.push(TerminalOutputEvent::TitleReset);
-            return;
-        }
-        let Ok(title) = std::str::from_utf8(payload) else {
+        let Some(action) = osc::parse(command, payload, bell_terminated) else {
             return;
         };
-        let mut chars = title.chars();
-        if chars.by_ref().take(257).count() > 256 || title.chars().any(char::is_control) {
-            return;
+        match action {
+            Action::Title(osc_title::Action::Change(title)) => self
+                .output_events
+                .push(TerminalOutputEvent::TitleChanged(title)),
+            Action::Title(osc_title::Action::Reset) => {
+                self.output_events.push(TerminalOutputEvent::TitleReset);
+            }
+            Action::WorkingDirectory(osc7::Action::Change(metadata)) => self
+                .output_events
+                .push(TerminalOutputEvent::WorkingDirectoryChanged(metadata)),
+            Action::WorkingDirectory(osc7::Action::Reset) => self
+                .output_events
+                .push(TerminalOutputEvent::WorkingDirectoryReset),
+            Action::Hyperlink(osc8::Action::Open { uri, id }) => {
+                self.screen.open_hyperlink(uri, id);
+            }
+            Action::Hyperlink(osc8::Action::Close) => self.screen.close_hyperlink(),
+            Action::Color(osc_color::Action::Set(slot, rgb), _) => {
+                self.screen.set_default_color_rgb(slot, rgb);
+            }
+            Action::Color(osc_color::Action::Query(slot), bell_terminated) => {
+                let reply =
+                    osc_color::format_query(slot, self.screen.default_color(slot), bell_terminated);
+                self.screen.push_reply(reply.as_bytes());
+            }
+            Action::Color(osc_color::Action::Reset(slot), _) => {
+                self.screen.reset_default_color(slot);
+            }
+            Action::ShellIntegration(osc133::Action::Marker(marker)) => self
+                .output_events
+                .push(TerminalOutputEvent::ShellIntegration(marker)),
+            Action::ShellIntegration(osc133::Action::Reset) => self
+                .output_events
+                .push(TerminalOutputEvent::ShellIntegrationReset),
         }
-        self.output_events
-            .push(TerminalOutputEvent::TitleChanged(title.to_owned()));
     }
 
     fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {

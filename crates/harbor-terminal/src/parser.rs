@@ -3,15 +3,21 @@
 mod device_attributes;
 mod handlers;
 mod mode_query;
+mod osc;
 mod osc133;
 mod osc7;
 mod osc8;
 mod osc_color;
+mod osc_title;
 mod status_strings;
 mod xtgettcap;
 
 #[cfg(test)]
 mod incremental_tests;
+#[cfg(test)]
+mod osc_action_tests;
+#[cfg(test)]
+mod osc_benchmark;
 #[cfg(test)]
 mod tests;
 

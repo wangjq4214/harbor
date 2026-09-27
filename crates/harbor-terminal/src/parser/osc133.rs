@@ -2,6 +2,19 @@ use crate::ShellIntegrationMarker;
 
 const MAX_PAYLOAD_BYTES: usize = 1024;
 
+pub(super) enum Action {
+    Marker(ShellIntegrationMarker),
+    Reset,
+}
+
+pub(super) fn action(payload: &[u8]) -> Option<Action> {
+    if payload.is_empty() {
+        Some(Action::Reset)
+    } else {
+        parse(payload).map(Action::Marker)
+    }
+}
+
 /// Parses the OSC 133 semantic prompt / shell-integration payload.
 ///
 /// `payload` is the slice immediately following `133;`, without the leading semicolon.

@@ -4,6 +4,19 @@ const SCHEME: &[u8] = b"file://";
 const MAX_HOST_BYTES: usize = 255;
 const MAX_PATH_BYTES: usize = 2048;
 
+pub(super) enum Action {
+    Change(WorkingDirectoryMetadata),
+    Reset,
+}
+
+pub(super) fn action(payload: &[u8]) -> Option<Action> {
+    if payload.is_empty() {
+        Some(Action::Reset)
+    } else {
+        parse(payload).map(Action::Change)
+    }
+}
+
 /// Parses the deliberately narrow OSC 7 file-URI contract owned by the terminal layer.
 pub(super) fn parse(payload: &[u8]) -> Option<WorkingDirectoryMetadata> {
     let remainder = payload.strip_prefix(SCHEME)?;
