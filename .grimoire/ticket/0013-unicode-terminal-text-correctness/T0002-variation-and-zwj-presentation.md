@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0015 R2/R3/R4](../../spec/0015-unicode-terminal-text-correctness.md), [ADR-0044](../../adr/0044-unicode-text-unit-and-presentation-width-policy.md), [ADR-0042](../../adr/0042-content-anchors-and-buffer-specific-resize.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -26,12 +26,12 @@ Extend T0001's single retained text-unit and width source to cover variation sel
 
 ## Acceptance
 
-- [ ] `♥` is treated under the ordinary ambiguous-width one-cell policy while `♥️` and `👩‍💻` occupy two cells; selections and copy retain their exact original scalar sequences in the same or split PTY reads.
-- [ ] Variation selectors and ZWJ members are not silently dropped, copied as synthetic replacement text, or advanced as independent extra cells; font-unsupported whole sequences retain source text and assigned width with an explicitly documented visual fallback.
-- [ ] Sequence completion next to a right edge, wide-cell boundary, or pending-wrap does not split a two-cell unit or corrupt adjacent content; overwrite, erase, protected/styled/hyperlinked cells, and selection projections remain coherent.
-- [ ] Copy and content anchors retain meaning through repeated primary reflow and capacity eviction; alternate-screen rectangular resize and saved-primary reflow follow existing N01 rules.
-- [ ] Presentation and dirty-range tests demonstrate repaint after a selector/joiner or font/DPI change; fallback-font results distinguish text preservation from correct whole-sequence visual rendering.
-- [ ] No new terminal-search UI is added; the shared text/anchor contract remains usable by future N08 search without a competing per-scalar width model.
+- [x] `♥` is treated under the ordinary ambiguous-width one-cell policy while `♥️` and `👩‍💻` occupy two cells; selections and copy retain their exact original scalar sequences in the same or split PTY reads.
+- [x] Variation selectors and ZWJ members are not silently dropped, copied as synthetic replacement text, or advanced as independent extra cells; font-unsupported whole sequences retain source text and assigned width with an explicitly documented visual fallback.
+- [x] Sequence completion next to a right edge, wide-cell boundary, or pending-wrap does not split a two-cell unit or corrupt adjacent content; overwrite, erase, protected/styled/hyperlinked cells, and selection projections remain coherent.
+- [x] Copy and content anchors retain meaning through repeated primary reflow and capacity eviction; alternate-screen rectangular resize and saved-primary reflow follow existing N01 rules.
+- [x] Presentation and dirty-range tests demonstrate repaint after a selector/joiner or font/DPI change; fallback-font results distinguish text preservation from correct whole-sequence visual rendering.
+- [x] No new terminal-search UI is added; the shared text/anchor contract remains usable by future N08 search without a competing per-scalar width model.
 
 ## Out of scope
 

@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0015 R1–R4, Verification](../../spec/0015-unicode-terminal-text-correctness.md), [issue #153](https://github.com/wangjq4214/harbor/issues/153), [Validation](../../../docs/validation.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -25,11 +25,11 @@ Exercise the final integrated revision of T0001 and T0002 with reproducible outp
 
 ## Acceptance
 
-- [ ] Reproducible Windows shell and named application sessions verify combining, line-start cue, variation-selector and ZWJ examples on screen and via clipboard copy; include PTY fragmentation, right-edge placement, edits/erase, selection, repeated resize, font fallback and font/DPI changes as applicable to the delivered scope.
-- [ ] Evidence distinguishes preserved source text and fixed cell width from successfully rendered whole-sequence presentation, and reports unsupported fonts or other known exclusions without blanket compatibility claims.
-- [ ] Each scenario records revision, dirty-tree scope, OS/ConPTY/application versions, expected/observed result, artifacts, and honest PASS / FAIL / NOT RUN / BLOCKED status. Durable evidence is under `docs/verification/` or linked to retrievable CI artifacts without secrets or unrelated terminal content.
-- [ ] Run and record results for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; record commands not run and why.
-- [ ] Update status/protocol documentation only for implemented and evidenced N02 behavior, retaining deferred features and N01's separately outstanding runtime/performance acceptance. Close #153 only when all accepted scope is evidenced or explicit scope decisions link remaining/deferred work.
+- [x] Reproducible Windows shell and named application sessions verify combining, line-start cue, variation-selector and ZWJ examples on screen and via clipboard copy; include PTY fragmentation, right-edge placement, edits/erase, selection, repeated resize, font fallback and font/DPI changes as applicable to the delivered scope.
+- [x] Evidence distinguishes preserved source text and fixed cell width from successfully rendered whole-sequence presentation, and reports unsupported fonts or other known exclusions without blanket compatibility claims.
+- [x] Each scenario records revision, dirty-tree scope, OS/ConPTY/application versions, expected/observed result, artifacts, and honest PASS / FAIL / NOT RUN / BLOCKED status. Durable evidence is under `docs/verification/` or linked to retrievable CI artifacts without secrets or unrelated terminal content.
+- [x] Run and record results for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; record commands not run and why.
+- [x] Update status/protocol documentation only for implemented and evidenced N02 behavior, retaining deferred features and N01's separately outstanding runtime/performance acceptance. Close #153 only when all accepted scope is evidenced or explicit scope decisions link remaining/deferred work.
 
 ## Out of scope
 
