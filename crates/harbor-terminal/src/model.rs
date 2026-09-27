@@ -47,6 +47,11 @@ impl HyperlinkId {
     }
 }
 
+/// Returns whether a character is a Unicode variation selector.
+pub(crate) const fn is_selector(ch: char) -> bool {
+    matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+}
+
 // ── Cell ──────────────────────────────────────────────────────────────────────
 
 /// One visible terminal grid cell.

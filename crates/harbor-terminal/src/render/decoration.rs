@@ -11,28 +11,48 @@ use crate::{CellAttrs, DirtyRange};
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
 
 /// Builds underline vertices for every row.
-/// Returns one `ColoredVertex` per grid cell (degenerate for cells without decoration).
-pub fn build_underline_vertices(
-    metrics: &TextMetrics,
+#[inline]
+fn underline_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
+    let top = cell_y + metrics.underline_position;
+    (top, top + metrics.underline_thickness)
+}
+
+#[inline]
+fn strikethrough_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
+    let top = cell_y + metrics.strikethrough_position - metrics.strikethrough_thickness / 2.0;
+    (top, top + metrics.strikethrough_thickness)
+}
+
+#[inline]
+fn is_underline_active(cell: &crate::model::Cell) -> bool {
+    (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some()) && cell.ch != ' '
+}
+
+#[inline]
+fn is_strikethrough_active(cell: &crate::model::Cell) -> bool {
+    cell.attrs.contains(CellAttrs::STRIKETHROUGH) && cell.ch != ' '
+}
+
+fn build_decoration_layer_vertices(
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
     palette: &Palette,
+    y_bounds: impl Fn(&TextMetrics, f32) -> (f32, f32),
+    is_active: impl Fn(&crate::model::Cell) -> bool,
+    metrics: &TextMetrics,
 ) -> Vec<ColoredVertex> {
     let (surf_w, surf_h) = viewport.surface_dimensions();
     let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
     for row in 0..snap.rows {
         let (_, cell_y) = viewport.cell_pos(row, 0);
-        let u_top = cell_y + metrics.underline_position;
-        let u_bottom = u_top + metrics.underline_thickness;
+        let (top, bottom) = y_bounds(metrics, cell_y);
         for col in 0..snap.cols {
             let cell = snap.cell(row, col);
-            if (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some())
-                && cell.ch != ' '
-            {
+            if is_active(cell) {
                 let (left, _, right, _) = viewport.cell_bounds(row, col);
                 let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
                 verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                    left, u_top, right, u_bottom, color, surf_w, surf_h,
+                    left, top, right, bottom, color, surf_w, surf_h,
                 ));
             } else {
                 verts.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
@@ -40,6 +60,24 @@ pub fn build_underline_vertices(
         }
     }
     verts
+}
+
+/// Builds underline vertices for every row.
+/// Returns one `ColoredVertex` per grid cell (degenerate for cells without decoration).
+pub fn build_underline_vertices(
+    metrics: &TextMetrics,
+    snap: &TerminalSnapshot,
+    viewport: &RenderViewport,
+    palette: &Palette,
+) -> Vec<ColoredVertex> {
+    build_decoration_layer_vertices(
+        snap,
+        viewport,
+        palette,
+        underline_bounds,
+        is_underline_active,
+        metrics,
+    )
 }
 
 /// Builds strikethrough vertices for every row.
@@ -50,26 +88,14 @@ pub fn build_strikethrough_vertices(
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    let (surf_w, surf_h) = viewport.surface_dimensions();
-    let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
-    for row in 0..snap.rows {
-        let (_, cell_y) = viewport.cell_pos(row, 0);
-        let s_top = cell_y + metrics.strikethrough_position - metrics.strikethrough_thickness / 2.0;
-        let s_bottom = s_top + metrics.strikethrough_thickness;
-        for col in 0..snap.cols {
-            let cell = snap.cell(row, col);
-            if cell.attrs.contains(CellAttrs::STRIKETHROUGH) && cell.ch != ' ' {
-                let (left, _, right, _) = viewport.cell_bounds(row, col);
-                let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
-                verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                    left, s_top, right, s_bottom, color, surf_w, surf_h,
-                ));
-            } else {
-                verts.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
-            }
-        }
-    }
-    verts
+    build_decoration_layer_vertices(
+        snap,
+        viewport,
+        palette,
+        strikethrough_bounds,
+        is_strikethrough_active,
+        metrics,
+    )
 }
 
 // ── Decoration ────────────────────────────────────────────────────────────────
@@ -195,22 +221,18 @@ impl Decoration {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
                 let (_, cell_y) = viewport.cell_pos(range.row, 0);
-                let u_top = cell_y + self.metrics.underline_position;
-                let u_bottom = u_top + self.metrics.underline_thickness;
-                let s_top = cell_y + self.metrics.strikethrough_position
-                    - self.metrics.strikethrough_thickness / 2.0;
-                let s_bottom = s_top + self.metrics.strikethrough_thickness;
+                let (u_top, u_bottom) = underline_bounds(&self.metrics, cell_y);
+                let (s_top, s_bottom) = strikethrough_bounds(&self.metrics, cell_y);
 
                 let mut u_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 for col in range.start_col..range.end_col {
                     let cell = snap.cell(range.row, col);
-                    if (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some())
-                        && cell.ch != ' '
-                    {
-                        let (left, _, right, _) = viewport.cell_bounds(range.row, col);
-                        let color =
-                            glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
+                    let (left, _, right, _) = viewport.cell_bounds(range.row, col);
+                    let color =
+                        glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
+
+                    if is_underline_active(cell) {
                         u_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
                             left, u_top, right, u_bottom, color, surf_w, surf_h,
                         ));
@@ -218,10 +240,7 @@ impl Decoration {
                         u_row.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
                     }
 
-                    if cell.attrs.contains(CellAttrs::STRIKETHROUGH) && cell.ch != ' ' {
-                        let (left, _, right, _) = viewport.cell_bounds(range.row, col);
-                        let color =
-                            glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
+                    if is_strikethrough_active(cell) {
                         s_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
                             left, s_top, right, s_bottom, color, surf_w, surf_h,
                         ));

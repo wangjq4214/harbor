@@ -16,12 +16,12 @@ mod terminal_tests;
 mod types;
 
 // Re-exports for the main crate.
-pub use damage::DirtyRange;
 pub use harbor_config::Color;
 use harbor_config::Palette;
 use harbor_pty::{PtyControl, PtyEndpoints};
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
+pub use model::DirtyRange;
 pub use model::should_confirm_multiline;
 pub use model::{
     InputModes, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage,
@@ -874,12 +874,7 @@ impl Terminal {
 }
 
 fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4] {
-    let rgba = palette.background.components();
-    if backdrop_available {
-        rgba
-    } else {
-        [rgba[0], rgba[1], rgba[2], 1.0]
-    }
+    TerminalAppearance::from_palette(palette).clear_rgba(backdrop_available)
 }
 
 fn retain_geometry_changed(

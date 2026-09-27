@@ -537,7 +537,7 @@ impl PointerInteraction {
         }
     }
     fn commit_selection(&mut self, screen: &Screen) -> bool {
-        match screen.reader().content_projection() {
+        match screen.content_projection() {
             Ok(projection) => self.selection.commit_anchors(&projection),
             Err(error) => {
                 tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "selection anchor projection failed");

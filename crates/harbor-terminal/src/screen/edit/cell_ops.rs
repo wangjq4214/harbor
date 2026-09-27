@@ -258,6 +258,16 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
+        Self::erase_display_with_policy(pen_state, normal, cursor, mode, false);
+    }
+
+    fn erase_display_with_policy(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+        selective: bool,
+    ) {
         cursor.clear_pending_wrap();
         if cursor.margins.enabled
             && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
@@ -277,7 +287,7 @@ impl CellOps {
                     cursor.cursor.y,
                     (cursor.cursor.x, right + 1),
                     (left, right),
-                    false,
+                    selective,
                 );
                 for row in cursor.cursor.y + 1..normal.rows() {
                     Self::erase_row_range(
@@ -286,7 +296,7 @@ impl CellOps {
                         row,
                         (left, right + 1),
                         (left, right),
-                        false,
+                        selective,
                     );
                 }
             }
@@ -298,7 +308,7 @@ impl CellOps {
                         row,
                         (left, right + 1),
                         (left, right),
-                        false,
+                        selective,
                     );
                 }
                 Self::erase_row_range(
@@ -307,7 +317,7 @@ impl CellOps {
                     cursor.cursor.y,
                     (left, cursor.cursor.x + 1),
                     (left, right),
-                    false,
+                    selective,
                 );
             }
             2 => {
@@ -318,10 +328,12 @@ impl CellOps {
                         row,
                         (left, right + 1),
                         (left, right),
-                        false,
+                        selective,
                     );
                 }
-                cursor.home_cursor();
+                if !selective {
+                    cursor.home_cursor();
+                }
             }
             _ => {}
         }
@@ -332,6 +344,16 @@ impl CellOps {
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         mode: usize,
+    ) {
+        Self::erase_line_with_policy(pen_state, normal, cursor, mode, false);
+    }
+
+    fn erase_line_with_policy(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        mode: usize,
+        selective: bool,
     ) {
         cursor.clear_pending_wrap();
         if cursor.margins.enabled
@@ -351,7 +373,7 @@ impl CellOps {
                 cursor.cursor.y,
                 (cursor.cursor.x, right + 1),
                 (left, right),
-                false,
+                selective,
             ),
             1 => Self::erase_row_range(
                 pen_state,
@@ -359,7 +381,7 @@ impl CellOps {
                 cursor.cursor.y,
                 (left, cursor.cursor.x + 1),
                 (left, right),
-                false,
+                selective,
             ),
             2 => Self::erase_row_range(
                 pen_state,
@@ -367,15 +389,17 @@ impl CellOps {
                 cursor.cursor.y,
                 (left, right + 1),
                 (left, right),
-                false,
+                selective,
             ),
             _ => return,
         }
-        normal.mark_range_dirty(
-            cursor.cursor.y,
-            cursor.cursor.x.saturating_sub(1).max(left),
-            right + 1,
-        );
+        if !selective {
+            normal.mark_range_dirty(
+                cursor.cursor.y,
+                cursor.cursor.x.saturating_sub(1).max(left),
+                right + 1,
+            );
+        }
     }
 
     pub(crate) fn erase_chars(
@@ -424,72 +448,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
-        cursor.clear_pending_wrap();
-        if cursor.margins.enabled
-            && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
-        {
-            return;
-        }
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
-        match mode {
-            0 => {
-                Self::erase_row_range(
-                    pen_state,
-                    normal,
-                    cursor.cursor.y,
-                    (cursor.cursor.x, right + 1),
-                    (left, right),
-                    true,
-                );
-                for row in cursor.cursor.y + 1..normal.rows() {
-                    Self::erase_row_range(
-                        pen_state,
-                        normal,
-                        row,
-                        (left, right + 1),
-                        (left, right),
-                        true,
-                    );
-                }
-            }
-            1 => {
-                for row in 0..cursor.cursor.y {
-                    Self::erase_row_range(
-                        pen_state,
-                        normal,
-                        row,
-                        (left, right + 1),
-                        (left, right),
-                        true,
-                    );
-                }
-                Self::erase_row_range(
-                    pen_state,
-                    normal,
-                    cursor.cursor.y,
-                    (left, cursor.cursor.x + 1),
-                    (left, right),
-                    true,
-                );
-            }
-            2 => {
-                for row in 0..normal.rows() {
-                    Self::erase_row_range(
-                        pen_state,
-                        normal,
-                        row,
-                        (left, right + 1),
-                        (left, right),
-                        true,
-                    );
-                }
-            }
-            _ => {}
-        }
+        Self::erase_display_with_policy(pen_state, normal, cursor, mode, true);
     }
 
     pub(crate) fn selective_erase_line(
@@ -498,44 +457,7 @@ impl CellOps {
         cursor: &mut CursorEngine,
         mode: usize,
     ) {
-        cursor.clear_pending_wrap();
-        if cursor.margins.enabled
-            && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
-        {
-            return;
-        }
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
-        match mode {
-            0 => Self::erase_row_range(
-                pen_state,
-                normal,
-                cursor.cursor.y,
-                (cursor.cursor.x, right + 1),
-                (left, right),
-                true,
-            ),
-            1 => Self::erase_row_range(
-                pen_state,
-                normal,
-                cursor.cursor.y,
-                (left, cursor.cursor.x + 1),
-                (left, right),
-                true,
-            ),
-            2 => Self::erase_row_range(
-                pen_state,
-                normal,
-                cursor.cursor.y,
-                (left, right + 1),
-                (left, right),
-                true,
-            ),
-            _ => {}
-        }
+        Self::erase_line_with_policy(pen_state, normal, cursor, mode, true);
     }
 
     // ── insert / delete chars ─────────────────────────────────────
@@ -632,6 +554,80 @@ impl CellOps {
 
     // ── insert / delete lines ─────────────────────────────────────
 
+    fn scroll_rows_up(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        top: usize,
+        bottom: usize,
+        n: usize,
+    ) {
+        let max_n = bottom - top + 1;
+        let n = n.min(max_n);
+        normal.mark_rows_dirty(top, bottom.saturating_add(1));
+        if cursor.margins.enabled {
+            Self::scroll_margin_rect_up(pen_state, normal, cursor, top, bottom, n);
+            return;
+        }
+        normal.sever_soft_wrap_after(bottom);
+        if n == max_n {
+            for row in top..=bottom {
+                normal.fill_row_with(row, pen_state.erase_cell());
+            }
+            return;
+        }
+        let tr = normal.total_rows();
+        let vis = normal.visible_start();
+        let src_start = (vis + top + n) % tr;
+        let src_end = (vis + bottom + 1) % tr;
+        let dst = (vis + top) % tr;
+        normal.copy_ring_rows(src_start, src_end, dst);
+        normal.sever_soft_wrap(top);
+        for i in 0..n {
+            normal.fill_row_with(bottom - i, pen_state.erase_cell());
+        }
+        for row in top..=bottom {
+            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
+        }
+    }
+
+    fn scroll_rows_down(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        top: usize,
+        bottom: usize,
+        n: usize,
+    ) {
+        let max_n = bottom - top + 1;
+        let n = n.min(max_n);
+        normal.mark_rows_dirty(top, bottom.saturating_add(1));
+        if cursor.margins.enabled {
+            Self::scroll_margin_rect_down(pen_state, normal, cursor, top, bottom, n);
+            return;
+        }
+        normal.sever_soft_wrap_after(bottom);
+        if n == max_n {
+            for row in top..=bottom {
+                normal.fill_row_with(row, pen_state.erase_cell());
+            }
+            return;
+        }
+        let tr = normal.total_rows();
+        let vis = normal.visible_start();
+        let src_start = (vis + top) % tr;
+        let src_end = (vis + bottom - n + 1) % tr;
+        let dst = (vis + top + n) % tr;
+        normal.copy_ring_rows(src_start, src_end, dst);
+        normal.sever_soft_wrap(top + n);
+        for i in 0..n {
+            normal.fill_row_with(top + i, pen_state.erase_cell());
+        }
+        for row in top..=bottom {
+            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
+        }
+    }
+
     pub(crate) fn insert_lines(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
@@ -639,52 +635,20 @@ impl CellOps {
         n: usize,
     ) {
         cursor.clear_pending_wrap();
-        let n = if n == 0 { 1 } else { n };
         if cursor.cursor.y < cursor.scroll_region.top
             || cursor.cursor.y > cursor.scroll_region.bottom
         {
             return;
         }
-        let max_n = cursor.scroll_region.bottom - cursor.cursor.y + 1;
-        let n = n.min(max_n);
-        normal.mark_rows_dirty(
+        let n = if n == 0 { 1 } else { n };
+        Self::scroll_rows_down(
+            pen_state,
+            normal,
+            cursor,
             cursor.cursor.y,
-            cursor.scroll_region.bottom.saturating_add(1),
+            cursor.scroll_region.bottom,
+            n,
         );
-        if cursor.margins.enabled {
-            Self::scroll_margin_rect_down(
-                pen_state,
-                normal,
-                cursor,
-                cursor.cursor.y,
-                cursor.scroll_region.bottom,
-                n,
-            );
-            cursor.cursor.x = 0;
-            return;
-        }
-        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
-        if n == max_n {
-            for row in cursor.cursor.y..=cursor.scroll_region.bottom {
-                normal.fill_row_with(row, pen_state.erase_cell());
-            }
-            cursor.cursor.x = 0;
-            return;
-        }
-        let tr = normal.total_rows();
-        let vis = normal.visible_start();
-        let c = normal.cols();
-        let src_start = ((vis + cursor.cursor.y) % tr) * c;
-        let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
-        let dst = ((vis + cursor.cursor.y + n) % tr) * c;
-        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
-        normal.sever_soft_wrap(cursor.cursor.y + n);
-        for i in 0..n {
-            normal.fill_row_with(cursor.cursor.y + i, pen_state.erase_cell());
-        }
-        for row in cursor.cursor.y..=cursor.scroll_region.bottom {
-            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
-        }
         cursor.cursor.x = 0;
     }
 
@@ -695,56 +659,22 @@ impl CellOps {
         n: usize,
     ) {
         cursor.clear_pending_wrap();
-        let n = if n == 0 { 1 } else { n };
         if cursor.cursor.y < cursor.scroll_region.top
             || cursor.cursor.y > cursor.scroll_region.bottom
         {
             return;
         }
-        let max_n = cursor.scroll_region.bottom - cursor.cursor.y + 1;
-        let n = n.min(max_n);
-        normal.mark_rows_dirty(
+        let n = if n == 0 { 1 } else { n };
+        Self::scroll_rows_up(
+            pen_state,
+            normal,
+            cursor,
             cursor.cursor.y,
-            cursor.scroll_region.bottom.saturating_add(1),
+            cursor.scroll_region.bottom,
+            n,
         );
-        if cursor.margins.enabled {
-            Self::scroll_margin_rect_up(
-                pen_state,
-                normal,
-                cursor,
-                cursor.cursor.y,
-                cursor.scroll_region.bottom,
-                n,
-            );
-            cursor.cursor.x = 0;
-            return;
-        }
-        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
-        if n == max_n {
-            for row in cursor.cursor.y..=cursor.scroll_region.bottom {
-                normal.fill_row_with(row, pen_state.erase_cell());
-            }
-            cursor.cursor.x = 0;
-            return;
-        }
-        let tr = normal.total_rows();
-        let vis = normal.visible_start();
-        let c = normal.cols();
-        let src_start = ((vis + cursor.cursor.y + n) % tr) * c;
-        let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
-        let dst = ((vis + cursor.cursor.y) % tr) * c;
-        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
-        normal.sever_soft_wrap(cursor.cursor.y);
-        for i in 0..n {
-            normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
-        }
-        for row in cursor.cursor.y..=cursor.scroll_region.bottom {
-            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
-        }
         cursor.cursor.x = 0;
     }
-
-    // ── scroll region ─────────────────────────────────────────────
 
     pub(crate) fn scroll_up_region(
         pen_state: &mut PenState,
@@ -754,43 +684,14 @@ impl CellOps {
     ) {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
-        let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
-        let n = n.min(region_height);
-        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-            normal.mark_row_dirty(row);
-        }
-        if cursor.margins.enabled {
-            Self::scroll_margin_rect_up(
-                pen_state,
-                normal,
-                cursor,
-                cursor.scroll_region.top,
-                cursor.scroll_region.bottom,
-                n,
-            );
-            return;
-        }
-        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
-        if n == region_height {
-            for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-                normal.fill_row_with(row, pen_state.erase_cell());
-            }
-            return;
-        }
-        let tr = normal.total_rows();
-        let vis = normal.visible_start();
-        let c = normal.cols();
-        let src_start = ((vis + cursor.scroll_region.top + n) % tr) * c;
-        let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
-        let dst = ((vis + cursor.scroll_region.top) % tr) * c;
-        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
-        normal.sever_soft_wrap(cursor.scroll_region.top);
-        for i in 0..n {
-            normal.fill_row_with(cursor.scroll_region.bottom - i, pen_state.erase_cell());
-        }
-        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
-        }
+        Self::scroll_rows_up(
+            pen_state,
+            normal,
+            cursor,
+            cursor.scroll_region.top,
+            cursor.scroll_region.bottom,
+            n,
+        );
     }
 
     pub(crate) fn scroll_down_region(
@@ -801,48 +702,19 @@ impl CellOps {
     ) {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
-        let region_height = cursor.scroll_region.bottom - cursor.scroll_region.top + 1;
-        let n = n.min(region_height);
-        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-            normal.mark_row_dirty(row);
-        }
-        if cursor.margins.enabled {
-            Self::scroll_margin_rect_down(
-                pen_state,
-                normal,
-                cursor,
-                cursor.scroll_region.top,
-                cursor.scroll_region.bottom,
-                n,
-            );
-            return;
-        }
-        normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
-        if n == region_height {
-            for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-                normal.fill_row_with(row, pen_state.erase_cell());
-            }
-            return;
-        }
-        let tr = normal.total_rows();
-        let vis = normal.visible_start();
-        let c = normal.cols();
-        let src_start = ((vis + cursor.scroll_region.top) % tr) * c;
-        let src_end = ((vis + cursor.scroll_region.bottom - n + 1) % tr) * c;
-        let dst = ((vis + cursor.scroll_region.top + n) % tr) * c;
-        normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
-        normal.sever_soft_wrap(cursor.scroll_region.top + n);
-        for i in 0..n {
-            normal.fill_row_with(cursor.scroll_region.top + i, pen_state.erase_cell());
-        }
-        for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
-            Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
-        }
+        Self::scroll_rows_down(
+            pen_state,
+            normal,
+            cursor,
+            cursor.scroll_region.top,
+            cursor.scroll_region.bottom,
+            n,
+        );
     }
 
     // ── internal scroll_region_up_one ─────────────────────────────
 
-    pub(crate) fn scroll_region_up_one_inner(
+    pub(crate) fn scroll_region_up_one(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
@@ -867,11 +739,10 @@ impl CellOps {
             normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
             let tr = normal.total_rows();
             let vis = normal.visible_start();
-            let c = normal.cols();
-            let src_start = ((vis + cursor.scroll_region.top + 1) % tr) * c;
-            let src_end = ((vis + cursor.scroll_region.bottom + 1) % tr) * c;
-            let dst = ((vis + cursor.scroll_region.top) % tr) * c;
-            normal.copy_ring_rows(src_start / c, src_end / c, dst / c);
+            let src_start = (vis + cursor.scroll_region.top + 1) % tr;
+            let src_end = (vis + cursor.scroll_region.bottom + 1) % tr;
+            let dst = (vis + cursor.scroll_region.top) % tr;
+            normal.copy_ring_rows(src_start, src_end, dst);
             normal.sever_soft_wrap(cursor.scroll_region.top);
             normal.fill_row_with(cursor.scroll_region.bottom, pen_state.erase_cell());
         }
@@ -891,30 +762,7 @@ impl CellOps {
         cursor: &CursorEngine,
         params: &Params,
     ) {
-        let top = params.get_or(0, 0);
-        let left = params.get_or(1, 0);
-        let bottom = params.get_or(2, 0);
-        let right = params.get_or(3, 0);
-
-        let Some(Rect {
-            top: t,
-            left: l,
-            bottom: b,
-            right: r,
-        }) = cursor.resolve_rect(normal, top, left, bottom, right)
-        else {
-            return;
-        };
-        for row in t..=b {
-            Self::erase_rectangle_row_range(
-                pen_state,
-                normal,
-                row,
-                (l, r + 1),
-                (0, normal.cols() - 1),
-                false,
-            );
-        }
+        Self::decera_with_policy(pen_state, normal, cursor, params, false);
     }
 
     pub(crate) fn decsera(
@@ -922,6 +770,16 @@ impl CellOps {
         normal: &mut NormalBuf,
         cursor: &CursorEngine,
         params: &Params,
+    ) {
+        Self::decera_with_policy(pen_state, normal, cursor, params, true);
+    }
+
+    fn decera_with_policy(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &CursorEngine,
+        params: &Params,
+        selective: bool,
     ) {
         let top = params.get_or(0, 0);
         let left = params.get_or(1, 0);
@@ -944,7 +802,7 @@ impl CellOps {
                 row,
                 (l, r + 1),
                 (0, normal.cols() - 1),
-                true,
+                selective,
             );
         }
     }
@@ -1127,35 +985,19 @@ impl CellOps {
     }
 
     pub(crate) fn deccara(normal: &mut NormalBuf, cursor: &CursorEngine, params: &Params) {
-        let top = params.get_or(0, 0);
-        let left = params.get_or(1, 0);
-        let bottom = params.get_or(2, 0);
-        let right = params.get_or(3, 0);
-
-        let Some(Rect {
-            top: t,
-            left: l,
-            bottom: b,
-            right: r,
-        }) = cursor.resolve_rect(normal, top, left, bottom, right)
-        else {
-            return;
-        };
-
-        for row in t..=b {
-            let (start, end) =
-                Self::normalize_touched_range(normal, row, l, r + 1, 0, normal.cols() - 1);
-            for col in start..end {
-                normal.mutate_cell_semantics(row, col, |cell| {
-                    for code in params.iter_flat().skip(4).flatten() {
-                        cell.apply_sgr(code);
-                    }
-                });
-            }
-        }
+        Self::mutate_rect_sgr(normal, cursor, params, Cell::apply_sgr);
     }
 
     pub(crate) fn decrara(normal: &mut NormalBuf, cursor: &CursorEngine, params: &Params) {
+        Self::mutate_rect_sgr(normal, cursor, params, Cell::toggle_sgr);
+    }
+
+    fn mutate_rect_sgr(
+        normal: &mut NormalBuf,
+        cursor: &CursorEngine,
+        params: &Params,
+        mutate: impl Fn(&mut Cell, usize),
+    ) {
         let top = params.get_or(0, 0);
         let left = params.get_or(1, 0);
         let bottom = params.get_or(2, 0);
@@ -1177,7 +1019,7 @@ impl CellOps {
             for col in start..end {
                 normal.mutate_cell_semantics(row, col, |cell| {
                     for code in params.iter_flat().skip(4).flatten() {
-                        cell.toggle_sgr(code);
+                        mutate(cell, code);
                     }
                 });
             }

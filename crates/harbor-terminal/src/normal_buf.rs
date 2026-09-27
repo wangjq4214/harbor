@@ -440,49 +440,6 @@ impl NormalBuf {
         self.mark_range_dirty(display_row, col, col + 1);
     }
 
-    /// Fills a row range with erase-state cells while retaining row identity.
-    pub fn fill_row_range(&mut self, row: usize, start_col: usize, end_col: usize, cell: Cell) {
-        let start_col = start_col.min(self.cols);
-        let end_col = end_col.min(self.cols);
-        if start_col >= end_col {
-            return;
-        }
-        let ring_row = self.display_to_ring(row);
-        let start = ring_row * self.cols + start_col;
-        let end = ring_row * self.cols + end_col;
-        self.cell_state[start..end].fill(CellState::erase(&cell));
-        self.cells[start..end].fill(cell);
-        self.recompute_ring_row_extent(ring_row);
-        self.mark_range_dirty(row, start_col, end_col);
-    }
-
-    /// Selectively erases unprotected cells and their retained-content state.
-    pub fn selective_erase_row_range(
-        &mut self,
-        row: usize,
-        start_col: usize,
-        end_col: usize,
-        erase: Cell,
-    ) {
-        let start_col = start_col.min(self.cols);
-        let end_col = end_col.min(self.cols);
-        if start_col >= end_col {
-            return;
-        }
-        let ring_row = self.display_to_ring(row);
-        let start = ring_row * self.cols + start_col;
-        let end = ring_row * self.cols + end_col;
-        let erase_state = CellState::erase(&erase);
-        for idx in start..end {
-            if !self.cells[idx].protected {
-                self.cells[idx] = erase.clone();
-                self.cell_state[idx] = erase_state;
-            }
-        }
-        self.recompute_ring_row_extent(ring_row);
-        self.mark_range_dirty(row, start_col, end_col);
-    }
-
     /// Fills a contiguous cell range with erase-state content and provenance.
     pub(crate) fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
         self.cell_state[start..end].fill(CellState::erase(&cell));
@@ -1211,11 +1168,6 @@ impl NormalBuf {
 
     // ── bulk helpers for Screen's mutation methods ──
 
-    #[inline]
-    pub fn fill_row(&mut self, display_row: usize) {
-        self.fill_row_with(display_row, Cell::default());
-    }
-
     /// Replaces a display row and assigns a fresh independent identity.
     #[inline]
     pub fn fill_row_with(&mut self, display_row: usize, cell: Cell) {
@@ -1262,11 +1214,6 @@ impl NormalBuf {
         self.scroll_count = 0;
         self.view_offset = 0;
         self.history_start = 0;
-    }
-
-    /// Fill every visible row with default cells.
-    pub fn fill_all(&mut self) {
-        self.fill_all_with(Cell::default());
     }
 }
 
@@ -1610,7 +1557,7 @@ mod tests {
         buf.cell_mut(0, 0).ch = 'X';
 
         // Act
-        buf.fill_all();
+        buf.fill_all_with(Cell::default());
 
         // Assert
         assert_eq!(buf.row_text(0), "  ");

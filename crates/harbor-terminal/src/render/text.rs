@@ -1,4 +1,4 @@
-use crate::model::{Cell, TerminalSnapshot};
+use crate::model::{Cell, TerminalSnapshot, is_selector};
 use harbor_config::Palette;
 
 use anyhow::Result;
@@ -214,9 +214,6 @@ impl GpuGlyphAtlas {
 // within its assigned cells, plus combining marks; selectors and ZWJ are
 // retained for copy but have no independent visual glyph. A joined emoji may
 // therefore appear as its first pictograph, not a color/ligature emoji.
-fn is_selector(ch: char) -> bool {
-    matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
-}
 
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {

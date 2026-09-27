@@ -57,10 +57,8 @@ impl CellWriter {
                 .contains(CodePointMapData::<GeneralCategory>::new().get(ch))
     }
 
-    /// Selectors and joiners have no independent advance. A pictograph after a
-    /// retained ZWJ completes that same text unit, even across parser reads.
-    pub(crate) fn is_selector(ch: char) -> bool {
-        matches!(ch, '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
+    pub(crate) const fn is_selector(ch: char) -> bool {
+        crate::model::is_selector(ch)
     }
 
     pub(crate) fn continuation_base(
@@ -454,7 +452,7 @@ impl CellWriter {
     ) -> bool {
         let before = cursor.cursor.y;
         if cursor.index_needs_scroll() {
-            CellOps::scroll_region_up_one_inner(pen_state, normal, cursor);
+            CellOps::scroll_region_up_one(pen_state, normal, cursor);
             true
         } else {
             cursor.index_advance(normal);

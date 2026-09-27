@@ -858,11 +858,41 @@ impl Screen {
     }
 
     pub fn terminal_snapshot(&self) -> crate::model::TerminalSnapshot {
-        self.reader().terminal_snapshot()
+        let rows = self.rows();
+        let cols = self.cols();
+        let mut cells = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                cells.push(self.cell(r, c).clone());
+            }
+        }
+        crate::model::TerminalSnapshot {
+            rows,
+            cols,
+            cells,
+            cursor_x: self.cursor_x(),
+            cursor_y: self.cursor_y(),
+            cursor_visible: self.cursor_visible(),
+            cursor_blink: self.cursor_blink(),
+            cursor_shape: self.cursor_shape(),
+            scroll_count: self.scroll_count(),
+            view_offset: self.view_offset(),
+            history_start: self.history_start(),
+            wrapped: (0..rows).map(|row| self.is_wrapped(row)).collect(),
+            is_alt: self.is_alt(),
+            input_modes: self.input_modes(),
+            dirty_ranges: self.dirty_ranges(),
+        }
     }
 
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
-        self.reader().selected_text(bounds)
+        match crate::logical_content::selected_text(&self.normal, bounds) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "selected text decode failed");
+                String::new()
+            }
+        }
     }
 
     // ── dirty tracking ─────────────────────────────────────────────────
@@ -1945,12 +1975,10 @@ impl Screen {
                     .sever_soft_wrap_after(self.cursor.scroll_region.bottom);
                 let tr = self.normal.total_rows();
                 let vis = self.normal.visible_start();
-                let c = self.normal.cols();
-                let src_start = ((vis + self.cursor.scroll_region.top) % tr) * c;
-                let src_end = ((vis + self.cursor.scroll_region.bottom) % tr) * c;
-                let dst = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
-                self.normal
-                    .copy_ring_rows(src_start / c, src_end / c, dst / c);
+                let src_start = (vis + self.cursor.scroll_region.top) % tr;
+                let src_end = (vis + self.cursor.scroll_region.bottom) % tr;
+                let dst = (vis + self.cursor.scroll_region.top + 1) % tr;
+                self.normal.copy_ring_rows(src_start, src_end, dst);
                 self.normal
                     .sever_soft_wrap(self.cursor.scroll_region.top + 1);
                 self.normal
@@ -1976,57 +2004,13 @@ impl Screen {
     // ── scroll_region_up_one (coordinator) ─────────────────────────────
 
     fn scroll_region_up_one(&mut self) {
-        tracing::debug!(
-            scroll_top = self.cursor.scroll_region.top,
-            scroll_bottom = self.cursor.scroll_region.bottom,
-            visible_rows = self.normal.rows(),
-            full_screen = (self.cursor.scroll_region.top == 0
-                && self.cursor.scroll_region.bottom == self.normal.rows() - 1),
-            "scroll_region_up_one"
-        );
-
-        self.mark_rows_dirty(
-            self.cursor.scroll_region.top,
-            self.cursor.scroll_region.bottom.saturating_add(1),
-        );
-        if self.cursor.margins.enabled {
-            let Screen {
-                normal,
-                cursor,
-                pen_state,
-                ..
-            } = self;
-            CellOps::scroll_margin_rect_up(
-                pen_state,
-                normal,
-                cursor,
-                cursor.scroll_region.top,
-                cursor.scroll_region.bottom,
-                1,
-            );
-        } else if self.cursor.scroll_region.top == 0
-            && self.cursor.scroll_region.bottom == self.normal.rows() - 1
-        {
-            self.normal
-                .scroll_up_full_screen(1, self.pen_state.erase_cell());
-        } else {
-            self.normal
-                .sever_soft_wrap_after(self.cursor.scroll_region.bottom);
-            let tr = self.normal.total_rows();
-            let vis = self.normal.visible_start();
-            let c = self.normal.cols();
-            let src_start = ((vis + self.cursor.scroll_region.top + 1) % tr) * c;
-            let src_end = ((vis + self.cursor.scroll_region.bottom + 1) % tr) * c;
-            let dst = ((vis + self.cursor.scroll_region.top) % tr) * c;
-            self.normal
-                .copy_ring_rows(src_start / c, src_end / c, dst / c);
-            self.normal.sever_soft_wrap(self.cursor.scroll_region.top);
-            self.normal.fill_row_with(
-                self.cursor.scroll_region.bottom,
-                self.pen_state.erase_cell(),
-            );
-        }
-        self.cursor.cursor.y = self.cursor.scroll_region.bottom;
+        let Screen {
+            pen_state,
+            normal,
+            cursor,
+            ..
+        } = self;
+        CellOps::scroll_region_up_one(pen_state, normal, cursor);
     }
 
     // ── screen alignment / reset ───────────────────────────────────────

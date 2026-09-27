@@ -687,7 +687,7 @@ mod tests {
         screen.write_char('a');
         screen.write_char('b');
         screen.write_char('界');
-        let before = screen.reader().content_projection().unwrap();
+        let before = screen.content_projection().unwrap();
         let padding = GenPos::new(0, 2);
         let anchor = before
             .to_anchor(padding, Affinity::Before)
@@ -709,7 +709,7 @@ mod tests {
         screen.write_char('a');
         screen.write_char('b');
         screen.write_char('界');
-        let before = screen.reader().content_projection().unwrap();
+        let before = screen.content_projection().unwrap();
         let wide = before
             .to_anchor(GenPos::new(1, 0), Affinity::After)
             .expect("wide glyph anchor");
