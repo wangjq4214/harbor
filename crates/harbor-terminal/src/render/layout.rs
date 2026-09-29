@@ -80,14 +80,15 @@ impl RenderViewport {
         (x, y, x + self.cell_width, y + self.line_height)
     }
 
-    /// Calculates grid dimensions that fit inside the current allocation.
+    /// Calculates the supported grid dimensions for the current allocation.
+    /// Columns have a two-cell minimum to match terminal/PTY resize normalization.
     pub fn compute_grid_size(&self) -> TerminalSize {
         let (alloc_w, alloc_h) = self.allocation_size;
         let available_width = (alloc_w as f32 - 2.0 * self.padding).max(0.0);
         let available_height = (alloc_h as f32 - 2.0 * self.padding).max(0.0);
         TerminalSize {
             rows: ((available_height / self.line_height).floor() as usize).max(1),
-            cols: ((available_width / self.cell_width).floor() as usize).max(1),
+            cols: ((available_width / self.cell_width).floor() as usize).max(2),
         }
     }
 }
@@ -232,7 +233,7 @@ mod tests {
         let grid = viewport.compute_grid_size();
         // Allocation is 200×100; TEXT_PADDING is applied on each edge.
         let pad = harbor_config::TEXT_PADDING;
-        let expected_cols = (((200.0 - 2.0 * pad) / metrics.cell_width).floor() as usize).max(1);
+        let expected_cols = (((200.0 - 2.0 * pad) / metrics.cell_width).floor() as usize).max(2);
         let expected_rows = (((100.0 - 2.0 * pad) / metrics.line_height).floor() as usize).max(1);
         assert_eq!(grid.cols, expected_cols);
         assert_eq!(grid.rows, expected_rows);
@@ -257,11 +258,11 @@ mod tests {
     }
 
     #[test]
-    fn should_return_minimum_one_by_one_grid_for_tiny_allocation() {
+    fn should_return_supported_one_by_two_grid_for_tiny_allocation() {
         let viewport = RenderViewport::with_surface(10.0, 20.0, (1, 1), (800, 600));
         let grid = viewport.compute_grid_size();
         assert_eq!(grid.rows, 1);
-        assert_eq!(grid.cols, 1);
+        assert_eq!(grid.cols, 2);
     }
 
     #[test]
@@ -312,7 +313,7 @@ mod tests {
         let pad = harbor_config::TEXT_PADDING;
         assert_eq!(
             grid.cols,
-            (((400.0 - 2.0 * pad) / metrics.cell_width).floor() as usize).max(1)
+            (((400.0 - 2.0 * pad) / metrics.cell_width).floor() as usize).max(2)
         );
         assert_eq!(
             grid.rows,
@@ -364,7 +365,7 @@ mod tests {
 
         // Assert
         assert_eq!(grid.rows, 1);
-        assert_eq!(grid.cols, 1);
+        assert_eq!(grid.cols, 2);
     }
 
     #[test]

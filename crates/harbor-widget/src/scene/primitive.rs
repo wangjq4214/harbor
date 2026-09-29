@@ -155,16 +155,15 @@ impl ExternalDrawContext {
         self.viewport.physical_size
     }
 
-    /// Physical allocation origin and size within the full surface (pixels).
+    /// Surface-clipped physical allocation origin and size (pixels), matching the draw scissor.
     pub fn physical_allocation(&self) -> (f32, f32, u32, u32) {
-        let scale = self.scale_factor();
-        let left = (self.logical_rect.min.x * scale).floor();
-        let top = (self.logical_rect.min.y * scale).floor();
-        let right = (self.logical_rect.max.x * scale).ceil();
-        let bottom = (self.logical_rect.max.y * scale).ceil();
-        let width = (right - left).max(0.0) as u32;
-        let height = (bottom - top).max(0.0) as u32;
-        (left.max(0.0), top.max(0.0), width, height)
+        let scissor = self.scissor_rect();
+        (
+            scissor.x as f32,
+            scissor.y as f32,
+            scissor.width,
+            scissor.height,
+        )
     }
 
     /// Clamped physical scissor `(x, y, width, height)` for wgpu.
@@ -587,9 +586,42 @@ mod tests {
         // Act
         let (origin_x, origin_y, width, height) = context.physical_allocation();
 
-        // Assert: origin is clamped; size still spans the unclamped logical extent.
+        // Assert: allocation and draw scissor share the visible surface intersection.
         assert_eq!((origin_x, origin_y), (0.0, 0.0));
-        assert_eq!((width, height), (40, 30));
+        assert_eq!((width, height), (30, 25));
+        assert_eq!(context.scissor_rect(), (0, 0, 30, 25));
+    }
+
+    #[test]
+    fn physical_allocation_matches_visible_scissor_at_surface_edges() {
+        let partial = ExternalDrawContext::new(
+            Rect::from_min_size(
+                Point::new(75.25, 45.25),
+                crate::layout::Size::new(30.0, 20.0),
+            ),
+            Viewport::new(100, 60, 1.0),
+        );
+        assert_eq!(partial.physical_allocation(), (75.0, 45.0, 25, 15));
+        assert_eq!(partial.scissor_rect(), (75, 45, 25, 15));
+
+        let scaled = ExternalDrawContext::new(
+            Rect::from_min_size(
+                Point::new(35.25, 20.25),
+                crate::layout::Size::new(30.0, 20.0),
+            ),
+            Viewport::new(100, 60, 2.0),
+        );
+        assert_eq!(scaled.physical_allocation(), (70.0, 40.0, 30, 20));
+
+        let outside = ExternalDrawContext::new(
+            Rect::from_min_size(
+                Point::new(110.0, 10.0),
+                crate::layout::Size::new(30.0, 20.0),
+            ),
+            Viewport::new(100, 60, 1.0),
+        );
+        assert_eq!(outside.physical_allocation(), (100.0, 10.0, 0, 20));
+        assert!(outside.is_empty());
     }
 
     #[test]

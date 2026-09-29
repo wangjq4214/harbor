@@ -2541,6 +2541,25 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
         (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
         (20, 6)
     );
+    // Narrowing unused capacity must not move text or the input row.
+    for cols in [79, 70, 64, 80] {
+        terminal
+            .try_resize_if_changed(TerminalSize { rows: 24, cols })
+            .unwrap();
+        assert_eq!(
+            (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
+            (20, 6),
+            "short lines must stay put at {cols} columns"
+        );
+        for row in 0..20 {
+            assert!(
+                terminal
+                    .row_text(row)
+                    .starts_with(&format!("harbor-profile-{} ", row + 1)),
+                "line {row} moved before reaching its text at {cols} columns"
+            );
+        }
+    }
     for _ in 0..5 {
         for (rows, cols) in [(24, 30), (24, 12), (29, 50), (20, 8), (24, 80)] {
             terminal

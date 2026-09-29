@@ -40,7 +40,7 @@ pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> Rende
 /// Converts a final logical terminal-panel allocation into its PTY grid.
 ///
 /// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
-/// one-cell clamp, so minimizing a window cannot emit a synthetic 1×1 resize.
+/// grid clamp, so minimizing a window cannot emit a synthetic resize.
 pub fn terminal_size_from_allocation(
     logical_rect: Rect,
     scale_factor: f32,
@@ -602,6 +602,37 @@ mod tests {
             size.rows,
             ((physical_height - padding) / 20.0).floor() as usize
         );
+    }
+
+    #[test]
+    fn terminal_size_uses_only_surface_visible_allocation() {
+        let metrics = metrics();
+        let clipped = Rect::from_min_size(Point::new(80.0, 40.0), Size::new(120.0, 120.0));
+        let context = context(clipped, (140, 120), 1.0);
+        let target = render_target_from_context(&context);
+        assert_eq!(target.allocation_origin, (80.0, 40.0));
+        assert_eq!(target.allocation_size, (60, 80));
+        assert_eq!(
+            terminal_size_from_allocation(clipped, 1.0, (140, 120), &metrics),
+            Some(TerminalSize { rows: 2, cols: 2 })
+        );
+
+        let outside = Rect::from_min_size(Point::new(150.0, 40.0), Size::new(120.0, 120.0));
+        assert_eq!(
+            terminal_size_from_allocation(outside, 1.0, (140, 120), &metrics),
+            None
+        );
+    }
+
+    #[test]
+    fn terminal_size_matches_supported_two_column_minimum() {
+        let metrics = metrics();
+        let tiny = Rect::from_min_size(Point::ZERO, Size::new(35.0, 35.0));
+        let size = terminal_size_from_allocation(tiny, 1.0, (140, 120), &metrics);
+        assert_eq!(size, Some(TerminalSize { rows: 1, cols: 2 }));
+        let mut terminal = Terminal::new_headless(4, 20);
+        assert!(terminal.resize_if_changed(size.unwrap()));
+        assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 2));
     }
 
     #[test]
