@@ -1,6 +1,6 @@
 # harbor-terminal
 
-`harbor-terminal` is Harbor's host-neutral terminal engine. It combines incremental ANSI/VT parsing, screen and scrollback state, terminal input encoding, PTY I/O ownership, selection and pointer behavior, frame scheduling, and an optional wgpu render pipeline.
+`harbor-terminal` is Harbor's GPU-independent terminal engine and optional concrete wgpu renderer. The engine owns incremental ANSI/VT parsing, screen and scrollback state, terminal input, PTY I/O, selection and pointer behavior, and frame scheduling. Hosts own a `TerminalRenderPipeline` for each rendered session.
 
 The crate deliberately does **not** depend on `harbor-widget`, `winit`, or native window/composition APIs. An application host chooses the PTY implementation, maps platform input into terminal events, schedules frames, and embeds rendering in its UI.
 
@@ -59,21 +59,9 @@ If the terminal owns a live PTY reader, `drain_and_snapshot()` first consumes cu
 
 ## Create a live rendered terminal
 
-A live terminal is normally constructed on the UI/render thread with [`Terminal::try_new_with_appearance_from_endpoints`](src/lib.rs). The constructor keeps the PTY endpoint bundle intact until GPU renderer creation succeeds, preserving safe teardown on startup failure.
+A host creates a `Terminal` engine with `new_headless_with_appearance`, then constructs a separate `TerminalRenderPipeline` from `terminal.read_update(now)`. Construct the renderer **before** calling `terminal.start_session_from_endpoints(endpoints, wake)`: if GPU initialization fails, the intact `PtyEndpoints` bundle shuts down safely without starting a reader.
 
-The required inputs are:
-
-| Input                        | Purpose                                                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `TerminalSize`               | Initial rows and columns. Use `Terminal::terminal_size_for` to derive it from surface dimensions and text metrics. |
-| `PtyEndpoints`               | Reader, writer, and lifecycle/resize control from `harbor-pty`.                                                    |
-| `TerminalGpuAccess`          | Borrowed wgpu device, queue, target format, and upload policy.                                                     |
-| Surface size                 | Current physical target size in pixels.                                                                            |
-| `FontBook` and `TextMetrics` | Glyph fallback resources and fixed-cell measurements from `harbor-text`.                                           |
-| `TerminalAppearance`         | Palette and default-background tint policy.                                                                        |
-| Wake callback                | Notifies the host when the PTY reader has queued output or disconnected.                                           |
-
-If startup has already split PTY ownership into reader, writer, and `PtyControl`, `Terminal::new` and `Terminal::new_with_appearance` provide the lower-level constructors.
+`TerminalSize` describes the initial grid; `Terminal::terminal_size_for` derives it from surface dimensions and text metrics. The renderer takes a borrowed `TerminalGpuAccess` (device, queue, target format), surface size, `FontBook`, `TextMetrics`, and the initial update. The host owns the GPU surface and presentation; the session adapter owns the PTY reader, writer, resize barrier, and teardown.
 
 The integrated live PTY path is currently Windows-first and uses ConPTY through `harbor-pty`. The headless parser and screen model remain useful independently of native window hosting.
 
@@ -119,24 +107,7 @@ fn update_schedule(terminal: &mut Terminal) {
 }
 ```
 
-During a wgpu render pass, call `Terminal::render` with the terminal's allocation inside the full surface:
-
-```rust,ignore
-let target = RenderTarget::new_with_scale(
-    (allocation_x, allocation_y),
-    (allocation_width, allocation_height),
-    (surface_width, surface_height),
-    scale_factor,
-);
-
-terminal.render(
-    target,
-    &mut render_pass,
-    TerminalGpuAccess::new(device, queue, surface_format),
-);
-```
-
-`render` drains queued PTY output, updates the grid when allocation geometry changes, prepares damaged GPU resources, and draws the terminal. `draw_retained` can replay the last committed buffers when the host intentionally skips live preparation; it automatically falls back to a live render when geometry changed.
+During a live wgpu frame, the host calls `terminal.prepare_render_frame(target, renderer.metrics(), now)`, then reads `terminal.read_update(now)`, synchronizes the renderer viewport, and calls `renderer.prepare(gpu, &update, terminal.blink_visible_at(now))` and `renderer.draw(&mut pass)`. It acknowledges the update only after a successful projection. A retained draw may replay the last committed GPU buffers while geometry is unchanged; a changed viewport or scale needs live preparation. See [`harbor-app`'s bridge](../harbor-app/src/terminal_view.rs) for the full draw and IME integration.
 
 Harbor's reference integration is in [`../harbor-app/src/terminal_view.rs`](../harbor-app/src/terminal_view.rs) and [`../../src/tab_coordinator.rs`](../../src/tab_coordinator.rs).
 

@@ -251,7 +251,7 @@ pub struct TerminalWidgetBridge {
 
 impl TerminalWidgetBridge {
     #[allow(dead_code)]
-    /// Creates a stable bridge that paints and receives input for `terminal`.
+    /// Creates a headless bridge for input/scheduling without a GPU projection.
     pub fn new(
         draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
@@ -263,22 +263,6 @@ impl TerminalWidgetBridge {
             None,
             gate_active,
             Arc::new(|_| {}),
-        )
-    }
-
-    /// Creates a bridge with a Host-owned OSC 8 activation callback.
-    pub fn new_with_hyperlink_activation(
-        draw_id: impl Into<ExternalDrawId>,
-        terminal: Arc<Mutex<Terminal>>,
-        gate_active: Arc<AtomicBool>,
-        activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
-    ) -> Self {
-        Self::new_internal(
-            draw_id.into(),
-            terminal,
-            None,
-            gate_active,
-            activate_hyperlink,
         )
     }
 
@@ -316,42 +300,32 @@ impl TerminalWidgetBridge {
         let handler: Arc<ExternalDrawFn<'static>> =
             Arc::new(move |id, context, external_gpu, pass, mode| {
                 dispatch_matched_draw(draw_id, id, context, |target| {
+                    let Some(renderer) = &draw_renderer else {
+                        // Headless bridges used by tests and the HMR host have no GPU projection.
+                        return;
+                    };
                     if let Ok(mut term) = draw_terminal.lock() {
+                        let Ok(mut renderer) = renderer.lock() else {
+                            return;
+                        };
                         let gpu = TerminalGpuAccess::new(
                             external_gpu.device(),
                             external_gpu.queue(),
                             external_gpu.target_format(),
                         );
-                        if let Some(renderer) = &draw_renderer {
-                            let Ok(mut renderer) = renderer.lock() else {
-                                return;
-                            };
-                            let metrics = *renderer.metrics();
-                            let live = needs_live_projection(
-                                mode,
-                                &term,
-                                renderer.viewport(),
-                                target,
-                                &metrics,
-                            );
-                            if live {
-                                let now = std::time::Instant::now();
-                                let (viewport, grid_changed) =
-                                    term.prepare_render_frame(target, &metrics, now);
-                                let update = term.read_update(now);
-                                renderer.sync_viewport(viewport, grid_changed);
-                                renderer.prepare(gpu, &update, term.blink_visible_at(now));
-                                renderer.draw(pass);
-                                term.acknowledge_update(&update);
-                            } else {
-                                renderer.draw(pass);
-                            }
+                        let metrics = *renderer.metrics();
+                        if needs_live_projection(mode, &term, renderer.viewport(), target, &metrics)
+                        {
+                            let now = std::time::Instant::now();
+                            let (viewport, grid_changed) =
+                                term.prepare_render_frame(target, &metrics, now);
+                            let update = term.read_update(now);
+                            renderer.sync_viewport(viewport, grid_changed);
+                            renderer.prepare(gpu, &update, term.blink_visible_at(now));
+                            renderer.draw(pass);
+                            term.acknowledge_update(&update);
                         } else {
-                            // Transitional headless/facade callers retain their old draw path.
-                            match mode {
-                                ExternalDrawMode::Live => term.render(target, pass, gpu),
-                                ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
-                            }
+                            renderer.draw(pass);
                         }
                     }
                 });
@@ -372,13 +346,10 @@ impl TerminalWidgetBridge {
             }
             let target = render_target_from_context(context);
             let mut effect = ImeEffect::set_allowed(true);
-            let position = ime_terminal.lock().ok().and_then(|term| {
-                if let Some(renderer) = &ime_renderer {
-                    let renderer = renderer.lock().ok()?;
-                    term.ime_candidate_position_with_metrics(target, renderer.metrics())
-                } else {
-                    term.ime_candidate_position(target)
-                }
+            let position = ime_renderer.as_ref().and_then(|renderer| {
+                let term = ime_terminal.lock().ok()?;
+                let renderer = renderer.lock().ok()?;
+                term.ime_candidate_position_with_metrics(target, renderer.metrics())
             });
             if let Some((x, y)) = position {
                 effect.position =

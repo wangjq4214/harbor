@@ -491,10 +491,10 @@ impl TerminalSession {
     }
 }
 
-// ── TerminalIo (logical parser / compatibility facade) ───────────────
+// ── TerminalIo (logical parser and input) ─────────────────────────────
 
 /// Parser and input encoding on the logical/UI thread, with a separately
-/// owned session adapter while the public `Terminal` facade is retained.
+/// owned PTY session adapter.
 pub(crate) struct TerminalIo {
     parser: TerminalParser,
     session: TerminalSession,
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_facade_retains_session_endpoints_until_close() {
+    fn hidden_engine_retains_session_endpoints_until_close() {
         let (started_tx, started_rx) = mpsc::channel();
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let writer_drops = Arc::new(AtomicUsize::new(0));

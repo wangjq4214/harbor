@@ -2188,15 +2188,6 @@ fn should_initialize_headless_terminal_with_given_dimensions() {
 }
 
 #[test]
-fn should_return_none_for_text_metrics_when_headless() {
-    // Arrange
-    let terminal = Terminal::new_headless(24, 80);
-
-    // Act & Assert
-    assert!(terminal.text_metrics().is_none());
-}
-
-#[test]
 fn should_return_true_and_update_size_when_resize_if_changed_has_new_dimensions() {
     // Arrange
     let mut terminal = Terminal::new_headless(24, 80);

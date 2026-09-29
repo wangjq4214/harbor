@@ -28,8 +28,6 @@ mod update;
 pub use cursor_blink::CursorBlinkState;
 pub use harbor_config::Color;
 use harbor_config::Palette;
-#[cfg(feature = "renderer")]
-use harbor_pty::PtyControl;
 use harbor_pty::PtyEndpoints;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
@@ -66,15 +64,12 @@ pub use types::{
 };
 pub use update::TerminalUpdate;
 
-/// Terminal engine and transitional rendered facade. Core state builds without a GPU.
+/// GPU-independent terminal state, input, and PTY session.
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
     screen: Screen,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
-    /// Encapsulated GPU render pipeline.
-    #[cfg(feature = "renderer")]
-    renderer: Option<TerminalRenderPipeline>,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
     /// Terminal-owned default-background tint and fallback policy.
@@ -97,96 +92,6 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Creates a rendered terminal and takes ownership of one PTY's endpoints.
-    ///
-    /// The reader is consumed by a dedicated blocking thread; the writer is used
-    /// synchronously by UI-thread input handling. `pty_control` is the concrete
-    /// platform lifecycle owner that preserves resize and safe reader reaping.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "renderer")]
-    pub fn new<R, W>(
-        size: TerminalSize,
-        pty_read: R,
-        pty_write: W,
-        pty_control: PtyControl,
-        gpu: TerminalGpuAccess<'_>,
-        initial_surface_size: (u32, u32),
-        font_book: FontBook,
-        metrics: TextMetrics,
-        wake: impl Fn() -> bool + Send + 'static,
-    ) -> Self
-    where
-        R: Read + Send + 'static,
-        W: Write + Send + 'static,
-    {
-        Self::new_with_appearance(
-            size,
-            pty_read,
-            pty_write,
-            pty_control,
-            gpu,
-            initial_surface_size,
-            font_book,
-            metrics,
-            TerminalAppearance::default(),
-            wake,
-        )
-    }
-
-    /// Creates a rendered terminal with an explicitly owned appearance policy.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "renderer")]
-    pub fn new_with_appearance<R, W>(
-        size: TerminalSize,
-        pty_read: R,
-        pty_write: W,
-        pty_control: PtyControl,
-        gpu: TerminalGpuAccess<'_>,
-        initial_surface_size: (u32, u32),
-        font_book: FontBook,
-        metrics: TextMetrics,
-        appearance: TerminalAppearance,
-        wake: impl Fn() -> bool + Send + 'static,
-    ) -> Self
-    where
-        R: Read + Send + 'static,
-        W: Write + Send + 'static,
-    {
-        let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
-        let update = terminal.read_update(Instant::now());
-        let renderer =
-            TerminalRenderPipeline::new(gpu, initial_surface_size, font_book, metrics, &update)
-                .expect("terminal render pipeline init");
-        terminal.blink = CursorBlinkState::new(Instant::now());
-        terminal.renderer = Some(renderer);
-        terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
-        terminal
-    }
-
-    /// Fallibly creates a rendered terminal while preserving pre-reader PTY teardown on error.
-    ///
-    /// Renderer construction happens before [`PtyEndpoints::into_parts`], so a renderer error
-    /// drops the intact endpoint bundle through its safe unstarted-session shutdown path.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "renderer")]
-    pub fn try_new_with_appearance_from_endpoints(
-        size: TerminalSize,
-        endpoints: PtyEndpoints,
-        gpu: TerminalGpuAccess<'_>,
-        initial_surface_size: (u32, u32),
-        font_book: FontBook,
-        metrics: TextMetrics,
-        appearance: TerminalAppearance,
-        wake: impl Fn() -> bool + Send + 'static,
-    ) -> anyhow::Result<Self> {
-        let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
-        let update = terminal.read_update(Instant::now());
-        let renderer =
-            TerminalRenderPipeline::new(gpu, initial_surface_size, font_book, metrics, &update)?;
-        terminal.renderer = Some(renderer);
-        terminal.start_session_from_endpoints(endpoints, wake)
-    }
-
     /// Attaches the sole PTY session to a newly created headless engine.
     ///
     /// Construct fallible GPU resources first: if they fail, the intact endpoint
@@ -229,8 +134,6 @@ impl Terminal {
         Self {
             screen: Screen::with_palette(rows, cols, appearance.palette()),
             io: TerminalIo::new_headless(),
-            #[cfg(feature = "renderer")]
-            renderer: None,
             pointer: PointerInteraction::new(),
             appearance,
             backdrop_available: false,
@@ -280,24 +183,6 @@ impl Terminal {
         self.backdrop_available = available;
     }
 
-    /// Prepares retained GPU resources from the current coherent engine update.
-    /// Legacy `damage` may force a full upload, but cannot narrow engine-owned damage.
-    #[cfg(feature = "renderer")]
-    pub fn prepare(&mut self, gpu: TerminalGpuAccess<'_>, damage: Option<&UpdateDamage>) {
-        if self.renderer.is_none() {
-            return;
-        }
-        let now = Instant::now();
-        let mut update = self.read_update(now);
-        if matches!(damage, Some(UpdateDamage::FullUpload)) {
-            update.damage = UpdateDamage::FullUpload;
-        }
-        if let Some(renderer) = &mut self.renderer {
-            renderer.prepare(gpu, &update, self.blink.phase_visible(now));
-        }
-        self.acknowledge_update(&update);
-    }
-
     /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
     /// leaves the old grid intact so a subsequent draw can retry it.
     pub fn prepare_render_frame(
@@ -319,61 +204,6 @@ impl Terminal {
     pub fn blink_visible_at(&self, now: Instant) -> bool {
         self.blink.phase_visible(now)
     }
-    /// Coordinates prepare + draw for all components from a terminal-owned render target.
-    #[cfg(feature = "renderer")]
-    pub fn render(
-        &mut self,
-        target: RenderTarget,
-        pass: &mut wgpu::RenderPass,
-        gpu: TerminalGpuAccess<'_>,
-    ) {
-        let Some(metrics) = self.text_metrics().copied() else {
-            return;
-        };
-        let now = Instant::now();
-        let (viewport, grid_changed) = self.prepare_render_frame(target, &metrics, now);
-        if self.renderer.is_none() {
-            return;
-        }
-        let update = self.read_update(now);
-        if let Some(renderer) = &mut self.renderer {
-            renderer.sync_viewport(viewport, grid_changed);
-            renderer.prepare(gpu, &update, self.blink.phase_visible(now));
-            renderer.draw(pass);
-        }
-        // The retained GPU projection can draw this update. A skipped or interrupted
-        // encode never reaches this acknowledgement; host presentation stays host-owned.
-        self.acknowledge_update(&update);
-    }
-
-    /// Replays last committed GPU buffers without preparing the live Screen.
-    ///
-    /// Falls back to a live encode when viewport or grid geometry changed so
-    /// the terminal rect matches the new allocation.
-    #[cfg(feature = "renderer")]
-    pub fn draw_retained(
-        &mut self,
-        target: RenderTarget,
-        pass: &mut wgpu::RenderPass,
-        gpu: TerminalGpuAccess<'_>,
-    ) {
-        if self.retain_geometry_changed(target) {
-            self.render(target, pass, gpu);
-            return;
-        }
-        if let Some(renderer) = &self.renderer {
-            renderer.draw(pass);
-        }
-    }
-
-    #[cfg(feature = "renderer")]
-    fn retain_geometry_changed(&self, target: RenderTarget) -> bool {
-        let Some(renderer) = &self.renderer else {
-            return false;
-        };
-        self.retained_geometry_changed(renderer.viewport(), target, renderer.metrics())
-    }
-
     /// Whether retained projection or logical pointer mapping needs a live frame.
     /// A scale-only DPI change keeps physical geometry but changes input coordinates.
     pub fn retained_geometry_changed(
@@ -384,13 +214,13 @@ impl Terminal {
     ) -> bool {
         target.scale_factor != self.pointer.input_scale()
             || retain_geometry_changed(
-                Some(current_viewport),
+                current_viewport,
                 TerminalSize {
                     rows: self.screen.rows(),
                     cols: self.screen.cols(),
                 },
                 target,
-                Some(metrics),
+                metrics,
             )
     }
 
@@ -464,13 +294,6 @@ impl Terminal {
     /// Resizes the terminal grid and forwards changed dimensions to its PTY.
     pub fn resize(&mut self, rows: usize, cols: usize) {
         self.resize_if_changed(TerminalSize { rows, cols });
-    }
-
-    // ── text / glyphs ─────────────────────────────────────────────────
-
-    #[cfg(feature = "renderer")]
-    pub fn text_metrics(&self) -> Option<&TextMetrics> {
-        self.renderer.as_ref().map(|r| r.metrics())
     }
 
     // ── I/O delegation ────────────────────────────────────────────────
@@ -732,12 +555,6 @@ impl Terminal {
     /// Returns the current transient IME composition, if one is active.
     pub fn preedit(&self) -> Option<&Preedit> {
         self.preedit.as_ref()
-    }
-
-    /// Computes the physical candidate-window anchor from the current live cursor.
-    #[cfg(feature = "renderer")]
-    pub fn ime_candidate_position(&self, target: RenderTarget) -> Option<(f32, f32)> {
-        self.ime_candidate_position_with_metrics(target, self.text_metrics()?)
     }
 
     /// Computes the IME anchor using metrics owned by a separately hosted renderer.
@@ -1020,20 +837,16 @@ fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4
 }
 
 fn retain_geometry_changed(
-    current_viewport: Option<RenderViewport>,
+    current_viewport: RenderViewport,
     current_grid: TerminalSize,
     target: RenderTarget,
-    metrics: Option<&TextMetrics>,
+    metrics: &TextMetrics,
 ) -> bool {
-    let (Some(current_viewport), Some(metrics)) = (current_viewport, metrics) else {
-        return false;
-    };
     let viewport = RenderViewport::from_target(target, metrics);
     let grid = viewport.compute_grid_size();
     viewport != current_viewport || grid != current_grid
 }
-
-#[cfg(all(test, feature = "renderer"))]
+#[cfg(test)]
 mod retain_geometry_tests {
     use super::*;
     use harbor_text::TextMetrics;
@@ -1057,12 +870,7 @@ mod retain_geometry_tests {
         let viewport = RenderViewport::from_target(target, &metrics);
         let grid = viewport.compute_grid_size();
 
-        assert!(!retain_geometry_changed(
-            Some(viewport),
-            grid,
-            target,
-            Some(&metrics)
-        ));
+        assert!(!retain_geometry_changed(viewport, grid, target, &metrics));
     }
 
     #[test]
@@ -1073,24 +881,7 @@ mod retain_geometry_tests {
         let viewport = RenderViewport::from_target(committed, &metrics);
         let grid = viewport.compute_grid_size();
 
-        assert!(retain_geometry_changed(
-            Some(viewport),
-            grid,
-            resized,
-            Some(&metrics)
-        ));
-    }
-
-    #[test]
-    fn should_keep_retain_when_renderer_or_metrics_are_absent() {
-        let metrics = sample_metrics();
-        let target = RenderTarget::new((0.0, 0.0), (800, 600), (800, 600));
-        let viewport = RenderViewport::from_target(target, &metrics);
-        let grid = viewport.compute_grid_size();
-
-        assert!(!retain_geometry_changed(None, grid, target, None));
-        assert!(!retain_geometry_changed(Some(viewport), grid, target, None));
-        assert!(!retain_geometry_changed(None, grid, target, Some(&metrics)));
+        assert!(retain_geometry_changed(viewport, grid, resized, &metrics));
     }
 
     #[test]
@@ -1105,10 +896,7 @@ mod retain_geometry_tests {
         };
 
         assert!(retain_geometry_changed(
-            Some(viewport),
-            stale_grid,
-            target,
-            Some(&metrics)
+            viewport, stale_grid, target, &metrics
         ));
     }
 }
