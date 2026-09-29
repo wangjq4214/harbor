@@ -399,6 +399,7 @@ impl Text {
             {
                 let (cell_x, cell_y) = viewport.cell_pos(range.row, col);
                 let baseline = cell_y + self.metrics.ascent.ceil();
+                let assigned_width = self.metrics.cell_width * f32::from(cell.grid_width());
                 let mut glyph_left = cell_x + glyph.bearing_x as f32;
                 let glyph_bottom = baseline - glyph.bearing_y as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -410,19 +411,25 @@ impl Text {
                     glyph_right += offset;
                 }
 
+                // Nerd Font / PUA icons often rasterize wider than one cell.
+                // Scale them into the assigned cells instead of clipping them.
+                if glyph.width as f32 > assigned_width && assigned_width > 0.0 {
+                    glyph_left = cell_x;
+                    glyph_right = cell_x + assigned_width;
+                }
+
                 let color = glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
 
-                // Scalar fallback never paints outside the unit's assigned cells.
+                // Never paint outside the unit's assigned cells.
                 let clip_left = glyph_left.max(cell_x);
-                let clip_right = glyph_right
-                    .min(cell_x + self.metrics.cell_width * f32::from(cell.grid_width()));
+                let clip_right = glyph_right.min(cell_x + assigned_width);
                 let clip_top = glyph_top.max(cell_y);
                 let clip_bottom = glyph_bottom.min(cell_y + self.metrics.line_height);
                 if clip_left < clip_right && clip_top < clip_bottom {
+                    let span = glyph_right - glyph_left;
                     let u = |x: f32| {
                         glyph.uv.left
-                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left)
-                                / glyph.width as f32
+                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left) / span.max(1.0)
                     };
                     let v = |y: f32| {
                         glyph.uv.top
@@ -768,23 +775,28 @@ fn append_overlay_glyph(
     if glyph.width == 0 || glyph.height == 0 {
         return;
     }
-    let left = if center {
+    let mut left = if center {
         cell.x + (metrics.cell_width * cell.width as f32 - glyph.width as f32) * 0.5
     } else {
         cell.x + glyph.bearing_x as f32
     };
     let bottom = cell.baseline - glyph.bearing_y as f32;
     let top = bottom - glyph.height as f32;
-    let right = left + glyph.width as f32;
+    let assigned_width = metrics.cell_width * cell.width as f32;
+    let mut right = left + glyph.width as f32;
+    if glyph.width as f32 > assigned_width && assigned_width > 0.0 {
+        left = cell.x;
+        right = cell.x + assigned_width;
+    }
     let clip_left = left.max(cell.x);
-    let clip_right = right.min(cell.x + metrics.cell_width * cell.width as f32);
+    let clip_right = right.min(cell.x + assigned_width);
     let clip_top = top.max(cell.baseline - metrics.ascent.ceil());
     let clip_bottom = bottom.min(cell.baseline - metrics.ascent.ceil() + metrics.line_height);
     if clip_left >= clip_right || clip_top >= clip_bottom {
         return;
     }
-    let u =
-        |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / glyph.width as f32;
+    let span = right - left;
+    let u = |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / span.max(1.0);
     let v =
         |y: f32| glyph.uv.top + (glyph.uv.bottom - glyph.uv.top) * (y - top) / glyph.height as f32;
     vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
