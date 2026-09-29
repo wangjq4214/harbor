@@ -117,6 +117,13 @@ impl Selection {
         self.dirty = true;
     }
 
+    pub(crate) fn set_color(&mut self, color: Rgba) {
+        if self.color != color {
+            self.color = color;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_bounds(&mut self, bounds: Option<SelectionBounds>) {
         if self.bounds != bounds {
             self.bounds = bounds;

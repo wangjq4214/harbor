@@ -914,6 +914,7 @@ dependencies = [
  "harbor-pty",
  "harbor-text",
  "icu_properties",
+ "pollster",
  "proptest",
  "tracing",
  "unicode-width",

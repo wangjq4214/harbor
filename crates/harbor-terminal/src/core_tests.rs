@@ -30,6 +30,38 @@ fn core_update_replays_skipped_output_and_requires_explicit_acknowledgement() {
 }
 
 #[test]
+fn hidden_update_replays_resize_palette_and_transient_overlay_together() {
+    use crate::TerminalSize;
+    let mut engine = Terminal::new_headless(2, 6);
+    let now = Instant::now();
+    let initial = engine.read_update(now);
+    assert!(engine.acknowledge_update(&initial));
+
+    engine.put_str("first\nsecond\nthird\n");
+    engine.put_bytes(b"\x1b]11;#445566\x07");
+    engine
+        .handle_event(TerminalEvent::Preedit(Preedit::new("ime", None)))
+        .unwrap();
+    let hidden = engine.read_update(now);
+    assert!(hidden.snapshot.scroll_count > 0);
+    assert_ne!(hidden.appearance, initial.appearance);
+    assert_eq!(hidden.preedit.as_ref().unwrap().text, "ime");
+    assert_eq!(hidden.snapshot.cursor_x, engine.screen().cursor_x());
+    assert!(engine.resize_if_changed(TerminalSize { rows: 3, cols: 7 }));
+    assert!(!engine.acknowledge_update(&hidden));
+
+    let resumed = engine.read_update(now);
+    assert_eq!((resumed.snapshot.rows, resumed.snapshot.cols), (3, 7));
+    assert_eq!(resumed.appearance, hidden.appearance);
+    assert_eq!(resumed.preedit, hidden.preedit);
+    assert!(matches!(resumed.damage, UpdateDamage::Ranges(ref ranges) if !ranges.is_empty()));
+    engine.invalidate_update(); // Uncertain GPU projection after a failed draw.
+    assert_eq!(engine.read_update(now).damage, UpdateDamage::FullUpload);
+    assert!(engine.acknowledge_update(&engine.read_update(now)));
+    assert_eq!(engine.read_update(now).damage, UpdateDamage::Ranges(vec![]));
+}
+
+#[test]
 fn core_blink_and_preedit_work_without_gpu() {
     let mut engine = Terminal::new_headless(3, 8);
     let now = Instant::now();

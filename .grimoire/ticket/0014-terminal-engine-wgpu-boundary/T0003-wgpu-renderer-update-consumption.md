@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), [ADR-0045](../../adr/0045-gpu-independent-terminal-core-boundary.md), [#176](https://github.com/wangjq4214/harbor/issues/176)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 
@@ -26,7 +26,7 @@ Use the existing wgpu pipeline, `TerminalSnapshot` and `UpdateDamage` concepts; 
 
 ## Acceptance
 
-- [ ] Rendering and upload paths receive an explicit coherent update, with no mutable parser/screen state access from the renderer.
+- [x] Rendering and upload paths receive an explicit coherent update, with no mutable parser/screen state access from the renderer.
 - [ ] Focused tests exercise correct full and incremental uploads; changes to resize, DPI/viewport and palette invalidate the affected layers, while selection, cursor, scrollbar and preedit remain correct.
 - [ ] Output accumulated during hidden or skipped drawing and a failed draw appears fully on the next usable live frame; a snapshot read alone never marks it consumed.
 - [ ] Retained drawing, cursor blink phase and appearance remain compatible with the existing renderer; the core-only target still excludes GPU dependencies.

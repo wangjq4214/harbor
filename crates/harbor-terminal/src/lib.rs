@@ -152,19 +152,10 @@ impl Terminal {
         W: Write + Send + 'static,
     {
         let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
-        let snap = terminal.screen.terminal_snapshot();
-
-        let renderer = TerminalRenderPipeline::new(
-            gpu,
-            initial_surface_size,
-            font_book,
-            metrics,
-            &snap,
-            appearance.clear_rgba(false),
-            appearance.palette(),
-        )
-        .expect("terminal render pipeline init");
-
+        let update = terminal.read_update(Instant::now());
+        let renderer =
+            TerminalRenderPipeline::new(gpu, initial_surface_size, font_book, metrics, &update)
+                .expect("terminal render pipeline init");
         terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
         terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
@@ -188,16 +179,9 @@ impl Terminal {
         wake: impl Fn() -> bool + Send + 'static,
     ) -> anyhow::Result<Self> {
         let mut terminal = Self::new_headless_with_appearance(size.rows, size.cols, appearance);
-        let snap = terminal.screen.terminal_snapshot();
-        let renderer = TerminalRenderPipeline::new(
-            gpu,
-            initial_surface_size,
-            font_book,
-            metrics,
-            &snap,
-            appearance.clear_rgba(false),
-            appearance.palette(),
-        )?;
+        let update = terminal.read_update(Instant::now());
+        let renderer =
+            TerminalRenderPipeline::new(gpu, initial_surface_size, font_book, metrics, &update)?;
         let (pty_read, pty_write, pty_control) = endpoints.into_parts();
         terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
@@ -281,30 +265,23 @@ impl Terminal {
         self.backdrop_available = available;
     }
 
-    /// Prepares GPU resources for all render components.
+    /// Prepares retained GPU resources from the current coherent engine update.
+    /// Legacy `damage` may force a full upload, but cannot narrow engine-owned damage.
     #[cfg(feature = "renderer")]
     pub fn prepare(&mut self, gpu: TerminalGpuAccess<'_>, damage: Option<&UpdateDamage>) {
-        let now = Instant::now();
-        let snap = self.screen.terminal_snapshot();
-        let palette = self.screen.active_palette();
-        if let Some(renderer) = &mut self.renderer {
-            renderer.sync_palette(palette);
-            let tint = clear_rgba_for_palette(palette, self.backdrop_available);
-            renderer.prepare(
-                gpu,
-                &snap,
-                damage,
-                self.preedit.as_ref(),
-                self.blink.phase_visible(now),
-                self.pointer.bounds(),
-                tint,
-            );
-            self.blink.take_pending_redraw();
-            self.pending_ordinary_present = false;
-            self.pending_preedit_redraw = false;
+        if self.renderer.is_none() {
+            return;
         }
+        let now = Instant::now();
+        let mut update = self.read_update(now);
+        if matches!(damage, Some(UpdateDamage::FullUpload)) {
+            update.damage = UpdateDamage::FullUpload;
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.prepare(gpu, &update, self.blink.phase_visible(now));
+        }
+        self.acknowledge_update(&update);
     }
-
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
     #[cfg(feature = "renderer")]
     pub fn render(
@@ -324,26 +301,18 @@ impl Terminal {
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         let now = Instant::now();
         let _ = self.pointer.tick(&mut self.screen, now);
-        let snap = self.screen.terminal_snapshot();
-        let palette = self.screen.active_palette();
+        if self.renderer.is_none() {
+            return;
+        }
+        let update = self.read_update(now);
         if let Some(renderer) = &mut self.renderer {
             renderer.sync_viewport(viewport, grid_changed);
-            renderer.sync_palette(palette);
-            let tint = clear_rgba_for_palette(palette, self.backdrop_available);
-            renderer.prepare(
-                gpu,
-                &snap,
-                None,
-                self.preedit.as_ref(),
-                self.blink.phase_visible(now),
-                self.pointer.bounds(),
-                tint,
-            );
-            self.blink.take_pending_redraw();
-            self.pending_ordinary_present = false;
-            self.pending_preedit_redraw = false;
+            renderer.prepare(gpu, &update, self.blink.phase_visible(now));
             renderer.draw(pass);
         }
+        // The retained GPU projection can draw this update. A skipped or interrupted
+        // encode never reaches this acknowledgement; host presentation stays host-owned.
+        self.acknowledge_update(&update);
     }
 
     /// Replays last committed GPU buffers without preparing the live Screen.
