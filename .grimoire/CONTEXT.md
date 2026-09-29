@@ -537,14 +537,14 @@ Project domain concepts and terminology.
   - references Reflow
 
 ### Reflow
-- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions instead of leaving rows at their pre-resize layout.
+- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions instead of leaving rows at their pre-resize layout. During primary reflow, a maximal suffix of ordinary default-style, unprotected, non-hyperlinked spaces may be discarded rather than create an otherwise empty continuation row; cursor-required spaces are retained.
 - **Synonyms:** reflow on resize, resize reflow
 - **Relationships:**
   - consumes Soft-Wrap Marker
   - belongs to Screen Resize
 
 ### Meaningful Blank
-- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful. A default-style erase produces non-meaningful blank capacity, while an erase with visible non-default styling produces a meaningful blank.
+- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful before resize. On primary resize reflow, a maximal suffix of ordinary default-style, unprotected, non-hyperlinked spaces may be discarded (and is then unavailable to copy), except where needed to preserve cursor insertion; styled, protected and hyperlinked blanks remain retained. A default-style erase produces non-meaningful blank capacity, while an erase with visible non-default styling produces a meaningful blank.
 - **Synonyms:** content blank, retained blank
 - **Relationships:**
   - belongs to Logical Line

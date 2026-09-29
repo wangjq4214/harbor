@@ -1235,6 +1235,41 @@ fn conpty_resize_keeps_partial_history_line_outside_live_viewport() {
 }
 
 #[test]
+fn conpty_trimmed_live_continuation_does_not_pull_history_into_viewport() {
+    for cols in [2, 4, 6] {
+        let mut screen = Screen::new(2, 4);
+        for ch in "ABCD  ".chars() {
+            screen.write_char(ch);
+        }
+        screen.carriage_return();
+        screen.line_feed();
+        assert_eq!(screen.scroll_count(), 1);
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (1, 0));
+
+        let prepared = screen
+            .prepare_resize_with_viewport(2, cols, ReflowViewport::PreserveLiveTop)
+            .unwrap();
+        screen.commit_resize(prepared);
+        assert_eq!(
+            screen.scroll_count(),
+            if cols == 2 { 2 } else { 1 },
+            "history must remain outside ConPTY live viewport at width {cols}"
+        );
+        assert_eq!(
+            screen
+                .cell_at_generation(screen.history_start(), 0)
+                .unwrap()
+                .ch,
+            'A'
+        );
+        assert_eq!(screen.row_text(0), " ".repeat(cols));
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (1, 0));
+        screen.write_char('!');
+        assert_eq!(screen.row_text(1), format!("!{}", " ".repeat(cols - 1)));
+    }
+}
+
+#[test]
 fn conpty_alt_resize_uses_original_primary_and_only_final_dimensions() {
     for final_cols in [6, 12] {
         let mut screen = Screen::new(3, 12);

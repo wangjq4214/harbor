@@ -1,6 +1,7 @@
 # Content anchors and buffer-specific resize
 
 **Status:** Proposed
+**Superseded in part by:** [ADR-0046: Trim ordinary trailing spaces during primary resize reflow](./0046-trim-ordinary-trailing-spaces-during-primary-reflow.md) (only the resize projection of trailing ordinary spaces; other decisions remain applicable).
 **Date:** 2026-09-20
 
 ## Context

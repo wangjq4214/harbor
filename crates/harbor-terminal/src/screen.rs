@@ -27,7 +27,7 @@ use crate::content_anchor::{
 use crate::logical_content::{DecodeError, LogicalAtomOffset};
 use crate::normal_buf::{CellsIter, LogicalLineId};
 use crate::primary_reflow::{
-    PreparationError, PreparedPrimaryResize, PreparedProjection, ReflowViewport,
+    CursorRetention, PreparationError, PreparedPrimaryResize, PreparedProjection, ReflowViewport,
 };
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
@@ -503,12 +503,27 @@ impl Screen {
                 .y
                 .max(self.cursor.cursor.saved.as_ref().map_or(0, |s| s.cursor_y)),
         );
+        let mut cursor_retentions = vec![CursorRetention::Position(self.live_cursor_position())];
+        if let Some(saved) = self.cursor.cursor.saved.as_ref() {
+            if let Some(anchor) = saved.anchor {
+                if let Some(anchor) = self.anchor_mutations.apply(anchor) {
+                    cursor_retentions.push(CursorRetention::Anchor(anchor));
+                }
+            } else {
+                let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
+                cursor_retentions.push(CursorRetention::Position(GenPos::new(
+                    live_top.saturating_add(saved.cursor_y as u64),
+                    saved.cursor_x,
+                )));
+            }
+        }
         let prepared = PreparedPrimaryResize::prepare_geometry_with_viewport(
             &self.normal,
             requested_rows,
             requested_cols,
             cursor_floor,
             viewport,
+            &cursor_retentions,
         )?;
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)

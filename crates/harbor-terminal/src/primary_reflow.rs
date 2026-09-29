@@ -96,6 +96,13 @@ struct ReflowedAtom {
     end_col: usize,
 }
 
+/// Primary reflow keeps ordinary tail spaces through cursor insertion points.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CursorRetention {
+    Position(GenPos),
+    Anchor(ContentAnchor),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReflowedLine {
     source_generations: Vec<u64>,
@@ -143,6 +150,7 @@ impl PreparedPrimaryResize {
             requested_cols,
             cursor_floor,
             ReflowViewport::PullHistory,
+            &[],
         )
     }
 
@@ -152,6 +160,7 @@ impl PreparedPrimaryResize {
         requested_cols: usize,
         cursor_floor: Option<usize>,
         viewport: ReflowViewport,
+        retained_cursors: &[CursorRetention],
     ) -> Result<Self, PreparationError> {
         let target_rows = requested_rows.max(1);
         let cols = requested_cols.max(MIN_REFLOW_COLS);
@@ -183,7 +192,39 @@ impl PreparedPrimaryResize {
 
         for line in logical_lines {
             let first_row = rows.len();
-            let atoms = pack_line(&line, cols, live_boundary, &mut rows)?;
+            let atoms = pack_line(&line, cols, live_boundary, retained_cursors, &mut rows)?;
+            // ConPTY's first live row can belong to a history-spanning logical
+            // line with no retained atoms in that row. Keep its empty physical
+            // boundary row so history cannot be pulled into the producer viewport.
+            if live_boundary.is_some_and(|top| {
+                line.generations.contains(&top)
+                    && line.generations.iter().any(|&generation| generation < top)
+                    && atoms.iter().all(|atom| atom.source_span.generation < top)
+            }) {
+                let last = rows.last().ok_or(PreparationError::Invariant(
+                    "missing history row at live boundary",
+                ))?;
+                let logical_start = last
+                    .metadata
+                    .logical_start
+                    .checked_add(last.metadata.meaningful_extent)
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                let atom_start = line
+                    .atom_start
+                    .0
+                    .checked_add(atoms.len())
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                rows.try_reserve(1)
+                    .map_err(|_| PreparationError::AllocationFailed)?;
+                rows.push(ReflowedRow::blank(
+                    cols,
+                    line.line_id,
+                    logical_start,
+                    atom_start,
+                    true,
+                    false,
+                )?);
+            }
             let line_id = line.line_id;
             let atom_start = line.atom_start;
             let source_generations = line.generations;
@@ -223,7 +264,11 @@ impl PreparedPrimaryResize {
                         line.atoms
                             .iter()
                             .find(|atom| atom.source_span.generation >= source_live_top)
-                            .map_or(line.first_row, |atom| atom.source_position.row)
+                            // No retained live atom: the final row is the empty
+                            // boundary row, not the historical start of the line.
+                            .map_or(line.first_row + line.row_count - 1, |atom| {
+                                atom.source_position.row
+                            })
                     })
                 })
                 .ok_or(PreparationError::Invariant(
@@ -756,10 +801,48 @@ impl PreparedPrimaryResize {
     }
 }
 
+/// Only explicit, undecorated spaces at the *logical* end are disposable.
+fn retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
+    let visible_end = line
+        .glyphs
+        .iter()
+        .rposition(|logical| {
+            logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
+        })
+        .map_or(0, |index| index + 1);
+    // Keep the atom under each cursor as well as its preceding spaces, so a
+    // "before" anchor still has an on-grid position after narrowing.
+    cursors.iter().fold(visible_end, |end, cursor| {
+        let needed = match cursor {
+            CursorRetention::Position(position)
+                if line.generations.contains(&position.generation) =>
+            {
+                line.glyphs
+                    .iter()
+                    .position(|logical| {
+                        logical.source_span.generation > position.generation
+                            || (logical.source_span.generation == position.generation
+                                && logical.source_span.end_col >= position.col)
+                    })
+                    .map_or(line.glyphs.len(), |index| index + 1)
+            }
+            CursorRetention::Anchor(anchor) if anchor.line_id == line.line_id => anchor
+                .offset
+                .0
+                .saturating_sub(line.atom_start.0)
+                .saturating_add(1)
+                .min(line.glyphs.len()),
+            _ => 0,
+        };
+        end.max(needed)
+    })
+}
+
 fn pack_line(
     line: &LogicalLine,
     cols: usize,
     live_boundary: Option<u64>,
+    retained_cursors: &[CursorRetention],
     output: &mut Vec<ReflowedRow>,
 ) -> Result<Vec<ReflowedAtom>, PreparationError> {
     let mut logical_start = line.cell_start;
@@ -773,11 +856,12 @@ fn pack_line(
         line.head_truncated,
     )?;
     let mut atoms = Vec::new();
+    let retained_count = retained_glyph_count(line, retained_cursors);
     atoms
-        .try_reserve_exact(line.glyphs.len())
+        .try_reserve_exact(retained_count)
         .map_err(|_| PreparationError::AllocationFailed)?;
 
-    for logical in &line.glyphs {
+    for logical in line.glyphs.iter().take(retained_count) {
         let expected_offset = line
             .atom_start
             .0

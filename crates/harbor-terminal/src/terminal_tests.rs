@@ -111,6 +111,181 @@ fn resize_reflows_primary_and_keeps_the_live_cursor_suffix() {
 }
 
 #[test]
+fn padded_table_rows_do_not_gain_empty_continuations_on_primary_resize() {
+    let mut terminal = Terminal::new_headless(6, 8);
+    terminal.put_str("a       \r\nb       \r\nc");
+    assert_eq!(terminal.row_text(1), "b       ");
+    let before = terminal.screen();
+    let before_top = before.history_start() + before.scroll_count() as u64;
+    assert_eq!(
+        before.selected_text(crate::SelectionBounds {
+            start_row: before_top,
+            start_col: 0,
+            end_row: before_top,
+            end_col: 7,
+        }),
+        "a       "
+    );
+    terminal.resize(6, 4);
+    assert_eq!(terminal.row_text(0), "a   ");
+    assert_eq!(terminal.row_text(1), "b   ");
+    assert_eq!(terminal.row_text(2), "c   ");
+    let screen = terminal.screen();
+    let top = screen.history_start() + screen.scroll_count() as u64;
+    assert_eq!(
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + 2,
+            end_col: 3,
+        }),
+        "a\nb\nc"
+    );
+    terminal.resize(6, 8);
+    assert_eq!(terminal.row_text(0), "a       ");
+    assert_eq!(terminal.row_text(1), "b       ");
+    assert_eq!(terminal.row_text(2), "c       ");
+    let screen = terminal.screen();
+    let top = screen.history_start() + screen.scroll_count() as u64;
+    assert_eq!(
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + 2,
+            end_col: 7,
+        }),
+        "a\nb\nc",
+        "discarded ordinary tails must not reappear on widening"
+    );
+}
+
+#[test]
+fn tail_space_cursor_keeps_original_insertion_after_resize() {
+    let mut terminal = Terminal::new_headless(4, 6);
+    terminal.put_str("x     ");
+    terminal.resize(4, 3);
+    assert_eq!(terminal.row_text(0), "x  ");
+    terminal.put_str("Z");
+    let screen = terminal.screen();
+    let top = screen.history_start() + screen.scroll_count() as u64;
+    let text = screen.selected_text(crate::SelectionBounds {
+        start_row: top,
+        start_col: 0,
+        end_row: top + screen.rows() as u64 - 1,
+        end_col: screen.cols() - 1,
+    });
+    assert!(
+        text.starts_with("x     Z"),
+        "cursor must append after retained spaces: {text:?}"
+    );
+}
+
+#[test]
+fn resize_trims_only_logical_tail_not_interior_spaces_or_each_wrapped_row() {
+    let mut terminal = Terminal::new_headless(5, 10);
+    terminal.put_str("a   b    \r\nc");
+    terminal.resize(5, 3);
+    assert_eq!(terminal.row_text(0), "a  ");
+    assert_eq!(terminal.row_text(1), " b ");
+    assert_eq!(terminal.row_text(2), "c  ");
+    let screen = terminal.screen();
+    let top = screen.history_start() + screen.scroll_count() as u64;
+    assert_eq!(
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + 2,
+            end_col: 2,
+        }),
+        "a   b\nc"
+    );
+}
+
+#[test]
+fn saved_cursor_inside_tail_retains_insertion_but_trims_later_spaces() {
+    let mut terminal = Terminal::new_headless(6, 8);
+    terminal.put_str("a  \x1b7  \r\nb");
+    terminal.resize(6, 2);
+    assert_eq!(terminal.row_text(2), "b ");
+    terminal.put_str("\x1b8Z");
+    let screen = terminal.screen();
+    let top = screen.history_start() + screen.scroll_count() as u64;
+    assert_eq!(
+        screen.selected_text(crate::SelectionBounds {
+            start_row: top,
+            start_col: 0,
+            end_row: top + 1,
+            end_col: 1,
+        }),
+        "a  Z"
+    );
+}
+
+#[test]
+fn protected_and_hyperlinked_tail_blanks_are_not_trimmed() {
+    let mut terminal = Terminal::new_headless(7, 8);
+    terminal.put_str("a \x1b[1\"q \x1b[0\"q  \r\nb");
+    terminal.resize(7, 2);
+    assert!(terminal.screen().cell(1, 0).protected);
+    assert_eq!(terminal.row_text(2), "b ");
+
+    let mut linked = Terminal::new_headless(5, 8);
+    linked.put_str("a \x1b]8;;https://example.com\x1b\\ \x1b]8;;\x1b\\  \r\nb");
+    linked.resize(5, 2);
+    assert!(linked.screen().cell(1, 0).hyperlink.is_some());
+    assert_eq!(linked.row_text(2), "b ");
+}
+
+#[test]
+fn styled_tail_and_real_blank_line_still_take_rows_on_resize() {
+    let mut terminal = Terminal::new_headless(6, 6);
+    terminal.put_str("a \x1b[41m \x1b[0m   \r\n\r\nb");
+    terminal.resize(6, 2);
+    assert_eq!(terminal.row_text(0), "a ");
+    assert_ne!(
+        terminal.screen().cell(1, 0).bg,
+        harbor_config::Color::Default
+    );
+    assert_eq!(
+        terminal.row_text(2),
+        "  ",
+        "explicit empty line must survive"
+    );
+    assert_eq!(terminal.row_text(3), "b ");
+}
+
+#[test]
+fn selection_of_discarded_tail_does_not_alias_other_rows_after_resize() {
+    let mut terminal = Terminal::new_headless(4, 8);
+    terminal.put_str("a       \r\nb");
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    for (phase, position) in [
+        (TerminalPointerPhase::Down, (5.0, 10.0)),
+        (TerminalPointerPhase::Move, (75.0, 10.0)),
+        (TerminalPointerPhase::Up, (75.0, 10.0)),
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                position,
+                phase,
+                TerminalPointerButton::Left,
+                8,
+            )))
+            .unwrap();
+    }
+    assert_eq!(terminal.selection_text(), "a       ");
+    terminal.resize(4, 4);
+    assert_eq!(terminal.row_text(1), "b   ");
+    assert!(
+        matches!(terminal.selection_text().as_str(), "" | "a"),
+        "discarded tail selection must not claim lost spaces or select unrelated rows: {:?}",
+        terminal.selection_text()
+    );
+}
+
+#[test]
 fn one_row_autowrap_keeps_scrolled_source_metadata() {
     let mut terminal = Terminal::new_headless(1, 4);
 
@@ -5510,7 +5685,7 @@ fn should_record_backdrop_availability_through_the_setter() {
 }
 
 #[test]
-fn width_round_trip_preserves_cjk_hard_breaks_and_meaningful_trailing_blanks() {
+fn width_round_trip_discards_ordinary_tail_but_preserves_cjk_and_hard_breaks() {
     fn retained_text(terminal: &Terminal) -> String {
         let screen = terminal.screen();
         let retained_rows = screen.scroll_count() + screen.rows();
@@ -5529,7 +5704,7 @@ fn width_round_trip_preserves_cjk_hard_breaks_and_meaningful_trailing_blanks() {
 
     for cols in [6, 10, 8] {
         assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
-        assert_eq!(retained_text(&terminal), expected);
+        assert_eq!(retained_text(&terminal), "A界\n\nB\n");
     }
 }
 

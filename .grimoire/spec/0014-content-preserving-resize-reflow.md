@@ -1,17 +1,17 @@
 # Content-Preserving Resize Reflow
 
 **Spec ID:** 0014
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-09-20
 
 ## Requirements
 
-Harbor must preserve retained primary-screen and scrollback logical content across width-only, height-only, simultaneous, and repeated terminal resizes. Except for documented capacity eviction, round-trip resize must preserve explicit line boundaries, meaningful blanks, cell attributes, hyperlinks, wide characters, cursor and saved-cursor meaning, pending-wrap behavior, viewport review position, selection meaning, and copied text.
+Harbor must preserve retained primary-screen and scrollback logical content across width-only, height-only, simultaneous, and repeated terminal resizes, with one explicit exception: primary reflow may discard ordinary default-style, unprotected, non-hyperlinked spaces at a logical line's end. Apart from this exception and documented capacity eviction, round-trip resize preserves explicit line boundaries, meaningful styled or hyperlinked blanks, cell attributes, hyperlinks, wide characters, cursor and saved-cursor meaning, pending-wrap behavior, viewport review position, selection meaning, and copied text.
 
 The first delivery must:
 
 1. Re-wrap retained primary content by logical line instead of copying a top-left rectangle or trimming every physical row.
-2. Distinguish printed ordinary spaces, visibly styled or hyperlinked blank cells, unwritten capacity, and generated wide-edge padding.
+2. Distinguish printed ordinary spaces, styled, protected or hyperlinked blank cells, unwritten capacity, and generated wide-edge padding; on primary resize reflow, ordinary default-style, unprotected, non-hyperlinked spaces at the end of a logical line may be discarded to avoid a visually empty continuation row, except where needed by a live or saved cursor.
 3. Use durable logical content anchors for cursor, saved cursor, review position, selection endpoints, and future metadata consumers;
 4. Preserve the current ring-buffer architecture while making logical identity and reflow metadata explicit;
 5. Resize alternate screens as rectangular application surfaces while independently reflowing a saved primary screen;
@@ -38,6 +38,8 @@ Rows joined by soft-wrap metadata share one logical-line identity. An explicit n
 
 A printed ordinary space is meaningful. A blank carrying visible non-default styling or a hyperlink is meaningful. A default-style erase removes content and leaves non-meaningful blank capacity; a visibly styled erase creates meaningful blank content. Explicit blank lines remain hard line boundaries even when they contain no meaningful cells.
 
+On primary resize reflow, ordinary default-style, unprotected, non-hyperlinked spaces at the end of a logical line may be discarded. Discarded spaces are not retained for future widening, copy, or selection; a selection endpoint on discarded content may be clamped or invalidated. Preserve spaces required to maintain the live or saved cursor insertion position, significant interior spaces, styled/protected/hyperlinked blanks, and real hard blank lines.
+
 ### Logical stream and physical projection
 
 Decode retained primary rows into a temporary logical atom stream shared by reflow and copy:
@@ -48,7 +50,11 @@ Decode retained primary rows into a temporary logical atom stream shared by refl
 - continuation cells are not independent content; and
 - generated padding used to avoid splitting a wide atom at the right edge is excluded from the logical stream and recreated during projection.
 
-A continuation-row soft-wrap marker joins adjacent physical rows. A non-wrapped row boundary creates a hard break, including each explicit blank line. Reprojection packs complete atoms into the new width, regenerates continuation metadata and wide-edge padding, and never splits a width-two atom.
+A continuation-row soft-wrap marker joins adjacent physical rows. A non-wrapped row boundary creates a hard break, including each explicit blank line. Before packing a primary logical line into the new width, remove its maximal ordinary trailing-space suffix except any portion needed by a live or saved cursor. Reprojection packs the remaining complete atoms, regenerates continuation metadata and wide-edge padding, and never splits a width-two atom.
+
+The new logical end after resize is the end of the retained prefix, not a hidden off-grid payload. A later resize decodes that prefix and cannot recover discarded spaces. Preserve the live and saved cursor's insertion boundaries by retaining enough spaces on their lines before trimming, even if this cursor-required content occupies another row.
+
+When a ConPTY `PreserveLiveTop` resize trims all ordinary atoms from the first live row of a history-spanning logical line, keep an empty boundary row rather than projecting history into the producer's live viewport. This row protects live geometry, not discarded text; it does not restore the removed spaces for copy.
 
 Terminal, model, and PTY geometry normalize requested width to at least two columns and row count to at least one. This guarantees that every retained width-two atom has a valid physical projection without replacement characters or hidden overflow storage.
 
@@ -110,7 +116,9 @@ The committed resize restores a full-height scroll region, clamps horizontal mar
 
 ### Copy behavior
 
-Copy traverses the same logical content classification used by reflow. It joins soft-wrapped rows, emits hard breaks for explicit newlines and blank lines, skips continuation cells and generated padding, preserves meaningful ordinary and styled trailing spaces, and resolves retained hyperlink-bearing cells without treating URI metadata as copied text. Unconditional per-physical-row `trim_end()` is not part of the new algorithm.
+Copy traverses retained logical content. It joins soft-wrapped rows, emits hard breaks for explicit newlines and blank lines, skips continuation cells and generated padding, and preserves any meaningful ordinary and styled trailing spaces still retained. Primary resize may discard the ordinary tail under the policy above; copied text after resize need not include those discarded spaces. Copy resolves retained hyperlink-bearing cells without treating URI metadata as copied text. Unconditional per-physical-row `trim_end()` is not part of the algorithm.
+
+Trimming is restricted to primary resize, not the copy operation itself. Before resize, printed ordinary spaces are copied as written; after resize, only the retained prefix is copied.
 
 ### Seams
 
@@ -129,7 +137,17 @@ Copy traverses the same logical content classification used by reflow. It joins 
 
 - **Given:** Main-screen and scrollback content containing long logical lines, CJK width-two glyphs, colors, attributes, hyperlinks, ordinary trailing spaces, styled blank cells, and explicit newlines.
 - **When:** The terminal is repeatedly narrowed and widened, including a return to its original geometry.
-- **Then:** Retained logical text, attribute and hyperlink identity, wide-cell invariants, selection meaning, and copied output match the original except for explicitly reported capacity eviction.
+- **Then:** Retained logical text (except discarded ordinary trailing spaces and documented capacity eviction), attribute and hyperlink identity, wide-cell invariants, selection meaning for surviving content, and copied output remain consistent across resizes.
+
+### E2E: PowerShell-style padded rows after resize
+- **Given:** A primary-screen table whose headers and data rows end with enough ordinary, unstyled, non-hyperlinked spaces to fill the original terminal width, with the original display containing no blank row between adjacent entries.
+- **When:** The terminal is narrowed and widened, including repeated resizes.
+- **Then:** Ordinary tail padding does not alone introduce visually empty continuation rows between entries; real blank lines remain, and copied text after resize reflects the retained prefix rather than the original ordinary tail.
+
+### E2E: Tail-space cursor and decorated blanks
+- **Given:** A live or saved cursor at an insertion point within an ordinary trailing-space suffix, plus lines with significant interior spaces and styled, protected or hyperlinked trailing blanks.
+- **When:** The primary screen is resized across the right-margin boundary and back.
+- **Then:** Ordinary spaces necessary to retain either cursor position remain and subsequent output appears at the correct insertion point; interior spaces and styled, protected or hyperlinked blanks are not mistaken for trimmable tail padding. A selection endpoint in discarded tail content may be clamped or invalidated.
 
 ### E2E: Explicit blank lines and pending wrap
 
@@ -178,7 +196,7 @@ Copy traverses the same logical content classification used by reflow. It joins 
 
 - **Given:** Colored shell output, scrollback review, a retained selection, and intermittent new output.
 - **When:** Width-only, height-only, and combined resizes repeat while reader completion and chunk publication race with resize requests.
-- **Then:** Acknowledged barriers partition reader-observed output without loss or duplication; every committed state satisfies row, wide-cell, anchor, history, cursor, and PTY/model geometry invariants; copy returns the selected retained logical content unless documented eviction invalidated it.
+- **Then:** Acknowledged barriers partition reader-observed output without loss or duplication; every committed state satisfies row, wide-cell, anchor, history, cursor, and PTY/model geometry invariants; copy returns the selected retained logical content unless documented eviction or ordinary-tail trimming invalidated it.
 
 ## Decisions
 
@@ -190,9 +208,9 @@ Copy traverses the same logical content classification used by reflow. It joins 
 
 ### Explicit meaningful blanks and shared logical atoms
 
-- **Choice:** Preserve printed spaces and visible styled/hyperlinked blanks explicitly, exclude unused capacity and generated padding, and use the same logical classification for reflow and copy.
-- **Reason:** Cell value and unconditional trimming cannot distinguish all accepted text and presentation semantics.
-- **ADR reference:** [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md), [0035-cell-linked-bounded-registry-for-osc8-hyperlinks](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md)
+- **Choice:** Primary resize reflow discards the maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix except what the live or saved cursor requires. It retains interior spaces and styled, protected or hyperlinked blanks; ordinary tail text discarded on resize is not available to copy or selection afterward.
+- **Reason:** This avoids phantom empty continuation rows without introducing an off-grid text, copy, and cursor representation. It accepts a narrowly defined information-loss exception rather than silently claiming full round-trip preservation.
+- **ADR reference:** [0046-trim-ordinary-trailing-spaces-during-primary-reflow](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md), [0035-cell-linked-bounded-registry-for-osc8-hyperlinks](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md)
 
 ### Preserve ring storage while extending row semantics
 
@@ -237,16 +255,20 @@ Copy traverses the same logical content classification used by reflow. It joins 
 - **Normal-buffer tests:** Verify identity allocation/non-reuse, ring wraparound, metadata movement for scroll and structural edits, width/height policies, physical capacity, partial-line eviction, full damage, and no stale generation-to-content aliasing.
 - **Anchor tests:** Verify before/after affinity under insert/delete, overwrite stability, row movement, reflow projection, destruction/eviction invalidation, review fallback, cursor insertion boundaries, saved cursor, and complete-selection invalidation when one endpoint is lost.
 - **Selection/copy tests:** Verify pixel/`GenPos`/anchor conversion, forward and reverse drag, word and logical-line selection, selection retention across output and resize, meaningful trailing blanks, explicit newlines, soft-wrap joining, wide continuation skipping, and eviction behavior.
+- **Tail-space reflow tests:** Model a PowerShell-style full-width padded table, narrow and widen it repeatedly, and compare visible rows, scrollback, before/after copy, anchors, and next-output cursor position. Assert discarded ordinary tails do not return on widening; include saved/live cursor in a tail, styled/protected/hyperlinked blanks, interior spaces, explicit blank lines and selected tail endpoints (clamped or invalidated without corrupting surviving content).
 - **Alternate-screen tests:** Cover `?47`, `?1047`, `?1048`, and `?1049` resize/restore behavior, active and parked alternate buffers, saved-primary reflow, no alternate scrollback, RIS, and current whole-screen isolation.
 - **Barrier protocol tests:** Deterministically interleave barrier requests with a read completed before publication and with a blocked read. Prove ordered matching acknowledgements, exactly-once chunks, no publication while paused, no stale-epoch reuse, and successful resume/retry.
 - **Failure tests:** Inject barrier interruption failure, barrier timeout, model preparation failure, and PTY resize failure; prove bounded return, no unacknowledged resize, no partial model commit, no premature pointer clearing, unchanged authoritative geometry on failure, mandatory reader resume, no reader leak, and successful retry.
 - **Focused commands:** Run targeted `harbor-terminal` and `harbor-pty` tests during development, then the standard gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`.
-- **Windows runtime evidence:** Record revision, dirty-tree scope, Windows/ConPTY/application versions, exact steps, expected and observed results, PASS/FAIL/NOT RUN/BLOCKED outcome, artifacts, and exclusions for PowerShell or `cmd`, `nvim`, clipboard selection/copy, primary/alternate transitions, repeated mixed resize, and interruption of a blocked ConPTY read during barrier acquisition.
+- **Windows runtime evidence:** Record revision, dirty-tree scope, Windows/ConPTY/application versions, exact steps, expected and observed results, PASS/FAIL/NOT RUN/BLOCKED outcome, artifacts, and exclusions for PowerShell or `cmd`, `nvim`, clipboard selection/copy, primary/alternate transitions, repeated mixed resize, and interruption of a blocked ConPTY read during barrier acquisition. Explicitly reproduce PowerShell's padded directory table before and after resizing, checking that resizing does not introduce empty rows between its entries.
 - **Performance evidence:** Record large-history resize latency and memory/cost under fixed machine, font, viewport, history, and build-profile conditions. This specification sets no unsupported pass threshold; preserve comparable captures so a threshold or optimization can be justified from evidence.
 
 ## Out of Scope
 
 - Replacing the ring buffer with a rope, document model, or unlimited history.
+- Globally trimming copy or selection outside resize, or treating styled/protected/hyperlinked blanks, interior spaces and zero-width characters as ignorable.
+- Introducing off-grid tail storage and a virtual cursor to retain ordinary tail content after resize; superseded by the explicitly accepted information-loss policy.
+- Changing ordinary PTY output interpretation when no resize occurs; the reported regression occurs after resize.
 - Search UI, command navigation UI, pane UI, font reload, or font shaping.
 - Completing combining-mark, variation-selector, ZWJ emoji, ambiguous-width, or complex-script behavior assigned to N02.
 - Reflowing alternate-screen application drawings as logical text.
