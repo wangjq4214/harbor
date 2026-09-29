@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use harbor_pty::PtyEndpoints;
 use harbor_pty::ShellCommand;
 use harbor_terminal::{
-    Terminal, TerminalAppearance, TerminalGpuAccess, TerminalSize, TextMetrics, load_system_fonts,
+    Terminal, TerminalAppearance, TerminalGpuAccess, TerminalRenderPipeline, TerminalSize,
+    TextMetrics, load_system_fonts,
 };
 use harbor_widget::{
     effects::ControlFlowEffect,
@@ -124,26 +125,29 @@ impl TerminalTabFactory {
         let hyperlink_event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
         let surface_size = (surface_size.0.max(1), surface_size.1.max(1));
-        let mut terminal = Terminal::try_new_with_appearance_from_endpoints(
-            size,
-            endpoints,
+        let mut terminal =
+            Terminal::new_headless_with_appearance(size.rows, size.cols, self.appearance);
+        terminal.set_backdrop_available(self.backdrop_available);
+        // A failed renderer init drops the intact, unstarted PTY endpoint bundle.
+        let renderer = TerminalRenderPipeline::new(
             gpu,
             surface_size,
             fonts,
             self.metrics,
-            self.appearance,
-            move || {
-                output_event_proxy
-                    .send_event(AppEvent::TerminalOutputReady(tab_id))
-                    .is_ok()
-            },
+            &terminal.read_update(std::time::Instant::now()),
         )?;
-        terminal.set_backdrop_available(self.backdrop_available);
+        // Only the session takes endpoint ownership and starts the reader.
+        let terminal = terminal.start_session_from_endpoints(endpoints, move || {
+            output_event_proxy
+                .send_event(AppEvent::TerminalOutputReady(tab_id))
+                .is_ok()
+        })?;
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
-        let bridge = TerminalWidgetBridge::new_with_hyperlink_activation(
+        let bridge = TerminalWidgetBridge::new_rendered_with_hyperlink_activation(
             draw_id,
             Arc::clone(&terminal),
+            renderer,
             Arc::clone(&self.input_gate),
             Arc::new(move |uri| {
                 let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(uri));

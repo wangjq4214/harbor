@@ -10,3 +10,6 @@ harbor-terminal = { workspace = true }
 harbor-widget = { workspace = true, features = ["winit"] }
 tracing = { workspace = true }
 wgpu = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }

@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), [ADR-0045](../../adr/0045-gpu-independent-terminal-core-boundary.md), [#176](https://github.com/wangjq4214/harbor/issues/176)
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 

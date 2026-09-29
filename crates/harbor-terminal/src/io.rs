@@ -553,6 +553,10 @@ impl TerminalIo {
         Self::with_session(TerminalSession::headless())
     }
 
+    pub(crate) fn has_session(&self) -> bool {
+        self.session.pty.is_some()
+    }
+
     fn with_session(session: TerminalSession) -> Self {
         Self {
             parser: TerminalParser::default(),

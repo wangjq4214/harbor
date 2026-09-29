@@ -29,7 +29,8 @@ pub use cursor_blink::CursorBlinkState;
 pub use harbor_config::Color;
 use harbor_config::Palette;
 #[cfg(feature = "renderer")]
-use harbor_pty::{PtyControl, PtyEndpoints};
+use harbor_pty::PtyControl;
+use harbor_pty::PtyEndpoints;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
 pub use layout::RenderViewport;
@@ -182,11 +183,24 @@ impl Terminal {
         let update = terminal.read_update(Instant::now());
         let renderer =
             TerminalRenderPipeline::new(gpu, initial_surface_size, font_book, metrics, &update)?;
-        let (pty_read, pty_write, pty_control) = endpoints.into_parts();
-        terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
-        terminal.io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
-        Ok(terminal)
+        terminal.start_session_from_endpoints(endpoints, wake)
+    }
+
+    /// Attaches the sole PTY session to a newly created headless engine.
+    ///
+    /// Construct fallible GPU resources first: if they fail, the intact endpoint
+    /// bundle is dropped using its unstarted-session shutdown protocol.
+    pub fn start_session_from_endpoints(
+        mut self,
+        endpoints: PtyEndpoints,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(!self.io.has_session(), "terminal session already attached");
+        let (pty_read, pty_write, pty_control) = endpoints.into_parts();
+        self.io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
+        self.blink = CursorBlinkState::new(Instant::now());
+        Ok(self)
     }
 
     /// Calculates the grid dimensions used by a rendered terminal at an explicit surface size.
@@ -206,7 +220,8 @@ impl Terminal {
         Self::new_headless_with_appearance(rows, cols, TerminalAppearance::default())
     }
 
-    pub(crate) fn new_headless_with_appearance(
+    /// Creates a GPU-free engine with the requested appearance, before attaching a PTY session.
+    pub fn new_headless_with_appearance(
         rows: usize,
         cols: usize,
         appearance: TerminalAppearance,
@@ -282,6 +297,28 @@ impl Terminal {
         }
         self.acknowledge_update(&update);
     }
+
+    /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
+    /// leaves the old grid intact so a subsequent draw can retry it.
+    pub fn prepare_render_frame(
+        &mut self,
+        target: RenderTarget,
+        metrics: &TextMetrics,
+        now: Instant,
+    ) -> (RenderViewport, bool) {
+        let viewport = RenderViewport::from_target(target, metrics);
+        self.pointer.set_viewport(viewport);
+        self.pointer.set_input_scale(target.scale_factor);
+        let grid_changed = self.resize_if_changed(viewport.compute_grid_size());
+        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
+        let _ = self.pointer.tick(&mut self.screen, now);
+        (viewport, grid_changed)
+    }
+
+    /// Engine-owned cursor-blink phase for the current renderer projection.
+    pub fn blink_visible_at(&self, now: Instant) -> bool {
+        self.blink.phase_visible(now)
+    }
     /// Coordinates prepare + draw for all components from a terminal-owned render target.
     #[cfg(feature = "renderer")]
     pub fn render(
@@ -293,14 +330,8 @@ impl Terminal {
         let Some(metrics) = self.text_metrics().copied() else {
             return;
         };
-        let viewport = RenderViewport::from_target(target, &metrics);
-        self.pointer.set_viewport(viewport);
-        self.pointer.set_input_scale(target.scale_factor);
-        let grid = viewport.compute_grid_size();
-        let grid_changed = self.resize_if_changed(grid);
-        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         let now = Instant::now();
-        let _ = self.pointer.tick(&mut self.screen, now);
+        let (viewport, grid_changed) = self.prepare_render_frame(target, &metrics, now);
         if self.renderer.is_none() {
             return;
         }
@@ -337,15 +368,30 @@ impl Terminal {
 
     #[cfg(feature = "renderer")]
     fn retain_geometry_changed(&self, target: RenderTarget) -> bool {
-        retain_geometry_changed(
-            self.renderer.as_ref().map(|renderer| renderer.viewport()),
-            TerminalSize {
-                rows: self.screen.rows(),
-                cols: self.screen.cols(),
-            },
-            target,
-            self.text_metrics(),
-        )
+        let Some(renderer) = &self.renderer else {
+            return false;
+        };
+        self.retained_geometry_changed(renderer.viewport(), target, renderer.metrics())
+    }
+
+    /// Whether retained projection or logical pointer mapping needs a live frame.
+    /// A scale-only DPI change keeps physical geometry but changes input coordinates.
+    pub fn retained_geometry_changed(
+        &self,
+        current_viewport: RenderViewport,
+        target: RenderTarget,
+        metrics: &TextMetrics,
+    ) -> bool {
+        target.scale_factor != self.pointer.input_scale()
+            || retain_geometry_changed(
+                Some(current_viewport),
+                TerminalSize {
+                    rows: self.screen.rows(),
+                    cols: self.screen.cols(),
+                },
+                target,
+                Some(metrics),
+            )
     }
 
     /// Host-neutral frame demand from ingested PTY, Cursor blink, and screen cursor flags.
@@ -691,8 +737,16 @@ impl Terminal {
     /// Computes the physical candidate-window anchor from the current live cursor.
     #[cfg(feature = "renderer")]
     pub fn ime_candidate_position(&self, target: RenderTarget) -> Option<(f32, f32)> {
+        self.ime_candidate_position_with_metrics(target, self.text_metrics()?)
+    }
+
+    /// Computes the IME anchor using metrics owned by a separately hosted renderer.
+    pub fn ime_candidate_position_with_metrics(
+        &self,
+        target: RenderTarget,
+        metrics: &TextMetrics,
+    ) -> Option<(f32, f32)> {
         let preedit = self.preedit.as_ref()?;
-        let metrics = self.text_metrics()?;
         let viewport = RenderViewport::from_target(target, metrics);
         let snap = self.screen.terminal_snapshot();
         let layout = crate::layout::layout_preedit(
@@ -965,7 +1019,6 @@ fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4
     TerminalAppearance::from_palette(palette).clear_rgba(backdrop_available)
 }
 
-#[cfg(feature = "renderer")]
 fn retain_geometry_changed(
     current_viewport: Option<RenderViewport>,
     current_grid: TerminalSize,

@@ -151,3 +151,43 @@ fn update_includes_selection_and_effective_appearance() {
     assert!(engine.read_update(Instant::now()).backdrop_available);
     assert!(!engine.acknowledge_update(&update));
 }
+
+#[test]
+fn host_live_preparation_replays_skipped_output_and_geometry_without_gpu() {
+    use crate::{RenderTarget, RenderViewport, TextMetrics};
+    let metrics = TextMetrics {
+        cell_width: 10.0,
+        line_height: 20.0,
+        ascent: 16.0,
+        underline_position: 16.0,
+        underline_thickness: 2.0,
+        strikethrough_position: 10.0,
+        strikethrough_thickness: 2.0,
+    };
+    let now = Instant::now();
+    let original = RenderTarget::new((0.0, 0.0), (100, 40), (100, 40));
+    let original_viewport = RenderViewport::from_target(original, &metrics);
+    let initial = original_viewport.compute_grid_size();
+    let mut engine = Terminal::new_headless(initial.rows, initial.cols);
+    assert!(engine.acknowledge_update(&engine.read_update(now)));
+    engine.process_output(b"hi");
+    assert!(!engine.retained_geometry_changed(original_viewport, original, &metrics));
+    let pending = engine.read_update(now);
+    assert_eq!(pending.snapshot.cell_char(0, 0), 'h');
+    assert!(matches!(pending.damage, UpdateDamage::Ranges(ref rows) if !rows.is_empty()));
+    assert_eq!(engine.read_update(now).snapshot, pending.snapshot);
+
+    let enlarged = RenderTarget::new_with_scale((0.0, 0.0), (120, 60), (120, 60), 2.0);
+    assert!(engine.retained_geometry_changed(original_viewport, enlarged, &metrics));
+    let (viewport, resized) = engine.prepare_render_frame(enlarged, &metrics, now);
+    assert!(resized);
+    let new_size = viewport.compute_grid_size();
+    assert_ne!(new_size, initial);
+    assert_eq!(
+        (engine.snapshot().rows, engine.snapshot().cols),
+        (new_size.rows, new_size.cols)
+    );
+    assert!(engine.acknowledge_update(&engine.read_update(now)));
+    assert_eq!(engine.read_update(now).damage, UpdateDamage::Ranges(vec![]));
+    assert!(!engine.retained_geometry_changed(viewport, enlarged, &metrics));
+}

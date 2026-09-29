@@ -167,6 +167,10 @@ impl PointerInteraction {
         self.input_scale = scale_factor.max(0.001);
     }
 
+    pub(crate) fn input_scale(&self) -> f32 {
+        self.input_scale
+    }
+
     pub fn has_viewport(&self) -> bool {
         self.viewport.is_some()
     }

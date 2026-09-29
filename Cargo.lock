@@ -864,6 +864,7 @@ dependencies = [
  "harbor-config",
  "harbor-terminal",
  "harbor-widget",
+ "pollster",
  "tracing",
  "wgpu",
 ]
