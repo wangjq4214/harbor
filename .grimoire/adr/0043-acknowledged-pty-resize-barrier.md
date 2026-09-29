@@ -1,6 +1,6 @@
 # Acknowledged PTY resize barrier
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-21
 
 ## Context

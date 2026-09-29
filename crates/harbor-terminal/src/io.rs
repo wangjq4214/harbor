@@ -74,12 +74,37 @@ struct TerminalPty {
 }
 
 impl TerminalPty {
-    fn new<R, W>(
+    fn try_new<R, W>(
         reader: R,
         writer: W,
         control: Option<PtyControl>,
         wake: impl Fn() -> bool + Send + 'static,
-    ) -> Self
+    ) -> anyhow::Result<Self>
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        // SAFETY: std::thread::Builder::spawn returns Err only when it did not
+        // launch a thread; it drops the closure and captured reader on failure.
+        unsafe {
+            Self::try_new_with_spawn(reader, writer, control, wake, |pump| {
+                std::thread::Builder::new()
+                    .name("harbor-terminal-reader".into())
+                    .spawn(pump)
+            })
+        }
+    }
+
+    /// # Safety
+    /// If `spawn` returns an error, it must not have started the pump and
+    /// must have dropped the pump closure (including its reader endpoint).
+    unsafe fn try_new_with_spawn<R, W>(
+        reader: R,
+        writer: W,
+        control: Option<PtyControl>,
+        wake: impl Fn() -> bool + Send + 'static,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<JoinHandle<()>>,
+    ) -> anyhow::Result<Self>
     where
         R: Read + Send + 'static,
         W: Write + Send + 'static,
@@ -88,19 +113,27 @@ impl TerminalPty {
         let (commands, reader_commands) = mpsc::channel();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let reader_wake_pending = Arc::clone(&wake_pending);
-        let reader = std::thread::Builder::new()
-            .name("harbor-terminal-reader".into())
-            .spawn(move || {
-                pump_reader(
-                    reader,
-                    output_tx,
-                    reader_commands,
-                    reader_wake_pending,
-                    wake,
-                )
-            })
-            .expect("failed to start terminal PTY reader");
-        Self {
+        let reader = spawn(Box::new(move || {
+            pump_reader(
+                reader,
+                output_tx,
+                reader_commands,
+                reader_wake_pending,
+                wake,
+            )
+        }));
+        let reader = match reader {
+            Ok(reader) => reader,
+            Err(error) => {
+                // SAFETY: a failed spawn drops its closure and captured reader
+                // before returning; no reader thread was started for this PTY.
+                if let Some(control) = control {
+                    unsafe { control.shutdown_unstarted() };
+                }
+                return Err(error.into());
+            }
+        };
+        Ok(Self {
             output,
             commands,
             writer: Box::new(writer),
@@ -110,7 +143,7 @@ impl TerminalPty {
             next_barrier_epoch: 1,
             test_interrupt: None,
             barrier_timeout: RESIZE_BARRIER_TIMEOUT,
-        }
+        })
     }
 }
 
@@ -246,24 +279,229 @@ fn service_reader_commands(
     }
 }
 
-// ── TerminalIo ────────────────────────────────────────────────────────
+// ── TerminalSession ───────────────────────────────────────────────────
 
-/// PTY I/O and ANSI/VT parsing — owns the parser, PTY endpoints, and input encoding.
-///
-/// Created once per terminal instance. The PTY is optional (absent in headless/test mode).
-pub(crate) struct TerminalIo {
-    /// Incremental ANSI/VT parser.
-    parser: TerminalParser,
-    /// PTY reader, writer, and shutdown owner. None in headless mode.
+/// GPU-independent PTY session adapter: owns the endpoints, reader, resize
+/// coordination, and teardown. The logical I/O state below owns VT parsing.
+struct TerminalSession {
     pty: Option<TerminalPty>,
-    /// When true, `process_output` skips the scroll-to-bottom snap.
+    closed_observed: bool,
+}
+
+impl TerminalSession {
+    fn headless() -> Self {
+        Self {
+            pty: None,
+            closed_observed: false,
+        }
+    }
+
+    fn with_pty(pty: TerminalPty) -> Self {
+        Self {
+            pty: Some(pty),
+            closed_observed: false,
+        }
+    }
+
+    fn observe_disconnect(&mut self) -> bool {
+        if self.closed_observed {
+            false
+        } else {
+            self.closed_observed = true;
+            true
+        }
+    }
+
+    /// A wake stays pending until the queue is empty. The second receive
+    /// after clearing it closes the producer/consumer race.
+    fn drain_events(&mut self) -> (Vec<ReaderEvent>, bool) {
+        let Some(pty) = self.pty.as_ref() else {
+            return (Vec::new(), false);
+        };
+        let mut events = Vec::new();
+        loop {
+            match pty.output.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => {
+                    pty.wake_pending.store(false, Ordering::Release);
+                    match pty.output.try_recv() {
+                        Ok(event) => events.push(event),
+                        Err(TryRecvError::Empty) => return (events, false),
+                        Err(TryRecvError::Disconnected) => return (events, true),
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    pty.wake_pending.store(false, Ordering::Release);
+                    events.extend(pty.output.try_iter());
+                    return (events, true);
+                }
+            }
+        }
+    }
+    /// Pause the reader with an epoch-qualified acknowledgement. Return chunks
+    /// even on failure so the logical parser processes them under old geometry.
+    fn acquire_resize_barrier(
+        &mut self,
+    ) -> (Vec<Vec<u8>>, bool, anyhow::Result<Option<ResizeBarrier>>) {
+        let Some(pty) = self.pty.as_mut() else {
+            return (Vec::new(), false, Ok(None));
+        };
+        if pty.control.is_none() && pty.test_interrupt.is_none() {
+            return (
+                Vec::new(),
+                false,
+                Err(anyhow::anyhow!(
+                    "cannot resize a terminal with an active reader but no interrupt capability"
+                )),
+            );
+        }
+        let epoch = pty.next_barrier_epoch;
+        let Some(next_epoch) = epoch.checked_add(1) else {
+            return (
+                Vec::new(),
+                false,
+                Err(anyhow::anyhow!("PTY resize barrier epoch exhausted")),
+            );
+        };
+        pty.next_barrier_epoch = next_epoch;
+        let commands = pty.commands.clone();
+        if commands.send(ReaderCommand::Barrier(epoch)).is_err() {
+            return (
+                Vec::new(),
+                false,
+                Err(anyhow::anyhow!(
+                    "terminal reader stopped before resize barrier"
+                )),
+            );
+        }
+        let barrier = ResizeBarrier { commands, epoch };
+        let deadline = Instant::now() + pty.barrier_timeout;
+        let mut acquisition = self.interrupt_reader_for_barrier();
+        let mut chunks = Vec::new();
+        let mut acknowledged = false;
+        let mut disconnected = false;
+        while acquisition.is_ok() && !acknowledged {
+            let now = Instant::now();
+            if now >= deadline {
+                acquisition = Err(anyhow::anyhow!(
+                    "timed out waiting for PTY resize barrier {epoch}"
+                ));
+                break;
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(BARRIER_INTERRUPT_RETRY);
+            let event = self
+                .pty
+                .as_ref()
+                .expect("active PTY during barrier")
+                .output
+                .recv_timeout(wait);
+            match event {
+                Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
+                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
+                    acknowledged = true;
+                    if let Some(pty) = self.pty.as_ref() {
+                        pty.wake_pending.store(false, Ordering::Release);
+                    }
+                }
+                Ok(ReaderEvent::BarrierAck(_)) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    acquisition = self.interrupt_reader_for_barrier();
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    acquisition = Err(anyhow::anyhow!(
+                        "terminal reader stopped before resize barrier {epoch}"
+                    ));
+                }
+            }
+        }
+
+        // Close the wake/queue race on both success and failure. A final
+        // pre-barrier chunk must remain parseable against the old grid.
+        if let Some(pty) = self.pty.as_ref() {
+            pty.wake_pending.store(false, Ordering::Release);
+            loop {
+                match pty.output.try_recv() {
+                    Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
+                    Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
+                        acknowledged = true;
+                    }
+                    Ok(ReaderEvent::BarrierAck(_)) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if acquisition.is_ok() {
+            debug_assert!(acknowledged);
+        }
+        (chunks, disconnected, acquisition.map(|()| Some(barrier)))
+    }
+
+    fn interrupt_reader_for_barrier(&self) -> anyhow::Result<()> {
+        let pty = self
+            .pty
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal has no active PTY"))?;
+        let reader = pty
+            .reader
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal PTY reader is unavailable"))?;
+        if let Some(interrupt) = &pty.test_interrupt {
+            return interrupt(reader);
+        }
+        let control = pty
+            .control
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("terminal PTY has no reader control"))?;
+        control.interrupt_reader(reader)
+    }
+
+    fn write_pty(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let Some(pty) = self.pty.as_mut() else {
+            anyhow::bail!("terminal has no active pty");
+        };
+        pty.writer.write_all(bytes).map_err(Into::into)
+    }
+
+    fn reflow_viewport(&self) -> crate::primary_reflow::ReflowViewport {
+        use crate::primary_reflow::ReflowViewport;
+        if cfg!(windows) && self.pty.as_ref().is_some_and(|pty| pty.control.is_some()) {
+            ReflowViewport::PreserveLiveTop
+        } else {
+            ReflowViewport::PullHistory
+        }
+    }
+
+    fn resize_pty(&mut self, size: TerminalSize) -> anyhow::Result<()> {
+        if let Some(pty) = self.pty.as_mut()
+            && let Some(control) = pty.control.as_mut()
+        {
+            control.resize(harbor_pty::TerminalSize {
+                rows: size.rows,
+                cols: size.cols,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+// ── TerminalIo (logical parser / compatibility facade) ───────────────
+
+/// Parser and input encoding on the logical/UI thread, with a separately
+/// owned session adapter while the public `Terminal` facade is retained.
+pub(crate) struct TerminalIo {
+    parser: TerminalParser,
+    session: TerminalSession,
     suppress_scroll_snap: bool,
-    /// Set on the first observed reader/session disconnect so close clears once.
-    session_closed: bool,
 }
 
 impl TerminalIo {
-    /// Creates a TerminalIo with PTY endpoints for a live terminal.
     pub(crate) fn new<R, W>(
         pty_read: R,
         pty_write: W,
@@ -274,13 +512,25 @@ impl TerminalIo {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        Self::with_pty(Some(TerminalPty::new(
-            pty_read,
-            pty_write,
-            pty_control,
-            wake,
+        Self::try_new(pty_read, pty_write, pty_control, wake)
+            .expect("failed to start terminal PTY reader")
+    }
+
+    pub(crate) fn try_new<R, W>(
+        pty_read: R,
+        pty_write: W,
+        pty_control: Option<PtyControl>,
+        wake: impl Fn() -> bool + Send + 'static,
+    ) -> anyhow::Result<Self>
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        Ok(Self::with_session(TerminalSession::with_pty(
+            TerminalPty::try_new(pty_read, pty_write, pty_control, wake)?,
         )))
     }
+
     #[cfg(all(test, feature = "renderer"))]
     pub(crate) fn new_with_test_barrier<R, W>(
         pty_read: R,
@@ -293,22 +543,21 @@ impl TerminalIo {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
-        let mut pty = TerminalPty::new(pty_read, pty_write, None, wake);
+        let mut pty = TerminalPty::try_new(pty_read, pty_write, None, wake)
+            .expect("failed to start test PTY reader");
         pty.set_test_barrier(interrupt, timeout);
-        Self::with_pty(Some(pty))
+        Self::with_session(TerminalSession::with_pty(pty))
     }
 
-    /// Creates a headless TerminalIo without PTY resources (for tests).
     pub(crate) fn new_headless() -> Self {
-        Self::with_pty(None)
+        Self::with_session(TerminalSession::headless())
     }
 
-    fn with_pty(pty: Option<TerminalPty>) -> Self {
+    fn with_session(session: TerminalSession) -> Self {
         Self {
             parser: TerminalParser::default(),
-            pty,
+            session,
             suppress_scroll_snap: false,
-            session_closed: false,
         }
     }
 
@@ -367,44 +616,9 @@ impl TerminalIo {
 
     // ── PTY I/O ───────────────────────────────────────────────────────
 
-    /// Drains all reader-thread output in FIFO order into the terminal parser.
-    ///
-    /// A wake remains pending until this has observed an empty queue. The second
-    /// receive after clearing the flag closes the producer/consumer race: bytes
-    /// queued just before the clear are consumed here, while later bytes post a
-    /// fresh wake.
+    /// Drains ordered PTY bytes and parses them on the logical thread.
     pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        {
-            let Some(pty) = self.pty.as_ref() else {
-                return false;
-            };
-            loop {
-                match pty.output.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(TryRecvError::Empty) => {
-                        pty.wake_pending.store(false, Ordering::Release);
-                        match pty.output.try_recv() {
-                            Ok(event) => events.push(event),
-                            Err(TryRecvError::Empty) => break,
-                            Err(TryRecvError::Disconnected) => {
-                                disconnected = true;
-                                break;
-                            }
-                        }
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        pty.wake_pending.store(false, Ordering::Release);
-                        while let Ok(event) = pty.output.try_recv() {
-                            events.push(event);
-                        }
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
+        let (events, disconnected) = self.session.drain_events();
         let mut consumed_bytes = false;
         for event in events {
             if let ReaderEvent::Bytes(bytes) = event {
@@ -418,127 +632,20 @@ impl TerminalIo {
         consumed_bytes
     }
 
-    /// Pauses a live PTY reader at an acknowledged event-stream boundary.
+    /// Parses all pre-barrier chunks against the old geometry, even on failure.
     pub(crate) fn acquire_resize_barrier(
         &mut self,
         screen: &mut Screen,
         pointer: &mut PointerInteraction,
     ) -> anyhow::Result<Option<ResizeBarrier>> {
-        let Some(pty) = self.pty.as_mut() else {
-            return Ok(None);
-        };
-        if pty.control.is_none() && pty.test_interrupt.is_none() {
-            anyhow::bail!(
-                "cannot resize a terminal with an active reader but no interrupt capability"
-            );
-        }
-
-        let epoch = pty.next_barrier_epoch;
-        pty.next_barrier_epoch = pty
-            .next_barrier_epoch
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("PTY resize barrier epoch exhausted"))?;
-        let commands = pty.commands.clone();
-        commands
-            .send(ReaderCommand::Barrier(epoch))
-            .map_err(|_| anyhow::anyhow!("terminal reader stopped before resize barrier"))?;
-        let barrier = ResizeBarrier { commands, epoch };
-
-        let deadline = Instant::now() + pty.barrier_timeout;
-        let mut acquisition = self.interrupt_reader_for_barrier();
-        let mut chunks = Vec::new();
-        let mut acknowledged = false;
-        let mut disconnected = false;
-        while acquisition.is_ok() && !acknowledged {
-            let now = Instant::now();
-            if now >= deadline {
-                acquisition = Err(anyhow::anyhow!(
-                    "timed out waiting for PTY resize barrier {epoch}"
-                ));
-                break;
-            }
-            let wait = deadline
-                .saturating_duration_since(now)
-                .min(BARRIER_INTERRUPT_RETRY);
-            let event = {
-                let pty = self
-                    .pty
-                    .as_ref()
-                    .expect("active PTY must remain owned during resize barrier");
-                pty.output.recv_timeout(wait)
-            };
-            match event {
-                Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
-                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
-                    acknowledged = true;
-                    if let Some(pty) = self.pty.as_ref() {
-                        pty.wake_pending.store(false, Ordering::Release);
-                    }
-                }
-                Ok(ReaderEvent::BarrierAck(_)) => {}
-                Err(RecvTimeoutError::Timeout) => {
-                    acquisition = self.interrupt_reader_for_barrier();
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    disconnected = true;
-                    acquisition = Err(anyhow::anyhow!(
-                        "terminal reader stopped before resize barrier {epoch}"
-                    ));
-                }
-            }
-        }
-
-        // Close the wake flag/queue race before returning on either success or failure.
-        // A failed interrupt can leave the reader publishing one final pre-barrier chunk;
-        // consume it under the unchanged old geometry or let a later publish post a fresh wake.
-        if let Some(pty) = self.pty.as_ref() {
-            pty.wake_pending.store(false, Ordering::Release);
-            loop {
-                match pty.output.try_recv() {
-                    Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
-                    Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
-                        acknowledged = true;
-                    }
-                    Ok(ReaderEvent::BarrierAck(_)) => {}
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Parsing and synchronous terminal replies happen only after the reader-side
-        // wait has completed, so they cannot extend the barrier acquisition deadline.
+        let (chunks, disconnected, result) = self.session.acquire_resize_barrier();
         for bytes in chunks {
             self.process_reader_bytes(screen, pointer, &bytes);
         }
         if disconnected {
             self.observe_reader_disconnect(screen);
         }
-        acquisition?;
-        debug_assert!(acknowledged);
-        Ok(Some(barrier))
-    }
-
-    fn interrupt_reader_for_barrier(&self) -> anyhow::Result<()> {
-        let pty = self
-            .pty
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("terminal has no active PTY"))?;
-        let reader = pty
-            .reader
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("terminal PTY reader is unavailable"))?;
-        if let Some(interrupt) = &pty.test_interrupt {
-            return interrupt(reader);
-        }
-        let control = pty
-            .control
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("terminal PTY has no reader control"))?;
-        control.interrupt_reader(reader)
+        result
     }
 
     fn process_reader_bytes(
@@ -561,40 +668,22 @@ impl TerminalIo {
     }
 
     fn observe_reader_disconnect(&mut self, screen: &mut Screen) {
-        if !self.session_closed {
-            self.session_closed = true;
+        if self.session.observe_disconnect() {
             screen.clear_synchronized_output();
         }
     }
 
-    /// Writes bytes synchronously to the terminal's PTY input endpoint.
+    /// Writes bytes synchronously through the session's input endpoint.
     pub(crate) fn write_pty(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
-        let Some(pty) = self.pty.as_mut() else {
-            anyhow::bail!("terminal has no active pty");
-        };
-        pty.writer.write_all(bytes).map_err(Into::into)
+        self.session.write_pty(bytes)
     }
 
     pub(crate) fn reflow_viewport(&self) -> crate::primary_reflow::ReflowViewport {
-        use crate::primary_reflow::ReflowViewport;
-        if cfg!(windows) && self.pty.as_ref().is_some_and(|pty| pty.control.is_some()) {
-            ReflowViewport::PreserveLiveTop
-        } else {
-            ReflowViewport::PullHistory
-        }
+        self.session.reflow_viewport()
     }
 
-    /// Resizes the PTY to the given terminal dimensions.
     pub(crate) fn resize_pty(&mut self, size: TerminalSize) -> anyhow::Result<()> {
-        if let Some(pty) = self.pty.as_mut()
-            && let Some(control) = pty.control.as_mut()
-        {
-            control.resize(harbor_pty::TerminalSize {
-                rows: size.rows,
-                cols: size.cols,
-            })?;
-        }
-        Ok(())
+        self.session.resize_pty(size)
     }
 
     // ── event handling ────────────────────────────────────────────────
@@ -676,6 +765,106 @@ impl TerminalIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::AtomicUsize;
+
+    struct ParkedReader {
+        started: Option<Sender<()>>,
+        dropped: Sender<()>,
+    }
+
+    impl Read for ParkedReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(started) = self.started.take() {
+                started.send(()).unwrap();
+            }
+            std::thread::park();
+            Ok(0)
+        }
+    }
+
+    impl Drop for ParkedReader {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    struct TrackedWriter(Arc<AtomicUsize>);
+
+    impl Write for TrackedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for TrackedWriter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn hidden_facade_retains_session_endpoints_until_close() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let writer_drops = Arc::new(AtomicUsize::new(0));
+        let hidden = crate::Terminal::new_headless_with_io(
+            2,
+            8,
+            ParkedReader {
+                started: Some(started_tx),
+                dropped: dropped_tx,
+            },
+            TrackedWriter(Arc::clone(&writer_drops)),
+            || true,
+        );
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut tabs = vec![hidden, crate::Terminal::new_headless(2, 8)];
+
+        // A different active tab must not close the hidden session.
+        tabs[1].put_bytes(b"active");
+        assert_eq!(writer_drops.load(Ordering::SeqCst), 0);
+        assert!(dropped_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        tabs[0].write_pty(b"still alive").unwrap();
+
+        // Close only that tab. The session owns both endpoint lifetimes; its
+        // parked reader is unparked and exits rather than leaking a thread.
+        tabs.remove(0);
+        assert_eq!(writer_drops.load(Ordering::SeqCst), 1);
+        dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(tabs[0].row_text(0), "active  ");
+    }
+
+    #[test]
+    fn reader_spawn_failure_releases_unstarted_endpoints() {
+        let (started_tx, _started_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let writer_drops = Arc::new(AtomicUsize::new(0));
+        // SAFETY: this injected failure drops the pump without starting it.
+        let result = unsafe {
+            TerminalPty::try_new_with_spawn(
+                ParkedReader {
+                    started: Some(started_tx),
+                    dropped: dropped_tx,
+                },
+                TrackedWriter(Arc::clone(&writer_drops)),
+                None,
+                || true,
+                |pump| {
+                    drop(pump);
+                    Err(std::io::Error::other("injected reader spawn failure"))
+                },
+            )
+        };
+
+        assert!(result.is_err());
+        dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(writer_drops.load(Ordering::SeqCst), 1);
+    }
 
     fn assert_resize_output_matches_parser(chunks: &[&[u8]], sizes: &[usize]) {
         let mut terminal = crate::Terminal::new_headless(4, 20);

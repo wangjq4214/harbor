@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), [ADR-0045](../../adr/0045-gpu-independent-terminal-core-boundary.md), [ADR-0043](../../adr/0043-acknowledged-pty-resize-barrier.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 

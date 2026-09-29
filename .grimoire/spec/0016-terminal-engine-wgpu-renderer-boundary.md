@@ -1,7 +1,7 @@
 # Terminal Engine and wgpu Renderer Boundary
 
 **Spec ID:** 0016
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-09-27
 
 ## Sources and scope

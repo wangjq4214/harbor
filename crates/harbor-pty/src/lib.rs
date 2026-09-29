@@ -198,7 +198,9 @@ impl Drop for PtyEndpoints {
         // No reader thread exists until the endpoints are transferred to Terminal,
         // so ordinary platform teardown is safe on this unstarted path.
         if let Some(control) = self.control.take() {
-            control.close_without_reader();
+            // SAFETY: This bundle still owns its reader; it was never transferred
+            // to a terminal or spawned onto a reader thread.
+            unsafe { control.shutdown_unstarted() };
         }
     }
 }
@@ -253,8 +255,13 @@ impl PtyControl {
             .expect("pty control must retain its reader shutdown protocol");
         RawPty::shutdown(pty, reader, reader_shutdown);
     }
-
-    fn close_without_reader(mut self) {
+    /// Closes a PTY whose reader thread was never started (e.g. thread spawn failed).
+    ///
+    /// # Safety
+    /// The caller must guarantee that no thread has started reading this PTY.
+    /// After a reader starts, use `shutdown(reader)` so the platform reaper
+    /// observes its completion before closing ConPTY.
+    pub unsafe fn shutdown_unstarted(mut self) {
         drop(self.pty.take());
         drop(self.reader_shutdown.take());
     }

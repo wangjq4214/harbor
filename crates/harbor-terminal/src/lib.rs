@@ -201,7 +201,7 @@ impl Terminal {
         let (pty_read, pty_write, pty_control) = endpoints.into_parts();
         terminal.blink = CursorBlinkState::new(Instant::now());
         terminal.renderer = Some(renderer);
-        terminal.io = TerminalIo::new(pty_read, pty_write, Some(pty_control), wake);
+        terminal.io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
         Ok(terminal)
     }
 

@@ -1,6 +1,6 @@
 # GPU-Independent Terminal Core Boundary
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-27
 
 ## Context

@@ -1,0 +1,19 @@
+# Terminal session ownership (T0002 migration boundary)
+
+| Owner | Resources / behavior | Close or failure responsibility |
+| --- | --- | --- |
+| Logical engine (`Terminal` and its `TerminalIo` logical state) | Screen, parser, input modes/encoding, pointer and selection, preedit, update damage, blink and frame demand | Discard logical state with the facade; parse pre-resize bytes on the UI thread before committing geometry. No GPU or OS handles are required by the core-only build. |
+| Session adapter (`TerminalSession` in `io.rs`) | PTY reader/writer, bounded event queue, wake flag, barrier epoch/commands, resize control, disconnect observation and reader shutdown | Owns one `TerminalPty`; on drop, transfers control plus reader join handle to the platform reaper. Writer is dropped with the session. The adapter has no GPU dependencies. |
+| Concrete renderer (`TerminalRenderPipeline`) | Projection, uploads, GPU buffers, viewport | Drops its own GPU resources; it never owns PTY handles or mutable parser state. |
+| Host (`harbor-app` / tab manager and widget runtime) | Tab ownership, window/device/surface/presentation, wake dispatch | Keeps hidden tabs (and their facade/session) alive; closing a tab releases its terminal and bridge; host owns GPU surface teardown. |
+
+During migration, `Terminal` is the compatibility facade: it owns both logical state (including `TerminalIo`) and the concrete renderer; `TerminalIo` nests the independent **resource-lifetime** session adapter for existing call sites. Application migration to separate session/renderer wiring belongs to T0004, not this ticket.
+
+## Construction and shutdown paths
+
+1. `PtyEndpoints::spawn_shell` owns an **unstarted** bundle. Until `into_parts`, dropping it closes the platform PTY without a reader reaper.
+2. The fallible rendered facade constructor initializes the renderer **before** splitting the bundle. A GPU initialization error drops the intact bundle and its resources. After transfer, session startup either owns reader, writer and control together or, if thread spawn fails, drops the reader closure and calls `PtyControl::shutdown_unstarted` rather than dropping a detached control (which would leak ConPTY). The compatibility constructors that accept pre-split endpoints remain infallible, but use the same safe startup teardown before their legacy panic.
+3. For resize, the session requests an epoch-qualified barrier and interrupts a blocked read. It collects completed bytes before the acknowledgement, never resumes before parsing those bytes against the old grid, and leaves the reader paused during prepared-model / PTY resize / model commit. The barrier guard resumes on all success/error paths; a timeout never commits a resize, and subsequent retries get a new epoch. Grid dimensions are normalized to at least one row and two columns. The logical parser and pointer remain on the UI thread.
+4. Closing an active tab drops its session. Platform control reaps a blocked reader before closing ConPTY; no UI-thread join is required. Merely hiding or switching tabs does not drop them. A reader disconnect releases synchronized-output suppression once, while the session still owns its remaining endpoint/control resources until close.
+
+The reader barrier orders **reader-observed chunks**, not bytes still in the OS pipe. Windows interactive ConPTY and integrated renderer-failure runtime evidence remains a later T0005 acceptance responsibility.
