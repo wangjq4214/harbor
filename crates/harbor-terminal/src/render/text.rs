@@ -400,8 +400,7 @@ impl Text {
             {
                 let (cell_x, cell_y) = viewport.cell_pos(range.row, col);
                 let baseline = cell_y + self.metrics.ascent.ceil();
-                let assigned_width =
-                    self.metrics.cell_width * f32::from(cell.grid_width());
+                let assigned_width = self.metrics.cell_width * f32::from(cell.grid_width());
                 let mut glyph_left = cell_x + glyph.bearing_x as f32;
                 let glyph_bottom = baseline - glyph.bearing_y as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -431,8 +430,7 @@ impl Text {
                     let span = glyph_right - glyph_left;
                     let u = |x: f32| {
                         glyph.uv.left
-                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left)
-                                / span.max(1.0)
+                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left) / span.max(1.0)
                     };
                     let v = |y: f32| {
                         glyph.uv.top
@@ -799,8 +797,7 @@ fn append_overlay_glyph(
         return;
     }
     let span = right - left;
-    let u =
-        |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / span.max(1.0);
+    let u = |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / span.max(1.0);
     let v =
         |y: f32| glyph.uv.top + (glyph.uv.bottom - glyph.uv.top) * (y - top) / glyph.height as f32;
     vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
