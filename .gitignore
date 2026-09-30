@@ -6,7 +6,7 @@ dhat-heap.json
 # Local tooling & agent runtime artifacts
 .pi/
 .vscode/
-.tools/qa/
+.codegraph
 
 third_party/*
 !third_party/.gitkeep
