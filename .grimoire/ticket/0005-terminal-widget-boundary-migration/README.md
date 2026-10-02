@@ -24,26 +24,30 @@ Every ticket cuts through all confirmed layers.
 
 ### Blocking relationships
 
-| Ticket | Blocks | Reason |
+| Prerequisite | Consumers | Reason |
 | --- | --- | --- |
-| T0001 | T0002, T0003 | Both observable paths consume the terminal-owned boundary contracts. |
-| T0002 | T0003 | Input routing must target the bridge Component and its bridge-owned draw identifier. |
+| [Spec 0005 terminal boundary and bridge contracts](../../spec/0005-terminal-widget-boundary-migration.md#solution) | T0003 | Input consumes `TerminalEvent` and targets the bridge-owned external draw identifier. |
 | T0003 | — | Final slice completes input behavior and removes the dependency. |
 
 ### Parallel groups
 
-None. T0002 and T0003 share `TerminalWidgetBridge`, `src/app.rs`, and the terminal boundary contracts, so parallel work would overlap files and runtime contracts.
+None. T0003 is the only retained ticket in this group.
 
 ## Recommended Order
 
-1. T0001 — terminal-owned boundary foundation (pre-refactoring)
-2. T0002 — terminal rendering through `TerminalWidgetBridge`
-3. T0003 — bridged input, cross-window gate preservation, and dependency elimination
+1. T0003 — bridged input, cross-window gate preservation, and dependency elimination, using the Spec 0005 boundary and bridge contracts.
 
 ## Ticket Index
 
 | Ticket ID | File | Title | Summary |
 | --- | --- | --- | --- |
-| T0001 | [T0001-terminal-boundary-foundation.md](./T0001-terminal-boundary-foundation.md) | Terminal-owned boundary foundation | Establish widget-free render and input contracts shared by the migration slices. |
-| T0002 | [T0002-render-through-terminal-widget-bridge.md](./T0002-render-through-terminal-widget-bridge.md) | Render through TerminalWidgetBridge | Render the terminal in the existing widget allocation through a root Component bridge. |
 | T0003 | [T0003-bridge-input-and-remove-widget-dependency.md](./T0003-bridge-input-and-remove-widget-dependency.md) | Bridge input and remove widget dependency | Preserve routed input and gate behavior while eliminating all terminal widget dependencies. |
+
+## Historical Contract Destinations
+
+The following stable IDs identify retired planning slices; their contracts remain in the source spec. This mapping does not close T0003's unresolved input-policy or acceptance work.
+
+| Historical ID | Surviving contract |
+| --- | --- |
+| 0005/T0001 | [Terminal-owned `RenderTarget` and `TerminalEvent` boundary](../../spec/0005-terminal-widget-boundary-migration.md#solution) |
+| 0005/T0002 | [Root-level bridge Component and external-paint integration](../../spec/0005-terminal-widget-boundary-migration.md#use-a-root-level-bridge-component) |

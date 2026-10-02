@@ -27,7 +27,7 @@ The complete multi-tab slice has executable evidence for all-session resize, act
 ## Blocked by
 
 - T0005 — Supplies allocation observation.
-- T0006 — Supplies all tab resources and events.
+- [Spec 0010 tab/session contract](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#application-model-and-boundaries) — Integrated acceptance must verify independent resources, tab-qualified events, active-only registrations, stale-event safety, and lifecycle cleanup.
 - T0007 — Supplies integrated product UI.
 
 ## Blocks

@@ -25,25 +25,23 @@ Every ticket lists all five layers; pre-refactoring and consuming slices explici
 
 | Ticket | Blocks | Reason |
 | --- | --- | --- |
-| T0001 | T0002, T0003, T0004, T0005, T0006 | Every slice consumes the shared decoration values, validation, paint-phase, or clip contracts. |
-| T0002 | T0003 | Shadow rendering extends the concrete `DecoratedBox` scene and renderer path established by fill and border. |
-| T0003 | T0004, T0006 | Rounded clipping follows stabilization of shared decoration/renderer files; the Terminal preset requires working shadows. |
+| T0001 | T0002, T0004, T0005, T0006 | Every retained slice consumes the shared decoration values, validation, paint-phase, or clip contracts. |
+| T0002 | — | Fill and border establish the concrete `DecoratedBox` scene and renderer path; clipping also consumes the shadow contract below. |
 | T0004 | T0005 | External-draw clipping consumes the rounded clip stack and hit/paint semantics established for normal widget content. |
 | T0005 | T0006 | The product preset cannot safely wrap Terminal until `Primitive::External` obeys rounded clipping. |
 | T0006 | — | Final product composition slice. |
 
 ### Parallel groups
 
-No tickets are declared parallel. T0002 through T0005 modify shared decoration, Scene, renderer, or frame-encoding contracts, and T0006 consumes all resulting behavior; sequential work avoids contract and file conflicts.
+No tickets are declared parallel. T0002, T0004, and T0005 modify shared decoration, Scene, renderer, or frame-encoding contracts, and T0006 consumes all resulting behavior; sequential work avoids contract and file conflicts.
 
 ## Recommended Order
 
 1. T0001 — Decoration Foundation (pre-refactoring)
 2. T0002 — DecoratedBox Fill and Border
-3. T0003 — Layered Outer Shadows
-4. T0004 — Rounded Widget Clipping and Hit Testing
-5. T0005 — Rounded CustomPaint Clipping
-6. T0006 — Terminal Decoration Preset
+3. T0004 — Rounded Widget Clipping and Hit Testing
+4. T0005 — Rounded CustomPaint Clipping
+5. T0006 — Terminal Decoration Preset
 
 ## Ticket Index
 
@@ -51,7 +49,10 @@ No tickets are declared parallel. T0002 through T0005 modify shared decoration, 
 | --- | --- | --- | --- |
 | T0001 | [T0001-decoration-foundation.md](./T0001-decoration-foundation.md) | Decoration Foundation | Defines shared decoration values, validation, paint phases, and clip contracts. |
 | T0002 | [T0002-decorated-box-fill-and-border.md](./T0002-decorated-box-fill-and-border.md) | DecoratedBox Fill and Border | Renders layout-neutral color, uniform border, and per-corner radii around a normal child. |
-| T0003 | [T0003-layered-outer-shadows.md](./T0003-layered-outer-shadows.md) | Layered Outer Shadows | Renders ordered outer shadows with offset, blur, spread, and alpha. |
 | T0004 | [T0004-rounded-widget-clipping-and-hit-testing.md](./T0004-rounded-widget-clipping-and-hit-testing.md) | Rounded Widget Clipping and Hit Testing | Applies hard-edge and anti-aliased rounded clips consistently to normal child paint and pointer targeting. |
 | T0005 | [T0005-rounded-custom-paint-clipping.md](./T0005-rounded-custom-paint-clipping.md) | Rounded CustomPaint Clipping | Makes external Terminal-style draws obey the same rounded child clip without changing provider contracts. |
 | T0006 | [T0006-terminal-decoration-preset.md](./T0006-terminal-decoration-preset.md) | Terminal Decoration Preset | Applies the confirmed terminal radius and shadow while preserving the actual 2dp inset and Acrylic behavior. |
+
+## Historical Contract Destinations
+
+T0003 (Layered Outer Shadows) retains its stable historical ID here; its contract is preserved in [spec 0009 Solution](../../spec/0009-widget-decoration-and-terminal-chrome.md#solution) and [Test Plan](../../spec/0009-widget-decoration-and-terminal-chrome.md#test-plan), including stable shadow SceneItem identity when ineffective entries are filtered. Rounded clipping and the terminal preset consume that shadow contract, including ancestor-only shadow clipping and retained ordering, rather than depending on a separate shadow ticket. Integrated acceptance and preset reconciliation remain unresolved.

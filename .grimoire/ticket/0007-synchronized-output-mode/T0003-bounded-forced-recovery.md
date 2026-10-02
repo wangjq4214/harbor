@@ -18,7 +18,7 @@ An unclosed synchronized batch remains visibly fresh because the Runtime force-p
 
 ## Approach
 
-1. Build on T0002's synchronized state and T0001's generic distinction between ordinary deferred and forced-compatible presentation.
+1. Build on [Spec 0007's synchronized batch state](../../spec/0007-synchronized-output-mode.md#solution) and T0001's generic distinction between ordinary deferred and forced-compatible presentation.
 2. Have the external schedule provider indicate that recovery remains necessary while synchronization is active; do not let Terminal acquire or present a surface.
 3. Extend Runtime scheduling so its monotonic deadline coexists with cursor blink, autoscroll, redraw coalescing, and host deadlines.
 4. At each due deadline, use the normal frame/presenter flow for a current terminal frame, then arm the next recovery deadline only while the mode remains enabled.
@@ -27,7 +27,7 @@ An unclosed synchronized batch remains visibly fresh because the Runtime force-p
 ## Blocked by
 
 - T0001 — Uses the generic presentation-eligibility and forced-present contract.
-- T0002 — Requires concrete synchronized state and ordinary batch suppression.
+- [Spec 0007 synchronized batch contract](../../spec/0007-synchronized-output-mode.md#solution) — requires concrete nested state, ordinary batch suppression, and final-disable release.
 
 ## Blocks
 

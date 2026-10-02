@@ -42,6 +42,8 @@ On primary resize reflow, ordinary default-style, unprotected, non-hyperlinked s
 
 ### Logical stream and physical projection
 
+Keep one crate-internal logical decoder shared by copy and reflow, independent of selection ownership, and one shared logical offset/affinity and content-anchor vocabulary. These internal contracts do not stabilize a public anchor API outside `harbor-terminal`.
+
 Decode retained primary rows into a temporary logical atom stream shared by reflow and copy:
 
 - a glyph atom carries its character, width of one or two cells, attributes, colors, hyperlink identity, and meaningful-blank state;
@@ -49,6 +51,8 @@ Decode retained primary rows into a temporary logical atom stream shared by refl
 - a valid wide base/continuation pair becomes one width-two atom;
 - continuation cells are not independent content; and
 - generated padding used to avoid splitting a wide atom at the right edge is excluded from the logical stream and recreated during projection.
+
+Malformed or orphan wide cells must be rejected or normalized through existing wide-cell invariants, not silently decoded as independent content.
 
 A continuation-row soft-wrap marker joins adjacent physical rows. A non-wrapped row boundary creates a hard break, including each explicit blank line. Before packing a primary logical line into the new width, remove its maximal ordinary trailing-space suffix except any portion needed by a live or saved cursor. Reprojection packs the remaining complete atoms, regenerates continuation metadata and wide-edge padding, and never splits a width-two atom.
 

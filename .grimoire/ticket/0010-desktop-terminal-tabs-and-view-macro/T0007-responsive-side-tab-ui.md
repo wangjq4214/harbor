@@ -28,11 +28,11 @@ The Harbor main window uses a macro-authored, keyboard-accessible vertical tab r
 ## Blocked by
 
 - T0001 — Flex allocation.
-- T0002 — Keyed dynamic children.
-- T0003 — View macro.
+- [Spec 0010 construction and reconciliation contract](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#macro-support-api) — Dynamic children require public child attachment and explicit sibling keys that preserve state/focus through close, insert, and reorder.
+- [Spec 0010 view macro contract](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#declarative-view-construction-contract) — Product composition consumes Rust-expression syntax and expansion semantics, with handwritten equivalence remaining independently verified.
 - T0004 — Interaction, focus, commands, and theme.
 - T0005 — Rail scrolling and allocation observation.
-- T0006 — Tab/session model.
+- [Spec 0010 tab/session contract](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#application-model-and-boundaries) — Bind the UI to independent sessions, stable TabIds/draw IDs, tab-qualified events, and active bridge registrations.
 
 ## Blocks
 

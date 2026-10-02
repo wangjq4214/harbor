@@ -17,7 +17,7 @@ Permitted terminal input continues to produce the same terminal and PTY behavior
 
 ## Approach
 
-1. Replace terminal-internal widget event imports with the terminal-owned event family from T0001, including every currently supported keyboard, IME, pointer, wheel, and focus path.
+1. Replace terminal-internal widget event imports with the terminal-owned `TerminalEvent` family defined by [Spec 0005's terminal boundary contract](../../spec/0005-terminal-widget-boundary-migration.md#solution), including every currently supported keyboard, IME, pointer, wheel, and focus path.
 2. Preserve terminal-side event encoding and scrollback semantics while changing only the event representation at its boundary.
 3. Extend `TerminalWidgetBridge` with explicit `UiEvent` to `TerminalEvent` adaptation and a stable bridge draw-ID access point for App routing.
 4. Update `src/app.rs` to drain the existing deferred external input, apply the existing cross-window gate and identifier match, then delegate the permitted event to the bridge.
@@ -25,8 +25,8 @@ Permitted terminal input continues to produce the same terminal and PTY behavior
 
 ## Blocked by
 
-- T0001 — supplies `TerminalEvent` and supporting terminal input types.
-- T0002 — supplies `TerminalWidgetBridge` and its bridge-owned external draw identifier.
+- [Spec 0005 terminal boundary contract](../../spec/0005-terminal-widget-boundary-migration.md#solution) — requires `TerminalEvent` and supporting terminal input types.
+- [Spec 0005 bridge Component contract](../../spec/0005-terminal-widget-boundary-migration.md#use-a-root-level-bridge-component) — requires `TerminalWidgetBridge` and its bridge-owned external draw identifier.
 
 ## Blocks
 

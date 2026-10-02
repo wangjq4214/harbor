@@ -28,7 +28,7 @@ A normal child subtree wrapped by `DecoratedBox` obeys `HardEdge` or `AntiAlias`
 ## Blocked by
 
 - T0001 — Supplies `ClipBehavior`, normalized radii, and retained clip contracts.
-- T0003 — Stabilizes the shared decoration, scene, and renderer files before clipping extends them.
+- [Spec 0009 shadow contract](../../spec/0009-widget-decoration-and-terminal-chrome.md#test-plan) — Preserve shadow ordering and stable retained identity in the shared decoration/scene/renderer path, including filtered ineffective entries, before extending it with child-only clipping.
 
 ## Blocks
 

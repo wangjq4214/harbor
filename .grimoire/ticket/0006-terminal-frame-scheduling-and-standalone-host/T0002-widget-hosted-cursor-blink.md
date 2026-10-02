@@ -10,7 +10,7 @@ A Terminal embedded through `TerminalWidgetBridge` visibly blinks while idle bec
 
 ## Layers
 
-- [ ] **harbor-terminal state and rendering:** Consume T0001's Frame Demand from the bridge and render the resulting cursor phase only into the Runtime-provided render pass.
+- [ ] **harbor-terminal state and rendering:** Consume the shared Frame Demand defined by [Spec 0006](../../spec/0006-terminal-frame-scheduling-and-standalone-host.md#use-one-host-neutral-frame-demand-contract) from the bridge and render the resulting cursor phase only into the Runtime-provided render pass.
 - [ ] **harbor-widget Runtime / CustomPaint:** Extend external draw registration with a scheduling callback, collect its demand before idle, merge the earliest deadline into Runtime scheduling, and register the terminal bridge callback beside its draw provider.
 - [ ] **Runtime Host / winit-wgpu adapter:** Apply the merged Runtime effects through `FrameScheduler` and the feature-gated winit integration; suppress deadline wakes while non-drawable and request a recovery frame when drawable again.
 - [ ] **Verification:** Add widget/runtime and winit contract tests plus an end-to-end bridge scenario for idle blink, reset after routed input, and surface suspension/recovery.
@@ -25,7 +25,7 @@ A Terminal embedded through `TerminalWidgetBridge` visibly blinks while idle bec
 
 ## Blocked by
 
-- T0001 — provides the Frame Demand contract and reset semantics.
+- [Spec 0006 Frame Demand contract](../../spec/0006-terminal-frame-scheduling-and-standalone-host.md#solution) — requires the shared demand and reset-to-visible semantics.
 
 ## Blocks
 

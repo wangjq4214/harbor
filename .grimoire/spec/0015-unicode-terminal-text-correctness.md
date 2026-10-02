@@ -51,6 +51,12 @@ Add deterministic parser/screen tests for PTY fragmentation, zero-width retentio
 
 For each delivered increment, record focused tests and reproducible Windows end-to-end steps, revision and dirty-tree scope, OS/ConPTY/application versions, expected versus observed outcome, artifacts, known exclusions, and honest PASS / FAIL / NOT RUN / BLOCKED statuses under `docs/verification/` or retrievable CI evidence. Run or account for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; update status/protocol claims only for evidenced behavior. See [Validation](../../docs/validation.md). Parser/model tests alone do not prove Windows runtime compatibility.
 
+### Unresolved acceptance and discrepancy
+
+Historical T0001 (combining) and T0002 (VS/ZWJ) completion records remain in [combining evidence](../../docs/verification/combining-text-t0001.md) and [variation/ZWJ evidence](../../docs/verification/variation-zwj-t0002.md); their completion does not establish every runtime matrix row. The variation/ZWJ record documents a DECAWM-disabled final-column selector retaining raw text with a one-cell projection, in conflict with R2's two-cell emoji policy. This discrepancy remains unresolved; retiring the implementation tickets neither authorizes that exception nor changes R2.
+
+[Integrated Windows evidence](../../docs/verification/unicode-terminal-text-t0003.md) reports the documented combining, selector/ZWJ width, delayed-write, wrapping-edge, edit/erase and clipboard subset. It does not document font/DPI-change or resize/alternate/eviction executions, a named application workload/version, full runtime and dirty-tree provenance/artifacts, or the integrated `cargo test --workspace` gate (it lists package tests). Delayed writes alone do not establish distinct PTY reads. T0003's Done status and checked acceptance do not fill these evidence gaps or resolve the no-wrap discrepancy; the Verification obligations above remain applicable.
+
 ## Out of scope
 
 Full complex-script shaping and optional font ligatures are not prerequisites for basic combining correctness. IME preedit is not this work. Search UI, a wholesale screen-buffer rewrite, and blanket claims of emoji/font interoperability are not authorized by #153. N01's outstanding Windows/performance acceptance is tracked separately, not declared complete here.
