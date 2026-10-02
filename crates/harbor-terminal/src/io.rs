@@ -312,43 +312,40 @@ impl TerminalSession {
         }
     }
 
+    /// Receive one event at a time, never collecting a refilling queue into a vector.
     /// A wake stays pending until the queue is empty. The second receive
     /// after clearing it closes the producer/consumer race.
-    fn drain_events(&mut self) -> (Vec<ReaderEvent>, bool) {
+    fn next_event(&mut self) -> Result<Option<ReaderEvent>, TryRecvError> {
         let Some(pty) = self.pty.as_ref() else {
-            return (Vec::new(), false);
+            return Ok(None);
         };
-        let mut events = Vec::new();
-        loop {
-            match pty.output.try_recv() {
-                Ok(event) => events.push(event),
-                Err(TryRecvError::Empty) => {
-                    pty.wake_pending.store(false, Ordering::Release);
-                    match pty.output.try_recv() {
-                        Ok(event) => events.push(event),
-                        Err(TryRecvError::Empty) => return (events, false),
-                        Err(TryRecvError::Disconnected) => return (events, true),
-                    }
+        match pty.output.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(TryRecvError::Empty) => {
+                pty.wake_pending.store(false, Ordering::Release);
+                match pty.output.try_recv() {
+                    Ok(event) => Ok(Some(event)),
+                    Err(TryRecvError::Empty) => Ok(None),
+                    Err(error) => Err(error),
                 }
-                Err(TryRecvError::Disconnected) => {
-                    pty.wake_pending.store(false, Ordering::Release);
-                    events.extend(pty.output.try_iter());
-                    return (events, true);
-                }
+            }
+            Err(error) => {
+                pty.wake_pending.store(false, Ordering::Release);
+                Err(error)
             }
         }
     }
-    /// Pause the reader with an epoch-qualified acknowledgement. Return chunks
-    /// even on failure so the logical parser processes them under old geometry.
+    /// Pause with an epoch-qualified acknowledgement, streaming every chunk under old geometry.
+    /// The callback receives the session so ordinary protocol replies use the same PTY writer.
     fn acquire_resize_barrier(
         &mut self,
-    ) -> (Vec<Vec<u8>>, bool, anyhow::Result<Option<ResizeBarrier>>) {
+        mut process_bytes: impl FnMut(&mut Self, &[u8]),
+    ) -> (bool, anyhow::Result<Option<ResizeBarrier>>) {
         let Some(pty) = self.pty.as_mut() else {
-            return (Vec::new(), false, Ok(None));
+            return (false, Ok(None));
         };
         if pty.control.is_none() && pty.test_interrupt.is_none() {
             return (
-                Vec::new(),
                 false,
                 Err(anyhow::anyhow!(
                     "cannot resize a terminal with an active reader but no interrupt capability"
@@ -358,7 +355,6 @@ impl TerminalSession {
         let epoch = pty.next_barrier_epoch;
         let Some(next_epoch) = epoch.checked_add(1) else {
             return (
-                Vec::new(),
                 false,
                 Err(anyhow::anyhow!("PTY resize barrier epoch exhausted")),
             );
@@ -367,7 +363,6 @@ impl TerminalSession {
         let commands = pty.commands.clone();
         if commands.send(ReaderCommand::Barrier(epoch)).is_err() {
             return (
-                Vec::new(),
                 false,
                 Err(anyhow::anyhow!(
                     "terminal reader stopped before resize barrier"
@@ -377,7 +372,6 @@ impl TerminalSession {
         let barrier = ResizeBarrier { commands, epoch };
         let deadline = Instant::now() + pty.barrier_timeout;
         let mut acquisition = self.interrupt_reader_for_barrier();
-        let mut chunks = Vec::new();
         let mut acknowledged = false;
         let mut disconnected = false;
         while acquisition.is_ok() && !acknowledged {
@@ -398,7 +392,7 @@ impl TerminalSession {
                 .output
                 .recv_timeout(wait);
             match event {
-                Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
+                Ok(ReaderEvent::Bytes(bytes)) => process_bytes(self, &bytes),
                 Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
                     acknowledged = true;
                     if let Some(pty) = self.pty.as_ref() {
@@ -422,25 +416,26 @@ impl TerminalSession {
         // pre-barrier chunk must remain parseable against the old grid.
         if let Some(pty) = self.pty.as_ref() {
             pty.wake_pending.store(false, Ordering::Release);
-            loop {
-                match pty.output.try_recv() {
-                    Ok(ReaderEvent::Bytes(bytes)) => chunks.push(bytes),
-                    Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
-                        acknowledged = true;
-                    }
-                    Ok(ReaderEvent::BarrierAck(_)) => {}
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
+        }
+        while let Some(pty) = self.pty.as_ref() {
+            let event = pty.output.try_recv();
+            match event {
+                Ok(ReaderEvent::Bytes(bytes)) => process_bytes(self, &bytes),
+                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
+                    acknowledged = true;
+                }
+                Ok(ReaderEvent::BarrierAck(_)) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
                 }
             }
         }
         if acquisition.is_ok() {
             debug_assert!(acknowledged);
         }
-        (chunks, disconnected, acquisition.map(|()| Some(barrier)))
+        (disconnected, acquisition.map(|()| Some(barrier)))
     }
 
     fn interrupt_reader_for_barrier(&self) -> anyhow::Result<()> {
@@ -574,13 +569,29 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
+        Self::feed_parser_bytes(
+            &mut self.parser,
+            &mut self.suppress_scroll_snap,
+            screen,
+            pointer,
+            bytes,
+        );
+    }
+
+    fn feed_parser_bytes(
+        parser: &mut TerminalParser,
+        suppress_scroll_snap: &mut bool,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        bytes: &[u8],
+    ) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
             let before_projection = (pointer.has_selection_state()
                 || screen.requires_anchor_baseline())
             .then(|| screen.content_projection().ok())
             .flatten();
-            let result = self.parser.put_bytes(screen, remaining);
+            let result = parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
             match screen.finish_anchor_mutations(before_projection.as_ref()) {
                 Ok((mutations, projection)) => {
@@ -592,7 +603,7 @@ impl TerminalIo {
                 }
             }
             if let Some(action) = result.alt_request {
-                self.suppress_scroll_snap = false;
+                *suppress_scroll_snap = false;
                 pointer.apply_alt_transition(screen, action);
             }
         }
@@ -605,33 +616,74 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         output: &[u8],
     ) {
+        Self::feed_parser_bytes_snapped(
+            &mut self.parser,
+            &mut self.suppress_scroll_snap,
+            screen,
+            pointer,
+            output,
+        );
+    }
+
+    fn feed_parser_bytes_snapped(
+        parser: &mut TerminalParser,
+        suppress_scroll_snap: &mut bool,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        output: &[u8],
+    ) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
         }
-        if !screen.is_alt() && !self.suppress_scroll_snap {
+        if !screen.is_alt() && !*suppress_scroll_snap {
             screen.scroll_to_bottom();
         }
-        self.feed_pty_output(screen, pointer, output);
+        Self::feed_parser_bytes(parser, suppress_scroll_snap, screen, pointer, output);
     }
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
+    }
+    pub(crate) fn is_session_closed(&self) -> bool {
+        self.session.closed_observed
+            || self
+                .session
+                .pty
+                .as_ref()
+                .is_some_and(|pty| pty.reader.as_ref().is_some_and(JoinHandle::is_finished))
+    }
+
+    pub(crate) fn clipboard_delivery(&self) -> crate::ClipboardDelivery {
+        self.parser.clipboard_delivery()
+    }
+
+    pub(crate) fn set_clipboard_delivery(&mut self, delivery: crate::ClipboardDelivery) {
+        self.parser
+            .set_clipboard_delivery(if self.is_session_closed() {
+                crate::ClipboardDelivery::Discard
+            } else {
+                delivery
+            });
     }
 
     // ── PTY I/O ───────────────────────────────────────────────────────
 
     /// Drains ordered PTY bytes and parses them on the logical thread.
     pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
-        let (events, disconnected) = self.session.drain_events();
         let mut consumed_bytes = false;
-        for event in events {
-            if let ReaderEvent::Bytes(bytes) = event {
-                consumed_bytes = true;
-                self.process_reader_bytes(screen, pointer, &bytes);
+        loop {
+            match self.session.next_event() {
+                Ok(Some(ReaderEvent::Bytes(bytes))) => {
+                    consumed_bytes = true;
+                    self.process_reader_bytes(screen, pointer, &bytes);
+                }
+                Ok(Some(ReaderEvent::BarrierAck(_))) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    self.observe_reader_disconnect(screen);
+                    break;
+                }
             }
-        }
-        if disconnected {
-            self.observe_reader_disconnect(screen);
         }
         consumed_bytes
     }
@@ -642,10 +694,18 @@ impl TerminalIo {
         screen: &mut Screen,
         pointer: &mut PointerInteraction,
     ) -> anyhow::Result<Option<ResizeBarrier>> {
-        let (chunks, disconnected, result) = self.session.acquire_resize_barrier();
-        for bytes in chunks {
-            self.process_reader_bytes(screen, pointer, &bytes);
-        }
+        let parser = &mut self.parser;
+        let suppress_scroll_snap = &mut self.suppress_scroll_snap;
+        let (disconnected, result) = self.session.acquire_resize_barrier(|session, bytes| {
+            Self::process_reader_bytes_with(
+                parser,
+                suppress_scroll_snap,
+                session,
+                screen,
+                pointer,
+                bytes,
+            );
+        });
         if disconnected {
             self.observe_reader_disconnect(screen);
         }
@@ -658,14 +718,30 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
-        // Resize does not provide an output-stream boundary. Clear/home/cursor
-        // sequences are also ordinary application output, so never discard bytes
-        // by guessing their source. Keep partial sequences in the VT parser and
-        // service queries (including ConPTY cursor synchronization) as usual.
-        self.feed_pty_output_snapped(screen, pointer, bytes);
+        Self::process_reader_bytes_with(
+            &mut self.parser,
+            &mut self.suppress_scroll_snap,
+            &mut self.session,
+            screen,
+            pointer,
+            bytes,
+        );
+    }
+
+    fn process_reader_bytes_with(
+        parser: &mut TerminalParser,
+        suppress_scroll_snap: &mut bool,
+        session: &mut TerminalSession,
+        screen: &mut Screen,
+        pointer: &mut PointerInteraction,
+        bytes: &[u8],
+    ) {
+        // Resize does not provide an output-stream boundary. Keep partial sequences
+        // and service protocol queries under the current (pre-resize) geometry.
+        Self::feed_parser_bytes_snapped(parser, suppress_scroll_snap, screen, pointer, bytes);
         let replies = screen.drain_replies();
         if !replies.is_empty()
-            && let Err(error) = self.write_pty(&replies)
+            && let Err(error) = session.write_pty(&replies)
         {
             tracing::warn!(error = %error, "failed to write terminal replies to pty");
         }
@@ -673,6 +749,7 @@ impl TerminalIo {
 
     fn observe_reader_disconnect(&mut self, screen: &mut Screen) {
         if self.session.observe_disconnect() {
+            self.parser.close_session();
             screen.clear_synchronized_output();
         }
     }
@@ -769,6 +846,323 @@ impl TerminalIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
+        for interrupt_failure in [false, true] {
+            const CHUNKS: usize = 201;
+            let generated = Arc::new(AtomicUsize::new(0));
+            let processed = Arc::new(AtomicUsize::new(0));
+            let published = Arc::new(AtomicUsize::new(0));
+            let high_water = Arc::new(AtomicUsize::new(0));
+            let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+            let (commands, command_rx) = mpsc::channel();
+            let (full_tx, full_rx) = mpsc::channel();
+            let (all_queued_tx, all_queued_rx) = mpsc::channel();
+            let producer_generated = Arc::clone(&generated);
+            let producer_processed = Arc::clone(&processed);
+            let producer_published = Arc::clone(&published);
+            let producer_high_water = Arc::clone(&high_water);
+            let reader = std::thread::spawn(move || {
+                for index in 0..CHUNKS {
+                    let count = producer_generated.fetch_add(1, Ordering::SeqCst) + 1;
+                    producer_high_water.fetch_max(
+                        count - producer_processed.load(Ordering::SeqCst),
+                        Ordering::SeqCst,
+                    );
+                    let bytes = if index == CHUNKS - 1 {
+                        b"\x1b]0;after\x07\x1b[2;20HX\x1b[6n".to_vec()
+                    } else {
+                        let mut bytes = b"\x1b]52;c;".to_vec();
+                        bytes.extend_from_slice(&b"YWFh".repeat(1022));
+                        bytes.push(7);
+                        assert_eq!(bytes.len(), 4096);
+                        bytes
+                    };
+                    if count == PTY_QUEUE_CAPACITY + 1 {
+                        full_tx.send(()).unwrap();
+                    }
+                    output_tx.send(ReaderEvent::Bytes(bytes)).unwrap();
+                    producer_published.fetch_add(1, Ordering::SeqCst);
+                }
+                let ReaderCommand::Barrier(epoch) = command_rx.recv().unwrap() else {
+                    panic!("missing barrier");
+                };
+                output_tx.send(ReaderEvent::BarrierAck(epoch - 1)).unwrap();
+                output_tx.send(ReaderEvent::BarrierAck(epoch)).unwrap();
+                all_queued_tx.send(()).unwrap();
+                assert_eq!(command_rx.recv().unwrap(), ReaderCommand::Resume(epoch));
+            });
+            full_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            #[derive(Clone)]
+            struct Writer(Arc<std::sync::Mutex<Vec<u8>>>);
+            impl Write for Writer {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut session = TerminalSession::with_pty(TerminalPty {
+                output,
+                commands,
+                writer: Box::new(Writer(Arc::clone(&replies))),
+                reader: Some(reader),
+                control: None,
+                wake_pending: Arc::new(AtomicBool::new(true)),
+                next_barrier_epoch: 7,
+                test_interrupt: Some(Arc::new(move |_| {
+                    if interrupt_failure {
+                        anyhow::bail!("injected interrupt failure");
+                    }
+                    Ok(())
+                })),
+                barrier_timeout: Duration::from_secs(5),
+            });
+            let mut parser = TerminalParser::default();
+            let mut suppress_scroll_snap = false;
+            let mut screen = Screen::new(3, 20);
+            let mut pointer = PointerInteraction::default();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (disconnected, result) = session.acquire_resize_barrier(|session, bytes| {
+                assert_eq!(screen.cols(), 20, "callback must use pre-resize geometry");
+                TerminalIo::process_reader_bytes_with(
+                    &mut parser,
+                    &mut suppress_scroll_snap,
+                    session,
+                    &mut screen,
+                    &mut pointer,
+                    bytes,
+                );
+                assert!(format!("{parser:?}").matches("ClipboardWrite(").count() <= 1);
+                let count = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                // Keep the queue full deterministically, including in the final try_recv loop.
+                let required = (count + PTY_QUEUE_CAPACITY).min(CHUNKS);
+                while published.load(Ordering::SeqCst) < required {
+                    assert!(Instant::now() < deadline, "producer failed to refill");
+                    std::thread::yield_now();
+                }
+                if count == CHUNKS {
+                    all_queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+            });
+            assert!(!disconnected);
+            assert_eq!(processed.load(Ordering::SeqCst), CHUNKS);
+            assert!(
+                (PTY_QUEUE_CAPACITY + 1..=PTY_QUEUE_CAPACITY + 2)
+                    .contains(&high_water.load(Ordering::SeqCst))
+            );
+            let events = parser.drain_output_events();
+            assert_eq!(events.len(), 2);
+            assert!(
+                matches!(&events[0], crate::TerminalOutputEvent::ClipboardWrite(write) if write.as_str().len() == 3066)
+            );
+            assert_eq!(
+                events[1],
+                crate::TerminalOutputEvent::TitleChanged("after".into())
+            );
+            assert_eq!(screen.row_text(1).chars().nth(19), Some('X'));
+            assert_eq!(*replies.lock().unwrap(), b"\x1b[2;20R");
+            assert!(
+                !session
+                    .pty
+                    .as_ref()
+                    .unwrap()
+                    .wake_pending
+                    .load(Ordering::Acquire)
+            );
+            if interrupt_failure {
+                assert!(result.is_err());
+            } else {
+                let barrier = result.unwrap().unwrap();
+                assert_eq!(barrier.epoch, 7);
+                assert!(
+                    !session
+                        .pty
+                        .as_ref()
+                        .unwrap()
+                        .reader
+                        .as_ref()
+                        .unwrap()
+                        .is_finished()
+                );
+                drop(barrier);
+            }
+            session
+                .pty
+                .as_mut()
+                .unwrap()
+                .reader
+                .take()
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn osc52_streaming_refill_retains_only_queue_plus_current_chunk() {
+        struct FloodReader {
+            generated: Arc<AtomicUsize>,
+            processed: Arc<AtomicUsize>,
+            high_water: Arc<AtomicUsize>,
+            full: Sender<()>,
+            fixture: Vec<u8>,
+        }
+        impl Read for FloodReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let index = self.generated.load(Ordering::SeqCst);
+                if index == 200 {
+                    return Ok(0);
+                }
+                buffer[..self.fixture.len()].copy_from_slice(&self.fixture);
+                let generated = self.generated.fetch_add(1, Ordering::SeqCst) + 1;
+                let outstanding = generated - self.processed.load(Ordering::SeqCst);
+                self.high_water.fetch_max(outstanding, Ordering::SeqCst);
+                if generated == PTY_QUEUE_CAPACITY + 1 {
+                    self.full.send(()).unwrap();
+                }
+                Ok(self.fixture.len())
+            }
+        }
+        let generated = Arc::new(AtomicUsize::new(0));
+        let processed = Arc::new(AtomicUsize::new(0));
+        let high_water = Arc::new(AtomicUsize::new(0));
+        let (full_tx, full_rx) = mpsc::channel();
+        let mut fixture = b"\x1b]52;c;".to_vec();
+        fixture.extend_from_slice(&b"YWFh".repeat(1022));
+        fixture.push(7);
+        assert_eq!(fixture.len(), 4096);
+        let mut io = TerminalIo::new(
+            FloodReader {
+                generated: Arc::clone(&generated),
+                processed: Arc::clone(&processed),
+                high_water: Arc::clone(&high_water),
+                full: full_tx,
+                fixture,
+            },
+            std::io::sink(),
+            None,
+            || true,
+        );
+        // Start with a full queue and a producer blocked while publishing one more chunk.
+        full_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut screen = Screen::new(2, 20);
+        let mut pointer = PointerInteraction::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match io.session.next_event() {
+                Ok(Some(ReaderEvent::Bytes(bytes))) => {
+                    io.process_reader_bytes(&mut screen, &mut pointer, &bytes);
+                    processed.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(Some(ReaderEvent::BarrierAck(_))) => unreachable!(),
+                Ok(None) => {
+                    assert!(Instant::now() < deadline, "refilling reader did not finish");
+                    std::thread::yield_now();
+                }
+                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => unreachable!(),
+            }
+        }
+        assert_eq!(processed.load(Ordering::SeqCst), 200);
+        // 32 queued chunks + one being parsed + one producer-local/read chunk.
+        assert!(
+            (PTY_QUEUE_CAPACITY + 1..=PTY_QUEUE_CAPACITY + 2)
+                .contains(&high_water.load(Ordering::SeqCst))
+        );
+        let events = io.drain_output_events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], crate::TerminalOutputEvent::ClipboardWrite(write) if write.as_str().len() == 3066)
+        );
+        io.observe_reader_disconnect(&mut screen);
+        assert!(io.is_session_closed());
+        assert!(
+            !io.session
+                .pty
+                .as_ref()
+                .unwrap()
+                .wake_pending
+                .load(Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn osc52_finished_reader_is_closed_before_ui_observes_disconnect() {
+        let mut io = TerminalIo::new(std::io::empty(), std::io::sink(), None, || true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !io
+            .session
+            .pty
+            .as_ref()
+            .unwrap()
+            .reader
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            assert!(Instant::now() < deadline, "EOF reader did not finish");
+            std::thread::yield_now();
+        }
+        assert!(!io.session.closed_observed);
+        assert!(io.is_session_closed());
+        io.set_clipboard_delivery(crate::ClipboardDelivery::Latest);
+        let mut screen = Screen::new(2, 20);
+        let mut pointer = PointerInteraction::default();
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b]52;c;Zg==\x07");
+        assert!(io.drain_output_events().is_empty());
+        io.drain(&mut screen, &mut pointer);
+        assert!(io.session.closed_observed);
+    }
+
+    #[test]
+    fn osc52_observed_eof_releases_pending_clipboard_but_preserves_other_events() {
+        let mut io = TerminalIo::new(std::io::empty(), std::io::sink(), None, || true);
+        // Joining the EOF reader makes disconnect observation deterministic, without sleeps.
+        io.session
+            .pty
+            .as_mut()
+            .unwrap()
+            .reader
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        let mut screen = Screen::new(2, 20);
+        let mut pointer = PointerInteraction::default();
+        assert!(!io.is_session_closed());
+        io.feed_pty_output(
+            &mut screen,
+            &mut pointer,
+            b"\x1b]0;before\x07\x1b]52;c;Zg==\x07\x1b]0;after\x07",
+        );
+        io.drain(&mut screen, &mut pointer);
+        assert!(io.is_session_closed());
+        assert_eq!(
+            io.drain_output_events(),
+            vec![
+                crate::TerminalOutputEvent::TitleChanged("before".into()),
+                crate::TerminalOutputEvent::TitleChanged("after".into()),
+            ]
+        );
+        // A stale delivery reconfiguration cannot resurrect clipboard work on this session.
+        io.set_clipboard_delivery(crate::ClipboardDelivery::Latest);
+        io.feed_pty_output(
+            &mut screen,
+            &mut pointer,
+            b"\x1b]52;c;Zw==\x07\x1b]0;stale\x07",
+        );
+        assert_eq!(
+            io.drain_output_events(),
+            vec![crate::TerminalOutputEvent::TitleChanged("stale".into())]
+        );
+        io.drain(&mut screen, &mut pointer);
+        assert!(io.is_session_closed());
+    }
 
     use std::sync::atomic::AtomicUsize;
 

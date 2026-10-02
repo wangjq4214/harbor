@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use harbor_terminal::{
-    ShellIntegrationMarker, Terminal, TerminalOutputEvent, TerminalSize, WorkingDirectoryMetadata,
+    ClipboardDelivery, ClipboardWrite, ShellIntegrationMarker, Terminal, TerminalOutputEvent,
+    TerminalSize, WorkingDirectoryMetadata,
 };
 use harbor_widget::scene::primitive::ExternalDrawId;
 
@@ -142,14 +143,31 @@ impl TabActionOutcome {
     }
 }
 
+/// A bounded clipboard candidate carrying its stable originating session.
+/// Routing alone does not authorize the host clipboard effect.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SessionClipboardWrite {
+    pub source: TabId,
+    pub contents: ClipboardWrite,
+}
+
+impl std::fmt::Debug for SessionClipboardWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionClipboardWrite")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Classification of one tab-qualified PTY wake.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TabOutputOutcome {
     pub request_active_invalidation: bool,
     pub unread_changed: bool,
     pub title_changed: bool,
     pub active_title_changed: bool,
     pub metadata_changed: bool,
+    pub clipboard_write: Option<SessionClipboardWrite>,
 }
 
 fn normalize_shell_title(title: String, shell_fallback: &str) -> String {
@@ -181,6 +199,7 @@ pub struct TabManager {
     next_tab_id: u64,
     next_draw_id: ExternalDrawId,
     last_broadcast_size: Option<TerminalSize>,
+    clipboard_delivery: Option<ClipboardDelivery>,
 }
 
 impl Default for TabManager {
@@ -198,6 +217,7 @@ impl TabManager {
             next_tab_id: 1,
             next_draw_id: ExternalDrawId::new(1),
             last_broadcast_size: None,
+            clipboard_delivery: None,
         }
     }
 
@@ -216,6 +236,13 @@ impl TabManager {
             ));
         }
 
+        if let Some(delivery) = self.clipboard_delivery {
+            resources
+                .terminal
+                .lock()
+                .map_err(|_| anyhow!("terminal lock poisoned during tab creation"))?
+                .set_clipboard_delivery(delivery);
+        }
         let title = resources.shell_fallback.clone();
         self.tabs.push(TerminalTab {
             id,
@@ -241,6 +268,38 @@ impl TabManager {
 
     pub fn active_id(&self) -> Option<TabId> {
         self.active
+    }
+
+    /// Session eligibility only; the host must separately validate window focus.
+    pub fn active_live(&self, id: TabId) -> bool {
+        self.active == Some(id)
+            && self.tabs.iter().any(|tab| {
+                tab.id == id
+                    && tab
+                        .terminal
+                        .lock()
+                        .is_ok_and(|terminal| !terminal.is_session_closed())
+            })
+    }
+
+    /// Bounded display-only label, never a replacement for stable source identity.
+    pub fn source_label(&self, id: TabId) -> String {
+        const MAX_TITLE_CHARS: usize = 80;
+        match self.tabs.iter().find(|tab| tab.id == id) {
+            Some(tab) if !tab.title.is_empty() => tab.title.chars().take(MAX_TITLE_CHARS).collect(),
+            _ => format!("Session {id}"),
+        }
+    }
+
+    /// Overrides delivery on all current and subsequently created sessions.
+    /// Without an override, each factory's terminal delivery setting is preserved.
+    pub fn set_clipboard_delivery(&mut self, delivery: ClipboardDelivery) {
+        self.clipboard_delivery = Some(delivery);
+        for tab in &self.tabs {
+            if let Ok(mut terminal) = tab.terminal.lock() {
+                terminal.set_clipboard_delivery(delivery);
+            }
+        }
     }
 
     /// Selects the right neighbor, then the left, for rail focus after a close.
@@ -404,8 +463,15 @@ impl TabManager {
         let previous_title = tab.title.clone();
         let previous_working_directory = tab.working_directory.clone();
         let previous_shell_integration = tab.shell_integration;
+        let mut clipboard_write = None;
         for event in output_events {
             match event {
+                TerminalOutputEvent::ClipboardWrite(contents) => {
+                    clipboard_write = Some(SessionClipboardWrite {
+                        source: id,
+                        contents,
+                    });
+                }
                 TerminalOutputEvent::TitleChanged(title) => {
                     tab.title = normalize_shell_title(title, &tab.shell_fallback);
                 }
@@ -431,6 +497,7 @@ impl TabManager {
                 title_changed,
                 active_title_changed: title_changed,
                 metadata_changed,
+                clipboard_write,
             }
         } else {
             let unread_changed = ingested_output && !std::mem::replace(&mut tab.unread, true);
@@ -440,6 +507,7 @@ impl TabManager {
                 title_changed,
                 active_title_changed: false,
                 metadata_changed,
+                clipboard_write,
             }
         }
     }
@@ -530,6 +598,286 @@ mod tests {
             .find(|tab| tab.id == id)
             .map(|tab| Arc::clone(&tab.terminal))
             .unwrap()
+    }
+
+    #[test]
+    fn clipboard_output_preserves_sources_and_unrelated_events() {
+        let mut manager = TabManager::new();
+        let (a, _) = create(&mut manager);
+        let (b, _) = create(&mut manager);
+        terminal(&manager, a).lock().unwrap().put_bytes(
+            b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;source title\x07\x1b]7;file:///source\x07\x1b]133;A\x07\x1b]52;c;c2Vjb25k\x07",
+        );
+        terminal(&manager, b)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;;YWN0aXZl\x1b\\");
+
+        let output = manager.process_output(a);
+        assert!(output.title_changed);
+        assert!(output.metadata_changed);
+        assert!(!output.active_title_changed);
+        assert!(!output.request_active_invalidation);
+        assert!(!output.unread_changed);
+        let write = output.clipboard_write.unwrap();
+        assert_eq!(write.source, a);
+        assert_eq!(write.contents.as_str(), "second");
+        assert!(!format!("{write:?}").contains("second"));
+        assert!(!manager.active_live(write.source));
+        assert_eq!(manager.source_label(a), "source title");
+        assert_eq!(manager.active_title(), Some("test-shell"));
+        let snapshot = &manager.snapshots()[0];
+        assert_eq!(snapshot.working_directory().unwrap().path(), "/source");
+        assert_eq!(
+            snapshot.shell_integration(),
+            Some(ShellIntegrationMarker::PromptStart)
+        );
+        assert!(manager.process_output(a).clipboard_write.is_none());
+
+        let write = manager.process_output(b).clipboard_write.unwrap();
+        assert_eq!(write.source, b);
+        assert_eq!(write.contents.into_text(), "active");
+        assert!(manager.active_live(b));
+    }
+
+    #[test]
+    fn clipboard_source_eligibility_rejects_invalid_removed_and_changed_sessions() {
+        let mut manager = TabManager::new();
+        let (a, _) = create(&mut manager);
+        assert!(manager.active_live(a));
+        assert!(!manager.active_live(TabId(u64::MAX)));
+        terminal(&manager, a)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07");
+        let write = manager.process_output(a).clipboard_write.unwrap();
+        let (b, _) = create(&mut manager);
+        assert!(!manager.active_live(write.source));
+        manager.close(a);
+        assert!(!manager.active_live(write.source));
+        assert_eq!(manager.process_output(a), TabOutputOutcome::default());
+        assert_eq!(
+            manager.process_output(TabId(u64::MAX)),
+            TabOutputOutcome::default()
+        );
+        assert!(manager.active_live(b));
+        assert_eq!(manager.source_label(a), format!("Session {a}"));
+        manager.close(b);
+        let (c, _) = create(&mut manager);
+        assert_ne!(c, a);
+        assert_ne!(c, b);
+        assert!(!manager.active_live(a));
+        assert!(!manager.active_live(b));
+    }
+
+    #[test]
+    fn clipboard_delivery_settings_apply_to_current_and_future_sessions() {
+        let mut manager = TabManager::new();
+        let (a, _) = create(&mut manager);
+        manager.set_clipboard_delivery(ClipboardDelivery::First);
+        let (b, _) = create(&mut manager);
+        for id in [a, b] {
+            terminal(&manager, id)
+                .lock()
+                .unwrap()
+                .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
+            assert_eq!(
+                manager
+                    .process_output(id)
+                    .clipboard_write
+                    .unwrap()
+                    .contents
+                    .as_str(),
+                "first"
+            );
+        }
+        manager.set_clipboard_delivery(ClipboardDelivery::Latest);
+        for id in [a, b] {
+            terminal(&manager, id)
+                .lock()
+                .unwrap()
+                .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07\x1b]52;c;invalid!\x07");
+            assert_eq!(
+                manager
+                    .process_output(id)
+                    .clipboard_write
+                    .unwrap()
+                    .contents
+                    .as_str(),
+                "second"
+            );
+        }
+        manager.set_clipboard_delivery(ClipboardDelivery::Discard);
+        let (c, _) = create(&mut manager);
+        for id in [a, b, c] {
+            terminal(&manager, id)
+                .lock()
+                .unwrap()
+                .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;still works\x07");
+            let output = manager.process_output(id);
+            assert!(output.clipboard_write.is_none());
+            assert!(output.title_changed);
+        }
+    }
+
+    #[test]
+    fn clipboard_delivery_changes_preserve_or_release_pending_candidates() {
+        let mut manager = TabManager::new();
+        let (id, _) = create(&mut manager);
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07");
+        manager.set_clipboard_delivery(ClipboardDelivery::First);
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;c2Vjb25k\x07");
+        assert_eq!(
+            manager
+                .process_output(id)
+                .clipboard_write
+                .unwrap()
+                .contents
+                .as_str(),
+            "first"
+        );
+
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07");
+        manager.set_clipboard_delivery(ClipboardDelivery::Latest);
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;c2Vjb25k\x07");
+        assert_eq!(
+            manager
+                .process_output(id)
+                .clipboard_write
+                .unwrap()
+                .contents
+                .as_str(),
+            "second"
+        );
+
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;retained title\x07");
+        manager.set_clipboard_delivery(ClipboardDelivery::Discard);
+        let output = manager.process_output(id);
+        assert!(output.clipboard_write.is_none());
+        assert!(output.title_changed);
+    }
+
+    #[test]
+    fn clipboard_factory_delivery_is_preserved_without_manager_override() {
+        let mut manager = TabManager::new();
+        manager
+            .create_tab(|_, draw_id| {
+                let resources = resources(draw_id);
+                resources
+                    .terminal
+                    .lock()
+                    .unwrap()
+                    .set_clipboard_delivery(ClipboardDelivery::First);
+                Ok(resources)
+            })
+            .unwrap();
+        let id = manager.active_id().unwrap();
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
+        assert_eq!(
+            manager
+                .process_output(id)
+                .clipboard_write
+                .unwrap()
+                .contents
+                .as_str(),
+            "first"
+        );
+    }
+
+    #[test]
+    fn closed_reader_session_is_ineligible_even_while_tab_remains_active() {
+        use std::io::Cursor;
+        use std::time::{Duration, Instant};
+
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        let mut manager = TabManager::new();
+        manager
+            .create_tab(|_, draw_id| {
+                #[allow(clippy::arc_with_non_send_sync)]
+                let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+                    4,
+                    20,
+                    Cursor::new(Vec::<u8>::new()),
+                    std::io::sink(),
+                    move || wake_tx.send(()).is_ok(),
+                )));
+                let bridge = TerminalWidgetBridge::new(
+                    draw_id,
+                    Arc::clone(&terminal),
+                    Arc::new(AtomicBool::new(false)),
+                );
+                Ok(TerminalTabResources::new(terminal, bridge, "closed-shell"))
+            })
+            .unwrap();
+        let id = manager.active_id().unwrap();
+        let terminal = terminal(&manager, id);
+        // An EOF reader may already have finished before this UI turn; no live precondition.
+        terminal
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;closing title\x07");
+        wake_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        // The EOF wake is posted just before the reader drops its sender.
+        loop {
+            terminal.lock().unwrap().drain_pty();
+            if terminal.lock().unwrap().is_session_closed() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "reader EOF was not observed");
+            std::thread::yield_now();
+        }
+        assert_eq!(manager.active_id(), Some(id));
+        assert!(!manager.active_live(id));
+        let output = manager.process_output(id);
+        assert!(output.clipboard_write.is_none());
+        assert!(output.title_changed);
+        assert_eq!(manager.active_title(), Some("closing title"));
+    }
+
+    #[test]
+    fn poisoned_clipboard_source_is_ineligible() {
+        let mut manager = TabManager::new();
+        let (id, _) = create(&mut manager);
+        let terminal = terminal(&manager, id);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = terminal.lock().unwrap();
+            panic!("synthetic lock poison");
+        }));
+        assert!(!manager.active_live(id));
+        assert_eq!(manager.process_output(id), TabOutputOutcome::default());
+    }
+
+    #[test]
+    fn clipboard_source_label_is_bounded_without_changing_the_title() {
+        let mut manager = TabManager::new();
+        let (id, _) = create(&mut manager);
+        let title = "界".repeat(100);
+        terminal(&manager, id)
+            .lock()
+            .unwrap()
+            .put_bytes(format!("\x1b]2;{title}\x07").as_bytes());
+        manager.process_output(id);
+        assert_eq!(manager.source_label(id).chars().count(), 80);
+        assert_eq!(manager.active_title(), Some(title.as_str()));
     }
 
     #[test]

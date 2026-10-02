@@ -69,6 +69,7 @@ pub(crate) struct TerminalTabFactory {
     backdrop_available: bool,
     event_proxy: EventLoopProxy<AppEvent>,
     input_gate: Arc<std::sync::atomic::AtomicBool>,
+    clipboard_delivery: harbor_terminal::ClipboardDelivery,
 }
 
 impl TerminalTabFactory {
@@ -83,6 +84,7 @@ impl TerminalTabFactory {
         backdrop_available: bool,
         event_proxy: EventLoopProxy<AppEvent>,
         input_gate: Arc<std::sync::atomic::AtomicBool>,
+        clipboard_delivery: harbor_terminal::ClipboardDelivery,
     ) -> Self {
         Self {
             gpu,
@@ -94,6 +96,7 @@ impl TerminalTabFactory {
             backdrop_available,
             event_proxy,
             input_gate,
+            clipboard_delivery,
         }
     }
 
@@ -128,6 +131,7 @@ impl TerminalTabFactory {
         let mut terminal =
             Terminal::new_headless_with_appearance(size.rows, size.cols, self.appearance);
         terminal.set_backdrop_available(self.backdrop_available);
+        terminal.set_clipboard_delivery(self.clipboard_delivery);
         // A failed renderer init drops the intact, unstarted PTY endpoint bundle.
         let renderer = TerminalRenderPipeline::new(
             gpu,
@@ -179,6 +183,10 @@ impl TabCoordinator {
 
     pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.tabs.active_terminal()
+    }
+
+    pub(crate) fn active_live(&self, source: TabId) -> bool {
+        self.tabs.active_live(source)
     }
 
     pub(crate) fn sync_ui(&self, window: &Window) {

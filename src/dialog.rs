@@ -300,6 +300,13 @@ impl PasteController {
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
 
+struct DialogRoot(Box<dyn harbor_widget::view::Component>);
+impl harbor_widget::view::Component for DialogRoot {
+    fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
+        self.0.build(cx)
+    }
+}
+
 struct ConfirmationRootState {
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
@@ -307,9 +314,9 @@ struct ConfirmationRootState {
     preview_scroll_offset: Arc<AtomicUsize>,
 }
 
-struct ConfirmationEventOutcome {
-    result: ConfirmationResult,
-    wait: Option<ControlFlowEffect>,
+pub(crate) struct ConfirmationEventOutcome {
+    pub(crate) result: ConfirmationResult,
+    pub(crate) wait: Option<ControlFlowEffect>,
 }
 
 /// A thin application wrapper around a secondary Host-owned native window.
@@ -325,6 +332,25 @@ pub(crate) struct ConfirmationWindow {
 impl ConfirmationWindow {
     pub(crate) fn new(
         raw_text: String,
+        event_loop: &ActiveEventLoop,
+        main_host: &WinitWindowHost,
+    ) -> anyhow::Result<Self> {
+        Self::with_presentation(raw_text, None, event_loop, main_host)
+    }
+
+    /// Clipboard mode receives only a bounded preview; the host retains the exact payload.
+    pub(crate) fn clipboard(
+        preview: String,
+        header: String,
+        event_loop: &ActiveEventLoop,
+        main_host: &WinitWindowHost,
+    ) -> anyhow::Result<Self> {
+        Self::with_presentation(preview, Some(header), event_loop, main_host)
+    }
+
+    fn with_presentation(
+        raw_text: String,
+        clipboard_header: Option<String>,
         event_loop: &ActiveEventLoop,
         main_host: &WinitWindowHost,
     ) -> anyhow::Result<Self> {
@@ -372,14 +398,27 @@ impl ConfirmationWindow {
                 let cancelled = Arc::new(AtomicBool::new(false));
                 let confirmed = Arc::new(AtomicBool::new(false));
                 let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
-                let root = harbor_app::tab_view::ui::build_confirmation_root(
-                    line_count,
-                    wrapped_lines.clone(),
-                    Arc::clone(&preview_scroll_offset),
-                    Arc::clone(&cancelled),
-                    Arc::clone(&confirmed),
-                    metrics.line_height,
-                );
+                let root: Box<dyn harbor_widget::view::Component> =
+                    if let Some(header) = clipboard_header {
+                        Box::new(harbor_app::tab_view::ui::build_clipboard_confirmation_root(
+                            header,
+                            wrapped_lines.clone(),
+                            Arc::clone(&preview_scroll_offset),
+                            Arc::clone(&cancelled),
+                            Arc::clone(&confirmed),
+                            metrics.line_height,
+                        ))
+                    } else {
+                        Box::new(harbor_app::tab_view::ui::build_confirmation_root(
+                            line_count,
+                            wrapped_lines.clone(),
+                            Arc::clone(&preview_scroll_offset),
+                            Arc::clone(&cancelled),
+                            Arc::clone(&confirmed),
+                            metrics.line_height,
+                        ))
+                    };
+                let root = DialogRoot(root);
                 let root_state = ConfirmationRootState {
                     cancelled,
                     confirmed,
@@ -404,6 +443,10 @@ impl ConfirmationWindow {
         self.host.window_id()
     }
 
+    pub(crate) fn window(&self) -> &Window {
+        self.host.window()
+    }
+
     /// Applies idle redraw effects and returns this window's wait request.
     pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
         self.host.about_to_wait(now, None).wait
@@ -415,7 +458,7 @@ impl ConfirmationWindow {
     }
 
     /// Applies application shortcuts/preview policy, then delegates one generic event to Host.
-    fn handle_event(&mut self, event: &WindowEvent) -> ConfirmationEventOutcome {
+    pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> ConfirmationEventOutcome {
         if matches!(event, WindowEvent::CloseRequested) {
             return ConfirmationEventOutcome {
                 result: ConfirmationResult::Cancelled,
@@ -998,6 +1041,40 @@ mod tests {
             std::any::TypeId::of::<harbor_widget::widgets::button::Button>(),
             "focused widget should be a Button"
         );
+    }
+
+    #[test]
+    fn clipboard_confirmation_root_routes_real_deny_and_allow_buttons() {
+        use harbor_widget::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, UiEvent};
+        use harbor_widget::runtime::Runtime;
+        for approve in [false, true] {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let confirmed = Arc::new(AtomicBool::new(false));
+            let root = harbor_app::tab_view::ui::build_clipboard_confirmation_root(
+                "Tab 7 requests clipboard write (5 bytes)".into(),
+                vec!["fixture preview".into()],
+                Arc::new(AtomicUsize::new(0)),
+                Arc::clone(&cancelled),
+                Arc::clone(&confirmed),
+                20.0,
+            );
+            let mut runtime = Runtime::new();
+            runtime.set_root(root);
+            runtime.update(Instant::now());
+            assert!(runtime.focus_first_focusable());
+            if approve {
+                runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: WidgetKey::Tab,
+                    modifiers: Modifiers::default(),
+                }));
+            }
+            runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: WidgetKey::Enter,
+                modifiers: Modifiers::default(),
+            }));
+            assert_eq!(confirmed.load(Ordering::SeqCst), approve);
+            assert_eq!(cancelled.load(Ordering::SeqCst), !approve);
+        }
     }
 
     #[test]

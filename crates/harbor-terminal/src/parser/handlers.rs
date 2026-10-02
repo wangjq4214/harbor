@@ -18,6 +18,7 @@ pub struct ScreenHandler<'a> {
     pub decrqss: &'a mut DecrqssRequest,
     pub xtgettcap: &'a mut XtgettcapRequest,
     pub output_events: &'a mut Vec<TerminalOutputEvent>,
+    pub clipboard_delivery: crate::ClipboardDelivery,
 }
 
 impl VtHandler for ScreenHandler<'_> {
@@ -285,10 +286,32 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
+        // Denied delivery and an occupied First slot need not allocate decoded candidates.
+        if command == b"52"
+            && (self.clipboard_delivery == crate::ClipboardDelivery::Discard
+                || (self.clipboard_delivery == crate::ClipboardDelivery::First
+                    && self
+                        .output_events
+                        .iter()
+                        .any(|event| matches!(event, TerminalOutputEvent::ClipboardWrite(_)))))
+        {
+            tracing::debug!("OSC 52 write ignored by delivery policy");
+            return;
+        }
         let Some(action) = osc::parse(command, payload, bell_terminated) else {
+            if command == b"52" {
+                tracing::debug!("OSC 52 request ignored: unsupported or invalid write");
+            }
             return;
         };
         match action {
+            Action::ClipboardWrite(write) => {
+                // Remove, then append: replacement must not jump ahead of intervening events.
+                self.output_events
+                    .retain(|event| !matches!(event, TerminalOutputEvent::ClipboardWrite(_)));
+                self.output_events
+                    .push(TerminalOutputEvent::ClipboardWrite(write));
+            }
             Action::Title(osc_title::Action::Change(title)) => self
                 .output_events
                 .push(TerminalOutputEvent::TitleChanged(title)),

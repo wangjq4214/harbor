@@ -5,6 +5,7 @@
 
 mod backdrop;
 mod chrome;
+mod clipboard;
 mod dialog;
 mod effects;
 mod event;

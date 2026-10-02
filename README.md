@@ -51,7 +51,15 @@ Both crates are currently documented as pre-1.0 workspace libraries. Their READM
 
 Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
 
-Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, and structured per-command keybindings.
+`[clipboard] osc52_write = "allow"` controls application-requested OSC 52 writes. Values are `allow` (default), `deny`, and `confirm`; invalid values fall back locally to `allow`. This setting applies at startup, including subsequently created tabs; restart Harbor to apply edits.
+
+Only the active live tab in the foreground, non-minimized main window may request a write or clear. `confirm` opens an independent per-request window with the source tab, decoded byte size and a bounded preview. Its own focus may continue that admitted interaction; tab/source closure or switching applications cancels it. Further requests are rejected while pending, and approval is not a persistent grant. `allow` keeps only the latest unexecuted valid write per session.
+
+Supported OSC 52 selections are `c` and empty (system clipboard), with standard padded/unpadded base64 encoding of UTF-8 text without NUL. Empty text clears under the same policy. Fixed limits: 4,194,304 decoded bytes and 5,592,408 encoded data bytes. Clipboard reads (`?`), other selections, binary text and malformed/over-limit requests are ignored. Other OSC/string limits are unchanged. This is not proof of application authenticity or WSL/SSH/tmux compatibility; runtime evidence is recorded separately.
+
+For manual-assisted Windows checks inside an existing Harbor tab, see [the OSC 52 test guide](docs/verification/osc52-manual-guide.md). The script requires explicit clipboard-replacement consent and does not edit startup configuration.
+
+Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, OSC 52 write policy, and structured per-command keybindings.
 
 - Invalid scalar font/shell fields fall back independently; an invalid supplied color resets the complete palette.
 - Invalid keybinding overrides reset the complete binding table while retaining valid non-keybinding settings. Omitted commands keep defaults; `bindings = []` unbinds a command.
