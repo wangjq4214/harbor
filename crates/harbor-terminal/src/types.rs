@@ -45,9 +45,51 @@ impl ShellIntegrationMarker {
     }
 }
 
+/// Validated UTF-8 clipboard text. Construction enforces the fixed byte bound and no NUL.
+/// Debug intentionally exposes size only, never clipboard contents.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ClipboardWrite(String);
+
+impl ClipboardWrite {
+    pub const MAX_BYTES: usize = 4_194_304;
+
+    pub fn new(text: String) -> Option<Self> {
+        (text.len() <= Self::MAX_BYTES && !text.as_bytes().contains(&0)).then_some(Self(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_text(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ClipboardWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardWrite")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
+
+/// Pending clipboard retention only; the host still owns authorization and OS effects.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ClipboardDelivery {
+    /// Replace an unexecuted write with the newest valid write.
+    #[default]
+    Latest,
+    /// Preserve the original pending write until events are drained.
+    First,
+    /// Drop new writes and release any already pending write.
+    Discard,
+}
+
 /// Host-neutral side effects produced while parsing terminal output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalOutputEvent {
+    ClipboardWrite(ClipboardWrite),
     TitleChanged(String),
     TitleReset,
     WorkingDirectoryChanged(WorkingDirectoryMetadata),

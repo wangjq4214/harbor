@@ -6,6 +6,8 @@ use crate::perform::VtHandler;
 #[cfg(test)]
 mod property_tests;
 
+#[cfg(test)]
+mod osc52_tests;
 /// High-level ANSI/VT parser states for incremental parsing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum State {
@@ -29,7 +31,6 @@ enum State {
 }
 
 /// Pure incremental VT parser core.
-#[derive(Debug)]
 pub struct Parser {
     state: State,
     csi: CsiAccumulator,
@@ -46,6 +47,16 @@ pub struct Parser {
     dcs_ignoring: bool,
     /// Whether 8-bit C1 sequences are recognized in Ground and string states.
     c1_enabled: bool,
+}
+
+impl std::fmt::Debug for Parser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parser")
+            .field("state", &self.state)
+            .field("osc_bytes", &self.osc.len())
+            .field("osc_overflow", &self.osc_overflow)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Parser {
@@ -91,7 +102,7 @@ impl Parser {
 
     #[cfg(test)]
     pub(crate) fn retained_state_within_limits(&self) -> bool {
-        self.osc.len() <= MAX_OSC_BYTES
+        self.osc.len() <= self.osc_limit()
             && self.string_len <= MAX_STRING_BYTES
             && self.utf8.len <= self.utf8.bytes.len()
             && self.csi.retained_state_within_limits()
@@ -428,8 +439,28 @@ impl Parser {
         }
     }
 
+    fn osc_limit(&self) -> usize {
+        // Only these exact command/selection fields receive the larger data budget.
+        if self.osc.starts_with(b"52;c;") {
+            5 + 5_592_408
+        } else if self.osc.starts_with(b"52;;") {
+            4 + 5_592_408
+        } else {
+            MAX_OSC_BYTES
+        }
+    }
+
     fn push_osc_byte(&mut self, byte: u8) {
-        if self.osc.len() < MAX_OSC_BYTES {
+        if self.osc_overflow {
+            return;
+        }
+        let limit = self.osc_limit();
+        if self.osc.len() < limit {
+            // Grow on demand without geometric growth exceeding the protocol cap.
+            if self.osc.len() == self.osc.capacity() {
+                let capacity = (self.osc.capacity().max(64) * 2).min(limit);
+                self.osc.reserve_exact(capacity - self.osc.len());
+            }
             self.osc.push(byte);
         } else {
             self.osc_overflow = true;

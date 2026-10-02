@@ -8,6 +8,11 @@ size = 24.0
 program = "pwsh.exe"
 args = ["-NoLogo"]
 
+# OSC 52 system clipboard writes: allow (default), deny, or confirm.
+# Foreground active live tab only; confirm approves exactly one request.
+# Fixed 4 MiB UTF-8 limit; clipboard reads are always denied. Restart to apply.
+[clipboard]
+osc52_write = "allow"
 
 # Each command table's bindings replace its defaults. Modifiers in one record are
 # simultaneous. Omit a command table to retain its defaults; use `bindings = []`

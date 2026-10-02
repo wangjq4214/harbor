@@ -10,7 +10,7 @@ A public feature-gated companion host renders Terminal directly through winit an
 
 ## Layers
 
-- [ ] **harbor-terminal state and rendering:** Consume T0001's Frame Demand and render Terminal into the companion host's supplied wgpu render pass; do not add `winit` ownership or dependencies to the core engine.
+- [ ] **harbor-terminal state and rendering:** Consume the shared Frame Demand defined by [Spec 0006](../../spec/0006-terminal-frame-scheduling-and-standalone-host.md#use-one-host-neutral-frame-demand-contract) and render Terminal into the companion host's supplied wgpu render pass; do not add `winit` ownership or dependencies to the core engine.
 - [ ] **harbor-widget Runtime / CustomPaint:** None — this independently demonstrable path intentionally creates no Runtime or CustomPaint.
 - [ ] **Runtime Host / winit-wgpu adapter:** Add the feature-gated companion adapter, public construction/event-loop API, deadline-to-control-flow handling, render-pass lifecycle, and non-drawable surface suspension/recovery.
 - [ ] **Verification:** Add adapter-level tests for effects/control flow and an executable or integration path proving direct idle blink, reset, and surface recovery without `harbor-widget`.
@@ -25,7 +25,7 @@ A public feature-gated companion host renders Terminal directly through winit an
 
 ## Blocked by
 
-- T0001 — provides the Frame Demand contract and reset semantics.
+- [Spec 0006 Frame Demand contract](../../spec/0006-terminal-frame-scheduling-and-standalone-host.md#solution) — requires the shared demand and reset-to-visible semantics.
 
 ## Blocks
 

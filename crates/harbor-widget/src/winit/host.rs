@@ -2,14 +2,16 @@
 
 #[cfg(feature = "hmr")]
 use super::WidgetHmrWork;
-use super::effects::apply_window_effects;
+use super::effects::{apply_window_effects, apply_window_effects_checked};
 #[cfg(feature = "hmr")]
 use super::hmr::{WidgetHmrConfig, WidgetHmrRoot, WidgetHmrState, WidgetHmrWorkKind};
 use super::{
     FrameError, FrameOutcome, SharedGpu, WindowPresenter, WindowSurface, WinitAdapter,
     WinitFrameTarget,
 };
-use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::effects::{
+    ClipboardEffect, ClipboardEffectError, ControlFlowEffect, ExternalInvalidation, RuntimeEffects,
+};
 use crate::input::event::UiEvent;
 use crate::renderer::Viewport;
 use crate::scene::primitive::ExternalDrawId;
@@ -536,6 +538,22 @@ impl WinitWindowHost {
             clipboard: Some(ClipboardEffect::write(text)),
             ..RuntimeEffects::default()
         })
+    }
+
+    /// Applies an approved clipboard write and preserves the actual native effect outcome.
+    /// Empty text clears through the same effect as non-empty text. Errors never contain payloads.
+    pub fn write_clipboard_checked(
+        &mut self,
+        text: impl Into<String>,
+    ) -> Result<HostIdleOutcome, ClipboardEffectError> {
+        let effects = self.presenter.fold_effects(RuntimeEffects {
+            clipboard: Some(ClipboardEffect::write(text)),
+            ..RuntimeEffects::default()
+        });
+        let (wait, clipboard_result) = apply_window_effects_checked(&self.window, effects);
+        clipboard_result
+            .expect("clipboard write effect must survive presenter folding")
+            .map(|()| HostIdleOutcome { wait })
     }
 
     /// Applies one opaque adapter-owned hot-reload work item on the UI thread.

@@ -14,38 +14,21 @@ Deliver #153 in bounded increments: preserve and display combining marks through
 - **Presentation:** `render/text.rs`, `render/layout.rs`, `damage.rs`, `harbor-text` atlas/DirectWrite fallback, font/DPI update handling.
 - **Acceptance:** focused tests, Windows shell/clipboard/app sessions, revision and version records, standard quality gates, and documentation under `docs/verification/`.
 
-## Dependency graph
+## Dependencies and retained acceptance
 
-| Ticket | Blocks | Concrete reason |
+[T0003 — Windows runtime and evidence](./T0003-windows-runtime-and-evidence.md) remains retained with its existing Done status and acceptance markers unchanged. Final evidence must exercise the integrated combining and VS/ZWJ text-unit/width contract in [Spec 0015 Requirements](../../spec/0015-unicode-terminal-text-correctness.md#requirements) and [Solution](../../spec/0015-unicode-terminal-text-correctness.md#solution), not a partial build. Combining storage precedes VS/ZWJ extension; both share one writer, renderer, copy/reflow and damage interpretation rather than parallel width paths. Fixture preparation can proceed separately, but final records require an identified integrated revision and dirty-tree scope; later changes require affected captures to be rerun.
+
+N01 Windows/performance acceptance remains separate. Reuse reproducible resize scenarios where useful without implying N02 closes N01.
+
+## Historical implementation IDs and destinations
+
+Historical T0001 and T0002 contracts survive in the destinations below. Their historical Done statuses do not supply missing per-scenario runtime evidence. Stable IDs map to surviving requirements and evidence:
+
+| Historical ID | Surviving contract | Historical evidence |
 | --- | --- | --- |
-| T0001 | T0002 | VS/ZWJ text and width cannot be retained or verified end-to-end while the single-`char` screen/logical representation drops zero-width sequence members; T0002 consumes T0001's text-unit contract. |
-| T0001, T0002 | T0003 | Final scope and runtime evidence must exercise the integrated behavior at an identified revision; evidence from a partial build cannot close #153. |
+| T0001 — combining | [Spec 0015 Requirements](../../spec/0015-unicode-terminal-text-correctness.md#requirements) R1/R3/R4 and [Solution](../../spec/0015-unicode-terminal-text-correctness.md#solution): shared text unit, isolated display-only cue, edits/copy/reflow/anchors/damage | [Combining verification](../../../docs/verification/combining-text-t0001.md): automated checks and user acceptance; extended runtime matrix not independently documented. |
+| T0002 — variation/ZWJ | [Spec 0015 Requirements](../../spec/0015-unicode-terminal-text-correctness.md#requirements) R2/R3/R4 and [Solution](../../spec/0015-unicode-terminal-text-correctness.md#solution): retained scalars, assigned width, shared geometry and documented visual fallback | [Variation/ZWJ verification](../../../docs/verification/variation-zwj-t0002.md): automated checks, scope-unconfirmed user smoke report and unresolved no-wrap final-column width. |
 
-## Coordination risks
+## Evidence boundaries
 
-| Tickets | Risk | Strategy |
-| --- | --- | --- |
-| T0001, T0002 | Both touch screen text storage, width projection, rendering, copy/reflow and damage. | T0001 establishes one source-of-truth text unit and tests; T0002 extends it without adding a second width or copy path. |
-| T0003, implementation tickets | Runtime records can become stale after behavioral changes. | Prepare fixtures early, but capture final evidence against the integrated revision and record dirty-tree scope. |
-| N01 acceptance, T0003 | N01 Windows/performance work is still open and shares resize scenarios. | Reuse reproducible scenarios where useful, but report N01 and N02 results separately; do not imply one closes the other. |
-
-## Parallel candidates and recommended order
-
-The final evidence capture is blocked by both implementation outcomes, though fixture preparation can proceed alongside either. Recommended sequence: T0001 (combining correctness), T0002 (VS/ZWJ and fallback), T0003 (integrated Windows and documentation acceptance). File overlap is coordination risk, not an additional dependency. These are reversible draft execution boundaries, not a new product policy.
-
-## Requirement coverage
-
-| Spec 0015 requirement | Tickets |
-| --- | --- |
-| R1 combining and isolated mark with display-only cue | T0001; T0003 runtime evidence |
-| R2 VS/ZWJ, ambiguous/emoji width and unsupported-font fallback | T0002; T0003 runtime evidence |
-| R3 shared editing/selection/copy/reflow/anchors/damage and future-search compatibility | T0001 establishes the shared unit; T0002 extends it; T0003 verifies the integrated contract |
-| R4 fragmented reads, wide edges, edits, fallback and font/DPI changes | T0001 and T0002 focused tests; T0003 Windows runtime and clipboard evidence |
-
-## Ticket index
-
-| Ticket | File | Outcome |
-| --- | --- | --- |
-| T0001 | [T0001-combining-text-end-to-end.md](./T0001-combining-text-end-to-end.md) | Combining text, including isolated marks, survives writing, edits, copy, reflow and rendering without extra advance. |
-| T0002 | [T0002-variation-and-zwj-presentation.md](./T0002-variation-and-zwj-presentation.md) | VS/ZWJ sequences share a stable width/text unit with coherent rendering, edits, fallback and resize. |
-| T0003 | [T0003-windows-runtime-and-evidence.md](./T0003-windows-runtime-and-evidence.md) | Integrated quality gates, Windows runtime/clipboard/font evidence and accurate status documentation for #153. |
+[Integrated Windows evidence](../../../docs/verification/unicode-terminal-text-t0003.md) records its documented subset, not every obligation in [Spec 0015 Verification](../../spec/0015-unicode-terminal-text-correctness.md#verification). The spec's [unresolved acceptance and discrepancy](../../spec/0015-unicode-terminal-text-correctness.md#unresolved-acceptance-and-discrepancy) preserves the no-wrap one-cell versus R2 two-cell discrepancy and missing font/DPI, resize, named-application/provenance and integrated-gate evidence. Retirement does not reconcile these gaps, change requirements, or establish whole-sequence emoji rendering.

@@ -13,7 +13,7 @@
 - Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
 - Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
 - This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
-- Known exclusions: Kitty keyboard/graphics, OSC 52, and OSC 4 palette operations remain unsupported. Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in [T0003 runtime evidence](../verification/unicode-terminal-text-t0003.md); complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
+- Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections, and OSC 4 palette operations remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in [T0003 runtime evidence](../verification/unicode-terminal-text-t0003.md); complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
 
@@ -994,16 +994,20 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Illegal URIs do not cause parse desynchronization
 ### 24.7 Clipboard
 
-* [ ] `OSC 52 ; selection ; base64 ST`
-* [ ] Supports common selection fields
-* [ ] Empty selection behavior is well-defined
-* [ ] Base64 decoding is strict
-* [ ] Payload length limit
-* [ ] Decoded length limit
-* [ ] Writing clipboard is permission-controlled
-* [ ] Querying clipboard is permission-controlled
-* [ ] Remote sessions cannot silently read the clipboard by default
-* [ ] Illegal Base64 is safely ignored
+* [x] `OSC 52 ; selection ; base64 ST` — bounded system-clipboard text write subset; BEL also supported
+* [ ] Supports common selection fields — only `c` and empty are supported; primary/cut-buffer/multi-target selections remain unsupported
+* [x] Empty selection behavior is well-defined — system clipboard; empty decoded contents clear under the same policy
+* [x] Base64 decoding is strict — standard alphabet, valid padded/unpadded encoding; malformed/noncanonical encodings rejected
+* [x] Payload length limit — 5,592,408 data bytes; bounded exact command/selection overhead
+* [x] Decoded length limit — 4,194,304 UTF-8 bytes, no NUL, no truncation
+* [x] Writing clipboard is permission-controlled — startup allow/deny/confirm; active live foreground source only
+* [x] Querying clipboard is permission-controlled — `?` is always ignored; no read/reply or confirmation-for-read
+* [x] Remote sessions cannot silently read the clipboard by default — reads unsupported under every policy
+* [x] Illegal Base64 is safely ignored
+
+Source/test evidence: `crates/harbor-parser/src/core.rs`, `crates/harbor-terminal/src/parser/osc52.rs` and `osc52_tests.rs`, `crates/harbor-app/src/tab_manager.rs`, `src/clipboard.rs`, `src/shell.rs`, and the existing widget native clipboard effects. The terminal retains one pending write per session before host draining: latest valid write in allow mode, first candidate in confirm mode, none in deny mode. Other output events retain their order. Generic OSC/DCS/APC/PM/SOS limits remain 4096 bytes.
+
+Host confirmation uses an independent window with source/decoded-size and a 1024-character preview (escaped for display). One admitted payload is immutable; further requests are rejected, not queued. Its own foreground focus continues only that request. Source closure, tab changes, minimization or external-application focus cancel it; execution revalidates stable source and foreground state. Approval is one-use and does not paste to the PTY. Configuration timing and exact subset: [startup settings](../../README.md#startup-configuration). Windows/application acceptance remains distinct from these focused tests; see [the verification record](../verification/osc52-windows-runtime.md).
 
 ### 24.8 Shell Integration
 
@@ -1397,14 +1401,14 @@ Tracking modes 1000/1002/1003 currently produce reports only with SGR encoding (
 * [x] Maximum SOS length
 * [x] Maximum title length
 * [x] Maximum hyperlink URI length
-* [ ] Maximum OSC 52 Base64 length
-* [ ] Maximum clipboard decoded length
+* [x] Maximum OSC 52 Base64 length — 5,592,408 data bytes
+* [x] Maximum clipboard decoded length — 4,194,304 UTF-8 bytes
 * [ ] Maximum image transfer length
 * [ ] Maximum image decoded size
 * [x] No further memory allocation after exceeding the limit
 * [x] Terminator can still be scanned after exceeding the limit
-* [ ] OSC 52 read is restricted by default
-* [ ] OSC 52 write is restricted by default
+* [x] OSC 52 read is restricted by default — always unsupported, no disclosure
+* [x] OSC 52 write is restricted by default — foreground active live session only; allow/deny/confirm
 * [ ] File transfer protocol is restricted by default
 * [ ] Desktop notifications are restricted by default
 * [ ] Window move and resize are restricted by default
@@ -1537,7 +1541,7 @@ Evidence: `crates/harbor-terminal/src/parser/handlers.rs`, `device_attributes.rs
 * [x] `\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\`
 * [x] `\x1b]10;?\x1b\\`
 * [x] `\x1b]11;?\x1b\\`
-* [ ] `\x1b]52;c;SGVsbG8=\x1b\\` — clipboard protocol not implemented
+* [x] `\x1b]52;c;SGVsbG8=\x1b\\` — write subset; strict decoder/framing tests, runtime acceptance recorded separately
 
 Evidence covers these representative sequence forms, not necessarily identical text payloads: `crates/harbor-terminal/src/parser/handlers.rs`, `osc7.rs`, `osc8.rs`, and `osc_color.rs`; `osc_titles_validate_and_drain_once_in_fifo_order` and `osc7_emits_structured_metadata_in_fifo_order_and_drains_once` in `crates/harbor-terminal/src/terminal_tests.rs`; `osc8_applies_cell_state_and_obeys_close_reset_and_invalid_preservation` and `osc_default_colors_set_query_reset_and_round_trip_all_slots` in `crates/harbor-terminal/src/parser/tests.rs`.
 

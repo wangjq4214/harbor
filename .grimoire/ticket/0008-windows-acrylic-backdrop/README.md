@@ -22,30 +22,26 @@ Every ticket includes all five layers and states why a layer has no work when th
 ## Dependency Graph
 
 ```text
-T0001
-  ├─→ T0002 ─┐
-  └─→ T0003 ─┴─→ T0004
+T0001 ─→ T0002 ─→ T0004
+   └────────────→ T0004
 ```
 
 ### Blocking relationships
 
 | Ticket | Blocks | Reason |
 | --- | --- | --- |
-| T0001 | T0002, T0003, T0004 | Caption, inverse paint, and Win10 accent all require the compositing stack (translucent `BACKGROUND`, compositing alpha, Host transparency, skipped GDI). |
+| T0001 | T0002, T0004 | Caption and Win10 accent require the compositing stack (translucent `BACKGROUND`, compositing alpha, Host transparency, skipped GDI). |
 | T0002 | T0004 | Both edit main-window creation in `src/app.rs`; Win10 accent must land on the finished caption-chrome path. |
-| T0003 | T0004 | Closing Win10 smoke and P7 docs verify the full main-window look, including Inverse Default Cells over Acrylic. |
 | T0004 | — | Final Host fallback and documentation slice. |
 
-### Parallel groups
+### Contract prerequisite
 
-| Group | Tickets | Reason |
-| --- | --- | --- |
-| A | T0002, T0003 | After T0001: T0002 edits Host window attributes; T0003 edits `harbor-terminal` text/background paint. No shared files or runtime contracts. |
+T0004 smoke/docs must also verify the [spec's inverse-cell contract](../../spec/0008-windows-acrylic-backdrop.md#e2e-inverse-and-colored-cells-stay-readable) over the Acrylic clear; this is a behavior prerequisite, not a separate ticket dependency.
 
 ## Recommended Order
 
 1. T0001 — Main-window compositing Acrylic (Win11)
-2. T0002 and T0003 — Caption chrome and Inverse Default Cells (parallel)
+2. T0002 — Caption chrome
 3. T0004 — Windows 10 accent Acrylic and documentation
 
 ## Ticket Index
@@ -54,5 +50,8 @@ T0001
 | --- | --- | --- | --- |
 | T0001 | [T0001-main-window-compositing-acrylic.md](./T0001-main-window-compositing-acrylic.md) | Main-window compositing Acrylic | Win11 TransientWindow glass through default-background cells. |
 | T0002 | [T0002-system-caption-chrome.md](./T0002-system-caption-chrome.md) | System caption chrome | Undrawn title and icon; DWM min/max/close; acrylic caption strip. |
-| T0003 | [T0003-inverse-default-cell-paint.md](./T0003-inverse-default-cell-paint.md) | Inverse Default Cell paint | Opaque default-foreground fill and `BACKGROUND` glyphs for inverse+default cells. |
 | T0004 | [T0004-windows-10-accent-and-docs.md](./T0004-windows-10-accent-and-docs.md) | Windows 10 accent and docs | Accent-policy Acrylic below 22621; documented caption degradation; P7 pointer. |
+
+## Historical Contract Destinations
+
+T0003 (Inverse Default Cell paint) retains its stable historical ID here; its contract is preserved in [spec 0008 Solution](../../spec/0008-windows-acrylic-backdrop.md#solution), [inverse-cell E2E](../../spec/0008-windows-acrylic-backdrop.md#e2e-inverse-and-colored-cells-stay-readable), and [Test Plan](../../spec/0008-windows-acrylic-backdrop.md#test-plan). This historical mapping does not mark integrated acceptance passed.

@@ -32,7 +32,7 @@ On Windows 11 build 22621 or later, empty Default Background Cells in the Harbor
 ## Blocks
 
 - T0002 — Caption chrome lands on the translucent main HWND created here.
-- T0003 — Inverse Default Cell paint is verified over this Acrylic clear.
+- The [inverse-cell contract](../../spec/0008-windows-acrylic-backdrop.md#e2e-inverse-and-colored-cells-stay-readable) is verified over this Acrylic clear; T0004 retains integrated smoke/docs acceptance.
 - T0004 — Win10 accent reuses transparency, compositing alpha, and skipped GDI.
 
 ## Acceptance
@@ -46,7 +46,7 @@ On Windows 11 build 22621 or later, empty Default Background Cells in the Harbor
 ## Out of Scope
 
 - Hiding caption text or icon (T0002).
-- Inverse Default Cell fill/glyph changes (T0003).
+- Inverse Default Cell fill/glyph changes (preserved in [spec 0008 Solution](../../spec/0008-windows-acrylic-backdrop.md#solution)).
 - `SetWindowCompositionAttribute` Win10 path (T0004).
 - Acrylic on confirmation or standalone host.
 - TOML, settings UI, or runtime Acrylic toggle.

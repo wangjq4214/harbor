@@ -225,6 +225,8 @@ struct ConfirmationDialogProps {
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
     line_height: f32,
+    deny_label: &'static str,
+    allow_label: &'static str,
 }
 
 fn confirmation_dialog(cx: &mut BuildCx, props: &ConfirmationDialogProps) -> View {
@@ -243,11 +245,11 @@ fn confirmation_dialog(cx: &mut BuildCx, props: &ConfirmationDialogProps) -> Vie
                 );
                 SizedBox::new(Size::new(0.0, 12.0));
                 Row::new() => {
-                    Button::new("Cancel").on_click(move |_| {
+                    Button::new(props.deny_label).on_click(move |_| {
                         cancelled.store(true, Ordering::SeqCst);
                     });
                     SizedBox::new(Size::new(12.0, 0.0));
-                    Button::new("Paste").on_click(move |_| {
+                    Button::new(props.allow_label).on_click(move |_| {
                         confirmed.store(true, Ordering::SeqCst);
                     });
                 }
@@ -266,6 +268,29 @@ pub fn build_confirmation_root(
 ) -> impl Component {
     let props = ConfirmationDialogProps {
         header_text: format!("Paste {line_count} lines?"),
+        deny_label: "Cancel",
+        allow_label: "Paste",
+        wrapped_lines,
+        scroll_offset,
+        cancelled,
+        confirmed,
+        line_height,
+    };
+    move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
+}
+/// Independent, per-request clipboard-write confirmation; never grants paste permission.
+pub fn build_clipboard_confirmation_root(
+    header_text: String,
+    wrapped_lines: Vec<String>,
+    scroll_offset: Arc<AtomicUsize>,
+    cancelled: Arc<AtomicBool>,
+    confirmed: Arc<AtomicBool>,
+    line_height: f32,
+) -> impl Component {
+    let props = ConfirmationDialogProps {
+        header_text,
+        deny_label: "Deny this request",
+        allow_label: "Allow this request",
         wrapped_lines,
         scroll_offset,
         cancelled,

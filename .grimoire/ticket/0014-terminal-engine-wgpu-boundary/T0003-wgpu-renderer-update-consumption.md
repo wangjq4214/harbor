@@ -10,9 +10,9 @@ The current concrete wgpu renderer draws from a coherent engine update, never mu
 
 ## Affected Surfaces
 
-- **Renderer orchestration:** `crates/harbor-terminal/src/render/{pipeline,text,background,decoration,selection,cursor,scrollbar}.rs` and integration with the T0001 update boundary.
+- **Renderer orchestration:** `crates/harbor-terminal/src/render/{pipeline,text,background,decoration,selection,cursor,scrollbar}.rs` and integration with the [Spec 0016 engine/update boundary](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md).
 - **Projection/appearance:** Render viewport, DPI, palette, selection bounds, cursor, scrollbar and preedit overlay handling.
-- **GPU initialization:** Existing host-injected GPU access and failure return path, coordinated with T0002 session ownership.
+- **GPU initialization:** Existing host-injected GPU access and failure return path, coordinated with the [session ownership contract](../../../docs/architecture/terminal-session-ownership.md).
 
 ## Approach
 
@@ -20,9 +20,9 @@ Use the existing wgpu pipeline, `TerminalSnapshot` and `UpdateDamage` concepts; 
 
 ## Dependencies and Coordination
 
-- **Blocked by:** T0001 provides a GPU-free update and timing interface that this renderer must consume.
+- **Blocked by:** The GPU-free update and timing interface defined by [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md) is required for renderer integration; [intermediate core-boundary evidence](../../../docs/verification/terminal-core-boundary-t0001.md) records the prerequisite boundary, not final renderer acceptance.
 - **Blocks:** T0004 cannot migrate the application draw path before the renderer handles the new boundary.
-- **Coordination risks:** T0002 also changes terminal construction; align GPU init failure and PTY endpoint ownership, but shared files alone do not require serializing the tickets.
+- **Coordination risks:** Terminal construction crosses the [session ownership contract](../../../docs/architecture/terminal-session-ownership.md); align GPU init failure and PTY endpoint ownership with T0004's integrated path, but shared files alone do not require serializing the work.
 
 ## Acceptance
 

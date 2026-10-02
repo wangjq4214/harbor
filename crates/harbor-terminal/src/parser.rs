@@ -5,6 +5,7 @@ mod handlers;
 mod mode_query;
 mod osc;
 mod osc133;
+mod osc52;
 mod osc7;
 mod osc8;
 mod osc_color;
@@ -14,6 +15,8 @@ mod xtgettcap;
 
 #[cfg(test)]
 mod incremental_tests;
+#[cfg(test)]
+mod osc52_tests;
 #[cfg(test)]
 mod osc_action_tests;
 #[cfg(test)]
@@ -39,6 +42,7 @@ pub struct TerminalParser {
     decrqss: DecrqssRequest,
     xtgettcap: XtgettcapRequest,
     output_events: Vec<TerminalOutputEvent>,
+    clipboard_delivery: crate::ClipboardDelivery,
 }
 
 /// Result of feeding bytes through the parser.
@@ -63,6 +67,7 @@ impl TerminalParser {
                     decrqss: &mut self.decrqss,
                     xtgettcap: &mut self.xtgettcap,
                     output_events: &mut self.output_events,
+                    clipboard_delivery: self.clipboard_delivery,
                 },
                 byte,
             );
@@ -81,6 +86,27 @@ impl TerminalParser {
 
     pub fn set_c1_enabled(&mut self, enabled: bool) {
         self.inner.set_c1_enabled(enabled);
+    }
+
+    /// Configure bounded pending clipboard delivery, independently of host authorization.
+    pub fn set_clipboard_delivery(&mut self, delivery: crate::ClipboardDelivery) {
+        self.clipboard_delivery = delivery;
+        if delivery == crate::ClipboardDelivery::Discard {
+            self.output_events
+                .retain(|event| !matches!(event, TerminalOutputEvent::ClipboardWrite(_)));
+        }
+    }
+
+    pub(crate) fn close_session(&mut self) {
+        self.set_clipboard_delivery(crate::ClipboardDelivery::Discard);
+        // A closed tab may stay visible; release partial wire data and its capacity too.
+        self.inner = Parser::default();
+        self.decrqss.cancel();
+        self.xtgettcap.cancel();
+    }
+
+    pub(crate) fn clipboard_delivery(&self) -> crate::ClipboardDelivery {
+        self.clipboard_delivery
     }
 
     pub(crate) fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {

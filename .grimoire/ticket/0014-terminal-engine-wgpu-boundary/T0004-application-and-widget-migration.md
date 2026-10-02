@@ -16,11 +16,11 @@ The application uses the separated session and renderer without mixed ownership,
 
 ## Approach
 
-Migrate callers from the facade to the separated owner(s) without leaving both the facade and application responsible for the same PTY or GPU resource. Keep facade compatibility while any caller needs it; removal is allowed only after all existing call paths and tests are migrated. Preserve the existing widget paint order and host surface ownership, and integrate T0002/T0003 failure handling at the application boundary.
+Migrate callers from the facade to the separated owner(s) without leaving both the facade and application responsible for the same PTY or GPU resource. Keep facade compatibility while any caller needs it; removal is allowed only after all existing call paths and tests are migrated. Preserve the existing widget paint order and host surface ownership, and integrate the [session ownership contract's](../../../docs/architecture/terminal-session-ownership.md) construction/teardown constraints and T0003 renderer failure handling at the application boundary.
 
 ## Dependencies and Coordination
 
-- **Blocked by:** T0002 provides safe PTY session ownership and T0003 provides a renderer consuming the engine update; both are required for an integrated host path.
+- **Blocked by:** Safe PTY endpoint/session ownership, resize ordering and teardown from [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md) and the [session ownership map](../../../docs/architecture/terminal-session-ownership.md), plus T0003's renderer consuming the engine update, are required for an integrated host path. The ownership map does not establish integrated failure/close acceptance; verify those constraints here and in T0005.
 - **Blocks:** T0005 needs the migrated application to gather final runtime evidence.
 - **Coordination risks:** Bridge/render changes span `terminal_view.rs`, tab lifetimes and frame scheduling; do not create an alternate source for blink demand or bypass the host's input/presentation policy.
 

@@ -27,7 +27,7 @@ RIS and PTY/session close reliably release synchronized-output suppression, and 
 ## Blocked by
 
 - T0001 — Uses the shared presentation-eligibility contract.
-- T0002 — Clears the concrete synchronized state and validates normal release.
+- [Spec 0007 synchronized batch contract](../../spec/0007-synchronized-output-mode.md#solution) — clears the concrete nested state and validates normal release.
 - T0003 — Must verify cancellation of the completed recovery behavior.
 
 ## Blocks

@@ -11,7 +11,7 @@ Windows builds below 22621, including Windows 10, show Acrylic in the main-windo
 ## Layers
 
 - [ ] **Config:** None — tint already comes from `BACKGROUND` alpha 0.72.
-- [ ] **Terminal:** None — compositing alpha and cell paint already land in T0001/T0003.
+- [ ] **Terminal:** None — compositing alpha is covered by T0001; cell paint follows the [spec's default/inverse-cell contract](../../spec/0008-windows-acrylic-backdrop.md#solution).
 - [ ] **Winit Runtime Integration:** None — present/clear path is unchanged.
 - [ ] **Runtime Host:** For build &lt; 22621, after HWND creation call `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND` and a gradient tint aligned to `BACKGROUND` at 0.72; keep system buttons; do not custom-draw caption.
 - [ ] **Verification:** Document Windows 10 Caption Degradation and Acrylic as P7 product work; note confirmation stays opaque; Windows 10 smoke that client Acrylic does not crash.
@@ -28,7 +28,7 @@ Windows builds below 22621, including Windows 10, show Acrylic in the main-windo
 
 - T0001 — Accent path reuses translucency, compositing alpha, skipped GDI, and `BACKGROUND` tint.
 - T0002 — Window-creation and caption-chrome edits in `src/app.rs` must be finished before adding the Win10 branch.
-- T0003 — Closing smoke/docs assume Inverse Default Cells already paint correctly over Acrylic.
+- [Spec 0008 inverse-cell contract](../../spec/0008-windows-acrylic-backdrop.md#e2e-inverse-and-colored-cells-stay-readable) — Closing smoke/docs must verify readable inverse cells over Acrylic; this behavior remains an integrated prerequisite, not a separate ticket dependency.
 
 ## Blocks
 

@@ -15,11 +15,11 @@ Provide reproducible, scope-specific evidence that combining and VS/ZWJ text beh
 
 ## Approach
 
-Exercise the final integrated revision of T0001 and T0002 with reproducible output fixtures, including separate PTY reads where observable, wide edges, overwrite/erase, fallback fonts, and repeated width changes. Record text/coordinate correctness separately from visual presentation and explicitly identify unsupported sequence rendering. Reuse N01 resize scenarios where helpful without equating N02 evidence to the outstanding N01 Windows/performance acceptance. Run applicable quality gates, capture exact commands and outcomes, then update only backed status/protocol claims; retain remaining scope and exclusions.
+Exercise the final integrated revision implementing Spec 0015's combining and VS/ZWJ text-unit/width contract (R1–R4) with reproducible output fixtures, including separate PTY reads where observable, wide edges, overwrite/erase, fallback fonts, and repeated width changes. Record text/coordinate correctness separately from visual presentation and explicitly identify unsupported sequence rendering. Reuse N01 resize scenarios where helpful without equating N02 evidence to the outstanding N01 Windows/performance acceptance. Run applicable quality gates, capture exact commands and outcomes, then update only backed status/protocol claims; retain remaining scope and exclusions.
 
 ## Dependencies and coordination
 
-- **Blocked by:** T0001 and T0002 for final acceptance against an integrated build; fixture preparation can happen earlier, but partial-build evidence cannot establish all #153 outcomes.
+- **Blocked by:** Integrated combining and VS/ZWJ behavior under [Spec 0015 Requirements](../../spec/0015-unicode-terminal-text-correctness.md#requirements) and [Verification](../../spec/0015-unicode-terminal-text-correctness.md#verification) for final acceptance; fixture preparation can happen earlier, but partial-build evidence cannot establish all #153 outcomes. Preserve the spec's [unresolved acceptance and discrepancy](../../spec/0015-unicode-terminal-text-correctness.md#unresolved-acceptance-and-discrepancy) rather than treating historical implementation completion as complete runtime evidence.
 - **Blocks:** None.
 - **Coordination risks:** Changes after capture invalidate some results; rerun affected scenarios and record the final revision/dirty-tree scope. N01 evidence has separate closure criteria.
 
