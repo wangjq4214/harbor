@@ -28,16 +28,13 @@ pub(super) fn parse(payload: &[u8]) -> Option<ClipboardWrite> {
         return None;
     }
     let data = &data[..symbols];
-    for &byte in data {
-        sextet(byte)?;
-    }
     if (remainder == 2 && sextet(*data.last()?)? & 15 != 0)
         || (remainder == 3 && sextet(*data.last()?)? & 3 != 0)
     {
         return None;
     }
 
-    // Validate UTF-8 and NUL in a no-allocation pass, before retaining decoded bytes.
+    // Validate the base64 alphabet, UTF-8 and NUL without allocating decoded bytes.
     // Bounds on each first continuation exclude overlongs, surrogates and > U+10FFFF.
     let (mut remaining, mut low, mut high) = (0, 0x80, 0xbf);
     visit_decoded(data, |byte| {

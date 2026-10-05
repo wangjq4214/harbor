@@ -490,25 +490,15 @@ impl TabManager {
             || tab.shell_integration != previous_shell_integration;
         let title_changed = tab.title != previous_title;
         let active = self.active == Some(id);
-        if active {
-            TabOutputOutcome {
-                request_active_invalidation: true,
-                unread_changed: false,
-                title_changed,
-                active_title_changed: title_changed,
-                metadata_changed,
-                clipboard_write,
-            }
-        } else {
-            let unread_changed = ingested_output && !std::mem::replace(&mut tab.unread, true);
-            TabOutputOutcome {
-                request_active_invalidation: false,
-                unread_changed,
-                title_changed,
-                active_title_changed: false,
-                metadata_changed,
-                clipboard_write,
-            }
+        let unread_changed =
+            !active && ingested_output && !std::mem::replace(&mut tab.unread, true);
+        TabOutputOutcome {
+            request_active_invalidation: active,
+            unread_changed,
+            title_changed,
+            active_title_changed: active && title_changed,
+            metadata_changed,
+            clipboard_write,
         }
     }
 
