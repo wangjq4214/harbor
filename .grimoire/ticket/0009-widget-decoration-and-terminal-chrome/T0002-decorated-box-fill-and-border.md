@@ -31,7 +31,7 @@ A caller can wrap one normal Widget in `DecoratedBox` and observe an optional ro
 
 ## Blocks
 
-- T0003 — Outer shadows extend this concrete `DecoratedBox` scene and renderer path.
+- No separate shadow ticket dependency remains. The [spec 0009 shadow contract](../../spec/0009-widget-decoration-and-terminal-chrome.md#solution) extends this concrete scene/renderer path and is consumed by rounded clipping and the terminal preset.
 
 ## Acceptance
 

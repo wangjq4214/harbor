@@ -47,6 +47,24 @@ impl ControlFlowEffect {
     }
 }
 
+/// Content-free failure from applying a host clipboard effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardEffectError {
+    WriteFailed,
+    ReadUnsupported,
+}
+
+impl std::fmt::Display for ClipboardEffectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::WriteFailed => "clipboard write failed",
+            Self::ReadUnsupported => "clipboard read effect unsupported",
+        })
+    }
+}
+
+impl std::error::Error for ClipboardEffectError {}
+
 /// Platform-neutral cursor shapes understood by the host adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorShape {

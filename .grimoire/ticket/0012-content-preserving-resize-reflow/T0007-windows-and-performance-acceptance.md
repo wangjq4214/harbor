@@ -17,13 +17,13 @@ Close the first content-preserving reflow package with complete automated gates,
 
 ## Approach
 
-Run focused and workspace automation against the integrated T0006 revision. Execute reproducible Windows scenarios that narrow, widen, change height, repeat, copy selected content, review scrollback, enter/exit `nvim`, and exercise failure/retry where practical. Record revision and dirty-tree scope, environment and versions, steps, expected/observed results, artifacts, exclusions, and honest PASS/FAIL/NOT RUN/BLOCKED outcomes.
+Run focused and workspace automation against the integrated revision implementing Spec 0014's transactional and buffer-specific resize contracts. Execute reproducible Windows scenarios that narrow, widen, change height, repeat, copy selected content, review scrollback, enter/exit `nvim`, and exercise failure/retry where practical. Record revision and dirty-tree scope, environment and versions, steps, expected/observed results, artifacts, exclusions, and honest PASS/FAIL/NOT RUN/BLOCKED outcomes.
 
 Measure large-history resize latency and memory/cost with a documented fixed workload. Do not invent a pass threshold or claim optimization; retain comparable captures and report observed behavior. Only after implementation and evidence satisfy the accepted scope should documentation replace non-reflow status and update ADR-0018/ADR-0042 without erasing decision history.
 
 ## Dependencies and Coordination
 
-- **Blocked by:** T0006 — acceptance must exercise the integrated PTY/model, primary/alternate, selection, and failure path.
+- **Blocked by:** Integrated [transactional resize](../../spec/0014-content-preserving-resize-reflow.md#transactional-resize), [alternate-screen policy](../../spec/0014-content-preserving-resize-reflow.md#alternate-screen-policy), and [anchor projections](../../spec/0014-content-preserving-resize-reflow.md#content-anchors-and-projections) — acceptance must exercise PTY/model consistency, primary/alternate restoration, selection, and failure/retry against the same tested revision.
 - **Blocks:** None; this closes the #152 first-delivery ticket set.
 - **Coordination risks:** Evidence becomes stale if implementation changes afterward. Freeze or identify the tested revision and record unrelated dirty-tree files explicitly.
 

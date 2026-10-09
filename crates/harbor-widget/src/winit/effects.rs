@@ -1,7 +1,8 @@
 //! Application of window-local runtime effects for the owned winit host.
 
 use crate::effects::{
-    ClipboardEffect, ControlFlowEffect, CursorEffect, CursorShape, ImeEffect, RuntimeEffects,
+    ClipboardEffect, ClipboardEffectError, ControlFlowEffect, CursorEffect, CursorShape, ImeEffect,
+    RuntimeEffects,
 };
 use crate::layout::Point;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -11,7 +12,7 @@ trait WindowEffectSink {
     fn set_cursor(&mut self, cursor: CursorIcon);
     fn set_ime_allowed(&mut self, allowed: bool);
     fn set_ime_cursor_area(&mut self, position: LogicalPosition<f64>, size: LogicalSize<f64>);
-    fn apply_clipboard(&mut self, effect: ClipboardEffect);
+    fn apply_clipboard(&mut self, effect: ClipboardEffect) -> Result<(), ClipboardEffectError>;
     fn request_redraw(&mut self);
 }
 
@@ -32,8 +33,8 @@ impl WindowEffectSink for NativeWindowEffectSink<'_> {
         self.window.set_ime_cursor_area(position, size);
     }
 
-    fn apply_clipboard(&mut self, effect: ClipboardEffect) {
-        apply_native_clipboard_effect(effect);
+    fn apply_clipboard(&mut self, effect: ClipboardEffect) -> Result<(), ClipboardEffectError> {
+        apply_native_clipboard_effect(effect)
     }
 
     fn request_redraw(&mut self) {
@@ -45,13 +46,34 @@ pub(super) fn apply_window_effects(
     window: &Window,
     effects: RuntimeEffects,
 ) -> Option<ControlFlowEffect> {
-    apply_effects_to_sink(&mut NativeWindowEffectSink { window }, effects)
+    apply_window_effects_checked(window, effects).0
 }
 
+pub(super) fn apply_window_effects_checked(
+    window: &Window,
+    effects: RuntimeEffects,
+) -> (
+    Option<ControlFlowEffect>,
+    Option<Result<(), ClipboardEffectError>>,
+) {
+    apply_effects_to_sink_checked(&mut NativeWindowEffectSink { window }, effects)
+}
+
+#[cfg(test)]
 fn apply_effects_to_sink(
     sink: &mut impl WindowEffectSink,
     effects: RuntimeEffects,
 ) -> Option<ControlFlowEffect> {
+    apply_effects_to_sink_checked(sink, effects).0
+}
+
+fn apply_effects_to_sink_checked(
+    sink: &mut impl WindowEffectSink,
+    effects: RuntimeEffects,
+) -> (
+    Option<ControlFlowEffect>,
+    Option<Result<(), ClipboardEffectError>>,
+) {
     if let Some(cursor) = effects.cursor {
         sink.set_cursor(cursor_icon(cursor));
     }
@@ -64,13 +86,13 @@ fn apply_effects_to_sink(
             sink.set_ime_cursor_area(position, size);
         }
     }
-    if let Some(clipboard) = effects.clipboard {
-        sink.apply_clipboard(clipboard);
-    }
+    let clipboard_result = effects
+        .clipboard
+        .map(|clipboard| sink.apply_clipboard(clipboard));
     if effects.request_redraw {
         sink.request_redraw();
     }
-    effects.control_flow
+    (effects.control_flow, clipboard_result)
 }
 
 fn cursor_icon(effect: CursorEffect) -> CursorIcon {
@@ -94,21 +116,31 @@ fn ime_cursor_area(position: Point) -> (LogicalPosition<f64>, LogicalSize<f64>) 
     )
 }
 
-fn apply_native_clipboard_effect(effect: ClipboardEffect) {
+fn apply_native_clipboard_effect(effect: ClipboardEffect) -> Result<(), ClipboardEffectError> {
+    apply_clipboard_effect_with(effect, |contents| {
+        arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(contents))
+    })
+}
+
+fn apply_clipboard_effect_with<E>(
+    effect: ClipboardEffect,
+    write: impl FnOnce(String) -> Result<(), E>,
+) -> Result<(), ClipboardEffectError> {
     match effect {
         ClipboardEffect::Write(contents) => {
             let byte_len = contents.len();
-            if let Err(error) =
-                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(contents))
-            {
-                tracing::warn!(%error, byte_len, "failed to write clipboard effect");
-            }
+            write(contents).map_err(|_| {
+                // Backend errors may contain the payload: never log or retain them.
+                tracing::warn!(byte_len, "failed to write clipboard effect");
+                ClipboardEffectError::WriteFailed
+            })
         }
         ClipboardEffect::Read => {
             tracing::warn!(
                 operation = "read",
                 "clipboard effect deferred: host result channel is not implemented"
             );
+            Err(ClipboardEffectError::ReadUnsupported)
         }
     }
 }
@@ -126,6 +158,7 @@ mod tests {
         ime_areas: Vec<(LogicalPosition<f64>, LogicalSize<f64>)>,
         clipboard: Vec<ClipboardEffect>,
         redraws: usize,
+        fail_clipboard: bool,
     }
 
     impl WindowEffectSink for RecordingSink {
@@ -141,13 +174,75 @@ mod tests {
             self.ime_areas.push((position, size));
         }
 
-        fn apply_clipboard(&mut self, effect: ClipboardEffect) {
+        fn apply_clipboard(&mut self, effect: ClipboardEffect) -> Result<(), ClipboardEffectError> {
             self.clipboard.push(effect);
+            if self.fail_clipboard {
+                Err(ClipboardEffectError::WriteFailed)
+            } else {
+                Ok(())
+            }
         }
 
         fn request_redraw(&mut self) {
             self.redraws += 1;
         }
+    }
+
+    #[test]
+    fn checked_batch_preserves_success_failure_and_empty_writes() {
+        for text in ["fixture text\n\t", ""] {
+            for fail_clipboard in [false, true] {
+                let mut sink = RecordingSink {
+                    fail_clipboard,
+                    ..RecordingSink::default()
+                };
+                let (wait, result) = apply_effects_to_sink_checked(
+                    &mut sink,
+                    RuntimeEffects {
+                        clipboard: Some(ClipboardEffect::write(text)),
+                        ..RuntimeEffects::default()
+                    },
+                );
+                assert_eq!(wait, None);
+                assert_eq!(
+                    result,
+                    Some(if fail_clipboard {
+                        Err(ClipboardEffectError::WriteFailed)
+                    } else {
+                        Ok(())
+                    })
+                );
+                assert_eq!(sink.clipboard, vec![ClipboardEffect::write(text)]);
+            }
+        }
+        let mut sink = RecordingSink::default();
+        assert_eq!(
+            apply_effects_to_sink_checked(&mut sink, RuntimeEffects::default()).1,
+            None
+        );
+    }
+
+    #[test]
+    fn native_effect_adapter_preserves_backend_result_without_payload_error() {
+        for text in ["fixture text", ""] {
+            let result = apply_clipboard_effect_with(ClipboardEffect::write(text), |actual| {
+                assert_eq!(actual, text);
+                Ok::<_, String>(())
+            });
+            assert_eq!(result, Ok(()));
+            let result = apply_clipboard_effect_with(ClipboardEffect::write(text), |actual| {
+                assert_eq!(actual, text);
+                Err(format!("backend error containing {actual}"))
+            });
+            assert_eq!(result, Err(ClipboardEffectError::WriteFailed));
+            assert_eq!(result.unwrap_err().to_string(), "clipboard write failed");
+        }
+        assert_eq!(
+            apply_clipboard_effect_with(ClipboardEffect::Read, |_| -> Result<(), ()> {
+                panic!("unsupported reads must not invoke the write backend")
+            }),
+            Err(ClipboardEffectError::ReadUnsupported)
+        );
     }
 
     #[test]

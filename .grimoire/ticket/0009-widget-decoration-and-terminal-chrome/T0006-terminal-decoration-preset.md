@@ -28,7 +28,7 @@ The main Harbor Terminal visibly uses the confirmed 12dp anti-aliased radius and
 ## Blocked by
 
 - T0001 — Supplies the public decoration values used by the preset.
-- T0003 — Supplies the outer-shadow rendering required by the preset.
+- [Spec 0009 shadow contract](../../spec/0009-widget-decoration-and-terminal-chrome.md#solution) — The preset requires working outer-shadow rendering and the retained identity/order obligations in the [Test Plan](../../spec/0009-widget-decoration-and-terminal-chrome.md#test-plan).
 - T0005 — Supplies rounded anti-aliased clipping for Terminal's external draw.
 
 ## Blocks

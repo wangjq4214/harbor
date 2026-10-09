@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod clipboard_attachment_tests;
 mod content_anchor;
 #[cfg(all(test, not(feature = "renderer")))]
 mod core_tests;
@@ -56,6 +58,7 @@ pub use selection_model::{
 };
 use std::io::{Read, Write};
 use std::time::Instant;
+pub use types::{ClipboardDelivery, ClipboardWrite};
 pub use types::{
     FrameDemand, Preedit, RenderTarget, ShellIntegrationMarker, TerminalAppearance, TerminalEvent,
     TerminalEventOutcome, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
@@ -97,15 +100,23 @@ impl Terminal {
     /// Construct fallible GPU resources first: if they fail, the intact endpoint
     /// bundle is dropped using its unstarted-session shutdown protocol.
     pub fn start_session_from_endpoints(
-        mut self,
+        self,
         endpoints: PtyEndpoints,
         wake: impl Fn() -> bool + Send + 'static,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(!self.io.has_session(), "terminal session already attached");
         let (pty_read, pty_write, pty_control) = endpoints.into_parts();
-        self.io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
+        let io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
+        Ok(self.attach_io(io))
+    }
+
+    fn attach_io(mut self, mut io: TerminalIo) -> Self {
+        // Host policy may be configured on the headless engine before session creation.
+        // Carry it over before the newly queued PTY bytes are ever parsed.
+        io.set_clipboard_delivery(self.io.clipboard_delivery());
+        self.io = io;
         self.blink = CursorBlinkState::new(Instant::now());
-        Ok(self)
+        self
     }
 
     /// Calculates the grid dimensions used by a rendered terminal at an explicit surface size.
@@ -318,6 +329,17 @@ impl Terminal {
     pub fn drain_pty(&mut self) -> bool {
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer))
     }
+    /// Whether reader EOF/disconnection is observed or the reader has already finished.
+    /// Checks reader completion even before UI output draining. Headless terminals remain open.
+    pub fn is_session_closed(&self) -> bool {
+        self.io.is_session_closed()
+    }
+
+    /// Set bounded pending clipboard retention; authorization remains the host's responsibility.
+    pub fn set_clipboard_delivery(&mut self, delivery: ClipboardDelivery) {
+        self.io.set_clipboard_delivery(delivery);
+    }
+
     /// Drains parser side effects exactly once in FIFO order.
     pub fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
         self.io.drain_output_events()

@@ -32,7 +32,7 @@ Shared decoration, paint-phase, and rounded-clip contracts exist with validated 
 ## Blocks
 
 - T0002 — Concrete `DecoratedBox` fill and border consume all shared values and paint phases.
-- T0003 — Shadow rendering consumes `BoxShadow` and normalized geometry.
+- The [spec 0009 shadow contract](../../spec/0009-widget-decoration-and-terminal-chrome.md#solution) also consumes `BoxShadow` and normalized geometry; its retained-identity verification remains in the [Test Plan](../../spec/0009-widget-decoration-and-terminal-chrome.md#test-plan).
 - T0004 — Rounded clipping consumes `ClipBehavior` and clip descriptors.
 - T0005 — External-draw clipping consumes the same retained clip contract.
 - T0006 — The Host preset is expressed entirely through these public values.

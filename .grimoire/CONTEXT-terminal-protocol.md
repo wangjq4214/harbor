@@ -262,3 +262,25 @@
   - communicates with Runtime Host
   - references RIS
   - implements Terminal Pointer Interaction Policy
+
+### OSC 52 Host-Authorized Clipboard Write
+- **Definition:** The implemented #174 policy for bounded application-requested clipboard text writes, with source/test evidence and Windows runtime acceptance still pending. Terminal parsing emits typed requests without system clipboard I/O; the host validates the originating live session and authorizes the write before applying the existing clipboard effect. Writes default to allow only for the active tab while the Harbor main window has focus; inactive tabs, genuinely unfocused or minimized applications, and stale sessions cannot write. Write configuration offers allow, deny, and confirm. Confirm uses an independent window with source tab, decoded size, and a bounded preview, granting or denying only the current request; its own focus continues that already-admitted foreground request. At most one confirmation is pending and additional requests are rejected; source closure, tab changes, or switching to another application cancel it. OSC 52 reads remain denied in this delivery. Decoded UTF-8 text has a fixed 4 MiB (4,194,304-byte) limit with no capacity configuration; only OSC 52 receives larger retention, leaving other protocol caps unchanged, and over-limit requests are rejected rather than truncated.
+- **Synonyms:** OSC 52 clipboard policy
+- **Relationships:**
+  - belongs to Terminal Tab
+  - communicates with Application Business Host
+  - references RuntimeEffects
+  - depends on Parser Retention Limits
+  - references OSC 52 Write Subset
+  - references OSC 52 Request Delivery
+
+### OSC 52 Write Subset
+- **Definition:** The accepted #174 wire contract: `c` or an empty selection writes the system clipboard; other selections are rejected. Standard base64 with or without valid padding decodes to UTF-8 text without NUL, preserving newlines and tabs. Empty decoded contents clear the clipboard through the same authorization rules. BEL and ST termination support fragmented input; malformed, incomplete, unsupported, and over-limit candidates do not change the clipboard. OSC 52 reads are denied.
+- **Relationships:**
+  - belongs to OSC 52 Host-Authorized Clipboard Write
+
+### OSC 52 Request Delivery
+- **Definition:** The accepted #174 pending-write policy: allow mode keeps only the latest unexecuted valid write per originating live session, while confirm mode preserves one admitted request and rejects additional requests rather than replacing its contents. Host execution validates source identity and current eligibility. Denial and failure produce content-free diagnostics, not extra popup windows, terminal text, or PTY protocol error replies.
+- **Relationships:**
+  - belongs to OSC 52 Host-Authorized Clipboard Write
+  - communicates with Application Business Host

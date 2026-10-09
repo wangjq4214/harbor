@@ -34,6 +34,21 @@ pub struct Settings {
     pub shell: ShellSettings,
     pub colors: Palette,
     pub keybindings: RawKeybindings,
+    pub clipboard: ClipboardSettings,
+}
+
+/// Startup policy for host-authorized OSC 52 system clipboard writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Osc52WritePolicy {
+    #[default]
+    Allow,
+    Deny,
+    Confirm,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClipboardSettings {
+    pub osc52_write: Osc52WritePolicy,
 }
 
 /// Raw structured bindings keyed by stable command ID. Command semantics are application-owned.
@@ -153,7 +168,7 @@ fn parse_document(document: Value) -> SettingsLoad {
     };
     warn_unknown(
         root,
-        &["font", "shell", "colors", "keybindings"],
+        &["font", "shell", "colors", "keybindings", "clipboard"],
         "",
         &mut diagnostics,
     );
@@ -161,6 +176,11 @@ fn parse_document(document: Value) -> SettingsLoad {
     let mut settings = Settings::default();
     parse_font(root.get("font"), &mut settings.font, &mut diagnostics);
     parse_shell(root.get("shell"), &mut settings.shell, &mut diagnostics);
+    parse_clipboard(
+        root.get("clipboard"),
+        &mut settings.clipboard,
+        &mut diagnostics,
+    );
     parse_keybindings(
         root.get("keybindings"),
         &mut settings.keybindings,
@@ -176,6 +196,29 @@ fn parse_document(document: Value) -> SettingsLoad {
     SettingsLoad {
         settings,
         diagnostics,
+    }
+}
+
+fn parse_clipboard(
+    value: Option<&Value>,
+    settings: &mut ClipboardSettings,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        diagnostics.push(error("clipboard must be a table; using clipboard defaults"));
+        return;
+    };
+    warn_unknown(table, &["osc52_write"], "clipboard", diagnostics);
+    if let Some(value) = table.get("osc52_write") {
+        match value.as_str() {
+            Some("allow") => settings.osc52_write = Osc52WritePolicy::Allow,
+            Some("deny") => settings.osc52_write = Osc52WritePolicy::Deny,
+            Some("confirm") => settings.osc52_write = Osc52WritePolicy::Confirm,
+            _ => diagnostics.push(error(
+                "clipboard.osc52_write must be allow, deny, or confirm; using allow",
+            )),
+        }
     }
 }
 
@@ -555,6 +598,78 @@ mod tests {
 
     fn parse(source: &str) -> SettingsLoad {
         parse_document(toml::from_str(source).expect("test TOML must parse"))
+    }
+
+    #[test]
+    fn clipboard_policy_defaults_and_supported_values() {
+        for source in ["", "[clipboard]"] {
+            let loaded = parse(source);
+            assert_eq!(
+                loaded.settings.clipboard.osc52_write,
+                Osc52WritePolicy::Allow
+            );
+            assert!(loaded.diagnostics.is_empty());
+        }
+        for (value, expected) in [
+            ("allow", Osc52WritePolicy::Allow),
+            ("deny", Osc52WritePolicy::Deny),
+            ("confirm", Osc52WritePolicy::Confirm),
+        ] {
+            let loaded = parse(&format!("[clipboard]\nosc52_write = {value:?}"));
+            assert_eq!(loaded.settings.clipboard.osc52_write, expected);
+            assert!(loaded.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_clipboard_shapes_recover_locally_without_echoing_values() {
+        for clipboard in [
+            "clipboard = 1",
+            "clipboard = false",
+            "clipboard = 'fixture-invalid-value'",
+            "clipboard = []",
+            "[[clipboard]]",
+            "[clipboard]\nosc52_write = 'fixture-invalid-value'",
+            "[clipboard]\nosc52_write = 'ALLOW'",
+            "[clipboard]\nosc52_write = ''",
+            "[clipboard]\nosc52_write = 1",
+            "[clipboard]\nosc52_write = true",
+            "[clipboard]\nosc52_write = []",
+            "[clipboard.osc52_write]",
+        ] {
+            let loaded = parse(&format!(
+                "{clipboard}\n[font]\nsize = 18\n[shell]\nprogram = 'pwsh.exe'"
+            ));
+            assert_eq!(
+                loaded.settings.clipboard.osc52_write,
+                Osc52WritePolicy::Allow
+            );
+            assert_eq!(loaded.settings.font.size, 18.0);
+            assert_eq!(loaded.settings.shell.program.as_deref(), Some("pwsh.exe"));
+            assert_eq!(loaded.diagnostics.len(), 1, "{clipboard}");
+            assert_eq!(loaded.diagnostics[0].level, DiagnosticLevel::Error);
+            assert!(
+                !loaded.diagnostics[0]
+                    .message
+                    .contains("fixture-invalid-value")
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_clipboard_settings_are_not_capacity_or_read_controls() {
+        let loaded = parse("[clipboard]\nosc52_write = 'deny'\nread = true\ncapacity = 100");
+        assert_eq!(
+            loaded.settings.clipboard.osc52_write,
+            Osc52WritePolicy::Deny
+        );
+        assert_eq!(loaded.diagnostics.len(), 2);
+        assert!(
+            loaded
+                .diagnostics
+                .iter()
+                .all(|d| d.level == DiagnosticLevel::Warning)
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ Establish a generic Terminal-to-Runtime presentation-eligibility contract that l
 
 ## Blocks
 
-- T0002 — Basic synchronized batching needs a concrete state to publish through this contract.
+- [Spec 0007 synchronized batch contract](../../spec/0007-synchronized-output-mode.md#solution) — basic synchronized batching needs concrete nested state to publish through this contract.
 - T0003 — Recovery needs the contract to request forced frames while ordinary presentation is deferred.
 - T0004 — Lifecycle cleanup needs cleared state to restore the contract's ordinary-present behavior.
 
