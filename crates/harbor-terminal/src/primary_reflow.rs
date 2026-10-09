@@ -957,6 +957,7 @@ fn continuation_cell(base: &Cell) -> Cell {
         fg: base.fg,
         bg: base.bg,
         attrs: base.attrs,
+        underline_color: base.underline_color,
         protected: base.protected,
         hyperlink: base.hyperlink,
     }

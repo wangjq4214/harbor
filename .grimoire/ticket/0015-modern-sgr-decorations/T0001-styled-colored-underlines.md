@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0018 R1-R3, R5-R7](../../spec/0018-modern-sgr-decorations.md), [ADR 0051](../../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -35,18 +35,22 @@ Extend DECRQSS alongside the state producer so it does not silently report moder
 
 ## Acceptance
 
-- [ ] `4:0..5`, legacy `4`/`24`, and `21` produce the specified styles; `21` does not clear bold and unknown styles retain previous style.
-- [ ] All selected SGR 58 indexed/RGB semicolon/colon forms, including empty colorspace RGB, work within `0..255`; incomplete/out-of-range candidates leave previous underline color unchanged.
-- [ ] Color changes do not enable style; `24`/`4:0` preserve color, re-enable reuses it, and `59` restores effective-foreground following. Explicit colors do not swap under inverse.
-- [ ] Mixed top-level/colon parameters, ordered resets, every relevant fragmentation boundary, malformed/cancelled CSI, parser bounds and subsequent text recover correctly without subparameters leaking into other attributes.
-- [ ] Written cells, wide continuations, edited/moved cells, scrollback, saved pen, buffer transitions, SGR reset, DECSTR and RIS carry/reset the new state according to spec R5.
-- [ ] CPU geometry and GPU evidence distinguish all styles, preserve contiguous decoration over spaces/adjacent cells, cover both halves of wide text without duplicate artifacts, and respect viewport/font/DPI invalidation and clipping.
-- [ ] Explicit decorated tails and existing styled erase/fill blanks survive primary narrowing/widening with correct meaningful extents. Default undecorated tails, live/saved cursor exceptions, capacity eviction and selection/copy anchor behavior retain existing rules.
-- [ ] Alternate-screen resize remains rectangular, saved primary reflow retains the new state, and no primary/alternate state leaks.
-- [ ] Non-space OSC 8 fallback remains single when explicit style is off, explicit enabled style wins, and linked spaces do not acquire fallback decoration. Existing link lifetime/activation is unchanged.
-- [ ] DECRQSS includes accurate underline style/color, preserves legacy/default exact bytes, round-trips into the same pen state, and retains framing/cancellation/bounds.
-- [ ] Focused tests and scoped synthetic Windows rendering/resize evidence record commands, revision/dirty scope, versions, observations and exclusions under the validation policy. No Neovim or broader transport pass is inferred from these alone.
-- [ ] Applicable implementation gates are run with unrun commands explained. Documentation records only the exact evidenced underline scope; Su remains T0003's responsibility.
+- [x] `4:0..5`, legacy `4`/`24`, and `21` produce the specified styles; `21` does not clear bold and unknown styles retain previous style.
+- [x] All selected SGR 58 indexed/RGB semicolon/colon forms, including empty colorspace RGB, work within `0..255`; incomplete/out-of-range candidates leave previous underline color unchanged.
+- [x] Color changes do not enable style; `24`/`4:0` preserve color, re-enable reuses it, and `59` restores effective-foreground following. Explicit colors do not swap under inverse.
+- [x] Mixed top-level/colon parameters, ordered resets, every relevant fragmentation boundary, malformed/cancelled CSI, parser bounds and subsequent text recover correctly without subparameters leaking into other attributes.
+- [x] Written cells, wide continuations, edited/moved cells, scrollback, saved pen, buffer transitions, SGR reset, DECSTR and RIS carry/reset the new state according to spec R5.
+- [x] CPU geometry and GPU evidence distinguish all styles, preserve contiguous decoration over spaces/adjacent cells, cover both halves of wide text without duplicate artifacts, and respect viewport/font/DPI invalidation and clipping.
+- [x] Explicit decorated tails and existing styled erase/fill blanks survive primary narrowing/widening with correct meaningful extents. Default undecorated tails, live/saved cursor exceptions, capacity eviction and selection/copy anchor behavior retain existing rules.
+- [x] Alternate-screen resize remains rectangular, saved primary reflow retains the new state, and no primary/alternate state leaks.
+- [x] Non-space OSC 8 fallback remains single when explicit style is off, explicit enabled style wins, and linked spaces do not acquire fallback decoration. Existing link lifetime/activation is unchanged.
+- [x] DECRQSS includes accurate underline style/color, preserves legacy/default exact bytes, round-trips into the same pen state, and retains framing/cancellation/bounds.
+- [x] Focused tests and scoped synthetic Windows rendering/resize evidence record commands, revision/dirty scope, versions, observations and exclusions under the validation policy. No Neovim or broader transport pass is inferred from these alone.
+- [x] Applicable implementation gates are run with unrun commands explained. Documentation records only the exact evidenced underline scope; Su remains T0003's responsibility.
+
+## Delivery Evidence
+
+Implemented against baseline `84bed2aaf0a7ea4ffa36ccaf86dea13d6bcc1988` plus the T0001 dirty-tree scope. [Acceptance mapping, commands, GPU readback and synthetic Windows resize observations](../../../docs/verification/modern-underlines-t0001.md) establish the scoped result. Workspace: 2269 passed, 5 ignored; core-only terminal: 669 passed, 2 ignored. Ignored/manual gates are not passes. T0002/T0003, Su, Neovim, broader transport and release acceptance remain outside this delivery.
 
 ## Out of Scope
 

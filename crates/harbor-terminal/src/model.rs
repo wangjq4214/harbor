@@ -5,9 +5,37 @@ use std::borrow::Cow;
 
 // ── CellAttrs ─────────────────────────────────────────────────────────────────
 
-/// Text style attributes, stored as a compact bitset.
+/// An explicit SGR underline, independent of hyperlink fallback and color.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CellAttrs(u8);
+#[repr(u8)]
+pub enum UnderlineStyle {
+    #[default]
+    Off = 0,
+    Single = 1,
+    Double = 2,
+    Curly = 3,
+    Dotted = 4,
+    Dashed = 5,
+}
+
+impl UnderlineStyle {
+    pub(crate) fn from_sgr(code: usize) -> Option<Self> {
+        Some(match code {
+            0 => Self::Off,
+            1 => Self::Single,
+            2 => Self::Double,
+            3 => Self::Curly,
+            4 => Self::Dotted,
+            5 => Self::Dashed,
+            _ => return None,
+        })
+    }
+}
+
+/// Text attributes plus one authoritative underline style.
+/// The legacy UNDERLINE selector accesses the style; it is not a second flag.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CellAttrs(u16);
 
 impl CellAttrs {
     pub const BOLD: u8 = 1 << 0;
@@ -17,21 +45,43 @@ impl CellAttrs {
     pub const BLINK: u8 = 1 << 4;
     pub const INVERSE: u8 = 1 << 5;
     pub const STRIKETHROUGH: u8 = 1 << 6;
+    const UNDERLINE_MASK: u16 = 7 << 8;
 
-    #[allow(dead_code)]
+    pub fn underline_style(self) -> UnderlineStyle {
+        UnderlineStyle::from_sgr(usize::from((self.0 & Self::UNDERLINE_MASK) >> 8))
+            .expect("underline bits are only written by set_underline_style")
+    }
+
+    pub fn set_underline_style(&mut self, style: UnderlineStyle) {
+        self.0 = (self.0 & !Self::UNDERLINE_MASK) | ((style as u16) << 8);
+    }
+
     pub fn contains(self, bits: u8) -> bool {
-        self.0 & bits != 0
+        self.0 & u16::from(bits & !Self::UNDERLINE) != 0
+            || (bits & Self::UNDERLINE != 0 && self.underline_style() != UnderlineStyle::Off)
     }
     pub fn set(&mut self, bits: u8) {
-        self.0 |= bits;
+        self.0 |= u16::from(bits & !Self::UNDERLINE);
+        if bits & Self::UNDERLINE != 0 {
+            self.set_underline_style(UnderlineStyle::Single);
+        }
     }
     pub fn toggle(&mut self, bits: u8) {
-        self.0 ^= bits;
+        self.0 ^= u16::from(bits & !Self::UNDERLINE);
+        if bits & Self::UNDERLINE != 0 {
+            self.set_underline_style(if self.underline_style() == UnderlineStyle::Off {
+                UnderlineStyle::Single
+            } else {
+                UnderlineStyle::Off
+            });
+        }
     }
     pub fn clear(&mut self, bits: u8) {
-        self.0 &= !bits;
+        self.0 &= !u16::from(bits & !Self::UNDERLINE);
+        if bits & Self::UNDERLINE != 0 {
+            self.set_underline_style(UnderlineStyle::Off);
+        }
     }
-    #[allow(dead_code)]
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -73,6 +123,8 @@ pub struct Cell {
     pub bg: Color,
     /// Text style attributes.
     pub attrs: CellAttrs,
+    /// Independent underline color; Default follows the effective foreground.
+    pub underline_color: Color,
     /// True if this character is protected against selective erasure (DECSCA).
     pub protected: bool,
     /// Screen-local OSC 8 hyperlink identity, if any.
@@ -90,6 +142,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             attrs: CellAttrs::default(),
+            underline_color: Color::Default,
             protected: false,
             hyperlink: None,
         }
@@ -117,11 +170,14 @@ impl Cell {
 
     /// Whether a blank cell paints pixels in the current renderer.
     ///
-    /// Foreground-only and glyph decorations do not make a space visible: the
-    /// renderer skips space glyphs, underlines, hyperlinks, and strikethroughs.
-    /// A non-default background or inverse video does paint the cell rectangle.
+    /// Explicit underlines paint spaces; hyperlink fallback and strike do not.
+    /// Background and inverse video also paint the cell rectangle.
     pub(crate) fn is_visibly_meaningful_blank(&self) -> bool {
-        self.ch == ' ' && (self.bg != Color::Default || self.attrs.contains(CellAttrs::INVERSE))
+        self.ch == ' '
+            && (self.bg != Color::Default
+                || self
+                    .attrs
+                    .contains(CellAttrs::INVERSE | CellAttrs::UNDERLINE))
     }
 
     /// Sets the public cell fields and clears any screen-local hyperlink identity.
@@ -148,6 +204,7 @@ impl Cell {
         self.fg = fg;
         self.bg = bg;
         self.attrs = attrs;
+        self.underline_color = Color::Default;
         self.protected = protected;
         self.hyperlink = hyperlink;
     }
@@ -160,6 +217,7 @@ impl Cell {
                 self.fg = Color::Default;
                 self.bg = Color::Default;
                 self.attrs = CellAttrs::default();
+                self.underline_color = Color::Default;
                 self.protected = false;
             }
             1 => self.attrs.set(CellAttrs::BOLD),
@@ -169,6 +227,7 @@ impl Cell {
             5 => self.attrs.set(CellAttrs::BLINK),
             7 => self.attrs.set(CellAttrs::INVERSE),
             9 => self.attrs.set(CellAttrs::STRIKETHROUGH),
+            21 => self.attrs.set_underline_style(UnderlineStyle::Double),
             22 => self.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
             23 => self.attrs.clear(CellAttrs::ITALIC),
             24 => self.attrs.clear(CellAttrs::UNDERLINE),
@@ -179,6 +238,7 @@ impl Cell {
             40..=47 => self.bg = Color::Named((code - 40) as u8),
             39 => self.fg = Color::Default,
             49 => self.bg = Color::Default,
+            59 => self.underline_color = Color::Default,
             90..=97 => self.fg = Color::Bright((code - 90) as u8),
             100..=107 => self.bg = Color::Bright((code - 100) as u8),
             _ => {}

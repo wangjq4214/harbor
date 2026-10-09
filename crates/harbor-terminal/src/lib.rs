@@ -34,8 +34,8 @@ use harbor_pty::PtyEndpoints;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
 pub use layout::RenderViewport;
-pub use model::DirtyRange;
 pub use model::should_confirm_multiline;
+pub use model::{DirtyRange, UnderlineStyle};
 pub use model::{
     InputModes, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage,
     safe_preview_line,

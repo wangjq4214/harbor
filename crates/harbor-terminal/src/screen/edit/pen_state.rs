@@ -4,7 +4,7 @@
 //! Cell-erase uses the current pen to produce blank cells tinted with the
 //! active foreground, background, and attributes.
 
-use crate::model::{Cell, CellAttrs, CharacterProtection};
+use crate::model::{Cell, CellAttrs, CharacterProtection, UnderlineStyle};
 use harbor_config::Color;
 use harbor_parser::Params;
 
@@ -18,6 +18,7 @@ pub(crate) struct Pen {
     pub(crate) bg: Color,
     /// Active text attributes (bold, italic, underline, etc.).
     pub(crate) attrs: CellAttrs,
+    pub(crate) underline_color: Color,
     /// Whether newly written cells are protected (DECSCA).
     pub(crate) protected: bool,
 }
@@ -28,6 +29,7 @@ impl Pen {
             fg: Color::Default,
             bg: Color::Default,
             attrs: CellAttrs::default(),
+            underline_color: Color::Default,
             protected: false,
         }
     }
@@ -40,7 +42,60 @@ struct SavedPen {
     fg: Color,
     bg: Color,
     attrs: CellAttrs,
+    underline_color: Color,
     charsets: CharacterSets,
+}
+
+/// Parse only the approved SGR 58 forms, consuming the entire candidate even
+/// when invalid. Colon fields never become independent top-level attributes.
+fn underline_color(params: &Params, i: usize) -> (Option<Color>, usize) {
+    let len = params.sub_params_len(i).unwrap_or(0);
+    if len > 1 {
+        let color = match (params.get_sub_param(i, 1), len) {
+            (Some(5), 3) => params
+                .get_sub_param(i, 2)
+                .filter(|&n| n <= 255)
+                .map(|n| Color::Indexed(n as u8)),
+            (Some(2), 5) => rgb_color(
+                params.get_sub_param(i, 2),
+                params.get_sub_param(i, 3),
+                params.get_sub_param(i, 4),
+            ),
+            (Some(2), 6) if params.get_sub_param(i, 2).is_none() => rgb_color(
+                params.get_sub_param(i, 3),
+                params.get_sub_param(i, 4),
+                params.get_sub_param(i, 5),
+            ),
+            _ => None,
+        };
+        return (color, 0);
+    }
+    let plain = |index| {
+        (params.sub_params_len(index) == Some(1))
+            .then(|| params.get(index))
+            .flatten()
+    };
+    let consumed = match plain(i + 1) {
+        Some(5) => 2,
+        Some(2) => 4,
+        _ => return (None, 1),
+    };
+    let color = match consumed {
+        2 => plain(i + 2)
+            .filter(|&n| n <= 255)
+            .map(|n| Color::Indexed(n as u8)),
+        _ => rgb_color(plain(i + 2), plain(i + 3), plain(i + 4)),
+    };
+    (color, consumed)
+}
+
+fn rgb_color(r: Option<usize>, g: Option<usize>, b: Option<usize>) -> Option<Color> {
+    match (r, g, b) {
+        (Some(r), Some(g), Some(b)) if r <= 255 && g <= 255 && b <= 255 => {
+            Some(Color::Rgb(r as u8, g as u8, b as u8))
+        }
+        _ => None,
+    }
 }
 
 /// Horizontal tab stops.  `true` at column `c` means a tab stop is set.
@@ -187,6 +242,7 @@ impl PenState {
             fg: self.pen.fg,
             bg: self.pen.bg,
             attrs: self.pen.attrs,
+            underline_color: self.pen.underline_color,
             protected: false,
             hyperlink: None,
         }
@@ -199,6 +255,7 @@ impl PenState {
             fg: self.pen.fg,
             bg: self.pen.bg,
             attrs: self.pen.attrs,
+            underline_color: self.pen.underline_color,
             charsets: self.charsets,
         });
     }
@@ -210,6 +267,7 @@ impl PenState {
             self.pen.fg = saved.fg;
             self.pen.bg = saved.bg;
             self.pen.attrs = saved.attrs;
+            self.pen.underline_color = saved.underline_color;
             self.charsets.g0 = saved.charsets.g0;
             self.charsets.g1 = saved.charsets.g1;
             self.charsets.g2 = saved.charsets.g2;
@@ -242,11 +300,26 @@ impl PenState {
                     self.pen.fg = Color::Default;
                     self.pen.bg = Color::Default;
                     self.pen.attrs = CellAttrs::default();
+                    self.pen.underline_color = Color::Default;
                 }
                 1 => self.pen.attrs.set(CellAttrs::BOLD),
                 2 => self.pen.attrs.set(CellAttrs::DIM),
                 3 => self.pen.attrs.set(CellAttrs::ITALIC),
-                4 => self.pen.attrs.set(CellAttrs::UNDERLINE),
+                4 => {
+                    let style = if sub_params_len == 1 {
+                        Some(UnderlineStyle::Single)
+                    } else if sub_params_len == 2 {
+                        params
+                            .get_sub_param(i, 1)
+                            .and_then(UnderlineStyle::from_sgr)
+                    } else {
+                        None
+                    };
+                    if let Some(style) = style {
+                        self.pen.attrs.set_underline_style(style);
+                    }
+                }
+                21 => self.pen.attrs.set_underline_style(UnderlineStyle::Double),
                 5 => self.pen.attrs.set(CellAttrs::BLINK),
                 7 => self.pen.attrs.set(CellAttrs::INVERSE),
                 9 => self.pen.attrs.set(CellAttrs::STRIKETHROUGH),
@@ -256,6 +329,13 @@ impl PenState {
                 25 => self.pen.attrs.clear(CellAttrs::BLINK),
                 27 => self.pen.attrs.clear(CellAttrs::INVERSE),
                 29 => self.pen.attrs.clear(CellAttrs::STRIKETHROUGH),
+                58 => {
+                    let (color, consumed) = underline_color(params, i);
+                    if let Some(color) = color {
+                        self.pen.underline_color = color;
+                    }
+                    i += consumed;
+                }
                 30..=37 => self.pen.fg = Color::Named((n - 30) as u8),
                 40..=47 => self.pen.bg = Color::Named((n - 40) as u8),
                 39 => self.pen.fg = Color::Default,
@@ -346,6 +426,7 @@ impl PenState {
                         }
                     }
                 }
+                59 => self.pen.underline_color = Color::Default,
                 _ => { /* unknown SGR code — silently ignore */ }
             }
             i += 1;

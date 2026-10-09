@@ -94,25 +94,41 @@ fn serialize_status(screen: &Screen, pt: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn serialize_sgr(screen: &Screen) -> Vec<u8> {
-    let (fg, bg, attrs) = screen.current_sgr();
+    let (fg, bg, attrs, underline_color) = screen.current_sgr();
     let mut parts = vec![String::from("0")];
 
     for &(bit, code) in &[
         (CellAttrs::BOLD, "1"),
         (CellAttrs::DIM, "2"),
         (CellAttrs::ITALIC, "3"),
-        (CellAttrs::UNDERLINE, "4"),
+        (CellAttrs::UNDERLINE, ""),
         (CellAttrs::BLINK, "5"),
         (CellAttrs::INVERSE, "7"),
         (CellAttrs::STRIKETHROUGH, "9"),
     ] {
         if attrs.contains(bit) {
-            parts.push(code.to_string());
+            if bit == CellAttrs::UNDERLINE {
+                let style = attrs.underline_style();
+                parts.push(if style == crate::UnderlineStyle::Single {
+                    "4".to_string()
+                } else {
+                    format!("4:{}", style as u8)
+                });
+            } else {
+                parts.push(code.to_string());
+            }
         }
     }
 
     push_sgr_color(&mut parts, true, fg);
     push_sgr_color(&mut parts, false, bg);
+    match underline_color {
+        Color::Default => {}
+        Color::Indexed(n) => parts.push(format!("58;5;{n}")),
+        Color::Rgb(r, g, b) => parts.push(format!("58;2;{r};{g};{b}")),
+        Color::Named(n) => parts.push(format!("58;5;{n}")),
+        Color::Bright(n) => parts.push(format!("58;5;{}", n + 8)),
+    }
 
     let mut out = parts.join(";");
     out.push('m');

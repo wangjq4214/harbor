@@ -308,8 +308,8 @@ Evidence: `crates/harbor-parser/src/params.rs` and `src/core.rs`; `should_preser
 * [x] Supports multiple sub-parameters (parser structure)
 * [ ] Supports `38:2::R:G:B`
 * [ ] Supports `48:2::R:G:B`
-* [ ] Supports `58:2::R:G:B`
-* [ ] Supports `4:3`
+* [x] Supports `58:2::R:G:B`
+* [x] Supports `4:3`
 * [x] Semicolon parameters and colon sub-parameters are not confused (parser structure)
 * [ ] Unknown sub-parameter forms can be safely ignored
 
@@ -606,14 +606,14 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 ### 16.3 Underline
 
 * [x] `4` — Single underline
-* [ ] `21` — Double underline or compatibility handling
+* [x] `21` — Double underline; preserves bold
 * [x] `24` — Underline off
-* [ ] `4:0` — No underline
-* [ ] `4:1` — Single underline
-* [ ] `4:2` — Double underline
-* [ ] `4:3` — Curly underline
-* [ ] `4:4` — Dotted underline
-* [ ] `4:5` — Dashed underline
+* [x] `4:0` — No underline
+* [x] `4:1` — Single underline
+* [x] `4:2` — Double underline
+* [x] `4:3` — Curly underline
+* [x] `4:4` — Dotted underline
+* [x] `4:5` — Dashed underline
 * [x] Unknown underline styles degrade safely
 
 ### 16.4 Blink
@@ -662,7 +662,7 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 
 * [x] `38;5;index` — Foreground
 * [x] `48;5;index` — Background
-* [ ] `58;5;index` — Underline color
+* [x] `58;5;index` — Underline color
 * [x] index range limited to `0..255`
 * [x] Out-of-range values are safely ignored or truncated
 * [x] Incomplete sequences do not corrupt subsequent SGR
@@ -671,17 +671,17 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 
 * [x] `38;2;R;G;B`
 * [x] `48;2;R;G;B`
-* [ ] `58;2;R;G;B`
+* [x] `58;2;R;G;B`
 * [ ] `38:2::R:G:B`
 * [ ] `48:2::R:G:B`
-* [ ] `58:2::R:G:B`
+* [x] `58:2::R:G:B`
 * [x] RGB components limited to `0..255`
 * [ ] Supports colon form with empty colorspace field
 * [x] Incomplete RGB parameters are safely ignored
 
 ### 16.11 Underline Color Reset
 
-* [ ] `59` — Default underline color
+* [x] `59` — Default underline color
 
 ### 16.12 SGR Combinations
 
@@ -690,7 +690,9 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Subsequent parameters continue to take effect after reset
 * [x] E.g. `CSI 0;1;31 m` produces the correct result
 * [x] Unknown SGR parameters do not reset all attributes
-* [ ] Semicolon and colon formats can appear in the same CSI
+* [x] Semicolon and colon formats can appear in the same CSI
+
+T0001's [evidence record](../verification/modern-underlines-t0001.md) covers all five explicit styles, independent color, spaces/wide cells, retained blanks and DECRQSS. Accepted color forms are `58;5;n`, `58:5:n`, `58;2;r;g;b`, `58:2:r:g:b`, and `58:2::r:g:b` with `0..255` components; invalid candidates retain the previous color without leaking components into attributes. `24`/`4:0` retain color, and `59` restores effective-foreground following (including inverse). Empty-colorspace support here is scoped to SGR 58, not a new acceptance claim for the unchecked 38/48 items. Su/Neovim and conceal/overline are separate open work.
 
 ---
 
@@ -1458,8 +1460,8 @@ This index preserves application-oriented coverage requirements without duplicat
 * [x] `\x1b[1;3;4mstyled\x1b[0m`
 * [x] `\x1b[38;5;196mindexed\x1b[0m`
 * [x] `\x1b[38;2;255;128;0mtruecolor\x1b[0m`
-* [ ] `\x1b[4:3mcurly\x1b[4:0m`
-* [ ] `\x1b[58;2;255;0;0munderline-color\x1b[59m`
+* [x] `\x1b[4:3mcurly\x1b[4:0m`
+* [x] `\x1b[58;2;255;0;0munderline-color\x1b[59m`
 
 ### 38.2 Cursor
 

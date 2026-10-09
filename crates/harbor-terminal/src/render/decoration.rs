@@ -6,16 +6,13 @@ use std::sync::Arc;
 use super::gpu::{self, ColoredVertex, TerminalGpuAccess, UploadMode};
 use super::text::glyph_color_with_palette;
 use crate::render::RenderViewport;
-use crate::{CellAttrs, DirtyRange};
+use crate::{CellAttrs, Color, DirtyRange, UnderlineStyle};
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
 
-/// Builds underline vertices for every row.
-#[inline]
-fn underline_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
-    let top = cell_y + metrics.underline_position;
-    (top, top + metrics.underline_thickness)
-}
+// Fixed-size cell slots keep dirty-range uploads bounded and independent of
+// neighboring cells. Curves use 16 strips; other styles use at most that many.
+const UNDERLINE_VERTICES_PER_CELL: usize = 16 * 6;
 
 #[inline]
 fn strikethrough_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
@@ -23,9 +20,113 @@ fn strikethrough_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
     (top, top + metrics.strikethrough_thickness)
 }
 
-#[inline]
-fn is_underline_active(cell: &crate::model::Cell) -> bool {
-    (cell.attrs.contains(CellAttrs::UNDERLINE) || cell.hyperlink.is_some()) && cell.ch != ' '
+fn effective_underline(
+    cell: &crate::Cell,
+    snap: &TerminalSnapshot,
+    row: usize,
+    col: usize,
+) -> UnderlineStyle {
+    let explicit = cell.attrs.underline_style();
+    if explicit != UnderlineStyle::Off {
+        return explicit;
+    }
+    // A continuation has a space scalar but belongs to its non-space wide lead.
+    let non_space =
+        cell.ch != ' ' || (cell.wide_continuation && col > 0 && snap.cell(row, col - 1).ch != ' ');
+    if cell.hyperlink.is_some() && non_space {
+        UnderlineStyle::Single
+    } else {
+        UnderlineStyle::Off
+    }
+}
+
+/// One non-overlapping slot per occupied cell, including wide continuations.
+/// Pattern phase is grid-relative, so incremental updates cannot introduce seams.
+fn underline_cell_vertices(
+    metrics: &TextMetrics,
+    snap: &TerminalSnapshot,
+    viewport: &RenderViewport,
+    palette: &Palette,
+    row: usize,
+    col: usize,
+) -> [ColoredVertex; UNDERLINE_VERTICES_PER_CELL] {
+    let mut out = [ColoredVertex::default(); UNDERLINE_VERTICES_PER_CELL];
+    let cell = snap.cell(row, col);
+    let style = effective_underline(cell, snap, row, col);
+    if style == UnderlineStyle::Off {
+        return out;
+    }
+    let color = if cell.underline_color == Color::Default {
+        glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs)
+    } else {
+        palette.resolve(cell.underline_color)
+    };
+    let (left, cell_y, right, cell_bottom) = viewport.cell_bounds(row, col);
+    let scale = viewport.line_height / metrics.line_height;
+    let thickness = (metrics.underline_thickness * scale)
+        .max(1.0)
+        .min(viewport.line_height / 4.0);
+    // Reserve room inside this row for two lines or the wave's excursion.
+    let band_height = (3.0 * thickness).min(viewport.line_height);
+    let top =
+        (cell_y + metrics.underline_position * scale).clamp(cell_y, cell_bottom - band_height);
+    let (surf_w, surf_h) = viewport.surface_dimensions();
+    let mut used = 0;
+    let mut rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        if x1 > x0 && y1 > y0 {
+            out[used..used + 6].copy_from_slice(&ColoredVertex::from_pixel_rect(
+                x0, y0, x1, y1, color, surf_w, surf_h,
+            ));
+            used += 6;
+        }
+    };
+    match style {
+        UnderlineStyle::Single => rect(left, top, right, top + thickness),
+        UnderlineStyle::Double => {
+            rect(left, top, right, top + thickness);
+            rect(left, top + 2.0 * thickness, right, top + 3.0 * thickness);
+        }
+        UnderlineStyle::Curly => {
+            let step = viewport.cell_width / 16.0;
+            for segment in 0..16 {
+                // One full wave per cell, continuous across adjacent cells.
+                let x0 = left + segment as f32 * step;
+                let x1 = if segment == 15 {
+                    right
+                } else {
+                    left + (segment + 1) as f32 * step
+                };
+                let phase = (segment as f32 + 0.5) / 16.0 * std::f32::consts::TAU;
+                let y = top + thickness * (1.0 + phase.sin());
+                rect(x0, y, x1, y + thickness);
+            }
+        }
+        UnderlineStyle::Dotted | UnderlineStyle::Dashed => {
+            let on = if style == UnderlineStyle::Dotted {
+                thickness
+            } else {
+                3.0 * thickness
+            };
+            // At most eight dots per cell, avoiding unbounded geometry at large sizes.
+            let period = (2.0 * on).max(viewport.cell_width / 8.0);
+            let phase_left = col as f32 * viewport.cell_width;
+            let phase_right = phase_left + viewport.cell_width;
+            let mut start = (phase_left / period).floor() * period;
+            while start < phase_right {
+                let x0 = start.max(phase_left);
+                let x1 = (start + on).min(phase_right);
+                rect(
+                    left + x0 - phase_left,
+                    top,
+                    left + x1 - phase_left,
+                    top + thickness,
+                );
+                start += period;
+            }
+        }
+        UnderlineStyle::Off => {}
+    }
+    out
 }
 
 #[inline]
@@ -62,22 +163,22 @@ fn build_decoration_layer_vertices(
     verts
 }
 
-/// Builds underline vertices for every row.
-/// Returns one `ColoredVertex` per grid cell (degenerate for cells without decoration).
+/// Builds fixed-size underline slots for every occupied grid cell.
 pub fn build_underline_vertices(
     metrics: &TextMetrics,
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    build_decoration_layer_vertices(
-        snap,
-        viewport,
-        palette,
-        underline_bounds,
-        is_underline_active,
-        metrics,
-    )
+    let mut vertices = Vec::with_capacity(snap.rows * snap.cols * UNDERLINE_VERTICES_PER_CELL);
+    for row in 0..snap.rows {
+        for col in 0..snap.cols {
+            vertices.extend_from_slice(&underline_cell_vertices(
+                metrics, snap, viewport, palette, row, col,
+            ));
+        }
+    }
+    vertices
 }
 
 /// Builds strikethrough vertices for every row.
@@ -128,11 +229,11 @@ impl Decoration {
     ) -> Self {
         let rows = snap.rows;
         let cols = snap.cols;
-        let max_vertices = rows * cols * 6;
-        let empty = vec![ColoredVertex::default(); max_vertices.max(1)];
-
-        let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
-        let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
+        let empty_u =
+            vec![ColoredVertex::default(); (rows * cols * UNDERLINE_VERTICES_PER_CELL).max(1)];
+        let empty_s = vec![ColoredVertex::default(); (rows * cols * 6).max(1)];
+        let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_u);
+        let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
 
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
@@ -175,7 +276,8 @@ impl Decoration {
     ) {
         let (surf_w, surf_h) = viewport.surface_dimensions();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
-        let bytes_per_cell = 6 * std::mem::size_of::<ColoredVertex>();
+        let bytes_per_cell =
+            (UNDERLINE_VERTICES_PER_CELL + 6) * std::mem::size_of::<ColoredVertex>();
         let plan = gpu.upload_plan(
             snap.rows,
             snap.cols,
@@ -190,12 +292,15 @@ impl Decoration {
                 cols = snap.cols,
                 "decoration layer resize"
             );
-            let new_cap = snap.rows * snap.cols * 6;
-            let old_cap = self.rows * self.cols * 6;
-            if new_cap > old_cap {
-                let empty = vec![ColoredVertex::default(); new_cap.max(1)];
-                self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
-                self.strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
+            if snap.rows * snap.cols > self.rows * self.cols {
+                let empty_u = vec![
+                    ColoredVertex::default();
+                    (snap.rows * snap.cols * UNDERLINE_VERTICES_PER_CELL).max(1)
+                ];
+                let empty_s = vec![ColoredVertex::default(); (snap.rows * snap.cols * 6).max(1)];
+                self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_u);
+                self.strikethrough_buffer =
+                    gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
             }
             let u = build_underline_vertices(&self.metrics, snap, viewport, &self.palette);
             let s = build_strikethrough_vertices(&self.metrics, snap, viewport, &self.palette);
@@ -221,10 +326,11 @@ impl Decoration {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
                 let (_, cell_y) = viewport.cell_pos(range.row, 0);
-                let (u_top, u_bottom) = underline_bounds(&self.metrics, cell_y);
                 let (s_top, s_bottom) = strikethrough_bounds(&self.metrics, cell_y);
 
-                let mut u_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
+                let mut u_row = Vec::with_capacity(
+                    (range.end_col - range.start_col) * UNDERLINE_VERTICES_PER_CELL,
+                );
                 let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 for col in range.start_col..range.end_col {
                     let cell = snap.cell(range.row, col);
@@ -232,13 +338,14 @@ impl Decoration {
                     let color =
                         glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
 
-                    if is_underline_active(cell) {
-                        u_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                            left, u_top, right, u_bottom, color, surf_w, surf_h,
-                        ));
-                    } else {
-                        u_row.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
-                    }
+                    u_row.extend_from_slice(&underline_cell_vertices(
+                        &self.metrics,
+                        snap,
+                        viewport,
+                        &self.palette,
+                        range.row,
+                        col,
+                    ));
 
                     if is_strikethrough_active(cell) {
                         s_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
@@ -252,7 +359,14 @@ impl Decoration {
                 let offset = ((range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<ColoredVertex>()) as u64;
-                gpu.write_buffer(&self.underline_buffer, offset, bytemuck::cast_slice(&u_row));
+                let u_offset = ((range.row * snap.cols + range.start_col)
+                    * UNDERLINE_VERTICES_PER_CELL
+                    * std::mem::size_of::<ColoredVertex>()) as u64;
+                gpu.write_buffer(
+                    &self.underline_buffer,
+                    u_offset,
+                    bytemuck::cast_slice(&u_row),
+                );
                 gpu.write_buffer(
                     &self.strikethrough_buffer,
                     offset,
@@ -280,12 +394,19 @@ impl Decoration {
         pass.set_vertex_buffer(0, self.underline_buffer.slice(..));
         let vertex_count = (self.rows * self.cols * 6) as u32;
         if vertex_count > 0 {
-            pass.draw(0..vertex_count, 0..1);
+            pass.draw(
+                0..(self.rows * self.cols * UNDERLINE_VERTICES_PER_CELL) as u32,
+                0..1,
+            );
             pass.set_vertex_buffer(0, self.strikethrough_buffer.slice(..));
             pass.draw(0..vertex_count, 0..1);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "decoration_tests.rs"]
+mod modern_tests;
 
 #[cfg(test)]
 mod tests {
@@ -317,7 +438,7 @@ mod tests {
         let metrics = test_metrics();
 
         let u_verts = build_underline_vertices(&metrics, &snap, &viewport, &Palette::default());
-        assert_eq!(u_verts.len(), 2 * 4 * 6);
+        assert_eq!(u_verts.len(), 2 * 4 * UNDERLINE_VERTICES_PER_CELL);
         assert_ne!(
             u_verts[0].position,
             [0.0, 0.0],
@@ -346,24 +467,24 @@ mod tests {
             &Palette::default(),
         );
 
-        assert_eq!(vertices.len(), 4 * 6);
+        assert_eq!(vertices.len(), 4 * UNDERLINE_VERTICES_PER_CELL);
         assert_ne!(
             vertices[0].position,
             [0.0, 0.0],
             "linked character should have an underline"
         );
         assert_eq!(
-            vertices[6].position,
+            vertices[UNDERLINE_VERTICES_PER_CELL].position,
             [0.0, 0.0],
             "linked spaces should remain undecorated"
         );
         assert_ne!(
-            vertices[12].position,
+            vertices[2 * UNDERLINE_VERTICES_PER_CELL].position,
             [0.0, 0.0],
             "linked character after a space should have an underline"
         );
         assert_eq!(
-            vertices[18].position,
+            vertices[3 * UNDERLINE_VERTICES_PER_CELL].position,
             [0.0, 0.0],
             "character after OSC 8 close should remain undecorated"
         );

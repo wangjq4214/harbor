@@ -326,11 +326,12 @@ impl Screen {
     }
 
     /// Current SGR foreground, background, and attributes as observed for DECRQSS.
-    pub(crate) fn current_sgr(&self) -> (Color, Color, CellAttrs) {
+    pub(crate) fn current_sgr(&self) -> (Color, Color, CellAttrs, Color) {
         (
             self.pen_state.pen.fg,
             self.pen_state.pen.bg,
             self.pen_state.pen.attrs,
+            self.pen_state.pen.underline_color,
         )
     }
 

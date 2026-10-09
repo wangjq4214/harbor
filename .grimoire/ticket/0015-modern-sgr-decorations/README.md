@@ -69,6 +69,8 @@ The first two can proceed with coordinated parallel work, but shared-file risk m
 | T0002 | [Conceal and overline](./T0002-conceal-overline.md) | Independent presentation attributes with preserved original content |
 | T0003 | [Capability discovery and Neovim acceptance](./T0003-capability-neovim-acceptance.md) | Truthful Su discovery and evidenced integrated SGR delivery |
 
+**Execution update:** T0001 is Done with [scoped automated/GPU/Windows evidence](../../../docs/verification/modern-underlines-t0001.md). T0002 and T0003 remain Todo; this does not mark the entire spec or ticket set complete.
+
 ## Handoff and Permissions
 
 - Selected endpoint: spec plus ticket set only. No production changes, native test execution, GitHub issue creation, staging, or commit is authorized by artifact authoring.
