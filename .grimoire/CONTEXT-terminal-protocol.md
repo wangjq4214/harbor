@@ -284,3 +284,11 @@
 - **Relationships:**
   - belongs to OSC 52 Host-Authorized Clipboard Write
   - communicates with Application Business Host
+
+### Modern SGR Decoration Policy
+- **Definition:** The accepted #162 modern SGR policy, pending implementation: explicit underline style and color are independent; styled underlines and overlines also paint spaces, while OSC 8 retains its non-space single-underline fallback. Visibly decorated blanks remain meaningful during primary reflow without changing ordinary default-style trailing-space trimming. Conceal suppresses foreground glyphs and decorations but preserves source text, background, width, and copy semantics; it is presentation rather than redaction. SGR status replies must reflect the authoritative state, and verified styled underline support is discoverable through `Su` without changing terminal identity. See [ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md) for exact compatibility rules.
+- **Relationships:**
+  - belongs to Terminal
+  - references OSC 8 Hyperlink
+  - references DECRQSS
+  - references XTGETTCAP
