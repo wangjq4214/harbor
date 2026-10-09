@@ -38,13 +38,16 @@ impl UnderlineStyle {
 pub struct CellAttrs(u16);
 
 impl CellAttrs {
-    pub const BOLD: u8 = 1 << 0;
-    pub const DIM: u8 = 1 << 1;
-    pub const ITALIC: u8 = 1 << 2;
-    pub const UNDERLINE: u8 = 1 << 3;
-    pub const BLINK: u8 = 1 << 4;
-    pub const INVERSE: u8 = 1 << 5;
-    pub const STRIKETHROUGH: u8 = 1 << 6;
+    pub const BOLD: u16 = 1 << 0;
+    pub const DIM: u16 = 1 << 1;
+    pub const ITALIC: u16 = 1 << 2;
+    pub const UNDERLINE: u16 = 1 << 3;
+    pub const BLINK: u16 = 1 << 4;
+    pub const INVERSE: u16 = 1 << 5;
+    pub const STRIKETHROUGH: u16 = 1 << 6;
+    /// Presentation only: source text and background remain intact.
+    pub const CONCEAL: u16 = 1 << 7;
+    pub const OVERLINE: u16 = 1 << 11;
     const UNDERLINE_MASK: u16 = 7 << 8;
 
     pub fn underline_style(self) -> UnderlineStyle {
@@ -56,18 +59,18 @@ impl CellAttrs {
         self.0 = (self.0 & !Self::UNDERLINE_MASK) | ((style as u16) << 8);
     }
 
-    pub fn contains(self, bits: u8) -> bool {
-        self.0 & u16::from(bits & !Self::UNDERLINE) != 0
+    pub fn contains(self, bits: u16) -> bool {
+        self.0 & (bits & !(Self::UNDERLINE | Self::UNDERLINE_MASK)) != 0
             || (bits & Self::UNDERLINE != 0 && self.underline_style() != UnderlineStyle::Off)
     }
-    pub fn set(&mut self, bits: u8) {
-        self.0 |= u16::from(bits & !Self::UNDERLINE);
+    pub fn set(&mut self, bits: u16) {
+        self.0 |= bits & !(Self::UNDERLINE | Self::UNDERLINE_MASK);
         if bits & Self::UNDERLINE != 0 {
             self.set_underline_style(UnderlineStyle::Single);
         }
     }
-    pub fn toggle(&mut self, bits: u8) {
-        self.0 ^= u16::from(bits & !Self::UNDERLINE);
+    pub fn toggle(&mut self, bits: u16) {
+        self.0 ^= bits & !(Self::UNDERLINE | Self::UNDERLINE_MASK);
         if bits & Self::UNDERLINE != 0 {
             self.set_underline_style(if self.underline_style() == UnderlineStyle::Off {
                 UnderlineStyle::Single
@@ -76,8 +79,8 @@ impl CellAttrs {
             });
         }
     }
-    pub fn clear(&mut self, bits: u8) {
-        self.0 &= !u16::from(bits & !Self::UNDERLINE);
+    pub fn clear(&mut self, bits: u16) {
+        self.0 &= !(bits & !(Self::UNDERLINE | Self::UNDERLINE_MASK));
         if bits & Self::UNDERLINE != 0 {
             self.set_underline_style(UnderlineStyle::Off);
         }
@@ -168,16 +171,17 @@ impl Cell {
         text
     }
 
-    /// Whether a blank cell paints pixels in the current renderer.
+    /// Whether a blank carries normally visible styling worth retaining.
     ///
-    /// Explicit underlines paint spaces; hyperlink fallback and strike do not.
-    /// Background and inverse video also paint the cell rectangle.
+    /// Underlines/overlines paint spaces; hyperlink fallback and strike do not.
+    /// Background and inverse video also paint the cell rectangle. Conceal is
+    /// deliberately ignored here: hidden styled contents remain retained.
     pub(crate) fn is_visibly_meaningful_blank(&self) -> bool {
         self.ch == ' '
             && (self.bg != Color::Default
                 || self
                     .attrs
-                    .contains(CellAttrs::INVERSE | CellAttrs::UNDERLINE))
+                    .contains(CellAttrs::INVERSE | CellAttrs::UNDERLINE | CellAttrs::OVERLINE))
     }
 
     /// Sets the public cell fields and clears any screen-local hyperlink identity.
@@ -226,6 +230,7 @@ impl Cell {
             4 => self.attrs.set(CellAttrs::UNDERLINE),
             5 => self.attrs.set(CellAttrs::BLINK),
             7 => self.attrs.set(CellAttrs::INVERSE),
+            8 => self.attrs.set(CellAttrs::CONCEAL),
             9 => self.attrs.set(CellAttrs::STRIKETHROUGH),
             21 => self.attrs.set_underline_style(UnderlineStyle::Double),
             22 => self.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
@@ -233,11 +238,14 @@ impl Cell {
             24 => self.attrs.clear(CellAttrs::UNDERLINE),
             25 => self.attrs.clear(CellAttrs::BLINK),
             27 => self.attrs.clear(CellAttrs::INVERSE),
+            28 => self.attrs.clear(CellAttrs::CONCEAL),
             29 => self.attrs.clear(CellAttrs::STRIKETHROUGH),
             30..=37 => self.fg = Color::Named((code - 30) as u8),
             40..=47 => self.bg = Color::Named((code - 40) as u8),
             39 => self.fg = Color::Default,
             49 => self.bg = Color::Default,
+            53 => self.attrs.set(CellAttrs::OVERLINE),
+            55 => self.attrs.clear(CellAttrs::OVERLINE),
             59 => self.underline_color = Color::Default,
             90..=97 => self.fg = Color::Bright((code - 90) as u8),
             100..=107 => self.bg = Color::Bright((code - 100) as u8),

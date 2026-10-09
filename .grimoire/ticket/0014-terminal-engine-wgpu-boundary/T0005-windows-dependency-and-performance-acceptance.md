@@ -11,7 +11,7 @@ Verify the delivered core/renderer/session boundary against baseline behavior an
 ## Affected Surfaces
 
 - **Automated checks:** Core-only and rendered build/test targets, dependency-graph assertions and focused boundary/integration tests.
-- **Runtime evidence:** `docs/verification/` or retrievable CI artifacts with one-/multi-session measurements and Windows ConPTY/GPU scenarios.
+- **Runtime evidence:** Self-contained summaries with one-/multi-session measurements and Windows ConPTY/GPU scenarios; raw artifacts remain local or in retrievable CI.
 - **Documentation:** Final ownership map and status of the completed boundary, including any compatibility facade retained only for transitional callers.
 
 ## Approach

@@ -104,7 +104,9 @@ fn serialize_sgr(screen: &Screen) -> Vec<u8> {
         (CellAttrs::UNDERLINE, ""),
         (CellAttrs::BLINK, "5"),
         (CellAttrs::INVERSE, "7"),
+        (CellAttrs::CONCEAL, "8"),
         (CellAttrs::STRIKETHROUGH, "9"),
+        (CellAttrs::OVERLINE, "53"),
     ] {
         if attrs.contains(bit) {
             if bit == CellAttrs::UNDERLINE {

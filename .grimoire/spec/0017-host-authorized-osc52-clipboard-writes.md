@@ -143,7 +143,7 @@ Record reproducible foreground default/explicit allow, explicit deny, confirm ap
 
 Include a named application workload that emits OSC 52 and record its exact application and transport versions; distinguish a direct synthetic protocol probe from a remote editor or WSL/SSH/tmux compatibility claim. Do not infer transport/application acceptance from parser tests. Repeat ordinary selection copy and paste-confirmation behavior as regression checks.
 
-Store durable evidence under `docs/verification/` or link retrievable CI artifacts, following the validation policy. Record:
+Keep a self-contained validation summary in committed documentation and retain raw artifacts locally or in retrievable CI, following the validation policy. Record:
 
 - Revision and dirty-tree scope.
 - Windows build, ConPTY/application versions, build profile, and actual transport.

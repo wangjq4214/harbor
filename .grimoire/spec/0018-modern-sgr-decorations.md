@@ -92,7 +92,7 @@ Support the selected indexed/RGB SGR 58 family alongside existing foreground/bac
 - Demonstrate Neovim undercurl/diagnostic-style highlighting and explicit underline color through an actual Harbor Windows/ConPTY session. Record the Neovim version, launch/transport path, highlight setup, expected versus observed rendering, resize/DPI observations, and return to the shell.
 - Supplement Neovim with direct synthetic VT cases for all styles, overline, conceal, explicit spaces, resets, inverse, and status/discovery bytes. A synthetic sequence test alone is not Neovim acceptance.
 - Preserve existing reply, OSC metadata, focus, SGR mouse, IME, synchronized output, selection/copy, and alternate-screen behavior through applicable regression checks rather than reimplement them.
-- Store retrievable evidence under `docs/verification/` or link CI artifacts using [Validation](../../docs/validation.md). Record revision/dirty scope, Windows/ConPTY/application versions, commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, artifacts, and exclusions. Do not capture secrets or unrelated terminal/clipboard contents.
+- Keep self-contained validation summaries using [Validation](../../docs/validation.md), with raw artifacts retained locally or linked from retrievable CI. Record revision/dirty scope, Windows/ConPTY/application versions, commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and exclusions. Do not capture secrets or unrelated terminal/clipboard contents.
 - Update protocol/status documentation only for behavior actually delivered and evidenced. The approved #162 prerequisites remain outside this slice's revalidation scope.
 
 ## Solution and Necessary Seams

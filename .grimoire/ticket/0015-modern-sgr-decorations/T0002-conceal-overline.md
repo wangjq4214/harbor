@@ -44,6 +44,10 @@ Extend the existing DECRQSS serializer for these attributes in the same delivery
 - [ ] Focused/core/CPU-geometry/GPU tests and scoped synthetic Windows rendering/copy/resize evidence are recorded with versions, revision/dirty scope and honest results/exclusions. Conceal is documented as presentation, not redaction.
 - [ ] Existing hyperlink, cursor/selection, IME and input contracts are preserved, and applicable implementation gates are run or explicitly marked unrun with reasons.
 
+## Implementation evidence
+
+The T0002 state/projection/status implementation is delivered with a reproducible [synthetic Windows fixture](../../../scripts/verify_conceal_overline_windows.ps1). Core: 677 passed, 2 ignored; workspace: 2280 passed, 5 ignored. Clippy, fmt, CPU/GPU readback and native original-text copy/empty-input resize checks passed. Native copy exactly preserved the combining suffix and CJK source. Partial-input cmd resize showed a redraw anomaly, also reproduced with legacy-only styling; its root cause remains unverified. Native font-settings reload, multi-monitor DPI and IME checks were not run. This ticket is not promoted to Done while complete acceptance remains unresolved; passing focused checks is not global acceptance.
+
 ## Out of Scope
 
 New underline styles/color (T0001), Su/final Neovim acceptance (T0003), security redaction, changed copied text, expansion of strikethrough-space rendering, a font/reflow/cursor/selection/IME redesign, new clipboard policy, and unrelated #162 extensions.

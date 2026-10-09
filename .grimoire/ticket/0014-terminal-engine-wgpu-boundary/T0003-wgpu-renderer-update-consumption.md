@@ -20,7 +20,7 @@ Use the existing wgpu pipeline, `TerminalSnapshot` and `UpdateDamage` concepts; 
 
 ## Dependencies and Coordination
 
-- **Blocked by:** The GPU-free update and timing interface defined by [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md) is required for renderer integration; [intermediate core-boundary evidence](../../../docs/verification/terminal-core-boundary-t0001.md) records the prerequisite boundary, not final renderer acceptance.
+- **Blocked by:** The GPU-free update and timing interface defined by [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md) is required for renderer integration; intermediate core-boundary evidence records the prerequisite boundary, not final renderer acceptance.
 - **Blocks:** T0004 cannot migrate the application draw path before the renderer handles the new boundary.
 - **Coordination risks:** Terminal construction crosses the [session ownership contract](../../../docs/architecture/terminal-session-ownership.md); align GPU init failure and PTY endpoint ownership with T0004's integrated path, but shared files alone do not require serializing the work.
 

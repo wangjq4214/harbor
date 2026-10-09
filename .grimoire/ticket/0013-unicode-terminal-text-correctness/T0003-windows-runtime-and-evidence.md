@@ -11,7 +11,7 @@ Provide reproducible, scope-specific evidence that combining and VS/ZWJ text beh
 ## Affected surfaces
 
 - **Windows integration:** ConPTY output in the running application, screen rendering/fallback, font/DPI changes, resize and clipboard selection/copy; named shell/application versions.
-- **Evidence and claims:** `docs/verification/`, `docs/current-status.md`, `docs/protocol/checklist.md` and applicable N02 roadmap/issue references; quality-gate logs or linked retrievable CI artifacts.
+- **Evidence and claims:** Self-contained summaries in `docs/current-status.md`, `docs/protocol/checklist.md` and applicable N02 roadmap/issue references; raw quality-gate logs stay local or in retrievable CI.
 
 ## Approach
 
@@ -27,7 +27,7 @@ Exercise the final integrated revision implementing Spec 0015's combining and VS
 
 - [x] Reproducible Windows shell and named application sessions verify combining, line-start cue, variation-selector and ZWJ examples on screen and via clipboard copy; include PTY fragmentation, right-edge placement, edits/erase, selection, repeated resize, font fallback and font/DPI changes as applicable to the delivered scope.
 - [x] Evidence distinguishes preserved source text and fixed cell width from successfully rendered whole-sequence presentation, and reports unsupported fonts or other known exclusions without blanket compatibility claims.
-- [x] Each scenario records revision, dirty-tree scope, OS/ConPTY/application versions, expected/observed result, artifacts, and honest PASS / FAIL / NOT RUN / BLOCKED status. Durable evidence is under `docs/verification/` or linked to retrievable CI artifacts without secrets or unrelated terminal content.
+- [x] Each scenario records revision, dirty-tree scope, OS/ConPTY/application versions, expected/observed result, and honest PASS / FAIL / NOT RUN / BLOCKED status. Committed summaries are self-contained; raw artifacts remain local or in retrievable CI without secrets or unrelated terminal content.
 - [x] Run and record results for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; record commands not run and why.
 - [x] Update status/protocol documentation only for implemented and evidenced N02 behavior, retaining deferred features and N01's separately outstanding runtime/performance acceptance. Close #153 only when all accepted scope is evidenced or explicit scope decisions link remaining/deferred work.
 

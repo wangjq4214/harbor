@@ -207,6 +207,14 @@ fn metrics_origin_and_dpi_project_inside_each_row() {
 }
 
 fn raster(device: &wgpu::Device, queue: &wgpu::Queue, decoration: &Decoration) -> Vec<u8> {
+    raster_draw(device, queue, |pass| decoration.draw(pass))
+}
+
+fn raster_draw(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    draw: impl FnOnce(&mut wgpu::RenderPass),
+) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("T0001 readback"),
         size: wgpu::Extent3d {
@@ -241,7 +249,7 @@ fn raster(device: &wgpu::Device, queue: &wgpu::Queue, decoration: &Decoration) -
             multiview_mask: None,
         });
         pass.set_scissor_rect(0, 0, 128, 160);
-        decoration.draw(&mut pass);
+        draw(&mut pass);
     }
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("T0001 pixels"),
@@ -456,5 +464,264 @@ fn gpu_modern_underline_styles_readback_and_incremental_reprojection() {
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     eprintln!(
         "PASS: T0001 five distinct GPU styles, spaces/wide slots, exact color, scissor, incremental/full equivalence, resize/DPI/palette invalidation"
+    );
+}
+
+#[test]
+fn conceal_suppresses_all_decoration_and_overline_uses_effective_foreground() {
+    for prefix in ["", "\x1b]8;;https://example.test\x1b\\"] {
+        for attrs in ["8;4;9;53", "8;4;9;53;7;31;44", "8;53"] {
+            let snap = snapshot(&format!("{prefix}\x1b[{attrs}mAe\u{301}界  "), 1, 6);
+            for vertices in [
+                build_underline_vertices(&metrics(), &snap, &viewport(), &Palette::default()),
+                build_strikethrough_vertices(&metrics(), &snap, &viewport(), &Palette::default()),
+                build_overline_vertices(&metrics(), &snap, &viewport(), &Palette::default()),
+            ] {
+                assert!(
+                    rects(&vertices).is_empty(),
+                    "{attrs}: no foreground decoration"
+                );
+            }
+        }
+    }
+    let snap = snapshot("\x1b[53;4;9;31;44;7mA 界", 1, 4);
+    let mut palette = Palette::default();
+    palette.normal[4] = harbor_config::Rgba::new(0.3, 0.6, 0.9, 1.0);
+    let overline = build_overline_vertices(&metrics(), &snap, &viewport(), &palette);
+    assert_eq!(
+        rects(&overline).len(),
+        4,
+        "spaces and wide continuation each have one slot"
+    );
+    for (col, slot) in overline.chunks_exact(6).enumerate() {
+        let shape = rects(slot);
+        let (left, top, right, bottom) = shape[0];
+        assert!((left - col as f32 * 16.0).abs() < 0.001);
+        assert!((right - (col + 1) as f32 * 16.0).abs() < 0.001);
+        assert!(top.abs() < 0.001 && (bottom - 1.0).abs() < 0.001);
+        assert_eq!(slot[0].color, palette.resolve(Color::Named(4)));
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(slot),
+            bytemuck::cast_slice::<_, u8>(&overline_cell_vertices(
+                &metrics(),
+                &snap,
+                &viewport(),
+                &palette,
+                0,
+                col
+            ))
+        );
+    }
+    assert!(
+        !rects(&build_underline_vertices(
+            &metrics(),
+            &snap,
+            &viewport(),
+            &palette
+        ))
+        .is_empty()
+    );
+    assert!(
+        !rects(&build_strikethrough_vertices(
+            &metrics(),
+            &snap,
+            &viewport(),
+            &palette
+        ))
+        .is_empty()
+    );
+}
+
+#[test]
+fn overline_font_origin_dpi_geometry_stays_inside_rows() {
+    let snap = snapshot("\x1b[53m    ", 2, 2);
+    for thickness in [0.2, 1.0, 3.0, 100.0] {
+        let font = TextMetrics {
+            underline_thickness: thickness,
+            ..metrics()
+        };
+        for scale in [1.0, 1.5, 2.0] {
+            let mut view = viewport();
+            view.cell_width *= scale;
+            view.line_height *= scale;
+            view.allocation_origin = (7.0, 11.0);
+            let vertices = build_overline_vertices(&font, &snap, &view, &Palette::default());
+            for row in 0..2 {
+                for col in 0..2 {
+                    let start = (row * 2 + col) * 6;
+                    let shape = rects(&vertices[start..start + 6]);
+                    assert_eq!(shape.len(), 1);
+                    let (x0, y0, x1, y1) = shape[0];
+                    let (left, top, right, bottom) = view.cell_bounds(row, col);
+                    assert!((x0 - left).abs() < 0.001 && (x1 - right).abs() < 0.001);
+                    assert!((y0 - top).abs() < 0.001 && y1 <= bottom + 0.001);
+                    assert!(
+                        (y1 - y0 - (thickness * scale).max(1.0).min(view.line_height / 4.0)).abs()
+                            < 0.001
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn gpu_conceal_overline_readback_dirty_removal_and_reprojection() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))
+    .expect("T0002 requires a GPU adapter; missing adapter is a prerequisite failure");
+    eprintln!("T0002 GPU adapter: {:?}", adapter.get_info());
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "T0002",
+    ));
+    let mut screen = Screen::new(4, 10);
+    let mut parser = TerminalParser::default();
+    parser.put_bytes(
+        &mut screen,
+        "\x1b[53;38;2;255;0;0mA 界      \x1b[0m\x1b[2;1H\x1b[8;4;9;53;7mAe\u{301}界\x1b[3;1H\x1b[0;53;31mA      ".as_bytes(),
+    );
+    let snap = screen.terminal_snapshot();
+    let mut decoration = Decoration::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &snap,
+        metrics(),
+        Palette::default(),
+    );
+    decoration.invalidate_projection();
+    decoration.prepare_with_dirty(gpu, &snap, &[], &viewport());
+    let pixels = raster(&device, &queue, &decoration);
+    for x in 0..128 {
+        assert_eq!(
+            &pixels[x * 4..x * 4 + 4],
+            &[255, 0, 0, 255],
+            "continuous overline, including blank/wide slots"
+        );
+    }
+    for y in 24..48 {
+        for x in 0..128 {
+            assert_eq!(
+                pixels[(y * 256 + x) * 4 + 3],
+                0,
+                "concealed row has no decorations"
+            );
+        }
+    }
+    for y in 0..192 {
+        for x in 128..256 {
+            assert_eq!(
+                pixels[(y * 256 + x) * 4 + 3],
+                0,
+                "scissor clips the overlay"
+            );
+        }
+    }
+    screen.clear_dirty();
+    parser.put_bytes(&mut screen, b"\x1b[1;1H\x1b[8;53mA\x1b[55;28m ");
+    let snap = screen.terminal_snapshot();
+    decoration.prepare_with_dirty(gpu, &snap, &snap.dirty_ranges, &viewport());
+    let incremental = raster(&device, &queue, &decoration);
+    assert_eq!(incremental[3], 0, "conceal removes stale overline");
+    assert_eq!(incremental[16 * 4 + 3], 0, "55 removes stale overline");
+    let mut full = Decoration::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &snap,
+        metrics(),
+        Palette::default(),
+    );
+    full.invalidate_projection();
+    full.prepare_with_dirty(gpu, &snap, &[], &viewport());
+    assert_eq!(incremental, raster(&device, &queue, &full));
+    for cols in [5, 12] {
+        screen.resize(4, cols);
+        let snap = screen.terminal_snapshot();
+        let mut view = viewport();
+        view.cell_width *= 1.5;
+        view.line_height *= 1.5;
+        view.allocation_origin = (3.0, 5.0);
+        let mut palette = Palette::default();
+        palette.normal[1] = harbor_config::Rgba::new(0.0, 1.0, 0.0, 1.0);
+        decoration.set_palette(palette);
+        decoration.invalidate_projection();
+        decoration.prepare_with_dirty(gpu, &snap, &[], &view);
+        let retained = raster(&device, &queue, &decoration);
+        assert!(
+            retained.chunks_exact(4).any(|p| p == [0, 255, 0, 255]),
+            "visible indexed overline must use the updated active palette"
+        );
+        let mut full =
+            Decoration::new(gpu, pipeline.clone(), (256, 192), &snap, metrics(), palette);
+        full.invalidate_projection();
+        full.prepare_with_dirty(gpu, &snap, &[], &view);
+        assert_eq!(retained, raster(&device, &queue, &full));
+    }
+    // Actual text atlas/encode/readback, including suffix and isolated-mark overlays.
+    let fonts = harbor_text::load_system_fonts(&harbor_config::FontSettings::default()).unwrap();
+    let font_metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+    let view = RenderViewport {
+        padding: 0.0,
+        ..RenderViewport::with_surface(
+            font_metrics.cell_width,
+            font_metrics.line_height,
+            (256, 192),
+            (256, 192),
+        )
+    };
+    let mut text_screen = Screen::new(2, 10);
+    let mut text_parser = TerminalParser::default();
+    text_parser.put_bytes(
+        &mut text_screen,
+        "\x1b[8;7;44mAe\u{301}界\x1b[2;1H\u{301}".as_bytes(),
+    );
+    let hidden = text_screen.terminal_snapshot();
+    let mut text_layer =
+        super::super::text::Text::new(gpu, fonts, font_metrics, &hidden, &view, Palette::default())
+            .unwrap();
+    text_layer.prepare_with_dirty(gpu, &hidden, &hidden.dirty_ranges, &view, None);
+    text_layer.prepare_preedit(gpu, None, &hidden, &view);
+    let pixels = raster_draw(&device, &queue, |pass| text_layer.draw(pass));
+    assert!(
+        pixels.iter().all(|&x| x == 0),
+        "no concealed base, suffix or dotted-circle glyphs, even under inverse"
+    );
+    text_screen.clear_dirty();
+    text_parser.put_bytes(
+        &mut text_screen,
+        "\x1b[1;1H\x1b[28;27;49mAe\u{301}界".as_bytes(),
+    );
+    let visible = text_screen.terminal_snapshot();
+    text_layer.prepare_with_dirty(gpu, &visible, &visible.dirty_ranges, &view, None);
+    text_layer.prepare_preedit(gpu, None, &visible, &view);
+    let pixels = raster_draw(&device, &queue, |pass| text_layer.draw(pass));
+    assert!(
+        pixels.chunks_exact(4).any(|p| p[3] != 0),
+        "reveal can populate an initially empty atlas"
+    );
+    text_screen.clear_dirty();
+    text_parser.put_bytes(&mut text_screen, "\x1b[1;1H\x1b[8;7mAe\u{301}界".as_bytes());
+    let hidden_again = text_screen.terminal_snapshot();
+    text_layer.prepare_with_dirty(gpu, &hidden_again, &hidden_again.dirty_ranges, &view, None);
+    text_layer.prepare_preedit(gpu, None, &hidden_again, &view);
+    assert!(
+        raster_draw(&device, &queue, |pass| text_layer.draw(pass))
+            .iter()
+            .all(|&x| x == 0),
+        "dirty conceal clears retained base and suffix glyphs"
+    );
+    eprintln!(
+        "PASS: T0002 GPU overline/space/wide/color/scissor, dirty conceal/off removal, resize/palette/DPI reprojection, base/suffix/isolated glyph suppression and reveal"
     );
 }

@@ -157,7 +157,7 @@ Do not use DHAT-instrumented timing as startup/input-latency evidence. Keep hist
 
 ## Evidence Record Format
 
-Store durable run records under `docs/verification/` when available, or link a retrievable CI artifact from the relevant work item. Do not invent a pass to fill a table.
+Raw run artifacts remain local and are not committed. Committed documents must contain self-contained validation summaries and must not link to local-only artifacts; link retrievable CI artifacts when available. Keep revision, environment, commands, outcomes and limitations in the summary. Do not invent a pass to fill a table.
 
 ```text
 Revision / dirty-tree scope:

@@ -13,7 +13,7 @@ Applications discover only implemented/evidenced styled underline support, and t
 - `crates/harbor-terminal/src/parser/xtgettcap.rs`: existing boolean capability registry and exact bounded replies.
 - Existing DECRQSS and integration tests for combined style/color/conceal/overline state.
 - Terminal update/render integration and regression tests for combined features; defects return to the responsible producer without inventing new policy.
-- Windows synthetic VT / Neovim procedures or scoped harness fixtures, `docs/verification/` records and affected protocol/status documentation.
+- Windows synthetic VT / Neovim procedures or scoped harness fixtures, self-contained validation summaries and affected protocol/status documentation.
 
 ## Approach
 

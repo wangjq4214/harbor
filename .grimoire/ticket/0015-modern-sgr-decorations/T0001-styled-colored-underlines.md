@@ -50,7 +50,7 @@ Extend DECRQSS alongside the state producer so it does not silently report moder
 
 ## Delivery Evidence
 
-Implemented against baseline `84bed2aaf0a7ea4ffa36ccaf86dea13d6bcc1988` plus the T0001 dirty-tree scope. [Acceptance mapping, commands, GPU readback and synthetic Windows resize observations](../../../docs/verification/modern-underlines-t0001.md) establish the scoped result. Workspace: 2269 passed, 5 ignored; core-only terminal: 669 passed, 2 ignored. Ignored/manual gates are not passes. T0002/T0003, Su, Neovim, broader transport and release acceptance remain outside this delivery.
+Implemented against baseline `84bed2aaf0a7ea4ffa36ccaf86dea13d6bcc1988` plus the T0001 dirty-tree scope. Acceptance mapping, commands, GPU readback and synthetic Windows resize observations establish the scoped result. Workspace: 2269 passed, 5 ignored; core-only terminal: 669 passed, 2 ignored. Ignored/manual gates are not passes. T0002/T0003, Su, Neovim, broader transport and release acceptance remain outside this delivery.
 
 ## Out of Scope
 

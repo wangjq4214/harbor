@@ -322,13 +322,17 @@ impl PenState {
                 21 => self.pen.attrs.set_underline_style(UnderlineStyle::Double),
                 5 => self.pen.attrs.set(CellAttrs::BLINK),
                 7 => self.pen.attrs.set(CellAttrs::INVERSE),
+                8 => self.pen.attrs.set(CellAttrs::CONCEAL),
                 9 => self.pen.attrs.set(CellAttrs::STRIKETHROUGH),
                 22 => self.pen.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
                 23 => self.pen.attrs.clear(CellAttrs::ITALIC),
                 24 => self.pen.attrs.clear(CellAttrs::UNDERLINE),
                 25 => self.pen.attrs.clear(CellAttrs::BLINK),
                 27 => self.pen.attrs.clear(CellAttrs::INVERSE),
+                28 => self.pen.attrs.clear(CellAttrs::CONCEAL),
                 29 => self.pen.attrs.clear(CellAttrs::STRIKETHROUGH),
+                53 => self.pen.attrs.set(CellAttrs::OVERLINE),
+                55 => self.pen.attrs.clear(CellAttrs::OVERLINE),
                 58 => {
                     let (color, consumed) = underline_color(params, i);
                     if let Some(color) = color {

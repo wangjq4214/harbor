@@ -37,4 +37,4 @@ Historical T0001–T0006 contracts survive in Spec 0014; retirement does not est
 
 ## Evidence and open gates
 
-[Automation](../../../docs/verification/content-preserving-resize-automation.md) records automated scope only. [Windows runtime](../../../docs/verification/content-preserving-resize-windows.md) and [performance](../../../docs/verification/content-preserving-resize-performance.md) records are NOT RUN and block final T0007 acceptance. Spec 0014's [Test Plan](../../spec/0014-content-preserving-resize-reflow.md#test-plan) remains the verification destination; retiring historical implementation tickets does not close #152/#170 or advance ADR acceptance.
+Automation records automated scope only. Windows runtime and performance records are NOT RUN and block final T0007 acceptance. Spec 0014's [Test Plan](../../spec/0014-content-preserving-resize-reflow.md#test-plan) remains the verification destination; retiring historical implementation tickets does not close #152/#170 or advance ADR acceptance.

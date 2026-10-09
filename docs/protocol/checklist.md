@@ -13,7 +13,7 @@
 - Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
 - Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
 - This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
-- Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections, and OSC 4 palette operations remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in [T0003 runtime evidence](../verification/unicode-terminal-text-t0003.md); complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
+- Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections, and OSC 4 palette operations remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in T0003 runtime evidence; complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
 
@@ -558,7 +558,7 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Scrolling is correct when autowrap triggers at the bottom of the scrolling region
 * [x] LF, IND, NEL and RI clear pending wrap on movement, scroll and boundary no-op paths
 * [x] Accepted erase and line-edit commands clear pending wrap before early returns
-* [x] Resize clears pending wrap before transactional content-preserving reflow; see the [automated evidence](../verification/content-preserving-resize-automation.md)
+* [x] Resize clears pending wrap before transactional content-preserving reflow; covered by automated regressions
 * [x] DECSTR clears pending wrap while preserving screen content and soft-wrap markers
 
 ---
@@ -600,8 +600,8 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] `23` — Italic off
 * [x] `9` — Strikethrough
 * [x] `29` — Strikethrough off
-* [ ] `53` — Overline
-* [ ] `55` — Overline off
+* [x] `53` — Overline
+* [x] `55` — Overline off
 
 ### 16.3 Underline
 
@@ -626,8 +626,8 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 
 * [x] `7` — Inverse
 * [x] `27` — Inverse off
-* [ ] `8` — Conceal/Invisible
-* [ ] `28` — Reveal
+* [x] `8` — Conceal/Invisible
+* [x] `28` — Reveal
 
 ### 16.6 Basic Foreground Colors
 
@@ -692,7 +692,9 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Unknown SGR parameters do not reset all attributes
 * [x] Semicolon and colon formats can appear in the same CSI
 
-T0001's [evidence record](../verification/modern-underlines-t0001.md) covers all five explicit styles, independent color, spaces/wide cells, retained blanks and DECRQSS. Accepted color forms are `58;5;n`, `58:5:n`, `58;2;r;g;b`, `58:2:r:g:b`, and `58:2::r:g:b` with `0..255` components; invalid candidates retain the previous color without leaking components into attributes. `24`/`4:0` retain color, and `59` restores effective-foreground following (including inverse). Empty-colorspace support here is scoped to SGR 58, not a new acceptance claim for the unchecked 38/48 items. Su/Neovim and conceal/overline are separate open work.
+T0001 verification covers all five explicit styles, independent color, spaces/wide cells, retained blanks and DECRQSS. Accepted color forms are `58;5;n`, `58:5:n`, `58;2;r;g;b`, `58:2:r:g:b`, and `58:2::r:g:b` with `0..255` components; invalid candidates retain the previous color without leaking components into attributes. `24`/`4:0` retain color, and `59` restores effective-foreground following (including inverse). Empty-colorspace support here is scoped to SGR 58, not a new acceptance claim for the unchecked 38/48 items. Su/Neovim remain separate open work in T0003.
+
+T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow, CPU/GPU projection and synthetic Windows rendering/copy/empty-input resize. Conceal suppresses foreground only, not retained/copied text or backgrounds; it is presentation, not redaction. Overline also paints spaces and uses effective text foreground. Native partial-input cmd resize exhibited a redraw anomaly, also reproduced with legacy-only styling; native font-settings reload, multi-monitor DPI and IME checks were not run. These checkmarks do not claim complete interactive-resize, Neovim or Spec 0018 acceptance.
 
 ---
 
@@ -1009,7 +1011,7 @@ T0001's [evidence record](../verification/modern-underlines-t0001.md) covers all
 
 Source/test evidence: `crates/harbor-parser/src/core.rs`, `crates/harbor-terminal/src/parser/osc52.rs` and `osc52_tests.rs`, `crates/harbor-app/src/tab_manager.rs`, `src/clipboard.rs`, `src/shell.rs`, and the existing widget native clipboard effects. The terminal retains one pending write per session before host draining: latest valid write in allow mode, first candidate in confirm mode, none in deny mode. Other output events retain their order. Generic OSC/DCS/APC/PM/SOS limits remain 4096 bytes.
 
-Host confirmation uses an independent window with source/decoded-size and a 1024-character preview (escaped for display). One admitted payload is immutable; further requests are rejected, not queued. Its own foreground focus continues only that request. Source closure, tab changes, minimization or external-application focus cancel it; execution revalidates stable source and foreground state. Approval is one-use and does not paste to the PTY. Configuration timing and exact subset: [startup settings](../../README.md#startup-configuration). Windows/application acceptance remains distinct from these focused tests; see [the verification record](../verification/osc52-windows-runtime.md).
+Host confirmation uses an independent window with source/decoded-size and a 1024-character preview (escaped for display). One admitted payload is immutable; further requests are rejected, not queued. Its own foreground focus continues only that request. Source closure, tab changes, minimization or external-application focus cancel it; execution revalidates stable source and foreground state. Approval is one-use and does not paste to the PTY. Configuration timing and exact subset: [startup settings](../../README.md#startup-configuration). Windows/application runtime acceptance remains BLOCKED and distinct from these focused tests.
 
 ### 24.8 Shell Integration
 
@@ -1594,6 +1596,6 @@ These are end-to-end/release acceptance requirements, not aliases of the source-
 * [ ] OSC 8 Hyperlink correct
 * [ ] DSR, DA, DECRQM, DECRQSS responses correct
 * [x] Malformed sequences do not permanently desynchronize the parser
-* [ ] Arbitrary byte input does not panic — stable property tests passed in the [refresh verification](../verification/documentation-refresh.md); recorded fuzz replay/campaign evidence still pending
+* [ ] Arbitrary byte input does not panic — stable property tests passed; recorded fuzz replay/campaign evidence still pending
 * [ ] Arbitrary byte input does not cause infinite loops — same property-run evidence; bounded fuzz campaign still pending
 * [ ] Arbitrary byte input does not cause unbounded memory growth — same parser-retention property evidence; fuzz runtime evidence and separate handler-owned allocation limits remain required

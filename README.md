@@ -57,7 +57,7 @@ Only the active live tab in the foreground, non-minimized main window may reques
 
 Supported OSC 52 selections are `c` and empty (system clipboard), with standard padded/unpadded base64 encoding of UTF-8 text without NUL. Empty text clears under the same policy. Fixed limits: 4,194,304 decoded bytes and 5,592,408 encoded data bytes. Clipboard reads (`?`), other selections, binary text and malformed/over-limit requests are ignored. Other OSC/string limits are unchanged. This is not proof of application authenticity or WSL/SSH/tmux compatibility; runtime evidence is recorded separately.
 
-For manual-assisted Windows checks inside an existing Harbor tab, see [the OSC 52 test guide](docs/verification/osc52-manual-guide.md). The script requires explicit clipboard-replacement consent and does not edit startup configuration.
+For manual-assisted Windows checks inside an existing Harbor tab, run [`scripts/test_osc52_manual.ps1`](scripts/test_osc52_manual.ps1). The script requires explicit clipboard-replacement consent and does not edit startup configuration.
 
 Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, OSC 52 write policy, and structured per-command keybindings.
 
