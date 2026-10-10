@@ -5,7 +5,7 @@ use super::mode_query;
 use super::osc::{self, Action};
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
-use super::{osc_color, osc_title, osc7, osc8, osc133};
+use super::{osc_color, osc_palette, osc_title, osc7, osc8, osc133};
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 
@@ -339,6 +339,33 @@ impl VtHandler for ScreenHandler<'_> {
             Action::Color(osc_color::Action::Reset(slot), _) => {
                 self.screen.reset_default_color(slot);
             }
+            Action::Palette(action, bell_terminated) => match action {
+                osc_palette::Action::Entries(entries) => {
+                    for entry in entries {
+                        match entry {
+                            osc_palette::Entry::Set(index, rgb) => {
+                                self.screen.set_indexed_color_rgb(index, rgb);
+                            }
+                            osc_palette::Entry::Query(index) => {
+                                let reply = osc_color::format_palette_query(
+                                    index,
+                                    self.screen.indexed_color(index),
+                                    bell_terminated,
+                                );
+                                self.screen.push_reply(reply.as_bytes());
+                            }
+                            osc_palette::Entry::Reset(index) => {
+                                self.screen.reset_indexed_color(index);
+                            }
+                        }
+                    }
+                }
+                osc_palette::Action::ResetAll => {
+                    for index in 0..=255 {
+                        self.screen.reset_indexed_color(index);
+                    }
+                }
+            },
             Action::ShellIntegration(osc133::Action::Marker(marker)) => self
                 .output_events
                 .push(TerminalOutputEvent::ShellIntegration(marker)),

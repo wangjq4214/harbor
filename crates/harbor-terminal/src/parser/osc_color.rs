@@ -26,7 +26,7 @@ pub(super) fn parse(command: &[u8], payload: &[u8]) -> Option<Action> {
     parse_color(payload).map(|rgb| Action::Set(slot, rgb))
 }
 
-fn parse_color(payload: &[u8]) -> Option<[u8; 3]> {
+pub(super) fn parse_color(payload: &[u8]) -> Option<[u8; 3]> {
     if let Some(hex) = payload.strip_prefix(b"#") {
         if hex.len() != 6 {
             return None;
@@ -76,7 +76,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 pub(super) struct Reply {
-    bytes: [u8; 26],
+    bytes: [u8; 28],
     len: usize,
 }
 
@@ -92,14 +92,37 @@ pub(super) fn format_query(slot: DefaultColorSlot, color: Rgba, bell_terminated:
         DefaultColorSlot::Background => b"11",
         DefaultColorSlot::Cursor => b"12",
     };
+    format_rgb_query(command, None, color, bell_terminated)
+}
+
+pub(super) fn format_palette_query(index: u8, color: Rgba, bell_terminated: bool) -> Reply {
+    format_rgb_query(b"4", Some(index), color, bell_terminated)
+}
+
+fn format_rgb_query(
+    command: &[u8],
+    index: Option<u8>,
+    color: Rgba,
+    bell_terminated: bool,
+) -> Reply {
     let [red, green, blue, _] = color.components();
     let rgb = [quantize(red), quantize(green), quantize(blue)];
     let mut reply = Reply {
-        bytes: [0; 26],
+        bytes: [0; 28],
         len: 0,
     };
     reply.extend(b"\x1b]");
     reply.extend(command);
+    if let Some(index) = index {
+        reply.push(b';');
+        if index >= 100 {
+            reply.push(b'0' + index / 100);
+        }
+        if index >= 10 {
+            reply.push(b'0' + (index / 10) % 10);
+        }
+        reply.push(b'0' + index % 10);
+    }
     reply.extend(b";rgb:");
     for (index, component) in rgb.into_iter().enumerate() {
         if index != 0 {

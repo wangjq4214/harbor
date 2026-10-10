@@ -117,7 +117,7 @@ pub struct Screen {
     focus_reporting: FocusReporting,
     /// Session-owned `?2026` nesting; preserved across alt-screen swap.
     synchronized_output: SynchronizedOutput,
-    /// Startup and active OSC default colors, owned by the terminal session.
+    /// Startup and active OSC default and indexed colors, owned by the terminal session.
     default_colors: DefaultColors,
 }
 #[derive(Debug)]
@@ -266,6 +266,22 @@ impl Screen {
 
     pub(crate) fn reset_default_color(&mut self, slot: DefaultColorSlot) {
         if self.default_colors.reset(slot) {
+            self.mark_all_dirty();
+        }
+    }
+
+    pub(crate) fn indexed_color(&self, index: u8) -> Rgba {
+        self.default_colors.indexed(index)
+    }
+
+    pub(crate) fn set_indexed_color_rgb(&mut self, index: u8, rgb: [u8; 3]) {
+        if self.default_colors.set_indexed_rgb(index, rgb) {
+            self.mark_all_dirty();
+        }
+    }
+
+    pub(crate) fn reset_indexed_color(&mut self, index: u8) {
+        if self.default_colors.reset_indexed(index) {
             self.mark_all_dirty();
         }
     }

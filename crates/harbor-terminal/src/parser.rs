@@ -9,6 +9,7 @@ mod osc52;
 mod osc7;
 mod osc8;
 mod osc_color;
+mod osc_palette;
 mod osc_title;
 mod status_strings;
 mod xtgettcap;

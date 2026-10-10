@@ -13,6 +13,8 @@ pub mod layout;
 mod logical_content;
 mod model;
 mod normal_buf;
+#[cfg(test)]
+mod palette_tests;
 mod parser;
 mod pointer;
 mod primary_reflow;

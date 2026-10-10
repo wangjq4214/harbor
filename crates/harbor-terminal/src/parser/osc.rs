@@ -1,5 +1,5 @@
 //! Static routing of completed, bounded OSC payloads into terminal-internal actions.
-use super::{osc_color, osc_title, osc7, osc8, osc52, osc133};
+use super::{osc_color, osc_palette, osc_title, osc7, osc8, osc52, osc133};
 
 pub(super) enum Action {
     ClipboardWrite(crate::ClipboardWrite),
@@ -7,6 +7,7 @@ pub(super) enum Action {
     WorkingDirectory(osc7::Action),
     Hyperlink(osc8::Action),
     Color(osc_color::Action, bool),
+    Palette(osc_palette::Action, bool),
     ShellIntegration(osc133::Action),
 }
 
@@ -17,6 +18,8 @@ pub(super) fn parse(command: &[u8], payload: &[u8], bell_terminated: bool) -> Op
         b"0" | b"1" | b"2" => osc_title::parse(payload).map(Action::Title),
         b"7" => osc7::action(payload).map(Action::WorkingDirectory),
         b"8" => osc8::parse(payload).map(Action::Hyperlink),
+        b"4" | b"104" => osc_palette::parse(command, payload)
+            .map(|action| Action::Palette(action, bell_terminated)),
         b"10" | b"11" | b"12" | b"110" | b"111" | b"112" => {
             osc_color::parse(command, payload).map(|action| Action::Color(action, bell_terminated))
         }

@@ -13,7 +13,7 @@
 - Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
 - Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
 - This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
-- Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections, and OSC 4 palette operations remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in T0003 runtime evidence; complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
+- Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in T0003 runtime evidence; complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
 
@@ -954,13 +954,15 @@ T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow,
 
 ### 24.3 Palette
 
-* [ ] `OSC 4 ; index ; color ST`
-* [ ] Can set multiple palette entries at once
-* [ ] `OSC 4 ; index ; ? ST` queries color
-* [ ] Supports `rgb:RR/GG/BB`
-* [ ] Supports shorter RGB component formats
-* [ ] Illegal color formats are safely ignored
-* [ ] Palette index is limited to the valid range
+* [x] `OSC 4 ; index ; color ST`
+* [x] Can set multiple palette entries at once
+* [x] `OSC 4 ; index ; ? ST` queries color
+* [x] Supports `rgb:RR/GG/BB`
+* [x] Supports shorter RGB component formats
+* [x] Illegal color formats are safely ignored
+* [x] Palette index is limited to the valid range
+
+Evidence: `crates/harbor-config/src/color.rs` owns fixed indexed slots and ANSI aliases; `crates/harbor-terminal/src/parser/osc_palette.rs` validates entire bounded requests and `screen/default_colors.rs` owns startup/active session colors. Named tests in `crates/harbor-terminal/src/palette_tests.rs`: `osc_palette_all_slots_baseline_aliases_alpha_and_reset`, `osc_palette_ordered_queries_exact_terminators_and_quantization`, `osc_palette_rejects_entire_malformed_request_without_damage_or_replies`, `osc_palette_fragmented_framing_cancellation_overflow_and_recovery`, and `osc_palette_reply_capacity_is_atomic_and_does_not_suppress_sets`. The supported subset is indexes 0-255, `#RRGGBB` and `rgb:R/G/B` with 1-4 hex digits per component, exact `?`, BEL/ST, ordered pairs after whole-request validation, and RGB-only sets preserving alpha. Retained GPU readback: `gpu_osc_palette_retained_layers_recolor_and_replay`. See [indexed palette acceptance](../osc-palette-acceptance.md) for executed Windows probe scope and transport exclusions.
 
 ### 24.4 Default Colors
 
@@ -973,8 +975,10 @@ T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow,
 * [x] `OSC 110 ST` — Reset default foreground
 * [x] `OSC 111 ST` — Reset default background
 * [x] `OSC 112 ST` — Reset cursor color
-* [ ] `OSC 104 ST` — Reset palette
-* [ ] `OSC 104 ; index ST` — Reset specified color
+* [x] `OSC 104 ST` — Reset palette
+* [x] `OSC 104 ; index ST` — Reset specified color
+
+OSC 104 evidence: `osc_palette_selective_repeated_full_reset_and_default_separation` and `osc_palette_lifetime_across_buffers_resets_and_independent_sessions` in `crates/harbor-terminal/src/palette_tests.rs`. Empty payload restores all startup RGBA entries; a fully validated list restores selected entries (repeats allowed), without resetting default foreground/background, cursor or selection. Palette state survives alternate buffers, RIS, DECSTR and SGR reset. Existing OSC 10/11/12/110/111/112 single-color semantics are unchanged. [Windows probe evidence](../osc-palette-acceptance.md) covers selective/full reset through actual ConPTY.
 
 ### 24.5 Current Working Directory
 
