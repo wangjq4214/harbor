@@ -2,7 +2,7 @@
 
 **Source:** [Spec 0018](../../spec/0018-modern-sgr-decorations.md), [ADR 0051](../../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), and [#162](https://github.com/wangjq4214/harbor/issues/162).
 **Ticket folder:** `.grimoire/ticket/0015-modern-sgr-decorations/`
-**Status:** Ready for execution handoff; implementation has not started.
+**Status:** Scoped modern-SGR delivery complete; see the execution update and evidence below.
 
 ## Overview
 
@@ -69,7 +69,7 @@ The first two can proceed with coordinated parallel work, but shared-file risk m
 | T0002 | [Conceal and overline](./T0002-conceal-overline.md) | Independent presentation attributes with preserved original content |
 | T0003 | [Capability discovery and Neovim acceptance](./T0003-capability-neovim-acceptance.md) | Truthful Su discovery and evidenced integrated SGR delivery |
 
-**Execution update:** T0001 is Done with scoped automated/GPU/Windows evidence. T0002 has a delivered state/render/status implementation and scoped evidence, with completion follow-ups documented in its ticket. T0002/T0003 are not marked Done; this does not mark the entire spec or ticket set complete.
+**Execution update:** T0001, T0002 and T0003 are Done for the scoped modern-SGR delivery. T0002's earlier cmd partial-input resize anomaly was fixed and verified in `cb6ee0a` / ADR 0052. [Integrated acceptance](../../../docs/modern-sgr-acceptance.md) records exact discovery/status, combined core/GPU checks, configured native Windows Neovim and synthetic rendering/copy/resize observations, versions and explicit exclusions. This does not close #162's non-SGR scope or establish broad transport/release acceptance.
 
 ## Handoff and Permissions
 

@@ -132,6 +132,27 @@ fn serialize_sgr(screen: &Screen) -> Vec<u8> {
         Color::Bright(n) => parts.push(format!("58;5;{}", n + 8)),
     }
 
+    // Preserve legacy bytes, but keep a complete modern status replayable within
+    // harbor-parser's 16 top-level CSI slots. Colon color groups each use one
+    // slot (at most five subparameters), without enlarging any parser/reply cap.
+    let modern = underline_color != Color::Default
+        || attrs.contains(CellAttrs::CONCEAL | CellAttrs::OVERLINE)
+        || !matches!(
+            attrs.underline_style(),
+            crate::UnderlineStyle::Off | crate::UnderlineStyle::Single
+        );
+    if modern
+        && parts
+            .iter()
+            .map(|part| part.split(';').count())
+            .sum::<usize>()
+            > 16
+    {
+        for part in &mut parts {
+            *part = part.replace(';', ":");
+        }
+    }
+
     let mut out = parts.join(";");
     out.push('m');
     out.into_bytes()

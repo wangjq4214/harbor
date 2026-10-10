@@ -692,9 +692,9 @@ Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `sh
 * [x] Unknown SGR parameters do not reset all attributes
 * [x] Semicolon and colon formats can appear in the same CSI
 
-T0001 verification covers all five explicit styles, independent color, spaces/wide cells, retained blanks and DECRQSS. Accepted color forms are `58;5;n`, `58:5:n`, `58;2;r;g;b`, `58:2:r:g:b`, and `58:2::r:g:b` with `0..255` components; invalid candidates retain the previous color without leaking components into attributes. `24`/`4:0` retain color, and `59` restores effective-foreground following (including inverse). Empty-colorspace support here is scoped to SGR 58, not a new acceptance claim for the unchecked 38/48 items. Su/Neovim remain separate open work in T0003.
+T0001 verification covers all five explicit styles, independent color, spaces/wide cells, retained blanks and DECRQSS. Accepted color forms are `58;5;n`, `58:5:n`, `58;2;r;g;b`, `58:2:r:g:b`, and `58:2::r:g:b` with `0..255` components; invalid candidates retain the previous color without leaking components into attributes. `24`/`4:0` retain color, and `59` restores effective-foreground following (including inverse). Empty-colorspace support here is scoped to SGR 58, not a new acceptance claim for the unchecked 38/48 items. Su and configured native Windows Neovim are now evidenced by [T0003 scoped acceptance](../modern-sgr-acceptance.md); no automatic-detection or broader transport pass is inferred.
 
-T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow, CPU/GPU projection and synthetic Windows rendering/copy/empty-input resize. Conceal suppresses foreground only, not retained/copied text or backgrounds; it is presentation, not redaction. Overline also paints spaces and uses effective text foreground. Native partial-input cmd resize exhibited a redraw anomaly, also reproduced with legacy-only styling; native font-settings reload, multi-monitor DPI and IME checks were not run. These checkmarks do not claim complete interactive-resize, Neovim or Spec 0018 acceptance.
+T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow, CPU/GPU projection and synthetic Windows rendering/copy/resize. Conceal suppresses foreground only, not retained/copied text or backgrounds; it is presentation, not redaction. Overline also paints spaces and uses effective text foreground. The earlier cmd partial-input redraw anomaly was fixed and verified under [ADR 0052](../../.grimoire/adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md). [T0003 acceptance](../modern-sgr-acceptance.md) adds combined style/color/conceal/overline, native Neovim and exact original-text copy at the observed 1.5x scale. Native font reload, cross-monitor DPI and IME smoke remain NOT RUN; these checkmarks are not broad release acceptance.
 
 ---
 
@@ -1080,6 +1080,9 @@ Evidence: `crates/harbor-parser/src/core.rs` and terminal `parser/handlers.rs`; 
 * [x] Return values use correct hex encoding
 * [x] Does not declare actually unsupported capabilities
 * [x] Request length is limited
+* [x] Boolean `Su` styled-underline support returns exactly `ESC P 1+r5375 ESC \\`
+
+Registry: `TN=xterm-256color`, `RGB=8/8/8`, boolean `u8` and `Su`. [T0003 evidence](../modern-sgr-acceptance.md) covers exact bytes, ordered mixed/unknown names, fragmentation, cancellation and request/reply bounds without identity or writer changes.
 
 ### 25.4 Sixel
 
@@ -1584,6 +1587,7 @@ These are end-to-end/release acceptance requirements, not aliases of the source-
 * [ ] All query responses conform to protocol format
 * [x] Does not declare terminal capabilities not actually supported
 * [ ] Screen state is correct after Neovim launch, run, and exit
+  - Scoped configured Windows Neovim 0.12.5 modern-SGR launch/edit/redraw/resize/exit passed in [T0003](../modern-sgr-acceptance.md); the broad application acceptance item remains unchecked.
 * [ ] State is correct after tmux launch, split, and exit
 * [ ] less, top, htop, fzf, lazygit work correctly
 * [ ] Application cursor keys and normal cursor keys switch correctly

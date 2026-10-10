@@ -470,7 +470,16 @@ fn gpu_modern_underline_styles_readback_and_incremental_reprojection() {
 #[test]
 fn conceal_suppresses_all_decoration_and_overline_uses_effective_foreground() {
     for prefix in ["", "\x1b]8;;https://example.test\x1b\\"] {
-        for attrs in ["8;4;9;53", "8;4;9;53;7;31;44", "8;53"] {
+        for attrs in [
+            "8;4;9;53",
+            "8;4;9;53;7;31;44",
+            "8;53",
+            "8;4:1;58;5;123;53",
+            "8;4:2;58;5;123;53",
+            "8;4:3;58;2;255;0;0;53;7;31;44",
+            "8;4:4;58;5;123;53",
+            "8;4:5;58;5;123;53",
+        ] {
             let snap = snapshot(&format!("{prefix}\x1b[{attrs}mAe\u{301}界  "), 1, 6);
             for vertices in [
                 build_underline_vertices(&metrics(), &snap, &viewport(), &Palette::default()),
@@ -588,7 +597,7 @@ fn gpu_conceal_overline_readback_dirty_removal_and_reprojection() {
     let mut parser = TerminalParser::default();
     parser.put_bytes(
         &mut screen,
-        "\x1b[53;38;2;255;0;0mA 界      \x1b[0m\x1b[2;1H\x1b[8;4;9;53;7mAe\u{301}界\x1b[3;1H\x1b[0;53;31mA      ".as_bytes(),
+        "\x1b[53;38;2;255;0;0mA 界      \x1b[0m\x1b[2;1H\x1b]8;;https://example.test\x1b\\\x1b[8;4:3;58;2;255;0;0;9;53;7mAe\u{301}界\x1b[3;1H\x1b[0;53;31mA      ".as_bytes(),
     );
     let snap = screen.terminal_snapshot();
     let mut decoration = Decoration::new(
