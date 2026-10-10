@@ -42,7 +42,7 @@ Under full primary reflow (retained history and non-ConPTY primary), ordinary de
 
 ### Approved Windows ConPTY live-primary exception
 
-The user approved approach A and authorized implementation on 2026-10-09; [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and [plan 0020](../plans/0020-conpty-styled-tail-resize-compatibility.md) record the decision and scoped implementation/verification evidence. Approval is not a runtime or acceptance pass.
+The user approved approach A and authorized implementation on 2026-10-09; [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and local plan 0020 (`conpty-styled-tail-resize-compatibility`, not tracked) record the decision and scoped implementation/verification evidence. Approval is not a runtime or acceptance pass.
 
 Only the producer-owned live portion of a Windows ConPTY primary screen follows producer text/cursor geometry: a style-only trailing blank suffix, whether printed or created by styled erase/fill, must not itself create extra physical rows. Preserve trailing cell attributes within available target-row capacity and clip/discard overflowing styled tail capacity. Discarded overflow is not promised to return on widening or remain available to copy/selection; anchors must reflect surviving cells, with lost endpoints clamped or invalidated consistently.
 

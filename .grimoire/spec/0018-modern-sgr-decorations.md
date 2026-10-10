@@ -7,7 +7,7 @@
 
 ## Scope and Settled Contract
 
-Deliver the modern SGR slice of #162, with Neovim as the first named application workload: styled and colored underlines, conceal/reveal, and overline. The user selected Spec -> slice and approved all recommended compatibility rules after reviewing the impact on primary reflow. The later approach A decision explicitly authorizes the scoped Windows ConPTY live-primary resize repair in [plan 0020](../plans/0020-conpty-styled-tail-resize-compatibility.md) / [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); this contract update does not claim implementation or verification, or broaden that authorization to unrelated work.
+Deliver the modern SGR slice of #162, with Neovim as the first named application workload: styled and colored underlines, conceal/reveal, and overline. The user selected Spec -> slice and approved all recommended compatibility rules after reviewing the impact on primary reflow. The later approach A decision explicitly authorizes the scoped Windows ConPTY live-primary resize repair in local plan 0020 (`conpty-styled-tail-resize-compatibility`, not tracked) / [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); this contract update does not claim implementation or verification, or broaden that authorization to unrelated work.
 
 For sequencing, the user directs that all existing #162 sub-issues, currently #173 and #174, are treated as fully implemented and verified. Do not reopen their implementation or historical acceptance as prerequisites. This is the supplied prerequisite premise, not a new execution result or permission to rewrite historical evidence.
 

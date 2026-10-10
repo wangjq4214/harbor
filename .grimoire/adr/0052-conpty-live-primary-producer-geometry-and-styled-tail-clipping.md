@@ -30,7 +30,7 @@ The user chose the bounded Harbor-side compatibility repair over keeping complet
 
 - This is an explicit, narrowly scoped information-loss exception to styled-tail retention, not an expansion of global ordinary-space trimming. Target-row styling is retained without letting style-only overflow move the input row away from producer geometry.
 - Specs 0014/0018 and resize domain context must distinguish Windows ConPTY live primary from retained history, non-ConPTY primary, and rectangular alternate screens.
-- Implementation and evidence follow [plan 0020](../plans/0020-conpty-styled-tail-resize-compatibility.md). Regression acceptance must check the `END` marker, complete prompt and pending input, and subsequent typing/backspace/Enter, plus history/live boundaries, cursor cases, and unchanged full-retention policies. Payload survival alone is insufficient.
+- Implementation and evidence follow local plan 0020 (`conpty-styled-tail-resize-compatibility`, not tracked). Regression acceptance must check the `END` marker, complete prompt and pending input, and subsequent typing/backspace/Enter, plus history/live boundaries, cursor cases, and unchanged full-retention policies. Payload survival alone is insufficient.
 - Approval alone is not execution evidence. The scoped implementation and subsequent checks are recorded separately below; unrelated feature and release acceptance remain outside this repair.
 
 ## Scoped implementation and verification
