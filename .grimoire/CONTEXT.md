@@ -26,6 +26,12 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to DirectWrite Font Backend
 
+### Emoji Sequence Presentation
+- **Definition:** The approved, not-yet-implemented #181 presentation extension: DirectWrite shapes complete retained emoji units and Direct2D composites them into offscreen tiles consumed by the wgpu terminal renderer. Ordinary text keeps its R8 fast path; emoji color tiles use a separate bounded atlas. Oversized artwork is uniformly downscaled, positioned and finally clipped inside the model-assigned cells, never used to redefine width or copied text. Complete color, complete monochrome and unsupported-sequence fallback are distinct presentation outcomes. [ADR 0054](./adr/0054-color-emoji-offscreen-presentation.md) records the architecture and limitations.
+- **Relationships:**
+  - depends on DirectWrite Font Backend
+  - references System Font Fallback
+
 ### Harbor Widget Runtime
 - **Definition:** A declarative GPU UI runtime based on Rust and wgpu, managing the full UI pipeline from component state changes to retained GPU scene encoding.
 - **Synonyms:** Widget Runtime, Runtime
