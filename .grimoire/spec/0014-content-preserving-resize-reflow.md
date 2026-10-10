@@ -6,11 +6,11 @@
 
 ## Requirements
 
-Harbor must preserve retained primary-screen and scrollback logical content across width-only, height-only, simultaneous, and repeated terminal resizes, with one explicit exception: primary reflow may discard ordinary default-style, unprotected, non-hyperlinked spaces at a logical line's end. Apart from this exception and documented capacity eviction, round-trip resize preserves explicit line boundaries, meaningful styled or hyperlinked blanks, cell attributes, hyperlinks, wide characters, cursor and saved-cursor meaning, pending-wrap behavior, viewport review position, selection meaning, and copied text.
+Harbor must preserve retained primary-screen and scrollback logical content across width-only, height-only, simultaneous, and repeated terminal resizes, with two explicit exceptions: primary reflow may discard ordinary default-style, unprotected, non-hyperlinked spaces at a logical line's end; and Windows ConPTY live-primary resize follows producer geometry with style-only tail clipping under [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md). Apart from these scoped exceptions and documented capacity eviction, round-trip resize preserves explicit line boundaries, meaningful styled or hyperlinked blanks, cell attributes, hyperlinks, wide characters, cursor and saved-cursor meaning, pending-wrap behavior, viewport review position, selection meaning, and copied text.
 
 The first delivery must:
 
-1. Re-wrap retained primary content by logical line instead of copying a top-left rectangle or trimming every physical row.
+1. Re-wrap retained primary content by logical line instead of copying a top-left rectangle or trimming every physical row, subject to the Windows ConPTY live-primary geometry exception below.
 2. Distinguish printed ordinary spaces, styled, protected or hyperlinked blank cells, unwritten capacity, and generated wide-edge padding; on primary resize reflow, ordinary default-style, unprotected, non-hyperlinked spaces at the end of a logical line may be discarded to avoid a visually empty continuation row, except where needed by a live or saved cursor.
 3. Use durable logical content anchors for cursor, saved cursor, review position, selection endpoints, and future metadata consumers;
 4. Preserve the current ring-buffer architecture while making logical identity and reflow metadata explicit;
@@ -38,7 +38,19 @@ Rows joined by soft-wrap metadata share one logical-line identity. An explicit n
 
 A printed ordinary space is meaningful. A blank carrying visible non-default styling or a hyperlink is meaningful. A default-style erase removes content and leaves non-meaningful blank capacity; a visibly styled erase creates meaningful blank content. Explicit blank lines remain hard line boundaries even when they contain no meaningful cells.
 
-On primary resize reflow, ordinary default-style, unprotected, non-hyperlinked spaces at the end of a logical line may be discarded. Discarded spaces are not retained for future widening, copy, or selection; a selection endpoint on discarded content may be clamped or invalidated. Preserve spaces required to maintain the live or saved cursor insertion position, significant interior spaces, styled/protected/hyperlinked blanks, and real hard blank lines.
+Under full primary reflow (retained history and non-ConPTY primary), ordinary default-style, unprotected, non-hyperlinked spaces at the end of a logical line may be discarded. Discarded spaces are not retained for future widening, copy, or selection; a selection endpoint on discarded content may be clamped or invalidated. Preserve spaces required to maintain the live or saved cursor insertion position, significant interior spaces, styled/protected/hyperlinked blanks, and real hard blank lines. Windows ConPTY live-primary styled tails instead follow the scoped producer-compatible rule below.
+
+### Approved Windows ConPTY live-primary exception
+
+The user approved approach A and authorized implementation on 2026-10-09; [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and [plan 0020](../plans/0020-conpty-styled-tail-resize-compatibility.md) record the decision and scoped implementation/verification evidence. Approval is not a runtime or acceptance pass.
+
+Only the producer-owned live portion of a Windows ConPTY primary screen follows producer text/cursor geometry: a style-only trailing blank suffix, whether printed or created by styled erase/fill, must not itself create extra physical rows. Preserve trailing cell attributes within available target-row capacity and clip/discard overflowing styled tail capacity. Discarded overflow is not promised to return on widening or remain available to copy/selection; anchors must reflect surviving cells, with lost endpoints clamped or invalidated consistently.
+
+For already soft-wrapped source rows, retain the producer's forced-prefix footprint, including ordinary or styled blanks; only the final old source row has a trimmable tail. An old forced 103-column prefix occupies three rows on the first shrink to 51, regardless of whether its last cells are spaces. Removing that footprint displaces producer-relative repaint. After widening collapses the prefix to one row, later narrowing may trim the now-final suffix.
+
+Actual text, significant interior spaces, explicit hard blank lines, wide-cell invariants, and producer-compatible live/saved cursor and pending-wrap semantics remain required. Conceal is not a reason to discard hidden source text. Retained history and non-ConPTY primary keep the full rules above; this is not global blank reclassification or permission to ignore protected/hyperlinked content. History/live-spanning lines must preserve the policy boundary and existing `PreserveLiveTop` protection without pulling history into producer live coordinates. The same region-specific primary rule applies to saved-primary resize while alternate is active; alternate surfaces remain rectangular. Transactional resize and normal output interpretation are unchanged.
+
+The logical projection, capacity, copy, and preservation requirements below are subject only to this scoped exception; their full-retention expectations remain mandatory for history/non-ConPTY primary.
 
 ### Logical stream and physical projection
 
@@ -120,7 +132,7 @@ The committed resize restores a full-height scroll region, clamps horizontal mar
 
 ### Copy behavior
 
-Copy traverses retained logical content. It joins soft-wrapped rows, emits hard breaks for explicit newlines and blank lines, skips continuation cells and generated padding, and preserves any meaningful ordinary and styled trailing spaces still retained. Primary resize may discard the ordinary tail under the policy above; copied text after resize need not include those discarded spaces. Copy resolves retained hyperlink-bearing cells without treating URI metadata as copied text. Unconditional per-physical-row `trim_end()` is not part of the algorithm.
+Copy traverses retained logical content. It joins soft-wrapped rows, emits hard breaks for explicit newlines and blank lines, skips continuation cells and generated padding, and preserves any meaningful ordinary and styled trailing spaces still retained. Primary resize may discard the ordinary tail, or Windows ConPTY live-primary styled overflow, under the respective policies above; copied text after resize need not include discarded spaces. Copy resolves retained hyperlink-bearing cells without treating URI metadata as copied text. Unconditional per-physical-row `trim_end()` is not part of the algorithm.
 
 Trimming is restricted to primary resize, not the copy operation itself. Before resize, printed ordinary spaces are copied as written; after resize, only the retained prefix is copied.
 
@@ -136,6 +148,8 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 | Hyperlink retention | reflowed cells/pen state ↔ screen hyperlink registry | Compact IDs remain attached to retained atoms and all reachable owners participate in cleanup | Stable retained OSC 8 identity with bounded unreachable registry state |
 
 ## End-to-End Tests
+
+Preservation cases below require full styled-tail retention for retained history and non-ConPTY primary. Windows ConPTY live-primary cases instead use the approved exception above and the dedicated cmd repaint case below; overflow loss there is not a lossless round-trip promise.
 
 ### E2E: Round-trip long colored and CJK output
 
@@ -202,6 +216,12 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 - **When:** Width-only, height-only, and combined resizes repeat while reader completion and chunk publication race with resize requests.
 - **Then:** Acknowledged barriers partition reader-observed output without loss or duplication; every committed state satisfies row, wide-cell, anchor, history, cursor, and PTY/model geometry invariants; copy returns the selected retained logical content unless documented eviction or ordinary-tail trimming invalidated it.
 
+### E2E: ConPTY live styled-tail geometry and cmd repaint
+
+- **Given:** Bundled ConPTY `1.24.260710001`, the original conceal/overline script and pending cmd input, plus minimized ordinary tails, 65-blank overline/underline/background tails and 103-blank styled erase rows.
+- **When:** Narrow 103 -> 51 columns, widen again, and repeat mixed resizes, then type, backspace and submit input.
+- **Then:** Live model geometry agrees with the producer before CUP + ED repaint; style-only tails do not add rows, retained target-row styling survives, and clipped overflow is not claimed for restoration/copy. The `END` marker, complete prompt and pending input survive repaint and subsequent editing/submission. Also verify live/saved cursor, wide cells and history/live boundaries; history/non-ConPTY retain complete styled content and alternate remains rectangular. Existing full-retention E2E cases apply to those unaffected policies, not clipped live overflow.
+
 ## Decisions
 
 ### Durable logical anchors instead of physical generations
@@ -212,7 +232,7 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 
 ### Explicit meaningful blanks and shared logical atoms
 
-- **Choice:** Primary resize reflow discards the maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix except what the live or saved cursor requires. It retains interior spaces and styled, protected or hyperlinked blanks; ordinary tail text discarded on resize is not available to copy or selection afterward.
+- **Choice:** Full primary reflow discards the maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix except what the live or saved cursor requires. It retains interior spaces and styled, protected or hyperlinked blanks. Windows ConPTY live-primary resize additionally clips style-only tail overflow to preserve producer geometry under ADR 0052. Neither discarded ordinary tails nor discarded live styled overflow are promised for later copy/selection or widening.
 - **Reason:** This avoids phantom empty continuation rows without introducing an off-grid text, copy, and cursor representation. It accepts a narrowly defined information-loss exception rather than silently claiming full round-trip preservation.
 - **ADR reference:** [0046-trim-ordinary-trailing-spaces-during-primary-reflow](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md), [0035-cell-linked-bounded-registry-for-osc8-hyperlinks](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md)
 
@@ -221,6 +241,12 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 - **Choice:** Keep the bounded ring buffer and add logical metadata rather than introducing a document, rope, or unbounded history store.
 - **Reason:** The accepted scope requires stable content semantics, not a wholesale storage rewrite.
 - **ADR reference:** [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+
+### Producer-compatible Windows live primary
+
+- **Choice:** Apply the approved style-only tail clipping exception only to Windows ConPTY live-primary resize; preserve target-row attributes without extra tail-driven rows.
+- **Reason:** The observed 103 -> 51 resize accumulated three extra model rows, so cmd's producer-relative CUP + ED repaint overwrote the end marker and prompt. Full live-tail retention conflicts with that geometry; history/non-ConPTY and alternate policies are unchanged.
+- **ADR reference:** [0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)
 
 ### Buffer-specific resize
 
@@ -260,6 +286,7 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 - **Anchor tests:** Verify before/after affinity under insert/delete, overwrite stability, row movement, reflow projection, destruction/eviction invalidation, review fallback, cursor insertion boundaries, saved cursor, and complete-selection invalidation when one endpoint is lost.
 - **Selection/copy tests:** Verify pixel/`GenPos`/anchor conversion, forward and reverse drag, word and logical-line selection, selection retention across output and resize, meaningful trailing blanks, explicit newlines, soft-wrap joining, wide continuation skipping, and eviction behavior.
 - **Tail-space reflow tests:** Model a PowerShell-style full-width padded table, narrow and widen it repeatedly, and compare visible rows, scrollback, before/after copy, anchors, and next-output cursor position. Assert discarded ordinary tails do not return on widening; include saved/live cursor in a tail, styled/protected/hyperlinked blanks, interior spaces, explicit blank lines and selected tail endpoints (clamped or invalidated without corrupting surviving content).
+- **ConPTY live compatibility tests:** Exercise the producer/model and original-script cases above, styled erase/fill, cursor-required extents and history/live-spanning lines. Check retained target-row attributes and honest overflow copy/anchor loss separately from unchanged full history/non-ConPTY styled-tail retention. No test execution or acceptance is asserted by this contract update.
 - **Alternate-screen tests:** Cover `?47`, `?1047`, `?1048`, and `?1049` resize/restore behavior, active and parked alternate buffers, saved-primary reflow, no alternate scrollback, RIS, and current whole-screen isolation.
 - **Barrier protocol tests:** Deterministically interleave barrier requests with a read completed before publication and with a blocked read. Prove ordered matching acknowledgements, exactly-once chunks, no publication while paused, no stale-epoch reuse, and successful resume/retry.
 - **Failure tests:** Inject barrier interruption failure, barrier timeout, model preparation failure, and PTY resize failure; prove bounded return, no unacknowledged resize, no partial model commit, no premature pointer clearing, unchanged authoritative geometry on failure, mandatory reader resume, no reader leak, and successful retry.
@@ -270,7 +297,7 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 ## Out of Scope
 
 - Replacing the ring buffer with a rope, document model, or unlimited history.
-- Globally trimming copy or selection outside resize, or treating styled/protected/hyperlinked blanks, interior spaces and zero-width characters as ignorable.
+- Globally trimming copy or selection outside resize, or treating styled/protected/hyperlinked blanks, interior spaces and zero-width characters as ignorable beyond the explicitly approved Windows ConPTY live-primary style-only tail exception.
 - Introducing off-grid tail storage and a virtual cursor to retain ordinary tail content after resize; superseded by the explicitly accepted information-loss policy.
 - Changing ordinary PTY output interpretation when no resize occurs; the reported regression occurs after resize.
 - Search UI, command navigation UI, pane UI, font reload, or font shaping.

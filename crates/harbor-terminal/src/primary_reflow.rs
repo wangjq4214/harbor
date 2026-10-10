@@ -24,6 +24,8 @@ pub(crate) enum ReflowViewport {
     /// Reclaim retained history when the reflowed content fits.
     PullHistory,
     /// ConPTY has no scrollback: reflow its live rows independently of history.
+    /// Final source-row tail styles fit producer geometry without extra
+    /// rows; overflow is discarded to match producer-relative redraw coordinates.
     PreserveLiveTop,
 }
 
@@ -810,9 +812,13 @@ fn retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usiz
             logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
         })
         .map_or(0, |index| index + 1);
+    visible_end.max(cursor_retained_glyph_count(line, cursors))
+}
+
+fn cursor_retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
     // Keep the atom under each cursor as well as its preceding spaces, so a
     // "before" anchor still has an on-grid position after narrowing.
-    cursors.iter().fold(visible_end, |end, cursor| {
+    cursors.iter().fold(0, |end, cursor| {
         let needed = match cursor {
             CursorRetention::Position(position)
                 if line.generations.contains(&position.generation) =>
@@ -857,6 +863,32 @@ fn pack_line(
     )?;
     let mut atoms = Vec::new();
     let retained_count = retained_glyph_count(line, retained_cursors);
+    // The full retained extent still owns the styles we can paint. ConPTY's
+    // live geometry ends at text/cursors/already-wrapped prefixes, not styles.
+    // History remains fully reflowed and the live-top split remains explicit.
+    let geometry_count = live_boundary.map_or(retained_count, |top| {
+        // An already soft-wrapped source prefix is producer geometry even if
+        // its last cells are spaces. Only the FINAL source row has a trimmable
+        // tail; erasing the prefix's footprint disagrees with ConPTY reflow.
+        let last_source_row = line.generations.last().copied();
+        let geometry_end = line
+            .glyphs
+            .iter()
+            .rposition(|logical| {
+                let cell = &logical.glyph.cell;
+                logical.source_span.generation < top
+                    || last_source_row.is_some_and(|last| logical.source_span.generation < last)
+                    || cell.ch != ' '
+                    || !cell.suffix.is_empty()
+                    || cell.protected
+                    || cell.hyperlink.is_some()
+            })
+            .map_or(0, |index| index + 1);
+        geometry_end.max(cursor_retained_glyph_count(line, retained_cursors))
+    });
+    // A wrapForced prefix can contain ordinary blanks which the generic
+    // retention policy trims. Keep that producer footprint in live reflow too.
+    let retained_count = retained_count.max(geometry_count);
     atoms
         .try_reserve_exact(retained_count)
         .map_err(|_| PreparationError::AllocationFailed)?;
@@ -885,6 +917,12 @@ fn pack_line(
                     .last()
                     .is_some_and(|atom: &ReflowedAtom| atom.source_span.generation < top)
         });
+        // Keep trailing styles only while they fit. Never wrap just to paint
+        // a suffix ConPTY excludes from its cooked-input resize geometry.
+        // A history/live boundary still starts a distinct producer row.
+        if atoms.len() >= geometry_count && width > remaining && !starts_live_viewport {
+            break;
+        }
         if width > remaining || starts_live_viewport {
             logical_start = logical_start
                 .checked_add(row.metadata.meaningful_extent)
@@ -1481,5 +1519,352 @@ mod tests {
         let prepared = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 4).unwrap();
         assert!(prepared.rows()[0].metadata.head_truncated);
         assert_eq!(normal.row_metadata(0), before);
+    }
+
+    #[test]
+    fn conpty_already_wrapped_blank_prefix_is_geometry_even_without_style() {
+        for styled in [false, true] {
+            let mut normal = NormalBuf::new(4, 12);
+            let blank = if styled {
+                overlined_blank()
+            } else {
+                Cell::default()
+            };
+            for row in 0..2 {
+                for col in 0..12 {
+                    write(&mut normal, row, col, blank.clone());
+                }
+            }
+            for (col, ch) in "AB".chars().enumerate() {
+                write(
+                    &mut normal,
+                    0,
+                    col,
+                    Cell {
+                        ch,
+                        ..Cell::default()
+                    },
+                );
+            }
+            normal.continue_logical_line(1, normal.live_row_metadata(0), 12);
+            write(
+                &mut normal,
+                2,
+                0,
+                Cell {
+                    ch: '>',
+                    ..Cell::default()
+                },
+            );
+            let prepared = prepare_conpty(&normal, 5, &[]);
+            // Only the FINAL old source row is trimmable. The first 12-column
+            // wrapForced footprint still occupies three rows at five columns.
+            assert_eq!(prepared.rows()[3].cells[0].ch, '>');
+            assert!(prepared.rows()[1].metadata.soft_wrapped);
+            assert!(prepared.rows()[2].metadata.soft_wrapped);
+            assert_eq!(
+                prepared.rows()[2].metadata.meaningful_extent,
+                if styled { 5 } else { 2 }
+            );
+            // Once widened to one row, the next shrink may discard its tail.
+            let widened = prepare_conpty(prepared.normal(), 12, &[]);
+            assert_eq!(widened.rows()[1].cells[0].ch, '>');
+            let narrowed = prepare_conpty(widened.normal(), 5, &[]);
+            assert_eq!(narrowed.rows()[1].cells[0].ch, '>');
+        }
+    }
+
+    #[test]
+    fn conpty_clips_tail_at_exact_text_edge_without_splitting_wide_units() {
+        for wide in [false, true] {
+            let mut normal = NormalBuf::new(4, 12);
+            let cols = if wide { 3 } else { 5 };
+            if wide {
+                let cell = Cell {
+                    ch: '界',
+                    width: 2,
+                    ..Cell::default()
+                };
+                write(
+                    &mut normal,
+                    0,
+                    0,
+                    Cell {
+                        ch: 'a',
+                        ..Cell::default()
+                    },
+                );
+                write(&mut normal, 0, 1, cell.clone());
+                write(&mut normal, 0, 2, continuation_cell(&cell));
+            } else {
+                for (col, ch) in "ABCDE".chars().enumerate() {
+                    write(
+                        &mut normal,
+                        0,
+                        col,
+                        Cell {
+                            ch,
+                            ..Cell::default()
+                        },
+                    );
+                }
+            }
+            for col in cols..12 {
+                write(&mut normal, 0, col, overlined_blank());
+            }
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: '>',
+                    ..Cell::default()
+                },
+            );
+            let prepared = prepare_conpty(&normal, cols, &[]);
+            assert_eq!(prepared.rows()[0].metadata.meaningful_extent, cols);
+            assert_eq!(prepared.rows()[1].cells[0].ch, '>');
+            if wide {
+                assert_eq!(prepared.rows()[0].cells[1].ch, '界');
+                assert!(prepared.rows()[0].cells[2].wide_continuation);
+            }
+        }
+    }
+
+    fn overlined_blank() -> Cell {
+        let mut cell = Cell::default();
+        cell.attrs.set(CellAttrs::OVERLINE);
+        cell
+    }
+
+    fn prepare_conpty(
+        normal: &NormalBuf,
+        cols: usize,
+        cursors: &[CursorRetention],
+    ) -> PreparedPrimaryResize {
+        PreparedPrimaryResize::prepare_geometry_with_viewport(
+            normal,
+            normal.rows(),
+            cols,
+            None,
+            ReflowViewport::PreserveLiveTop,
+            cursors,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn conpty_live_styled_tail_fits_last_row_and_drops_overflow_anchors() {
+        for erased in [false, true] {
+            let mut normal = NormalBuf::new(4, 12);
+            for (col, ch) in "AB".chars().enumerate() {
+                write(
+                    &mut normal,
+                    0,
+                    col,
+                    Cell {
+                        ch,
+                        ..Cell::default()
+                    },
+                );
+            }
+            for col in 2..12 {
+                if erased {
+                    normal.erase_cell(0, col, overlined_blank());
+                } else {
+                    write(&mut normal, 0, col, overlined_blank());
+                }
+            }
+            for (col, ch) in "END".chars().enumerate() {
+                write(
+                    &mut normal,
+                    1,
+                    col,
+                    Cell {
+                        ch,
+                        ..Cell::default()
+                    },
+                );
+            }
+            write(
+                &mut normal,
+                2,
+                0,
+                Cell {
+                    ch: '>',
+                    ..Cell::default()
+                },
+            );
+            let projection = ContentProjection::build(&normal).unwrap();
+            let surviving = projection
+                .to_anchor(GenPos::new(0, 3), Affinity::Before)
+                .unwrap();
+            let discarded = projection
+                .to_anchor(GenPos::new(0, 10), Affinity::Before)
+                .unwrap();
+            let prepared = prepare_conpty(&normal, 5, &[]);
+            assert_eq!(prepared.rows()[0].metadata.meaningful_extent, 5);
+            assert!(
+                prepared.rows()[0].cells[2..]
+                    .iter()
+                    .all(|cell| cell == &overlined_blank())
+            );
+            assert_eq!(prepared.rows()[1].cells[0].ch, 'E');
+            assert_eq!(prepared.rows()[2].cells[0].ch, '>');
+            assert!(prepared.project_selection(surviving).is_some());
+            assert!(prepared.project_selection(discarded).is_none());
+            let widened = prepare_conpty(prepared.normal(), 12, &[]);
+            assert_eq!(widened.rows()[0].metadata.meaningful_extent, 5);
+            assert!(
+                widened.rows()[0].cells[5..]
+                    .iter()
+                    .all(|cell| cell == &Cell::default())
+            );
+            // Standalone/non-ConPTY policy still reflows the entire decorated tail.
+            let generic = PreparedPrimaryResize::prepare_geometry(&normal, 4, 5).unwrap();
+            assert_eq!(generic.rows()[3].cells[0].ch, 'E');
+        }
+    }
+
+    #[test]
+    fn conpty_erase_only_row_remains_one_decorated_hard_line() {
+        let mut normal = NormalBuf::new(3, 12);
+        normal.fill_row_with(0, overlined_blank());
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: '>',
+                ..Cell::default()
+            },
+        );
+        let prepared = prepare_conpty(&normal, 5, &[]);
+        assert_eq!(prepared.rows()[0].metadata.meaningful_extent, 5);
+        assert!(
+            prepared.rows()[0]
+                .cells
+                .iter()
+                .all(|cell| cell == &overlined_blank())
+        );
+        assert_eq!(prepared.rows()[1].cells[0].ch, '>');
+        assert!(!prepared.rows()[1].metadata.soft_wrapped);
+    }
+
+    #[test]
+    fn conpty_tail_clipping_keeps_interior_spaces_protection_and_links() {
+        for significant in [
+            Cell {
+                protected: true,
+                ..overlined_blank()
+            },
+            Cell {
+                hyperlink: Some(HyperlinkId::from_nonzero(NonZeroU32::new(7).unwrap())),
+                ..overlined_blank()
+            },
+            Cell {
+                ch: 'Z',
+                ..Cell::default()
+            },
+        ] {
+            let mut normal = NormalBuf::new(4, 12);
+            for col in 0..12 {
+                write(&mut normal, 0, col, overlined_blank());
+            }
+            write(&mut normal, 0, 8, significant.clone());
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: '>',
+                    ..Cell::default()
+                },
+            );
+            let prepared = prepare_conpty(&normal, 5, &[]);
+            assert_eq!(prepared.rows()[1].cells[3], significant);
+            assert_eq!(prepared.rows()[1].cells[4], overlined_blank());
+            assert_eq!(prepared.rows()[2].cells[0].ch, '>');
+        }
+    }
+
+    #[test]
+    fn conpty_styled_history_is_not_clipped_and_live_top_stays_separate() {
+        let mut normal = NormalBuf::new(3, 12);
+        normal.fill_row_with(0, overlined_blank());
+        normal.fill_row_with(1, overlined_blank());
+        write(
+            &mut normal,
+            2,
+            0,
+            Cell {
+                ch: '>',
+                ..Cell::default()
+            },
+        );
+        normal.scroll_up_full_screen(1, Cell::default());
+        let prepared = prepare_conpty(&normal, 5, &[]);
+        assert_eq!(prepared.normal().scroll_count(), 3);
+        assert_eq!(prepared.rows()[0].metadata.meaningful_extent, 5);
+        assert_eq!(prepared.rows()[1].metadata.meaningful_extent, 5);
+        assert_eq!(prepared.rows()[2].metadata.meaningful_extent, 2);
+        assert_eq!(prepared.rows()[3].metadata.meaningful_extent, 5);
+        assert_eq!(prepared.rows()[4].cells[0].ch, '>');
+    }
+
+    #[test]
+    fn conpty_tail_crossing_history_keeps_history_atoms_and_live_boundary() {
+        let mut normal = NormalBuf::new(3, 12);
+        for (col, ch) in "abcdefghijkl".chars().enumerate() {
+            write(
+                &mut normal,
+                0,
+                col,
+                Cell {
+                    ch,
+                    ..Cell::default()
+                },
+            );
+        }
+        normal.fill_row_with(1, overlined_blank());
+        normal.continue_logical_line(1, normal.live_row_metadata(0), 12);
+        write(
+            &mut normal,
+            2,
+            0,
+            Cell {
+                ch: '>',
+                ..Cell::default()
+            },
+        );
+        normal.scroll_up_full_screen(1, Cell::default());
+        let prepared = prepare_conpty(&normal, 5, &[]);
+        assert_eq!(prepared.normal().scroll_count(), 3);
+        assert_eq!(prepared.rows()[2].cells[0].ch, 'k');
+        assert_eq!(prepared.rows()[2].cells[1].ch, 'l');
+        assert_eq!(prepared.rows()[3].metadata.meaningful_extent, 5);
+        assert!(prepared.rows()[3].metadata.soft_wrapped);
+        assert_eq!(prepared.rows()[4].cells[0].ch, '>');
+    }
+
+    #[test]
+    fn conpty_live_and_saved_cursor_floors_survive_styled_tail_clipping() {
+        let mut normal = NormalBuf::new(4, 12);
+        normal.fill_row_with(0, overlined_blank());
+        let projection = ContentProjection::build(&normal).unwrap();
+        let saved = projection.cursor_anchor(GenPos::new(0, 8), false).unwrap();
+        let prepared = prepare_conpty(
+            &normal,
+            5,
+            &[
+                CursorRetention::Position(GenPos::new(0, 2)),
+                CursorRetention::Anchor(saved),
+            ],
+        );
+        assert_eq!(prepared.rows()[1].metadata.meaningful_extent, 5);
+        assert_eq!(prepared.rows()[2].metadata.meaningful_extent, 0);
+        let projected = prepared.project_cursor(saved).unwrap();
+        assert_eq!(projected.position.col, 3);
+        assert!(!projected.pending_wrap);
     }
 }

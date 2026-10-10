@@ -2,6 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-09
+**Superseded by (Windows ConPTY live-primary tail retention only):** [ADR 0052](./0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), approved 2026-10-09. Full styled-blank retention remains the history/non-ConPTY rule; other modern SGR decisions and this historical status are unchanged.
 
 ## Context
 
