@@ -929,11 +929,14 @@ dependencies = [
  "anyhow",
  "harbor-config",
  "hashbrown 0.17.1",
+ "icu_properties",
+ "image",
  "tracing",
  "tracing-subscriber",
  "unicode-width",
  "windows",
  "windows-core",
+ "windows-numerics",
 ]
 
 [[package]]

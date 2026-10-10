@@ -56,6 +56,33 @@ impl FontBook {
         self.native.resolve(ch, size, style.into())
     }
 
+    /// Present a complete retained emoji unit. Ordinary scalar consumers are unchanged.
+    pub fn present_sequence(
+        &self,
+        request: &crate::SequenceRequest,
+    ) -> std::sync::Arc<crate::SequencePresentation> {
+        self.native.present_sequence(request)
+    }
+
+    pub fn presentation_generation(&self) -> crate::PresentationGeneration {
+        self.native.presentation_generation()
+    }
+
+    /// Drop session-local sequence resolutions/failures and tiles after a resource
+    /// change. Old results remain readable, but consumers must compare generation.
+    pub fn invalidate_presentations(&self) {
+        self.native.invalidate_presentations();
+    }
+
+    pub fn sequence_cache_stats(&self) -> crate::SequenceCacheStats {
+        self.native.sequence_cache_stats()
+    }
+
+    /// Lazily opens native offscreen resources; scalar-only loading never does so.
+    pub fn sequence_capabilities(&self) -> crate::SequenceCapabilities {
+        self.native.sequence_capabilities()
+    }
+
     pub fn font_metrics(&self) -> FontMetrics {
         self.native.font_metrics(self.size)
     }

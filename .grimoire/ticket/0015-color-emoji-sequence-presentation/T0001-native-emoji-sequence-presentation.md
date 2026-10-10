@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0020](../../spec/0020-color-emoji-sequence-presentation.md), R1/R3/R4/R6/R7; [ADR 0054](../../adr/0054-color-emoji-offscreen-presentation.md); [issue #181](https://github.com/wangjq4214/harbor/issues/181)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
