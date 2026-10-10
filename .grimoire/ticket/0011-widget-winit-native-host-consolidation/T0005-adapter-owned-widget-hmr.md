@@ -29,7 +29,7 @@ Optional Windows debug Widget HMR is a reusable `harbor-widget::winit` host capa
 
 ### Blocked by
 
-- T0003 — Integrated acceptance requires the real application root to live in the adapter-owned main host.
+- [Spec 0012 Solution](../../spec/0012-widget-winit-native-host-consolidation.md#solution) — adapter-owned main-window host (historical T0003, retired). Integrated acceptance requires the real application root to live in the adapter-owned main host.
 
 ### Blocks
 
@@ -37,7 +37,7 @@ Optional Windows debug Widget HMR is a reusable `harbor-widget::winit` host capa
 
 ### Coordination
 
-- Reuse the stable root inputs established during T0003; do not create a second application state/action transport.
+- Reuse the stable root inputs established by the main-window host (historical T0003, retired); do not create a second application state/action transport.
 - HMR wake events must coexist with terminal output and other application events without leaking blocker or loader types into business reducers.
 
 ## Acceptance

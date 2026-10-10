@@ -1,6 +1,6 @@
 # Store OSC 8 Hyperlinks as Cell IDs in a Bounded Screen Registry
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

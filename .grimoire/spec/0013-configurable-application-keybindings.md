@@ -1,7 +1,7 @@
 # Configurable Application Keybindings
 
 **Spec ID:** 0013
-**Status:** Draft
+**Status:** Implemented
 **Date:** 2026-09-18
 
 ## Requirement

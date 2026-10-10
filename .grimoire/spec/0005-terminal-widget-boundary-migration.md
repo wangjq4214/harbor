@@ -104,3 +104,10 @@ The App remains the Runtime Host: it constructs and owns the terminal, drains de
 - Extract `terminal-core` and `terminal-wgpu` when true UI independence or an additional rendering host is required; resolve the ADR 0012 winit-dependency conflict at that time.
 - Create a dedicated bridge crate only when a second application or reusable consumer needs the same Component.
 - Generalize deferred external input handlers only when a bridge must autonomously receive widget input without App-mediated Host policy.
+
+## Historical Ticket IDs
+
+| Historical ID | Surviving contract |
+| --- | --- |
+| 0005/T0001 | [Terminal-owned `RenderTarget` and `TerminalEvent` boundary](#solution) |
+| 0005/T0002 | [Root-level bridge Component and external-paint integration](#use-a-root-level-bridge-component) |

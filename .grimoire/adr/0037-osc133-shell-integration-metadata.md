@@ -1,6 +1,6 @@
 # Expose OSC 133 Shell-Integration Markers as Host Metadata
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

@@ -1,7 +1,7 @@
 # Modern SGR Decorations
 
 **Spec ID:** 0018
-**Status:** Draft
+**Status:** Implemented (scoped modern-SGR slice; see [acceptance record](../../docs/modern-sgr-acceptance.md))
 **Date:** 2026-10-09
 **Sources:** [Issue #162](https://github.com/wangjq4214/harbor/issues/162), the user-approved modern SGR refinement contract below, [ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), and the approved Windows ConPTY live-primary exception in [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 
@@ -159,13 +159,13 @@ No private representation or additional colorspace protocol is selected by this 
 
 ## Verification and Definition of Done
 
-- [ ] R1-R6 have focused deterministic coverage of supported forms, invalid/fragmented/cancelled input, bounds, reset, ordering and relevant state lifetimes.
-- [ ] CPU geometry/model tests and actual GPU encode/render evidence cover styles, spaces, wide cells, color/inverse, conceal and overline.
-- [ ] Primary tests prove full styled retention in history/non-ConPTY and producer-compatible live geometry/target-row styling with honest overflow loss for Windows ConPTY under ADR 0052; alternate stays rectangular, while ordinary-tail rules, surviving cursor/selection anchors and transactional invariants remain intact.
-- [ ] Exact DECRQSS/XTGETTCAP replies and reconstructed state are verified; no unsupported identity/capability is advertised.
-- [ ] Windows Neovim and direct synthetic cases are recorded with the precise delivered scope, application/transport versions, observations and honest exclusions.
-- [ ] Applicable existing reply/OSC/focus/mouse/IME/synchronized-output and copy/selection regressions remain intact; no prerequisite sub-issue is reopened.
-- [ ] Documentation reflects implemented and evidenced support only; #162 remains the tracker for remaining non-SGR work.
+- [x] R1-R6 have focused deterministic coverage of supported forms, invalid/fragmented/cancelled input, bounds, reset, ordering and relevant state lifetimes.
+- [x] CPU geometry/model tests and actual GPU encode/render evidence cover styles, spaces, wide cells, color/inverse, conceal and overline.
+- [x] Primary tests prove full styled retention in history/non-ConPTY and producer-compatible live geometry/target-row styling with honest overflow loss for Windows ConPTY under ADR 0052; alternate stays rectangular, while ordinary-tail rules, surviving cursor/selection anchors and transactional invariants remain intact.
+- [x] Exact DECRQSS/XTGETTCAP replies and reconstructed state are verified; no unsupported identity/capability is advertised.
+- [x] Windows Neovim and direct synthetic cases are recorded with the precise delivered scope, application/transport versions, observations and honest exclusions.
+- [x] Applicable existing reply/OSC/focus/mouse/IME/synchronized-output and copy/selection regressions remain intact; no prerequisite sub-issue is reopened.
+- [x] Documentation reflects implemented and evidenced support only; #162 remains the tracker for remaining non-SGR work.
 
 Run applicable gates at implementation boundaries, recording every unrun command and why:
 
@@ -177,7 +177,7 @@ python scripts/check_docs.py
 python scripts/checklist_summary.py
 ```
 
-A GPU test skipped for lack of an adapter, a compiled binary, or an unexecuted native procedure is not a runtime pass. This draft records requirements only and reports no implementation test or application acceptance result.
+A GPU test skipped for lack of an adapter, a compiled binary, or an unexecuted native procedure is not a runtime pass. Scoped implementation and acceptance evidence is recorded in the acceptance record linked from the status; this spec does not claim broader #162 or transport acceptance.
 
 ## Out of Scope
 

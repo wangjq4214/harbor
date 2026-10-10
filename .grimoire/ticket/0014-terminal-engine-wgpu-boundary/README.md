@@ -5,52 +5,37 @@
 
 ## Overview
 
-Deliver a GPU-independent terminal core while preserving the concrete wgpu renderer and application behavior. The compatibility facade protects callers only while they migrate and may be removed afterwards. The update contract preserves hidden/failed-draw changes; PTY lifetime belongs to the session adapter. No new renderer or generic rendering abstraction is included.
-
-## Delivery Surfaces
-
-1. **Core and build boundary:** `harbor-terminal` features/dependencies, screen/parser/input/selection/damage/preedit/timing, `TerminalSnapshot` and `UpdateDamage`.
-2. **PTY session:** `harbor-terminal` I/O, `harbor-pty` endpoint/control capabilities, acknowledged resize, ownership map and safe teardown.
-3. **Concrete renderer:** `harbor-terminal/src/render/` projection, GPU upload/invalidations, blink display, preedit and retained/live draw.
-4. **Host integration:** `harbor-app` terminal view, tabs and scheduling; widget external-draw integration, GPU initialization/failure policy.
-5. **Evidence:** core-only dependency graph, focused tests, quality gates, Windows scenarios and one-/multi-session performance comparison.
+One ticket remains open: Windows, dependency, and performance acceptance for the core/renderer/session boundary. The engine/update boundary, the wgpu renderer consumption, and the application migration are implemented; their contracts are recorded in [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md) and the historical destinations below.
 
 ## Dependency Graph
 
-| Contract or active ticket | Required by | Concrete reason |
+| Contract | Required by | Concrete reason |
 | --- | --- | --- |
-| [Spec 0016 engine/update and timing contract](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), with intermediate core-only evidence | T0003 | The renderer must consume the GPU-free update and timing interface; intermediate evidence is not final renderer acceptance. |
-| [Session ownership contract](../../../docs/architecture/terminal-session-ownership.md) and [ADR-0043 resize ordering](../../adr/0043-acknowledged-pty-resize-barrier.md) | T0004 | App migration must preserve endpoint ownership, resize ordering, construction-failure cleanup and teardown, and verify them in the integrated host path. |
-| T0003 | T0004 | App migration cannot complete until the wgpu renderer consumes the update boundary and preserves retained/live drawing. |
-| T0004 | T0005 | Final Windows and performance acceptance must exercise the integrated application, not an intermediate compatibility path. |
-| T0005 | — | Final evidence closes the package. |
+| [Spec 0016 solution boundary](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#solution-boundary) and [necessary seams](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#necessary-seams) | T0005 | Final acceptance must exercise the integrated engine, session, renderer, and host path. |
 
-T0003 and T0004 coordinate on the surviving engine/update and session ownership contracts; shared-file overlap alone is not a blocking edge. T0005 baseline preparation and measurements should begin before migration, even though its final acceptance depends on T0004.
+## Recommended Order
+
+1. T0005 — Windows, Dependency and Performance Acceptance
 
 ## Coordination Risks
 
 | Tickets | Risk | Strategy |
 | --- | --- | --- |
-| T0003, T0004 | Engine, session and renderer integration share facade and constructor surfaces. | Use Spec 0016's engine/update and timing contract and the session ownership map; avoid a second source of truth. |
-| T0003, T0004 | Renderer initialization failure touches PTY ownership despite separate implementation surfaces. | Preserve safe endpoint/session ownership from the ownership map; T0003 verifies renderer-local resource release and T0004 verifies integrated failure handling. |
-| T0003, T0004 | Live/retained drawing, viewport, scheduling and blink span the renderer and `TerminalWidgetBridge`. | Preserve one frame-demand contract and existing host-owned presentation; test hidden-tab resumption and retained drawing at integration. |
 | T0005, all | Later changes invalidate earlier runtime/performance claims. | Capture baseline early, but attribute final evidence to the delivered revision and dirty-tree scope. |
-
-## Recommended Order
-
-1. Review [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md), intermediate core-boundary evidence and the [session ownership map](../../../docs/architecture/terminal-session-ownership.md) as migration prerequisites, not final acceptance.
-2. T0003 — wgpu Renderer Update Consumption
-3. T0004 — Application and Widget Migration (coordinate with T0003; integrated completion depends on it)
-4. T0005 — Windows, Dependency and Performance Acceptance
-
-The #169 contract and first #170 reflow path are closed prerequisites; preserve their behavior during this migration. Shared-file overlap alone is not a blocking edge.
 
 ## Ticket Index
 
 | Ticket | File | Outcome |
 | --- | --- | --- |
-| Historical T0001 | [Spec 0016 test/evidence plan](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#test-and-evidence-plan), core-boundary evidence | GPU-free engine/update and timing constraints survive in the spec; intermediate core-only and CPU-side baseline evidence does not establish final integrated acceptance. |
-| Historical T0002 | [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#test-and-evidence-plan), [session ownership map](../../../docs/architecture/terminal-session-ownership.md) | Endpoint, resize and teardown obligations remain constraints; the recorded Done status and unchecked acceptance items are not reconciled or promoted to a pass. Integrated lifecycle verification remains T0004/T0005 work. |
-| T0003 | [T0003-wgpu-renderer-update-consumption.md](./T0003-wgpu-renderer-update-consumption.md) | Existing wgpu renderer consumes coherent updates and recovers hidden/failed draws without model mutation. |
-| T0004 | [T0004-application-and-widget-migration.md](./T0004-application-and-widget-migration.md) | Application callers migrate safely; compatibility facade may be removed when unused. |
 | T0005 | [T0005-windows-dependency-and-performance-acceptance.md](./T0005-windows-dependency-and-performance-acceptance.md) | Integrated behavior, quality gates and before/after evidence are accurately recorded. |
+
+## Historical Contract Destinations
+
+These mappings do not mark integrated acceptance passed.
+
+| Historical ID | Contract destination |
+| --- | --- |
+| T0001 (GPU-Free Engine and Update Boundary) | [Spec 0016 test and evidence plan](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#test-and-evidence-plan): GPU-free engine/update and timing constraints; intermediate core-boundary evidence. |
+| T0002 (PTY Session Ownership) | [Spec 0016 test and evidence plan](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#test-and-evidence-plan) and [session ownership map](../../../docs/architecture/terminal-session-ownership.md): endpoint, resize, and teardown obligations. |
+| T0003 (wgpu Renderer Update Consumption) | [Spec 0016 solution boundary](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#solution-boundary): the renderer consumes a coherent engine update and never mutates parser or screen state. |
+| T0004 (Application and Widget Migration) | [Spec 0016 necessary seams](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#necessary-seams) and [end-to-end verification cases](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#end-to-end-verification-cases): application callers migrated; one owner per engine, session, and renderer. |

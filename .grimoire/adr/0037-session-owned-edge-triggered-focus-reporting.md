@@ -1,6 +1,6 @@
 # Session-Owned Edge-Triggered Focus Reporting
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

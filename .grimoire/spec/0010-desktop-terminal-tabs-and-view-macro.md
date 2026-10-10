@@ -1,7 +1,7 @@
 # Desktop Terminal Tabs and Declarative View Macro
 
 **Spec ID:** 0010
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-09-07
 
 ## Requirement
@@ -74,7 +74,7 @@ The first parent data contract covers flex factor/fit and positioned layout meta
 | Flexible child | `Flexible`, `Expanded`, `Spacer`, flex factor and loose/tight fit | Terminal receives remaining width |
 | Constraints | `ConstrainedBox` with per-axis minimum/maximum bounds | Bound expanded/compact rail width |
 | Separator | Horizontal/vertical convenience over existing box paint | Rail/content boundary |
-| Interaction state | `InteractiveRegion` with disabled, hovered, pressed, focused, focus-visible, and selected states | Tab items and icon buttons |
+| Interaction state | `InteractiveRegion` with disabled, hovered, pressed, focused, focus-visible, and selected states; pointer capture is released on pointer-up, cancel, focus loss, disabling, unmount, and window-lifecycle cancellation | Tab items and icon buttons |
 | Pointer behavior | `MouseRegion` cursor/enter/exit and desktop click behavior | Rail hover and close affordances |
 | Focus and commands | Node-level `Focus`, traversal order, `Shortcuts`, typed `Actions` | Keyboard tab operation |
 | Styling | Inherited `Theme` tokens for colors, typography, spacing, radii, and interaction states | Remove hard-coded tab/button visuals |

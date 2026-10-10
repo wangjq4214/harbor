@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation](../../spec/0012-widget-winit-native-host-consolidation.md)
-**Status:** Complete
+**Status:** In Progress
 
 ## Goal
 
@@ -27,8 +27,8 @@ Harbor has one native Widget host implementation with no duplicate binary-owned 
 
 ### Blocked by
 
-- T0003 — Main window must use the owned host.
-- T0004 — Confirmation window must use the owned host.
+- [Spec 0012 Solution](../../spec/0012-widget-winit-native-host-consolidation.md#solution) — main-window host (historical T0003, retired). Main window must use the owned host.
+- Confirmation-window migration (historical T0004, retired; criteria in Spec 0012 Test Plan) — the confirmation window must use the owned host.
 - T0005 — Adapter-owned HMR must replace application lifecycle code.
 
 ### Blocks

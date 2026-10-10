@@ -1,6 +1,6 @@
 # OSC 52 Write Subset and Bounded Request Delivery
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-30
 
 ## Context

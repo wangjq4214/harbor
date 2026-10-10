@@ -16,11 +16,11 @@ Verify the delivered core/renderer/session boundary against baseline behavior an
 
 ## Approach
 
-Capture a reproducible baseline before migration; attribute final measurements and manual checks to the integrated revision after T0004. Report actual status rather than claiming that a scenario passed when not run or not reproducible. Follow the repository validation policy; no new performance threshold is invented by this ticket.
+Capture a reproducible baseline before migration; attribute final measurements and manual checks to the integrated revision after the application migration (historical T0004, retired). Report actual status rather than claiming that a scenario passed when not run or not reproducible. Follow the repository validation policy; no new performance threshold is invented by this ticket.
 
 ## Dependencies and Coordination
 
-- **Blocked by:** T0004 for final integrated Windows/performance acceptance; baseline collection, test scaffolding and command preparation may begin earlier.
+- **Blocked by:** the application migration (historical T0004, retired; see [Spec 0016](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#necessary-seams)) for final integrated Windows/performance acceptance; baseline collection, test scaffolding and command preparation may begin earlier.
 - **Blocks:** None; this is final acceptance for the ticket set.
 - **Coordination risks:** Tests or performance evidence from earlier intermediate revisions may not reflect the final app integration. Record revision and dirty scope for every result.
 

@@ -1,7 +1,7 @@
 # Unicode terminal text correctness (N02 / #153)
 
 **Spec ID:** 0015
-**Status:** Draft
+**Status:** Implemented
 **Date:** 2026-09-26
 
 ## Requirements

@@ -1,8 +1,8 @@
-# Modern SGR: T0003 scoped acceptance
+# Modern SGR scoped acceptance
 
 ## Snapshot and execution contract
 
-- Sources: [T0003](../.grimoire/ticket/0015-modern-sgr-decorations/T0003-capability-neovim-acceptance.md), [Spec 0018](../.grimoire/spec/0018-modern-sgr-decorations.md), [ADR 0051](../.grimoire/adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), [ADR 0052](../.grimoire/adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), [validation policy](validation.md).
+- Sources: [Spec 0018](../.grimoire/spec/0018-modern-sgr-decorations.md), [ADR 0051](../.grimoire/adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), [ADR 0052](../.grimoire/adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), [validation policy](validation.md).
 - Baseline: `cb6ee0aa0eaae2250807c56b8e666d9853884a41`; working tree initially clean. Production dirty scope: `crates/harbor-terminal/src/parser/xtgettcap.rs` and `parser/status_strings.rs`. Additional scope: `render/decoration_tests.rs`, `tests/modern_sgr_acceptance.rs`, the two fixtures below and these documentation updates. No commit/staging, identity change, new PTY writer or ConPTY bundle change.
 - Binary: `cargo build --bin harbor`, debug Harbor 0.1.0, no HMR. SHA256: `4aa5db89a0a3a7697832601c9f032340abc6a7c6697da1363424df6dcb2b7151`. Final test-only boundary coverage and documentation edits do not change this binary's production source.
 - Method: existing ticket approach -> implementation -> focused/workspace/GPU/native checks -> inline combined-diff review and criterion check -> final gates. No new plan file or delegation; the existing ticket supplies sequencing. The only production deviation is the demonstrated status-replay fix below.

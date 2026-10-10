@@ -1,6 +1,6 @@
 # Activate OSC 8 Hyperlinks Through the Host on Direct Click
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context
