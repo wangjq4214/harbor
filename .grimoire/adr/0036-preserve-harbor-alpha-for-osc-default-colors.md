@@ -1,6 +1,6 @@
 # Preserve Harbor Alpha for OSC Default Colors
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

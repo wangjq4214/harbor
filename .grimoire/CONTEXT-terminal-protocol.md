@@ -46,14 +46,14 @@
   - references Screen state
 
 ### XTGETTCAP
-- **Definition:** A VT terminfo-capability query where an application sends `DCS + q Pt ST` with `Pt` as semicolon-separated hex-encoded capability names, and Harbor replies `DCS 1 + r Pt ST` listing `name=value` pairs for its registry-backed capabilities (`TN` = `xterm-256color`, `RGB` = `8/8/8`, `u8` = UTF-8 boolean) or `DCS 0 + r ST` when none match.
+- **Definition:** A VT terminfo-capability query where an application sends `DCS + q Pt ST` with `Pt` as semicolon-separated hex-encoded capability names, and Harbor replies `DCS 1 + r Pt ST` listing hex-encoded `name=value` entries (or name-only booleans) for its registry-backed capabilities (`TN` = `xterm-256color`, `RGB` = `8/8/8`, `u8` = UTF-8 boolean, `Su` = styled-underline boolean) or `DCS 0 + r ST` when none match.
 - **Synonyms:** Terminal Capability Query, tcap query
 - **Relationships:**
   - depends on TerminalReply
   - references Terminfo Capability Declaration
 
 ### Terminfo Capability Declaration
-- **Definition:** The private compile-time list in `harbor-terminal::parser::xtgettcap` mapping supported terminfo capability names (`TN`, `RGB`, `u8`) to their XTGETTCAP reply values.
+- **Definition:** The private compile-time list in `harbor-terminal::parser::xtgettcap` mapping supported terminfo capability names (`TN`, `RGB`, `u8`, `Su`) to their XTGETTCAP reply values.
 - **Relationships:**
   - referenced by XTGETTCAP
 
@@ -284,3 +284,11 @@
 - **Relationships:**
   - belongs to OSC 52 Host-Authorized Clipboard Write
   - communicates with Application Business Host
+
+### Modern SGR Decoration Policy
+- **Definition:** The accepted #162 modern SGR policy implemented in the terminal core and renderer: explicit underline style and color are independent; styled underlines and overlines paint spaces, while OSC 8 retains its non-space single-underline fallback. Visibly decorated blanks remain meaningful; history/non-ConPTY primary retain them through full reflow without changing ordinary-tail trimming. The approved Windows ConPTY live-primary exception in [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) follows producer text/cursor geometry: style-only tails add no rows, attributes remain in target-row capacity, and overflow is clipped without a restoration/copy promise. Alternate rectangular resize is unchanged. Conceal suppresses foreground glyphs and decorations but preserves source text, background, width, and copy semantics; it is presentation rather than redaction and does not make hidden text disposable. SGR status replies reflect authoritative state, and verified styled underline support is discoverable through `Su` without identity changes. See [ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md) for other compatibility rules. The approved approach A is implemented; [scoped integrated evidence](../docs/modern-sgr-acceptance.md) records configured native Windows Neovim and synthetic acceptance with explicit runtime/transport exclusions.
+- **Relationships:**
+  - belongs to Terminal
+  - references OSC 8 Hyperlink
+  - references DECRQSS
+  - references XTGETTCAP

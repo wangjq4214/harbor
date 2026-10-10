@@ -217,7 +217,7 @@ impl GpuGlyphAtlas {
 
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {
-    if cell.wide_continuation {
+    if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
         return Vec::new();
     }
     let mut chars = Vec::new();
@@ -393,6 +393,7 @@ impl Text {
             if cell.ch != ' '
                 && !cell.isolated_mark
                 && !cell.wide_continuation
+                && !cell.attrs.contains(CellAttrs::CONCEAL)
                 && let Some(glyph) = self.atlas.glyph_by_char(cell.ch)
                 && glyph.width > 0
                 && glyph.height > 0
@@ -542,7 +543,7 @@ impl Text {
         for row in 0..snap.rows {
             for col in 0..snap.cols {
                 let cell = snap.cell(row, col);
-                if cell.wide_continuation {
+                if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
                     continue;
                 }
                 let (cell_x, cell_y) = viewport.cell_pos(row, col);

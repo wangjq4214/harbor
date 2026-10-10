@@ -1,11 +1,11 @@
 # Windows Acrylic Backdrop
 
 **Spec ID:** 0008
-**Status:** In Progress
+**Status:** Implemented
 **Date:** 2026-08-25
 
 
-**Reconciliation required:** The implementation currently uses a unified four-tier backdrop chain and a 0.25 tint alpha, while the acceptance text below records the earlier TransientWindow-first and 0.72-alpha contract. This discrepancy is retained explicitly pending a product-requirement decision; it must not be treated as resolved by implementation alone.
+**Superseded in part:** the earlier TransientWindow-first, 0.72-alpha contract in the acceptance text below is superseded by the unified backdrop tint chain (ADR 0026, amended by ADR 0028). The current four-tier chain and the configured `BACKGROUND` alpha are the reference; the earlier values are retained as historical design intent.
 ## Requirement
 
 The Harbor main window on Windows must show a Windows Terminal-style Acrylic backdrop through default-background cells and the caption strip, while remaining readable for inverse and non-default cells.
@@ -136,3 +136,9 @@ The paste confirmation window stays a separate opaque OS window with its existin
 - Offer Mica as an explicit appearance option only if product direction changes away from Windows Terminal-style glass.
 - Extend Acrylic to Unix only after P8 host work exists; this spec is Windows-only.
 - Re-evaluate undocumented accent policy if Microsoft removes `SetWindowCompositionAttribute` behavior.
+
+## Historical Ticket IDs
+
+| Historical ID | Surviving contract |
+| --- | --- |
+| 0008/T0003 (Inverse Default Cell paint) | [Solution](#solution), [inverse-cell E2E](#e2e-inverse-and-colored-cells-stay-readable), and [Test Plan](#test-plan) |

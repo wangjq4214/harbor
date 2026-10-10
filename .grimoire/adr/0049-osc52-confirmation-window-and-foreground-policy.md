@@ -1,6 +1,6 @@
 # OSC 52 Confirmation Window and Foreground Policy
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-30
 **Supersedes:** [ADR 0047](./0047-foreground-only-host-authorized-osc52-writes.md)
 

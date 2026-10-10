@@ -1,6 +1,6 @@
 # Expose OSC 7 as Metadata Without File-System Side Effects
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

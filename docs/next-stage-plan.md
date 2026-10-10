@@ -36,7 +36,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 
 **First delivery**
 
-Source implementation and automated regressions cover this delivery. N01 acceptance remains open: interactive Windows shell/clipboard/`nvim` and release latency/DHAT records are **NOT RUN**; see the [automation](verification/content-preserving-resize-automation.md), [Windows](verification/content-preserving-resize-windows.md), and [performance](verification/content-preserving-resize-performance.md) records.
+Source implementation and automated regressions cover this delivery. N01 acceptance remains open: interactive Windows shell/clipboard/`nvim` and release latency/DHAT checks are **NOT RUN**.
 
 - Re-wrap retained main-screen and scrollback logical lines when column count changes; preserve explicit newlines rather than concatenating every physical row.
 - Define meaningful trailing blanks, styled blank cells, wide-character boundary padding, hyperlinks, and cell attributes. Do not use unconditional text trimming as the reflow algorithm.

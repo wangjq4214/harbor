@@ -1,6 +1,6 @@
 # Prioritized SGR-Only Mouse Reporting
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

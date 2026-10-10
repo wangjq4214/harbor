@@ -1,6 +1,6 @@
 # Application Command Dispatch and Keybinding Precedence
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-18
 
 **Configuration format note:** The command-dispatch and precedence decisions remain current. The command-to-chord-array format is superseded by [ADR-0041](./0041-structured-keybinding-configuration.md).

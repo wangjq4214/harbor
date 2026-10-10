@@ -1,11 +1,11 @@
 # Widget Decoration and Terminal Chrome
 
 **Spec ID:** 0009
-**Status:** In Progress
+**Status:** Implemented
 **Date:** 2026-08-26
 
 
-**Reconciliation required:** The current tested product preset uses a 4dp inset, 8dp radius, 10%-opaque black shadow, and 1dp offset/blur, while the acceptance text below records the earlier 16dp/12dp/25%/4dp/12dp contract. This discrepancy is retained explicitly pending a product-requirement decision.
+**Superseded in part:** the earlier 16dp inset and 12dp/25%/4dp/12dp preset in the acceptance text below are superseded by the current Terminal Window Inset (4dp) and Terminal Decoration Preset (8dp radius, 10%-opaque shadow, 1dp offset and blur) recorded in CONTEXT.md. The earlier values are retained as historical design intent.
 ## Requirement
 
 Harbor must provide Flutter-style, reusable widget box decoration and use it to render the main terminal with anti-aliased rounded corners and an outer shadow while preserving layout, input, external-draw, and Acrylic behavior.
@@ -130,3 +130,9 @@ The main Runtime Host composes `TerminalWidgetBridge` inside `DecoratedBox` with
 - Introduce user-configurable terminal decoration after the configuration schema and live-update policy are defined.
 - Re-evaluate save-layer anti-aliasing if visual evidence shows direct anti-aliased rounded clipping is insufficient.
 - Generalize rounded clip representation for nested transformed clips when non-axis-aligned transforms enter the Widget Runtime.
+
+## Historical Ticket IDs
+
+| Historical ID | Surviving contract |
+| --- | --- |
+| 0009/T0003 (Layered Outer Shadows) | [Solution](#solution) and [Test Plan](#test-plan), including stable shadow SceneItem identity when ineffective entries are filtered. |

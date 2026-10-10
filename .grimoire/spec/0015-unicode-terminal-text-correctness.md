@@ -1,7 +1,7 @@
 # Unicode terminal text correctness (N02 / #153)
 
 **Spec ID:** 0015
-**Status:** Draft
+**Status:** Implemented
 **Date:** 2026-09-26
 
 ## Requirements
@@ -49,13 +49,13 @@ The renderer presents the retained unit in its assigned cell bounds, including f
 
 Add deterministic parser/screen tests for PTY fragmentation, zero-width retention, cluster width and cursor/pending-wrap, line-start isolation, wide edges, insert/overwrite/erase and protected/styled/hyperlinked cells. Verify logical-stream decode, selected text, content-anchor remapping, eviction, primary reflow, alternate resize, and dirty-range uploads against the same original sequences. Check font fallback and font/DPI rerendering in Windows runtime, not only model tests; include a named terminal application workload and clipboard copy across resize.
 
-For each delivered increment, record focused tests and reproducible Windows end-to-end steps, revision and dirty-tree scope, OS/ConPTY/application versions, expected versus observed outcome, artifacts, known exclusions, and honest PASS / FAIL / NOT RUN / BLOCKED statuses under `docs/verification/` or retrievable CI evidence. Run or account for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; update status/protocol claims only for evidenced behavior. See [Validation](../../docs/validation.md). Parser/model tests alone do not prove Windows runtime compatibility.
+For each delivered increment, record focused tests and reproducible Windows end-to-end steps, revision and dirty-tree scope, OS/ConPTY/application versions, expected versus observed outcome, artifacts, known exclusions, and honest PASS / FAIL / NOT RUN / BLOCKED statuses in self-contained committed summaries, with raw artifacts retained locally or in retrievable CI. Run or account for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py`; update status/protocol claims only for evidenced behavior. See [Validation](../../docs/validation.md). Parser/model tests alone do not prove Windows runtime compatibility.
 
 ### Unresolved acceptance and discrepancy
 
-Historical T0001 (combining) and T0002 (VS/ZWJ) completion records remain in [combining evidence](../../docs/verification/combining-text-t0001.md) and [variation/ZWJ evidence](../../docs/verification/variation-zwj-t0002.md); their completion does not establish every runtime matrix row. The variation/ZWJ record documents a DECAWM-disabled final-column selector retaining raw text with a one-cell projection, in conflict with R2's two-cell emoji policy. This discrepancy remains unresolved; retiring the implementation tickets neither authorizes that exception nor changes R2.
+Historical T0001 (combining) and T0002 (VS/ZWJ) completion included focused verification; their completion does not establish every runtime matrix row. The variation/ZWJ verification documented a DECAWM-disabled final-column selector retaining raw text with a one-cell projection, in conflict with R2's two-cell emoji policy. This discrepancy remains unresolved; retiring the implementation tickets neither authorizes that exception nor changes R2.
 
-[Integrated Windows evidence](../../docs/verification/unicode-terminal-text-t0003.md) reports the documented combining, selector/ZWJ width, delayed-write, wrapping-edge, edit/erase and clipboard subset. It does not document font/DPI-change or resize/alternate/eviction executions, a named application workload/version, full runtime and dirty-tree provenance/artifacts, or the integrated `cargo test --workspace` gate (it lists package tests). Delayed writes alone do not establish distinct PTY reads. T0003's Done status and checked acceptance do not fill these evidence gaps or resolve the no-wrap discrepancy; the Verification obligations above remain applicable.
+Integrated Windows verification covered the documented combining, selector/ZWJ width, delayed-write, wrapping-edge, edit/erase and clipboard subset. It did not document font/DPI-change or resize/alternate/eviction executions, a named application workload/version, full runtime and dirty-tree provenance/artifacts, or the integrated `cargo test --workspace` gate (it lists package tests). Delayed writes alone do not establish distinct PTY reads. T0003's Done status and checked acceptance do not fill these evidence gaps or resolve the no-wrap discrepancy; the Verification obligations above remain applicable.
 
 ## Out of scope
 

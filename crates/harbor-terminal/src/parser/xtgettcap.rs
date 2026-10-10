@@ -39,6 +39,7 @@ impl TerminfoCapabilities {
             b"TN" => Some(CapabilityValue::Str(b"xterm-256color")),
             b"RGB" => Some(CapabilityValue::Str(b"8/8/8")),
             b"u8" => Some(CapabilityValue::Bool),
+            b"Su" => Some(CapabilityValue::Bool),
             _ => None,
         }
     }
@@ -223,6 +224,11 @@ mod tests {
             TerminfoCapabilities::lookup(b"u8"),
             Some(CapabilityValue::Bool)
         );
+        assert_eq!(
+            TerminfoCapabilities::lookup(b"Su"),
+            Some(CapabilityValue::Bool)
+        );
+        assert_eq!(TerminfoCapabilities::lookup(b"su"), None);
         assert_eq!(TerminfoCapabilities::lookup(b"xx"), None);
         assert_eq!(TerminfoCapabilities::lookup(b""), None);
     }
@@ -286,6 +292,7 @@ mod tests {
     #[test]
     fn finish_queues_boolean_capability_by_name_only() {
         assert_eq!(queued_reply(b"7538"), b"\x1bP1+r7538\x1b\\");
+        assert_eq!(queued_reply(b"5375"), b"\x1bP1+r5375\x1b\\");
     }
 
     #[test]

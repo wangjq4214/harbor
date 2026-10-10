@@ -26,9 +26,9 @@ The complete multi-tab slice has executable evidence for all-session resize, act
 
 ## Blocked by
 
-- T0005 — Supplies allocation observation.
+- [Spec 0010 Terminal allocation propagation](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#terminal-allocation-propagation) — post-layout allocation feedback (historical T0005, retired).
 - [Spec 0010 tab/session contract](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#application-model-and-boundaries) — Integrated acceptance must verify independent resources, tab-qualified events, active-only registrations, stale-event safety, and lifecycle cleanup.
-- T0007 — Supplies integrated product UI.
+- [Spec 0010 Product Behavior](../../spec/0010-desktop-terminal-tabs-and-view-macro.md#product-behavior) — integrated product UI (historical T0007, retired).
 
 ## Blocks
 

@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-29
+**Superseded by (Windows ConPTY live-primary tail retention only):** [ADR 0052](./0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), approved 2026-10-09. The historical completion status and history/non-ConPTY ordinary-tail policy remain unchanged.
 
 ## Context
 

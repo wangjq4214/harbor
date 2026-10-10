@@ -1,7 +1,8 @@
 # Terminal Frame Scheduling and Standalone Host
 
 **Spec ID:** 0006
-**Status:** In Progress
+**Status:** Implemented
+**Superseded in part:** the public standalone winit/wgpu host requirement (Solution, its decision, and the standalone E2E) is superseded by a newer decision not recorded in this repository; the retired ticket 0006/T0003 was marked Superseded.
 **Date:** 2026-09-11
 
 ## Requirement
@@ -96,3 +97,9 @@ For direct rendering, provide a public feature-gated standalone winit/wgpu host 
 - Add direct host adapters for additional platform event loops without changing Terminal Frame Demand.
 - Revisit blink configuration and focus-state behavior if user settings or accessibility requirements require them.
 - Re-evaluate scheduling granularity if terminal decorations or other animations add independent deadlines.
+
+## Historical Ticket IDs
+
+| Historical ID | Surviving contract |
+| --- | --- |
+| 0006/T0001 | [Host-neutral Frame Demand and blink-reset contract](#solution) |

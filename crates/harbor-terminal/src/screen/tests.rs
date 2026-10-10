@@ -1938,7 +1938,7 @@ fn should_expose_decrqss_getters_for_sgr_regions_style_and_protection() {
     screen.set_character_protection(crate::model::CharacterProtection::Protected);
 
     // Act / Assert — public Screen observation surface used by DECRQSS.
-    let (fg, bg, attrs) = screen.current_sgr();
+    let (fg, bg, attrs, _) = screen.current_sgr();
     assert_eq!(fg, Color::Named(1));
     assert_eq!(bg, Color::Named(4));
     assert!(attrs.contains(CellAttrs::BOLD));

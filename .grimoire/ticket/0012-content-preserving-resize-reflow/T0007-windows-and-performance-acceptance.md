@@ -13,7 +13,7 @@ Close the first content-preserving reflow package with complete automated gates,
 - **Integrated regressions:** Terminal model, pointer/selection/copy, alternate-screen restoration, PTY resize failure, and repeated mixed resize.
 - **Windows runtime evidence:** `cmd` or PowerShell, `nvim`, clipboard selection/copy, primary/alternate transitions, and exact ConPTY/application versions.
 - **Performance evidence:** Large retained history with colored output and CJK under fixed machine, font, viewport, scale, and build profile.
-- **Documentation/decisions:** Durable records under `docs/verification/`, current status/protocol wording, ADR-0018 history, and ADR-0042 implementation status.
+- **Documentation/decisions:** Self-contained validation summaries, current status/protocol wording, ADR-0018 history, and ADR-0042 implementation status; raw artifacts stay local or in retrievable CI.
 
 ## Approach
 

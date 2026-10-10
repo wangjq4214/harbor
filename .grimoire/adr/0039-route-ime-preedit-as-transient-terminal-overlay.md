@@ -1,6 +1,6 @@
 # Route IME Preedit as a Transient Terminal Overlay
 
-**Status:** Proposed
+**Status:** Completed
 **Date:** 2026-09-17
 
 ## Context

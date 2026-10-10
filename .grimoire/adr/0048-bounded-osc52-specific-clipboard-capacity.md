@@ -1,6 +1,6 @@
 # Bounded OSC 52-Specific Clipboard Capacity
 
-**Status:** Proposed
+**Status:** Implementing
 **Date:** 2026-09-30
 
 ## Context

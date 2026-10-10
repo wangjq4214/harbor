@@ -6,7 +6,7 @@ Project domain concepts and terminology.
 
 | Domain | File | Entry Count |
 | --- | --- | ---: |
-| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 39 |
+| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 40 |
 
 ### System-Native Font Loading
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
@@ -529,7 +529,7 @@ Project domain concepts and terminology.
   - contains Soft-Wrap Marker
 
 ### Screen Resize
-- **Definition:** A change to the terminal grid size that copies existing rows in place without reflow.
+- **Definition:** A change to terminal grid geometry governed by buffer-specific resize policy: primary logical reflow and alternate rectangular resize. The approved Windows ConPTY live-primary exception follows producer geometry rather than creating rows solely from styled tail blanks; retained history and non-ConPTY primary keep full reflow rules. See [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); approval does not establish implementation or acceptance.
 - **Synonyms:** resize
 - **Relationships:**
   - references Soft-Wrap Marker
@@ -537,14 +537,14 @@ Project domain concepts and terminology.
   - references Reflow
 
 ### Reflow
-- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions instead of leaving rows at their pre-resize layout. During primary reflow, a maximal suffix of ordinary default-style, unprotected, non-hyperlinked spaces may be discarded rather than create an otherwise empty continuation row; cursor-required spaces are retained.
+- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions. Full primary reflow may discard a maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix, retaining cursor-required spaces and styled/protected/hyperlinked blanks. The approved Windows ConPTY producer-owned live-primary exception instead follows producer text/cursor geometry: style-only tail blanks do not add rows, their attributes remain within target-row capacity, and overflow is clipped/discarded without a restoration/copy promise. Retained history and non-ConPTY primary keep full rules; alternate stays rectangular. [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) records approval, not an implementation pass.
 - **Synonyms:** reflow on resize, resize reflow
 - **Relationships:**
   - consumes Soft-Wrap Marker
   - belongs to Screen Resize
 
 ### Meaningful Blank
-- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful before resize. On primary resize reflow, a maximal suffix of ordinary default-style, unprotected, non-hyperlinked spaces may be discarded (and is then unavailable to copy), except where needed to preserve cursor insertion; styled, protected and hyperlinked blanks remain retained. A default-style erase produces non-meaningful blank capacity, while an erase with visible non-default styling produces a meaningful blank.
+- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful before resize. Full primary reflow may discard ordinary default-style, unprotected, non-hyperlinked tail spaces (then unavailable to copy), except where needed for cursor insertion; styled, protected and hyperlinked blanks remain retained. A default-style erase produces non-meaningful capacity, while visibly styled erase produces meaningful blanks. The approved [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) exception does not globally reclassify blanks: only Windows ConPTY live-primary style-only tail overflow may be clipped to producer geometry, preserving target-row attributes but not promising discarded overflow for widening, copy or selection. History/non-ConPTY retain the full rule; concealed source text is not disposable blank capacity.
 - **Synonyms:** content blank, retained blank
 - **Relationships:**
   - belongs to Logical Line
@@ -586,7 +586,7 @@ Project domain concepts and terminology.
   - references Wide Cell
 
 ### Primary Height Resize Policy
-- **Definition:** A main-screen resize policy that keeps the live bottom and cursor anchored, moves removed top viewport rows into scrollback when shrinking, pulls newest history back when growing, and preserves a scrolled-back viewport through its Content Anchor. Simultaneous resize reflows width before selecting the new history/live boundary.
+- **Definition:** A main-screen resize policy that keeps the live bottom and cursor anchored, moves removed top viewport rows into scrollback when shrinking, pulls newest history back when growing, and preserves a scrolled-back viewport through its Content Anchor. Simultaneous resize reflows width before selecting the new history/live boundary. The approved Windows ConPTY live-primary producer-geometry exception must preserve the existing `PreserveLiveTop` history/live boundary protection rather than projecting history into producer live coordinates; it does not change the full retained-history policy.
 - **Relationships:**
   - belongs to Screen Resize
   - references Content Anchor

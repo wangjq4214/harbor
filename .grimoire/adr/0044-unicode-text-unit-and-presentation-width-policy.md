@@ -1,6 +1,6 @@
 # Unicode text unit and presentation-width policy
 
-**Status:** Implementing
+**Status:** Completed
 **Date:** 2026-09-26
 
 ## Context

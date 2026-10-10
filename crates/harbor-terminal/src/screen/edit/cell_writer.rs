@@ -399,6 +399,7 @@ impl CellWriter {
             fg: pen_state.pen.fg,
             bg: pen_state.pen.bg,
             attrs: pen_state.pen.attrs,
+            underline_color: pen_state.pen.underline_color,
             protected: pen_state.pen.protected,
             hyperlink: pen_state.active_hyperlink,
         };
@@ -417,6 +418,7 @@ impl CellWriter {
                     fg: pen_state.pen.fg,
                     bg: pen_state.pen.bg,
                     attrs: pen_state.pen.attrs,
+                    underline_color: pen_state.pen.underline_color,
                     protected: pen_state.pen.protected,
                     hyperlink: pen_state.active_hyperlink,
                 },
