@@ -185,6 +185,8 @@ Prioritize bounded slices for:
 
 Each slice needs malformed/fragmented input, reset, bounds, exact reply/input bytes where applicable, and a named application workload. Existing replies, OSC metadata, focus, mouse, IME, and synchronized output need continued regression/runtime evidence, not reimplementation.
 
+The OSC 4/104 indexed palette slice is implemented with scoped native Windows probe and retained GPU evidence in [palette acceptance](osc-palette-acceptance.md). This does not complete N11's other slices or establish WSL/SSH/tmux acceptance.
+
 ### N12 — Kitty Graphics
 
 First verify APC transport and application interoperability through the same target ConPTY paths. Treat graphics as a separate protocol/resource/rendering project, not an extra parser dispatch case.

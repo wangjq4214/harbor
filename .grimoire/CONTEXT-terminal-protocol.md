@@ -229,6 +229,16 @@
   - references TOML User Settings
   - references Windows Acrylic Backdrop
 
+### OSC Indexed Palette Policy
+- **Definition:** The approved, not-yet-implemented OSC 4/104 contract for a session-owned palette of exactly 256 indexed colors. Primary/alternate buffers share the active palette, sessions remain isolated, and ANSI named/bright colors resolve through their matching indexed slots. Sets preserve alpha; explicit resets restore startup RGBA without resetting OSC default colors or selection. Whole malformed requests are ignored before any mutation or reply; valid operations execute in order. RIS, DECSTR, and SGR reset preserve the palette. See [ADR 0053](./adr/0053-bounded-session-osc-palette-policy.md) for the bounded syntax and compatibility decisions.
+- **Synonyms:** Dynamic indexed colors, OSC 4/104 palette
+- **Relationships:**
+  - belongs to Terminal
+  - depends on TerminalReply
+  - depends on Parser Retention Limits
+  - references OSC Default Color Policy
+  - references TOML User Settings
+
 ### OSC 133 Shell-Integration Metadata
 - **Definition:** A bounded, host-visible representation of OSC 133 semantic prompt markers (`A` Prompt Start, `B` Prompt End, `C` Command Executed, `D` Command Finished with optional integer exit code), stored per terminal tab as optional structured metadata without UI chrome or PTY injection. Unknown subcommands are safely consumed and ignored. Empty OSC 133 and RIS reset the metadata.
 - **Synonyms:** Shell integration markers, FinalTerm semantic markers, FTCS markers

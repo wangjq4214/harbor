@@ -734,3 +734,117 @@ fn gpu_conceal_overline_readback_dirty_removal_and_reprojection() {
         "PASS: T0002 GPU overline/space/wide/color/scissor, dirty conceal/off removal, resize/palette/DPI reprojection, base/suffix/isolated glyph suppression and reveal"
     );
 }
+
+#[test]
+fn gpu_osc_palette_retained_layers_recolor_and_replay() {
+    use crate::{Terminal, TerminalAppearance};
+    use std::time::Instant;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        compatible_surface: None,
+        ..Default::default()
+    })) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            eprintln!("BLOCKED: OSC palette GPU adapter: {error}");
+            return;
+        }
+    };
+    eprintln!("OSC palette GPU adapter: {:?}", adapter.get_info());
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let fonts = harbor_text::load_system_fonts(&harbor_config::FontSettings::default()).unwrap();
+    let mut terminal = Terminal::new_headless_with_appearance(
+        6,
+        8,
+        TerminalAppearance::from_palette(Palette {
+            background: harbor_config::Rgba::from_rgb8(0, 0, 0),
+            ..Palette::default()
+        }),
+    );
+    terminal
+        .put_bytes(b"\x1b[?25l\x1b]4;42;#ff0000;43;#00ff00;44;#0000ff;1;#ffff00;15;#00ffff\x07");
+    terminal.put_bytes(b"\x1b[38;5;42mXXX\x1b[2;1H\x1b[0;48;5;43m   \x1b[3;1H\x1b[0;4;58;5;44m   \x1b[4;1H\x1b[0;31mXXX\x1b[5;1H\x1b[0;107m   \x1b[6;1H\x1b[0;48;2;17;34;51m   ");
+    let now = Instant::now();
+    let first = terminal.read_update(now);
+    let mut renderer = crate::render::pipeline::TerminalRenderPipeline::new(
+        gpu,
+        (256, 192),
+        fonts,
+        metrics(),
+        &first,
+    )
+    .unwrap();
+    renderer.sync_viewport(viewport(), false);
+    renderer.prepare(gpu, &first, true);
+    assert!(terminal.acknowledge_update(&first));
+    let before = raster_draw(&device, &queue, |pass| renderer.draw(pass));
+    let row_pixels = |pixels: &[u8], row: usize| -> Vec<[u8; 4]> {
+        (row * 24..(row + 1) * 24)
+            .flat_map(|y| {
+                (0..48).map(move |x| {
+                    pixels[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4]
+                        .try_into()
+                        .unwrap()
+                })
+            })
+            .collect()
+    };
+    for (row, color) in [
+        (0, [255, 0, 0, 255]),
+        (1, [0, 255, 0, 255]),
+        (2, [0, 0, 255, 255]),
+        (3, [255, 255, 0, 255]),
+        (4, [0, 255, 255, 255]),
+        (5, [17, 34, 51, 255]),
+    ] {
+        assert!(
+            row_pixels(&before, row).contains(&color),
+            "initial row {row}"
+        );
+    }
+    let old = terminal.read_update(now);
+    // Read while hidden/skipped: neither reading nor skipping consumes palette damage.
+    terminal
+        .put_bytes(b"\x1b[?2026h\x1b]4;42;#ff00ff;43;#ffaa00;44;#ffffff;1;#8800ff;15;#0088ff\x07");
+    let skipped = terminal.read_update(now);
+    assert!(!skipped.frame_demand.ordinary_present_eligible);
+    assert!(!terminal.acknowledge_update(&old));
+    terminal.put_bytes(b"\x1b[?2026l");
+    let updated = terminal.read_update(now);
+    assert_eq!(first.snapshot.cells, updated.snapshot.cells);
+    renderer.sync_palette(updated.appearance.palette());
+    assert!(renderer.background.is_dirty());
+    assert!(renderer.text.is_dirty());
+    assert!(renderer.decoration.is_dirty());
+    renderer.prepare(gpu, &updated, true);
+    assert!(terminal.acknowledge_update(&updated));
+    let after = raster_draw(&device, &queue, |pass| renderer.draw(pass));
+    for (row, color) in [
+        (0, [255, 0, 255, 255]),
+        (1, [255, 170, 0, 255]),
+        (2, [255, 255, 255, 255]),
+        (3, [136, 0, 255, 255]),
+        (4, [0, 136, 255, 255]),
+    ] {
+        let pixels = row_pixels(&after, row);
+        assert!(pixels.contains(&color), "recolored row {row}");
+        assert_ne!(pixels, row_pixels(&before, row), "retained row {row}");
+    }
+    assert_eq!(
+        row_pixels(&after, 5),
+        row_pixels(&before, 5),
+        "truecolor unchanged"
+    );
+    terminal.put_bytes(b"\x1b]104\x07");
+    let reset = terminal.read_update(now);
+    renderer.prepare(gpu, &reset, true);
+    assert!(terminal.acknowledge_update(&reset));
+    let reset_pixels = raster_draw(&device, &queue, |pass| renderer.draw(pass));
+    assert_ne!(row_pixels(&reset_pixels, 1), row_pixels(&after, 1));
+    assert_eq!(row_pixels(&reset_pixels, 5), row_pixels(&before, 5));
+    eprintln!(
+        "PASS: OSC palette retained foreground/background/underline, ANSI aliases, unchanged semantic cells/truecolor, skipped-frame replay, stale acknowledgement and reset readback"
+    );
+}

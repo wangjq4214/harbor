@@ -21,11 +21,42 @@ impl DefaultColors {
         }
     }
 
-    pub(super) const fn active_palette(self) -> Palette {
+    pub(super) fn indexed(&self, index: u8) -> Rgba {
+        self.active.indexed(index)
+    }
+
+    pub(super) fn set_indexed_rgb(&mut self, index: u8, rgb: [u8; 3]) -> bool {
+        let alpha = self.active.indexed(index).components()[3];
+        self.replace_indexed(
+            index,
+            Rgba::new(
+                rgb[0] as f32 / 255.0,
+                rgb[1] as f32 / 255.0,
+                rgb[2] as f32 / 255.0,
+                alpha,
+            ),
+        )
+    }
+
+    pub(super) fn reset_indexed(&mut self, index: u8) -> bool {
+        self.replace_indexed(index, self.startup.indexed(index))
+    }
+
+    fn replace_indexed(&mut self, index: u8, color: Rgba) -> bool {
+        let target = self.active.indexed_mut(index);
+        if *target == color {
+            false
+        } else {
+            *target = color;
+            true
+        }
+    }
+
+    pub(super) const fn active_palette(&self) -> Palette {
         self.active
     }
 
-    pub(super) const fn get(self, slot: DefaultColorSlot) -> Rgba {
+    pub(super) const fn get(&self, slot: DefaultColorSlot) -> Rgba {
         match slot {
             DefaultColorSlot::Foreground => self.active.foreground,
             DefaultColorSlot::Background => self.active.background,

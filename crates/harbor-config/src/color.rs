@@ -84,6 +84,8 @@ pub struct Palette {
     pub selection: Rgba,
     pub normal: [Rgba; 8],
     pub bright: [Rgba; 8],
+    /// Indexed slots 16-255; ANSI slots live only in `normal`/`bright`.
+    pub extended: [Rgba; 240],
 }
 
 impl Default for Palette {
@@ -113,11 +115,30 @@ impl Default for Palette {
                 Rgba::from_rgb8(0, 255, 255),
                 Rgba::from_rgb8(255, 255, 255),
             ],
+            extended: std::array::from_fn(|index| default_extended_color(index as u8 + 16)),
         }
     }
 }
 
 impl Palette {
+    /// Returns the authoritative indexed entry, including ANSI aliases.
+    pub fn indexed(&self, index: u8) -> Rgba {
+        match index {
+            0..=7 => self.normal[index as usize],
+            8..=15 => self.bright[(index - 8) as usize],
+            _ => self.extended[(index - 16) as usize],
+        }
+    }
+
+    /// Mutates the same slot used by semantic color resolution.
+    pub fn indexed_mut(&mut self, index: u8) -> &mut Rgba {
+        match index {
+            0..=7 => &mut self.normal[index as usize],
+            8..=15 => &mut self.bright[(index - 8) as usize],
+            _ => &mut self.extended[(index - 16) as usize],
+        }
+    }
+
     /// Resolves a foreground/semantic color. [`Color::Default`] means the
     /// configured default foreground; default backgrounds are handled by the
     /// renderer's clear layer using [`Self::background`].
@@ -136,31 +157,24 @@ impl Palette {
                 .copied()
                 .unwrap_or(Rgba::from_rgb8(0, 0, 0))
                 .into(),
-            Color::Indexed(n @ 0..=7) => self.normal[n as usize].into(),
-            Color::Indexed(n @ 8..=15) => self.bright[(n - 8) as usize].into(),
-            Color::Indexed(n @ 16..=231) => {
-                let index = n - 16;
-                let expand = |component: u8| match component {
-                    0 => 0.0,
-                    1 => 95.0 / 255.0,
-                    2 => 135.0 / 255.0,
-                    3 => 175.0 / 255.0,
-                    4 => 215.0 / 255.0,
-                    _ => 1.0,
-                };
-                [
-                    expand(index / 36),
-                    expand((index % 36) / 6),
-                    expand(index % 6),
-                    1.0,
-                ]
-            }
-            Color::Indexed(n) => {
-                let value = (8 + (n - 232) * 10) as f32 / 255.0;
-                [value, value, value, 1.0]
-            }
+            Color::Indexed(n) => self.indexed(n).into(),
             Color::Rgb(red, green, blue) => Rgba::from_rgb8(red, green, blue).into(),
         }
+    }
+}
+
+fn default_extended_color(index: u8) -> Rgba {
+    if index < 232 {
+        let index = index - 16;
+        let levels = [0, 95, 135, 175, 215, 255];
+        Rgba::from_rgb8(
+            levels[(index / 36) as usize],
+            levels[((index % 36) / 6) as usize],
+            levels[(index % 6) as usize],
+        )
+    } else {
+        let value = 8 + (index - 232) * 10;
+        Rgba::from_rgb8(value, value, value)
     }
 }
 
