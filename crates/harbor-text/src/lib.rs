@@ -9,6 +9,7 @@ pub mod contracts;
 pub mod font;
 mod lifecycle;
 pub mod metrics;
+pub mod presentation;
 
 pub use atlas::{AtlasGlyph, AtlasUv, GlyphAtlas, GlyphBitmapBounds, RasterizeResult};
 pub use contracts::{
@@ -16,3 +17,4 @@ pub use contracts::{
 };
 pub use font::{FontBook, load_system_fonts, load_system_ui_fonts};
 pub use metrics::{FontMetrics, TextMetrics};
+pub use presentation::*;

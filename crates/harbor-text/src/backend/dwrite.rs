@@ -39,6 +39,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::core::{BOOL, ComObjectInner as _, Interface, implement};
 
+mod sequence;
 use crate::atlas::GlyphBitmapBounds;
 use crate::contracts::{
     FaceId, FontSize, FontStyle, GlyphId, GlyphKey, GlyphResolution, ResolutionKey,
@@ -239,10 +240,30 @@ pub(crate) struct DwriteState {
     session: Rc<DirectWriteSession>,
     resolver: GlyphResolver,
     rasterizer: GlyphRasterizer,
+    sequence: RefCell<sequence::SequencePresenter>,
     primary_metrics: FontMetrics,
 }
 
 impl DwriteState {
+    pub(crate) fn present_sequence(
+        &self,
+        request: &crate::SequenceRequest,
+    ) -> std::sync::Arc<crate::SequencePresentation> {
+        self.sequence.borrow_mut().present(&self.session, request)
+    }
+    pub(crate) fn presentation_generation(&self) -> crate::PresentationGeneration {
+        self.sequence.borrow().generation()
+    }
+    pub(crate) fn invalidate_presentations(&self) {
+        self.sequence.borrow_mut().invalidate();
+    }
+    pub(crate) fn sequence_cache_stats(&self) -> crate::SequenceCacheStats {
+        self.sequence.borrow().stats()
+    }
+    pub(crate) fn sequence_capabilities(&self) -> crate::SequenceCapabilities {
+        self.sequence.borrow_mut().capabilities(&self.session)
+    }
+
     fn from_session(session: DirectWriteSession, primary_metrics: FontMetrics) -> Self {
         let session = Rc::new(session);
         let faces = Rc::clone(&session.faces);
@@ -261,6 +282,7 @@ impl DwriteState {
             session,
             resolver,
             rasterizer,
+            sequence: RefCell::new(sequence::SequencePresenter::new()),
             primary_metrics,
         }
     }
