@@ -18,6 +18,8 @@ pub struct TerminalRenderPipeline {
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
     palette: Palette,
+    font_settings: harbor_config::FontSettings,
+    raster_scale: f32,
 }
 
 impl TerminalRenderPipeline {
@@ -27,6 +29,17 @@ impl TerminalRenderPipeline {
         font_book: FontBook,
         metrics: TextMetrics,
         update: &TerminalUpdate,
+    ) -> anyhow::Result<Self> {
+        Self::new_at_scale(gpu, initial_surface_size, font_book, metrics, update, 1.0)
+    }
+
+    fn new_at_scale(
+        gpu: TerminalGpuAccess<'_>,
+        initial_surface_size: (u32, u32),
+        font_book: FontBook,
+        metrics: TextMetrics,
+        update: &TerminalUpdate,
+        raster_scale: f32,
     ) -> anyhow::Result<Self> {
         let snap = &update.snapshot;
         let palette = update.appearance.palette();
@@ -53,7 +66,16 @@ impl TerminalRenderPipeline {
             tint,
             palette,
         );
-        let text = Text::new(gpu, font_book, metrics, snap, &viewport, palette)?;
+        let font_settings = font_book.settings().clone();
+        let text = Text::new_at_scale(
+            gpu,
+            font_book,
+            metrics,
+            snap,
+            &viewport,
+            palette,
+            raster_scale,
+        )?;
         let decoration = Decoration::new(
             gpu,
             Arc::clone(&colored_quad_pipeline),
@@ -75,8 +97,67 @@ impl TerminalRenderPipeline {
             cursor,
             scrollbar,
             palette,
+            font_settings,
+            raster_scale,
         })
     }
+    /// Prepare a replacement projection before committing a font/fallback session.
+    /// Host settings hot reload is deliberately not introduced here.
+    pub fn replace_fonts(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        fonts: FontBook,
+        update: &TerminalUpdate,
+    ) -> anyhow::Result<()> {
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let mut replacement = Self::new(gpu, self.viewport.surface_size, fonts, metrics, update)?;
+        replacement.sync_raster_scale(gpu, self.raster_scale, update)?;
+        let mut viewport = self.viewport;
+        viewport.cell_width = replacement.metrics().cell_width;
+        viewport.line_height = replacement.metrics().line_height;
+        replacement.sync_viewport(viewport, true);
+        replacement.prepare(gpu, update, false);
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Actual host DPI transition. A new session invalidates scalar resolutions,
+    /// sequence failures/tiles and every metric-dependent layer atomically.
+    pub fn sync_raster_scale(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        scale: f32,
+        update: &TerminalUpdate,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            scale.is_finite() && scale > 0.0 && (96.0 * scale).is_finite(),
+            "invalid terminal raster scale"
+        );
+        if self.raster_scale == scale {
+            return Ok(false);
+        }
+        let mut settings = self.font_settings.clone();
+        settings.size *= scale;
+        let fonts = harbor_text::load_system_fonts(&settings)?;
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let mut replacement = Self::new_at_scale(
+            gpu,
+            self.viewport.surface_size,
+            fonts,
+            metrics,
+            update,
+            scale,
+        )?;
+        replacement.font_settings = self.font_settings.clone();
+        let mut viewport = self.viewport;
+        viewport.cell_width = metrics.cell_width;
+        viewport.line_height = metrics.line_height;
+        replacement.sync_viewport(viewport, true);
+        replacement.prepare(gpu, update, false);
+        *self = replacement;
+        Ok(true)
+    }
+
     pub fn sync_palette(&mut self, palette: Palette) {
         if self.palette == palette {
             return;
@@ -99,6 +180,10 @@ impl TerminalRenderPipeline {
             self.selection.invalidate_projection();
             self.cursor.invalidate_projection();
         }
+    }
+
+    pub fn raster_scale(&self) -> f32 {
+        self.raster_scale
     }
 
     pub fn viewport(&self) -> RenderViewport {

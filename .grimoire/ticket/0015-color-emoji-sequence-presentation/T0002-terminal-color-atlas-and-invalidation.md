@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0020](../../spec/0020-color-emoji-sequence-presentation.md), R1-R7 renderer obligations; [ADR 0054](../../adr/0054-color-emoji-offscreen-presentation.md); [ADR 0045](../../adr/0045-gpu-independent-terminal-core-boundary.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
