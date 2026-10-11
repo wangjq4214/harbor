@@ -332,25 +332,8 @@ impl CursorEngine {
         row_1_based: usize,
         col_1_based: usize,
     ) {
-        self.clear_pending_wrap();
-        if self.modes.origin {
-            let relative_row = row_1_based.saturating_sub(1);
-            let absolute_row = self.scroll_region.top.saturating_add(relative_row);
-            self.cursor.y = absolute_row.clamp(self.scroll_region.top, self.scroll_region.bottom);
-
-            let relative_col = col_1_based.saturating_sub(1);
-            if self.margins.enabled {
-                let absolute_col = self.margins.left.saturating_add(relative_col);
-                self.cursor.x = absolute_col.clamp(self.margins.left, self.margins.right);
-            } else {
-                self.cursor.x = relative_col.min(normal.cols().saturating_sub(1));
-            }
-        } else {
-            let row = row_1_based.saturating_sub(1).min(normal.rows() - 1);
-            let col = col_1_based.saturating_sub(1).min(normal.cols() - 1);
-            self.cursor.y = row;
-            self.cursor.x = col;
-        }
+        self.set_cursor_row(normal, row_1_based);
+        self.set_cursor_col(normal, col_1_based);
     }
 
     pub(crate) fn set_cursor_col(&mut self, normal: &NormalBuf, col_1_based: usize) {

@@ -290,6 +290,42 @@ fn raster_draw(
 }
 
 #[test]
+fn strikethrough_ranges_match_full_slots_for_spaces_wide_conceal_and_inverse() {
+    let snap = snapshot("\x1b[9;31mA 界\x1b[8mB\x1b[28;7;44mC", 2, 8);
+    let mut view = viewport();
+    view.allocation_origin = (7.0, 11.0);
+    let palette = Palette::default();
+    let full = build_strikethrough_vertices(&metrics(), &snap, &view, &palette);
+    for row in 0..snap.rows {
+        for (start_col, end_col) in [(0, 8), (1, 4), (4, 6), (6, 6)] {
+            let mut range = Vec::new();
+            append_strikethrough_range(
+                &metrics(),
+                &snap,
+                &view,
+                &palette,
+                &DirtyRange {
+                    row,
+                    start_col,
+                    end_col,
+                },
+                &mut range,
+            );
+            let start = (row * snap.cols + start_col) * 6;
+            let end = (row * snap.cols + end_col) * 6;
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&range),
+                bytemuck::cast_slice::<_, u8>(&full[start..end])
+            );
+        }
+    }
+    for col in [1, 3, 4] {
+        assert!(rects(&full[col * 6..(col + 1) * 6]).is_empty());
+    }
+    assert_eq!(full[5 * 6].color, palette.resolve(Color::Named(4)));
+}
+
+#[test]
 fn gpu_modern_underline_styles_readback_and_incremental_reprojection() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

@@ -15,14 +15,14 @@ use crate::{
 };
 use std::time::Instant;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct HyperlinkPress {
     cell: GenPos,
     hyperlink: crate::model::HyperlinkId,
     pressed_cell: crate::Cell,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 enum ActivePointer {
     Selection {
         pointer_id: u64,
@@ -35,9 +35,9 @@ enum ActivePointer {
 }
 
 impl ActivePointer {
-    fn pointer_id(self) -> u64 {
+    fn pointer_id(&self) -> u64 {
         match self {
-            Self::Selection { pointer_id, .. } | Self::Scrollbar { pointer_id, .. } => pointer_id,
+            Self::Selection { pointer_id, .. } | Self::Scrollbar { pointer_id, .. } => *pointer_id,
         }
     }
 }
@@ -298,20 +298,20 @@ impl PointerInteraction {
         self.pending_release = self
             .active
             .take()
-            .map(ActivePointer::pointer_id)
+            .map(|active| active.pointer_id())
             .or(self.pending_release);
     }
 
     fn consume_release_sources(&mut self) -> Option<u64> {
         self.active
             .take()
-            .map(ActivePointer::pointer_id)
+            .map(|active| active.pointer_id())
             .or_else(|| self.vt_capture.take())
             .or_else(|| self.pending_release.take())
     }
 
     fn local_interruption(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(ActivePointer::pointer_id);
+        let release_pointer = self.active.take().map(|active| active.pointer_id());
         let redraw = self.selection.cancel() != SelectionOutcome::None;
         TerminalEventOutcome {
             redraw,
@@ -325,7 +325,7 @@ impl PointerInteraction {
         let release_pointer = self
             .active
             .take()
-            .map(ActivePointer::pointer_id)
+            .map(|active| active.pointer_id())
             .or_else(|| self.pending_release.take());
         self.mouse_buttons = 0;
         TerminalEventOutcome {
@@ -443,12 +443,12 @@ impl PointerInteraction {
                 }
             }
             TerminalPointerPhase::Move => {
-                let Some(active) = self.active.clone() else {
+                let Some(active) = self.active.as_ref() else {
                     return TerminalEventOutcome::default();
                 };
                 match active {
                     ActivePointer::Selection { pointer_id, .. }
-                        if pointer_id == event.pointer_id =>
+                        if *pointer_id == event.pointer_id =>
                     {
                         let cell = self.pixel_to_cell(event.position, &snapshot, &viewport);
                         let changed = self.selection.drag_to(cell, &snapshot);
@@ -469,12 +469,12 @@ impl PointerInteraction {
                     ActivePointer::Scrollbar {
                         pointer_id,
                         grab_offset,
-                    } if pointer_id == event.pointer_id => {
+                    } if *pointer_id == event.pointer_id => {
                         let Some(offset) = offset_for_thumb(
                             &snapshot,
                             &viewport,
                             physical_position.1,
-                            grab_offset,
+                            *grab_offset,
                         ) else {
                             return TerminalEventOutcome::default();
                         };
@@ -496,7 +496,7 @@ impl PointerInteraction {
                 let Some(active) = self.active.take() else {
                     return TerminalEventOutcome::default();
                 };
-                if active.clone().pointer_id() != event.pointer_id {
+                if active.pointer_id() != event.pointer_id {
                     self.active = Some(active);
                     return TerminalEventOutcome::default();
                 }
@@ -639,6 +639,113 @@ mod tests {
         pointer_id: u64,
     ) -> TerminalPointerEvent {
         TerminalPointerEvent::new(position, phase, TerminalPointerButton::Left, pointer_id)
+    }
+
+    #[test]
+    fn unrelated_pointer_events_preserve_a_hyperlink_press() {
+        let mut screen = Screen::new(2, 10);
+        screen.open_hyperlink("https://example.test".to_owned(), None);
+        screen.write_char('a');
+        screen.write_char('\u{301}');
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let now = Instant::now();
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Down, 7),
+            now,
+        );
+
+        for phase in [
+            TerminalPointerPhase::Move,
+            TerminalPointerPhase::Up,
+            TerminalPointerPhase::Cancel,
+        ] {
+            let outcome =
+                pointer.handle_pointer(&mut screen, pointer_event((31.0, 1.0), phase, 8), now);
+            assert!(!outcome.redraw);
+            assert_eq!(outcome.release_pointer, None);
+            assert_eq!(outcome.hyperlink_activation, None);
+            assert!(matches!(
+                pointer.active.as_ref(),
+                Some(ActivePointer::Selection {
+                    pointer_id: 7,
+                    hyperlink: Some(_),
+                })
+            ));
+        }
+
+        // A same-cell move must not discard the pending hyperlink either.
+        let moved = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Move, 7),
+            now,
+        );
+        assert!(!moved.redraw);
+        let released = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((1.0, 1.0), TerminalPointerPhase::Up, 7),
+            now,
+        );
+        assert_eq!(released.release_pointer, Some(7));
+        assert_eq!(
+            released.hyperlink_activation.as_deref(),
+            Some("https://example.test")
+        );
+        assert!(!pointer.has_active_pointer());
+    }
+
+    #[test]
+    fn scrollbar_moves_keep_capture_and_only_the_matching_pointer_can_release_it() {
+        let mut screen = Screen::new(2, 10);
+        for _ in 0..10 {
+            screen.newline();
+        }
+        let mut pointer = PointerInteraction::new();
+        let mut viewport = viewport();
+        viewport.allocation_size = (100, 100);
+        pointer.set_viewport(viewport);
+        pointer.active = Some(ActivePointer::Scrollbar {
+            pointer_id: 7,
+            grab_offset: 3.0,
+        });
+        let now = Instant::now();
+        let moved = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((99.0, 3.0), TerminalPointerPhase::Move, 7),
+            now,
+        );
+        assert!(moved.redraw);
+        assert_eq!(screen.view_offset(), screen.scroll_count());
+        assert_eq!(
+            pointer.active,
+            Some(ActivePointer::Scrollbar {
+                pointer_id: 7,
+                grab_offset: 3.0,
+            })
+        );
+
+        for phase in [
+            TerminalPointerPhase::Move,
+            TerminalPointerPhase::Up,
+            TerminalPointerPhase::Cancel,
+        ] {
+            let outcome =
+                pointer.handle_pointer(&mut screen, pointer_event((99.0, 100.0), phase, 8), now);
+            assert!(!outcome.redraw);
+            assert_eq!(outcome.release_pointer, None);
+            assert_eq!(screen.view_offset(), screen.scroll_count());
+            assert!(pointer.has_active_pointer());
+        }
+
+        let cancelled = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((99.0, 100.0), TerminalPointerPhase::Cancel, 7),
+            now,
+        );
+        assert!(cancelled.redraw);
+        assert_eq!(cancelled.release_pointer, Some(7));
+        assert!(!pointer.has_active_pointer());
     }
 
     #[test]

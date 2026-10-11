@@ -296,15 +296,6 @@ impl PenState {
                 .expect("index is bounded by params.len()");
             let n = params.get_or(i, 0);
             match n {
-                0 => {
-                    self.pen.fg = Color::Default;
-                    self.pen.bg = Color::Default;
-                    self.pen.attrs = CellAttrs::default();
-                    self.pen.underline_color = Color::Default;
-                }
-                1 => self.pen.attrs.set(CellAttrs::BOLD),
-                2 => self.pen.attrs.set(CellAttrs::DIM),
-                3 => self.pen.attrs.set(CellAttrs::ITALIC),
                 4 => {
                     let style = if sub_params_len == 1 {
                         Some(UnderlineStyle::Single)
@@ -319,20 +310,6 @@ impl PenState {
                         self.pen.attrs.set_underline_style(style);
                     }
                 }
-                21 => self.pen.attrs.set_underline_style(UnderlineStyle::Double),
-                5 => self.pen.attrs.set(CellAttrs::BLINK),
-                7 => self.pen.attrs.set(CellAttrs::INVERSE),
-                8 => self.pen.attrs.set(CellAttrs::CONCEAL),
-                9 => self.pen.attrs.set(CellAttrs::STRIKETHROUGH),
-                22 => self.pen.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
-                23 => self.pen.attrs.clear(CellAttrs::ITALIC),
-                24 => self.pen.attrs.clear(CellAttrs::UNDERLINE),
-                25 => self.pen.attrs.clear(CellAttrs::BLINK),
-                27 => self.pen.attrs.clear(CellAttrs::INVERSE),
-                28 => self.pen.attrs.clear(CellAttrs::CONCEAL),
-                29 => self.pen.attrs.clear(CellAttrs::STRIKETHROUGH),
-                53 => self.pen.attrs.set(CellAttrs::OVERLINE),
-                55 => self.pen.attrs.clear(CellAttrs::OVERLINE),
                 58 => {
                     let (color, consumed) = underline_color(params, i);
                     if let Some(color) = color {
@@ -340,12 +317,6 @@ impl PenState {
                     }
                     i += consumed;
                 }
-                30..=37 => self.pen.fg = Color::Named((n - 30) as u8),
-                40..=47 => self.pen.bg = Color::Named((n - 40) as u8),
-                39 => self.pen.fg = Color::Default,
-                49 => self.pen.bg = Color::Default,
-                90..=97 => self.pen.fg = Color::Bright((n - 90) as u8),
-                100..=107 => self.pen.bg = Color::Bright((n - 100) as u8),
                 38 | 48 => {
                     let is_fg = n == 38;
                     if sub_params_len > 1 {
@@ -430,8 +401,13 @@ impl PenState {
                         }
                     }
                 }
-                59 => self.pen.underline_color = Color::Default,
-                _ => { /* unknown SGR code — silently ignore */ }
+                _ => crate::model::apply_scalar_sgr(
+                    n,
+                    &mut self.pen.fg,
+                    &mut self.pen.bg,
+                    &mut self.pen.attrs,
+                    &mut self.pen.underline_color,
+                ),
             }
             i += 1;
         }
@@ -538,5 +514,54 @@ pub(crate) fn map_dec_graphics(ch: char) -> char {
         '}' => '\u{00a3}',
         '~' => '\u{00b7}',
         _ => ch,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_sgr_matches_cell_styling_but_preserves_pen_protection_and_hyperlinks() {
+        let hyperlink =
+            crate::model::HyperlinkId::from_nonzero(std::num::NonZeroU32::new(7).unwrap());
+        for code in (0..=110).chain([usize::MAX]) {
+            let mut cell = Cell {
+                fg: Color::Rgb(1, 2, 3),
+                bg: Color::Bright(5),
+                underline_color: Color::Indexed(6),
+                protected: true,
+                hyperlink: Some(hyperlink),
+                ..Cell::default()
+            };
+            cell.attrs.set(CellAttrs::BOLD | CellAttrs::CONCEAL);
+            cell.attrs.set_underline_style(UnderlineStyle::Curly);
+            let mut state = PenState::new(8);
+            state.pen = Pen {
+                fg: cell.fg,
+                bg: cell.bg,
+                attrs: cell.attrs,
+                underline_color: cell.underline_color,
+                protected: cell.protected,
+            };
+            state.active_hyperlink = cell.hyperlink;
+
+            cell.apply_sgr(code);
+            state.set_sgr_slice(&[Some(code)]);
+            assert_eq!(
+                (cell.fg, cell.bg, cell.attrs, cell.underline_color),
+                (
+                    state.pen.fg,
+                    state.pen.bg,
+                    state.pen.attrs,
+                    state.pen.underline_color
+                ),
+                "SGR {code}",
+            );
+            assert!(state.pen.protected, "SGR {code} must not clear DECSCA");
+            assert_eq!(cell.protected, code != 0);
+            assert_eq!(cell.hyperlink, Some(hyperlink));
+            assert_eq!(state.active_hyperlink, Some(hyperlink));
+        }
     }
 }

@@ -30,18 +30,12 @@ pub(super) enum CapabilityValue {
 /// `u8` here is the UTF-8 boolean per issue #80. Note the naming collision
 /// with ncurses terminfo, where lowercase `u8` is user string #8 (a string
 /// capability holding the DA-reply format); do not silently "correct" it.
-pub(super) struct TerminfoCapabilities;
-
-impl TerminfoCapabilities {
-    /// Resolves a capability name to its reply value, or `None` when unsupported.
-    pub(super) fn lookup(name: &[u8]) -> Option<CapabilityValue> {
-        match name {
-            b"TN" => Some(CapabilityValue::Str(b"xterm-256color")),
-            b"RGB" => Some(CapabilityValue::Str(b"8/8/8")),
-            b"u8" => Some(CapabilityValue::Bool),
-            b"Su" => Some(CapabilityValue::Bool),
-            _ => None,
-        }
+fn lookup(name: &[u8]) -> Option<CapabilityValue> {
+    match name {
+        b"TN" => Some(CapabilityValue::Str(b"xterm-256color")),
+        b"RGB" => Some(CapabilityValue::Str(b"8/8/8")),
+        b"u8" | b"Su" => Some(CapabilityValue::Bool),
+        _ => None,
     }
 }
 
@@ -104,47 +98,31 @@ impl XtgettcapRequest {
 /// registry, and frames the reply. An empty or unmatched query yields the
 /// empty failure frame.
 fn build_reply(pt: &[u8]) -> Vec<u8> {
-    let mut entries: Vec<Vec<u8>> = Vec::new();
+    const PREFIX: &[u8] = b"\x1bP1+r";
+    let mut frame = PREFIX.to_vec();
     for segment in pt.split(|&byte| byte == b';') {
-        if let Some(name) = hex_decode(segment)
-            && let Some(value) = TerminfoCapabilities::lookup(&name)
-        {
-            entries.push(encode_entry(&name, &value));
-        }
-    }
-    frame_reply(&entries)
-}
-
-/// Frames the found entries, falling back to the failure frame if the success
-/// frame would exceed the reply cap.
-fn frame_reply(entries: &[Vec<u8>]) -> Vec<u8> {
-    if entries.is_empty() {
-        return failure_frame();
-    }
-    let frame = success_frame(entries);
-    if frame.len() <= MAX_REPLY {
-        frame
-    } else {
-        failure_frame()
-    }
-}
-
-fn encode_entry(name: &[u8], value: &CapabilityValue) -> Vec<u8> {
-    let mut out = hex_encode(name);
-    if let CapabilityValue::Str(value) = value {
-        out.push(b'=');
-        out.extend_from_slice(&hex_encode(value));
-    }
-    out
-}
-
-fn success_frame(entries: &[Vec<u8>]) -> Vec<u8> {
-    let mut frame = b"\x1bP1+r".to_vec();
-    for (index, entry) in entries.iter().enumerate() {
-        if index > 0 {
+        let Some(name) = hex_decode(segment) else {
+            continue;
+        };
+        let Some(value) = lookup(&name) else {
+            continue;
+        };
+        if frame.len() > PREFIX.len() {
             frame.push(b';');
         }
-        frame.extend_from_slice(entry);
+        append_hex(&mut frame, &name);
+        if let CapabilityValue::Str(value) = value {
+            frame.push(b'=');
+            append_hex(&mut frame, value);
+        }
+        // Later names cannot make a growing reply fit. Drop the whole reply,
+        // not an accepted prefix, accounting for the two-byte ST terminator.
+        if frame.len() + 2 > MAX_REPLY {
+            return failure_frame();
+        }
+    }
+    if frame.len() == PREFIX.len() {
+        return failure_frame();
     }
     frame.extend_from_slice(b"\x1b\\");
     frame
@@ -156,13 +134,11 @@ fn failure_frame() -> Vec<u8> {
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
-fn hex_encode(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len() * 2);
+fn append_hex(out: &mut Vec<u8>, bytes: &[u8]) {
     for &byte in bytes {
         out.push(HEX[(byte >> 4) as usize]);
         out.push(HEX[(byte & 0x0f) as usize]);
     }
-    out
 }
 
 /// Decodes uppercase or lowercase hex pairs; rejects odd length and
@@ -212,36 +188,28 @@ mod tests {
 
     #[test]
     fn registry_resolves_only_evidence_backed_capabilities() {
-        assert_eq!(
-            TerminfoCapabilities::lookup(b"TN"),
-            Some(CapabilityValue::Str(b"xterm-256color"))
-        );
-        assert_eq!(
-            TerminfoCapabilities::lookup(b"RGB"),
-            Some(CapabilityValue::Str(b"8/8/8"))
-        );
-        assert_eq!(
-            TerminfoCapabilities::lookup(b"u8"),
-            Some(CapabilityValue::Bool)
-        );
-        assert_eq!(
-            TerminfoCapabilities::lookup(b"Su"),
-            Some(CapabilityValue::Bool)
-        );
-        assert_eq!(TerminfoCapabilities::lookup(b"su"), None);
-        assert_eq!(TerminfoCapabilities::lookup(b"xx"), None);
-        assert_eq!(TerminfoCapabilities::lookup(b""), None);
+        assert_eq!(lookup(b"TN"), Some(CapabilityValue::Str(b"xterm-256color")));
+        assert_eq!(lookup(b"RGB"), Some(CapabilityValue::Str(b"8/8/8")));
+        assert_eq!(lookup(b"u8"), Some(CapabilityValue::Bool));
+        assert_eq!(lookup(b"Su"), Some(CapabilityValue::Bool));
+        assert_eq!(lookup(b"su"), None);
+        assert_eq!(lookup(b"xx"), None);
+        assert_eq!(lookup(b""), None);
     }
 
     #[test]
-    fn hex_encode_uses_uppercase_digits() {
-        assert_eq!(hex_encode(b"TN"), b"544E");
-        assert_eq!(hex_encode(b"RGB"), b"524742");
-        assert_eq!(hex_encode(b"8/8/8"), b"382F382F38");
-        assert_eq!(
-            hex_encode(b"xterm-256color"),
-            b"787465726D2D323536636F6C6F72"
-        );
+    fn append_hex_uses_uppercase_digits_and_preserves_prefix() {
+        for (bytes, expected) in [
+            (b"TN".as_slice(), b"544E".as_slice()),
+            (b"RGB", b"524742"),
+            (b"8/8/8", b"382F382F38"),
+            (b"xterm-256color", b"787465726D2D323536636F6C6F72"),
+        ] {
+            let mut out = b"prefix".to_vec();
+            append_hex(&mut out, bytes);
+            assert_eq!(&out[..6], b"prefix");
+            assert_eq!(&out[6..], expected);
+        }
     }
 
     #[test]
@@ -337,10 +305,10 @@ mod tests {
     }
 
     #[test]
-    fn frame_reply_falls_back_when_success_frame_exceeds_reply_cap() {
-        let oversized = vec![b'x'; MAX_REPLY];
-        assert!(success_frame(&[oversized]).len() > MAX_REPLY);
-        assert_eq!(frame_reply(&[vec![b'x'; MAX_REPLY]]), b"\x1bP0+r\x1b\\");
+    fn reply_falls_back_when_supported_entries_exceed_reply_cap() {
+        let payload = [b"544E".as_slice(); 8].join(&b';');
+        assert!(payload.len() <= MAX_PT);
+        assert_eq!(queued_reply(&payload), failure_frame());
     }
 
     #[test]
@@ -422,24 +390,50 @@ mod tests {
 
     #[test]
     fn should_accept_frame_at_exact_reply_cap() {
-        // Arrange — an entry sized so the framed reply lands exactly on MAX_REPLY.
-        let at_cap = vec![b'x'; MAX_REPLY - b"\x1bP1+r\x1b\\".len()];
-        assert_eq!(
-            success_frame(std::slice::from_ref(&at_cap)).len(),
-            MAX_REPLY
-        );
-
-        // Act — frame exactly at the cap, and one byte past it.
-        let accepted = frame_reply(&[at_cap]);
-        let one_past = frame_reply(&[vec![b'x'; MAX_REPLY - b"\x1bP1+r\x1b\\".len() + 1]]);
-
-        // Assert — the cap is inclusive; one byte past falls back to failure.
+        // 50 four-byte boolean entries plus separators and framing = 256 bytes.
+        let at_cap = [b"7538".as_slice(); 50].join(&b';');
+        let mut one_past = at_cap.clone();
+        one_past.push(b';'); // malformed/empty trailing names add no reply bytes
+        assert!(one_past.len() <= MAX_PT);
+        let accepted = queued_reply(&one_past);
         assert_eq!(accepted.len(), MAX_REPLY);
         assert!(accepted.starts_with(b"\x1bP1+r"));
         assert!(accepted.ends_with(b"\x1b\\"));
-        assert_eq!(one_past, failure_frame());
+
+        // 33 booleans, one RGB and two TN entries frame to exactly 257 bytes.
+        let mut over_cap = vec![b"7538".as_slice(); 33];
+        over_cap.extend([b"524742".as_slice(), b"544E", b"544E"]);
+        let payload = over_cap.join(&b';');
+        assert!(payload.len() <= MAX_PT);
+        assert_eq!(queued_reply(&payload), failure_frame());
     }
 
+    proptest::proptest! {
+        #[test]
+        fn replies_match_ordered_entries_with_duplicates_and_malformed_names(
+            choices in proptest::collection::vec(0usize..9, 0..=32)
+        ) {
+            let names: [&[u8]; 9] = [
+                b"544E", b"544e", b"524742", b"7538", b"5375",
+                b"544", b"Z4", b"", b"7878",
+            ];
+            let entries: [&[u8]; 5] = [
+                b"544E=787465726D2D323536636F6C6F72",
+                b"544E=787465726D2D323536636F6C6F72",
+                b"524742=382F382F38", b"7538", b"5375",
+            ];
+            let payload = choices.iter().map(|&i| names[i]).collect::<Vec<_>>().join(&b';');
+            let found = choices.iter().filter_map(|&i| entries.get(i).copied()).collect::<Vec<_>>();
+            let mut expected = b"\x1bP1+r".to_vec();
+            expected.extend(found.join(&b';'));
+            expected.extend_from_slice(b"\x1b\\");
+            if found.is_empty() || expected.len() > MAX_REPLY {
+                expected = b"\x1bP0+r\x1b\\".to_vec();
+            }
+            proptest::prop_assert!(payload.len() <= MAX_PT);
+            proptest::prop_assert_eq!(queued_reply(&payload), expected);
+        }
+    }
     #[test]
     fn hex_decode_accepts_lowercase_digits() {
         assert_eq!(hex_decode(b"544e"), Some(b"TN".to_vec()));

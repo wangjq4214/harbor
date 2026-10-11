@@ -216,40 +216,15 @@ impl Cell {
     /// Applies a single SGR (Select Graphic Rendition) code to this cell,
     /// mutating foreground, background, attributes, and protection in place.
     pub fn apply_sgr(&mut self, code: usize) {
-        match code {
-            0 => {
-                self.fg = Color::Default;
-                self.bg = Color::Default;
-                self.attrs = CellAttrs::default();
-                self.underline_color = Color::Default;
-                self.protected = false;
-            }
-            1 => self.attrs.set(CellAttrs::BOLD),
-            2 => self.attrs.set(CellAttrs::DIM),
-            3 => self.attrs.set(CellAttrs::ITALIC),
-            4 => self.attrs.set(CellAttrs::UNDERLINE),
-            5 => self.attrs.set(CellAttrs::BLINK),
-            7 => self.attrs.set(CellAttrs::INVERSE),
-            8 => self.attrs.set(CellAttrs::CONCEAL),
-            9 => self.attrs.set(CellAttrs::STRIKETHROUGH),
-            21 => self.attrs.set_underline_style(UnderlineStyle::Double),
-            22 => self.attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
-            23 => self.attrs.clear(CellAttrs::ITALIC),
-            24 => self.attrs.clear(CellAttrs::UNDERLINE),
-            25 => self.attrs.clear(CellAttrs::BLINK),
-            27 => self.attrs.clear(CellAttrs::INVERSE),
-            28 => self.attrs.clear(CellAttrs::CONCEAL),
-            29 => self.attrs.clear(CellAttrs::STRIKETHROUGH),
-            30..=37 => self.fg = Color::Named((code - 30) as u8),
-            40..=47 => self.bg = Color::Named((code - 40) as u8),
-            39 => self.fg = Color::Default,
-            49 => self.bg = Color::Default,
-            53 => self.attrs.set(CellAttrs::OVERLINE),
-            55 => self.attrs.clear(CellAttrs::OVERLINE),
-            59 => self.underline_color = Color::Default,
-            90..=97 => self.fg = Color::Bright((code - 90) as u8),
-            100..=107 => self.bg = Color::Bright((code - 100) as u8),
-            _ => {}
+        apply_scalar_sgr(
+            code,
+            &mut self.fg,
+            &mut self.bg,
+            &mut self.attrs,
+            &mut self.underline_color,
+        );
+        if code == 0 {
+            self.protected = false;
         }
     }
 
@@ -267,6 +242,51 @@ impl Cell {
             9 => self.attrs.toggle(CellAttrs::STRIKETHROUGH),
             _ => {}
         }
+    }
+}
+
+/// Applies one scalar SGR styling code, without changing protection or hyperlink lifetime.
+/// Parameter-list forms (styled underlines and extended colors) remain parser-owned.
+pub(crate) fn apply_scalar_sgr(
+    code: usize,
+    fg: &mut Color,
+    bg: &mut Color,
+    attrs: &mut CellAttrs,
+    underline_color: &mut Color,
+) {
+    match code {
+        0 => {
+            *fg = Color::Default;
+            *bg = Color::Default;
+            *attrs = CellAttrs::default();
+            *underline_color = Color::Default;
+        }
+        1 => attrs.set(CellAttrs::BOLD),
+        2 => attrs.set(CellAttrs::DIM),
+        3 => attrs.set(CellAttrs::ITALIC),
+        4 => attrs.set(CellAttrs::UNDERLINE),
+        5 => attrs.set(CellAttrs::BLINK),
+        7 => attrs.set(CellAttrs::INVERSE),
+        8 => attrs.set(CellAttrs::CONCEAL),
+        9 => attrs.set(CellAttrs::STRIKETHROUGH),
+        21 => attrs.set_underline_style(UnderlineStyle::Double),
+        22 => attrs.clear(CellAttrs::BOLD | CellAttrs::DIM),
+        23 => attrs.clear(CellAttrs::ITALIC),
+        24 => attrs.clear(CellAttrs::UNDERLINE),
+        25 => attrs.clear(CellAttrs::BLINK),
+        27 => attrs.clear(CellAttrs::INVERSE),
+        28 => attrs.clear(CellAttrs::CONCEAL),
+        29 => attrs.clear(CellAttrs::STRIKETHROUGH),
+        30..=37 => *fg = Color::Named((code - 30) as u8),
+        40..=47 => *bg = Color::Named((code - 40) as u8),
+        39 => *fg = Color::Default,
+        49 => *bg = Color::Default,
+        53 => attrs.set(CellAttrs::OVERLINE),
+        55 => attrs.clear(CellAttrs::OVERLINE),
+        59 => *underline_color = Color::Default,
+        90..=97 => *fg = Color::Bright((code - 90) as u8),
+        100..=107 => *bg = Color::Bright((code - 100) as u8),
+        _ => {}
     }
 }
 
@@ -448,7 +468,7 @@ pub enum AltScreenAction {
 /// Single-line text (with or without trailing newlines) and text that becomes
 /// empty after trimming are not multi-line.
 pub fn should_confirm_multiline(text: &str) -> bool {
-    let trimmed = trim_trailing_newlines(text);
+    let trimmed = text.trim_end_matches(['\r', '\n']);
     trimmed.contains('\n') || trimmed.contains('\r')
 }
 
@@ -474,12 +494,6 @@ pub fn safe_preview_line(line: &str) -> String {
         }
     }
     out
-}
-
-/// Trims any trailing newline sequences (`\r\n`, `\n`, `\r`) from the input,
-/// returning the remaining prefix.
-fn trim_trailing_newlines(text: &str) -> &str {
-    text.trim_end_matches(['\r', '\n'])
 }
 
 // ── Terminal worker contract ────────────────────────────────────────────────

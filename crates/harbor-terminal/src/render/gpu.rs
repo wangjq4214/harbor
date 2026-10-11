@@ -49,35 +49,21 @@ impl UploadPolicy {
         });
         let dirty_bytes = dirty_cells.saturating_mul(bytes_per_cell);
         let full_bytes = rows.saturating_mul(cols).saturating_mul(bytes_per_cell);
-        if force_full {
-            return UploadPlan {
-                mode: UploadMode::Full,
-                dirty_range_count: dirty_ranges.len(),
-                dirty_cells,
-                dirty_bytes,
-                full_bytes,
-            };
-        }
-        if dirty_ranges.is_empty() {
-            return UploadPlan {
-                mode: UploadMode::None,
-                dirty_range_count: 0,
-                dirty_cells,
-                dirty_bytes,
-                full_bytes,
-            };
-        }
-        let ratio = if full_bytes == 0 {
-            1.0
-        } else {
-            dirty_bytes as f64 / full_bytes as f64
-        };
-        let mode = if ratio >= self.full_upload_ratio
-            || dirty_ranges.len() > self.max_incremental_ranges
-        {
+        let mode = if force_full {
             UploadMode::Full
+        } else if dirty_ranges.is_empty() {
+            UploadMode::None
         } else {
-            UploadMode::Incremental
+            let ratio = if full_bytes == 0 {
+                1.0
+            } else {
+                dirty_bytes as f64 / full_bytes as f64
+            };
+            if ratio >= self.full_upload_ratio || dirty_ranges.len() > self.max_incremental_ranges {
+                UploadMode::Full
+            } else {
+                UploadMode::Incremental
+            }
         };
         UploadPlan {
             mode,
@@ -159,6 +145,52 @@ mod tests {
         assert_eq!(
             policy.decide(2, 2, 8, &[range(1, 1, 2)], true).mode,
             UploadMode::Full
+        );
+    }
+
+    #[test]
+    fn upload_policy_preserves_empty_zero_sized_and_saturated_accounting() {
+        let policy = UploadPolicy::default();
+        for force_full in [false, true] {
+            assert_eq!(
+                policy.decide(0, 0, 4, &[], force_full),
+                UploadPlan {
+                    mode: if force_full {
+                        UploadMode::Full
+                    } else {
+                        UploadMode::None
+                    },
+                    dirty_range_count: 0,
+                    dirty_cells: 0,
+                    dirty_bytes: 0,
+                    full_bytes: 0,
+                }
+            );
+        }
+        assert_eq!(
+            policy.decide(0, 0, 4, &[range(0, 0, 0)], false).mode,
+            UploadMode::Full
+        );
+        assert_eq!(
+            policy.decide(10, 10, 0, &[range(0, 0, 1)], false).mode,
+            UploadMode::Full
+        );
+        let plan = policy.decide(
+            usize::MAX,
+            2,
+            4,
+            &[range(0, 0, usize::MAX), range(1, 0, 2)],
+            false,
+        );
+        assert_eq!(plan.mode, UploadMode::Full);
+        assert_eq!(plan.dirty_range_count, 2);
+        assert_eq!(plan.dirty_cells, usize::MAX);
+        assert_eq!(plan.dirty_bytes, usize::MAX);
+        assert_eq!(plan.full_bytes, usize::MAX);
+        let ranges = vec![range(0, 0, 1); 64];
+        assert_eq!(
+            policy.decide(100, 100, 4, &ranges, false).mode,
+            UploadMode::Incremental
         );
     }
 }
