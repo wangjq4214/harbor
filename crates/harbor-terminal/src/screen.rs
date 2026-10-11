@@ -1453,7 +1453,7 @@ impl Screen {
                     self.request_alt_exit();
                 }
             }
-            1047 => {
+            1047 | 1049 => {
                 if enabled {
                     self.request_alt_enter(true);
                 } else {
@@ -1465,13 +1465,6 @@ impl Screen {
                     self.save_cursor();
                 } else {
                     self.restore_cursor();
-                }
-            }
-            1049 => {
-                if enabled {
-                    self.request_alt_enter(true);
-                } else {
-                    self.request_alt_exit();
                 }
             }
             SynchronizedOutput::MODE => {

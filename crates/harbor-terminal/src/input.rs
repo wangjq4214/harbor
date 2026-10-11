@@ -106,16 +106,18 @@ fn encode_key(
         });
     }
 
-    match key {
-        TerminalKey::Tab => Some(if modifiers.shift {
-            b"\x1b[Z".to_vec()
-        } else {
-            b"\t".to_vec()
-        }),
-        TerminalKey::Enter => Some(b"\r".to_vec()),
-        TerminalKey::Space => Some(b" ".to_vec()),
-        TerminalKey::Escape => Some(b"\x1b".to_vec()),
-        TerminalKey::Backspace => Some(b"\x7f".to_vec()),
+    Some(match key {
+        TerminalKey::Tab => {
+            if modifiers.shift {
+                b"\x1b[Z".to_vec()
+            } else {
+                b"\t".to_vec()
+            }
+        }
+        TerminalKey::Enter => b"\r".to_vec(),
+        TerminalKey::Space => b" ".to_vec(),
+        TerminalKey::Escape => b"\x1b".to_vec(),
+        TerminalKey::Backspace => b"\x7f".to_vec(),
         TerminalKey::Insert => csi_tilde("2", modifier_code),
         TerminalKey::Delete => csi_tilde("3", modifier_code),
         TerminalKey::F1 => cursor_key(b'P', true, modifier_code),
@@ -138,7 +140,7 @@ fn encode_key(
         TerminalKey::ArrowLeft => cursor_key(b'D', modes.application_cursor, modifier_code),
         TerminalKey::Home => cursor_key(b'H', modes.application_cursor, modifier_code),
         TerminalKey::End => cursor_key(b'F', modes.application_cursor, modifier_code),
-        TerminalKey::Character('\0') => None,
+        TerminalKey::Character('\0') => return None,
         TerminalKey::Character(character) => {
             let mut bytes = Vec::with_capacity(character.len_utf8() + usize::from(modifiers.alt));
             if modifiers.alt {
@@ -146,12 +148,12 @@ fn encode_key(
             }
             let mut text = [0; 4];
             bytes.extend_from_slice(character.encode_utf8(&mut text).as_bytes());
-            Some(bytes)
+            bytes
         }
         TerminalKey::NumpadCharacter(_) | TerminalKey::NumpadEnter => {
             unreachable!("numpad keys normalized above")
         }
-    }
+    })
 }
 
 fn mouse_modifier_code(modifiers: TerminalModifiers) -> u8 {
@@ -205,23 +207,23 @@ fn keypad_sequence(key: TerminalKey) -> Option<&'static [u8]> {
     }
 }
 
-fn cursor_key(suffix: u8, application_cursor: bool, modifier_code: u8) -> Option<Vec<u8>> {
+fn cursor_key(suffix: u8, application_cursor: bool, modifier_code: u8) -> Vec<u8> {
     if modifier_code > 1 {
-        Some(format!("\x1b[1;{}{}", modifier_code, suffix as char).into_bytes())
+        format!("\x1b[1;{}{}", modifier_code, suffix as char).into_bytes()
     } else {
-        Some(vec![
+        vec![
             b'\x1b',
             if application_cursor { b'O' } else { b'[' },
             suffix,
-        ])
+        ]
     }
 }
 
-fn csi_tilde(parameter: &str, modifier_code: u8) -> Option<Vec<u8>> {
+fn csi_tilde(parameter: &str, modifier_code: u8) -> Vec<u8> {
     if modifier_code > 1 {
-        Some(format!("\x1b[{parameter};{modifier_code}~").into_bytes())
+        format!("\x1b[{parameter};{modifier_code}~").into_bytes()
     } else {
-        Some(format!("\x1b[{parameter}~").into_bytes())
+        format!("\x1b[{parameter}~").into_bytes()
     }
 }
 

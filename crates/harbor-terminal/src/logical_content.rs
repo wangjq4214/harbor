@@ -88,12 +88,11 @@ pub(crate) fn decode_active(
     normal: &NormalBuf,
     active_count: usize,
 ) -> Result<Vec<LogicalAtom>, DecodeError> {
-    let rows: Vec<_> = normal.retained_rows_bounded(active_count).collect();
     let mut atoms = Vec::new();
     let mut previous: Option<RetainedRow<'_>> = None;
     let mut atom_offset = 0usize;
 
-    for row in rows {
+    for row in normal.retained_rows_bounded(active_count) {
         if let Some(prior) = previous {
             if row.metadata.soft_wrapped {
                 let expected_start = prior
@@ -165,8 +164,6 @@ fn decode_row(
         };
         let meaningful_blank =
             cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
-        let mut normalized_cell = cell;
-        normalized_cell.wide_continuation = false;
         atoms.push(LogicalAtom::Glyph {
             line_id: row.metadata.logical_line_id,
             atom_offset: LogicalAtomOffset(*atom_offset),
@@ -176,7 +173,7 @@ fn decode_row(
                 end_col: col + usize::from(width - 1),
             },
             glyph: LogicalGlyph {
-                cell: normalized_cell,
+                cell,
                 width,
                 meaningful_blank,
                 cell_state: row.cell_state[col],

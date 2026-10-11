@@ -146,7 +146,7 @@ impl CellWriter {
             if cursor.cursor.x < left || cursor.cursor.x > right {
                 return false;
             }
-            if !Self::prepare_position(normal, cursor, pen_state, ch, 1, (left, right)) {
+            if !Self::prepare_position(normal, cursor, pen_state, 1, (left, right)) {
                 return false;
             }
             Self::commit_cell(pen_state, normal, cursor, ch, 1, (left, right));
@@ -155,7 +155,7 @@ impl CellWriter {
                     cell.isolated_mark = true;
                 });
             }
-            Self::advance_cursor(cursor, 1, (left, right));
+            Self::advance_cursor(cursor, 1, right);
             return true;
         }
         let (left_limit, right_limit) = if cursor.margins.enabled {
@@ -165,14 +165,7 @@ impl CellWriter {
         };
 
         // 2. Prepare: handle pending wrap, clamp, and insert-mode shift.
-        if !Self::prepare_position(
-            normal,
-            cursor,
-            pen_state,
-            ch,
-            width,
-            (left_limit, right_limit),
-        ) {
+        if !Self::prepare_position(normal, cursor, pen_state, width, (left_limit, right_limit)) {
             return false;
         };
 
@@ -187,7 +180,7 @@ impl CellWriter {
         );
 
         // 4. Advance cursor and set pending_wrap.
-        Self::advance_cursor(cursor, width, (left_limit, right_limit));
+        Self::advance_cursor(cursor, width, right_limit);
         true
     }
 
@@ -214,7 +207,7 @@ impl CellWriter {
             cursor.cursor.x = col;
             cursor.modes.pending_wrap = false;
             cursor.last_clamped_write = false;
-            if !Self::prepare_position(normal, cursor, pen_state, cell.ch, 2, (left, right)) {
+            if !Self::prepare_position(normal, cursor, pen_state, 2, (left, right)) {
                 return false;
             }
             Self::commit_cell(pen_state, normal, cursor, cell.ch, 2, (left, right));
@@ -227,7 +220,7 @@ impl CellWriter {
             trailing.isolated_mark = false;
             trailing.wide_continuation = true;
             normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x + 1, trailing);
-            Self::advance_cursor(cursor, 2, (left, right));
+            Self::advance_cursor(cursor, 2, right);
         } else {
             if CellOps::wide_range(normal, row, col + 1)
                 .is_some_and(|(_, continuation)| continuation > right)
@@ -250,7 +243,7 @@ impl CellWriter {
             cell.isolated_mark = false;
             cell.wide_continuation = true;
             normal.write_meaningful_cell(row, col + 1, cell);
-            Self::advance_cursor(cursor, 1, (left, right));
+            Self::advance_cursor(cursor, 1, right);
         }
         true
     }
@@ -281,37 +274,22 @@ impl CellWriter {
     }
 
     /// Handles pending autowrap, margin boundary checks, and insert-mode
-    /// shifting. Returns `None` when the write should be suppressed.
+    /// shifting. Returns `false` when the write should be suppressed.
     fn prepare_position(
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         pen_state: &mut PenState,
-        _ch: char,
         width: usize,
         (left_limit, right_limit): (usize, usize),
     ) -> bool {
         // Handle pending wrap if autowrap is on.
         if cursor.modes.autowrap && cursor.modes.pending_wrap {
-            let mut source = normal.live_row_metadata(cursor.cursor.y);
-            let mut source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
-            cursor.carriage_return();
-            if Self::newline_inner(pen_state, normal, cursor) {
-                if !cursor.margins.enabled && cursor.cursor.y > 0 {
-                    let source_row = cursor.cursor.y - 1;
-                    source = normal.live_row_metadata(source_row);
-                    source_atom_count = normal.live_row_logical_atom_count(source_row);
-                }
-                normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
-            }
-            cursor.modes.pending_wrap = false;
+            Self::wrap_line(pen_state, normal, cursor);
         }
 
         // Ignore writes outside active horizontal bounds.
         if cursor.cursor.x < left_limit || cursor.cursor.x > right_limit {
             return false;
-        }
-        if !cursor.modes.autowrap && cursor.cursor.x == right_limit {
-            cursor.cursor.x = right_limit;
         }
 
         // If a wide character cannot fit, wrap only when DECAWM is enabled.
@@ -319,18 +297,7 @@ impl CellWriter {
             if !cursor.modes.autowrap {
                 return false;
             }
-            let mut source = normal.live_row_metadata(cursor.cursor.y);
-            let mut source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
-            cursor.carriage_return();
-            if Self::newline_inner(pen_state, normal, cursor) {
-                if !cursor.margins.enabled && cursor.cursor.y > 0 {
-                    let source_row = cursor.cursor.y - 1;
-                    source = normal.live_row_metadata(source_row);
-                    source_atom_count = normal.live_row_logical_atom_count(source_row);
-                }
-                normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
-            }
-            cursor.modes.pending_wrap = false;
+            Self::wrap_line(pen_state, normal, cursor);
         }
 
         let start_x = cursor.cursor.x;
@@ -353,6 +320,22 @@ impl CellWriter {
         }
 
         true
+    }
+
+    /// Continues the logical line across an autowrap, including region scrolling.
+    fn wrap_line(pen_state: &mut PenState, normal: &mut NormalBuf, cursor: &mut CursorEngine) {
+        let mut source = normal.live_row_metadata(cursor.cursor.y);
+        let mut source_atom_count = normal.live_row_logical_atom_count(cursor.cursor.y);
+        cursor.carriage_return();
+        if Self::newline_inner(pen_state, normal, cursor) {
+            if !cursor.margins.enabled && cursor.cursor.y > 0 {
+                let source_row = cursor.cursor.y - 1;
+                source = normal.live_row_metadata(source_row);
+                source_atom_count = normal.live_row_logical_atom_count(source_row);
+            }
+            normal.continue_logical_line(cursor.cursor.y, source, source_atom_count);
+        }
+        cursor.modes.pending_wrap = false;
     }
 
     /// Clears the target cell(s) and writes the glyph to the grid.
@@ -428,11 +411,7 @@ impl CellWriter {
 
     /// Advances the cursor horizontally and sets `pending_wrap` when the
     /// cursor reaches the right margin with autowrap on.
-    fn advance_cursor(
-        cursor: &mut CursorEngine,
-        width: usize,
-        (_left_limit, right_limit): (usize, usize),
-    ) {
+    fn advance_cursor(cursor: &mut CursorEngine, width: usize, right_limit: usize) {
         cursor.last_clamped_write = !cursor.modes.autowrap && cursor.cursor.x + width > right_limit;
         cursor.cursor.x += width;
         if cursor.cursor.x > right_limit {

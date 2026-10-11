@@ -8,11 +8,14 @@ harbor-config = { workspace = true }
 anyhow = { workspace = true }
 hashbrown = { workspace = true }
 tracing = { workspace = true }
+icu_properties = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true }
+windows = { workspace = true, features = ["Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11"] }
 windows-core = { workspace = true }
+windows-numerics = { workspace = true }
 
 [dev-dependencies]
 unicode-width = { workspace = true }
+image = { workspace = true }
 tracing-subscriber = { workspace = true }

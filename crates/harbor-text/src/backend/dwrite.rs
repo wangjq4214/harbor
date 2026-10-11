@@ -39,6 +39,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::core::{BOOL, ComObjectInner as _, Interface, implement};
 
+mod sequence;
 use crate::atlas::GlyphBitmapBounds;
 use crate::contracts::{
     FaceId, FontSize, FontStyle, GlyphId, GlyphKey, GlyphResolution, ResolutionKey,
@@ -49,11 +50,9 @@ use crate::metrics::FontMetrics;
 const PRIMARY_FACE_ID: FaceId = FaceId::PRIMARY;
 const LOCALE_NAME_MAX: usize = 85;
 
-/// Primary face identity and style metadata for DirectWrite fallback mapping.
+/// Primary family and style metadata for DirectWrite fallback mapping.
 #[derive(Clone)]
 struct PrimaryDescriptor {
-    #[allow(dead_code)]
-    face_id: FaceId,
     family_name: Vec<u16>,
     weight: DWRITE_FONT_WEIGHT,
     style: DWRITE_FONT_STYLE,
@@ -72,7 +71,6 @@ struct FaceFingerprint {
 struct NativeFaceRegistry {
     faces: HashMap<FaceId, IDWriteFontFace>,
     fingerprints: HashMap<FaceFingerprint, FaceId>,
-    next_id: u64,
 }
 
 impl NativeFaceRegistry {
@@ -85,7 +83,6 @@ impl NativeFaceRegistry {
         Ok(Self {
             faces,
             fingerprints,
-            next_id: 1,
         })
     }
 
@@ -94,8 +91,8 @@ impl NativeFaceRegistry {
         if let Some(&id) = self.fingerprints.get(&fingerprint) {
             return Ok(id);
         }
-        let id = FaceId::new(self.next_id);
-        self.next_id += 1;
+        // IDs start at zero and faces are never removed from this session.
+        let id = FaceId::new(self.faces.len() as u64);
         self.fingerprints.insert(fingerprint, id);
         self.faces.insert(id, face);
         Ok(id)
@@ -239,10 +236,30 @@ pub(crate) struct DwriteState {
     session: Rc<DirectWriteSession>,
     resolver: GlyphResolver,
     rasterizer: GlyphRasterizer,
+    sequence: RefCell<sequence::SequencePresenter>,
     primary_metrics: FontMetrics,
 }
 
 impl DwriteState {
+    pub(crate) fn present_sequence(
+        &self,
+        request: &crate::SequenceRequest,
+    ) -> std::sync::Arc<crate::SequencePresentation> {
+        self.sequence.borrow_mut().present(&self.session, request)
+    }
+    pub(crate) fn presentation_generation(&self) -> crate::PresentationGeneration {
+        self.sequence.borrow().generation()
+    }
+    pub(crate) fn invalidate_presentations(&self) {
+        self.sequence.borrow_mut().invalidate();
+    }
+    pub(crate) fn sequence_cache_stats(&self) -> crate::SequenceCacheStats {
+        self.sequence.borrow().stats()
+    }
+    pub(crate) fn sequence_capabilities(&self) -> crate::SequenceCapabilities {
+        self.sequence.borrow_mut().capabilities(&self.session)
+    }
+
     fn from_session(session: DirectWriteSession, primary_metrics: FontMetrics) -> Self {
         let session = Rc::new(session);
         let faces = Rc::clone(&session.faces);
@@ -261,6 +278,7 @@ impl DwriteState {
             session,
             resolver,
             rasterizer,
+            sequence: RefCell::new(sequence::SequencePresenter::new()),
             primary_metrics,
         }
     }
@@ -524,8 +542,7 @@ impl GlyphResolver {
 
 impl GlyphRasterizer {
     pub fn rasterize(&self, key: GlyphKey) -> (GlyphBitmapBounds, Vec<u8>) {
-        let px = key.size.get();
-        match self.rasterize_inner(key, px) {
+        match self.rasterize_inner(key) {
             Ok(result) => result,
             Err(err) => {
                 tracing::error!(
@@ -548,7 +565,8 @@ impl GlyphRasterizer {
         }
     }
 
-    fn rasterize_inner(&self, key: GlyphKey, px: f32) -> Result<(GlyphBitmapBounds, Vec<u8>)> {
+    fn rasterize_inner(&self, key: GlyphKey) -> Result<(GlyphBitmapBounds, Vec<u8>)> {
+        let px = key.size.get();
         let faces = self.faces.borrow();
         let face = faces
             .get(key.face_id)
@@ -584,9 +602,8 @@ impl GlyphRasterizer {
             bidiLevel: 0,
         };
 
-        let base_factory: IDWriteFactory2 = self.factory.cast()?;
         let analysis_result = unsafe {
-            base_factory.CreateGlyphRunAnalysis(
+            self.factory.CreateGlyphRunAnalysis(
                 &glyph_run,
                 None,
                 DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
@@ -746,18 +763,8 @@ fn font_metrics_from_face(face: &IDWriteFontFace, size: f32) -> Result<FontMetri
         bail!("DirectWrite face reported zero designUnitsPerEm");
     }
     let scale = size / f32::from(metrics.designUnitsPerEm);
-    let codepoints = [u32::from('M')];
-    let mut glyphs = [0u16; 1];
-    unsafe {
-        face.GetGlyphIndices(codepoints.as_ptr(), 1, glyphs.as_mut_ptr())
-            .context("GetGlyphIndices")?;
-    }
-    let mut glyph_metrics = [DWRITE_GLYPH_METRICS::default(); 1];
-    unsafe {
-        face.GetDesignGlyphMetrics(glyphs.as_ptr(), 1, glyph_metrics.as_mut_ptr(), false)
-            .context("GetDesignGlyphMetrics")?;
-    }
-    let advance = glyph_metrics[0].advanceWidth as f32;
+    let glyph = glyph_index_on_face(face, 'M')?;
+    let advance = design_advance(face, glyph)?;
     let cell_width = (advance * scale).ceil();
     let ascent = f32::from(metrics.ascent) * scale;
     let descent = f32::from(metrics.descent) * scale;
@@ -813,11 +820,7 @@ fn select_system_primary(
         if !unsafe { face1.IsMonospacedFont() }.as_bool() {
             continue;
         }
-        let mut glyphs = [0u16; 1];
-        let codepoints = [u32::from('M')];
-        if unsafe { face.GetGlyphIndices(codepoints.as_ptr(), 1, glyphs.as_mut_ptr()) }.is_err()
-            || glyphs[0] == 0
-        {
+        if !matches!(glyph_index_on_face(&face, 'M'), Ok(glyph) if glyph != 0) {
             continue;
         }
         let family_name = match localized_family_name_from_family(&family) {
@@ -825,7 +828,6 @@ fn select_system_primary(
             Err(_) => continue,
         };
         let descriptor = PrimaryDescriptor {
-            face_id: PRIMARY_FACE_ID,
             family_name,
             weight: unsafe { font.GetWeight() },
             style: unsafe { font.GetStyle() },
@@ -903,7 +905,6 @@ fn select_family_primary_inner(
         bail!("font family `{requested}` has no Latin primary glyph");
     }
     let descriptor = PrimaryDescriptor {
-        face_id: PRIMARY_FACE_ID,
         family_name: localized_family_name_from_family(&family)?,
         weight: unsafe { font.GetWeight() },
         style: unsafe { font.GetStyle() },
@@ -958,11 +959,7 @@ fn select_system_fallback_ui_primary(
             Ok(face) => face,
             Err(_) => continue,
         };
-        let mut glyphs = [0u16; 1];
-        let codepoints = [u32::from('M')];
-        if unsafe { face.GetGlyphIndices(codepoints.as_ptr(), 1, glyphs.as_mut_ptr()) }.is_err()
-            || glyphs[0] == 0
-        {
+        if !matches!(glyph_index_on_face(&face, 'M'), Ok(glyph) if glyph != 0) {
             continue;
         }
         let family_name = match localized_family_name_from_family(&family) {
@@ -970,7 +967,6 @@ fn select_system_fallback_ui_primary(
             Err(_) => continue,
         };
         let descriptor = PrimaryDescriptor {
-            face_id: PRIMARY_FACE_ID,
             family_name,
             weight: unsafe { font.GetWeight() },
             style: unsafe { font.GetStyle() },
@@ -992,7 +988,6 @@ fn describe_face(face: &IDWriteFontFace) -> Result<PrimaryDescriptor> {
     let names = unsafe { face3.GetFamilyNames() }.context("GetFamilyNames")?;
     let family_name = localized_string(&names).context("read primary family name")?;
     Ok(PrimaryDescriptor {
-        face_id: PRIMARY_FACE_ID,
         family_name,
         weight: unsafe { face3.GetWeight() },
         style: unsafe { face3.GetStyle() },
@@ -1096,6 +1091,102 @@ mod tests {
     use crate::lifecycle::{FontLifecycleEvent, FontLifecycleSink, RecordingFontLifecycleSink};
 
     use super::*;
+
+    #[test]
+    fn should_assign_contiguous_registry_ids_without_consuming_ids_for_duplicates() {
+        let (factory, _, _) = open_factory_fallback_locale().expect("open factory");
+        let base: IDWriteFactory = factory.cast().expect("base factory");
+        let mut collection = None;
+        unsafe { base.GetSystemFontCollection(&mut collection, false) }.expect("system collection");
+        let collection = collection.expect("non-null collection");
+        let mut fonts = Vec::new();
+        let mut fingerprints = Vec::new();
+        for index in 0..unsafe { collection.GetFontFamilyCount() } {
+            let family = unsafe { collection.GetFontFamily(index) }.expect("system family");
+            let font = unsafe {
+                family.GetFirstMatchingFont(
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                )
+            }
+            .expect("matching font");
+            let face = unsafe { font.CreateFontFace() }.expect("system face");
+            let fingerprint = face_fingerprint(&face).expect("fingerprint");
+            if !fingerprints.contains(&fingerprint) {
+                fonts.push(font);
+                fingerprints.push(fingerprint);
+                if fonts.len() == 3 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(fonts.len(), 3, "need three distinct system faces");
+        let primary = unsafe { fonts[0].CreateFontFace() }.expect("primary face");
+        let mut registry = NativeFaceRegistry::with_primary(primary.clone()).expect("registry");
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.register(primary).expect("duplicate primary"),
+            PRIMARY_FACE_ID
+        );
+        let reopened = unsafe { fonts[0].CreateFontFace() }.expect("reopen primary");
+        assert_eq!(
+            registry.register(reopened).expect("reopened primary"),
+            PRIMARY_FACE_ID
+        );
+        assert_eq!(registry.len(), 1);
+
+        let second = unsafe { fonts[1].CreateFontFace() }.expect("second face");
+        assert_eq!(
+            registry.register(second.clone()).expect("register second"),
+            FaceId::new(1)
+        );
+        assert_eq!(
+            registry.register(second).expect("duplicate second"),
+            FaceId::new(1)
+        );
+        let reopened = unsafe { fonts[1].CreateFontFace() }.expect("reopen second");
+        assert_eq!(
+            registry.register(reopened).expect("reopened second"),
+            FaceId::new(1)
+        );
+        assert_eq!(registry.len(), 2);
+
+        let third = unsafe { fonts[2].CreateFontFace() }.expect("third face");
+        assert_eq!(
+            registry.register(third).expect("register third"),
+            FaceId::new(2)
+        );
+        assert_eq!(registry.len(), 3);
+        for (index, fingerprint) in fingerprints.iter().enumerate() {
+            let retained = registry
+                .get(FaceId::new(index as u64))
+                .expect("retained face");
+            assert!(face_fingerprint(retained).expect("retained fingerprint") == *fingerprint);
+        }
+        assert!(registry.get(FaceId::new(3)).is_none());
+        assert!(registry.get(FaceId::new(u64::MAX)).is_none());
+    }
+
+    #[test]
+    fn should_reject_unknown_face_before_out_of_range_glyph_when_rasterizing() {
+        let state = open_primary();
+        let key = GlyphKey {
+            face_id: FaceId::new(u64::MAX),
+            glyph_id: GlyphId::new(u32::MAX),
+            size: FontSize::from_bits(harbor_config::FONT_SIZE.to_bits()),
+            style: FontStyle::new(0),
+        };
+        let error = state.rasterizer.rasterize_inner(key).unwrap_err();
+        assert_eq!(error.to_string(), format!("unknown face_id {}", u64::MAX));
+        let (bounds, bitmap) = state.rasterize(key);
+        assert_eq!(bounds.width, 0);
+        assert_eq!(bounds.height, 0);
+        assert_eq!(bounds.bearing_x, 0);
+        assert_eq!(bounds.bearing_y, 0);
+        assert_eq!(bounds.advance_width, 0.0);
+        assert!(bitmap.is_empty());
+    }
 
     fn windows_fonts_dir() -> PathBuf {
         env::var_os("WINDIR")
@@ -1581,10 +1672,8 @@ mod tests {
         }
         // Force equal glyph_index collision across faces in the atlas key space.
         let colliding = GlyphKey {
-            face_id: cjk_key.face_id,
-            glyph_id: GlyphId::new(latin.glyph_id.get()),
-            size: FontSize::from_bits(cjk_key.size.bits()),
-            style: FontStyle::new(cjk_key.style.get()),
+            glyph_id: latin.glyph_id,
+            ..cjk_key
         };
         assert_ne!(latin, colliding);
     }

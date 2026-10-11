@@ -30,18 +30,6 @@ pub struct GlyphBitmapBounds {
     pub advance_width: f32,
 }
 
-/// Internal metrics for atlas packing — pixel size, bearings, and advance
-/// from a backend-neutral rasterization result.
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-struct PackedMetrics {
-    width: usize,
-    height: usize,
-    bearing_x: i32,
-    bearing_y: i32,
-    advance_width: f32,
-}
-
 /// Result of an incremental `rasterize_new` call.
 pub struct RasterizeResult {
     /// Glyph keys that were newly rasterized and added to the cache.
@@ -102,10 +90,21 @@ struct Shelf {
 struct RasterizedGlyph {
     /// Stable identity for this glyph.
     key: GlyphKey,
-    /// Packed metrics for atlas placement.
-    metrics: PackedMetrics,
+    /// Raster bounds and placement metrics.
+    bounds: GlyphBitmapBounds,
     /// Greyscale bitmap (1 byte/pixel, 0 = transparent, 255 = opaque).
     bitmap: Vec<u8>,
+}
+
+impl RasterizedGlyph {
+    fn rasterize(fonts: &FontBook, key: GlyphKey) -> Self {
+        let (bounds, bitmap) = fonts.rasterize_from_key(key);
+        Self {
+            key,
+            bounds,
+            bitmap,
+        }
+    }
 }
 
 /// Shelf-packed placement and pixel storage for the CPU atlas.
@@ -134,20 +133,15 @@ impl AtlasStore {
     }
 
     fn rebuild(&mut self, mut glyphs: Vec<RasterizedGlyph>) {
-        glyphs.sort_by_key(|glyph| Reverse(glyph.metrics.height));
+        glyphs.sort_by_key(|glyph| Reverse(glyph.bounds.height));
         self.glyphs.clear();
         self.pixels.fill(0);
         self.shelves.clear();
 
         for glyph in &glyphs {
-            if !self.pack_onto_existing_shelf(glyph) {
-                let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
-                let glyph_height = glyph.metrics.height as u32;
-                if shelf_y + glyph_height > MAX_ATLAS_SIZE {
-                    tracing::warn!("atlas full during full rebuild; dropping glyphs");
-                    break;
-                }
-                self.start_new_shelf(glyph);
+            if !self.try_pack(glyph) {
+                tracing::warn!("atlas full during full rebuild; dropping glyphs");
+                break;
             }
         }
         self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
@@ -155,12 +149,8 @@ impl AtlasStore {
 
     fn add_incremental(&mut self, glyphs: &[RasterizedGlyph]) -> bool {
         for glyph in glyphs {
-            if !self.pack_onto_existing_shelf(glyph) {
-                let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
-                if shelf_y + glyph.metrics.height as u32 > MAX_ATLAS_SIZE {
-                    return false;
-                }
-                self.start_new_shelf(glyph);
+            if !self.try_pack(glyph) {
+                return false;
             }
         }
         self.height = self.shelves.last().map_or(1, |s| s.y + s.height);
@@ -189,9 +179,21 @@ impl AtlasStore {
 }
 
 impl AtlasStore {
+    fn try_pack(&mut self, glyph: &RasterizedGlyph) -> bool {
+        if self.pack_onto_existing_shelf(glyph) {
+            return true;
+        }
+        let shelf_y = self.shelves.last().map_or(0, |s| s.y + s.height);
+        if shelf_y + glyph.bounds.height as u32 > MAX_ATLAS_SIZE {
+            return false;
+        }
+        self.start_new_shelf(glyph);
+        true
+    }
+
     fn pack_onto_existing_shelf(&mut self, glyph: &RasterizedGlyph) -> bool {
-        let gw = glyph.metrics.width as u32 + ATLAS_PADDING;
-        let gh = glyph.metrics.height as u32;
+        let gw = glyph.bounds.width as u32 + ATLAS_PADDING;
+        let gh = glyph.bounds.height as u32;
         for index in 0..self.shelves.len() {
             if self.shelves[index].height < gh || self.shelves[index].next_x + gw > MAX_ATLAS_SIZE {
                 continue;
@@ -200,7 +202,7 @@ impl AtlasStore {
             let y = self.shelves[index].y;
             self.blit_glyph(glyph, x, y);
             self.insert_placement(glyph, x, y);
-            self.shelves[index].next_x += glyph.metrics.width as u32 + ATLAS_PADDING;
+            self.shelves[index].next_x += glyph.bounds.width as u32 + ATLAS_PADDING;
             return true;
         }
         false
@@ -213,8 +215,8 @@ impl AtlasStore {
         self.insert_placement(glyph, x, y);
         self.shelves.push(Shelf {
             y,
-            height: glyph.metrics.height as u32,
-            next_x: glyph.metrics.width as u32 + ATLAS_PADDING,
+            height: glyph.bounds.height as u32,
+            next_x: glyph.bounds.width as u32 + ATLAS_PADDING,
         });
     }
 
@@ -226,14 +228,14 @@ impl AtlasStore {
                 uv: AtlasUv {
                     left: x as f32 / MAX_ATLAS_SIZE as f32,
                     top: y as f32 / MAX_ATLAS_SIZE as f32,
-                    right: (x + glyph.metrics.width as u32) as f32 / MAX_ATLAS_SIZE as f32,
-                    bottom: (y + glyph.metrics.height as u32) as f32 / MAX_ATLAS_SIZE as f32,
+                    right: (x + glyph.bounds.width as u32) as f32 / MAX_ATLAS_SIZE as f32,
+                    bottom: (y + glyph.bounds.height as u32) as f32 / MAX_ATLAS_SIZE as f32,
                 },
-                width: glyph.metrics.width as u32,
-                height: glyph.metrics.height as u32,
-                bearing_x: glyph.metrics.bearing_x,
-                bearing_y: glyph.metrics.bearing_y,
-                advance_width: glyph.metrics.advance_width,
+                width: glyph.bounds.width as u32,
+                height: glyph.bounds.height as u32,
+                bearing_x: glyph.bounds.bearing_x,
+                bearing_y: glyph.bounds.bearing_y,
+                advance_width: glyph.bounds.advance_width,
                 atlas_x: x,
                 atlas_y: y,
             },
@@ -241,11 +243,11 @@ impl AtlasStore {
     }
 
     fn blit_glyph(&mut self, glyph: &RasterizedGlyph, x: u32, y: u32) {
-        for row in 0..glyph.metrics.height {
+        for row in 0..glyph.bounds.height {
             let dst_start = ((y + row as u32) * MAX_ATLAS_SIZE + x) as usize;
-            let src_start = row * glyph.metrics.width;
-            self.pixels[dst_start..dst_start + glyph.metrics.width]
-                .copy_from_slice(&glyph.bitmap[src_start..src_start + glyph.metrics.width]);
+            let src_start = row * glyph.bounds.width;
+            self.pixels[dst_start..dst_start + glyph.bounds.width]
+                .copy_from_slice(&glyph.bitmap[src_start..src_start + glyph.bounds.width]);
         }
     }
 }
@@ -334,18 +336,7 @@ impl GlyphAtlas {
             if self.store.glyph(key).is_some() || !queued.insert(key) {
                 continue;
             }
-            let (bounds, bitmap) = fonts.rasterize_from_key(key);
-            new_glyphs.push(RasterizedGlyph {
-                key,
-                metrics: PackedMetrics {
-                    width: bounds.width,
-                    height: bounds.height,
-                    bearing_x: bounds.bearing_x,
-                    bearing_y: bounds.bearing_y,
-                    advance_width: bounds.advance_width,
-                },
-                bitmap,
-            });
+            new_glyphs.push(RasterizedGlyph::rasterize(fonts, key));
         }
 
         if new_glyphs.is_empty() {
@@ -414,24 +405,11 @@ impl GlyphAtlas {
         unique_keys.sort();
         unique_keys.dedup();
 
-        let mut new_rasterized: Vec<RasterizedGlyph> = Vec::new();
-        for key in &unique_keys {
-            let key = *key;
-            let (bounds, bitmap) = fonts.rasterize_from_key(key);
-            new_rasterized.push(RasterizedGlyph {
-                key,
-                metrics: PackedMetrics {
-                    width: bounds.width,
-                    height: bounds.height,
-                    bearing_x: bounds.bearing_x,
-                    bearing_y: bounds.bearing_y,
-                    advance_width: bounds.advance_width,
-                },
-                bitmap,
-            });
-        }
-
-        self.store.rebuild(new_rasterized);
+        let glyphs = unique_keys
+            .into_iter()
+            .map(|key| RasterizedGlyph::rasterize(fonts, key))
+            .collect();
+        self.store.rebuild(glyphs);
 
         tracing::debug!(
             glyphs = self.store.len(),
@@ -500,6 +478,154 @@ mod tests {
     /// Helper: resolve a char to a GlyphKey via the font book.
     fn glyph_key(fonts: &FontBook, ch: char) -> GlyphKey {
         expect_key(fonts.resolve(ch, FONT_SIZE, 0))
+    }
+
+    fn rasterized_rect(id: u32, width: usize, height: usize) -> RasterizedGlyph {
+        RasterizedGlyph {
+            key: GlyphKey::new(
+                FaceId::PRIMARY,
+                GlyphId::new(id),
+                FontSize::new(FONT_SIZE).unwrap(),
+                FontStyle::REGULAR,
+            ),
+            bounds: GlyphBitmapBounds {
+                width,
+                height,
+                bearing_x: -2,
+                bearing_y: 3,
+                advance_width: 4.5,
+            },
+            bitmap: vec![id as u8; width * height],
+        }
+    }
+
+    #[test]
+    fn incremental_packing_preserves_order_pixels_and_metric_only_glyphs() {
+        let glyphs = [
+            rasterized_rect(1, 3, 2),
+            rasterized_rect(2, 2, 1),
+            rasterized_rect(3, 0, 0),
+        ];
+        let mut store = AtlasStore::new();
+        assert!(store.add_incremental(&glyphs));
+        assert_eq!(store.height(), 2);
+        assert_eq!(store.shelf_count(), 1);
+        for (glyph, x) in glyphs.iter().zip([0, 4, 7]) {
+            let placed = store.glyph(glyph.key).unwrap();
+            assert_eq!((placed.atlas_x, placed.atlas_y), (x, 0));
+            assert_eq!((placed.bearing_x, placed.bearing_y), (-2, 3));
+            assert_eq!(placed.advance_width, 4.5);
+            assert_eq!(placed.uv.left, x as f32 / MAX_ATLAS_SIZE as f32);
+        }
+        assert_eq!(&store.pixels()[..8], &[1, 1, 1, 0, 2, 2, 0, 0]);
+        let second_row = MAX_ATLAS_SIZE as usize;
+        assert_eq!(
+            &store.pixels()[second_row..second_row + 8],
+            &[1, 1, 1, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn incremental_overflow_keeps_partial_placements_until_rebuild() {
+        let mut store = AtlasStore::new();
+        let first = rasterized_rect(1, MAX_ATLAS_SIZE as usize - 1, 2);
+        assert!(store.add_incremental(&[first]));
+        let added = rasterized_rect(2, 2, 1);
+        let added_key = added.key;
+        let oversized = rasterized_rect(3, 1, MAX_ATLAS_SIZE as usize);
+        let oversized_key = oversized.key;
+        assert!(!store.add_incremental(&[added, oversized]));
+        assert_eq!(
+            store.height(),
+            2,
+            "failed batches leave reported height unchanged"
+        );
+        assert_eq!(store.glyph(added_key).unwrap().atlas_y, 2);
+        assert!(store.glyph(oversized_key).is_none());
+    }
+
+    #[test]
+    fn rebuild_sorts_by_height_clears_pixels_and_stops_when_full() {
+        let mut store = AtlasStore::new();
+        let old = rasterized_rect(1, 3, 2);
+        let old_key = old.key;
+        assert!(store.add_incremental(&[old]));
+        let small = rasterized_rect(2, 1, 1);
+        let small_key = small.key;
+        let full = rasterized_rect(3, MAX_ATLAS_SIZE as usize - 1, MAX_ATLAS_SIZE as usize);
+        let full_key = full.key;
+        store.rebuild(vec![small, full]);
+        assert_eq!(store.len(), 1);
+        assert!(store.glyph(old_key).is_none());
+        assert!(store.glyph(small_key).is_none());
+        assert_eq!(store.glyph(full_key).unwrap().atlas_y, 0);
+        assert_eq!(store.height(), MAX_ATLAS_SIZE);
+        assert_eq!(store.pixels()[0], 3);
+        store.rebuild(Vec::new());
+        assert_eq!(store.height(), 1);
+        assert_eq!(store.len(), 0);
+        assert!(store.pixels().iter().all(|&pixel| pixel == 0));
+    }
+
+    #[test]
+    fn retaining_repack_reports_eviction_and_keeps_resolution_cache() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let size = FontSize::new(fonts.size()).unwrap();
+        atlas.rasterize_new(&fonts, &['A']);
+        let old_key = atlas.glyph_by_char('A').unwrap().key;
+        let mut full = rasterized_rect(1, MAX_ATLAS_SIZE as usize - 1, MAX_ATLAS_SIZE as usize);
+        full.key = old_key;
+        atlas.store.rebuild(vec![full]);
+
+        let result = atlas.rasterize_new_at_size_retaining(&fonts, &['X', 'X'], size, &[]);
+        let new_key = expect_key(fonts.resolve('X', size.get(), FontStyle::REGULAR));
+        assert!(result.evicted);
+        assert_eq!(result.new_keys, vec![new_key]);
+        assert_eq!(atlas.len(), 1);
+        assert!(atlas.glyph_by_char('A').is_none());
+        assert!(atlas.glyph_by_char('X').is_some());
+        assert_eq!(
+            atlas
+                .resolution
+                .get(&ResolutionKey::new('A', size, FontStyle::REGULAR)),
+            Some(&GlyphResolution::Available(old_key))
+        );
+        assert!(atlas.rasterize_new(&fonts, &['X']).new_keys.is_empty());
+    }
+
+    #[test]
+    fn retaining_repack_preserves_result_order_but_deduplicates_placements() {
+        let fonts = test_font_book();
+        let size = FontSize::new(fonts.size()).unwrap();
+        let old_key = expect_key(fonts.resolve('A', size.get(), FontStyle::REGULAR));
+        let new_key = expect_key(fonts.resolve('X', size.get(), FontStyle::REGULAR));
+        let mut atlas = GlyphAtlas::new();
+        let mut full = rasterized_rect(1, MAX_ATLAS_SIZE as usize - 1, MAX_ATLAS_SIZE as usize);
+        full.key = old_key;
+        atlas.store.rebuild(vec![full]);
+        let retained = [new_key, old_key, old_key];
+
+        let result = atlas.rasterize_new_at_size_retaining(&fonts, &['X'], size, &retained);
+        assert!(result.evicted);
+        assert_eq!(result.new_keys, [new_key, old_key, old_key, new_key]);
+        assert_eq!(atlas.len(), 2);
+        assert!(atlas.glyph(old_key).is_some());
+        assert!(atlas.glyph(new_key).is_some());
+    }
+
+    #[test]
+    fn rebuild_preserves_input_order_for_equal_heights() {
+        let short = rasterized_rect(1, 2, 1);
+        let first = rasterized_rect(2, 2, 2);
+        let second = rasterized_rect(3, 2, 2);
+        let keys = [first.key, second.key, short.key];
+        let mut store = AtlasStore::new();
+        store.rebuild(vec![short, first, second]);
+        for (key, x) in keys.into_iter().zip([0, 3, 6]) {
+            let glyph = store.glyph(key).unwrap();
+            assert_eq!((glyph.atlas_x, glyph.atlas_y), (x, 0));
+        }
     }
 
     #[test]
@@ -576,7 +702,7 @@ mod tests {
         atlas.rasterize_new(&fonts, &['a', 'b']);
         assert_eq!(atlas.len(), 2);
 
-        atlas.rebuild(&fonts, &['c', 'd']);
+        atlas.rebuild(&fonts, &['d', 'c', 'c', 'd']);
         assert_eq!(atlas.len(), 2);
         assert!(atlas.glyph_by_char('a').is_none());
         assert!(atlas.glyph_by_char('c').is_some());

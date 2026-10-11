@@ -139,33 +139,29 @@ fn is_strikethrough_active(cell: &crate::model::Cell) -> bool {
         && cell.ch != ' '
 }
 
-fn build_decoration_layer_vertices(
+fn append_strikethrough_range(
+    metrics: &TextMetrics,
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
     palette: &Palette,
-    y_bounds: impl Fn(&TextMetrics, f32) -> (f32, f32),
-    is_active: impl Fn(&crate::model::Cell) -> bool,
-    metrics: &TextMetrics,
-) -> Vec<ColoredVertex> {
+    range: &DirtyRange,
+    vertices: &mut Vec<ColoredVertex>,
+) {
     let (surf_w, surf_h) = viewport.surface_dimensions();
-    let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
-    for row in 0..snap.rows {
-        let (_, cell_y) = viewport.cell_pos(row, 0);
-        let (top, bottom) = y_bounds(metrics, cell_y);
-        for col in 0..snap.cols {
-            let cell = snap.cell(row, col);
-            if is_active(cell) {
-                let (left, _, right, _) = viewport.cell_bounds(row, col);
-                let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
-                verts.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                    left, top, right, bottom, color, surf_w, surf_h,
-                ));
-            } else {
-                verts.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
-            }
+    let (_, cell_y) = viewport.cell_pos(range.row, 0);
+    let (top, bottom) = strikethrough_bounds(metrics, cell_y);
+    for col in range.start_col..range.end_col {
+        let cell = snap.cell(range.row, col);
+        if is_strikethrough_active(cell) {
+            let (left, _, right, _) = viewport.cell_bounds(range.row, col);
+            let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
+            vertices.extend_from_slice(&ColoredVertex::from_pixel_rect(
+                left, top, right, bottom, color, surf_w, surf_h,
+            ));
+        } else {
+            vertices.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
         }
     }
-    verts
 }
 
 /// Builds fixed-size underline slots for every occupied grid cell.
@@ -235,21 +231,29 @@ pub fn build_overline_vertices(
 }
 
 /// Builds strikethrough vertices for every row.
-/// Returns one `ColoredVertex` per grid cell (degenerate for cells without decoration).
+/// Returns six `ColoredVertex` values per grid cell (degenerate for cells without decoration).
 pub fn build_strikethrough_vertices(
     metrics: &TextMetrics,
     snap: &TerminalSnapshot,
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    build_decoration_layer_vertices(
-        snap,
-        viewport,
-        palette,
-        strikethrough_bounds,
-        is_strikethrough_active,
-        metrics,
-    )
+    let mut vertices = Vec::with_capacity(snap.rows * snap.cols * 6);
+    for row in 0..snap.rows {
+        append_strikethrough_range(
+            metrics,
+            snap,
+            viewport,
+            palette,
+            &DirtyRange {
+                row,
+                start_col: 0,
+                end_col: snap.cols,
+            },
+            &mut vertices,
+        );
+    }
+    vertices
 }
 
 // ── Decoration ────────────────────────────────────────────────────────────────
@@ -332,7 +336,6 @@ impl Decoration {
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
     ) {
-        let (surf_w, surf_h) = viewport.surface_dimensions();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell =
             (UNDERLINE_VERTICES_PER_CELL + 12) * std::mem::size_of::<ColoredVertex>();
@@ -361,16 +364,6 @@ impl Decoration {
                     gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
                 self.overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
             }
-            let u = build_underline_vertices(&self.metrics, snap, viewport, &self.palette);
-            let s = build_strikethrough_vertices(&self.metrics, snap, viewport, &self.palette);
-            gpu.write_buffer(&self.underline_buffer, 0, bytemuck::cast_slice(&u));
-            gpu.write_buffer(&self.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
-            let o = build_overline_vertices(&self.metrics, snap, viewport, &self.palette);
-            gpu.write_buffer(&self.overline_buffer, 0, bytemuck::cast_slice(&o));
-            self.rows = snap.rows;
-            self.cols = snap.cols;
-            self.dirty = false;
-            return;
         }
 
         if plan.mode == UploadMode::None {
@@ -388,20 +381,20 @@ impl Decoration {
         } else {
             tracing::trace!("rebuilding decoration draw batch (incremental)");
             for range in dirty_ranges {
-                let (_, cell_y) = viewport.cell_pos(range.row, 0);
-                let (s_top, s_bottom) = strikethrough_bounds(&self.metrics, cell_y);
-
                 let mut u_row = Vec::with_capacity(
                     (range.end_col - range.start_col) * UNDERLINE_VERTICES_PER_CELL,
                 );
                 let mut s_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
+                append_strikethrough_range(
+                    &self.metrics,
+                    snap,
+                    viewport,
+                    &self.palette,
+                    range,
+                    &mut s_row,
+                );
                 let mut o_row = Vec::with_capacity((range.end_col - range.start_col) * 6);
                 for col in range.start_col..range.end_col {
-                    let cell = snap.cell(range.row, col);
-                    let (left, _, right, _) = viewport.cell_bounds(range.row, col);
-                    let color =
-                        glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
-
                     u_row.extend_from_slice(&underline_cell_vertices(
                         &self.metrics,
                         snap,
@@ -418,14 +411,6 @@ impl Decoration {
                         range.row,
                         col,
                     ));
-
-                    if is_strikethrough_active(cell) {
-                        s_row.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                            left, s_top, right, s_bottom, color, surf_w, surf_h,
-                        ));
-                    } else {
-                        s_row.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
-                    }
                 }
 
                 let offset = ((range.row * snap.cols + range.start_col)
@@ -448,6 +433,8 @@ impl Decoration {
             }
         }
 
+        self.rows = snap.rows;
+        self.cols = snap.cols;
         self.dirty = false;
     }
 

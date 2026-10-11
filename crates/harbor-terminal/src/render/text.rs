@@ -210,11 +210,8 @@ impl GpuGlyphAtlas {
 
 // ── TextLayer ────────────────────────────────────────────────────────────────
 
-// The scalar atlas cannot shape a whole emoji sequence. Draw the base glyph
-// within its assigned cells, plus combining marks; selectors and ZWJ are
-// retained for copy but have no independent visual glyph. A joined emoji may
-// therefore appear as its first pictograph, not a color/ligature emoji.
-
+// Whole emoji units use SequenceLayer; ordinary text and bounded leading-glyph
+// fallback retain the scalar R8 atlas. Model source/assigned width stay authoritative.
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
@@ -235,6 +232,16 @@ fn paint_chars(cell: &Cell) -> Vec<char> {
     chars
 }
 
+/// Diagnostic resource counters; never part of the retained terminal model.
+#[derive(Clone, Copy, Debug)]
+pub struct PresentationStats {
+    pub native: harbor_text::SequenceCacheStats,
+    pub cached_requests: usize,
+    pub cached_pixel_bytes: usize,
+    pub color_atlas_bytes: usize,
+    pub color_atlas_revision: u64,
+}
+
 /// Text rendering: glyph atlas + vertex buffer for every grid cell.
 pub struct Text {
     fonts: FontBook,
@@ -250,9 +257,27 @@ pub struct Text {
     rows: usize,
     cols: usize,
     palette: Palette,
+    pub(super) sequences: super::sequence::SequenceLayer,
+    pub(super) raster_scale: f32,
 }
 
 impl Text {
+    pub fn presentation_stats(&self) -> PresentationStats {
+        let atlas = &self.sequences.atlas;
+        PresentationStats {
+            native: self.fonts.sequence_cache_stats(),
+            cached_requests: atlas.entries.len(),
+            cached_pixel_bytes: atlas
+                .entries
+                .values()
+                .filter_map(|e| e.tile.as_ref())
+                .map(|t| t.rgba.len())
+                .sum(),
+            color_atlas_bytes: atlas.pixels.len(),
+            color_atlas_revision: atlas.revision,
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -291,6 +316,19 @@ impl Text {
         viewport: &RenderViewport,
         palette: Palette,
     ) -> Result<Self> {
+        Self::new_at_scale(gpu, fonts, metrics, snap, viewport, palette, 1.0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_at_scale(
+        gpu: TerminalGpuAccess<'_>,
+        fonts: FontBook,
+        metrics: TextMetrics,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        palette: Palette,
+        raster_scale: f32,
+    ) -> Result<Self> {
         let bind_group_layout = gpu::create_texture_bind_group_layout(gpu.device());
         let pipeline = Self::create_pipeline(gpu.device(), gpu.format(), &bind_group_layout);
 
@@ -322,8 +360,19 @@ impl Text {
             rows,
             cols,
             palette,
+            sequences: super::sequence::SequenceLayer::default(),
+            raster_scale,
         };
 
+        layer.sequences.prepare(
+            gpu,
+            &layer.fonts,
+            &layer.atlas,
+            snap,
+            viewport,
+            &layer.palette,
+            layer.raster_scale,
+        );
         let verts = layer.build_all_vertices(snap, viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
@@ -390,6 +439,17 @@ impl Text {
         let mut verts = Vec::with_capacity((range.end_col - range.start_col) * 6);
         for col in range.start_col..range.end_col {
             let cell = snap.cell(range.row, col);
+            let idx = range.row * snap.cols + col;
+            if self.sequences.tile_cells.contains(&idx) {
+                verts.extend(std::iter::repeat_n(
+                    TexturedVertex {
+                        color: [0.0; 4],
+                        ..Default::default()
+                    },
+                    6,
+                ));
+                continue;
+            }
             if cell.ch != ' '
                 && !cell.isolated_mark
                 && !cell.wide_continuation
@@ -400,6 +460,36 @@ impl Text {
             {
                 let (cell_x, cell_y) = viewport.cell_pos(range.row, col);
                 let baseline = cell_y + self.metrics.ascent.ceil();
+                if self.sequences.emoji_cells.contains(&idx) {
+                    let quad = super::sequence::fitted_quad(
+                        harbor_text::TileBounds {
+                            left: glyph.bearing_x,
+                            top: self.metrics.ascent.ceil() as i32
+                                - glyph.bearing_y
+                                - glyph.height as i32,
+                            width: glyph.width,
+                            height: glyph.height,
+                        },
+                        [glyph.uv.left, glyph.uv.top, glyph.uv.right, glyph.uv.bottom],
+                        [
+                            cell_x,
+                            cell_y,
+                            viewport.cell_width
+                                * usize::from(cell.grid_width()).min(snap.cols - col) as f32,
+                            viewport.line_height,
+                        ],
+                        (surf_w, surf_h),
+                        glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs),
+                    )
+                    .unwrap_or(
+                        [TexturedVertex {
+                            color: [0.0; 4],
+                            ..Default::default()
+                        }; 6],
+                    );
+                    verts.extend(quad);
+                    continue;
+                }
                 let mut glyph_left = cell_x + glyph.bearing_x as f32;
                 let glyph_bottom = baseline - glyph.bearing_y as f32;
                 let glyph_top = glyph_bottom - glyph.height as f32;
@@ -476,42 +566,13 @@ impl Text {
         format: wgpu::TextureFormat,
         bind_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::RenderPipeline {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("text shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("text pipeline layout"),
-            bind_group_layouts: &[Some(bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("text pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(TexturedVertex::layout())],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
+        textured_pipeline(
+            device,
+            format,
+            bind_group_layout,
+            SHADER,
+            wgpu::BlendState::ALPHA_BLENDING,
+        )
     }
 
     /// Rebuilds only the transient IME overlay while sharing the base glyph atlas.
@@ -543,7 +604,10 @@ impl Text {
         for row in 0..snap.rows {
             for col in 0..snap.cols {
                 let cell = snap.cell(row, col);
-                if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
+                if cell.wide_continuation
+                    || cell.attrs.contains(CellAttrs::CONCEAL)
+                    || self.sequences.tile_cells.contains(&(row * snap.cols + col))
+                {
                     continue;
                 }
                 let (cell_x, cell_y) = viewport.cell_pos(row, col);
@@ -650,6 +714,15 @@ impl Text {
             }
             self.atlas.rebuild(&self.fonts, &all_chars);
             self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
+            self.sequences.prepare(
+                gpu,
+                &self.fonts,
+                &self.atlas,
+                snap,
+                viewport,
+                &self.palette,
+                self.raster_scale,
+            );
 
             let new_cap = snap
                 .rows
@@ -686,6 +759,24 @@ impl Text {
         let result = self.atlas.rasterize_new(&self.fonts, &unique);
         self.apply_rasterize_result(gpu, result);
 
+        if self.dirty
+            || !dirty_ranges.is_empty()
+            || self.sequences.atlas_generation_changed(&self.fonts)
+        {
+            let had_emoji = !self.sequences.emoji_cells.is_empty();
+            self.sequences.prepare(
+                gpu,
+                &self.fonts,
+                &self.atlas,
+                snap,
+                viewport,
+                &self.palette,
+                self.raster_scale,
+            );
+            // Repack and complete/fallback transitions can affect old placements
+            // outside the current dirty span. Ordinary-only output stays incremental.
+            self.dirty |= had_emoji || !self.sequences.emoji_cells.is_empty();
+        }
         let plan = gpu.upload_plan(
             snap.rows,
             snap.cols,
@@ -737,10 +828,14 @@ impl Text {
         let vertex_count = (self.rows * self.cols * 6) as u32;
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
-            if self.overlay_vertex_count > 0 {
-                pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
-                pass.draw(0..self.overlay_vertex_count, 0..1);
-            }
+        }
+        self.sequences.draw(pass);
+        // Transient preedit is above BOTH scalar and complete sequence paint.
+        if self.overlay_vertex_count > 0 {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.gpu_atlas.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
+            pass.draw(0..self.overlay_vertex_count, 0..1);
         }
     }
 }
@@ -823,6 +918,53 @@ fn atlas_gpu_sync(result: &harbor_text::RasterizeResult) -> AtlasGpuSync {
         AtlasGpuSync::Incremental
     }
 }
+
+pub(super) fn textured_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    source: &str,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("terminal textured shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("terminal textured layout"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("terminal textured pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(TexturedVertex::layout())],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+#[cfg(test)]
+#[path = "text_tests.rs"]
+pub(super) mod sequence_tests;
 
 #[cfg(test)]
 mod tests {
