@@ -225,11 +225,9 @@ impl Background {
                     &vec![ColoredVertex::default(); new_cap.max(1)],
                 );
             }
-            let verts = self.build_all_vertices(snap, viewport);
-            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
-            self.rows = snap.rows;
-            self.cols = snap.cols;
-        } else if plan.mode == UploadMode::Full {
+        }
+
+        if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding background draw batch (full)");
             let verts = self.build_all_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
@@ -259,6 +257,8 @@ impl Background {
             self.upload_full_rect(gpu, viewport);
         }
 
+        self.rows = snap.rows;
+        self.cols = snap.cols;
         self.dirty = false;
     }
 

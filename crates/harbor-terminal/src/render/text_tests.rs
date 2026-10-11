@@ -274,8 +274,10 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
     let mut pipeline = TerminalRenderPipeline::new(gpu, (256, 128), f, metrics, &update).unwrap();
     pipeline.prepare(gpu, &update, false);
     let before = pipeline.text.fonts.presentation_generation();
-    let mut palette = Palette::default();
-    palette.foreground = harbor_config::Rgba::from_rgba8(0, 255, 0, 128);
+    let palette = Palette {
+        foreground: harbor_config::Rgba::from_rgba8(0, 255, 0, 128),
+        ..Palette::default()
+    };
     pipeline.text.set_palette(palette);
     pipeline
         .text
@@ -382,7 +384,7 @@ fn unsupported_sequence_keeps_a_fitted_leading_glyph_and_source_then_overwrites_
     for v in &base[..6] {
         let x = (v.position[0] + 1.0) * 128.0;
         let y = (1.0 - v.position[1]) * 64.0;
-        assert!(x >= 15.99 && x <= 34.01 && y >= 15.99 && y <= 35.01);
+        assert!((15.99..=34.01).contains(&x) && (15.99..=35.01).contains(&y));
     }
     snap.cells[0].ch = 'x';
     snap.cells[0].suffix.clear();

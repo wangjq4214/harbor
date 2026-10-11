@@ -6,6 +6,8 @@ mod core_tests;
 #[path = "render/cursor_blink.rs"]
 pub mod cursor_blink;
 mod damage;
+#[cfg(test)]
+mod engine_tests;
 mod input;
 mod io;
 #[path = "render/layout.rs"]
@@ -31,7 +33,6 @@ mod update;
 // Re-exports for the main crate.
 pub use cursor_blink::CursorBlinkState;
 pub use harbor_config::Color;
-use harbor_config::Palette;
 use harbor_pty::PtyEndpoints;
 pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load_system_ui_fonts};
 use io::TerminalIo;
@@ -180,7 +181,8 @@ impl Terminal {
 
     /// Returns the terminal-owned default clear color for the host environment.
     pub fn clear_rgba(&self, backdrop_available: bool) -> [f32; 4] {
-        clear_rgba_for_palette(self.screen.active_palette(), backdrop_available)
+        TerminalAppearance::from_palette(self.screen.active_palette())
+            .clear_rgba(backdrop_available)
     }
 
     /// Returns the configured tint used by a host compositor backdrop.
@@ -242,28 +244,26 @@ impl Terminal {
     /// The engine owns blink timing even without a GPU renderer.
     pub fn frame_demand(&mut self, now: Instant) -> FrameDemand {
         let drained = self.drain_pty();
-        let snap = self.snapshot();
+        let mut demand = self.current_frame_demand(now);
+        demand.redraw_now |= demand.ordinary_present_eligible && drained;
+        demand
+    }
+
+    /// Scheduling policy shared by live polling and read-only renderer updates.
+    fn current_frame_demand(&self, now: Instant) -> FrameDemand {
+        let ordinary_present_eligible = self.screen.ordinary_present_eligible();
         let mut demand = FrameDemand {
-            redraw_now: self.screen.ordinary_present_eligible()
+            redraw_now: ordinary_present_eligible
                 && (self.blink.pending_redraw()
                     || self.pending_ordinary_present
                     || self.pending_preedit_redraw),
-            deadline: (snap.cursor_visible && snap.cursor_blink)
+            deadline: (self.screen.cursor_visible() && self.screen.cursor_blink())
                 .then(|| self.blink.next_deadline(now)),
-            ordinary_present_eligible: true,
+            ordinary_present_eligible,
         };
         if let Some(deadline) = self.pointer.auto_scroll_deadline() {
             demand.redraw_now |= deadline <= now;
-            demand.deadline = Some(
-                demand
-                    .deadline
-                    .map_or(deadline, |current| current.min(deadline)),
-            );
-        }
-        demand.ordinary_present_eligible = self.screen.ordinary_present_eligible();
-        let released = self.pending_ordinary_present;
-        if demand.ordinary_present_eligible && (drained || released) {
-            demand.redraw_now = true;
+            demand.deadline = Some(demand.deadline.map_or(deadline, |d| d.min(deadline)));
         }
         demand
     }
@@ -432,55 +432,37 @@ impl Terminal {
                 if !self.pointer.has_active_pointer() && self.screen.view_offset() == 0 {
                     self.io.set_suppress_scroll_snap(false);
                 }
+                self.maybe_reset_blink(before, false);
+                return Ok(outcome);
             }
             TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(_)) => {
                 outcome.redraw = self.clear_preedit();
-                let wrote = self.ingest_screen(|io, screen, pointer| {
-                    io.handle_event(screen, pointer, event.clone())
-                })?;
-                self.maybe_reset_blink(before, wrote);
-                return Ok(outcome);
             }
             TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown { key, .. }) => {
-                if *key == TerminalKey::Escape {
-                    outcome = self.pointer.clear_selection_outcome();
-                    if outcome.release_pointer.is_some() {
-                        self.io.set_suppress_scroll_snap(false);
-                    }
+                outcome = if *key == TerminalKey::Escape {
+                    self.pointer.clear_selection_outcome()
                 } else {
-                    outcome = self.pointer.on_key_press_outcome();
-                    if outcome.release_pointer.is_some() {
-                        self.io.set_suppress_scroll_snap(false);
-                    }
-                    let wrote = self.ingest_screen(|io, screen, pointer| {
-                        io.handle_event(screen, pointer, event.clone())
-                    })?;
-                    self.maybe_reset_blink(before, wrote);
+                    self.pointer.on_key_press_outcome()
+                };
+                if outcome.release_pointer.is_some() {
+                    self.io.set_suppress_scroll_snap(false);
+                }
+                if *key == TerminalKey::Escape {
+                    self.maybe_reset_blink(before, false);
                     return Ok(outcome);
                 }
             }
-            TerminalEvent::Focus(focus) => {
-                if matches!(focus, TerminalFocusEvent::Lost) {
-                    outcome = self.pointer.cancel();
-                    outcome.redraw |= self.clear_preedit();
-                    self.io.set_suppress_scroll_snap(false);
-                }
-                let wrote = self.ingest_screen(|io, screen, pointer| {
-                    io.handle_event(screen, pointer, event.clone())
-                })?;
-                self.maybe_reset_blink(before, wrote);
-                return Ok(outcome);
+            TerminalEvent::Focus(TerminalFocusEvent::Lost) => {
+                outcome = self.pointer.cancel();
+                outcome.redraw |= self.clear_preedit();
+                self.io.set_suppress_scroll_snap(false);
             }
-            _ => {
-                let wrote = self.ingest_screen(|io, screen, pointer| {
-                    io.handle_event(screen, pointer, event.clone())
-                })?;
-                self.maybe_reset_blink(before, wrote);
-                return Ok(outcome);
-            }
+            _ => {}
         }
 
-        self.maybe_reset_blink(before, false);
+        let wrote =
+            self.ingest_screen(|io, screen, pointer| io.handle_event(screen, pointer, event))?;
+        self.maybe_reset_blink(before, wrote);
         Ok(outcome)
     }
 
@@ -511,20 +493,6 @@ impl Terminal {
         } else {
             UpdateDamage::Ranges(snapshot.dirty_ranges.clone())
         };
-        let mut frame_demand = FrameDemand {
-            redraw_now: self.screen.ordinary_present_eligible()
-                && (self.blink.pending_redraw()
-                    || self.pending_ordinary_present
-                    || self.pending_preedit_redraw),
-            deadline: (snapshot.cursor_visible && snapshot.cursor_blink)
-                .then(|| self.blink.next_deadline(now)),
-            ordinary_present_eligible: self.screen.ordinary_present_eligible(),
-        };
-        if let Some(deadline) = self.pointer.auto_scroll_deadline() {
-            frame_demand.redraw_now |= deadline <= now;
-            frame_demand.deadline =
-                Some(frame_demand.deadline.map_or(deadline, |d| d.min(deadline)));
-        }
         TerminalUpdate {
             snapshot,
             damage,
@@ -532,7 +500,7 @@ impl Terminal {
             preedit: self.preedit.clone(),
             appearance: TerminalAppearance::from_palette(self.screen.active_palette()),
             backdrop_available: self.backdrop_available,
-            frame_demand,
+            frame_demand: self.current_frame_demand(now),
             projection_epoch: self.projection_epoch,
         }
     }
@@ -854,10 +822,6 @@ impl Terminal {
         outcome.redraw |= before != self.screen.view_offset();
         outcome
     }
-}
-
-fn clear_rgba_for_palette(palette: Palette, backdrop_available: bool) -> [f32; 4] {
-    TerminalAppearance::from_palette(palette).clear_rgba(backdrop_available)
 }
 
 fn retain_geometry_changed(

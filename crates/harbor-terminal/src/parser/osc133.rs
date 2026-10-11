@@ -25,31 +25,16 @@ pub(super) fn parse(payload: &[u8]) -> Option<ShellIntegrationMarker> {
         return None;
     }
 
-    let mut parts = payload.split(|b| *b == b';');
-    let subcommand = parts.next()?;
-
-    match subcommand {
-        b"A" | b"B" | b"C" => {
-            let marker = match subcommand {
-                b"A" => ShellIntegrationMarker::PromptStart,
-                b"B" => ShellIntegrationMarker::PromptEnd,
-                b"C" => ShellIntegrationMarker::CommandExecuted,
-                _ => unreachable!(),
-            };
-            parts.next().is_none().then_some(marker)
+    match payload {
+        b"A" => Some(ShellIntegrationMarker::PromptStart),
+        b"B" => Some(ShellIntegrationMarker::PromptEnd),
+        b"C" => Some(ShellIntegrationMarker::CommandExecuted),
+        b"D" => Some(ShellIntegrationMarker::CommandFinished(None)),
+        _ => {
+            let code_bytes = payload.strip_prefix(b"D;")?;
+            let code = std::str::from_utf8(code_bytes).ok()?.parse::<i32>().ok()?;
+            Some(ShellIntegrationMarker::CommandFinished(Some(code)))
         }
-        b"D" => match parts.next() {
-            None => Some(ShellIntegrationMarker::CommandFinished(None)),
-            Some(code_bytes) => {
-                if parts.next().is_some() || code_bytes.is_empty() {
-                    return None;
-                }
-                let s = std::str::from_utf8(code_bytes).ok()?;
-                let code = s.parse::<i32>().ok()?;
-                Some(ShellIntegrationMarker::CommandFinished(Some(code)))
-            }
-        },
-        _ => None,
     }
 }
 
@@ -57,6 +42,34 @@ pub(super) fn parse(payload: &[u8]) -> Option<ShellIntegrationMarker> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn signed_exit_code_boundaries_and_exact_payloads() {
+        for (payload, code) in [
+            (b"D;+1".as_slice(), 1),
+            (b"D;-2147483648", i32::MIN),
+            (b"D;2147483647", i32::MAX),
+            (b"D;000", 0),
+        ] {
+            assert_eq!(
+                parse(payload),
+                Some(ShellIntegrationMarker::CommandFinished(Some(code)))
+            );
+        }
+        for payload in [
+            b"A;".as_slice(),
+            b"B;",
+            b"C;",
+            b"D;",
+            b"D;;",
+            b"D;0;",
+            b"D;2147483648",
+            b"D;-2147483649",
+            b"D; 0",
+            b"D;\xff",
+        ] {
+            assert_eq!(parse(payload), None, "accepted {payload:?}");
+        }
+    }
     #[test]
     fn parse_valid_subcommands() {
         assert_eq!(parse(b"A"), Some(ShellIntegrationMarker::PromptStart));

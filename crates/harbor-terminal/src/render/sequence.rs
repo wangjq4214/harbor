@@ -476,9 +476,11 @@ mod tests {
     }
     #[test]
     fn classification_uses_complete_source_not_wide_cells() {
-        let mut c = Cell::default();
-        c.ch = '中';
-        c.width = 2;
+        let mut c = Cell {
+            ch: '中',
+            width: 2,
+            ..Cell::default()
+        };
         assert!(!emoji_candidate(&c));
         c.ch = '♥';
         assert!(!emoji_candidate(&c));
@@ -510,7 +512,7 @@ mod tests {
             harbor_text::CompleteKind::Monochrome,
         ] {
             let mut atlas = ColorAtlas::default();
-            atlas.sync(&[request.clone()], generation, |_| {
+            atlas.sync(std::slice::from_ref(&request), generation, |_| {
                 harbor_text::SequencePresentation {
                     generation,
                     outcome: harbor_text::SequenceOutcome::Complete {
