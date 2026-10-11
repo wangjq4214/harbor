@@ -1,4 +1,5 @@
 pub mod background;
+mod box_drawing;
 mod color_atlas;
 pub mod cursor;
 mod sequence;

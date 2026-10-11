@@ -1,3 +1,4 @@
+use super::box_drawing::BoxDrawing;
 use crate::TerminalUpdate;
 use crate::damage::DirtyRange;
 use crate::model::UpdateDamage;
@@ -13,6 +14,7 @@ pub struct TerminalRenderPipeline {
     viewport: RenderViewport,
     pub background: Background,
     pub text: Text,
+    pub(super) boxes: BoxDrawing,
     pub decoration: Decoration,
     pub selection: Selection,
     pub cursor: Cursor,
@@ -82,6 +84,8 @@ impl TerminalRenderPipeline {
             metrics,
             palette,
         );
+        let mut boxes = BoxDrawing::new(gpu, Arc::clone(&colored_quad_pipeline), palette);
+        boxes.prepare_with_dirty(gpu, snap, &[], &viewport);
         let selection = Selection::new(gpu, colored_quad_pipeline, palette.selection);
         let cursor = Cursor::new(gpu, metrics, palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
@@ -90,6 +94,7 @@ impl TerminalRenderPipeline {
             viewport,
             background,
             text,
+            boxes,
             decoration,
             selection,
             cursor,
@@ -147,6 +152,7 @@ impl TerminalRenderPipeline {
         self.palette = palette;
         self.background.set_palette(palette);
         self.text.set_palette(palette);
+        self.boxes.set_palette(palette);
         self.decoration.set_palette(palette);
         self.cursor.set_color(palette.cursor);
         self.selection.set_color(palette.selection);
@@ -158,6 +164,7 @@ impl TerminalRenderPipeline {
             self.viewport = viewport;
             self.background.invalidate_projection();
             self.text.invalidate_projection();
+            self.boxes.invalidate_projection();
             self.decoration.invalidate_projection();
             self.selection.invalidate_projection();
             self.cursor.invalidate_projection();
@@ -187,6 +194,8 @@ impl TerminalRenderPipeline {
         let tint = update.appearance.clear_rgba(update.backdrop_available);
         self.background
             .prepare_with_dirty(gpu, snap, &dirty_ranges, &viewport, tint);
+        self.boxes
+            .prepare_with_dirty(gpu, snap, &dirty_ranges, &viewport);
         self.text
             .prepare_with_dirty(gpu, snap, &dirty_ranges, &viewport, update.preedit.as_ref());
         self.decoration
@@ -207,6 +216,7 @@ impl TerminalRenderPipeline {
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         self.background.draw(pass);
+        self.boxes.draw(pass);
         self.text.draw(pass);
         self.decoration.draw(pass);
         self.selection.draw(pass);

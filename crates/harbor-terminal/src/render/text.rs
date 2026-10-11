@@ -221,7 +221,7 @@ fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.isolated_mark {
         chars.push('\u{25cc}');
     }
-    if cell.ch != ' ' {
+    if cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch) {
         chars.push(cell.ch);
     }
     chars.extend(cell.suffix.chars().filter(|&ch| {
@@ -459,6 +459,7 @@ impl Text {
                 continue;
             }
             if cell.ch != ' '
+                && !super::box_drawing::is_box_drawing(cell.ch)
                 && !cell.isolated_mark
                 && !cell.wide_continuation
                 && !cell.attrs.contains(CellAttrs::CONCEAL)
@@ -989,6 +990,20 @@ pub(super) mod sequence_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn procedural_box_collection_suppresses_only_the_base_and_retains_marks() {
+        for scalar in 0x2500..=0x257f {
+            let mut cell = Cell {
+                ch: char::from_u32(scalar).unwrap(),
+                ..Cell::default()
+            };
+            cell.suffix.push('\u{301}');
+            assert_eq!(paint_chars(&cell), ['\u{301}']);
+            assert_eq!(cell.grid_width(), 1);
+            assert_eq!(cell.raw_text(), format!("{}\u{301}", cell.ch));
+        }
+    }
     use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
 
     #[test]

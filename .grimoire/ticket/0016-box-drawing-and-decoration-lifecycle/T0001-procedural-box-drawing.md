@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0022 R1, R2 and box-specific R4](../../spec/0022-box-drawing-and-decoration-lifecycle.md), [ADR 0056](../../adr/0056-terminal-owned-procedural-box-drawing.md), [Issue #193](https://github.com/wangjq4214/harbor/issues/193).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
