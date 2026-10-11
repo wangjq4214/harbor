@@ -121,8 +121,9 @@ impl TerminalRenderPipeline {
         Ok(())
     }
 
-    /// Actual host DPI transition. A new session invalidates scalar resolutions,
-    /// sequence failures/tiles and every metric-dependent layer atomically.
+    /// Refresh presentation resources on a host DPI transition without changing
+    /// main's physical-pixel font size or grid metrics. A new session invalidates
+    /// scalar resolutions and sequence failures/tiles atomically.
     pub fn sync_raster_scale(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
@@ -136,10 +137,8 @@ impl TerminalRenderPipeline {
         if self.raster_scale == scale {
             return Ok(false);
         }
-        let mut settings = self.font_settings.clone();
-        settings.size *= scale;
-        let fonts = harbor_text::load_system_fonts(&settings)?;
-        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let fonts = harbor_text::load_system_fonts(&self.font_settings)?;
+        let metrics = *self.metrics();
         let mut replacement = Self::new_at_scale(
             gpu,
             self.viewport.surface_size,
@@ -148,11 +147,7 @@ impl TerminalRenderPipeline {
             update,
             scale,
         )?;
-        replacement.font_settings = self.font_settings.clone();
-        let mut viewport = self.viewport;
-        viewport.cell_width = metrics.cell_width;
-        viewport.line_height = metrics.line_height;
-        replacement.sync_viewport(viewport, true);
+        replacement.sync_viewport(self.viewport, true);
         replacement.prepare(gpu, update, false);
         *self = replacement;
         Ok(true)

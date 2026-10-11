@@ -133,6 +133,9 @@ impl SequenceLayer {
                 + cell.ch.len_utf16()
                 <= SEQUENCE_MAX_UTF16
             {
+                // Terminal font size is physical pixels, as on main. Convert to
+                // DIP for the native request so size * DPI / 96 stays unchanged,
+                // while DPI still participates in cache identity/invalidation.
                 let mut request = SequenceRequest::new(
                     cell.raw_text(),
                     FontSize::new(fonts.size() / scale).unwrap(),

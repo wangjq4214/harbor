@@ -261,6 +261,52 @@ fn fragmented_heart_and_zwj_replace_old_pixels_and_converge_after_erase() {
 }
 
 #[test]
+fn dpi_transitions_preserve_physical_metrics_and_scalar_pixels() {
+    let Some((device, queue)) = test_gpu() else {
+        return;
+    };
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(4, 16);
+    engine.put_str("ASCII e\u{301}\r\n\x1b[4;9mstyled\x1b[0m");
+    let update = engine.read_update(Instant::now());
+    let f = fonts();
+    let metrics = TextMetrics::from_font_metrics(f.font_metrics());
+    let mut pipeline = TerminalRenderPipeline::new(gpu, (256, 128), f, metrics, &update).unwrap();
+    pipeline.prepare(gpu, &update, false);
+    let viewport = pipeline.viewport();
+    let pixels = read_draw(&device, &queue, |p| pipeline.draw(p));
+    for scale in [1.25, 1.5, 2.0, 1.5, 1.0] {
+        let generation = pipeline.text.fonts.presentation_generation();
+        assert!(pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
+        pipeline.prepare(gpu, &update, false);
+        assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
+        assert_eq!(pipeline.viewport(), viewport);
+        assert_eq!(pipeline.text.fonts.size(), 16.0);
+        assert_ne!(
+            pipeline.text.fonts.presentation_generation().session,
+            generation.session
+        );
+        assert_eq!(read_draw(&device, &queue, |p| pipeline.draw(p)), pixels);
+        let stats = pipeline.text.presentation_stats();
+        assert_eq!(stats.native.shapes, 0);
+        assert_eq!(stats.color_atlas_bytes, 0);
+        assert!(!pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
+    }
+}
+
+fn metric_values(metrics: &TextMetrics) -> [f32; 7] {
+    [
+        metrics.cell_width,
+        metrics.line_height,
+        metrics.ascent,
+        metrics.underline_position,
+        metrics.underline_thickness,
+        metrics.strikethrough_position,
+        metrics.strikethrough_thickness,
+    ]
+}
+
+#[test]
 fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source() {
     let Some((device, queue)) = test_gpu() else {
         return;
@@ -297,7 +343,9 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
         pipeline.text.fonts.presentation_generation().session,
         before.session
     );
-    assert!(pipeline.metrics().cell_width > metrics.cell_width);
+    assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
+    assert_eq!(pipeline.text.fonts.size(), 16.0);
+    assert!(!pipeline.text.sequences.atlas.entries.is_empty());
     assert!(
         pipeline
             .text
@@ -305,7 +353,7 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
             .atlas
             .entries
             .keys()
-            .all(|r| r.dpi.get() == 192.0 && r.size.get() == 16.0)
+            .all(|r| r.dpi.get() == 192.0 && r.size.get() == 8.0 && r.raster_size() == 16.0)
     );
     assert!(!pipeline.sync_raster_scale(gpu, 2.0, &update).unwrap());
     let generation = pipeline.text.fonts.presentation_generation();
@@ -321,6 +369,17 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
         generation.session
     );
     assert_eq!(pipeline.raster_scale(), 2.0);
+    assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
+    assert_eq!(pipeline.text.fonts.size(), 16.0);
+    assert!(
+        pipeline
+            .text
+            .sequences
+            .atlas
+            .entries
+            .keys()
+            .all(|r| r.raster_size() == 16.0)
+    );
     assert!(pipeline.sync_raster_scale(gpu, f32::NAN, &update).is_err());
     assert_eq!(
         engine.read_update(Instant::now()).snapshot.cells,
