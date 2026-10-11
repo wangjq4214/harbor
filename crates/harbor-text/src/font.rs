@@ -19,17 +19,15 @@ use crate::metrics::FontMetrics;
 /// System terminal font set with a DirectWrite primary face and glyph fallbacks.
 pub struct FontBook {
     native: Box<DwriteState>,
-    size: f32,
     settings: FontSettings,
 }
 
 impl FontBook {
     /// Wrap a DirectWrite primary-face session.
-    pub(crate) fn from_native(state: DwriteState, size: f32) -> Self {
+    pub(crate) fn from_native(state: DwriteState, settings: FontSettings) -> Self {
         Self {
             native: Box::new(state),
-            size,
-            settings: FontSettings { family: None, size },
+            settings,
         }
     }
 
@@ -86,7 +84,7 @@ impl FontBook {
     }
 
     pub fn font_metrics(&self) -> FontMetrics {
-        self.native.font_metrics(self.size)
+        self.native.font_metrics(self.size())
     }
 
     /// Original startup family/size policy, for atomic host resource replacement.
@@ -95,7 +93,7 @@ impl FontBook {
     }
 
     pub const fn size(&self) -> f32 {
-        self.size
+        self.settings.size
     }
 }
 
@@ -117,7 +115,7 @@ fn load_system_ui_fonts_with_sink(lifecycle: Rc<dyn FontLifecycleSink>) -> Resul
     let size = harbor_config::DEFAULT_UI_FONT_SIZE;
     let state = DwriteState::open_system_ui_primary_with_sink(size, Rc::clone(&lifecycle))
         .context("load DirectWrite system UI primary face")?;
-    let fonts = FontBook::from_native(state, size);
+    let fonts = FontBook::from_native(state, FontSettings { family: None, size });
     emit_font_init(lifecycle.as_ref(), FontSource::System, started);
     Ok(fonts)
 }
@@ -138,8 +136,7 @@ fn load_system_fonts_with_sink(
     } else {
         FontSource::System
     };
-    let mut fonts = FontBook::from_native(state, settings.size);
-    fonts.settings = settings.clone();
+    let fonts = FontBook::from_native(state, settings.clone());
     emit_font_init(lifecycle.as_ref(), source, started);
     Ok(fonts)
 }
@@ -201,6 +198,8 @@ mod tests {
     fn should_load_system_ui_fonts_with_standard_size() {
         let fonts = load_system_ui_fonts().expect("load system ui font");
         assert_eq!(fonts.size(), harbor_config::DEFAULT_UI_FONT_SIZE);
+        assert_eq!(fonts.settings().family, None);
+        assert_eq!(fonts.settings().size, fonts.size());
         let metrics = fonts.font_metrics();
         assert!(metrics.cell_width > 0.0);
         assert!(metrics.line_height > 0.0);
@@ -251,6 +250,11 @@ mod tests {
         .expect("family fallback");
         assert!(fonts.font_metrics().cell_width > 0.0);
         assert_eq!(fonts.size(), 18.0);
+        assert_eq!(
+            fonts.settings().family.as_deref(),
+            Some("Harbor Definitely Missing Font")
+        );
+        assert_eq!(fonts.settings().size, fonts.size());
     }
     #[test]
     fn should_return_positive_advance_when_rasterizing_space_on_default_path() {
