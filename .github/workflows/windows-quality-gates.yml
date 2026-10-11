@@ -37,6 +37,8 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run workspace tests
+        env:
+          HARBOR_TEST_GPU: dx12-warp
         run: cargo test --workspace
 
       - name: Check documentation

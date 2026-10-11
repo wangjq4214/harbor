@@ -385,6 +385,14 @@ impl Text {
         self.dirty = true;
     }
 
+    /// DPI affects sequence request identity, not the scalar physical font size.
+    /// Keep scalar/native resources alive and invalidate only sequence caches;
+    /// prepare_with_dirty observes the generation even with no engine damage.
+    pub(super) fn sync_raster_scale(&mut self, scale: f32) {
+        self.raster_scale = scale;
+        self.fonts.invalidate_presentations();
+    }
+
     pub fn invalidate_projection(&mut self) {
         self.dirty = true;
     }

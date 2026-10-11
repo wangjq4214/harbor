@@ -4,13 +4,34 @@ use crate::{Terminal, TerminalRenderPipeline};
 use std::time::Instant;
 
 pub(crate) fn test_gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let Ok(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-    else {
-        eprintln!("NOT RUN: no GPU adapter for emoji encode/readback");
-        return None;
+    // Opt in to the same DX12 software renderer used by Windows CI, even on
+    // developer machines where the default adapter is a Vulkan hardware GPU.
+    let warp = match std::env::var("HARBOR_TEST_GPU").as_deref() {
+        Ok("dx12-warp") => true,
+        Err(std::env::VarError::NotPresent) => false,
+        other => panic!("unsupported HARBOR_TEST_GPU: {other:?}"),
     };
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if warp {
+        descriptor.backends = wgpu::Backends::DX12;
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        force_fallback_adapter: warp,
+        ..Default::default()
+    })) {
+        Ok(adapter) => adapter,
+        Err(error) if warp => panic!("requested DX12 software adapter unavailable: {error}"),
+        Err(_) => {
+            eprintln!("NOT RUN: no GPU adapter for emoji encode/readback");
+            return None;
+        }
+    };
+    if warp {
+        let info = adapter.get_info();
+        assert_eq!(info.backend, wgpu::Backend::Dx12);
+        assert_eq!(info.device_type, wgpu::DeviceType::Cpu);
+    }
     eprintln!("emoji test adapter: {:?}", adapter.get_info());
     Some(
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
@@ -275,23 +296,90 @@ fn dpi_transitions_preserve_physical_metrics_and_scalar_pixels() {
     pipeline.prepare(gpu, &update, false);
     let viewport = pipeline.viewport();
     let pixels = read_draw(&device, &queue, |p| pipeline.draw(p));
+    let atlas_pixels = pipeline.text.atlas.pixels().to_vec();
+    let vertices = pipeline
+        .text
+        .build_all_vertices(&update.snapshot, &viewport);
+    let scalar_pipeline = pipeline.text.pipeline.clone();
+    let scalar_texture = pipeline.text.gpu_atlas._texture.clone();
+    let scalar_buffer = pipeline.text.vertex_buffer.clone();
+    assert!(engine.acknowledge_update(&update));
+    let update = engine.read_update(Instant::now());
     for scale in [1.25, 1.5, 2.0, 1.5, 1.0] {
         let generation = pipeline.text.fonts.presentation_generation();
         assert!(pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
+        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
+        assert_eq!(pipeline.text.gpu_atlas._texture, scalar_texture);
+        assert_eq!(pipeline.text.vertex_buffer, scalar_buffer);
         pipeline.prepare(gpu, &update, false);
         assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
         assert_eq!(pipeline.viewport(), viewport);
         assert_eq!(pipeline.text.fonts.size(), 16.0);
-        assert_ne!(
-            pipeline.text.fonts.presentation_generation().session,
-            generation.session
+        let current_generation = pipeline.text.fonts.presentation_generation();
+        assert_eq!(current_generation.session, generation.session);
+        assert!(current_generation.revision > generation.revision);
+        assert!(
+            pipeline.text.atlas.pixels() == atlas_pixels,
+            "CPU scalar atlas changed at scale {scale}"
         );
-        assert_eq!(read_draw(&device, &queue, |p| pipeline.draw(p)), pixels);
+        let current_vertices = pipeline
+            .text
+            .build_all_vertices(&update.snapshot, &viewport);
+        assert!(
+            bytemuck::cast_slice::<_, u8>(&current_vertices)
+                == bytemuck::cast_slice::<_, u8>(&vertices),
+            "scalar vertices changed at scale {scale}"
+        );
+        assert_pixels_equal(
+            &read_draw(&device, &queue, |p| pipeline.draw(p)),
+            &pixels,
+            scale,
+        );
         let stats = pipeline.text.presentation_stats();
         assert_eq!(stats.native.shapes, 0);
         assert_eq!(stats.color_atlas_bytes, 0);
         assert!(!pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
+        assert_eq!(
+            pipeline.text.fonts.presentation_generation(),
+            current_generation
+        );
     }
+    let generation = pipeline.text.fonts.presentation_generation();
+    for scale in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+        assert!(pipeline.sync_raster_scale(gpu, scale, &update).is_err());
+        assert_eq!(pipeline.raster_scale(), 1.0);
+        assert_eq!(pipeline.text.fonts.presentation_generation(), generation);
+        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
+    }
+}
+
+// Keep byte-exact GPU comparisons, but report bounded diagnostics instead of
+// dumping two 128 KiB images into the Actions log.
+fn assert_pixels_equal(actual: &[u8], expected: &[u8], scale: f32) {
+    assert_eq!(actual.len(), expected.len());
+    let differences: Vec<_> = actual
+        .chunks_exact(4)
+        .zip(expected.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (actual, expected))| actual != expected)
+        .collect();
+    let max_delta = actual
+        .iter()
+        .zip(expected)
+        .map(|(actual, expected)| actual.abs_diff(*expected))
+        .max()
+        .unwrap_or(0);
+    let samples: Vec<_> = differences
+        .iter()
+        .take(8)
+        .map(|(index, (actual, expected))| (index % 256, index / 256, actual, expected))
+        .collect();
+    assert!(
+        differences.is_empty(),
+        "pixels changed at scale {scale}: {} pixels, max channel delta {max_delta}, \
+         first (x, y, actual, expected): {samples:?}",
+        differences.len()
+    );
 }
 
 fn metric_values(metrics: &TextMetrics) -> [f32; 7] {
@@ -320,6 +408,9 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
     let mut pipeline = TerminalRenderPipeline::new(gpu, (256, 128), f, metrics, &update).unwrap();
     pipeline.prepare(gpu, &update, false);
     let before = pipeline.text.fonts.presentation_generation();
+    // A DPI-only update must refresh sequence caches without engine damage.
+    assert!(engine.acknowledge_update(&update));
+    let update = engine.read_update(Instant::now());
     let palette = Palette {
         foreground: harbor_config::Rgba::from_rgba8(0, 255, 0, 128),
         ..Palette::default()
@@ -339,9 +430,14 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
     );
     assert!(pipeline.sync_raster_scale(gpu, 2.0, &update).unwrap());
     pipeline.prepare(gpu, &update, false);
-    assert_ne!(
-        pipeline.text.fonts.presentation_generation().session,
-        before.session
+    let after_dpi = pipeline.text.fonts.presentation_generation();
+    assert_eq!(after_dpi.session, before.session);
+    assert!(after_dpi.revision > before.revision);
+    assert!(
+        !pipeline
+            .text
+            .sequences
+            .atlas_generation_changed(&pipeline.text.fonts)
     );
     assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
     assert_eq!(pipeline.text.fonts.size(), 16.0);

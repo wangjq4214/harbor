@@ -18,7 +18,6 @@ pub struct TerminalRenderPipeline {
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
     palette: Palette,
-    font_settings: harbor_config::FontSettings,
     raster_scale: f32,
 }
 
@@ -66,7 +65,6 @@ impl TerminalRenderPipeline {
             tint,
             palette,
         );
-        let font_settings = font_book.settings().clone();
         let text = Text::new_at_scale(
             gpu,
             font_book,
@@ -97,7 +95,6 @@ impl TerminalRenderPipeline {
             cursor,
             scrollbar,
             palette,
-            font_settings,
             raster_scale,
         })
     }
@@ -121,9 +118,9 @@ impl TerminalRenderPipeline {
         Ok(())
     }
 
-    /// Refresh presentation resources on a host DPI transition without changing
-    /// main's physical-pixel font size or grid metrics. A new session invalidates
-    /// scalar resolutions and sequence failures/tiles atomically.
+    /// Refresh DPI-dependent sequence resources without changing physical font
+    /// metrics or rebuilding the ordinary-text atlas and GPU pipelines. A new
+    /// presentation revision invalidates sequence successes and failures together.
     pub fn sync_raster_scale(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
@@ -137,19 +134,9 @@ impl TerminalRenderPipeline {
         if self.raster_scale == scale {
             return Ok(false);
         }
-        let fonts = harbor_text::load_system_fonts(&self.font_settings)?;
-        let metrics = *self.metrics();
-        let mut replacement = Self::new_at_scale(
-            gpu,
-            self.viewport.surface_size,
-            fonts,
-            metrics,
-            update,
-            scale,
-        )?;
-        replacement.sync_viewport(self.viewport, true);
-        replacement.prepare(gpu, update, false);
-        *self = replacement;
+        self.text.sync_raster_scale(scale);
+        self.raster_scale = scale;
+        self.prepare(gpu, update, false);
         Ok(true)
     }
 
