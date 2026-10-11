@@ -1,5 +1,7 @@
 pub mod background;
+mod color_atlas;
 pub mod cursor;
+mod sequence;
 pub use crate::cursor_blink;
 pub mod decoration;
 pub mod gpu;

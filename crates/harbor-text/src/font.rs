@@ -20,6 +20,7 @@ use crate::metrics::FontMetrics;
 pub struct FontBook {
     native: Box<DwriteState>,
     size: f32,
+    settings: FontSettings,
 }
 
 impl FontBook {
@@ -28,6 +29,7 @@ impl FontBook {
         Self {
             native: Box::new(state),
             size,
+            settings: FontSettings { family: None, size },
         }
     }
 
@@ -87,6 +89,11 @@ impl FontBook {
         self.native.font_metrics(self.size)
     }
 
+    /// Original startup family/size policy, for atomic host resource replacement.
+    pub fn settings(&self) -> &FontSettings {
+        &self.settings
+    }
+
     pub const fn size(&self) -> f32 {
         self.size
     }
@@ -131,7 +138,8 @@ fn load_system_fonts_with_sink(
     } else {
         FontSource::System
     };
-    let fonts = FontBook::from_native(state, settings.size);
+    let mut fonts = FontBook::from_native(state, settings.size);
+    fonts.settings = settings.clone();
     emit_font_init(lifecycle.as_ref(), source, started);
     Ok(fonts)
 }
