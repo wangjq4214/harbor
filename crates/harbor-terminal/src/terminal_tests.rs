@@ -2963,7 +2963,7 @@ fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
 
     terminal.process_output(b"\x1b[?1006l");
     let before = written.lock().unwrap().len();
-    let silent = terminal
+    let legacy = terminal
         .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
             (2.0, 2.0),
             TerminalPointerPhase::Down,
@@ -2971,8 +2971,9 @@ fn sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty() {
             8,
         )))
         .unwrap();
-    assert_eq!(silent.capture_pointer, Some(8));
-    assert_eq!(written.lock().unwrap().len(), before);
+    assert_eq!(legacy.capture_pointer, Some(8));
+    assert_eq!(&written.lock().unwrap()[before..], b"\x1b[M\x20\x21\x21");
+    let before = written.lock().unwrap().len();
 
     terminal.process_output(b"\x1bc");
     assert_eq!(terminal.screen().input_modes(), InputModes::default());
@@ -3034,7 +3035,7 @@ fn vt_mouse_release_consumes_pending_local_capture_after_alt_transition() {
 }
 
 #[test]
-fn tracking_without_sgr_consumes_wheel_until_tracking_is_disabled() {
+fn legacy_tracking_reports_wheel_without_local_scroll_until_tracking_is_disabled() {
     let reader = ScriptedReader {
         chunks: std::collections::VecDeque::new(),
     };
@@ -3057,7 +3058,7 @@ fn tracking_without_sgr_consumes_wheel_until_tracking_is_disabled() {
         )))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 0);
-    assert!(written.lock().unwrap().is_empty());
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[M\x60\x21\x21");
 
     terminal.process_output(b"\x1b[?1000l");
     terminal
@@ -3069,7 +3070,7 @@ fn tracking_without_sgr_consumes_wheel_until_tracking_is_disabled() {
         )))
         .unwrap();
     assert!(terminal.screen().view_offset() > 0);
-    assert!(written.lock().unwrap().is_empty());
+    assert_eq!(written.lock().unwrap().as_slice(), b"\x1b[M\x60\x21\x21");
 }
 
 #[test]

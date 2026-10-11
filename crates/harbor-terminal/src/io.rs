@@ -769,6 +769,20 @@ impl TerminalIo {
 
     // ── event handling ────────────────────────────────────────────────
 
+    /// Writes an already projected pointer with the exact modes used to project it.
+    /// Do not drain here: that could change coordinate units after projection.
+    pub(crate) fn write_mouse_event(
+        &mut self,
+        event: crate::types::TerminalPointerEvent,
+        modes: crate::InputModes,
+    ) -> anyhow::Result<bool> {
+        let Some(bytes) = input::encode(&TerminalEvent::Pointer(event), modes) else {
+            return Ok(false);
+        };
+        self.write_pty(&bytes)?;
+        Ok(true)
+    }
+
     /// Drains new output, interprets scrollback navigation / wheel, then encodes
     /// remaining events for the PTY.
     ///
@@ -780,7 +794,15 @@ impl TerminalIo {
         event: TerminalEvent,
     ) -> anyhow::Result<bool> {
         self.drain(screen, pointer);
+        self.handle_current_event(screen, event)
+    }
 
+    /// Handles input after the caller has drained output and resolved coordinates.
+    pub(crate) fn handle_current_event(
+        &mut self,
+        screen: &mut Screen,
+        event: TerminalEvent,
+    ) -> anyhow::Result<bool> {
         if let TerminalEvent::Focus(focus) = &event {
             if screen.observe_focus(*focus) {
                 self.write_pty(input::encode_focus(*focus))?;
@@ -789,16 +811,10 @@ impl TerminalIo {
             return Ok(false);
         }
 
-        if matches!(&event, TerminalEvent::Pointer(_))
+        if let TerminalEvent::Pointer(pointer) = &event
             && screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
         {
-            if let Some(bytes) = input::encode(&event, screen.input_modes()) {
-                self.write_pty(&bytes)?;
-                return Ok(true);
-            }
-            // A supported tracking mode without SGR encoding is intentionally
-            // consumed rather than falling back to local selection/scrollback.
-            return Ok(false);
+            return self.write_mouse_event(*pointer, screen.input_modes());
         }
 
         if Self::try_scrollback_wheel(screen, &event) {

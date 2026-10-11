@@ -1,7 +1,7 @@
 //! Terminal keyboard event encoding for the direct PTY input path.
 
 use crate::InputModes;
-use crate::model::MouseTrackingMode;
+use crate::model::{MouseEncoding, MouseTrackingMode};
 use crate::types::{
     TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
     TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
@@ -45,34 +45,113 @@ fn encode_pointer(pointer: &TerminalPointerEvent, modes: InputModes) -> Option<V
         return None;
     }
 
-    let mut button = match pointer.button {
-        TerminalPointerButton::None => 3u8,
-        TerminalPointerButton::Left => 0,
-        TerminalPointerButton::Middle => 1,
-        TerminalPointerButton::Right => 2,
-    };
-    let wheel_delta = match pointer.phase {
-        TerminalPointerPhase::WheelLine { dy, .. }
-        | TerminalPointerPhase::WheelPixel { dy, .. } => Some(dy),
-        _ => None,
-    };
-    if let Some(dy) = wheel_delta {
-        if dy == 0.0 {
-            return None;
+    let encoding = modes.mouse_encoding();
+    let col = report_coordinate(pointer.position.0)?;
+    let row = report_coordinate(pointer.position.1)?;
+    // Reject whole reports instead of wrapping or clamping encoding overflows.
+    match encoding {
+        MouseEncoding::Legacy if col > 223 || row > 223 => return None,
+        MouseEncoding::Utf8 if col > 2015 || row > 2015 => return None,
+        _ => {}
+    }
+    let sgr = matches!(encoding, MouseEncoding::Sgr | MouseEncoding::SgrPixel);
+    let modifiers = mouse_modifier_code(pointer.modifiers);
+    let mut bytes = Vec::new();
+    if let TerminalPointerPhase::WheelLine { dx, dy }
+    | TerminalPointerPhase::WheelPixel { dx, dy } = pointer.phase
+    {
+        // Preserve vertical multiplicity; dual-axis SGR order is vertical, horizontal.
+        if dy.is_finite() && dy != 0.0 {
+            append_mouse_report(
+                &mut bytes,
+                encoding,
+                (if dy > 0.0 { 64 } else { 65 }) | modifiers,
+                col,
+                row,
+                false,
+            );
         }
-        button = if dy > 0.0 { 64 } else { 65 };
+        // winit positive dx moves content right (reveals the left).
+        if sgr && dx.is_finite() && dx != 0.0 {
+            append_mouse_report(
+                &mut bytes,
+                encoding,
+                (if dx > 0.0 { 66 } else { 67 }) | modifiers,
+                col,
+                row,
+                false,
+            );
+        }
+    } else {
+        let release = matches!(pointer.phase, TerminalPointerPhase::Up);
+        let button = if release && !sgr {
+            3
+        } else {
+            match pointer.button {
+                TerminalPointerButton::None => 3,
+                TerminalPointerButton::Left => 0,
+                TerminalPointerButton::Middle => 1,
+                TerminalPointerButton::Right => 2,
+            }
+        };
+        let button = button | modifiers | if is_motion { 32 } else { 0 };
+        append_mouse_report(&mut bytes, encoding, button, col, row, release);
     }
-    button |= mouse_modifier_code(pointer.modifiers);
-    if is_motion {
-        button = button.saturating_add(32);
+    (!bytes.is_empty()).then_some(bytes)
+}
+
+/// Positions are zero-based cells or physical pixels. Negative finite samples
+/// clamp to the content origin; non-finite or unrepresentable samples are dropped.
+fn report_coordinate(position: f32) -> Option<u32> {
+    if !position.is_finite() {
+        return None;
     }
-    let release = matches!(pointer.phase, TerminalPointerPhase::Up);
-    let suffix = if release { 'm' } else { 'M' };
-    let col = pointer.position.0.max(0.0) as u32 + 1;
-    let row = pointer.position.1.max(0.0) as u32 + 1;
-    modes
-        .mouse_sgr
-        .then(|| format!("\x1b[<{};{};{}{}", button, col, row, suffix).into_bytes())
+    let coordinate = f64::from(position).max(0.0).floor() + 1.0;
+    (coordinate <= f64::from(u32::MAX)).then_some(coordinate as u32)
+}
+
+fn append_mouse_report(
+    bytes: &mut Vec<u8>,
+    encoding: MouseEncoding,
+    button: u8,
+    col: u32,
+    row: u32,
+    release: bool,
+) {
+    match encoding {
+        MouseEncoding::Legacy => {
+            bytes.extend_from_slice(&[
+                0x1b,
+                b'[',
+                b'M',
+                button + 32,
+                (col + 32) as u8,
+                (row + 32) as u8,
+            ]);
+        }
+        MouseEncoding::Utf8 => {
+            bytes.extend_from_slice(b"\x1b[M");
+            for value in [u32::from(button) + 32, col + 32, row + 32] {
+                let mut utf8 = [0; 4];
+                // Range checks above guarantee scalar values <= 2047.
+                bytes.extend_from_slice(
+                    char::from_u32(value)
+                        .expect("mouse scalar")
+                        .encode_utf8(&mut utf8)
+                        .as_bytes(),
+                );
+            }
+        }
+        MouseEncoding::Urxvt => {
+            bytes.extend_from_slice(format!("\x1b[{};{};{}M", button + 32, col, row).as_bytes());
+        }
+        MouseEncoding::Sgr | MouseEncoding::SgrPixel => {
+            let suffix = if release { 'm' } else { 'M' };
+            bytes.extend_from_slice(
+                format!("\x1b[<{};{};{}{}", button, col, row, suffix).as_bytes(),
+            );
+        }
+    }
 }
 
 fn encode_key(
@@ -507,12 +586,6 @@ mod tests {
             )),
             TerminalEvent::Pointer(TerminalPointerEvent::new(
                 (0.0, 0.0),
-                TerminalPointerPhase::WheelPixel { dx: 1.0, dy: 0.0 },
-                TerminalPointerButton::Right,
-                1,
-            )),
-            TerminalEvent::Pointer(TerminalPointerEvent::new(
-                (0.0, 0.0),
                 TerminalPointerPhase::Cancel,
                 TerminalPointerButton::Left,
                 1,
@@ -531,6 +604,6 @@ mod tests {
             TerminalPointerButton::Left,
             1,
         ));
-        assert_eq!(encode(&press, no_sgr), None);
+        assert_eq!(encode(&press, no_sgr), Some(b"\x1b[M\x20\x21\x21".to_vec()));
     }
 }

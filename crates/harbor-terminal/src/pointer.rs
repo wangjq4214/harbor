@@ -203,12 +203,24 @@ impl PointerInteraction {
         }
     }
 
+    /// Projects using the snapshot's encoding units, retaining pixel precision.
+    /// Negative pixels clamp to the origin; the encoder rejects non-finite and
+    /// unrepresentable upper coordinates rather than wrapping or upper-clamping.
     pub fn report_position(
         &self,
         position: (f32, f32),
         snapshot: &crate::model::TerminalSnapshot,
     ) -> Option<(f32, f32)> {
         let viewport = self.viewport?;
+        if snapshot.input_modes.mouse_encoding() == crate::model::MouseEncoding::SgrPixel {
+            let physical = self.physical_position(position);
+            let x = physical.0 - viewport.allocation_origin.0 - viewport.padding;
+            let y = physical.1 - viewport.allocation_origin.1 - viewport.padding;
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+            return Some((x.max(0.0), y.max(0.0)));
+        }
         let (row, col) = self.grid_cell(position, snapshot, &viewport);
         Some((col as f32, row as f32))
     }

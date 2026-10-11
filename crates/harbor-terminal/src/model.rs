@@ -400,6 +400,17 @@ pub enum MouseTrackingMode {
     AnyMotion,
 }
 
+/// Effective wire encoding, independent of mouse tracking eligibility.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MouseEncoding {
+    #[default]
+    Legacy,
+    Utf8,
+    Urxvt,
+    Sgr,
+    SgrPixel,
+}
+
 /// Lightweight snapshot of terminal modes that affect input encoding.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InputModes {
@@ -408,9 +419,27 @@ pub struct InputModes {
     pub bracketed_paste: bool,
     pub mouse_tracking: MouseTrackingMode,
     pub mouse_sgr: bool,
+    pub mouse_utf8: bool,
+    pub mouse_urxvt: bool,
+    pub mouse_sgr_pixel: bool,
 }
 
 impl InputModes {
+    /// Selects retained encoding flags in DEC mode priority, not command order.
+    pub fn mouse_encoding(&self) -> MouseEncoding {
+        if self.mouse_sgr_pixel {
+            MouseEncoding::SgrPixel
+        } else if self.mouse_sgr {
+            MouseEncoding::Sgr
+        } else if self.mouse_urxvt {
+            MouseEncoding::Urxvt
+        } else if self.mouse_utf8 {
+            MouseEncoding::Utf8
+        } else {
+            MouseEncoding::Legacy
+        }
+    }
+
     /// Returns raw pasted bytes, framed with bracketed-paste markers when enabled.
     pub fn paste<'a>(&self, text: &'a [u8]) -> Cow<'a, [u8]> {
         if !self.bracketed_paste {

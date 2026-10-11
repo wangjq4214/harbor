@@ -1,7 +1,10 @@
 # Prioritized SGR-Only Mouse Reporting
 
-**Status:** Completed
+**Status:** Superseded
 **Date:** 2026-09-17
+**Superseded by:** [ADR 0055 — Multi-Encoding Mouse Reporting](./0055-multi-encoding-mouse-reporting.md)
+
+The 2026-10-11 refinement for #192 replaces the SGR-only encoding boundary while preserving independent tracking priority. ADR 0055 is Proposed: the original #102 implementation remains the current runtime baseline until the extension is delivered.
 
 ## Context
 

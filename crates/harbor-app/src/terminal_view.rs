@@ -1132,6 +1132,35 @@ mod tests {
     }
 
     #[test]
+    fn should_preserve_both_wheel_axes_and_units_at_terminal_bridge() {
+        for (ui_phase, terminal_phase) in [
+            (
+                PointerPhase::WheelLine { dx: 1.5, dy: -2.0 },
+                TerminalPointerPhase::WheelLine { dx: 1.5, dy: -2.0 },
+            ),
+            (
+                PointerPhase::WheelPixel { dx: -0.25, dy: 3.5 },
+                TerminalPointerPhase::WheelPixel { dx: -0.25, dy: 3.5 },
+            ),
+        ] {
+            assert_eq!(
+                terminal_event_from_ui_event(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(1.0, 2.0),
+                    ui_phase,
+                    PointerButton::Left,
+                    3
+                ))),
+                Some(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                    (1.0, 2.0),
+                    terminal_phase,
+                    TerminalPointerButton::Left,
+                    3
+                )))
+            );
+        }
+    }
+
+    #[test]
     fn should_suppress_non_wheel_when_gate_active() {
         let key = UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: WidgetKey::Enter,

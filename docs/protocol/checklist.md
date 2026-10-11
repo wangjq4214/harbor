@@ -746,10 +746,12 @@ T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow,
 * [x] `?1000` — Normal Tracking
 * [x] `?1002` — Button Event Tracking
 * [x] `?1003` — Any Event Tracking
-* [ ] `?1005` — UTF-8 Mouse
+* [x] `?1005` — UTF-8 Mouse
 * [x] `?1006` — SGR Mouse
-* [ ] `?1015` — urxvt Mouse
-* [ ] `?1016` — SGR Pixel Mouse
+* [x] `?1015` — urxvt Mouse
+* [x] `?1016` — SGR Pixel Mouse
+
+Implemented mode/parser scope: independent tracking `1003 > 1002 > 1000` and encoding `1016 > 1006 > 1015 > 1005 > legacy`; disabling the winner reveals retained flags. Encoding alone does not enable tracking; RIS clears all flags. Evidence: `screen/cursor.rs`, `model.rs`, and `mouse_encoding_flags_queries_fallback_ris_and_tracking_off` / `mouse_fragmented_mode_query_reset_and_cancellation_streams` in `crates/harbor-terminal/src/mouse_tests.rs`. Native Windows acceptance remains pending in [the scoped evidence record](../multi-encoding-mouse-acceptance.md).
 
 ### 17.7 Other Modern Modes
 
@@ -874,6 +876,8 @@ T0002 verification covers `8`/`28`, `53`/`55`, exact DECRQSS, state/copy/reflow,
 ---
 
 ## 22. Mode Queries
+
+Mouse modes `1000/1002/1003/1005/1006/1015/1016` return each flag's own set/reset status even when a higher priority mode wins; unsupported `9` remains unknown. Exact replies, enable/disable/RIS and all-byte split/cancellation recovery: `mouse_encoding_flags_queries_fallback_ris_and_tracking_off`, `mouse_fragmented_mode_query_reset_and_cancellation_streams` and `mouse_partial_query_and_disable_do_not_complete_prematurely` in `crates/harbor-terminal/src/mouse_tests.rs`.
 
 ### 22.1 DECRQM
 
@@ -1160,7 +1164,7 @@ Evidence: string states in `crates/harbor-parser/src/core.rs` and consume-only t
 
 ## 28. Mouse Protocol Output
 
-Tracking modes 1000/1002/1003 currently produce reports only with SGR encoding (1006); legacy `CSI M` is not implemented. Evidence: `crates/harbor-terminal/src/input.rs` and `pointer.rs`; `sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty`, `terminal_mouse_filters_follow_effective_mode_fallback_and_cancel_state`, and `focus_reporting_writes_only_enabled_real_transitions` in `crates/harbor-terminal/src/terminal_tests.rs`. Windows application interoperability remains a separate acceptance gate.
+Tracking modes 1000/1002/1003 report independently of encoding. Supported wire formats are legacy `CSI M`, UTF-8 1005, urxvt 1015, SGR cell 1006 and SGR physical pixel 1016. Evidence: `crates/harbor-terminal/src/input.rs`, `pointer.rs`, `lib.rs` and the recording-PTY tests in `mouse_tests.rs`: `mouse_all_encodings_press_release_reach_pty`, `mouse_all_buttons_modifiers_and_event_codes`, `mouse_tracking_fallback_cancel_and_encoding_overflow_preserve_vt_ownership` and `mouse_queued_output_resolves_tracking_and_coordinate_units_before_projection`. Existing SGR/focus/keyboard/IME regressions remain in `terminal_tests.rs` / `engine_tests.rs`. These are scoped implementation/automated checkmarks, not [Windows application acceptance](../multi-encoding-mouse-acceptance.md).
 
 ### 28.1 Mode Priority
 
@@ -1173,11 +1177,13 @@ Tracking modes 1000/1002/1003 currently produce reports only with SGR encoding (
 
 ### 28.2 X10 Encoding
 
-* [ ] `CSI M Cb Cx Cy`
-* [ ] Coordinates are encoded with the protocol offset
-* [ ] Behavior is well-defined when coordinates exceed range
+Here “X10 Encoding” means the legacy wire format, not press-only `?9` tracking. Releases and eligible motion remain enabled under `1000/1002/1003`; `?9` and press-only behavior are unimplemented. Numeric offset, modifiers and both coordinate limits: `mouse_encoding_numeric_boundaries_are_exact_and_safe`, `mouse_large_viewport_limits_are_not_hidden_by_cell_clamping`, `mouse_all_buttons_modifiers_and_event_codes`. Legacy >223 and UTF-8 >2015 suppress complete reports without local fallback. urxvt/SGR decimal encoding does not share those limits.
+
+* [x] `CSI M Cb Cx Cy`
+* [x] Coordinates are encoded with the protocol offset
+* [x] Behavior is well-defined when coordinates exceed range
 * [ ] X10 only reports press events
-* [ ] Modifier bits are encoded correctly
+* [x] Modifier bits are encoded correctly
 
 ### 28.3 SGR Mouse
 
@@ -1190,19 +1196,23 @@ Tracking modes 1000/1002/1003 currently produce reports only with SGR encoding (
 * [x] Release encoding correct
 * [x] Scroll up encoding correct
 * [x] Scroll down encoding correct
-* [ ] Horizontal scroll optionally supported
+* [x] Horizontal scroll optionally supported
 * [x] Shift bit correct
 * [x] Alt/Meta bit correct
 * [x] Ctrl bit correct
 * [x] Motion bit correct
 * [x] Drag and Move are correctly distinguished
 
+Horizontal SGR codes are positive dx → 66 (left), negative dx → 67 (right), matching winit content-movement signs. Dual-axis reports are vertical then horizontal, once per nonzero axis; no accumulation or magnitude repetition. Both wheel units/modifiers/zero input: `mouse_wheels_both_units_signs_order_modifiers_and_multiplicity`; transport seams: widget `wheel_conversion_preserves_line_and_pixel_payloads` and app `should_preserve_both_wheel_axes_and_units_at_terminal_bridge`.
+
 ### 28.4 Pixel Mouse
 
-* [ ] `?1016` enables pixel coordinates
-* [ ] Coordinates use pixels rather than cells
-* [ ] Coordinate origin and 1-based rules are correct
-* [ ] Switching with normal SGR Mouse is correct
+* [x] `?1016` enables pixel coordinates
+* [x] Coordinates use pixels rather than cells
+* [x] Coordinate origin and 1-based rules are correct
+* [x] Switching with normal SGR Mouse is correct
+
+Pixel projection scales the logical sample once, subtracts physical allocation origin and padding, then floors and adds one in the encoder. Finite negative content-relative pixels clamp to zero; upper positions are not viewport-clamped, and non-finite or >u32 final coordinates drop the report safely. Tests: `mouse_pixel_geometry_precision_switching_and_safe_boundaries` covers fractional positions and content origin, same-cell pixels, padding/allocation/2x DPI, later geometry changes and safe extremes; cell viewport clamping is retained.
 
 ### 28.5 Focus Reporting
 

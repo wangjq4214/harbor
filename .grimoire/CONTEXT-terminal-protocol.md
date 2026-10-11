@@ -264,9 +264,9 @@
   - communicates with Winit Adapter
   - depends on Terminal Widget Bridge
 
-### SGR Mouse Reporting
-- **Definition:** Harbor's cell-coordinate mouse protocol path uses DEC tracking modes `?1000`, `?1002`, and `?1003` with independent enablement and effective priority `?1003 > ?1002 > ?1000`; clearing a higher-priority mode reveals the next enabled mode. Reports are emitted only with SGR encoding mode `?1006`; without it, tracking still owns and consumes pointer input but emits no legacy encoding. RIS clears all tracking and SGR encoding modes.
-- **Synonyms:** SGR mouse tracking, DECSET mouse reporting
+### VT Mouse Reporting
+- **Definition:** Harbor's approved #192 mouse contract separates independently enabled tracking modes (`?1003 > ?1002 > ?1000`) from independently enabled encodings (`?1016 > ?1006 > ?1015 > ?1005 > legacy`). Disabling a higher-priority mode reveals the next enabled mode; mode queries report each flag's own state, and encoding enablement alone does not activate tracking. Legacy `CSI M` retains the effective tracking mode's press/release/motion semantics, suppresses reports outside its 223-coordinate limit, and is not the press-only `?9` tracking mode, which remains unsupported in this delivery. SGR pixel coordinates are 1-based physical pixels relative to terminal content, derived inside Terminal without losing sub-cell precision; WheelPixel describes wheel-delta units independently. Tracked input takes precedence over local selection/scrollback, including events that emit no bytes. RIS clears tracking and encoding enablement. [ADR 0055](./adr/0055-multi-encoding-mouse-reporting.md) records the approved, not-yet-implemented extension, including horizontal SGR wheel reporting; the current implementation still has the older SGR-only boundary preserved in [ADR 0038](./adr/0038-prioritized-sgr-only-mouse-reporting.md).
+- **Synonyms:** SGR Mouse Reporting, SGR mouse tracking, DECSET mouse reporting
 - **Relationships:**
   - belongs to Terminal
   - communicates with Runtime Host

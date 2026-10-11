@@ -136,6 +136,12 @@ pub(crate) struct TerminalModes {
     pub(crate) mouse_any_motion_tracking: bool,
     /// SGR extended mouse coordinate encoding (DECSET ?1006).
     pub(crate) mouse_sgr: bool,
+    /// UTF-8 mouse encoding (DECSET ?1005).
+    pub(crate) mouse_utf8: bool,
+    /// urxvt decimal mouse encoding (DECSET ?1015).
+    pub(crate) mouse_urxvt: bool,
+    /// SGR physical-pixel mouse encoding (DECSET ?1016).
+    pub(crate) mouse_sgr_pixel: bool,
 }
 
 impl TerminalModes {
@@ -153,6 +159,9 @@ impl TerminalModes {
             mouse_button_motion_tracking: false,
             mouse_any_motion_tracking: false,
             mouse_sgr: false,
+            mouse_utf8: false,
+            mouse_urxvt: false,
+            mouse_sgr_pixel: false,
         }
     }
 
@@ -264,6 +273,9 @@ impl CursorEngine {
             bracketed_paste: self.modes.bracketed_paste,
             mouse_tracking: self.modes.effective_mouse_tracking(),
             mouse_sgr: self.modes.mouse_sgr,
+            mouse_utf8: self.modes.mouse_utf8,
+            mouse_urxvt: self.modes.mouse_urxvt,
+            mouse_sgr_pixel: self.modes.mouse_sgr_pixel,
         }
     }
 
@@ -446,6 +458,9 @@ impl CursorEngine {
             1002 => self.modes.mouse_button_motion_tracking = enabled,
             1003 => self.modes.mouse_any_motion_tracking = enabled,
             1006 => self.modes.mouse_sgr = enabled,
+            1005 => self.modes.mouse_utf8 = enabled,
+            1015 => self.modes.mouse_urxvt = enabled,
+            1016 => self.modes.mouse_sgr_pixel = enabled,
             2004 => self.modes.bracketed_paste = enabled,
             6 => {
                 self.modes.origin = enabled;
@@ -486,6 +501,9 @@ impl CursorEngine {
             1002 => Some(self.modes.mouse_button_motion_tracking),
             1003 => Some(self.modes.mouse_any_motion_tracking),
             1006 => Some(self.modes.mouse_sgr),
+            1005 => Some(self.modes.mouse_utf8),
+            1015 => Some(self.modes.mouse_urxvt),
+            1016 => Some(self.modes.mouse_sgr_pixel),
             2004 => Some(self.modes.bracketed_paste),
             _ => None,
         }

@@ -14,6 +14,8 @@ mod io;
 pub mod layout;
 mod logical_content;
 mod model;
+#[cfg(test)]
+mod mouse_tests;
 mod normal_buf;
 #[cfg(test)]
 mod palette_tests;
@@ -40,8 +42,8 @@ pub use layout::RenderViewport;
 pub use model::should_confirm_multiline;
 pub use model::{DirtyRange, UnderlineStyle};
 pub use model::{
-    InputModes, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage,
-    safe_preview_line,
+    InputModes, MouseEncoding, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot,
+    UpdateDamage, safe_preview_line,
 };
 pub use normal_buf::NormalBuf;
 pub use parser::TerminalParser;
@@ -383,6 +385,14 @@ impl Terminal {
                 return Ok(outcome);
             }
             TerminalEvent::Pointer(pointer) => {
+                // Parse completed commands before choosing routing and coordinate units.
+                // Preserve a browsed viewport for local input as before.
+                if self.pointer.has_viewport()
+                    && self.screen.input_modes().mouse_tracking == MouseTrackingMode::Disabled
+                {
+                    self.io.set_suppress_scroll_snap(true);
+                }
+                self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
                 if !self.pointer.has_viewport()
                     || self.screen.input_modes().mouse_tracking
                         != crate::model::MouseTrackingMode::Disabled
@@ -391,15 +401,26 @@ impl Terminal {
                     outcome.redraw = interrupted.redraw;
                     outcome.release_pointer = interrupted.release_pointer;
                     let mut reported = self.pointer.prepare_mouse_event(*pointer);
-                    if let Some(position) = self
-                        .pointer
-                        .report_position(reported.position, &self.screen.terminal_snapshot())
-                    {
+                    let modes = self.screen.input_modes();
+                    let position = if self.pointer.has_viewport() {
+                        self.pointer
+                            .report_position(reported.position, &self.screen.terminal_snapshot())
+                    } else {
+                        Some(reported.position)
+                    };
+                    let wrote = if let Some(position) = position {
                         reported.position = position;
-                    }
-                    let wrote = self.ingest_screen(|io, screen, pointer| {
-                        io.handle_event(screen, pointer, TerminalEvent::Pointer(reported))
-                    })?;
+                        if modes.mouse_tracking == MouseTrackingMode::Disabled {
+                            self.io.handle_current_event(
+                                &mut self.screen,
+                                TerminalEvent::Pointer(reported),
+                            )?
+                        } else {
+                            self.io.write_mouse_event(reported, modes)?
+                        }
+                    } else {
+                        false
+                    };
                     outcome.capture_pointer = match pointer.phase {
                         TerminalPointerPhase::Down => {
                             self.pointer.begin_vt_capture(pointer.pointer_id);
@@ -422,7 +443,6 @@ impl Terminal {
                 // Preserve the review position while applying local pointer
                 // intent; queued output must not snap it before hit testing.
                 self.io.set_suppress_scroll_snap(true);
-                self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
                 outcome = self
                     .pointer
                     .handle_pointer(&mut self.screen, *pointer, Instant::now());
