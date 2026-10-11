@@ -17,6 +17,117 @@ fn request(s: &str) -> SequenceRequest {
     )
 }
 
+// Use a real native face, but control metadata independently of installed shaping.
+fn validation_run() -> OwnedRun {
+    let s = state();
+    let layout = make_layout(&s.session, &request("♥")).unwrap();
+    let mut run = capture(&layout).unwrap().remove(0);
+    run.info.utf16_start = 0;
+    run.info.utf16_len = 2;
+    run.info.glyphs = vec![1, 2];
+    run.info.clusters = vec![0, 0];
+    run
+}
+
+#[test]
+fn validation_requires_one_run_covering_the_entire_source() {
+    assert_eq!(validate_runs(&[validation_run()], 2), Ok(()));
+    for (start, len) in [(1, 1), (0, 1), (0, 3), (2, 2), (0, 0)] {
+        let mut run = validation_run();
+        run.info.utf16_start = start;
+        run.info.utf16_len = len;
+        run.info.clusters = vec![0; len as usize];
+        assert_eq!(
+            validate_runs(&[run], 2),
+            Err(UnsupportedReason::UnjoinedSequence),
+            "range {start}..{}",
+            start + len
+        );
+    }
+    // Even disjoint runs with full coverage are not an atomic retained unit.
+    let mut first = validation_run();
+    first.info.utf16_len = 1;
+    first.info.clusters = vec![0];
+    let mut second = validation_run();
+    second.info.utf16_start = 1;
+    second.info.utf16_len = 1;
+    second.info.clusters = vec![0];
+    assert_eq!(
+        validate_runs(&[first, second], 2),
+        Err(UnsupportedReason::UnjoinedSequence)
+    );
+    assert_eq!(
+        validate_runs(&[validation_run(), validation_run()], 2),
+        Err(UnsupportedReason::UnjoinedSequence)
+    );
+}
+
+#[test]
+fn validation_requires_valid_identical_clusters_not_one_glyph() {
+    for clusters in [
+        vec![],
+        vec![0],
+        vec![0, 0, 0],
+        vec![2, 2],
+        vec![0, 2],
+        vec![0, 1],
+    ] {
+        let mut run = validation_run();
+        run.info.clusters = clusters;
+        assert_eq!(
+            validate_runs(&[run], 2),
+            Err(UnsupportedReason::UnjoinedSequence)
+        );
+    }
+    // A shared nonzero cluster index and multiple glyphs remain valid.
+    let mut run = validation_run();
+    run.info.clusters = vec![1, 1];
+    assert_eq!(validate_runs(&[run], 2), Ok(()));
+    let mut run = validation_run();
+    run.info.glyphs.clear();
+    assert_eq!(
+        validate_runs(&[run], 2),
+        Err(UnsupportedReason::UnjoinedSequence)
+    );
+}
+
+#[test]
+fn validation_missing_glyph_wins_over_range_cluster_and_run_errors() {
+    assert_eq!(validate_runs(&[], 2), Err(UnsupportedReason::MissingGlyph));
+    let mut missing = validation_run();
+    missing.info.glyphs = vec![0];
+    missing.info.utf16_start = 1;
+    missing.info.clusters = vec![9];
+    assert_eq!(
+        validate_runs(&[missing], 2),
+        Err(UnsupportedReason::MissingGlyph)
+    );
+    let mut invalid = validation_run();
+    invalid.info.clusters.clear();
+    let mut missing = validation_run();
+    missing.info.glyphs.push(0);
+    assert_eq!(
+        validate_runs(&[invalid, missing], 2),
+        Err(UnsupportedReason::MissingGlyph)
+    );
+}
+
+#[test]
+fn rejected_shapes_do_not_consume_face_ids() {
+    let s = state();
+    let mut next_face = 41;
+    for source in ["♥\u{10ffff}", "😀😀", "👩\u{200d}", "👩\u{200d}A"] {
+        assert!(
+            shape(&s.session, &request(source), &mut next_face).is_err(),
+            "{source:?}"
+        );
+        assert_eq!(next_face, 41, "{source:?}");
+    }
+    let shaped = shape(&s.session, &request("♥"), &mut next_face).unwrap();
+    assert_eq!(next_face, 42);
+    assert_eq!(shaped.runs[0].info.face, FaceId::new(41));
+}
+
 #[test]
 fn controlled_native_unavailability_is_cached_then_invalidated() {
     let s = state();
@@ -76,6 +187,26 @@ fn native_monochrome_honors_foreground_and_alpha() {
     assert!(
         matches!(&p.outcome, SequenceOutcome::Complete { tile, .. } if tile.rgba.iter().all(|&p| p==0))
     );
+}
+
+#[test]
+fn native_modern_and_legacy_no_color_keep_outline_pixels_and_formats() {
+    let s = state();
+    let mut r = request("♥");
+    r.intent = PresentationIntent::Emoji;
+    r.foreground = [0, 255, 0, 128];
+    // Shape the primary monochrome face before requesting color dispatch.
+    let shaped = shape(&s.session, &request("♥"), &mut 1).unwrap();
+    let mut o = Offscreen::new(&s.session.factory).unwrap();
+    let modern = o.raster_pass(&shaped, &r, true).unwrap();
+    assert_eq!(modern.0, CompleteKind::Monochrome);
+    assert_ne!(modern.1.image_formats, 0);
+    o.capabilities.colr_v1 = false;
+    o.capabilities.bitmap_svg = false;
+    o.context7 = None;
+    o.context4 = None;
+    assert_eq!(o.raster_pass(&shaped, &r, true).unwrap(), modern);
+    assert_eq!(o.raster_pass(&shaped, &r, false).unwrap(), modern);
 }
 
 #[test]

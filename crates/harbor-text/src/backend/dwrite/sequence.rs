@@ -244,45 +244,8 @@ fn shape(
         return Err(UnsupportedReason::NotEmojiUnit);
     }
     let layout = make_layout(session, r).map_err(|_| UnsupportedReason::NativeFailure)?;
-    let captured = capture(&layout).map_err(|_| UnsupportedReason::NativeFailure)?;
-    let mut runs = captured;
-    if runs.is_empty() || runs.iter().any(|run| run.info.glyphs.contains(&0)) {
-        return Err(UnsupportedReason::MissingGlyph);
-    }
-    let len = r.source.encode_utf16().count() as u32;
-    let mut covered = vec![false; len as usize];
-    for run in &runs {
-        let info = &run.info;
-        if info.utf16_start + info.utf16_len > len
-            || info.clusters.len() != info.utf16_len as usize
-            || info
-                .clusters
-                .iter()
-                .any(|&c| usize::from(c) >= info.glyphs.len())
-        {
-            return Err(UnsupportedReason::UnjoinedSequence);
-        }
-        for position in info.utf16_start..info.utf16_start + info.utf16_len {
-            if covered[position as usize] {
-                return Err(UnsupportedReason::UnjoinedSequence);
-            }
-            covered[position as usize] = true;
-        }
-    }
-    if covered.contains(&false) {
-        return Err(UnsupportedReason::UnjoinedSequence);
-    }
-    // An atomic retained emoji must occupy one shaping cluster, including every
-    // UTF-16 code unit. This deliberately declines decomposed representations.
-    if runs.len() != 1
-        || runs[0]
-            .info
-            .clusters
-            .iter()
-            .any(|&c| c != runs[0].info.clusters[0])
-    {
-        return Err(UnsupportedReason::UnjoinedSequence);
-    }
+    let mut runs = capture(&layout).map_err(|_| UnsupportedReason::NativeFailure)?;
+    validate_runs(&runs, r.source.encode_utf16().count() as u32)?;
     // For a ZWJ candidate also require a substitution, not simply ignored joiners
     // or a single missing/leading glyph. Shape a control with joiners removed.
     // This is structural evidence; semantic support claims still need fixtures.
@@ -321,6 +284,29 @@ fn shape(
     Ok(ShapedUnit { runs })
 }
 type ShapeResultOwned = Result<ShapedUnit, UnsupportedReason>;
+
+fn validate_runs(runs: &[OwnedRun], len: u32) -> Result<(), UnsupportedReason> {
+    if runs.is_empty() || runs.iter().any(|run| run.info.glyphs.contains(&0)) {
+        return Err(UnsupportedReason::MissingGlyph);
+    }
+    // An atomic retained emoji must occupy one run and one shaping cluster,
+    // including every UTF-16 code unit. Decline decomposed representations.
+    let [run] = runs else {
+        return Err(UnsupportedReason::UnjoinedSequence);
+    };
+    let info = &run.info;
+    if info.utf16_start != 0
+        || info.utf16_len != len
+        || info.clusters.len() != len as usize
+        || info
+            .clusters
+            .iter()
+            .any(|&c| usize::from(c) >= info.glyphs.len() || c != info.clusters[0])
+    {
+        return Err(UnsupportedReason::UnjoinedSequence);
+    }
+    Ok(())
+}
 
 fn make_layout(
     session: &DirectWriteSession,
@@ -368,7 +354,8 @@ fn capture(layout: &IDWriteTextLayout) -> NativeResult<Vec<OwnedRun>> {
     unsafe {
         layout.Draw(None, &renderer, 0.0, 0.0)?;
     }
-    Ok(object.runs.borrow_mut().drain(..).collect())
+    let runs = std::mem::take(&mut *object.runs.borrow_mut());
+    Ok(runs)
 }
 
 #[implement(IDWriteTextRenderer)]
@@ -544,6 +531,28 @@ struct Offscreen {
     capabilities: SequenceCapabilities,
 }
 impl Offscreen {
+    unsafe fn draw_outline_layer(
+        &self,
+        layer: &DWRITE_COLOR_GLYPH_RUN,
+        foreground: &ID2D1SolidColorBrush,
+    ) -> Result<(), UnsupportedReason> {
+        unsafe {
+            let brush = self
+                .layer_brush(layer.runColor, layer.paletteIndex, foreground)
+                .map_err(|_| UnsupportedReason::NativeFailure)?;
+            self.context.DrawGlyphRun(
+                Vector2 {
+                    X: layer.baselineOriginX,
+                    Y: layer.baselineOriginY,
+                },
+                &layer.glyphRun,
+                None,
+                &brush,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            Ok(())
+        }
+    }
     unsafe fn layer_brush(
         &self,
         color: DWRITE_COLOR_F,
@@ -848,7 +857,6 @@ impl Offscreen {
                         palette,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
-                    formats |= format.0 as u32;
                 } else if format == DWRITE_GLYPH_IMAGE_FORMATS_SVG {
                     self.context4
                         .as_ref()
@@ -861,7 +869,6 @@ impl Offscreen {
                             palette,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
-                    formats |= format.0 as u32;
                 } else if (format.0 & bitmap_formats().0) != 0 {
                     self.context4
                         .as_ref()
@@ -873,7 +880,6 @@ impl Offscreen {
                             DWRITE_MEASURING_MODE_NATURAL,
                             D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DISABLE,
                         );
-                    formats |= format.0 as u32;
                 } else if (format.0
                     & (DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE
                         | DWRITE_GLYPH_IMAGE_FORMATS_CFF
@@ -881,20 +887,11 @@ impl Offscreen {
                         .0)
                     != 0
                 {
-                    let layer_brush = self
-                        .layer_brush(base.runColor, base.paletteIndex, brush)
-                        .map_err(|_| UnsupportedReason::NativeFailure)?;
-                    self.context.DrawGlyphRun(
-                        p,
-                        &base.glyphRun,
-                        None,
-                        &layer_brush,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    formats |= format.0 as u32;
+                    self.draw_outline_layer(base, brush)?;
                 } else {
                     return Err(UnsupportedReason::ImageFormat);
                 }
+                formats |= format.0 as u32;
             }
             if formats == 0 {
                 Err(UnsupportedReason::ImageFormat)
@@ -933,19 +930,7 @@ impl Offscreen {
                 let layer = &*layers
                     .GetCurrentRun()
                     .map_err(|_| UnsupportedReason::NativeFailure)?;
-                let b = self
-                    .layer_brush(layer.runColor, layer.paletteIndex, brush)
-                    .map_err(|_| UnsupportedReason::NativeFailure)?;
-                self.context.DrawGlyphRun(
-                    Vector2 {
-                        X: layer.baselineOriginX,
-                        Y: layer.baselineOriginY,
-                    },
-                    &layer.glyphRun,
-                    None,
-                    &b,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
+                self.draw_outline_layer(layer, brush)?;
                 formats |= DWRITE_GLYPH_IMAGE_FORMATS_COLR.0 as u32;
             }
             if formats == 0 {
