@@ -629,6 +629,18 @@ mod tests {
 
     #[test]
     fn rendered_bridge_replays_hidden_output_and_retained_resize_after_skipped_frames() {
+        assert_rendered_bridge_replays_hidden_output_and_retained_resize(None);
+        // Exercise the geometry that previously exposed styled scroll-fill tails
+        // on CI, independently of the machine's selected system font.
+        assert_rendered_bridge_replays_hidden_output_and_retained_resize(Some(TextMetrics {
+            line_height: 30.0,
+            ..metrics()
+        }));
+    }
+
+    fn assert_rendered_bridge_replays_hidden_output_and_retained_resize(
+        geometry_metrics: Option<TextMetrics>,
+    ) {
         use harbor_widget::scene::primitive::ExternalDrawGpu;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let Ok(adapter) =
@@ -655,7 +667,8 @@ mod tests {
         let gpu = TerminalGpuAccess::new(&device, &queue, format);
         let fonts = harbor_terminal::load_system_fonts(&harbor_config::FontSettings::default())
             .expect("test system fonts");
-        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let metrics = geometry_metrics
+            .unwrap_or_else(|| TextMetrics::from_font_metrics(fonts.font_metrics()));
         let terminal = headless_terminal(4, 8);
         let renderer = TerminalRenderPipeline::new(
             gpu,
@@ -774,6 +787,13 @@ mod tests {
             draw(&initial, 73, ExternalDrawMode::Live);
             assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
         }
+        // The remaining checks exercise successful resize/draw coordination, not
+        // the model's rejection of a cursor pushed into history. Styled scroll
+        // fills can leave meaningful blanks after the cursor; at tiny font-
+        // dependent grids those blanks wrap below it and make a shrink invalid.
+        // Reset the pen and erase only that suffix, preserving the printed text
+        // and its decorations already exercised by the rejected-target checks.
+        terminal.lock().unwrap().process_output(b"\x1b[0m\x1b[0J");
         let scaled = context(
             Rect::from_min_size(Point::ZERO, Size::new(80.0, 60.0)),
             (256, 256),
