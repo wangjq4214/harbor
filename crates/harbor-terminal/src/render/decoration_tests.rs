@@ -884,3 +884,367 @@ fn gpu_osc_palette_retained_layers_recolor_and_replay() {
         "PASS: OSC palette retained foreground/background/underline, ANSI aliases, unchanged semantic cells/truecolor, skipped-frame replay, stale acknowledgement and reset readback"
     );
 }
+
+#[test]
+fn t0002_all_decoration_metrics_project_and_clamp_inside_fractional_rows() {
+    let palette = Palette::default();
+    for style in 1..=5 {
+        let snap = snapshot(&format!("\x1b[4:{style};9;53mXXX\r\nXXX"), 2, 3);
+        for height in [12.0, 24.0, 37.5] {
+            for offset in [-100.0, 0.0, 8.25, 1000.0] {
+                let m = TextMetrics {
+                    line_height: 32.0,
+                    ascent: 25.0,
+                    underline_position: offset,
+                    strikethrough_position: offset,
+                    underline_thickness: 2.5,
+                    strikethrough_thickness: 3.0,
+                    ..metrics()
+                };
+                let mut view = viewport();
+                view.cell_width = 13.75;
+                view.line_height = height;
+                view.padding = 0.25;
+                view.allocation_origin = (3.35, 4.45);
+                let u = build_underline_vertices(&m, &snap, &view, &palette);
+                let s = build_strikethrough_vertices(&m, &snap, &view, &palette);
+                let o = build_overline_vertices(&m, &snap, &view, &palette);
+                assert_eq!(u.len(), 6 * 96, "underline layout contract");
+                let scale = height / m.line_height;
+                let ut = (m.underline_thickness * scale).max(1.0).min(height / 4.0);
+                let st = (m.strikethrough_thickness * scale)
+                    .max(1.0)
+                    .min(height / 4.0);
+                for row in 0..2 {
+                    for col in 0..3 {
+                        let index = row * 3 + col;
+                        let (left, top, right, bottom) = view.cell_bounds(row, col);
+                        for (vertices, count) in [(&u, 96), (&s, 6), (&o, 6)] {
+                            let shape = rects(&vertices[index * count..(index + 1) * count]);
+                            assert!(!shape.is_empty());
+                            for (x0, y0, x1, y1) in shape {
+                                assert!(x0 >= left - 0.0001 && x1 <= right + 0.0001);
+                                assert!(y0 >= top - 0.0001 && y1 <= bottom + 0.0001);
+                            }
+                        }
+                        let strike = rects(&s[index * 6..(index + 1) * 6])[0];
+                        let expected_top =
+                            (top + offset * scale - st / 2.0).clamp(top, bottom - st);
+                        assert!((strike.1 - expected_top).abs() < 0.0001);
+                        assert!((strike.3 - strike.1 - st).abs() < 0.0001);
+                        let overline = rects(&o[index * 6..(index + 1) * 6])[0];
+                        assert!((overline.1 - top).abs() < 0.0001);
+                        assert!((overline.3 - top - ut).abs() < 0.0001);
+                        if style == 1 {
+                            let underline = rects(&u[index * 96..(index + 1) * 96])[0];
+                            let expected_top = (top + offset * scale).clamp(top, bottom - 3.0 * ut);
+                            assert!((underline.1 - expected_top).abs() < 0.0001);
+                            assert!((underline.3 - underline.1 - ut).abs() < 0.0001);
+                        }
+                        let mut range = Vec::new();
+                        append_strikethrough_range(
+                            &m,
+                            &snap,
+                            &view,
+                            &palette,
+                            &DirtyRange {
+                                row,
+                                start_col: col,
+                                end_col: col + 1,
+                            },
+                            &mut range,
+                        );
+                        assert_eq!(
+                            bytemuck::cast_slice::<_, u8>(&range),
+                            bytemuck::cast_slice::<_, u8>(&s[index * 6..(index + 1) * 6])
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_finite_slots(vertices: &[ColoredVertex]) {
+    for vertex in vertices {
+        assert!(
+            vertex
+                .position
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= 1.0)
+        );
+        assert!(vertex.color.into_iter().all(f32::is_finite));
+    }
+}
+
+#[test]
+fn t0002_degenerate_extreme_projection_and_capacity_are_bounded() {
+    let palette = Palette::default();
+    for style in 1..=5 {
+        let snap = snapshot(&format!("\x1b[4:{style};9;53mXX\r\nXX"), 2, 2);
+        for field in 0..7 {
+            for value in [
+                0.0,
+                -1.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::from_bits(1),
+                f32::MAX,
+            ] {
+                let mut m = metrics();
+                *match field {
+                    0 => &mut m.cell_width,
+                    1 => &mut m.line_height,
+                    2 => &mut m.ascent,
+                    3 => &mut m.underline_position,
+                    4 => &mut m.underline_thickness,
+                    5 => &mut m.strikethrough_position,
+                    _ => &mut m.strikethrough_thickness,
+                } = value;
+                for vertices in [
+                    build_underline_vertices(&m, &snap, &viewport(), &palette),
+                    build_strikethrough_vertices(&m, &snap, &viewport(), &palette),
+                    build_overline_vertices(&m, &snap, &viewport(), &palette),
+                ] {
+                    assert_finite_slots(&vertices);
+                    if !valid_metrics(&m) {
+                        assert!(vertices.iter().all(|v| v.color[3] == 0.0));
+                    }
+                }
+            }
+        }
+        for value in [
+            0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(1),
+            f32::MAX,
+        ] {
+            for field in 0..5 {
+                let mut view = viewport();
+                *match field {
+                    0 => &mut view.cell_width,
+                    1 => &mut view.line_height,
+                    2 => &mut view.padding,
+                    3 => &mut view.allocation_origin.0,
+                    _ => &mut view.allocation_origin.1,
+                } = value;
+                for vertices in [
+                    build_underline_vertices(&metrics(), &snap, &view, &palette),
+                    build_strikethrough_vertices(&metrics(), &snap, &view, &palette),
+                    build_overline_vertices(&metrics(), &snap, &view, &palette),
+                ] {
+                    assert_finite_slots(&vertices);
+                }
+                if let Some(projection) =
+                    DecorationCell::new(&metrics(), &view, usize::MAX, usize::MAX)
+                {
+                    assert_finite_slots(&projection.rect(projection.bounds, [1.0; 4]));
+                }
+            }
+        }
+        for (allocation_size, surface_size) in [
+            ((0, 192), (256, 192)),
+            ((256, 0), (256, 192)),
+            ((256, 192), (0, 192)),
+            ((256, 192), (256, 0)),
+        ] {
+            let view = RenderViewport {
+                allocation_size,
+                surface_size,
+                ..viewport()
+            };
+            for vertices in [
+                build_underline_vertices(&metrics(), &snap, &view, &palette),
+                build_strikethrough_vertices(&metrics(), &snap, &view, &palette),
+                build_overline_vertices(&metrics(), &snap, &view, &palette),
+            ] {
+                assert_finite_slots(&vertices);
+                assert!(vertices.iter().all(|v| v.color[3] == 0.0));
+            }
+        }
+    }
+    let mut snap = snapshot("X", 2, 2);
+    let bytes = (4 * 96 * std::mem::size_of::<ColoredVertex>()) as u64;
+    assert_eq!(slot_count(&snap, bytes), Some(4));
+    assert_eq!(slot_count(&snap, bytes - 1), None);
+    for (rows, cols) in [
+        (0, 2),
+        (2, 0),
+        (usize::MAX, 2),
+        (2, usize::MAX),
+        (1, usize::MAX / 96),
+    ] {
+        snap.rows = rows;
+        snap.cols = cols;
+        assert_eq!(slot_count(&snap, u64::MAX), None);
+        assert!(
+            build_underline_vertices(&metrics(), &snap, &viewport(), &Palette::default())
+                .is_empty()
+        );
+        assert!(
+            build_strikethrough_vertices(&metrics(), &snap, &viewport(), &Palette::default())
+                .is_empty()
+        );
+        assert!(
+            build_overline_vertices(&metrics(), &snap, &viewport(), &Palette::default()).is_empty()
+        );
+    }
+}
+
+#[test]
+fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() {
+    let (device, queue) = super::super::text::sequence_tests::test_gpu()
+        .expect("BLOCKED: T0002 requires an actual GPU adapter");
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "T0002 decoration",
+    ));
+    let mut engine = crate::Terminal::new_headless(4, 8);
+    engine.put_str("\x1b[4:3;9;53;31mA 界 ABC\r\nABCDEFG\r\nABCDEFG");
+    let initial = engine.read_update(std::time::Instant::now());
+    let mut layer = Decoration::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &initial.snapshot,
+        metrics(),
+        Palette::default(),
+    );
+    let mut view = viewport();
+    layer.prepare_with_dirty(
+        gpu,
+        &initial.snapshot,
+        &initial.snapshot.dirty_ranges,
+        &view,
+    );
+    assert!(raster(&device, &queue, &layer).iter().any(|&v| v != 0));
+    assert!(engine.acknowledge_update(&initial));
+    let buffers = (
+        layer.underline_buffer.clone(),
+        layer.strikethrough_buffer.clone(),
+        layer.overline_buffer.clone(),
+    );
+    // Skipped/hidden output is read but not acknowledged; both edits remain pending.
+    engine.put_str("\x1b[1;1H\x1b[8mX");
+    let skipped = engine.read_update(std::time::Instant::now());
+    engine.put_str("\x1b[1;2H\x1b[28;4:5;58;2;0;255;0mY");
+    let changed = engine.read_update(std::time::Instant::now());
+    assert!(!changed.snapshot.dirty_ranges.is_empty());
+    assert!(!engine.acknowledge_update(&skipped));
+    layer.prepare_with_dirty(
+        gpu,
+        &changed.snapshot,
+        &changed.snapshot.dirty_ranges,
+        &view,
+    );
+    let compare = |layer: &Decoration, snap: &TerminalSnapshot, view: &RenderViewport| {
+        let mut full = Decoration::new(
+            gpu,
+            pipeline.clone(),
+            (256, 192),
+            snap,
+            metrics(),
+            Palette::default(),
+        );
+        full.prepare_with_dirty(gpu, snap, &[], view);
+        assert_eq!(
+            raster(&device, &queue, layer),
+            raster(&device, &queue, &full)
+        );
+    };
+    compare(&layer, &changed.snapshot, &view);
+    assert!(engine.acknowledge_update(&changed));
+    for (rows, cols) in [(8, 4), (4, 4), (3, 8), (4, 8), (5, 9)] {
+        engine.resize(rows, cols);
+        let update = engine.read_update(std::time::Instant::now());
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
+        compare(&layer, &update.snapshot, &view);
+        if rows * cols <= 32 {
+            assert_eq!(
+                layer.underline_buffer, buffers.0,
+                "equal/smaller count reuses capacity"
+            );
+        }
+        assert!(engine.acknowledge_update(&update));
+        engine.put_str("\x1b[1;2H\x1b[24;29;55mQ");
+        let edit = engine.read_update(std::time::Instant::now());
+        layer.prepare_with_dirty(gpu, &edit.snapshot, &edit.snapshot.dirty_ranges, &view);
+        compare(&layer, &edit.snapshot, &view);
+        assert!(engine.acknowledge_update(&edit));
+    }
+    let update = engine.read_update(std::time::Instant::now());
+    for (cell_width, line_height, origin, surface) in [
+        (12.75, 21.25, (3.35, 4.45), (256, 192)),
+        (10.5, 19.5, (1.25, 2.75), (240, 180)),
+        (16.0, 24.0, (0.0, 0.0), (256, 192)),
+    ] {
+        view.cell_width = cell_width;
+        view.line_height = line_height;
+        view.allocation_origin = origin;
+        view.surface_size = surface;
+        view.allocation_size = (200, 150);
+        // No explicit invalidation and no engine damage: identity must force reprojection.
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
+        compare(&layer, &update.snapshot, &view);
+    }
+    for range in [
+        DirtyRange {
+            row: usize::MAX,
+            start_col: 0,
+            end_col: 1,
+        },
+        DirtyRange {
+            row: 0,
+            start_col: 4,
+            end_col: 2,
+        },
+        DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: usize::MAX,
+        },
+    ] {
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[range], &view);
+        compare(&layer, &update.snapshot, &view);
+    }
+    let valid_buffer = layer.underline_buffer.clone();
+    for mut invalid in [
+        RenderViewport {
+            line_height: f32::NAN,
+            ..view
+        },
+        RenderViewport {
+            allocation_size: (0, 192),
+            ..view
+        },
+        RenderViewport {
+            surface_size: (256, 0),
+            ..view
+        },
+    ] {
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &invalid);
+        assert!(layer.is_dirty());
+        assert_eq!(layer.underline_buffer, valid_buffer);
+        assert!(raster(&device, &queue, &layer).iter().all(|&v| v == 0));
+        invalid = view;
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &invalid);
+        assert!(!layer.is_dirty());
+        compare(&layer, &update.snapshot, &view);
+    }
+    let mut malformed = update.snapshot.clone();
+    malformed.rows = usize::MAX;
+    layer.prepare_with_dirty(gpu, &malformed, &[], &view);
+    assert!(layer.is_dirty());
+    assert_eq!(layer.underline_buffer, valid_buffer);
+    layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
+    compare(&layer, &update.snapshot, &view);
+    eprintln!(
+        "PASS: T0002 decoration GPU dirty replay, stride/capacity, viewport identity, invalid ranges/targets and retained recovery"
+    );
+}

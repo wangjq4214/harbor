@@ -21,6 +21,7 @@ pub struct TerminalRenderPipeline {
     pub scrollbar: Scrollbar,
     palette: Palette,
     raster_scale: f32,
+    grid: (usize, usize),
 }
 
 impl TerminalRenderPipeline {
@@ -42,15 +43,36 @@ impl TerminalRenderPipeline {
         update: &TerminalUpdate,
         raster_scale: f32,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            super::decoration::valid_metrics(&metrics),
+            "invalid terminal text metrics"
+        );
+        anyhow::ensure!(
+            raster_scale.is_finite() && raster_scale > 0.0 && (96.0 * raster_scale).is_finite(),
+            "invalid terminal raster scale"
+        );
+        anyhow::ensure!(
+            super::decoration::slot_count(&update.snapshot, gpu.device().limits().max_buffer_size)
+                .is_some()
+                && super::box_drawing::slot_count(
+                    &update.snapshot,
+                    gpu.device().limits().max_buffer_size
+                )
+                .is_some(),
+            "terminal grid exceeds resource capacity"
+        );
         let snap = &update.snapshot;
         let palette = update.appearance.palette();
         let tint = update.appearance.clear_rgba(update.backdrop_available);
-        let initial_surface_size = (initial_surface_size.0.max(1), initial_surface_size.1.max(1));
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
             metrics.line_height,
             initial_surface_size,
             initial_surface_size,
+        );
+        anyhow::ensure!(
+            valid_projection(&viewport, (snap.rows, snap.cols), &metrics),
+            "invalid terminal viewport projection"
         );
         let colored_quad_pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
             gpu.device(),
@@ -101,6 +123,7 @@ impl TerminalRenderPipeline {
             scrollbar,
             palette,
             raster_scale,
+            grid: (snap.rows, snap.cols),
         })
     }
     /// Prepare a replacement projection before committing a font/fallback session.
@@ -112,14 +135,45 @@ impl TerminalRenderPipeline {
         update: &TerminalUpdate,
     ) -> anyhow::Result<()> {
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
-        let mut replacement = Self::new(gpu, self.viewport.surface_size, fonts, metrics, update)?;
-        replacement.sync_raster_scale(gpu, self.raster_scale, update)?;
-        let mut viewport = self.viewport;
-        viewport.cell_width = replacement.metrics().cell_width;
-        viewport.line_height = replacement.metrics().line_height;
-        replacement.sync_viewport(viewport, true);
-        replacement.prepare(gpu, update, false);
-        *self = replacement;
+        // Candidate resources may fail GPU validation/allocation even after the
+        // CPU preflight. Scope every preparation error and publish only afterwards.
+        let allocation = gpu
+            .device()
+            .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal = gpu.device().push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let candidate = (|| {
+            let mut replacement = Self::new_at_scale(
+                gpu,
+                self.viewport.surface_size,
+                fonts,
+                metrics,
+                update,
+                self.raster_scale,
+            )?;
+            let mut viewport = self.viewport;
+            viewport.cell_width = metrics.cell_width;
+            viewport.line_height = metrics.line_height;
+            anyhow::ensure!(
+                replacement.sync_viewport(viewport, true),
+                "invalid replacement viewport projection"
+            );
+            anyhow::ensure!(
+                replacement.prepare(gpu, update, false),
+                "invalid replacement grid projection"
+            );
+            Ok::<_, anyhow::Error>(replacement)
+        })();
+        let mut gpu_error = None;
+        for scope in [validation, internal, allocation] {
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                gpu_error = Some(error);
+            }
+        }
+        if let Some(error) = gpu_error {
+            anyhow::bail!("terminal font resource preparation failed: {error}");
+        }
+        *self = candidate?;
         Ok(())
     }
 
@@ -139,9 +193,14 @@ impl TerminalRenderPipeline {
         if self.raster_scale == scale {
             return Ok(false);
         }
+        anyhow::ensure!(
+            self.can_prepare(gpu, update),
+            "invalid terminal raster projection"
+        );
         self.text.sync_raster_scale(scale);
         self.raster_scale = scale;
-        self.prepare(gpu, update, false);
+        let prepared = self.prepare(gpu, update, false);
+        debug_assert!(prepared);
         Ok(true)
     }
 
@@ -158,7 +217,13 @@ impl TerminalRenderPipeline {
         self.selection.set_color(palette.selection);
     }
 
-    pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) {
+    /// Returns false for a rejected target, leaving the valid projection intact.
+    pub fn sync_viewport(&mut self, viewport: RenderViewport, grid_changed: bool) -> bool {
+        // Malformed records must not replace the last valid projection. A zero
+        // target is a skipped frame, not a reason to normalize vertices by zero.
+        if !valid_projection(&viewport, self.grid, self.metrics()) {
+            return false;
+        }
         let viewport_changed = self.viewport != viewport;
         if viewport_changed || grid_changed {
             self.viewport = viewport;
@@ -169,6 +234,7 @@ impl TerminalRenderPipeline {
             self.selection.invalidate_projection();
             self.cursor.invalidate_projection();
         }
+        true
     }
 
     pub fn raster_scale(&self) -> f32 {
@@ -179,15 +245,27 @@ impl TerminalRenderPipeline {
         self.viewport
     }
 
+    fn can_prepare(&self, gpu: TerminalGpuAccess<'_>, update: &TerminalUpdate) -> bool {
+        let snap = &update.snapshot;
+        super::decoration::slot_count(snap, gpu.device().limits().max_buffer_size).is_some()
+            && super::box_drawing::slot_count(snap, gpu.device().limits().max_buffer_size).is_some()
+            && valid_projection(&self.viewport, (snap.rows, snap.cols), self.metrics())
+    }
+
     /// Prepare every retained GPU layer from one coherent, read-only engine update.
-    /// A successful return leaves the projection sufficient for a subsequent draw.
+    /// A true return leaves the projection sufficient for a subsequent draw.
+    /// On false, the caller must not draw/acknowledge this update.
     pub fn prepare(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         update: &TerminalUpdate,
         blink_visible: bool,
-    ) {
+    ) -> bool {
         let snap = &update.snapshot;
+        if !self.can_prepare(gpu, update) {
+            return false;
+        }
+        self.grid = (snap.rows, snap.cols);
         self.sync_palette(update.appearance.palette());
         let viewport = self.viewport;
         let dirty_ranges = update_dirty_ranges(update);
@@ -212,6 +290,7 @@ impl TerminalRenderPipeline {
             blink_visible,
         );
         self.scrollbar.prepare(gpu, Some(snap), &viewport);
+        true
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
@@ -227,6 +306,27 @@ impl TerminalRenderPipeline {
     pub fn metrics(&self) -> &TextMetrics {
         self.text.metrics()
     }
+}
+
+/// Other retained layers still use f32 pixel arithmetic. Do not publish a
+/// projection whose cell/baseline or NDC arithmetic would overflow those layers.
+fn valid_projection(view: &RenderViewport, grid: (usize, usize), metrics: &TextMetrics) -> bool {
+    if !view.is_drawable() {
+        return false;
+    }
+    let (rows, cols) = grid;
+    let x = f64::from(view.allocation_origin.0) + f64::from(view.padding);
+    let y = f64::from(view.allocation_origin.1) + f64::from(view.padding);
+    let right = x + cols as f64 * f64::from(view.cell_width);
+    let bottom = y + rows as f64 * f64::from(view.line_height) + f64::from(metrics.ascent);
+    let limit = f64::from(f32::MAX) / 4.0;
+    [x, y, right, bottom].into_iter().all(|v| v.abs() < limit)
+        && [x, right]
+            .into_iter()
+            .all(|v| v.abs() / f64::from(view.surface_size.0) < limit)
+        && [y, bottom]
+            .into_iter()
+            .all(|v| v.abs() / f64::from(view.surface_size.1) < limit)
 }
 
 /// Translate explicit full damage into complete ranges for the existing layer upload policy.

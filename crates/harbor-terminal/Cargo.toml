@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["renderer"]
-renderer = ["dep:wgpu"]
+renderer = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
 harbor-parser = { workspace = true }
@@ -19,6 +19,7 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 icu_properties = { workspace = true }
 wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

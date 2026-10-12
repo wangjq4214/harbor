@@ -176,17 +176,7 @@ fn shape(ch: char) -> Option<Shape> {
 }
 
 fn drawable(view: &RenderViewport) -> bool {
-    view.cell_width.is_finite()
-        && view.cell_width > 0.0
-        && view.line_height.is_finite()
-        && view.line_height > 0.0
-        && view.padding.is_finite()
-        && view.allocation_origin.0.is_finite()
-        && view.allocation_origin.1.is_finite()
-        && view.allocation_size.0 > 0
-        && view.allocation_size.1 > 0
-        && view.surface_size.0 > 0
-        && view.surface_size.1 > 0
+    view.is_drawable()
 }
 
 type Point = [f64; 2];
@@ -470,7 +460,7 @@ pub(super) fn cell_vertices(
     mesh.vertices
 }
 
-fn slot_count(snap: &TerminalSnapshot, max_buffer_size: u64) -> Option<usize> {
+pub(super) fn slot_count(snap: &TerminalSnapshot, max_buffer_size: u64) -> Option<usize> {
     if snap.rows == 0 || snap.cols == 0 {
         return None;
     }

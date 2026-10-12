@@ -65,6 +65,26 @@ impl RenderViewport {
     pub fn surface_dimensions(&self) -> (f32, f32) {
         (self.surface_size.0 as f32, self.surface_size.1 as f32)
     }
+    /// Whether the public record has usable numeric cell projection inputs.
+    #[cfg(feature = "renderer")]
+    pub(super) fn has_valid_geometry(&self) -> bool {
+        self.cell_width.is_finite()
+            && self.cell_width > 0.0
+            && self.line_height.is_finite()
+            && self.line_height > 0.0
+            && self.padding.is_finite()
+            && self.allocation_origin.0.is_finite()
+            && self.allocation_origin.1.is_finite()
+    }
+
+    #[cfg(feature = "renderer")]
+    pub(super) fn is_drawable(&self) -> bool {
+        self.has_valid_geometry()
+            && self.allocation_size.0 > 0
+            && self.allocation_size.1 > 0
+            && self.surface_size.0 > 0
+            && self.surface_size.1 > 0
+    }
 
     /// Maps grid (row, col) to top-left pixel position (x, y).
     pub fn cell_pos(&self, row: usize, col: usize) -> (f32, f32) {

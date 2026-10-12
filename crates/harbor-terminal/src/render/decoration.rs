@@ -14,10 +14,86 @@ use crate::{CellAttrs, Color, DirtyRange, UnderlineStyle};
 // neighboring cells. Curves use 16 strips; other styles use at most that many.
 const UNDERLINE_VERTICES_PER_CELL: usize = 16 * 6;
 
-#[inline]
-fn strikethrough_bounds(metrics: &TextMetrics, cell_y: f32) -> (f32, f32) {
-    let top = cell_y + metrics.strikethrough_position - metrics.strikethrough_thickness / 2.0;
-    (top, top + metrics.strikethrough_thickness)
+/// Reject malformed public metric records before projecting or publishing resources.
+/// Finite offsets may lie outside the row; placement clamps them back into it.
+pub(super) fn valid_metrics(metrics: &TextMetrics) -> bool {
+    [
+        metrics.cell_width,
+        metrics.line_height,
+        metrics.ascent,
+        metrics.underline_thickness,
+        metrics.strikethrough_thickness,
+    ]
+    .into_iter()
+    .all(|v| v.is_finite() && v > 0.0)
+        && metrics.underline_position.is_finite()
+        && metrics.strikethrough_position.is_finite()
+}
+
+/// Row-local geometry in f64: finite f32 metrics can overflow during ratios,
+/// multiplication or offset addition, even when the final visible rect is small.
+struct DecorationCell<'a> {
+    view: &'a RenderViewport,
+    bounds: [f64; 4],
+    scale: f64,
+}
+
+impl<'a> DecorationCell<'a> {
+    fn new(
+        metrics: &TextMetrics,
+        view: &'a RenderViewport,
+        row: usize,
+        col: usize,
+    ) -> Option<Self> {
+        if !valid_metrics(metrics) || !view.is_drawable() {
+            return None;
+        }
+        let left = f64::from(view.allocation_origin.0)
+            + f64::from(view.padding)
+            + col as f64 * f64::from(view.cell_width);
+        let top = f64::from(view.allocation_origin.1)
+            + f64::from(view.padding)
+            + row as f64 * f64::from(view.line_height);
+        let right = left + f64::from(view.cell_width);
+        let bottom = top + f64::from(view.line_height);
+        (right > left && bottom > top).then_some(Self {
+            view,
+            bounds: [left, top, right, bottom],
+            scale: f64::from(view.line_height) / f64::from(metrics.line_height),
+        })
+    }
+
+    fn thickness(&self, thickness: f32) -> f64 {
+        (f64::from(thickness) * self.scale)
+            .max(1.0)
+            .min(f64::from(self.view.line_height) / 4.0)
+    }
+
+    fn top(&self, offset: f64, height: f64) -> f64 {
+        let [_, top, _, bottom] = self.bounds;
+        (top + offset).clamp(top, (bottom - height).max(top))
+    }
+
+    fn rect(&self, rect: [f64; 4], color: [f32; 4]) -> [ColoredVertex; 6] {
+        let [left, top, right, bottom] = self.bounds;
+        let (ox, oy) = self.view.allocation_origin;
+        let [x0, y0, x1, y1] = rect;
+        let x0 = x0.max(left).max(f64::from(ox)).max(0.0);
+        let y0 = y0.max(top).max(f64::from(oy)).max(0.0);
+        let x1 = x1
+            .min(right)
+            .min(f64::from(ox) + f64::from(self.view.allocation_size.0))
+            .min(f64::from(self.view.surface_size.0));
+        let y1 = y1
+            .min(bottom)
+            .min(f64::from(oy) + f64::from(self.view.allocation_size.1))
+            .min(f64::from(self.view.surface_size.1));
+        if x1 <= x0 || y1 <= y0 {
+            return [ColoredVertex::default(); 6];
+        }
+        let (w, h) = self.view.surface_dimensions();
+        ColoredVertex::from_pixel_rect(x0 as f32, y0 as f32, x1 as f32, y1 as f32, color, w, h)
+    }
 }
 
 fn effective_underline(
@@ -64,22 +140,21 @@ fn underline_cell_vertices(
     } else {
         palette.resolve(cell.underline_color)
     };
-    let (left, cell_y, right, cell_bottom) = viewport.cell_bounds(row, col);
-    let scale = viewport.line_height / metrics.line_height;
-    let thickness = (metrics.underline_thickness * scale)
-        .max(1.0)
-        .min(viewport.line_height / 4.0);
+    let Some(projection) = DecorationCell::new(metrics, viewport, row, col) else {
+        return out;
+    };
+    let [left, cell_y, right, cell_bottom] = projection.bounds;
+    let thickness = projection.thickness(metrics.underline_thickness);
     // Reserve room inside this row for two lines or the wave's excursion.
-    let band_height = (3.0 * thickness).min(viewport.line_height);
-    let top =
-        (cell_y + metrics.underline_position * scale).clamp(cell_y, cell_bottom - band_height);
-    let (surf_w, surf_h) = viewport.surface_dimensions();
+    let band_height = (3.0 * thickness).min(cell_bottom - cell_y);
+    let top = projection.top(
+        f64::from(metrics.underline_position) * projection.scale,
+        band_height,
+    );
     let mut used = 0;
-    let mut rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+    let mut rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
         if x1 > x0 && y1 > y0 {
-            out[used..used + 6].copy_from_slice(&ColoredVertex::from_pixel_rect(
-                x0, y0, x1, y1, color, surf_w, surf_h,
-            ));
+            out[used..used + 6].copy_from_slice(&projection.rect([x0, y0, x1, y1], color));
             used += 6;
         }
     };
@@ -90,16 +165,16 @@ fn underline_cell_vertices(
             rect(left, top + 2.0 * thickness, right, top + 3.0 * thickness);
         }
         UnderlineStyle::Curly => {
-            let step = viewport.cell_width / 16.0;
+            let step = f64::from(viewport.cell_width) / 16.0;
             for segment in 0..16 {
                 // One full wave per cell, continuous across adjacent cells.
-                let x0 = left + segment as f32 * step;
+                let x0 = left + segment as f64 * step;
                 let x1 = if segment == 15 {
                     right
                 } else {
-                    left + (segment + 1) as f32 * step
+                    left + (segment + 1) as f64 * step
                 };
-                let phase = (segment as f32 + 0.5) / 16.0 * std::f32::consts::TAU;
+                let phase = (segment as f64 + 0.5) / 16.0 * std::f64::consts::TAU;
                 let y = top + thickness * (1.0 + phase.sin());
                 rect(x0, y, x1, y + thickness);
             }
@@ -110,21 +185,23 @@ fn underline_cell_vertices(
             } else {
                 3.0 * thickness
             };
-            // At most eight dots per cell, avoiding unbounded geometry at large sizes.
-            let period = (2.0 * on).max(viewport.cell_width / 8.0);
-            let phase_left = col as f32 * viewport.cell_width;
-            let phase_right = phase_left + viewport.cell_width;
-            let mut start = (phase_left / period).floor() * period;
-            while start < phase_right {
-                let x0 = start.max(phase_left);
-                let x1 = (start + on).min(phase_right);
+            // At most nine clipped intervals, including the partial leading one.
+            // Relative phase and fixed iteration count remain safe when col is
+            // large enough that adding a period to an absolute f32 stops advancing.
+            let width = f64::from(viewport.cell_width);
+            let period = (2.0 * on).max(width / 8.0);
+            let phase = (col as f64 * width).rem_euclid(period);
+            for segment in 0..9 {
+                let start = -phase + segment as f64 * period;
+                if start >= width {
+                    break;
+                }
                 rect(
-                    left + x0 - phase_left,
+                    left + start.max(0.0),
                     top,
-                    left + x1 - phase_left,
+                    left + (start + on).min(width),
                     top + thickness,
                 );
-                start += period;
             }
         }
         UnderlineStyle::Off => {}
@@ -147,20 +224,22 @@ fn append_strikethrough_range(
     range: &DirtyRange,
     vertices: &mut Vec<ColoredVertex>,
 ) {
-    let (surf_w, surf_h) = viewport.surface_dimensions();
-    let (_, cell_y) = viewport.cell_pos(range.row, 0);
-    let (top, bottom) = strikethrough_bounds(metrics, cell_y);
     for col in range.start_col..range.end_col {
         let cell = snap.cell(range.row, col);
-        if is_strikethrough_active(cell) {
-            let (left, _, right, _) = viewport.cell_bounds(range.row, col);
+        let mut slot = [ColoredVertex::default(); 6];
+        if is_strikethrough_active(cell)
+            && let Some(projection) = DecorationCell::new(metrics, viewport, range.row, col)
+        {
+            let [left, _, right, _] = projection.bounds;
+            let thickness = projection.thickness(metrics.strikethrough_thickness);
+            let top = projection.top(
+                f64::from(metrics.strikethrough_position) * projection.scale - thickness / 2.0,
+                thickness,
+            );
             let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
-            vertices.extend_from_slice(&ColoredVertex::from_pixel_rect(
-                left, top, right, bottom, color, surf_w, surf_h,
-            ));
-        } else {
-            vertices.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
+            slot = projection.rect([left, top, right, top + thickness], color);
         }
+        vertices.extend_from_slice(&slot);
     }
 }
 
@@ -171,7 +250,10 @@ pub fn build_underline_vertices(
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    let mut vertices = Vec::with_capacity(snap.rows * snap.cols * UNDERLINE_VERTICES_PER_CELL);
+    let Some(cells) = slot_count(snap, u64::MAX) else {
+        return Vec::new();
+    };
+    let mut vertices = Vec::with_capacity(cells * UNDERLINE_VERTICES_PER_CELL);
     for row in 0..snap.rows {
         for col in 0..snap.cols {
             vertices.extend_from_slice(&underline_cell_vertices(
@@ -195,21 +277,13 @@ fn overline_cell_vertices(
     if !cell.attrs.contains(CellAttrs::OVERLINE) || cell.attrs.contains(CellAttrs::CONCEAL) {
         return [ColoredVertex::default(); 6];
     }
-    let (left, top, right, bottom) = viewport.cell_bounds(row, col);
-    let thickness = (metrics.underline_thickness * viewport.line_height / metrics.line_height)
-        .max(1.0)
-        .min(viewport.line_height / 4.0);
+    let Some(projection) = DecorationCell::new(metrics, viewport, row, col) else {
+        return [ColoredVertex::default(); 6];
+    };
+    let [left, top, right, _] = projection.bounds;
+    let thickness = projection.thickness(metrics.underline_thickness);
     let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
-    let (surf_w, surf_h) = viewport.surface_dimensions();
-    ColoredVertex::from_pixel_rect(
-        left,
-        top,
-        right,
-        (top + thickness).min(bottom),
-        color,
-        surf_w,
-        surf_h,
-    )
+    projection.rect([left, top, right, top + thickness], color)
 }
 
 /// Builds fixed-size overline slots for the occupied grid, including spaces.
@@ -219,7 +293,10 @@ pub fn build_overline_vertices(
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    let mut vertices = Vec::with_capacity(snap.rows * snap.cols * 6);
+    let Some(cells) = slot_count(snap, u64::MAX) else {
+        return Vec::new();
+    };
+    let mut vertices = Vec::with_capacity(cells * 6);
     for row in 0..snap.rows {
         for col in 0..snap.cols {
             vertices.extend_from_slice(&overline_cell_vertices(
@@ -238,7 +315,10 @@ pub fn build_strikethrough_vertices(
     viewport: &RenderViewport,
     palette: &Palette,
 ) -> Vec<ColoredVertex> {
-    let mut vertices = Vec::with_capacity(snap.rows * snap.cols * 6);
+    let Some(cells) = slot_count(snap, u64::MAX) else {
+        return Vec::new();
+    };
+    let mut vertices = Vec::with_capacity(cells * 6);
     for row in 0..snap.rows {
         append_strikethrough_range(
             metrics,
@@ -256,6 +336,17 @@ pub fn build_strikethrough_vertices(
     vertices
 }
 
+/// The largest decoration slot also bounds strike/overline counts and offsets.
+pub(super) fn slot_count(snap: &TerminalSnapshot, max_buffer_size: u64) -> Option<usize> {
+    let cells = snap.rows.checked_mul(snap.cols)?;
+    if cells == 0 || snap.cells.len() < cells {
+        return None;
+    }
+    let vertices = cells.checked_mul(UNDERLINE_VERTICES_PER_CELL)?;
+    let bytes = vertices.checked_mul(std::mem::size_of::<ColoredVertex>())?;
+    (vertices <= u32::MAX as usize && bytes as u64 <= max_buffer_size).then_some(cells)
+}
+
 // ── Decoration ────────────────────────────────────────────────────────────────
 
 /// Underline / strikethrough / overline decoration overlay.
@@ -270,6 +361,9 @@ pub struct Decoration {
     metrics: TextMetrics,
     palette: Palette,
     dirty: bool,
+    viewport: Option<RenderViewport>,
+    drawable: bool,
+    capacity: usize,
 }
 
 impl Decoration {
@@ -285,14 +379,10 @@ impl Decoration {
         metrics: TextMetrics,
         palette: Palette,
     ) -> Self {
-        let rows = snap.rows;
-        let cols = snap.cols;
-        let empty_u =
-            vec![ColoredVertex::default(); (rows * cols * UNDERLINE_VERTICES_PER_CELL).max(1)];
-        let empty_s = vec![ColoredVertex::default(); (rows * cols * 6).max(1)];
-        let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_u);
-        let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
-        let overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
+        let empty = [ColoredVertex::default()];
+        let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
+        let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
+        let overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
 
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
@@ -300,24 +390,23 @@ impl Decoration {
             initial_surface_size,
             initial_surface_size,
         );
-        let u = build_underline_vertices(&metrics, snap, &viewport, &palette);
-        let s = build_strikethrough_vertices(&metrics, snap, &viewport, &palette);
-        gpu.write_buffer(&underline_buffer, 0, bytemuck::cast_slice(&u));
-        gpu.write_buffer(&strikethrough_buffer, 0, bytemuck::cast_slice(&s));
-        let o = build_overline_vertices(&metrics, snap, &viewport, &palette);
-        gpu.write_buffer(&overline_buffer, 0, bytemuck::cast_slice(&o));
 
-        Self {
+        let mut layer = Self {
             pipeline,
             underline_buffer,
             strikethrough_buffer,
             overline_buffer,
-            rows,
-            cols,
+            rows: 0,
+            cols: 0,
             metrics,
             palette,
-            dirty: false,
-        }
+            dirty: true,
+            viewport: None,
+            drawable: false,
+            capacity: 0,
+        };
+        layer.prepare_with_dirty(gpu, snap, &[], &viewport);
+        layer
     }
 
     pub fn invalidate_projection(&mut self) {
@@ -336,6 +425,16 @@ impl Decoration {
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
     ) {
+        let count = slot_count(snap, gpu.device().limits().max_buffer_size);
+        if !valid_metrics(&self.metrics) || !viewport.is_drawable() || count.is_none() {
+            self.drawable = false;
+            self.dirty = true;
+            return;
+        }
+        let count = count.unwrap();
+        let invalid_range = dirty_ranges.iter().any(|range| {
+            range.row >= snap.rows || range.start_col > range.end_col || range.end_col > snap.cols
+        });
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell =
             (UNDERLINE_VERTICES_PER_CELL + 12) * std::mem::size_of::<ColoredVertex>();
@@ -344,26 +443,16 @@ impl Decoration {
             snap.cols,
             bytes_per_cell,
             dirty_ranges,
-            resized || self.dirty,
+            resized || self.dirty || self.viewport != Some(*viewport) || invalid_range,
         );
 
-        if resized {
-            tracing::trace!(
-                rows = snap.rows,
-                cols = snap.cols,
-                "decoration layer resize"
-            );
-            if snap.rows * snap.cols > self.rows * self.cols {
-                let empty_u = vec![
-                    ColoredVertex::default();
-                    (snap.rows * snap.cols * UNDERLINE_VERTICES_PER_CELL).max(1)
-                ];
-                let empty_s = vec![ColoredVertex::default(); (snap.rows * snap.cols * 6).max(1)];
-                self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_u);
-                self.strikethrough_buffer =
-                    gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
-                self.overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
-            }
+        if count > self.capacity {
+            let empty_u = vec![ColoredVertex::default(); count * UNDERLINE_VERTICES_PER_CELL];
+            let empty_s = vec![ColoredVertex::default(); count * 6];
+            self.underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_u);
+            self.strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
+            self.overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty_s);
+            self.capacity = count;
         }
 
         if plan.mode == UploadMode::None {
@@ -436,6 +525,8 @@ impl Decoration {
         self.rows = snap.rows;
         self.cols = snap.cols;
         self.dirty = false;
+        self.viewport = Some(*viewport);
+        self.drawable = true;
     }
 
     pub fn prepare(
@@ -450,6 +541,9 @@ impl Decoration {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
+        if !self.drawable {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.underline_buffer.slice(..));
         let vertex_count = (self.rows * self.cols * 6) as u32;

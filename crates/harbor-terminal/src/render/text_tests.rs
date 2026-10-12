@@ -592,3 +592,297 @@ fn preedit_paints_above_complete_tiles_at_an_overlapping_cursor() {
     assert_eq!(actual, expected);
     assert_ne!(actual, before);
 }
+
+#[test]
+fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent() {
+    let (device, queue) = test_gpu().expect("BLOCKED: T0002 requires an actual GPU adapter");
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(3, 10);
+    engine.put_str("\x1b[4:1;9;53mAX 界\r\n\x1b[4:3;58;2;255;0;0mABC\r\n\x1b[4:2;59mXYZ");
+    let initial = engine.read_update(Instant::now());
+    let f = fonts();
+    let m = TextMetrics::from_font_metrics(f.font_metrics());
+    let mut pipeline = TerminalRenderPipeline::new(gpu, (256, 128), f, m, &initial).unwrap();
+    let view = RenderViewport {
+        allocation_origin: (3.25, 4.75),
+        ..pipeline.viewport()
+    };
+    pipeline.sync_viewport(view, false);
+    pipeline.prepare(gpu, &initial, false);
+    assert!(engine.acknowledge_update(&initial));
+    let update = engine.read_update(Instant::now());
+    assert!(
+        matches!(&update.damage, crate::model::UpdateDamage::Ranges(ranges) if ranges.is_empty())
+    );
+    let source = update.snapshot.cells.clone();
+    let before_text = read_draw(&device, &queue, |pass| pipeline.text.draw(pass));
+    let before_decoration = read_draw(&device, &queue, |pass| pipeline.decoration.draw(pass));
+    let before_all = read_draw(&device, &queue, |pass| pipeline.draw(pass));
+    let generation = pipeline.text.fonts.presentation_generation();
+    let old_text_pipeline = pipeline.text.pipeline.clone();
+    // Same-metrics replacement changes session/resources but not geometry/pixels.
+    pipeline.replace_fonts(gpu, fonts(), &update).unwrap();
+    assert_eq!(metric_values(pipeline.metrics()), metric_values(&m));
+    assert_ne!(
+        pipeline.text.fonts.presentation_generation().session,
+        generation.session
+    );
+    assert_ne!(pipeline.text.pipeline, old_text_pipeline);
+    assert_eq!(
+        read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+        before_all
+    );
+    let atlas = pipeline.text.gpu_atlas._texture.clone();
+    let buffer = pipeline.text.vertex_buffer.clone();
+    let scalar_pipeline = pipeline.text.pipeline.clone();
+    // Even extremely small/large accepted DPI identities leave physical pixels alone.
+    for scale in [f32::from_bits(1), 1.25, 1.5, 2.0, f32::MAX / 192.0, 1.0] {
+        assert!(pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
+        assert_eq!(pipeline.viewport(), view);
+        assert_eq!(metric_values(pipeline.metrics()), metric_values(&m));
+        assert_eq!(pipeline.text.gpu_atlas._texture, atlas);
+        assert_eq!(pipeline.text.vertex_buffer, buffer);
+        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
+        assert_eq!(
+            read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+            before_all
+        );
+    }
+    let generation = pipeline.text.fonts.presentation_generation();
+    for scale in [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        -1.0,
+        f32::MAX,
+    ] {
+        assert!(pipeline.sync_raster_scale(gpu, scale, &update).is_err());
+        assert_eq!(pipeline.raster_scale(), 1.0);
+        assert_eq!(pipeline.text.fonts.presentation_generation(), generation);
+        assert_eq!(pipeline.text.gpu_atlas._texture, atlas);
+    }
+    let changed_fonts = || {
+        harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: Some("Consolas".into()),
+            size: 23.0,
+        })
+        .expect("native changed-size font session")
+    };
+    let candidate = changed_fonts();
+    let changed_metrics = TextMetrics::from_font_metrics(candidate.font_metrics());
+    assert_ne!(
+        m.cell_width, changed_metrics.cell_width,
+        "must genuinely change metrics"
+    );
+    assert_ne!(m.line_height, changed_metrics.line_height);
+    assert_ne!(m.ascent, changed_metrics.ascent);
+    eprintln!(
+        "T0002 native Consolas 16 -> 23 metrics: {:?} -> {:?}",
+        metric_values(&m),
+        metric_values(&changed_metrics)
+    );
+    pipeline.sync_raster_scale(gpu, 1.5, &update).unwrap();
+    pipeline.replace_fonts(gpu, candidate, &update).unwrap();
+    assert_eq!(pipeline.raster_scale(), 1.5);
+    assert_eq!(pipeline.text.raster_scale, 1.5);
+    assert_eq!(
+        pipeline.viewport().allocation_origin,
+        view.allocation_origin
+    );
+    assert_eq!(
+        metric_values(pipeline.metrics()),
+        metric_values(&changed_metrics)
+    );
+    assert_eq!(pipeline.viewport().cell_width, changed_metrics.cell_width);
+    assert_eq!(pipeline.viewport().line_height, changed_metrics.line_height);
+    assert_ne!(pipeline.text.gpu_atlas._texture, atlas);
+    assert_ne!(pipeline.text.vertex_buffer, buffer);
+    assert_ne!(pipeline.text.pipeline, scalar_pipeline);
+    assert_ne!(
+        read_draw(&device, &queue, |pass| pipeline.text.draw(pass)),
+        before_text
+    );
+    assert_ne!(
+        read_draw(&device, &queue, |pass| pipeline.decoration.draw(pass)),
+        before_decoration
+    );
+    assert_ne!(
+        read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+        before_all
+    );
+    let mut fresh =
+        TerminalRenderPipeline::new(gpu, (256, 128), changed_fonts(), changed_metrics, &update)
+            .unwrap();
+    fresh.sync_raster_scale(gpu, 1.5, &update).unwrap();
+    fresh.sync_viewport(pipeline.viewport(), false);
+    fresh.prepare(gpu, &update, false);
+    for layer in 0..3 {
+        let draw = |p: &TerminalRenderPipeline, pass: &mut wgpu::RenderPass| match layer {
+            0 => p.text.draw(pass),
+            1 => p.decoration.draw(pass),
+            _ => p.draw(pass),
+        };
+        assert_eq!(
+            read_draw(&device, &queue, |pass| draw(&pipeline, pass)),
+            read_draw(&device, &queue, |pass| draw(&fresh, pass)),
+            "changed resource layer {layer}"
+        );
+    }
+    // Capture all public presentation and scalar resource identity before errors.
+    let valid_view = pipeline.viewport();
+    let valid_metrics = metric_values(pipeline.metrics());
+    let valid_atlas = pipeline.text.gpu_atlas._texture.clone();
+    let valid_pipeline = pipeline.text.pipeline.clone();
+    let valid_buffer = pipeline.text.vertex_buffer.clone();
+    let valid_generation = pipeline.text.fonts.presentation_generation();
+    let valid_pixels = read_draw(&device, &queue, |pass| pipeline.draw(pass));
+    // Rejected resource preparation: malformed/oversized grids fail before publish.
+    for (rows, cols) in [(0, 10), (usize::MAX, 10), (3, usize::MAX)] {
+        let mut invalid = update.clone();
+        invalid.snapshot.rows = rows;
+        invalid.snapshot.cols = cols;
+        assert!(pipeline.replace_fonts(gpu, fonts(), &invalid).is_err());
+        assert_eq!(pipeline.viewport(), valid_view);
+        assert_eq!(metric_values(pipeline.metrics()), valid_metrics);
+        assert_eq!(pipeline.text.gpu_atlas._texture, valid_atlas);
+        assert_eq!(pipeline.text.pipeline, valid_pipeline);
+        assert_eq!(pipeline.text.vertex_buffer, valid_buffer);
+        assert_eq!(
+            pipeline.text.fonts.presentation_generation(),
+            valid_generation
+        );
+        assert_eq!(
+            read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+            valid_pixels
+        );
+        assert!(!pipeline.prepare(gpu, &invalid, false));
+        assert!(pipeline.sync_raster_scale(gpu, 2.0, &invalid).is_err());
+        assert_eq!(pipeline.raster_scale(), 1.5);
+        assert_eq!(
+            pipeline.text.fonts.presentation_generation(),
+            valid_generation
+        );
+    }
+    // Force a real GPU resource-validation error after CPU preflight, without
+    // losing the device: a depth format is not a valid terminal color target.
+    let invalid_gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Depth32Float);
+    let error = pipeline
+        .replace_fonts(invalid_gpu, fonts(), &update)
+        .expect_err("GPU validation must reject candidate");
+    assert!(error.to_string().contains("resource preparation failed"));
+    assert_eq!(pipeline.viewport(), valid_view);
+    assert_eq!(metric_values(pipeline.metrics()), valid_metrics);
+    assert_eq!(pipeline.text.gpu_atlas._texture, valid_atlas);
+    assert_eq!(pipeline.text.pipeline, valid_pipeline);
+    assert_eq!(pipeline.text.vertex_buffer, valid_buffer);
+    assert_eq!(
+        pipeline.text.fonts.presentation_generation(),
+        valid_generation
+    );
+    assert_eq!(
+        read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+        valid_pixels
+    );
+    for invalid in [
+        RenderViewport {
+            line_height: f32::NAN,
+            ..valid_view
+        },
+        RenderViewport {
+            cell_width: -1.0,
+            ..valid_view
+        },
+        RenderViewport {
+            padding: f32::MAX,
+            ..valid_view
+        },
+        RenderViewport {
+            allocation_origin: (f32::INFINITY, 0.0),
+            ..valid_view
+        },
+        RenderViewport {
+            surface_size: (0, 128),
+            ..valid_view
+        },
+        RenderViewport {
+            allocation_size: (256, 0),
+            ..valid_view
+        },
+    ] {
+        assert!(!pipeline.sync_viewport(invalid, true));
+        assert_eq!(pipeline.viewport(), valid_view);
+        assert_eq!(
+            read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+            valid_pixels
+        );
+    }
+    // New allocation/origin/surface actually reprojects despite empty engine damage.
+    let shifted = RenderViewport {
+        allocation_origin: (7.5, 1.25),
+        allocation_size: (230, 120),
+        surface_size: (240, 120),
+        ..valid_view
+    };
+    pipeline.sync_viewport(shifted, false);
+    assert!(pipeline.decoration.is_dirty());
+    pipeline.prepare(gpu, &update, false);
+    fresh.sync_viewport(shifted, false);
+    fresh.prepare(gpu, &update, false);
+    assert_eq!(
+        read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+        read_draw(&device, &queue, |pass| fresh.draw(pass))
+    );
+    assert_ne!(
+        read_draw(&device, &queue, |pass| pipeline.draw(pass)),
+        valid_pixels
+    );
+    assert_eq!(engine.snapshot().cells, source);
+    assert!(
+        engine
+            .read_update(Instant::now())
+            .snapshot
+            .dirty_ranges
+            .is_empty()
+    );
+    // Invalid public metrics and non-drawable initial targets must reject safely.
+    for field in 0..7 {
+        for value in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut bad = m;
+            *match field {
+                0 => &mut bad.cell_width,
+                1 => &mut bad.line_height,
+                2 => &mut bad.ascent,
+                3 => &mut bad.underline_thickness,
+                4 => &mut bad.strikethrough_thickness,
+                5 => &mut bad.underline_position,
+                _ => &mut bad.strikethrough_position,
+            } = value;
+            // Finite offsets, including zero/negative ones, are valid clamped placements.
+            if super::super::decoration::valid_metrics(&bad) {
+                continue;
+            }
+            assert!(TerminalRenderPipeline::new(gpu, (256, 128), fonts(), bad, &update).is_err());
+        }
+    }
+    for bad in [
+        TextMetrics {
+            cell_width: f32::MAX,
+            ..m
+        },
+        TextMetrics {
+            line_height: f32::MAX,
+            ..m
+        },
+        TextMetrics {
+            ascent: f32::MAX,
+            ..m
+        },
+    ] {
+        assert!(TerminalRenderPipeline::new(gpu, (256, 128), fonts(), bad, &update).is_err());
+    }
+    assert!(TerminalRenderPipeline::new(gpu, (0, 128), fonts(), m, &update).is_err());
+    eprintln!(
+        "PASS: T0002 DirectWrite changed-metrics GPU replacement, same-metrics session, scale-only physical pixels, rejected preparation retains metrics/atlas/resources/pixels"
+    );
+}
