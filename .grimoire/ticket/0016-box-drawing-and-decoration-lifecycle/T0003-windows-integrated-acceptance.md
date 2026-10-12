@@ -2,7 +2,11 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0022 R5 and integrated Definition of Done](../../spec/0022-box-drawing-and-decoration-lifecycle.md), [Validation Policy](../../../docs/validation.md), [historical modern SGR acceptance](../../../docs/modern-sgr-acceptance.md), [Issue #193](https://github.com/wangjq4214/harbor/issues/193).
-**Status:** Todo
+**Status:** Done (user-confirmed manual verification)
+
+## Closure Basis
+
+The user reported completing verification with no apparent issues and requested this ticket's status update. The Done status records that user confirmation; it does not establish a fully evidenced integrated acceptance PASS. The feedback did not specify the tested revision, environment, application, native font-replacement or cross-monitor procedures, or fresh quality-gate results. The acceptance checklist below remains unchecked where the required detailed evidence has not been supplied; no automated execution, blanket deferral, broader support claim, or Issue #193 closure is inferred.
 
 ## Goal
 
