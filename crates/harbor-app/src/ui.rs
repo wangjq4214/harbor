@@ -125,7 +125,7 @@ fn tab_rail(
             .min_width(state.presentation.width())
             .max_width(state.presentation.width()) => {
             ScrollArea::new().controller(controller.scroll.clone()) => {
-                Padding::new(4.0, 6.0, 4.0, 6.0) => {
+                Padding::new(0.0, 6.0, 4.0, 6.0) => {
                     Column::new().cross_axis_alignment(Alignment::Stretch).gap(4.0) => {
                         for snapshot in state.snapshots.iter() {
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());

@@ -480,6 +480,27 @@ mod tests {
                     _ => None,
                 })
                 .expect("active terminal primitive");
+            let first_tab = runtime
+                .pending_delta()
+                .unwrap()
+                .added
+                .iter()
+                .find_map(|item| match item.primitive {
+                    Primitive::Quad { rect, color, .. }
+                    | Primitive::RoundedQuad { rect, color, .. }
+                        if color.a > 0.0
+                            && rect.min.x >= rail.min.x
+                            && rect.max.x <= rail.max.x =>
+                    {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .expect("selected first tab background");
+            assert_eq!(
+                first_tab.min.y, terminal.min.y,
+                "first tab and terminal panel must share the same top edge"
+            );
             assert!(
                 [
                     terminal.min.x,
