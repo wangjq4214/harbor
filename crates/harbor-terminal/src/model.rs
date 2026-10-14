@@ -645,7 +645,7 @@ mod tests {
     fn default_palette_preserves_translucent_cursor() {
         assert_eq!(
             Palette::default().cursor,
-            Rgba::from_rgba8(255, 255, 255, 204)
+            Rgba::from_rgba8(0xf5, 0xe0, 0xdc, 204)
         );
     }
 

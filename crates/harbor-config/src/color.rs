@@ -91,29 +91,32 @@ pub struct Palette {
 impl Default for Palette {
     fn default() -> Self {
         Self {
-            foreground: Rgba::from_rgb8(255, 255, 255),
-            background: Rgba::new(0.36, 0.20, 0.08, 0.25),
-            cursor: Rgba::from_rgba8(255, 255, 255, 204),
-            selection: Rgba::new(0.3, 0.5, 0.9, 0.4),
+            // Catppuccin Mocha terminal colors, following the official Alacritty port:
+            // https://github.com/catppuccin/alacritty/blob/main/catppuccin-mocha.toml
+            // Keep Harbor's existing background, cursor, and selection alpha values.
+            foreground: Rgba::from_rgb8(0xcd, 0xd6, 0xf4),
+            background: Rgba(crate::BACKGROUND),
+            cursor: Rgba::from_rgba8(0xf5, 0xe0, 0xdc, 204),
+            selection: Rgba(crate::SELECTION_COLOR),
             normal: [
-                Rgba::from_rgb8(0, 0, 0),
-                Rgba::from_rgb8(205, 0, 0),
-                Rgba::from_rgb8(0, 205, 0),
-                Rgba::from_rgb8(205, 205, 0),
-                Rgba::from_rgb8(0, 0, 205),
-                Rgba::from_rgb8(205, 0, 205),
-                Rgba::from_rgb8(0, 205, 205),
-                Rgba::from_rgb8(229, 229, 229),
+                Rgba::from_rgb8(0x45, 0x47, 0x5a),
+                Rgba::from_rgb8(0xf3, 0x8b, 0xa8),
+                Rgba::from_rgb8(0xa6, 0xe3, 0xa1),
+                Rgba::from_rgb8(0xf9, 0xe2, 0xaf),
+                Rgba::from_rgb8(0x89, 0xb4, 0xfa),
+                Rgba::from_rgb8(0xf5, 0xc2, 0xe7),
+                Rgba::from_rgb8(0x94, 0xe2, 0xd5),
+                Rgba::from_rgb8(0xba, 0xc2, 0xde),
             ],
             bright: [
-                Rgba::from_rgb8(127, 127, 127),
-                Rgba::from_rgb8(255, 0, 0),
-                Rgba::from_rgb8(0, 255, 0),
-                Rgba::from_rgb8(255, 255, 0),
-                Rgba::from_rgb8(92, 92, 255),
-                Rgba::from_rgb8(255, 0, 255),
-                Rgba::from_rgb8(0, 255, 255),
-                Rgba::from_rgb8(255, 255, 255),
+                Rgba::from_rgb8(0x58, 0x5b, 0x70),
+                Rgba::from_rgb8(0xf3, 0x8b, 0xa8),
+                Rgba::from_rgb8(0xa6, 0xe3, 0xa1),
+                Rgba::from_rgb8(0xf9, 0xe2, 0xaf),
+                Rgba::from_rgb8(0x89, 0xb4, 0xfa),
+                Rgba::from_rgb8(0xf5, 0xc2, 0xe7),
+                Rgba::from_rgb8(0x94, 0xe2, 0xd5),
+                Rgba::from_rgb8(0xa6, 0xad, 0xc8),
             ],
             extended: std::array::from_fn(|index| default_extended_color(index as u8 + 16)),
         }

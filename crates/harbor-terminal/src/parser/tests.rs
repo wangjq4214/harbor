@@ -1225,7 +1225,7 @@ fn should_treat_eight_bit_device_attributes_as_unrecognized_and_resume_text() {
 
 #[test]
 fn osc_color_reply_is_atomic_at_capacity_boundary() {
-    let reply = b"\x1b]10;rgb:ffff/ffff/ffff\x07";
+    let reply = b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07";
     for (remaining, accepted) in [(reply.len(), true), (reply.len() - 1, false)] {
         let prefix = vec![b'x'; 1024 - remaining];
         let mut screen = Screen::new(2, 4);

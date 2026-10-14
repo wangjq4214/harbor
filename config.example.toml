@@ -61,28 +61,31 @@ bindings = [{ modifiers = [], key = "pagedown" }]
 bindings = [{ modifiers = [], key = "home" }]
 [keybindings.terminal.scroll-to-bottom]
 bindings = [{ modifiers = [], key = "end" }]
+# Built-in default terminal theme: Catppuccin Mocha.
+# Terminal colors do not configure application day/night mode or Acrylic tint.
+# Existing background/cursor/selection transparency is retained.
 [colors]
-foreground = "#FFFFFF"
-background = "#5C331440"
-cursor = "#FFFFFF"
-selection = "#4D80E666"
+foreground = "#CDD6F4"
+background = "#1E1E2E40"
+cursor = "#F5E0DCCC"
+selection = "#F5E0DC66"
 
 [colors.normal]
-black = "#000000"
-red = "#CD3131"
-green = "#0DBC79"
-yellow = "#E5E510"
-blue = "#2472C8"
-magenta = "#BC3FBC"
-cyan = "#11A8CD"
-white = "#E5E5E5"
+black = "#45475A"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#BAC2DE"
 
 [colors.bright]
-black = "#666666"
-red = "#F14C4C"
-green = "#23D18B"
-yellow = "#F5F543"
-blue = "#3B8EEA"
-magenta = "#D670D6"
-cyan = "#29B8DB"
-white = "#FFFFFF"
+black = "#585B70"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#A6ADC8"

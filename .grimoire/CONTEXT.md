@@ -885,3 +885,16 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to TOML User Settings
   - configures Default Background Cell
+
+### Terminal Theme
+- **Definition:** A terminal-only color scheme, distinct from the application's day/night appearance mode. Selecting a terminal theme must not recolor application chrome such as the tab rail or buttons. This approved boundary is recorded in [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md); it does not imply a theme-selection UI is implemented.
+- **Synonyms:** Terminal color scheme
+- **Relationships:**
+  - belongs to Terminal
+  - references Application Appearance Mode
+
+### Application Appearance Mode
+- **Definition:** The application's day/night (light/dark) appearance policy, separate from named terminal themes. The approved policy permits only these two overall modes; defaults, system-mode following, switching controls, and persistence remain unspecified, and implementation is not established by this definition. See [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md).
+- **Synonyms:** Day mode, Night mode, Light mode, Dark mode
+- **Relationships:**
+  - belongs to Application Business Host

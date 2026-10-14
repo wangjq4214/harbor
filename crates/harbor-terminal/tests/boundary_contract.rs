@@ -128,7 +128,7 @@ fn should_render_explicit_ansi_background_as_an_opaque_fill() {
 
 #[test]
 fn should_keep_default_color_fully_opaque() {
-    assert_eq!(Color::Default.to_rgba(), [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(Color::Default.to_rgba()[3], 1.0);
 }
 
 #[test]

@@ -18,8 +18,10 @@ use toml::{Table, Value};
 pub const FONT_SIZE: f32 = 24.0;
 pub const DEFAULT_UI_FONT_SIZE: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 16.0;
-pub const BACKGROUND: [f32; 4] = [0.36, 0.20, 0.08, 0.25];
-pub const SELECTION_COLOR: [f32; 4] = [0.3, 0.5, 0.9, 0.4];
+/// Built-in terminal background (Catppuccin Mocha Base), not the window backdrop tint.
+pub const BACKGROUND: [f32; 4] = [30.0 / 255.0, 30.0 / 255.0, 46.0 / 255.0, 0.25];
+/// Built-in terminal selection highlight (Catppuccin Mocha Rosewater).
+pub const SELECTION_COLOR: [f32; 4] = [245.0 / 255.0, 224.0 / 255.0, 220.0 / 255.0, 0.4];
 pub const BLINK_INTERVAL_MS: u64 = 530;
 pub const SCROLLBAR_WIDTH: f32 = 6.0;
 pub const SCROLLBAR_MARGIN: f32 = 2.0;
@@ -704,6 +706,13 @@ mod tests {
             loaded.settings.colors.normal[1],
             Rgba::from_rgb8(0xcd, 0x31, 0x31)
         );
+        // Unspecified terminal colors inherit Mocha rather than the old palette.
+        let defaults = Palette::default();
+        assert_eq!(loaded.settings.colors.foreground, defaults.foreground);
+        assert_eq!(loaded.settings.colors.cursor, defaults.cursor);
+        assert_eq!(loaded.settings.colors.selection, defaults.selection);
+        assert_eq!(loaded.settings.colors.normal[2..], defaults.normal[2..]);
+        assert_eq!(loaded.settings.colors.bright, defaults.bright);
     }
 
     #[test]

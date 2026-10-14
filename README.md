@@ -61,6 +61,8 @@ For manual-assisted Windows checks inside an existing Harbor tab, run [`scripts/
 
 Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, OSC 52 write policy, and structured per-command keybindings.
 
+The built-in default terminal palette is Catppuccin Mocha, with Harbor's existing background, cursor, and selection transparency. It affects only terminal colors, not application day/night appearance or the Windows Acrylic tint. Explicit `[colors]` settings still override these defaults; indexed slots 16–255 retain the standard color cube and grayscale.
+
 - Invalid scalar font/shell fields fall back independently; an invalid supplied color resets the complete palette.
 - Invalid keybinding overrides reset the complete binding table while retaining valid non-keybinding settings. Omitted commands keep defaults; `bindings = []` unbinds a command.
 - Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
