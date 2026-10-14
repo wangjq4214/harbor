@@ -8,6 +8,8 @@ use crate::scene::primitive::Primitive;
 use crate::signal::Signal;
 use crate::theme::ControlStyle;
 use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
+use crate::widgets::focus::FocusHandle;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Orthogonal state exposed by interactive desktop controls.
@@ -29,6 +31,7 @@ struct InteractionRuntimeState {
 }
 
 type ActivateCallback = Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
+type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
 
 /// Reusable focusable mouse/keyboard activation state machine.
 #[derive(Clone)]
@@ -40,6 +43,9 @@ pub struct InteractiveRegion {
     label: Option<String>,
     on_activate: Option<ActivateCallback>,
     child: Option<View>,
+    content: Option<ContentBuilder>,
+    style: Option<ControlStyle>,
+    focus_handle: Option<FocusHandle>,
 }
 
 impl InteractiveRegion {
@@ -52,11 +58,38 @@ impl InteractiveRegion {
             label: None,
             on_activate: None,
             child: None,
+            content: None,
+            style: None,
+            focus_handle: None,
         }
     }
 
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.content = None;
         self.child = Some(child.into_child_view());
+        self
+    }
+
+    /// Builds visual content from this region's retained interaction state.
+    /// Like `child`, this replaces any previously supplied content.
+    pub fn content(
+        mut self,
+        builder: impl Fn(&mut BuildCx, InteractionState) -> View + 'static,
+    ) -> Self {
+        self.child = None;
+        self.content = Some(Rc::new(builder));
+        self
+    }
+
+    /// Overrides control appearance without replacing the inherited theme.
+    pub fn style(mut self, style: ControlStyle) -> Self {
+        self.style = Some(style);
+        self
+    }
+
+    /// Assigns a stable focus identity while retaining nested control tab stops.
+    pub fn focus_handle(mut self, handle: FocusHandle) -> Self {
+        self.focus_handle = Some(handle);
         self
     }
 
@@ -119,10 +152,17 @@ impl Component for InteractiveRegion {
             }
             runtime.set(next);
         }
-        let style = if self.compact {
-            cx.theme().icon_button.clone()
-        } else {
-            cx.theme().button.clone()
+        let style = self.style.clone().unwrap_or_else(|| {
+            if self.compact {
+                cx.theme().icon_button.clone()
+            } else {
+                cx.theme().button.clone()
+            }
+        });
+        let visual = runtime.read().visual;
+        let children = match &self.content {
+            Some(builder) => vec![builder(cx, visual)],
+            None => self.child.iter().cloned().collect(),
         };
         View::new(
             InteractiveRegionView {
@@ -131,8 +171,9 @@ impl Component for InteractiveRegion {
                 label: self.label.clone(),
                 cursor: self.cursor,
                 on_activate: self.on_activate.clone(),
+                focus_handle: self.focus_handle,
             },
-            self.child.iter().cloned().collect(),
+            children,
             None,
         )
     }
@@ -144,6 +185,9 @@ impl crate::WithChildren for InteractiveRegion {
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
         children.into_single("InteractiveRegion", &mut self.child)?;
+        if self.child.is_some() {
+            self.content = None;
+        }
         Ok(self)
     }
 }
@@ -155,6 +199,7 @@ struct InteractiveRegionView {
     label: Option<String>,
     cursor: Option<CursorShape>,
     on_activate: Option<ActivateCallback>,
+    focus_handle: Option<FocusHandle>,
 }
 
 impl InteractiveRegionView {
@@ -284,7 +329,12 @@ impl AnyView for InteractiveRegionView {
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
-        match event {
+        // Descendant controls get first refusal. In particular, a nested close
+        // button must not also press or activate its enclosing selectable row.
+        if ctx.is_capture_phase() {
+            return EventHandled::Ignored;
+        }
+        let handled = match event {
             UiEvent::PointerBoundary(boundary) => {
                 self.update(ctx, |state| {
                     state.visual.hovered = boundary.kind == PointerBoundaryKind::Enter;
@@ -380,7 +430,11 @@ impl AnyView for InteractiveRegionView {
                 EventHandled::Handled
             }
             _ => EventHandled::Ignored,
+        };
+        if handled == EventHandled::Handled {
+            ctx.stop_propagation();
         }
+        handled
     }
 
     fn focus_metadata(&self) -> Option<FocusMetadata> {
@@ -388,7 +442,7 @@ impl AnyView for InteractiveRegionView {
             enabled: !self.runtime.read().visual.disabled,
             participates_in_tab_traversal: true,
             order: 0,
-            handle: None,
+            handle: self.focus_handle.map(|handle| handle.0),
         })
     }
 

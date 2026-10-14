@@ -9,6 +9,7 @@ bytemuck = { workspace = true }
 hashbrown = { workspace = true }
 slotmap = { workspace = true }
 harbor-text = { workspace = true }
+unicode-width = { workspace = true }
 wgpu = { workspace = true }
 tracing = { workspace = true }
 harbor-widget-macros = { workspace = true }

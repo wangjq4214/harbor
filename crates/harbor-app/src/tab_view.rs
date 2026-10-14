@@ -190,7 +190,7 @@ mod tests {
     use crate::command::{AppCommand, AppCommandRequest};
     use harbor_terminal::Terminal;
     use harbor_widget::{
-        ConstrainedBox, IconButton, Row,
+        ConstrainedBox, Row,
         fiber::FiberId,
         input::event::{
             Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -281,7 +281,14 @@ mod tests {
             .into_iter()
             .filter(|id| {
                 let fiber = runtime.arena().get(*id).expect("live fiber");
-                fiber.widget_type() == TypeId::of::<Row>() && fiber.children().len() == 2
+                let children = fiber.children();
+                fiber.widget_type() == TypeId::of::<Row>()
+                    && children.last().is_some_and(|child| {
+                        let kind = runtime.arena().get(*child).unwrap().widget_type();
+                        kind == TypeId::of::<ConstrainedBox>()
+                            || (children.len() == 1
+                                && kind == TypeId::of::<harbor_widget::Expanded>())
+                    })
             })
             .collect();
         rows.sort_by(|left, right| {
@@ -533,6 +540,271 @@ mod tests {
         );
     }
 
+    fn move_pointer(runtime: &mut Runtime, position: Point) {
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            position,
+            PointerPhase::Move,
+            PointerButton::Left,
+            7,
+        )));
+        runtime.update(Instant::now());
+    }
+
+    fn close_is_visible(runtime: &Runtime, row: FiberId) -> bool {
+        let rect = runtime.arena().get(row).unwrap().layout_rect().unwrap();
+        let delta = runtime.pending_delta().unwrap();
+        delta.added.iter().chain(&delta.modified).any(|item| {
+            matches!(&item.primitive, Primitive::Text { text, origin, color }
+                if text.as_ref() == "×" && rect.contains(*origin) && color.a > 0.0)
+        })
+    }
+
+    #[test]
+    fn compact_rail_has_no_close_control_or_close_focus_stop() {
+        let controller = controller(
+            899.0,
+            vec![snapshot(1, true, false), snapshot(2, false, false)],
+            1,
+        );
+        let mut runtime = mount(controller.clone(), 899, 320);
+        let rows = tab_rows(&runtime);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            let children = runtime.arena().get(*row).unwrap().children();
+            assert_eq!(children.len(), 1, "compact row contains only its label");
+            assert_eq!(
+                runtime.arena().get(children[0]).unwrap().widget_type(),
+                TypeId::of::<harbor_widget::Expanded>()
+            );
+            assert!(!close_is_visible(&runtime, *row));
+        }
+
+        let rect = runtime.arena().get(rows[1]).unwrap().layout_rect().unwrap();
+        let position = Point::new(rect.max.x - 4.0, rect.min.y + 8.0);
+        move_pointer(&mut runtime, position);
+        assert!(!close_is_visible(&runtime, rows[1]));
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                position,
+                phase,
+                PointerButton::Left,
+                7,
+            )));
+            runtime.update(Instant::now());
+        }
+        assert_eq!(
+            controller.drain_actions(),
+            [AppCommandRequest::rail(TabCommand::Activate(TabId(2)))]
+        );
+
+        runtime.request_focus(&controller.tab_focus(TabId(2)).unwrap());
+        runtime.update(Instant::now());
+        assert!(!close_is_visible(&runtime, rows[1]));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        }));
+        runtime.update(Instant::now());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [AppCommandRequest::rail(TabCommand::New)]
+        );
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('w'),
+            modifiers: ctrl(),
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [AppCommandRequest::shortcut(AppCommand::Tab(
+                TabCommand::CloseActive
+            ))]
+        );
+    }
+
+    #[test]
+    fn resizing_removes_and_restores_close_controls() {
+        let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        for width in [1000, 899, 900, 899] {
+            runtime.set_viewport(Viewport::new(width, 320, 1.0));
+            controller.sync(
+                vec![snapshot(1, true, false)],
+                Some(bridge(1)),
+                f64::from(width),
+            );
+            runtime.update(Instant::now());
+            let row = tab_rows(&runtime)[0];
+            let compact = width < 900;
+            assert_eq!(
+                runtime.arena().get(row).unwrap().children().len(),
+                if compact { 1 } else { 3 }
+            );
+            assert_eq!(close_is_visible(&runtime, row), !compact);
+        }
+    }
+
+    #[test]
+    fn close_affordance_follows_selection_hover_and_both_keyboard_stops() {
+        let controller = controller(
+            1000.0,
+            vec![snapshot(1, true, false), snapshot(2, false, false)],
+            1,
+        );
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        let rows = tab_rows(&runtime);
+        assert!(close_is_visible(&runtime, rows[0]));
+        assert!(!close_is_visible(&runtime, rows[1]));
+        let rect = runtime.arena().get(rows[1]).unwrap().layout_rect().unwrap();
+        move_pointer(&mut runtime, Point::new(rect.min.x + 8.0, rect.min.y + 8.0));
+        assert!(close_is_visible(&runtime, rows[1]));
+        move_pointer(&mut runtime, Point::new(500.0, 200.0));
+        assert!(!close_is_visible(&runtime, rows[1]));
+
+        runtime.request_focus(&controller.tab_focus(TabId(2)).unwrap());
+        runtime.update(Instant::now());
+        assert!(close_is_visible(&runtime, rows[1]));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        }));
+        runtime.update(Instant::now());
+        assert!(close_is_visible(&runtime, rows[1]));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [AppCommandRequest::close_rail(TabId(2))]
+        );
+        runtime.request_focus(&controller.terminal_focus());
+        runtime.update(Instant::now());
+        assert!(!close_is_visible(&runtime, rows[1]));
+    }
+
+    #[test]
+    fn nested_close_click_never_activates_the_tab_and_survives_pressed_rebuilds() {
+        for width in [900, 1000] {
+            let controller = controller(
+                f64::from(width),
+                vec![snapshot(1, true, false), snapshot(2, false, false)],
+                1,
+            );
+            let mut runtime = mount(controller.clone(), width, 320);
+            let row = tab_rows(&runtime)[1];
+            let close = *runtime.arena().get(row).unwrap().children().last().unwrap();
+            let rect = runtime.arena().get(close).unwrap().layout_rect().unwrap();
+            let position = Point::new(
+                rect.min.x + rect.size().width / 2.0,
+                rect.min.y + rect.size().height / 2.0,
+            );
+            move_pointer(&mut runtime, position);
+            assert!(close_is_visible(&runtime, row));
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    position,
+                    phase,
+                    PointerButton::Left,
+                    7,
+                )));
+                runtime.update(Instant::now());
+            }
+            assert_eq!(
+                controller.drain_actions(),
+                [AppCommandRequest::close_rail(TabId(2))]
+            );
+            assert!(runtime.input().captor(7).is_none());
+        }
+    }
+
+    #[test]
+    fn new_terminal_follows_tabs_and_remains_reachable_at_the_end_of_scroll() {
+        for count in [2, 20] {
+            let controller = controller(
+                1000.0,
+                (1..=count).map(|id| snapshot(id, id == 1, false)).collect(),
+                1,
+            );
+            let mut runtime = mount(controller.clone(), 1000, 320);
+            if count == 20 {
+                controller
+                    .scroll
+                    .jump_to(controller.scroll.metrics().max_scroll_extent());
+                runtime.update(Instant::now());
+            }
+            let last = *tab_rows(&runtime).last().unwrap();
+            let last_rect = runtime.arena().get(last).unwrap().layout_rect().unwrap();
+            let delta = runtime.pending_delta().unwrap();
+            let origin = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .find_map(|item| match &item.primitive {
+                    Primitive::Text { text, origin, .. } if text.as_ref() == "+  New terminal" => {
+                        Some(*origin)
+                    }
+                    _ => None,
+                })
+                .expect("new terminal label");
+            assert!(origin.y > last_rect.max.y);
+            assert!(origin.y < 300.0, "new control must be in the viewport");
+            if count == 2 {
+                assert!(
+                    origin.y < 120.0,
+                    "new control must not be pinned to the bottom"
+                );
+            }
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(origin.x + 4.0, origin.y + 4.0),
+                    phase,
+                    PointerButton::Left,
+                    7,
+                )));
+            }
+            assert_eq!(
+                controller.drain_actions(),
+                [AppCommandRequest::rail(TabCommand::New)]
+            );
+        }
+    }
+
+    #[test]
+    fn long_unicode_titles_are_ellipsized_clipped_and_never_resize_close_controls() {
+        let mut long = snapshot(1, true, false);
+        long.title =
+            "项目 / a very long terminal title that must not overlap the close button".into();
+        let controller = controller(1000.0, vec![long.clone()], 1);
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        let row = tab_rows(&runtime)[0];
+        let close = *runtime.arena().get(row).unwrap().children().last().unwrap();
+        let close_rect = runtime.arena().get(close).unwrap().layout_rect().unwrap();
+        let title = runtime.pending_delta().unwrap().added.iter().find(|item| {
+            matches!(&item.primitive, Primitive::Text { text, .. } if text.starts_with("项目"))
+        }).expect("truncated title");
+        assert!(matches!(&title.primitive, Primitive::Text { text, .. } if text.ends_with('…')));
+        assert!(
+            title
+                .clips
+                .iter()
+                .any(|clip| clip.rect().max.x <= close_rect.min.x)
+        );
+        assert_eq!(
+            controller.store.state().read().snapshots[0].title,
+            long.title
+        );
+        controller.sync(vec![snapshot(1, true, false)], Some(bridge(1)), 1000.0);
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime.arena().get(close).unwrap().layout_rect().unwrap(),
+            close_rect
+        );
+    }
+
     #[test]
     fn many_tabs_scroll_and_offset_clamps_after_content_shrinks() {
         let snapshots = (1..=20).map(|id| snapshot(id, id == 1, false)).collect();
@@ -617,13 +889,9 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_deterministic_and_preserve_full_compact_metadata() {
-        let unread = snapshot(123, false, true);
-        assert_eq!(tab_label(&unread), "• Terminal 123");
-        assert_eq!(abbreviation(&unread), "•");
+    fn compact_abbreviations_preserve_unread_indicators() {
+        assert_eq!(abbreviation(&snapshot(123, false, true)), "•");
         assert_eq!(abbreviation(&snapshot(123, false, false)), "3");
-        let button = IconButton::new(abbreviation(&unread), tab_label(&unread));
-        assert_eq!(button.label(), "• Terminal 123");
     }
 
     #[test]

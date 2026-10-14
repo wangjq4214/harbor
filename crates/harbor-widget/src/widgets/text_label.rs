@@ -3,6 +3,7 @@ use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, View};
 use std::sync::Arc;
+use unicode_width::UnicodeWidthChar;
 
 // ── TextLabel ───────────────────────────────────────────────────────────────
 
@@ -14,6 +15,7 @@ use std::sync::Arc;
 pub struct TextLabel {
     text: String,
     color: Color,
+    ellipsis: bool,
 }
 
 impl TextLabel {
@@ -21,7 +23,15 @@ impl TextLabel {
         TextLabel {
             text: text.into(),
             color: Color::WHITE,
+            ellipsis: false,
         }
+    }
+
+    /// Truncates overflowing text to the available monospace cell budget.
+    /// The full source text is retained for subsequent wider layouts.
+    pub fn ellipsis(mut self) -> Self {
+        self.ellipsis = true;
+        self
     }
 
     pub fn color(mut self, color: Color) -> Self {
@@ -53,17 +63,81 @@ impl AnyView for TextLabel {
         constraints.constrain(Size::new(width, height))
     }
 
-    fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        let text = if self.ellipsis {
+            ellipsized(&self.text, rect.size().width, metrics.cell_width)
+        } else {
+            self.text.clone()
+        };
+        if self.ellipsis && text.is_empty() {
+            return Vec::new();
+        }
         vec![Primitive::Text {
-            text: Arc::from(self.text.as_str()),
+            text: Arc::from(text),
             origin: rect.min,
             color: self.color,
         }]
     }
 }
 
+fn ellipsized(text: &str, width: f32, cell_width: f32) -> String {
+    if !width.is_finite() || !cell_width.is_finite() || cell_width <= 0.0 {
+        return String::new();
+    }
+    let budget = (width.max(0.0) / cell_width).floor() as usize;
+    let cells: usize = text.chars().map(|ch| ch.width().unwrap_or(0)).sum();
+    if cells <= budget {
+        return text.to_owned();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    let mut used = 0;
+    let mut result = String::new();
+    for ch in text.chars() {
+        let cells = ch.width().unwrap_or(0);
+        if used + cells > budget - 1 {
+            break;
+        }
+        result.push(ch);
+        used += cells;
+    }
+    result.push('…');
+    result
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ellipsis_respects_cell_budgets_and_keeps_source_for_wider_layouts() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        for (text, cells, expected) in [
+            ("Terminal", 4, "Ter…"),
+            ("Terminal", 1, "…"),
+            ("Terminal", 0, ""),
+            ("Terminal", 8, "Terminal"),
+            ("项目标签", 5, "项目…"),
+            ("项目标签", 2, "…"),
+            ("e\u{0301}xyz", 3, "e\u{0301}x…"),
+        ] {
+            assert_eq!(
+                ellipsized(text, cells as f32 * metrics.cell_width, metrics.cell_width),
+                expected
+            );
+        }
+        let label = TextLabel::new("Terminal").ellipsis();
+        for (cells, expected) in [(4, "Ter…"), (8, "Terminal")] {
+            let rect = Rect::from_min_size(
+                Point::ZERO,
+                Size::new(cells as f32 * metrics.cell_width, 20.0),
+            );
+            assert!(matches!(&label.paint_primitives(rect, &metrics)[0],
+                Primitive::Text { text, .. } if text.as_ref() == expected));
+        }
+        assert_eq!(ellipsized("test", 10.0, 0.0), "");
+        assert_eq!(ellipsized("test", f32::NAN, 10.0), "");
+    }
+
     use super::*;
     use crate::input::event::UiEvent;
     use crate::input::event_ctx::{EventCtx, EventHandled};
