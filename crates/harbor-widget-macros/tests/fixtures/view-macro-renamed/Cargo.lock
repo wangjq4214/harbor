@@ -327,6 +327,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "slotmap",
  "tracing",
+ "unicode-width",
  "wgpu",
 ]
 
