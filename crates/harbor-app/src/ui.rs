@@ -4,7 +4,7 @@ use harbor_widget::{
     ActionOutcome, Actions, Alignment, BoxDecoration, Button, ClipBehavior, Column,
     ComponentExt as _, ConstrainedBox, ControlColors, ControlStyle, DecoratedBox, Dispatcher,
     Expanded, Focus, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, LucideIcon,
-    Row, ScrollArea, Separator, Shortcuts,
+    Row, ScrollArea, Shortcuts,
     layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -106,7 +106,6 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                 shortcuts => {
                     Row::new() => {
                         tab_rail(cx, &state, &props.controller, dispatcher);
-                        Separator::vertical();
                         terminal_panel(cx, &props.controller, active_bridge);
                     }
                 }
