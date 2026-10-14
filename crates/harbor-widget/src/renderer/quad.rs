@@ -20,7 +20,7 @@ struct InstanceInput {
     @location(5) logical_size: vec2<f32>,
     @location(6) shape_rect: vec4<f32>, // origin x/y and size w/h within the instance
     @location(7) blur_radius: f32,
-    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask
+    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask, 3..6 = Lucide icons
     @location(9) clip_rect0: vec4<f32>, // local origin x/y and size w/h
     @location(10) clip_radii0: vec4<f32>,
     @location(11) clip_rect1: vec4<f32>,
@@ -101,6 +101,33 @@ fn stable_distance_aa(distance: f32, point: vec2<f32>) -> f32 {
     return clamp(fwidth(distance), 0.001, coordinate_width);
 }
 
+// Precompiled Lucide SVG subset (assets/lucide). One distance union per icon
+// keeps translucent intersections/round joins from accumulating alpha.
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+    return length(p - a - ab * t) - 1.0;
+}
+
+fn lucide_distance(p: vec2<f32>, mode: u32) -> f32 {
+    if mode == 3u {
+        return min(
+            segment_distance(p, vec2<f32>(12.0, 19.0), vec2<f32>(20.0, 19.0)),
+            min(segment_distance(p, vec2<f32>(4.0, 17.0), vec2<f32>(10.0, 11.0)),
+                segment_distance(p, vec2<f32>(10.0, 11.0), vec2<f32>(4.0, 5.0)))
+        );
+    }
+    if mode == 4u {
+        return min(segment_distance(p, vec2<f32>(5.0, 12.0), vec2<f32>(19.0, 12.0)),
+                   segment_distance(p, vec2<f32>(12.0, 5.0), vec2<f32>(12.0, 19.0)));
+    }
+    if mode == 5u {
+        return min(segment_distance(p, vec2<f32>(18.0, 6.0), vec2<f32>(6.0, 18.0)),
+                   segment_distance(p, vec2<f32>(6.0, 6.0), vec2<f32>(18.0, 18.0)));
+    }
+    // Lucide dot's r=1, stroke-width=2 circle, filled at its zero-radius center.
+    return length(p - vec2<f32>(12.0)) - 2.0;
+}
 fn rounded_clip_coverage(
     point: vec2<f32>,
     rect: vec4<f32>,
@@ -138,6 +165,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     if clip_alpha <= 0.0 {
         discard;
+    }
+    if in.mode >= 3u {
+        // Fit a square viewBox, preserving aspect ratio for direct primitives too.
+        let side = min(in.size.x, in.size.y);
+        let p = (in.local - (in.size - vec2<f32>(side)) * 0.5) * (24.0 / side);
+        let distance = lucide_distance(p, in.mode);
+        // One physical pixel of coverage, not smoothstep's two-pixel halo.
+        // Coordinate derivatives stay stable where min/abs distance gradients
+        // cancel across thin strokes, joins, or the quad's triangle boundary.
+        let pixel_width = max(max(fwidth(p.x), fwidth(p.y)), 0.001);
+        let coverage = clamp(0.5 - distance / pixel_width, 0.0, 1.0);
+        return vec4<f32>(in.color.rgb, in.color.a * coverage * clip_alpha);
     }
     if in.mode == 1u {
         let distance = rounded_box_distance(
@@ -609,6 +648,7 @@ impl QuadRenderer {
                 | Primitive::RoundedQuad { .. }
                 | Primitive::RoundedBorder { .. }
                 | Primitive::OuterShadow { .. }
+                | Primitive::Icon { .. }
         )
     }
 
@@ -624,6 +664,17 @@ impl QuadRenderer {
             blur_radius,
             mode,
         ) = match &item.primitive {
+            Primitive::Icon { icon, rect, color } => (
+                *rect,
+                *rect,
+                *rect,
+                *color,
+                [0.0; 4],
+                [0.0; 4],
+                0.0,
+                0.0,
+                icon.render_mode(),
+            ),
             Primitive::Quad {
                 rect,
                 color,

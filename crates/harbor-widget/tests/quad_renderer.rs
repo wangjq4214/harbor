@@ -2620,3 +2620,212 @@ fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
     assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
     assert_eq!(bgra(&pixels, 16, 16), [0, 255, 0, 255]);
 }
+
+#[test]
+fn lucide_icons_render_at_multiple_dpi_with_tint_and_single_coverage() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Lucide icon test");
+        return;
+    };
+    eprintln!("GPU available: executing Lucide pixel assertions");
+    use harbor_widget::LucideIcon;
+    for scale in [1.0, 1.5, 2.0] {
+        let target_size = (32.0 * scale) as u32;
+        for (icon, sample) in [
+            (LucideIcon::Terminal, (16.0, 19.0)),
+            (LucideIcon::Plus, (12.0, 12.0)),
+            (LucideIcon::X, (12.0, 12.0)),
+            (LucideIcon::Dot, (12.0, 12.0)),
+        ] {
+            let item = make_rounded_item(
+                1,
+                Primitive::Icon {
+                    icon,
+                    rect: Rect::from_min_size(Point::new(4.0, 4.0), Size::new(24.0, 24.0)),
+                    color: Color {
+                        a: 0.5,
+                        ..Color::RED
+                    },
+                },
+            );
+            let pixels = render_quad_item(
+                &device,
+                &queue,
+                item,
+                Viewport::new(target_size, target_size, scale),
+                target_size,
+            );
+            let sample = bgra(
+                &pixels,
+                ((sample.0 + 4.0) * scale) as u32,
+                ((sample.1 + 4.0) * scale) as u32,
+            );
+            assert!(
+                sample[2] > 80 && (90..=130).contains(&sample[3]),
+                "{icon:?} at {scale}x: {sample:?}"
+            );
+            assert_eq!(
+                bgra(&pixels, (5.0 * scale) as u32, (5.0 * scale) as u32),
+                [0; 4]
+            );
+        }
+    }
+}
+
+#[test]
+fn lucide_icon_uses_runtime_frame_encoding_and_ancestor_clip() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Lucide runtime clip test");
+        return;
+    };
+    let pixels = encode_root_to_pixels(
+        &device,
+        &queue,
+        harbor_widget::Icon::new(harbor_widget::LucideIcon::Plus)
+            .size(24.0)
+            .color(Color::GREEN),
+        Viewport::new(24, 24, 1.0),
+        24,
+    );
+    assert!(bgra(&pixels, 12, 12)[1] > 200);
+    assert_eq!(bgra(&pixels, 2, 2), [0; 4]);
+
+    let mut item = make_rounded_item(
+        1,
+        Primitive::Icon {
+            icon: harbor_widget::LucideIcon::Plus,
+            rect: Rect::from_min_size(Point::ZERO, Size::new(24.0, 24.0)),
+            color: Color::GREEN,
+        },
+    );
+    item.clips.push(
+        RoundedClip::new(
+            Rect::from_min_size(Point::new(12.0, 0.0), Size::new(12.0, 24.0)),
+            BorderRadius::default(),
+            ClipBehavior::HardEdge,
+        )
+        .unwrap(),
+    );
+    let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
+    assert_eq!(bgra(&pixels, 8, 12), [0; 4]);
+    assert!(bgra(&pixels, 16, 12)[1] > 200);
+}
+
+#[test]
+fn lucide_icon_updates_reuse_slots_and_switch_safely_between_primitive_types() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Lucide retention test");
+        return;
+    };
+    let viewport = Viewport::new(32, 32, 1.0);
+    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut item = make_rounded_item(
+        7,
+        Primitive::Icon {
+            icon: harbor_widget::LucideIcon::Plus,
+            rect: Rect::from_min_size(Point::ZERO, Size::new(24.0, 24.0)),
+            color: Color::WHITE,
+        },
+    );
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            added: vec![item.clone()],
+            modified: vec![],
+            removed: vec![],
+        },
+        &viewport,
+    );
+    let slot = renderer.slot_of(7).unwrap();
+    item.primitive = Primitive::Icon {
+        icon: harbor_widget::LucideIcon::X,
+        rect: Rect::from_min_size(Point::ZERO, Size::new(16.0, 16.0)),
+        color: Color::RED,
+    };
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            modified: vec![item.clone()],
+            added: vec![],
+            removed: vec![],
+        },
+        &viewport,
+    );
+    assert_eq!(renderer.slot_of(7), Some(slot));
+    renderer.refresh_viewport(&queue, &[item.clone()], &Viewport::new(64, 64, 2.0));
+    item.primitive = Primitive::Text {
+        text: Arc::from("label"),
+        origin: Point::ZERO,
+        color: Color::WHITE,
+    };
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            modified: vec![item],
+            added: vec![],
+            removed: vec![],
+        },
+        &viewport,
+    );
+    assert_eq!(renderer.slot_of(7), None);
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            removed: vec![7],
+            added: vec![],
+            modified: vec![],
+        },
+        &viewport,
+    );
+}
+
+#[test]
+fn lucide_axis_strokes_match_pixel_coverage_without_a_blur_halo() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter available for Lucide sharpness test");
+        return;
+    };
+    for side in [24.0, 20.0, 16.0] {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for phase in [0.0, 0.25, 0.5] {
+                let origin = 4.0 + phase;
+                let target_size = (32.0 * scale) as u32;
+                let item = make_rounded_item(
+                    1,
+                    Primitive::Icon {
+                        icon: harbor_widget::LucideIcon::Plus,
+                        rect: Rect::from_min_size(
+                            Point::new(origin, origin),
+                            Size::new(side, side),
+                        ),
+                        color: Color::WHITE,
+                    },
+                );
+                let pixels = render_quad_item(
+                    &device,
+                    &queue,
+                    item,
+                    Viewport::new(target_size, target_size, scale),
+                    target_size,
+                );
+                // Sample away from caps and the crossing. A 2/24-wide SVG stroke
+                // must cover exactly its geometric intersection with each pixel.
+                let x = ((origin + side * 2.0 / 3.0) * scale) as u32;
+                let center = (origin + side / 2.0) * scale;
+                let half_width = side * scale / 24.0;
+                let lo = center - half_width;
+                let hi = center + half_width;
+                for y in (lo.floor() as u32 - 1)..=(hi.ceil() as u32 + 1) {
+                    let expected = ((hi.min(y as f32 + 1.0) - lo.max(y as f32)).clamp(0.0, 1.0)
+                        * 255.0)
+                        .round() as i32;
+                    let actual = i32::from(bgra(&pixels, x, y)[3]);
+                    assert!(
+                        (actual - expected).abs() <= 4,
+                        "side={side}, scale={scale}, phase={phase}, pixel=({x},{y}): alpha={actual}, expected={expected}"
+                    );
+                }
+            }
+        }
+    }
+}

@@ -285,9 +285,18 @@ mod tests {
                 fiber.widget_type() == TypeId::of::<Row>()
                     && children.last().is_some_and(|child| {
                         let kind = runtime.arena().get(*child).unwrap().widget_type();
-                        kind == TypeId::of::<ConstrainedBox>()
-                            || (children.len() == 1
-                                && kind == TypeId::of::<harbor_widget::Expanded>())
+                        (kind == TypeId::of::<ConstrainedBox>() && children.len() == 3)
+                            || (kind == TypeId::of::<harbor_widget::Expanded>()
+                                && runtime
+                                    .arena()
+                                    .get(*child)
+                                    .unwrap()
+                                    .children()
+                                    .first()
+                                    .is_some_and(|label| {
+                                        runtime.arena().get(*label).unwrap().widget_type()
+                                            == TypeId::of::<harbor_widget::DecoratedBox>()
+                                    }))
                     })
             })
             .collect();
@@ -554,8 +563,8 @@ mod tests {
         let rect = runtime.arena().get(row).unwrap().layout_rect().unwrap();
         let delta = runtime.pending_delta().unwrap();
         delta.added.iter().chain(&delta.modified).any(|item| {
-            matches!(&item.primitive, Primitive::Text { text, origin, color }
-                if text.as_ref() == "×" && rect.contains(*origin) && color.a > 0.0)
+            matches!(&item.primitive, Primitive::Icon { icon: harbor_widget::LucideIcon::X, rect: icon_rect, color }
+                if rect.contains(icon_rect.min) && color.a > 0.0)
         })
     }
 
@@ -744,7 +753,7 @@ mod tests {
                 .iter()
                 .chain(&delta.modified)
                 .find_map(|item| match &item.primitive {
-                    Primitive::Text { text, origin, .. } if text.as_ref() == "+  New terminal" => {
+                    Primitive::Text { text, origin, .. } if text.as_ref() == "New terminal" => {
                         Some(*origin)
                     }
                     _ => None,
@@ -889,8 +898,57 @@ mod tests {
     }
 
     #[test]
-    fn compact_abbreviations_preserve_unread_indicators() {
-        assert_eq!(abbreviation(&snapshot(123, false, true)), "•");
+    fn rail_icon_artwork_replaces_glyphs_in_expanded_and_compact_modes() {
+        use harbor_widget::LucideIcon;
+        for width in [899, 1000] {
+            let controller = controller(
+                f64::from(width),
+                vec![snapshot(1, true, false), snapshot(2, false, true)],
+                1,
+            );
+            let runtime = mount(controller, width, 320);
+            let items = &runtime.pending_delta().unwrap().added;
+            let icons: Vec<_> = items
+                .iter()
+                .filter_map(|item| match &item.primitive {
+                    Primitive::Icon { icon, .. } => Some(*icon),
+                    _ => None,
+                })
+                .collect();
+            assert!(icons.contains(&LucideIcon::Plus));
+            assert!(icons.contains(&LucideIcon::Dot));
+            assert_eq!(icons.contains(&LucideIcon::Terminal), width >= 900);
+            assert_eq!(icons.contains(&LucideIcon::X), width >= 900);
+            let labels: Vec<_> = items
+                .iter()
+                .filter_map(|item| match &item.primitive {
+                    Primitive::Text { text, .. } => Some(text.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !labels
+                    .iter()
+                    .any(|text| [">_", "•", "+", "×", "+  New terminal"].contains(text))
+            );
+            if width < 900 {
+                assert!(labels.contains(&"1") && labels.contains(&"2"));
+            } else {
+                assert!(labels.contains(&"Terminal 1") && labels.contains(&"Terminal 2"));
+                assert!(labels.contains(&"New terminal"));
+            }
+            for item in items {
+                if let Primitive::Icon { rect, color, .. } = &item.primitive {
+                    assert!(rect.is_valid());
+                    assert!(color.is_finite());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_abbreviations_keep_numbers_even_when_unread() {
+        assert_eq!(abbreviation(&snapshot(123, false, true)), "3");
         assert_eq!(abbreviation(&snapshot(123, false, false)), "3");
     }
 

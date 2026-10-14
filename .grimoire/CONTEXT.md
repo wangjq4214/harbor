@@ -120,7 +120,7 @@ Project domain concepts and terminology.
   - accessed by BuildCx
 
 ### Primitive
-- **Definition:** A standardized retained draw input produced during widget painting. Variants cover Quad, Text, Border, OuterShadow, RoundedQuad, RoundedBorder, and External delegate rendering; a primitive is input to scene encoding rather than a guarantee of exactly one GPU draw call.
+- **Definition:** A standardized retained draw input produced during widget painting. Variants cover Quad, Text, Icon, Border, OuterShadow, RoundedQuad, RoundedBorder, and External delegate rendering; a primitive is input to scene encoding rather than a guarantee of exactly one GPU draw call.
 - **Relationships:**
   - produced by View painting
   - consumed by Scene Graph
@@ -142,6 +142,14 @@ Project domain concepts and terminology.
   - contains SceneItem
   - consumes Primitive
   - belongs to Harbor Widget Runtime
+
+### Widget Icon
+- **Definition:** A non-interactive `harbor-widget::Icon` leaf that paints built-in Lucide vector artwork independently of text metrics and system fonts. The initial SVG subset is precompiled into signed-distance functions in the retained quad renderer, with logical sizing, tint, DPI-aware antialiasing, and ancestor clipping; it is not an arbitrary SVG loader. Interactive state and tab behavior remain in the containing control and application.
+- **Synonyms:** Icon, Lucide icon
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - produces Primitive
+  - depends on Widget Renderer
 
 ### Widget Renderer
 - **Definition:** The wgpu-based instanced quad renderer inside harbor-widget that owns its own pipelines, vertex/index buffers, and processes SceneDelta to encode draw calls into a shared RenderPass.

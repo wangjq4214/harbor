@@ -3,8 +3,8 @@
 use harbor_widget::{
     ActionOutcome, Actions, Alignment, BoxDecoration, Button, ClipBehavior, Column,
     ComponentExt as _, ConstrainedBox, ControlColors, ControlStyle, DecoratedBox, Dispatcher,
-    Expanded, Focus, FocusScope, InteractionState, InteractiveRegion, Row, ScrollArea, Separator,
-    Shortcuts,
+    Expanded, Focus, FocusScope, Icon, InteractionState, InteractiveRegion, LucideIcon, Row,
+    ScrollArea, Separator, Shortcuts,
     layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -150,7 +150,12 @@ fn tab_row(
     let id = snapshot.id;
     let title = snapshot.title.clone();
     let compact = presentation == RailPresentation::Compact;
-    let glyph = if snapshot.unread { "•" } else { ">_" };
+    let unread = snapshot.unread;
+    let icon = if unread {
+        LucideIcon::Dot
+    } else {
+        LucideIcon::Terminal
+    };
     let short = abbreviation(snapshot);
     let select_dispatcher = dispatcher.clone();
     let region = InteractiveRegion::new()
@@ -166,8 +171,11 @@ fn tab_row(
                 Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 2.0 } else { 8.0 }) => {
                     if !compact {
                         ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
-                            TextLabel::new(glyph).color(color);
+                            Icon::new(icon).size(20.0).color(color);
                         }
+                    }
+                    if compact && unread {
+                        Icon::new(LucideIcon::Dot).size(12.0).color(color);
                     }
                     Expanded::new() => {
                         DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge) => {
@@ -224,11 +232,21 @@ fn new_tab_button(
                 let dispatcher = dispatcher.clone();
                 move |_| dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New))
             })
-            .child(
-                TextLabel::new(if compact { "+" } else { "+  New terminal" })
-                    .color(cx.theme().button.normal.foreground)
-                    .ellipsis(),
-            )
+            .content(move |cx, state| {
+                let color = rail_style(cx, compact).resolve_state(&state).foreground;
+                harbor_widget::view! { cx;
+                    Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 0.0 } else { 8.0 }) => {
+                        ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
+                            Icon::new(LucideIcon::Plus).size(20.0).color(color);
+                        }
+                        if !compact {
+                            Expanded::new() => {
+                                TextLabel::new("New terminal").color(color).ellipsis();
+                            }
+                        }
+                    }
+                }
+            })
             .build(cx)
     }
 }
@@ -255,11 +273,13 @@ fn close_tab_button(
                 .on_activate(move |_| dispatcher.dispatch(AppCommandRequest::close_rail(id)))
                 .content(move |cx, state| {
                     Align::new(Alignment::Center)
-                        .child(TextLabel::new("×").color(if visible || state.focused {
-                            foreground
-                        } else {
-                            Color::TRANSPARENT
-                        }))
+                        .child(Icon::new(LucideIcon::X).size(16.0).color(
+                            if visible || state.focused {
+                                foreground
+                            } else {
+                                Color::TRANSPARENT
+                            },
+                        ))
                         .build(cx)
                 }),
         )
@@ -420,9 +440,5 @@ pub(super) fn ctrl() -> Modifiers {
 }
 
 pub(super) fn abbreviation(snapshot: &TabSnapshot) -> String {
-    if snapshot.unread {
-        "•".to_owned()
-    } else {
-        (snapshot.id.get() % 10).to_string()
-    }
+    (snapshot.id.get() % 10).to_string()
 }

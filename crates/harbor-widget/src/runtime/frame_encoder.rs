@@ -448,7 +448,8 @@ impl FrameEncoder {
                         tr.encode_item(pass, item.id);
                     }
                 }
-                Primitive::Quad { .. }
+                Primitive::Icon { .. }
+                | Primitive::Quad { .. }
                 | Primitive::Border { .. }
                 | Primitive::RoundedQuad { .. }
                 | Primitive::RoundedBorder { .. }

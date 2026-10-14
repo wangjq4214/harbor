@@ -393,6 +393,12 @@ pub enum Primitive {
         color: Color,
         corner_radius: f32,
     },
+    /// A built-in vector icon rendered independently of the text atlas.
+    Icon {
+        icon: crate::icon::LucideIcon,
+        rect: Rect,
+        color: Color,
+    },
     Text {
         text: Arc<str>,
         origin: Point,
