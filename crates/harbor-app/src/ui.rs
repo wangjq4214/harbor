@@ -3,14 +3,13 @@
 use harbor_widget::{
     ActionOutcome, Actions, Alignment, BoxDecoration, Button, ClipBehavior, Column,
     ComponentExt as _, ConstrainedBox, ControlColors, ControlStyle, DecoratedBox, Dispatcher,
-    Expanded, Focus, FocusScope, Icon, InteractionState, InteractiveRegion, LucideIcon, Row,
-    ScrollArea, Separator, Shortcuts,
+    Expanded, Focus, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, LucideIcon,
+    Row, ScrollArea, Separator, Shortcuts,
     layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{
-        align::Align, padding::Padding, preview_pane::PreviewPane, sized_box::SizedBox,
-        text_label::TextLabel,
+        padding::Padding, preview_pane::PreviewPane, sized_box::SizedBox, text_label::TextLabel,
     },
 };
 use std::sync::{
@@ -268,20 +267,17 @@ fn close_tab_button(
         .max_width(20.0)
         .max_height(24.0)
         .child(
-            InteractiveRegion::new()
+            IconButton::new(LucideIcon::X, "Close tab")
                 .style(style)
-                .on_activate(move |_| dispatcher.dispatch(AppCommandRequest::close_rail(id)))
-                .content(move |cx, state| {
-                    Align::new(Alignment::Center)
-                        .child(Icon::new(LucideIcon::X).size(16.0).color(
-                            if visible || state.focused {
-                                foreground
-                            } else {
-                                Color::TRANSPARENT
-                            },
-                        ))
-                        .build(cx)
-                }),
+                .icon_size(16.0)
+                .color_with(move |state| {
+                    if visible || state.focused {
+                        foreground
+                    } else {
+                        Color::TRANSPARENT
+                    }
+                })
+                .on_click(move |_| dispatcher.dispatch(AppCommandRequest::close_rail(id))),
         )
 }
 

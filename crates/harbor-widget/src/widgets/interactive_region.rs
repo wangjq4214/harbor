@@ -39,7 +39,6 @@ pub struct InteractiveRegion {
     disabled: bool,
     selected: bool,
     cursor: Option<CursorShape>,
-    compact: bool,
     label: Option<String>,
     on_activate: Option<ActivateCallback>,
     child: Option<View>,
@@ -54,7 +53,6 @@ impl InteractiveRegion {
             disabled: false,
             selected: false,
             cursor: Some(CursorShape::Pointer),
-            compact: false,
             label: None,
             on_activate: None,
             child: None,
@@ -113,11 +111,6 @@ impl InteractiveRegion {
         self
     }
 
-    pub(crate) fn compact(mut self) -> Self {
-        self.compact = true;
-        self
-    }
-
     pub(crate) fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -152,13 +145,10 @@ impl Component for InteractiveRegion {
             }
             runtime.set(next);
         }
-        let style = self.style.clone().unwrap_or_else(|| {
-            if self.compact {
-                cx.theme().icon_button.clone()
-            } else {
-                cx.theme().button.clone()
-            }
-        });
+        let style = self
+            .style
+            .clone()
+            .unwrap_or_else(|| cx.theme().button.clone());
         let visual = runtime.read().visual;
         let children = match &self.content {
             Some(builder) => vec![builder(cx, visual)],
