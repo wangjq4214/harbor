@@ -94,7 +94,7 @@ impl Default for FontSettings {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellSettings {
-    /// Requested executable. `None` preserves the platform COMSPEC/cmd fallback.
+    /// Requested executable. `None` uses platform defaults (Windows: pwsh → powershell → COMSPEC/cmd).
     pub program: Option<String>,
     pub args: Vec<String>,
 }

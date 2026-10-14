@@ -381,40 +381,59 @@ fn create_shell_process(
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
     let environment_block = build_environment_block();
-    let mut command_line = shell_command_line(command);
-    tracing::info!("creating shell process");
-    match try_create_shell_process(&startup_info, &mut command_line, &environment_block) {
-        Ok(process_info) => Ok((
-            process_info,
-            shell_display_name(&selected_shell_program(
-                command,
-                std::env::var_os("COMSPEC"),
-            )),
-        )),
-        Err(error) if command.program.is_some() => {
-            tracing::warn!(
-                configured_program = ?command.program,
-                %error,
-                "configured shell failed to start; retrying the default shell"
-            );
-            let fallback = ShellCommand::default();
-            let mut fallback_line = shell_command_line(&fallback);
-            try_create_shell_process(&startup_info, &mut fallback_line, &environment_block)
-                .map(|process_info| {
-                    (
-                        process_info,
-                        shell_display_name(&selected_shell_program(
-                            &fallback,
-                            std::env::var_os("COMSPEC"),
-                        )),
-                    )
-                })
-                .with_context(|| {
-                    format!("configured shell failed ({error}); default shell also failed")
-                })
+    create_shell_process_with(command, std::env::var_os("COMSPEC"), |program, args| {
+        let mut command_line = shell_command_line(program, args);
+        try_create_shell_process(&startup_info, &mut command_line, &environment_block)
+            .map_err(anyhow::Error::from)
+    })
+}
+
+/// Try actual process creation rather than inferring availability from PATH.
+/// The returned title comes from the executable that successfully started.
+fn create_shell_process_with<T>(
+    command: &ShellCommand,
+    comspec: Option<OsString>,
+    mut create: impl FnMut(&OsStr, &[String]) -> anyhow::Result<T>,
+) -> anyhow::Result<(T, String)> {
+    let mut failures = Vec::new();
+    let configured_program = command
+        .program
+        .as_deref()
+        .filter(|program| !program.trim().is_empty());
+    if let Some(program) = configured_program {
+        match create(OsStr::new(program), &command.args) {
+            Ok(process) => return Ok((process, shell_display_name(OsStr::new(program)))),
+            Err(error) => {
+                tracing::warn!(program, %error, "configured shell failed; trying Windows defaults");
+                failures.push(format!("{program}: {error:#}"));
+            }
         }
-        Err(error) => Err(error).context("failed to create default shell process"),
     }
+
+    // Configured arguments must not leak into a different fallback shell.
+    // An args-only configuration still applies to the selected default shell.
+    let args = if configured_program.is_some() {
+        &[][..]
+    } else {
+        command.args.as_slice()
+    };
+    let comspec = comspec.filter(|program| !program.to_string_lossy().trim().is_empty());
+    let programs = [
+        Some(OsString::from("pwsh.exe")),
+        Some(OsString::from("powershell.exe")),
+        comspec,
+        Some(OsString::from("cmd.exe")),
+    ];
+    for program in programs.into_iter().flatten() {
+        match create(&program, args) {
+            Ok(process) => return Ok((process, shell_display_name(&program))),
+            Err(error) => {
+                tracing::warn!(?program, %error, "default shell failed; trying next candidate");
+                failures.push(format!("{}: {error:#}", program.to_string_lossy()));
+            }
+        }
+    }
+    anyhow::bail!("failed to create shell process: {}", failures.join("; "))
 }
 
 fn try_create_shell_process(
@@ -447,32 +466,17 @@ fn terminate_process(process_info: &PROCESS_INFORMATION) {
     }
 }
 
-fn shell_command_line(command: &ShellCommand) -> Vec<u16> {
-    shell_command_line_with_comspec(command, std::env::var_os("COMSPEC"))
-}
-
-fn shell_command_line_with_comspec(command: &ShellCommand, comspec: Option<OsString>) -> Vec<u16> {
-    let program = selected_shell_program(command, comspec);
-    tracing::info!(program = ?program, args = ?command.args, "selected shell command");
+fn shell_command_line(program: &OsStr, args: &[String]) -> Vec<u16> {
+    tracing::info!(?program, ?args, "selected shell command");
 
     let mut encoded = Vec::new();
     append_windows_argument(&mut encoded, &program.encode_wide().collect::<Vec<_>>());
-    for argument in &command.args {
+    for argument in args {
         encoded.push(b' ' as u16);
         append_windows_argument(&mut encoded, &argument.encode_utf16().collect::<Vec<_>>());
     }
     encoded.push(0);
     encoded
-}
-
-fn selected_shell_program(command: &ShellCommand, comspec: Option<OsString>) -> OsString {
-    command
-        .program
-        .as_deref()
-        .filter(|program| !program.trim().is_empty())
-        .map(OsString::from)
-        .or_else(|| comspec.filter(|program| !program.to_string_lossy().trim().is_empty()))
-        .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"))
 }
 
 fn shell_display_name(program: &OsStr) -> String {
@@ -806,32 +810,124 @@ mod tests {
     }
 
     #[test]
-    fn missing_program_uses_comspec_and_preserves_args() {
-        let command = ShellCommand::new(None, vec!["-NoLogo".to_owned()]);
-        let encoded = shell_command_line_with_comspec(
-            &command,
-            Some(OsString::from(r"C:\Program Files\cmd.exe")),
-        );
-        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
-
-        assert_eq!(line, "\"C:\\Program Files\\cmd.exe\" \"-NoLogo\"");
+    fn default_shells_are_tried_in_priority_order_and_report_the_started_shell() {
+        let programs = [
+            "pwsh.exe",
+            "powershell.exe",
+            r"C:\Windows\System32\cmd.exe",
+            "cmd.exe",
+        ];
+        let titles = ["pwsh", "powershell", "cmd", "cmd"];
+        for selected in 0..programs.len() {
+            let mut attempted = Vec::new();
+            let (process, title) = create_shell_process_with(
+                &ShellCommand::default(),
+                Some(OsString::from(programs[2])),
+                |program, args| {
+                    assert!(args.is_empty());
+                    attempted.push(program.to_string_lossy().into_owned());
+                    if attempted.len() == selected + 1 {
+                        Ok(42)
+                    } else {
+                        anyhow::bail!("unavailable")
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(attempted, programs[..=selected]);
+            assert_eq!(process, 42);
+            assert_eq!(title, titles[selected]);
+        }
     }
 
     #[test]
-    fn missing_program_and_comspec_use_cmd_exe() {
-        let encoded = shell_command_line_with_comspec(&ShellCommand::default(), None);
-        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
-
-        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\"");
+    fn missing_or_blank_comspec_still_falls_back_to_cmd() {
+        for comspec in [None, Some(OsString::new()), Some(OsString::from("   "))] {
+            let mut attempted = Vec::new();
+            let (_, title) =
+                create_shell_process_with(&ShellCommand::default(), comspec, |program, _| {
+                    attempted.push(program.to_string_lossy().into_owned());
+                    if program == OsStr::new("cmd.exe") {
+                        Ok(())
+                    } else {
+                        anyhow::bail!("unavailable")
+                    }
+                })
+                .unwrap();
+            assert_eq!(attempted, ["pwsh.exe", "powershell.exe", "cmd.exe"]);
+            assert_eq!(title, "cmd");
+        }
     }
 
     #[test]
-    fn whitespace_only_comspec_uses_cmd_exe_fallback() {
-        let encoded =
-            shell_command_line_with_comspec(&ShellCommand::default(), Some(OsString::from("   ")));
-        let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+    fn configured_shell_takes_precedence_and_preserves_args() {
+        let command =
+            ShellCommand::new(Some(r"C:\Tools\nu.exe".to_owned()), vec!["a b".to_owned()]);
+        let mut attempts = 0;
+        let (_, title) = create_shell_process_with(&command, None, |program, args| {
+            attempts += 1;
+            assert_eq!(program, OsStr::new(r"C:\Tools\nu.exe"));
+            assert_eq!(args, command.args);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(title, "nu");
+    }
 
-        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\"");
+    #[test]
+    fn failed_configured_shell_uses_default_order_without_configured_args() {
+        let command =
+            ShellCommand::new(Some("missing.exe".to_owned()), vec!["--custom".to_owned()]);
+        let mut attempted = Vec::new();
+        let (_, title) = create_shell_process_with(&command, None, |program, args| {
+            attempted.push(program.to_string_lossy().into_owned());
+            if program == OsStr::new("missing.exe") {
+                assert_eq!(args, command.args);
+            } else {
+                assert!(args.is_empty());
+            }
+            if program == OsStr::new("powershell.exe") {
+                Ok(())
+            } else {
+                anyhow::bail!("unavailable")
+            }
+        })
+        .unwrap();
+        assert_eq!(attempted, ["missing.exe", "pwsh.exe", "powershell.exe"]);
+        assert_eq!(title, "powershell");
+    }
+
+    #[test]
+    fn args_only_configuration_applies_to_default_shells() {
+        for program in [None, Some("   ".to_owned())] {
+            let command = ShellCommand::new(program, vec!["-NoLogo".to_owned()]);
+            let (_, title) = create_shell_process_with(&command, None, |program, args| {
+                assert_eq!(args, command.args);
+                if program == OsStr::new("powershell.exe") {
+                    Ok(())
+                } else {
+                    anyhow::bail!("unavailable")
+                }
+            })
+            .unwrap();
+            assert_eq!(title, "powershell");
+        }
+    }
+
+    #[test]
+    fn all_shell_failures_are_reported() {
+        let command = ShellCommand::new(Some("missing.exe".to_owned()), Vec::new());
+        let error =
+            create_shell_process_with::<()>(&command, None, |_, _| anyhow::bail!("unavailable"))
+                .unwrap_err();
+        let message = format!("{error:#}");
+        for program in ["missing.exe", "pwsh.exe", "powershell.exe", "cmd.exe"] {
+            assert!(
+                message.contains(&format!("{program}: unavailable")),
+                "{message}"
+            );
+        }
     }
 
     #[test]
@@ -845,7 +941,10 @@ mod tests {
             ],
         );
 
-        let encoded = shell_command_line(&command);
+        let encoded = shell_command_line(
+            OsStr::new(command.program.as_deref().unwrap()),
+            &command.args,
+        );
         let line = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
 
         assert_eq!(
@@ -883,17 +982,17 @@ mod tests {
         let (_pty, _reader, shell_name) =
             Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &command)
                 .unwrap_or_else(|error| panic!("configured-shell fallback failed: {error:#}"));
-        let expected = shell_display_name(&selected_shell_program(
-            &ShellCommand::default(),
-            std::env::var_os("COMSPEC"),
-        ));
+        let (_default_pty, _default_reader, expected) =
+            Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &ShellCommand::default()).unwrap();
         assert_eq!(shell_name, expected);
     }
 
     #[test]
     fn shell_prompt_output_is_readable_through_pseudoconsole() {
+        // Keep this transport check independent of the user's PowerShell prompt/profile.
+        let command = ShellCommand::new(None, vec!["-NoLogo".to_owned(), "-NoProfile".to_owned()]);
         let (pty, mut reader, _shell_name) =
-            Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &ShellCommand::default()).unwrap();
+            Pty::spawn_shell(PtySize { rows: 24, cols: 80 }, &command).unwrap();
         let mut buffer = [0_u8; 4096];
         let mut output = Vec::new();
         let mut replied_to_attributes = false;

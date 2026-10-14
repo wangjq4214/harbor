@@ -66,7 +66,7 @@ The built-in default terminal palette is Catppuccin Mocha, with Harbor's existin
 - Invalid scalar font/shell fields fall back independently; an invalid supplied color resets the complete palette.
 - Invalid keybinding overrides reset the complete binding table while retaining valid non-keybinding settings. Omitted commands keep defaults; `bindings = []` unbinds a command.
 - Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
-- Missing font family uses DirectWrite system monospace selection. Missing shell program uses `COMSPEC`, then `cmd.exe`; a configured executable that cannot start falls back without its configured arguments.
+- Missing font family uses DirectWrite system monospace selection. On Windows, a missing shell program tries `pwsh.exe`, then `powershell.exe`, then `COMSPEC`/`cmd.exe`, falling back when process creation fails. A configured executable takes precedence; if it cannot start, the same default sequence is retried without its configured arguments. Tab titles use the executable that actually started. This Windows policy does not apply to other platforms; Unix PTY support is not yet implemented.
 - Terminal background alpha is preserved. It does not configure the Windows Acrylic backdrop tint.
 
 Named profiles, environment/working-directory settings, user-selectable themes and configuration reload are planned, not additional current TOML options.
