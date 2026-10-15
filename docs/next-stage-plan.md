@@ -15,7 +15,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 | N01 | Resize reflow and stable content anchors      | Source/tests delivered; runtime/performance acceptance open | Windows shell/clipboard/`nvim` and measured cost evidence |
 | N02 | Unicode text correctness                      | Planned; wide cells exist, combining text is incomplete | Coordinate contract shared with N01                 |
 | N03 | `chcp` and legacy Windows compatibility       | Investigate; no specific Harbor defect assumed          | Reproducible ConPTY probes                          |
-| N04 | Configuration hot reload | Manual colors/bindings/fonts accepted (T0001 Done); watcher/launch extensions and package acceptance pending | Existing atomic transaction; spec 0024 |
+| N04 | Configuration hot reload | Manual/font, launch settings and watching implemented (T0001–T0003 Done); integrated E10/native checks pass; remaining interactive package acceptance pending in T0004 | Existing atomic transaction; spec 0024 |
 | N05 | Command palette                               | Planned; command registry exists                        | Existing command dispatch and availability rules    |
 | N06 | Named session profiles                        | Planned; one shell configuration exists                 | Session creation and configuration validation       |
 | N07 | Pane workspace                                | Planned; one terminal per tab exists                    | N01; independent session/layout identities          |
@@ -80,7 +80,7 @@ Build a small diagnostic fixture and record:
 
 ### N04 — Configuration Hot Reload
 
-The manual command now implements colors, bindings and terminal-only font reload, with automated gates and scoped Windows smoke verified in [T0001](../.grimoire/ticket/0017-configuration-hot-reload/T0001-manual-reload-acceptance.md). The user confirmed the remaining prior-round manual checks, completing T0001; the record distinguishes those results from agent-run tests. Next add file watching with debounce/editor atomic-save handling and new-session environment/directory settings under spec 0024. User configuration reload is separate from debug-only widget-library HMR.
+Manual colors/bindings/terminal-font reload (T0001), child-only shell/environment/directory settings (T0002), and default-on watching with debounce/replacement-save recovery (T0003) are implemented. [T0004](../.grimoire/ticket/0017-configuration-hot-reload/T0004-package-integration-and-evidence.md) adds combined E10 GPU/ConPTY/native-child coverage and scoped Windows window checks; full interactive package acceptance remains pending, not an implementation deferral of environment/directory. Earlier user-confirmed slice acceptance is distinguished from fresh integrated results. User configuration reload is separate from debug-only widget-library HMR.
 
 | Setting                                         | Intended application policy                                                          |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------ |

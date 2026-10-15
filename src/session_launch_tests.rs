@@ -306,3 +306,222 @@ fn invalid_launch_candidates_never_enter_application_transaction() {
         }
     }
 }
+
+#[test]
+fn package_manual_watched_generations_keep_live_resources_and_native_launches_coherent() {
+    use crate::configuration_watch::{ConfigurationWatch, WatchEvent};
+    use std::sync::mpsc;
+
+    fn document(generation: usize) -> String {
+        let (color, size, key, directory) = match generation {
+            0 => ("#112233", 24, 'r', "relative space"),
+            1 => ("#223344", 28, 'g', "absolute space"),
+            _ => ("#334455", 26, 'r', "relative space"),
+        };
+        format!(
+            "[font]\nfamily = 'Consolas'\nsize = {size}\n[colors]\nbackground = '{color}'\n\
+             [shell]\nprogram = 'pwsh.exe'\nargs = ['-NoLogo', '-NoProfile']\ndirectory = '{directory}'\n\
+             [shell.environment]\nHARBOR_T0002 = 'synthetic-generation-{generation}'\n\
+             HARBOR_LITERAL = '$VAR %VAR% $(echo synthetic)'\nterm = 'xterm-256color'\n\
+             [clipboard]\nosc52_write = 'deny'\n[keybindings.app.reload-configuration]\n\
+             bindings = [{{ modifiers = ['ctrl', 'shift'], key = '{key}' }}]\n"
+        )
+    }
+    fn observe(watch: &ConfigurationWatch, rx: &mpsc::Receiver<()>) {
+        rx.recv_timeout(Duration::from_secs(8))
+            .expect("package watch wake");
+        assert!(matches!(watch.take_pending(), Some(WatchEvent::Reload)));
+    }
+    fn reload(f: &mut Fixture, path: &Path, fail: Option<ReloadStage>) -> anyhow::Result<String> {
+        f.reload(
+            harbor_config::load_candidate_from_path(path)?.settings,
+            fail,
+        )
+    }
+    fn assert_generation(
+        f: &mut Fixture,
+        workspace: &Workspace,
+        index: usize,
+        probe_id: usize,
+    ) -> Probe {
+        assert_eq!(
+            f.accepted,
+            harbor_config::load_candidate_from_path(workspace.0.join("config.toml"))
+                .unwrap()
+                .settings
+        );
+        assert_eq!(f.policy.shell_command, configured_shell(&f.accepted.shell));
+        assert_eq!(f.policy.font_settings, f.accepted.font);
+        assert_eq!(f.policy.appearance.palette(), f.accepted.colors);
+        assert_eq!(f.clipboard, harbor_config::ClipboardSettings::default());
+        f.assert_reload_binding(if index == 1 { 'g' } else { 'r' });
+        for (_, terminal, bridge) in f.tabs.configuration_targets() {
+            assert_eq!(
+                terminal
+                    .lock()
+                    .unwrap()
+                    .read_update(Instant::now())
+                    .appearance
+                    .palette()
+                    .background,
+                f.accepted.colors.background
+            );
+            assert_eq!(
+                *bridge.renderer().unwrap().lock().unwrap().metrics(),
+                f.policy.metrics
+            );
+        }
+        // Actually construct future resources, not only inspect a settings snapshot.
+        let (terminal, renderer) = f
+            .policy
+            .prepare_new_terminal(
+                TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
+                load_system_fonts(&f.policy.font_settings).unwrap(),
+                f.tabs.last_broadcast_size().unwrap(),
+                (640, 320),
+                false,
+                harbor_terminal::ClipboardDelivery::Discard,
+            )
+            .unwrap();
+        assert_eq!(
+            terminal.read_update(Instant::now()).appearance.palette(),
+            f.accepted.colors
+        );
+        assert_eq!(*renderer.metrics(), f.policy.metrics);
+        let mut probe = Probe::spawn(
+            f.policy.shell_command.clone(),
+            &workspace.0,
+            probe_id,
+            false,
+        );
+        let report = probe.read();
+        assert_eq!(report[2], format!("value:synthetic-generation-{index}"));
+        assert_eq!(report[3], "$VAR %VAR% $(echo synthetic)");
+        assert_eq!(report[4], "xterm-256color");
+        assert_eq!(
+            fs::canonicalize(&report[1]).unwrap(),
+            fs::canonicalize(f.accepted.shell.directory.as_ref().unwrap()).unwrap()
+        );
+        probe
+    }
+
+    let workspace = Workspace::new();
+    let path = workspace.0.join("config.toml");
+    let mut f = Fixture::new();
+    f.attach_native_children();
+    let original = f.tabs.configuration_targets();
+    for (_, terminal, _) in &original {
+        terminal
+            .lock()
+            .unwrap()
+            .put_str("\x1b[?47h\x1b[HINTEGRATED-ALT");
+    }
+    // One active alternate, one parked alternate with primary retained.
+    original[1].1.lock().unwrap().put_str("\x1b[?47l");
+    fs::write(&path, document(0)).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = ConfigurationWatch::start(Some(path.clone()), move || tx.send(()).is_ok()).unwrap();
+    observe(&watch, &rx);
+    let feedback = reload(&mut f, &path, None).unwrap();
+    assert!(feedback.contains("applied live:"));
+    assert!(feedback.contains("new sessions only:"));
+    assert!(feedback.contains("restart required: clipboard.osc52_write"));
+    assert!(!feedback.contains("synthetic-generation"));
+    let mut first = assert_generation(&mut f, &workspace, 0, 20);
+    let first_report = first.read();
+
+    // Ordinary save changes every applicable policy while existing children survive.
+    fs::write(&path, document(1)).unwrap();
+    observe(&watch, &rx);
+    reload(&mut f, &path, None).unwrap();
+    let mut second = assert_generation(&mut f, &workspace, 1, 21);
+    let second_report = second.read();
+    assert_ne!(first_report[0], second_report[0]);
+    let accepted = f.accepted.clone();
+    // Invalid complete candidates cannot publish even the otherwise valid live edits.
+    for invalid in [
+        "[font\nSYNTHETIC-CONFIDENTIAL",
+        "[colors]\nbackground = '#abcdef'\n[shell.environment]\nTERM = 'SYNTHETIC-CONFIDENTIAL'",
+        "[colors]\nbackground = '#abcdef'\n[shell]\ndirectory = 'missing'",
+        "[colors]\nbackground = '#abcdef'\n[keybindings.app.reload-configuration]\nbindings = [{ key = 'bad-key' }]",
+    ] {
+        fs::write(&path, invalid).unwrap();
+        observe(&watch, &rx);
+        let error = format!("{:#}", reload(&mut f, &path, None).unwrap_err());
+        assert!(!error.contains("SYNTHETIC-CONFIDENTIAL"));
+        assert_eq!(f.accepted, accepted);
+        assert_eq!(f.policy.shell_command, configured_shell(&accepted.shell));
+        f.assert_reload_binding('g');
+        for (_, terminal, bridge) in f.tabs.configuration_targets() {
+            assert_eq!(
+                terminal
+                    .lock()
+                    .unwrap()
+                    .read_update(Instant::now())
+                    .appearance
+                    .palette()
+                    .background,
+                accepted.colors.background
+            );
+            assert_eq!(
+                *bridge.renderer().unwrap().lock().unwrap().metrics(),
+                f.policy.metrics
+            );
+        }
+    }
+
+    // Atomic replacement remains observed; preparation rejection retains launch/live state.
+    let replacement = workspace.0.join("replacement.toml");
+    fs::write(&replacement, document(2)).unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    observe(&watch, &rx);
+    for stage in [ReloadStage::Font, ReloadStage::Gpu] {
+        assert!(reload(&mut f, &path, Some(stage)).is_err());
+        assert_eq!(f.accepted, accepted);
+        assert_eq!(f.policy.shell_command, configured_shell(&accepted.shell));
+    }
+    reload(&mut f, &path, None).unwrap(); // Manual retry, no new save required.
+    let mut third = assert_generation(&mut f, &workspace, 2, 22);
+    let third_report = third.read();
+
+    // Hold an older wake while manually accepting a newer complete document.
+    fs::write(&path, document(1)).unwrap();
+    rx.recv_timeout(Duration::from_secs(8)).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, "[font\nintermediate").unwrap();
+    fs::write(&path, document(0)).unwrap();
+    reload(&mut f, &path, None).unwrap();
+    assert!(matches!(watch.take_pending(), Some(WatchEvent::Reload)));
+    reload(&mut f, &path, None).unwrap();
+    let mut final_probe = assert_generation(&mut f, &workspace, 0, 23);
+    assert_eq!(final_probe.read()[2], "value:synthetic-generation-0");
+    assert_eq!(first.recheck(), first_report);
+    assert_eq!(second.recheck(), second_report);
+    assert_eq!(third.recheck(), third_report);
+    for (index, ((id, terminal, bridge), (old_id, old_terminal, _))) in f
+        .tabs
+        .configuration_targets()
+        .iter()
+        .zip(&original)
+        .enumerate()
+    {
+        assert_eq!(id, old_id);
+        assert!(Arc::ptr_eq(terminal, old_terminal));
+        let mut terminal = terminal.lock().unwrap();
+        assert_eq!(terminal.is_alt_screen(), index == 0);
+        if index == 1 {
+            terminal.put_str("\x1b[?47h");
+        }
+        assert!(retained_text(&terminal).contains("INTEGRATED-ALT"));
+        terminal.put_str("\x1b[?47l");
+        assert_eq!(
+            *bridge.renderer().unwrap().lock().unwrap().metrics(),
+            f.policy.metrics
+        );
+    }
+    f.native_input();
+    f.wait_for_native_markers("RESUMED");
+    println!(
+        "T0004_PACKAGE_PASS: watched/manual all-field generations, active/parked alternate, native child env/cwd continuity, future resources, rejection, replacement, burst and stale-wake ordering"
+    );
+}

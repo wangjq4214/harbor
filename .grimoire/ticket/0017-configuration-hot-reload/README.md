@@ -25,7 +25,7 @@ At refinement, PR #201 contains the manual implementation; it is not treated as 
 | T0001 | [T0001-manual-reload-acceptance.md](./T0001-manual-reload-acceptance.md) | Done — manual/font baseline accepted with automated and user-confirmed manual evidence; package exclusions remain |
 | T0002 | [T0002-session-environment-and-directory.md](./T0002-session-environment-and-directory.md) | Done — new-session environment/directory accepted with automated/native-seam evidence and user-confirmed testing |
 | T0003 | [T0003-watched-configuration-reload.md](./T0003-watched-configuration-reload.md) | Done — default-on saves/replacements/bursts drive the same strict transaction; scoped Windows evidence recorded |
-| T0004 | [T0004-package-integration-and-evidence.md](./T0004-package-integration-and-evidence.md) | Combined behavior and #155 completion supported by retrievable evidence |
+| T0004 | [T0004-package-integration-and-evidence.md](./T0004-package-integration-and-evidence.md) | Combined E10/native checks pass; remaining human package acceptance and authorized remote reconciliation pending; detailed evidence local-only/untracked per user instruction |
 
 ## Requirement Coverage
 

@@ -1,5 +1,5 @@
 # Copy to ~/.harbor/config.toml. Watched by default; Ctrl+Shift+R reloads manually.
-# Colors, bindings and terminal-only fonts apply live. Shell changes affect new tabs.
+# Colors, bindings and terminal-only fonts apply live. Shell/env/directory affect new tabs only.
 # A rejected reload retains the last accepted configuration. Saves/replacements are coalesced; widget HMR is unrelated.
 
 [font]
