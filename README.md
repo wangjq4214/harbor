@@ -57,7 +57,7 @@ Colors, application bindings, and terminal font family/size apply to existing an
 
 OSC 10/11/12 and OSC 4 RGB overrides survive reload (even when equal to the old baseline), with alpha from the new baseline. OSC 110/111/112 and OSC 104 clear their respective overrides and restore the latest accepted configuration RGBA. New tabs do not inherit another session's overrides.
 
-A later-session PTY resize failure triggers compensation before rejection. If compensation itself fails, reload still fails without accepting candidate settings; readers resume, geometry reconciliation is attempted, and affected sessions are explicitly reported as needing recovery. See [the verification record](docs/verification/atomic-manual-configuration-reload.md) for implemented scope and outstanding Windows interactive evidence.
+A later-session PTY resize failure triggers compensation before rejection. If compensation itself fails, reload still fails without accepting candidate settings; readers resume, geometry reconciliation is attempted, and affected sessions are explicitly reported as needing recovery. See [Current Status](docs/current-status.md) for implemented scope and [Validation Policy](docs/validation.md) for evidence requirements. Interactive Windows reload acceptance remains NOT RUN.
 
 `[clipboard] osc52_write = "allow"` controls application-requested OSC 52 writes. Values are `allow` (default), `deny`, and `confirm`; invalid values fall back locally to `allow`. This setting applies at startup, including subsequently created tabs; restart Harbor to apply edits.
 

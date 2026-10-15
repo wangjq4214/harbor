@@ -793,7 +793,7 @@ Project domain concepts and terminology.
   - implements ClipBehavior
   - reveals the host/frame clear where clipped pixels are erased
 ### Manual Configuration Reload
-- **Definition:** The approved application-command transaction that validates a complete TOML candidate and prepares supported resources before publishing a coherent accepted configuration to existing applicable sessions and future-instance factories. Failure retains the last accepted configuration rather than applying startup fallback. It is distinct from development-only widget-library HMR; terminal font changes preserve terminal/session identity and use ordinary bounded resize retention rather than resetting buffers, while OSC RGB overrides remain above a newly accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and its retention clarification in [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); the implementation is present, while Windows runtime acceptance remains separately tracked in `docs/verification/atomic-manual-configuration-reload.md`.
+- **Definition:** The approved application-command transaction that validates a complete TOML candidate and prepares supported resources before publishing a coherent accepted configuration to existing applicable sessions and future-instance factories. Failure retains the last accepted configuration rather than applying startup fallback. It is distinct from development-only widget-library HMR; terminal font changes preserve terminal/session identity and use ordinary bounded resize retention rather than resetting buffers, while OSC RGB overrides remain above a newly accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and its retention clarification in [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); the implementation is present, while interactive Windows runtime acceptance remains NOT RUN as stated in [Current Status](../docs/current-status.md).
 - **Failure qualification:** A failed compensating native PTY resize permits an explicitly reported recovery-failed outcome, with old accepted settings retained, all readers resumed, geometry reconciliation attempted, and unrecovered sessions identified. Ordinary failures do not permit partial acceptance. See [ADR 0061](./adr/0061-manual-reload-compensation-failure.md).
 - **Relationships:**
   - belongs to Application Business Host
@@ -802,6 +802,18 @@ Project domain concepts and terminology.
   - references Terminal Font Policy
   - references OSC Default Color Policy
   - references OSC Indexed Palette Policy
+
+### Watched Configuration Reload
+- **Definition:** The approved, not-yet-implemented default-on file-triggered extension of Manual Configuration Reload. Debounced saves and editor file replacement use the same strict acceptance boundary; invalid edits retain the last accepted configuration, repeated identical errors avoid notification flooding, and watcher faults remain visible. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md).
+- **Relationships:**
+  - extends Manual Configuration Reload
+  - belongs to Application Business Host
+
+### New-Session Launch Settings
+- **Definition:** The approved child-launch configuration for shell program, arguments, environment overrides and initial working directory. Reload updates future sessions only, without mutating existing children or Harbor's global environment/directory. Environment values are literal overlays with protected TERM; relative directories resolve against the configuration file, and an unavailable configured directory fails rather than silently falling back. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md) for validation, inheritance and confidentiality rules. Environment/directory configuration is not yet implemented.
+- **Relationships:**
+  - references TOML User Settings
+  - references Manual Configuration Reload
 
 ### TOML User Settings
 - **Definition:** User preferences (loaded with startup recovery and re-read through the separately strict Manual Configuration Reload transaction) loaded from `~/.harbor/config.toml`; at startup, missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
