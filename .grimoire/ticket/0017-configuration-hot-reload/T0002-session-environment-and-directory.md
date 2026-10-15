@@ -2,11 +2,11 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0024 R2–R4 and E1–E7/E12](../../spec/0024-watched-reload-and-launch-settings.md), [ADR 0062](../../adr/0062-watched-reload-and-new-session-launch-settings.md).
-**Status:** Todo
+**Status:** Done — implementation and automated/native-seam checks complete; the user confirmed testing complete and requested closure.
 
 ## Implementation evidence (2026-10-15)
 
-Implementation and automated/native-seam checks are recorded locally in `docs/verification/session-launch-settings-evidence.md` (Git-ignored, not distributed with the repository, as requested by the user), based on `da1eaeb` plus the uncommitted T0002 changes. The five standard quality gates passed. Interactive launch-setting checks (shortcut-to-new-tab appearance and visible lost-directory failure feedback) are NOT RUN; the ticket is not promoted to Done or treated as package acceptance. Watching and combined acceptance remain T0003/T0004.
+Implementation and automated/native-seam checks are recorded locally in `docs/verification/session-launch-settings-evidence.md` (Git-ignored, not distributed with the repository, as requested by the user), based on `da1eaeb` plus the T0002 changes subsequently committed as `2488f96`. The five standard quality gates passed. Interactive launch-setting checks were previously NOT RUN in the agent's record; the user has now confirmed testing complete and explicitly requested T0002 be marked Done. Completion combines the existing automated/native evidence with that user confirmation; no new agent-run UI checks are claimed. T0003 is Done; combined package acceptance remains T0004.
 
 ## Goal
 
@@ -28,14 +28,14 @@ Carry validated launch settings through the existing acceptance/factory path to 
 
 ## Acceptance
 
-- [ ] One documented TOML schema supplies literal string environment overrides and optional directory to startup and manual reload.
-- [ ] Inheritance, overriding, empty values, override removal, Windows case-insensitive collisions and protected TERM match R2; no variable interpolation or inherited-variable deletion syntax.
-- [ ] Absolute/config-relative/omitted directory semantics match R3, independently of Harbor's launch location, active terminal cwd or OSC 7.
-- [ ] Invalid environment/directory candidates reject all live and factory changes; resource/resize failure also prevents launch-policy publication.
-- [ ] Real new Windows children report expected synthetic environment values and cwd, including the selected fallback shell path where exercised; prior children retain identity and their environment/cwd.
-- [ ] A directory lost after acceptance produces an explicit failed new-session attempt without fallback-directory launch or damage to existing sessions; subsequent valid creation works.
-- [ ] UI/log/error chains do not reveal configured environment values, including malformed-input diagnostics.
-- [ ] E1–E7/E12 results, startup fallback regressions, accurate new-session-only feedback and examples are recorded with applicable quality gates and runtime evidence.
+- [x] One documented TOML schema supplies literal string environment overrides and optional directory to startup and manual reload.
+- [x] Inheritance, overriding, empty values, override removal, Windows case-insensitive collisions and protected TERM match R2; no variable interpolation or inherited-variable deletion syntax.
+- [x] Absolute/config-relative/omitted directory semantics match R3, independently of Harbor's launch location, active terminal cwd or OSC 7.
+- [x] Invalid environment/directory candidates reject all live and factory changes; resource/resize failure also prevents launch-policy publication.
+- [x] Real new Windows children report expected synthetic environment values and cwd, including the selected fallback shell path where exercised; prior children retain identity and their environment/cwd.
+- [x] A directory lost after acceptance produces an explicit failed new-session attempt without fallback-directory launch or damage to existing sessions; subsequent valid creation works.
+- [x] UI/log/error chains do not reveal configured environment values, including malformed-input diagnostics.
+- [x] E1–E7/E12 results, startup fallback regressions, accurate new-session-only feedback and examples are recorded with applicable quality gates and runtime evidence.
 
 ## Out of Scope
 
