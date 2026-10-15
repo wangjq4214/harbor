@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-10-10
+**Superseded in part by:** [ADR 0059](./0059-atomic-manual-reload-and-terminal-only-fonts.md), the approved reload extension implemented under spec 0023 (runtime acceptance remains recorded separately) that advances the indexed reset baseline after successful configuration reload while preserving OSC RGB overrides. Other rules and the historical implementation status remain unchanged.
 **Sources:** [Issue #191](https://github.com/wangjq4214/harbor/issues/191) and the user's approval of the recommended palette contract on 2026-10-10. Approval establishes the contract, not implementation or runtime acceptance.
 
 ## Context

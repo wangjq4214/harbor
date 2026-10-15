@@ -84,6 +84,15 @@ struct TouchContact {
     pointer_id: u64,
 }
 
+/// Provenance supplied by the native keyboard event, not inferred from modifiers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeKeyboardMetadata {
+    pub repeat: bool,
+    /// Windows generates lifecycle releases/presses when focus changes.
+    /// They are not new user input and must not release or replay consumed chords.
+    pub is_synthetic: bool,
+}
+
 /// Per-window state for the winit integration.
 pub struct WinitAdapter {
     modifiers: ModifiersState,
@@ -180,7 +189,7 @@ impl WinitAdapter {
         let _ = physical_size;
         if matches!(event, WindowEvent::CloseRequested) {
             self.quarantine_active_pointers();
-            let effects = runtime.cancel_pointer_captures(self.logical_pointer_position());
+            let effects = runtime.cancel_active_input_ownership(self.logical_pointer_position());
             return WinitEventOutcome {
                 handled: false,
                 effects,
@@ -190,12 +199,21 @@ impl WinitAdapter {
         if self.quarantine_pointer_event(event) {
             return WinitEventOutcome::handled(RuntimeEffects::default());
         }
-        if let WindowEvent::KeyboardInput { event, .. } = event {
-            return self.handle_keyboard_input(
+        if let WindowEvent::KeyboardInput {
+            event,
+            is_synthetic,
+            ..
+        } = event
+        {
+            return self.handle_keyboard_input_with_metadata(
                 runtime,
                 &event.logical_key,
                 event.state,
                 event.location,
+                NativeKeyboardMetadata {
+                    repeat: event.repeat,
+                    is_synthetic: *is_synthetic,
+                },
             );
         }
 
@@ -216,13 +234,11 @@ impl WinitAdapter {
         }
 
         let mut effects = runtime.dispatch(ui_event);
-        if matches!(
-            event,
-            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
-        ) {
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
             effects.merge(runtime.cancel_pointer_captures(self.logical_pointer_position()));
         }
         if matches!(event, WindowEvent::Focused(false)) {
+            effects.merge(runtime.cancel_active_input_ownership(self.logical_pointer_position()));
             self.modifiers = ModifiersState::empty();
             // Focus loss ends the current composition so a later focus
             // session cannot inherit IME suppression.
@@ -384,6 +400,44 @@ impl WinitAdapter {
         state: ElementState,
         location: KeyLocation,
     ) -> WinitEventOutcome {
+        self.handle_keyboard_input_with_repeat(runtime, logical_key, state, location, false)
+    }
+
+    /// Adapt a native press/repeat distinction without changing the widget event
+    /// vocabulary. Fresh presses discard ownership whose release a gate dropped.
+    pub fn handle_keyboard_input_with_repeat(
+        &mut self,
+        runtime: &mut Runtime,
+        logical_key: &Key,
+        state: ElementState,
+        location: KeyLocation,
+        repeat: bool,
+    ) -> WinitEventOutcome {
+        self.handle_keyboard_input_with_metadata(
+            runtime,
+            logical_key,
+            state,
+            location,
+            NativeKeyboardMetadata {
+                repeat,
+                is_synthetic: false,
+            },
+        )
+    }
+
+    /// Route the same native provenance used by `WindowEvent::KeyboardInput`.
+    /// Ignore focus-synthesized events before touching IME or shortcut ownership.
+    pub fn handle_keyboard_input_with_metadata(
+        &mut self,
+        runtime: &mut Runtime,
+        logical_key: &Key,
+        state: ElementState,
+        location: KeyLocation,
+        metadata: NativeKeyboardMetadata,
+    ) -> WinitEventOutcome {
+        if metadata.is_synthetic {
+            return WinitEventOutcome::handled(RuntimeEffects::default());
+        }
         let is_composing = self.ime_preedit.is_some();
         let suppressed =
             ime_suppresses_keyboard(logical_key, state, location, self.modifiers, is_composing);
@@ -396,6 +450,11 @@ impl WinitAdapter {
                 WinitEventOutcome::unhandled()
             };
         };
+        if !metadata.repeat
+            && let UiEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) = &ui_event
+        {
+            runtime.begin_key_press(*key);
+        }
         let effects = runtime.dispatch(ui_event);
         WinitEventOutcome::handled(effects)
     }

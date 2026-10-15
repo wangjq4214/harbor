@@ -636,6 +636,19 @@ impl Runtime {
         effects
     }
 
+    /// Cancel input actions when a host gates/replaces an input-owning subtree.
+    /// Consumed shortcut repeats/releases stay suppressed until release or a new
+    /// native physical press, even if a modal gate drops the old release.
+    pub fn cancel_active_input_ownership(&mut self, position: Point) -> RuntimeEffects {
+        self.events.cancel_shortcut_actions();
+        self.cancel_pointer_captures(position)
+    }
+
+    #[cfg(feature = "winit")]
+    pub(crate) fn begin_key_press(&mut self, key: crate::input::event::Key) {
+        self.events.begin_key_press(key);
+    }
+
     /// Cancels every pointer currently captured by a widget.
     ///
     /// Hosts use this at lifecycle boundaries such as window focus loss so a

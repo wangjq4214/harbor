@@ -16,7 +16,7 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 
 These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
 
-The main gaps are interactive Windows/performance acceptance for the implemented resize reflow, complete combining/grapheme text handling, settings hot reload, split panes, search, profiles, a command palette, Kitty protocols, and selected terminal extensions. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
+The main gaps are interactive Windows/performance acceptance for the implemented resize reflow, complete combining/grapheme text handling, interactive manual-reload acceptance and automatic settings watching, split panes, search, profiles, a command palette, Kitty protocols, and selected terminal extensions. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
 
 ## Build and Run
 
@@ -49,7 +49,15 @@ Both crates are currently documented as pre-1.0 workspace libraries. Their READM
 
 ### Startup Configuration
 
-Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
+Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it at startup and supports manual reload with **Ctrl+Shift+R** (`app.reload-configuration`). It does not create a missing file or watch for edits. The reload binding follows the same replacement/unbinding rules as other application commands.
+
+Manual reload validates the complete document: unreadable files, malformed TOML, invalid recognized settings, or invalid/conflicting bindings reject the entire candidate and retain the last accepted configuration. Startup fallback below remains separate. Unknown ordinary settings produce ignored-setting warnings.
+
+Colors, application bindings, and terminal font family/size apply to existing and future terminals; fonts do not change application UI fonts or restart children. Font-driven grid changes use normal bounded primary reflow/alternate clipping, retaining newest available content rather than unlimited history. Shell program/arguments change new tabs only. Clipboard policy remains effective until restart. Non-modal application feedback and logs distinguish these outcomes.
+
+OSC 10/11/12 and OSC 4 RGB overrides survive reload (even when equal to the old baseline), with alpha from the new baseline. OSC 110/111/112 and OSC 104 clear their respective overrides and restore the latest accepted configuration RGBA. New tabs do not inherit another session's overrides.
+
+A later-session PTY resize failure triggers compensation before rejection. If compensation itself fails, reload still fails without accepting candidate settings; readers resume, geometry reconciliation is attempted, and affected sessions are explicitly reported as needing recovery. See [the verification record](docs/verification/atomic-manual-configuration-reload.md) for implemented scope and outstanding Windows interactive evidence.
 
 `[clipboard] osc52_write = "allow"` controls application-requested OSC 52 writes. Values are `allow` (default), `deny`, and `confirm`; invalid values fall back locally to `allow`. This setting applies at startup, including subsequently created tabs; restart Harbor to apply edits.
 
@@ -69,7 +77,7 @@ The built-in default terminal palette is Catppuccin Mocha, with Harbor's existin
 - Missing font family uses DirectWrite system monospace selection. On Windows, a missing shell program tries `pwsh.exe`, then `powershell.exe`, then `COMSPEC`/`cmd.exe`, falling back when process creation fails. A configured executable takes precedence; if it cannot start, the same default sequence is retried without its configured arguments. Tab titles use the executable that actually started. This Windows policy does not apply to other platforms; Unix PTY support is not yet implemented.
 - Terminal background alpha is preserved. It does not configure the Windows Acrylic backdrop tint.
 
-Named profiles, environment/working-directory settings, user-selectable themes and configuration reload are planned, not additional current TOML options.
+Named profiles, environment/working-directory settings, and user-selectable themes are planned, not additional current TOML options.
 
 ### Debug Widget Hot Reload (Windows)
 

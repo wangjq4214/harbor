@@ -411,6 +411,10 @@ fn shortcuts_claim_exact_chords_and_invoke_nearest_actions_provider() {
         },
     }));
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+        key: Key::Character('t'),
+        modifiers: Modifiers::default(),
+    }));
 
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('t'),
@@ -602,6 +606,7 @@ fn standard_tab_chords_map_to_typed_actions() {
     for (key, modifiers, expected) in cases {
         let effects =
             runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp { key, modifiers }));
         assert_eq!(observed.load(Ordering::SeqCst), expected);
         assert!(effects.request_redraw);
     }

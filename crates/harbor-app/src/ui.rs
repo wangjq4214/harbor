@@ -90,7 +90,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
-    let shortcuts = shortcuts(&props.keybindings);
+    let shortcuts = shortcuts(state.keybindings.as_ref().unwrap_or(&props.keybindings));
     let command_bridge = active_bridge.clone();
     let actions = Actions::handler(move |command| {
         let outcome = command_outcome(command, &command_bridge);
@@ -106,7 +106,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                 shortcuts => {
                     Row::new() => {
                         tab_rail(cx, &state, &props.controller, dispatcher);
-                        terminal_panel(cx, &props.controller, active_bridge);
+                        terminal_panel(cx, &props.controller, active_bridge, state.configuration_result.clone());
                     }
                 }
             }
@@ -284,13 +284,21 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &TabUiController,
     active_bridge: TerminalWidgetBridge,
+    configuration_result: Option<String>,
 ) -> View {
     harbor_widget::view! { cx; Expanded::new() => {
-        controller.allocation.observer() => {
-            TerminalDecorationPreset::container() => {
-                Focus::empty().handle(controller.terminal_focus) => {
-                    terminal_widget(active_bridge);
+        Column::new().cross_axis_alignment(Alignment::Stretch) => {
+            Expanded::new() => {
+                controller.allocation.observer() => {
+                    TerminalDecorationPreset::container() => {
+                        Focus::empty().handle(controller.terminal_focus) => {
+                            terminal_widget(active_bridge);
+                        }
+                    }
                 }
+            }
+            if let Some(message) = configuration_result {
+                TextLabel::new(message);
             }
         }
     } }

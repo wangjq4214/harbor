@@ -47,6 +47,15 @@ pub(crate) struct PreparedPointerResize {
     parked_alt_selection: Option<SelectionModel>,
     active_invalidated: bool,
 }
+impl PreparedPointerResize {
+    pub(crate) fn bounds(&self) -> Option<SelectionBounds> {
+        if self.selection.is_range_empty() {
+            None
+        } else {
+            self.selection.bounds()
+        }
+    }
+}
 
 pub struct PointerInteraction {
     selection: SelectionModel,

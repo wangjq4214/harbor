@@ -96,7 +96,109 @@ impl Write for RecordingWriter {
 }
 
 #[test]
-fn event_dispatch_preserves_local_escape_ime_focus_and_keyup_policy() {
+fn escape_without_local_selection_reaches_primary_and_alternate_pty() {
+    for alternate in [false, true] {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Terminal::new_headless_with_io(
+            3,
+            8,
+            std::io::empty(),
+            RecordingWriter(Arc::clone(&written)),
+            || true,
+        );
+        if alternate {
+            terminal.put_bytes(b"\x1b[?1049h");
+        }
+        assert_eq!(terminal.is_alt_screen(), alternate);
+        for _ in 0..2 {
+            terminal
+                .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+                    key: TerminalKey::Escape,
+                    modifiers: TerminalModifiers::default(),
+                }))
+                .unwrap();
+        }
+        terminal
+            .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyUp {
+                key: TerminalKey::Escape,
+                modifiers: TerminalModifiers::default(),
+            }))
+            .unwrap();
+        assert_eq!(
+            *written.lock().unwrap(),
+            b"\x1b\x1b",
+            "alternate={alternate}"
+        );
+    }
+}
+
+#[test]
+fn escape_consumes_local_selection_or_drag_then_next_escape_reaches_pty() {
+    use crate::{
+        RenderViewport, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    };
+    for (dragged, released) in [(false, false), (true, false), (true, true)] {
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Terminal::new_headless_with_io(
+            3,
+            8,
+            std::io::empty(),
+            RecordingWriter(Arc::clone(&written)),
+            || true,
+        );
+        terminal.put_str("abcdefgh");
+        terminal
+            .pointer
+            .set_viewport(RenderViewport::with_padding(10.0, 20.0, 0.0));
+        let pointer = |phase, x| {
+            TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (x, 1.0),
+                phase,
+                TerminalPointerButton::Left,
+                7,
+            ))
+        };
+        terminal
+            .handle_event(pointer(TerminalPointerPhase::Down, 11.0))
+            .unwrap();
+        if dragged {
+            terminal
+                .handle_event(pointer(TerminalPointerPhase::Move, 41.0))
+                .unwrap();
+        }
+        if released {
+            terminal
+                .handle_event(pointer(TerminalPointerPhase::Up, 41.0))
+                .unwrap();
+        }
+        let escape = || {
+            TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+                key: TerminalKey::Escape,
+                modifiers: TerminalModifiers::default(),
+            })
+        };
+        let canceled = terminal.handle_event_with_outcome(escape()).unwrap();
+        assert!(canceled.redraw);
+        assert_eq!(
+            canceled.release_pointer,
+            if released { None } else { Some(7) }
+        );
+        assert!(!terminal.pointer.has_selection_state());
+        assert!(!terminal.pointer.has_active_pointer());
+        assert!(
+            written.lock().unwrap().is_empty(),
+            "local cancellation must not reach child"
+        );
+        terminal.handle_event(escape()).unwrap();
+        assert_eq!(
+            *written.lock().unwrap(),
+            b"\x1b",
+            "next Esc must reach child"
+        );
+    }
+}
+#[test]
+fn event_dispatch_preserves_escape_passthrough_ime_focus_and_keyup_policy() {
     let written = Arc::new(Mutex::new(Vec::new()));
     let mut terminal = Terminal::new_headless_with_io(
         3,
@@ -120,8 +222,8 @@ fn event_dispatch_preserves_local_escape_ime_focus_and_keyup_policy() {
             modifiers: TerminalModifiers::default(),
         }))
         .unwrap();
-    assert!(written.lock().unwrap().is_empty());
-    assert!(!terminal.frame_demand(now).redraw_now);
+    assert_eq!(*written.lock().unwrap(), b"\x1b");
+    assert!(terminal.frame_demand(now).redraw_now);
 
     terminal
         .handle_event(key(TerminalKey::Character('x')))
@@ -153,5 +255,5 @@ fn event_dispatch_preserves_local_escape_ime_focus_and_keyup_policy() {
         .unwrap();
     assert!(lost.redraw);
     assert!(terminal.preedit().is_none());
-    assert_eq!(*written.lock().unwrap(), "x界\x1b[I\x1b[O".as_bytes());
+    assert_eq!(*written.lock().unwrap(), "\x1bx界\x1b[I\x1b[O".as_bytes());
 }

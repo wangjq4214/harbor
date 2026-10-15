@@ -103,7 +103,9 @@ fn needs_live_projection(
     target: RenderTarget,
     metrics: &TextMetrics,
 ) -> bool {
-    mode == ExternalDrawMode::Live || terminal.retained_geometry_changed(viewport, target, metrics)
+    mode == ExternalDrawMode::Live
+        || terminal.projection_requires_full_update()
+        || terminal.retained_geometry_changed(viewport, target, metrics)
 }
 
 /// Maps a widget [`UiEvent`] onto the terminal-owned [`TerminalEvent`] vocabulary.
@@ -247,11 +249,16 @@ pub struct TerminalWidgetBridge {
     ime: Arc<ExternalImeFn>,
     on_input: Arc<ExternalInputFn>,
     on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn>,
+    renderer: Option<Arc<Mutex<TerminalRenderPipeline>>>,
 }
 
 impl TerminalWidgetBridge {
     #[allow(dead_code)]
     /// Creates a headless bridge for input/scheduling without a GPU projection.
+    /// Host transaction access; the renderer remains shared with this bridge's draw/IME providers.
+    pub fn renderer(&self) -> Option<Arc<Mutex<TerminalRenderPipeline>>> {
+        self.renderer.clone()
+    }
     pub fn new(
         draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
@@ -443,6 +450,7 @@ impl TerminalWidgetBridge {
 
         Self {
             draw_id,
+            renderer,
             terminal,
             handler,
             schedule,

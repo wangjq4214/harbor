@@ -1,5 +1,6 @@
 //! Tab orchestration between Host-owned terminal tab models and declarative UI projection.
 
+use anyhow::Context as _;
 use std::sync::{Arc, Mutex};
 
 use harbor_pty::PtyEndpoints;
@@ -58,14 +59,200 @@ fn process_ungated_action_batch<A>(
     }
 }
 
-/// Factory configuration for spawning new Host-owned terminal tabs.
-pub(crate) struct TerminalTabFactory {
-    gpu: Arc<SharedGpu>,
-    format: wgpu::TextureFormat,
+/// Window-independent factory policy and the real application-thread transaction.
+/// Platform/window ownership stays in TerminalTabFactory; no publication occurs until
+/// all model/render preparations and group PTY effects have succeeded.
+struct TerminalConfiguration {
     shell_command: ShellCommand,
     font_settings: harbor_config::FontSettings,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReloadStage {
+    Font,
+    Metrics,
+    Model,
+    Gpu,
+    Pty(TerminalSize),
+}
+
+impl TerminalConfiguration {
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        tabs: &mut TabManager,
+        tab_ui: &TabUiController,
+        gpu: TerminalGpuAccess<'_>,
+        settings: &harbor_config::Settings,
+        font_changed: bool,
+        scale: f32,
+        surface: (u32, u32),
+        mut preflight: impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<String>> {
+        let targets = tabs.configuration_targets();
+        anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
+        let mut warnings = Vec::new();
+        let mut fonts = Vec::new();
+        let mut metrics = self.metrics;
+        if font_changed {
+            for (index, (id, _, _)) in targets.iter().enumerate() {
+                preflight(index, ReloadStage::Font)
+                    .with_context(|| format!("session {id}: terminal font acquisition"))?;
+                let font = load_system_fonts(&settings.font)
+                    .with_context(|| format!("session {id}: terminal font acquisition"))?;
+                if let Some(warning) = font.selection_warning()
+                    && !warnings.iter().any(|item| item == warning)
+                {
+                    warnings.push(warning.to_owned());
+                }
+                preflight(index, ReloadStage::Metrics)
+                    .with_context(|| format!("session {id}: primary font metrics"))?;
+                let measured = TextMetrics::from_font_metrics(font.font_metrics());
+                if index == 0 {
+                    metrics = measured;
+                }
+                anyhow::ensure!(
+                    measured == metrics,
+                    "session {id}: inconsistent primary font metrics"
+                );
+                fonts.push(font);
+            }
+        }
+        let size = if font_changed {
+            let rect = tab_ui
+                .latest_terminal_allocation()
+                .context("terminal allocation is unavailable for font reload")?;
+            terminal_size_from_allocation(rect, scale, surface, &metrics)
+                .context("terminal allocation/metrics are not drawable for font reload")?
+        } else {
+            tabs.last_broadcast_size()
+                .context("terminal geometry is unavailable")?
+        };
+        let mut terminals = targets
+            .iter()
+            .map(|(id, terminal, _)| {
+                terminal
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let renderers = targets
+            .iter()
+            .map(|(id, _, bridge)| {
+                bridge
+                    .renderer()
+                    .with_context(|| format!("session {id}: renderer unavailable"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut renderers = renderers
+            .iter()
+            .enumerate()
+            .map(|(index, renderer)| {
+                renderer.lock().map_err(|_| {
+                    anyhow::anyhow!("session {}: renderer lock unavailable", targets[index].0)
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut transactions = terminals
+            .iter_mut()
+            .enumerate()
+            .map(|(index, terminal)| {
+                preflight(index, ReloadStage::Model).with_context(|| {
+                    format!(
+                        "session {}: reader barrier/model preparation",
+                        targets[index].0
+                    )
+                })?;
+                terminal
+                    .prepare_configuration_resize(size)
+                    .with_context(|| {
+                        format!(
+                            "session {}: reader barrier/model preparation",
+                            targets[index].0
+                        )
+                    })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut replacements = Vec::new();
+        if font_changed {
+            for (index, font) in fonts.into_iter().enumerate() {
+                preflight(index, ReloadStage::Gpu).with_context(|| {
+                    format!("session {}: GPU font preparation", targets[index].0)
+                })?;
+                replacements.push(
+                    renderers[index]
+                        .prepare_fonts(gpu, font, &transactions[index].update(settings.colors))
+                        .with_context(|| {
+                            format!("session {}: GPU font preparation", targets[index].0)
+                        })?,
+                );
+            }
+        }
+        harbor_terminal::resize_configuration_group_with_check(&mut transactions, |index, size| {
+            preflight(index, ReloadStage::Pty(size))
+        })
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                error
+                    .failures
+                    .into_iter()
+                    .map(|(index, message)| format!("session {}: {message}", targets[index].0))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })?;
+        // From this point all publication consists of infallible ownership/state moves.
+        if font_changed {
+            for (renderer, replacement) in renderers.iter_mut().zip(replacements) {
+                **renderer = replacement;
+            }
+        }
+        for (transaction, renderer) in transactions.into_iter().zip(renderers.iter()) {
+            transaction.commit(settings.colors, Some(renderer.viewport()), scale);
+        }
+        self.font_settings = settings.font.clone();
+        self.metrics = metrics;
+        self.appearance = TerminalAppearance::from_palette(settings.colors);
+        self.shell_command =
+            ShellCommand::new(settings.shell.program.clone(), settings.shell.args.clone());
+        // Effective clipboard delivery remains the startup policy, including for new tabs.
+        tabs.accept_configuration_size(size);
+        Ok(warnings)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_new_terminal(
+        &self,
+        gpu: TerminalGpuAccess<'_>,
+        fonts: harbor_terminal::FontBook,
+        size: TerminalSize,
+        surface: (u32, u32),
+        backdrop_available: bool,
+        clipboard_delivery: harbor_terminal::ClipboardDelivery,
+    ) -> anyhow::Result<(Terminal, TerminalRenderPipeline)> {
+        let mut terminal =
+            Terminal::new_headless_with_appearance(size.rows, size.cols, self.appearance);
+        terminal.set_backdrop_available(backdrop_available);
+        terminal.set_clipboard_delivery(clipboard_delivery);
+        let renderer = TerminalRenderPipeline::new(
+            gpu,
+            (surface.0.max(1), surface.1.max(1)),
+            fonts,
+            self.metrics,
+            &terminal.read_update(std::time::Instant::now()),
+        )?;
+        Ok((terminal, renderer))
+    }
+}
+
+/// Factory configuration for spawning new Host-owned terminal tabs.
+pub(crate) struct TerminalTabFactory {
+    gpu: Arc<SharedGpu>,
+    format: wgpu::TextureFormat,
+    configuration: TerminalConfiguration,
     backdrop_available: bool,
     event_proxy: EventLoopProxy<AppEvent>,
     input_gate: Arc<std::sync::atomic::AtomicBool>,
@@ -89,10 +276,12 @@ impl TerminalTabFactory {
         Self {
             gpu,
             format,
-            shell_command,
-            font_settings,
-            metrics,
-            appearance,
+            configuration: TerminalConfiguration {
+                shell_command,
+                font_settings,
+                metrics,
+                appearance,
+            },
             backdrop_available,
             event_proxy,
             input_gate,
@@ -101,11 +290,11 @@ impl TerminalTabFactory {
     }
 
     pub(crate) fn metrics(&self) -> TextMetrics {
-        self.metrics
+        self.configuration.metrics
     }
 
     pub(crate) fn default_terminal_size(&self, surface_size: (u32, u32)) -> TerminalSize {
-        Terminal::terminal_size_for(surface_size, &self.metrics)
+        Terminal::terminal_size_for(surface_size, &self.configuration.metrics)
     }
 
     pub(crate) fn create_resources(
@@ -115,30 +304,25 @@ impl TerminalTabFactory {
         size: TerminalSize,
         surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
-        let fonts = load_system_fonts(&self.font_settings)?;
+        let fonts = load_system_fonts(&self.configuration.font_settings)?;
         let endpoints = PtyEndpoints::spawn_shell(
             harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
             },
-            &self.shell_command,
+            &self.configuration.shell_command,
         )?;
         let shell_name = endpoints.shell_name().to_owned();
         let output_event_proxy = self.event_proxy.clone();
         let hyperlink_event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
-        let surface_size = (surface_size.0.max(1), surface_size.1.max(1));
-        let mut terminal =
-            Terminal::new_headless_with_appearance(size.rows, size.cols, self.appearance);
-        terminal.set_backdrop_available(self.backdrop_available);
-        terminal.set_clipboard_delivery(self.clipboard_delivery);
-        // A failed renderer init drops the intact, unstarted PTY endpoint bundle.
-        let renderer = TerminalRenderPipeline::new(
+        let (terminal, renderer) = self.configuration.prepare_new_terminal(
             gpu,
-            surface_size,
             fonts,
-            self.metrics,
-            &terminal.read_update(std::time::Instant::now()),
+            size,
+            surface_size,
+            self.backdrop_available,
+            self.clipboard_delivery,
         )?;
         // Only the session takes endpoint ownership and starts the reader.
         let terminal = terminal.start_session_from_endpoints(endpoints, move || {
@@ -169,6 +353,37 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    pub(crate) fn report_configuration_result(&self, message: String) {
+        self.tab_ui.report_configuration_result(message);
+    }
+
+    pub(crate) fn publish_keybindings(&self, bindings: harbor_app::command::ResolvedKeybindings) {
+        self.tab_ui.publish_keybindings(bindings);
+    }
+
+    pub(crate) fn apply_configuration(
+        &mut self,
+        settings: &harbor_config::Settings,
+        font_changed: bool,
+        scale: f32,
+        surface: (u32, u32),
+    ) -> anyhow::Result<Vec<String>> {
+        let gpu = TerminalGpuAccess::new(
+            self.factory.gpu.device(),
+            self.factory.gpu.queue(),
+            self.factory.format,
+        );
+        self.factory.configuration.apply(
+            &mut self.tabs,
+            &self.tab_ui,
+            gpu,
+            settings,
+            font_changed,
+            scale,
+            surface,
+            |_, _| Ok(()),
+        )
+    }
     pub(crate) fn new(
         tabs: TabManager,
         tab_ui: TabUiController,
@@ -343,6 +558,10 @@ pub(crate) fn logical_width_from_physical(width: u32, scale: f64) -> f64 {
         0.0
     }
 }
+
+#[cfg(test)]
+#[path = "configuration_reload_tests.rs"]
+mod configuration_reload_tests;
 
 #[cfg(test)]
 mod tests {

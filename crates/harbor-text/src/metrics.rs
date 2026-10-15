@@ -19,7 +19,7 @@ pub struct FontMetrics {
 }
 
 /// Fixed measurements used to map window pixels to terminal cells.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextMetrics {
     pub cell_width: f32,
     pub line_height: f32,

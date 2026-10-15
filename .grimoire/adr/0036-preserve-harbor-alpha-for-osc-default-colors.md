@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-17
+**Superseded in part by:** [ADR 0059](./0059-atomic-manual-reload-and-terminal-only-fonts.md), the approved reload extension implemented under spec 0023 (runtime acceptance remains recorded separately) that advances the reset baseline after successful configuration reload while preserving OSC RGB overrides. Other rules and the historical implementation status remain unchanged.
 
 ## Context
 

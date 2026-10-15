@@ -1,4 +1,6 @@
-# Copy to ~/.harbor/config.toml. Settings are read once at startup.
+# Copy to ~/.harbor/config.toml. Read at startup; Ctrl+Shift+R reloads manually.
+# Colors, bindings and terminal-only fonts apply live. Shell changes affect new tabs.
+# A rejected reload retains the last accepted configuration. No file watching.
 
 [font]
 family = "Cascadia Mono"
@@ -17,7 +19,10 @@ osc52_write = "allow"
 # Each command table's bindings replace its defaults. Modifiers in one record are
 # simultaneous. Omit a command table to retain its defaults; use `bindings = []`
 # to unbind it. Multiple records bind multiple chords. Any invalid command, field,
-# modifier, key, duplicate, or conflict restores the complete default binding set.
+# modifier, key, duplicate, or conflict restores all defaults at startup and
+# rejects the entire candidate during manual reload.
+[keybindings.app.reload-configuration]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "r" }]
 [keybindings.app.new-tab]
 bindings = [{ modifiers = ["ctrl"], key = "t" }]
 [keybindings.app.close-active-tab]

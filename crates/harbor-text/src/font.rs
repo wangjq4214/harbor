@@ -87,6 +87,10 @@ impl FontBook {
         self.native.font_metrics(self.size())
     }
 
+    /// Warning from primary selection, independent of later missing-glyph fallback.
+    pub fn selection_warning(&self) -> Option<&str> {
+        self.native.primary_warning()
+    }
     /// Original startup family/size policy, for atomic host resource replacement.
     pub fn settings(&self) -> &FontSettings {
         &self.settings

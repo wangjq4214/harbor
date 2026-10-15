@@ -14,6 +14,12 @@ use crate::view::EnsureVisibleResult;
 use crate::widgets::shortcuts::KeyChord;
 use std::any::Any;
 
+/// A canceled action retains only its key ownership until release/new press.
+struct ConsumedShortcut {
+    key: Key,
+    action: Option<(FiberId, Box<dyn Any>)>,
+}
+
 /// Owns input state and routes UI events through capture → target → bubble.
 pub(crate) struct EventRouter {
     input: InputState,
@@ -26,6 +32,8 @@ pub(crate) struct EventRouter {
     layout_available: bool,
     last_focus_scope: Option<FiberId>,
     pending_external_input: Vec<(ExternalDrawId, UiEvent)>,
+    // A consumed key-down owns its repeats and release even after shortcut rebuild.
+    consumed_shortcuts: Vec<ConsumedShortcut>,
 }
 
 impl EventRouter {
@@ -41,7 +49,24 @@ impl EventRouter {
             layout_available: false,
             last_focus_scope: None,
             pending_external_input: Vec::new(),
+            consumed_shortcuts: Vec::new(),
         }
+    }
+
+    /// Cancel actions without leaking an already consumed press's repeat/release.
+    pub(crate) fn cancel_shortcut_actions(&mut self) {
+        for shortcut in &mut self.consumed_shortcuts {
+            shortcut.action = None;
+        }
+    }
+
+    /// A native non-repeat key-down starts a new physical press. Gates may have
+    /// dropped the previous release, so stale ownership must not capture this one.
+    #[cfg(feature = "winit")]
+    pub(crate) fn begin_key_press(&mut self, key: Key) {
+        let key = KeyChord::new(key, Default::default()).key;
+        self.consumed_shortcuts
+            .retain(|shortcut| shortcut.key != key);
     }
 
     /// Gates visibility requests on geometry from the latest layout attempt.
@@ -141,6 +166,32 @@ impl EventRouter {
         root_id: Option<FiberId>,
         event: &UiEvent,
     ) -> bool {
+        match event {
+            UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
+                if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
+                    shortcut.key == KeyChord::new(*key, Default::default()).key
+                }) {
+                    self.consumed_shortcuts.remove(index);
+                    return true;
+                }
+            }
+            UiEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) => {
+                if let Some(shortcut) = self
+                    .consumed_shortcuts
+                    .iter()
+                    .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key)
+                {
+                    // Preserve the original action across a binding rebuild. A
+                    // lifecycle cancellation keeps ownership but never replays it.
+                    if let Some((source, action)) = &shortcut.action {
+                        let _ = self.invoke_action(arena, *source, action.as_ref());
+                        let _ = self.finish_event(arena, EventCtx::new());
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
         let Some(root_id) = root_id else {
             return false;
         };
@@ -184,8 +235,12 @@ impl EventRouter {
             UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
                 if let Some((source, action)) = self.find_shortcut(arena, root_id, *key, *modifiers)
                 {
-                    let outcome = self.invoke_action(arena, source, action);
+                    let outcome = self.invoke_action(arena, source, action.as_ref());
                     if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
+                        self.consumed_shortcuts.push(ConsumedShortcut {
+                            key: KeyChord::new(*key, Default::default()).key,
+                            action: Some((source, action)),
+                        });
                         let focus_visibility_changed = self.input.focused.is_some()
                             && !self.input.focus_visible()
                             && self.transition_focus_with_visibility(
@@ -597,14 +652,14 @@ impl EventRouter {
         &self,
         arena: &FiberArena,
         source: FiberId,
-        action: Box<dyn Any>,
+        action: &dyn Any,
     ) -> Option<crate::widgets::actions::ActionOutcome> {
         let mut current = Some(source);
         while let Some(fiber) = current {
             if let Some(outcome) = arena
                 .get(fiber)
                 .and_then(|fiber| fiber.view.as_ref())
-                .and_then(|view| view.invoke_action(action.as_ref()))
+                .and_then(|view| view.invoke_action(action))
             {
                 return Some(outcome);
             }

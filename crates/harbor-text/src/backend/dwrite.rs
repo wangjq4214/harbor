@@ -238,9 +238,13 @@ pub(crate) struct DwriteState {
     rasterizer: GlyphRasterizer,
     sequence: RefCell<sequence::SequencePresenter>,
     primary_metrics: FontMetrics,
+    primary_warning: Option<String>,
 }
 
 impl DwriteState {
+    pub(crate) fn primary_warning(&self) -> Option<&str> {
+        self.primary_warning.as_deref()
+    }
     pub(crate) fn present_sequence(
         &self,
         request: &crate::SequenceRequest,
@@ -280,6 +284,7 @@ impl DwriteState {
             rasterizer,
             sequence: RefCell::new(sequence::SequencePresenter::new()),
             primary_metrics,
+            primary_warning: None,
         }
     }
 
@@ -291,6 +296,7 @@ impl DwriteState {
         lifecycle: Rc<dyn FontLifecycleSink>,
     ) -> Result<Self> {
         let (factory, fallback, locale) = open_factory_fallback_locale()?;
+        let mut warning = None;
         let selected = family
             .map(|family| select_family_primary(&factory, family))
             .transpose();
@@ -299,6 +305,10 @@ impl DwriteState {
             Ok(None) => select_system_primary(&factory)?,
             Err(error) => {
                 tracing::warn!(family, %error, "configured font family unavailable; using system primary");
+                warning = Some(format!(
+                    "configured font family {} unavailable; using system primary: {error}",
+                    family.unwrap_or_default()
+                ));
                 select_system_primary(&factory)?
             }
         };
@@ -306,7 +316,7 @@ impl DwriteState {
             .context("measure DirectWrite primary face")?;
         let faces = NativeFaceRegistry::with_primary(primary_face)
             .context("register DirectWrite primary face")?;
-        Ok(Self::from_session(
+        let mut state = Self::from_session(
             DirectWriteSession {
                 factory,
                 fallback,
@@ -316,7 +326,9 @@ impl DwriteState {
                 lifecycle,
             },
             primary_metrics,
-        ))
+        );
+        state.primary_warning = warning;
+        Ok(state)
     }
 
     /// Open the system default UI primary face (e.g. Segoe UI) at the requested size.

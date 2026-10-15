@@ -162,6 +162,71 @@ pub fn load_from_path(path: impl AsRef<Path>) -> SettingsLoad {
         )),
     }
 }
+/// A rejected live candidate. No fallback settings are exposed to the caller.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateError {
+    pub path: PathBuf,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl std::fmt::Display for CandidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: ", self.path.display())?;
+        for (index, diagnostic) in self.diagnostics.iter().enumerate() {
+            if index != 0 {
+                write!(f, "; ")?;
+            }
+            write!(f, "{}", diagnostic.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CandidateError {}
+
+/// Read a complete document for manual reload. Startup recovery remains separate.
+/// Command/key semantics must additionally be validated by the application.
+pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, CandidateError> {
+    let path = path.as_ref();
+    let reject = |message: String| CandidateError {
+        path: path.to_owned(),
+        diagnostics: vec![error(message)],
+    };
+    let source = fs::read_to_string(path)
+        .map_err(|err| reject(format!("could not read settings: {err}")))?;
+    let document = toml::from_str::<Value>(&source)
+        .map_err(|err| reject(format!("could not parse settings: {err}")))?;
+    let parsed = parse_document(document);
+    if parsed
+        .diagnostics
+        .iter()
+        .any(|d| d.level == DiagnosticLevel::Error)
+    {
+        let diagnostics = parsed
+            .diagnostics
+            .into_iter()
+            .map(|mut d| {
+                // These shared validators describe startup fallback. Live rejection
+                // must not suggest that fallback settings were installed.
+                if d.level == DiagnosticLevel::Error {
+                    d.message = d
+                        .message
+                        .split("; using")
+                        .next()
+                        .unwrap_or(&d.message)
+                        .to_owned();
+                }
+                d
+            })
+            .collect();
+        Err(CandidateError {
+            path: path.to_owned(),
+            diagnostics,
+        })
+    } else {
+        Ok(parsed)
+    }
+}
 
 fn parse_document(document: Value) -> SettingsLoad {
     let mut diagnostics = Vec::new();

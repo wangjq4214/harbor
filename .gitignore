@@ -4,7 +4,7 @@
 dhat-heap.json
 
 # Local verification artifacts
-/docs/verification/
+/docs/verification/*
 
 # Local tooling & agent runtime artifacts
 .pi/

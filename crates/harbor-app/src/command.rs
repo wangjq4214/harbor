@@ -24,6 +24,7 @@ pub enum AppCommand {
     PageDown,
     ScrollToTop,
     ScrollToBottom,
+    ReloadConfiguration,
 }
 
 /// A typed command plus source-specific focus disposition.
@@ -98,6 +99,13 @@ fn chord(key: Key, ctrl: bool, shift: bool) -> KeyChord {
 /// Returns the fixed initial registry in stable presentation order.
 pub fn command_registry() -> Vec<CommandDescriptor> {
     let mut entries = vec![
+        descriptor(
+            "app.reload-configuration",
+            "Reload configuration",
+            AppCommand::ReloadConfiguration,
+            chord(Key::Character('r'), true, true),
+            true,
+        ),
         descriptor(
             "app.new-tab",
             "New tab",
@@ -247,6 +255,15 @@ fn default_bindings(registry: &[CommandDescriptor]) -> ResolvedKeybindings {
     }
 }
 
+/// Resolves a live candidate without exposing startup fallback as acceptance.
+pub fn validate_keybindings(raw: &RawKeybindings) -> Result<ResolvedKeybindings, Vec<String>> {
+    let resolution = resolve_keybindings(raw);
+    if resolution.used_defaults {
+        Err(resolution.diagnostics)
+    } else {
+        Ok(resolution.keybindings)
+    }
+}
 /// Resolves all overrides atomically. Any semantic error restores all defaults.
 pub fn resolve_keybindings(raw: &RawKeybindings) -> KeybindingResolution {
     let registry = command_registry();
@@ -405,9 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn reload_command_is_configurable_and_live_semantics_never_return_fallback() {
+        let defaults = validate_keybindings(&RawKeybindings::default()).unwrap();
+        assert!(
+            defaults
+                .bindings()
+                .any(|(key, command)| command == AppCommand::ReloadConfiguration
+                    && key == chord(Key::Character('r'), true, true))
+        );
+        let unbound =
+            validate_keybindings(&raw(vec![("app.reload-configuration", vec![])])).unwrap();
+        assert!(
+            !unbound
+                .bindings()
+                .any(|(_, command)| command == AppCommand::ReloadConfiguration)
+        );
+        for entry in [
+            ("unknown.command", vec![]),
+            ("app.reload-configuration", vec![binding(&["ctrl"], "t")]),
+            (
+                "app.reload-configuration",
+                vec![binding(&["ctrl", "ctrl"], "r")],
+            ),
+            (
+                "app.reload-configuration",
+                vec![binding(&[], "unsupported")],
+            ),
+            (
+                "app.reload-configuration",
+                vec![binding(&[], "r"), binding(&[], "r")],
+            ),
+        ] {
+            assert!(validate_keybindings(&raw(vec![entry])).is_err());
+        }
+    }
+    #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 20);
+        assert_eq!(registry.len(), 21);
         assert_eq!(
             registry
                 .iter()

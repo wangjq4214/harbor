@@ -23,6 +23,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Unoptimized native font/GPU bootstrap and resource transactions retain
+    // large by-value futures on the UI thread. The Windows linker default (1 MiB)
+    // overflows during debug startup; reserve 8 MiB, committing pages on demand.
+    // Keep this binary-scoped so library consumers retain their own stack policy.
+    let stack_arg = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        "/STACK:8388608"
+    } else {
+        "-Wl,--stack,8388608"
+    };
+    println!("cargo:rustc-link-arg-bin=harbor={stack_arg}");
+
     let mut icon_dir = ico::IconDir::new(ico::ResourceType::Icon);
     for size in ICON_SIZES {
         let resized =

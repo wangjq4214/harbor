@@ -16,6 +16,13 @@ Project domain concepts and terminology.
 - **Relationships:**
   - depends on System-Native Font Loading
 
+### Terminal Font Policy
+- **Definition:** Configured font family and size govern terminal rendering and its grid metrics, independently of system UI fonts for widgets, application chrome, and dialogs. The approved live-reload extension replaces terminal font/render resources without restarting the application or PTYs, recreating sessions, or clearing buffers. Font-driven grid changes use normal bounded resize behavior, keeping newer content while permitting ordinary old-history eviction and alternate-screen boundary clipping; those effects alone do not reject reload. [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) records the boundary, qualified by [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); neither establishes implementation or runtime acceptance.
+- **Relationships:**
+  - belongs to Terminal
+  - depends on System Default Font Selection
+  - references Manual Configuration Reload
+
 ### DirectWrite Font Backend
 - **Definition:** The Windows `harbor-text` backend that uses DirectWrite for font selection, system fallback, metrics, glyph resolution, and rasterization while retaining the existing WGPU glyph atlas.
 - **Relationships:**
@@ -326,7 +333,7 @@ Project domain concepts and terminology.
   - communicates with Terminal
 
 ### Terminal Selection Lifecycle
-- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
+- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss. Escape is consumed locally only when it cancels selection or local pointer interaction; otherwise it is encoded and forwarded to the PTY, including in alternate-screen applications.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - references Logical Line
@@ -785,8 +792,19 @@ Project domain concepts and terminology.
   - belongs to Widget Renderer
   - implements ClipBehavior
   - reveals the host/frame clear where clipped pixels are erased
+### Manual Configuration Reload
+- **Definition:** The approved application-command transaction that validates a complete TOML candidate and prepares supported resources before publishing a coherent accepted configuration to existing applicable sessions and future-instance factories. Failure retains the last accepted configuration rather than applying startup fallback. It is distinct from development-only widget-library HMR; terminal font changes preserve terminal/session identity and use ordinary bounded resize retention rather than resetting buffers, while OSC RGB overrides remain above a newly accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and its retention clarification in [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); the implementation is present, while Windows runtime acceptance remains separately tracked in `docs/verification/atomic-manual-configuration-reload.md`.
+- **Failure qualification:** A failed compensating native PTY resize permits an explicitly reported recovery-failed outcome, with old accepted settings retained, all readers resumed, geometry reconciliation attempted, and unrecovered sessions identified. Ordinary failures do not permit partial acceptance. See [ADR 0061](./adr/0061-manual-reload-compensation-failure.md).
+- **Relationships:**
+  - belongs to Application Business Host
+  - references TOML User Settings
+  - references Application Command Dispatcher
+  - references Terminal Font Policy
+  - references OSC Default Color Policy
+  - references OSC Indexed Palette Policy
+
 ### TOML User Settings
-- **Definition:** Startup-only user preferences loaded from `~/.harbor/config.toml`; missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
+- **Definition:** User preferences (loaded with startup recovery and re-read through the separately strict Manual Configuration Reload transaction) loaded from `~/.harbor/config.toml`; at startup, missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
 - **Relationships:**
   - configures Terminal
   - configures System Default Font Selection

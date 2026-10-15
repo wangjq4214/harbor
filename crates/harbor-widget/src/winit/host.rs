@@ -513,7 +513,7 @@ impl WinitWindowHost {
         self.adapter.quarantine_active_pointers();
         let mut effects = self
             .runtime
-            .cancel_pointer_captures(crate::layout::Point::ZERO);
+            .cancel_active_input_ownership(crate::layout::Point::ZERO);
         effects.merge(self.runtime.take_pending_effects());
         self.apply_runtime_effects(effects)
     }

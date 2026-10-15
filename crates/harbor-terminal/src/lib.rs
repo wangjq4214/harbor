@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod clipboard_attachment_tests;
+mod configuration;
 mod content_anchor;
 #[cfg(all(test, not(feature = "renderer")))]
 mod core_tests;
@@ -9,6 +10,10 @@ mod damage;
 #[cfg(test)]
 mod engine_tests;
 mod input;
+pub use configuration::{
+    ConfigurationResize, ResizeGroupError, resize_configuration_group,
+    resize_configuration_group_with_check,
+};
 mod io;
 #[path = "render/layout.rs"]
 pub mod layout;
@@ -100,6 +105,9 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    pub fn projection_requires_full_update(&self) -> bool {
+        self.update_needs_full
+    }
     /// Attaches the sole PTY session to a newly created headless engine.
     ///
     /// Construct fallible GPU resources first: if they fail, the intact endpoint
@@ -467,7 +475,11 @@ impl Terminal {
                 if outcome.release_pointer.is_some() {
                     self.io.set_suppress_scroll_snap(false);
                 }
-                if *key == TerminalKey::Escape {
+                // Esc belongs to local cancellation only when it actually canceled state.
+                // Otherwise full-screen applications must receive its terminal encoding.
+                if *key == TerminalKey::Escape
+                    && (outcome.redraw || outcome.release_pointer.is_some())
+                {
                     self.maybe_reset_blink(before, false);
                     return Ok(outcome);
                 }

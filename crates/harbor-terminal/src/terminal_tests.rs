@@ -2433,6 +2433,85 @@ fn resize_rejects_active_reader_without_interrupt_capability() {
     assert!(terminal.drain_pty());
     assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'L'));
 }
+#[test]
+fn configuration_group_failure_resumes_every_paused_reader_without_losing_bytes() {
+    for failure in 0..3 {
+        let mut terminals = Vec::new();
+        let mut readers = Vec::new();
+        for _ in 0..2 {
+            let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+            let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
+            let reader = BarrierTestReader {
+                state: 0,
+                initial: b"BEFORE".to_vec(),
+                blocked: blocked_tx,
+                interrupted: interrupt_rx,
+                after_resume: b"AFTER".to_vec(),
+            };
+            let mut terminal = Terminal::new_headless(4, 20);
+            terminal.io = crate::io::TerminalIo::new_with_test_barrier(
+                reader,
+                std::io::sink(),
+                move |_| {
+                    let _ = interrupt_tx.send(());
+                    Ok(())
+                },
+                std::time::Duration::from_secs(1),
+                || true,
+            );
+            blocked_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap();
+            readers.push(blocked_rx);
+            terminals.push(terminal);
+        }
+        let transactions = terminals
+            .iter_mut()
+            .map(|terminal| {
+                terminal
+                    .prepare_configuration_resize(TerminalSize { rows: 3, cols: 12 })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        // Preparation rejection, compensated later-session failure, and double failure.
+        let mut transactions = transactions;
+        if failure != 0 {
+            let mut calls = 0;
+            let error = crate::configuration::resize_group_with(&mut transactions, |_, _, _| {
+                calls += 1;
+                if calls == 2 || (failure == 2 && calls == 3) {
+                    anyhow::bail!("injected resize failure");
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.failures.len(), failure);
+        }
+        drop(transactions);
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            for terminal in &mut terminals {
+                terminal.drain_pty();
+            }
+            if terminals
+                .iter()
+                .all(|terminal| terminal.row_text(0).starts_with("BEFOREAFTER"))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "reader did not resume");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        for (index, terminal) in terminals.iter().enumerate() {
+            assert_eq!(
+                terminal.screen().cols(),
+                if failure == 2 && index == 0 { 12 } else { 20 }
+            );
+            assert_eq!(terminal.row_text(0).trim_end(), "BEFOREAFTER");
+        }
+    }
+}
+
 struct BarrierTestReader {
     state: u8,
     initial: Vec<u8>,

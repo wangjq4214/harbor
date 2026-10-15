@@ -327,6 +327,19 @@ impl TabManager {
     pub fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.active_tab().map(|tab| Arc::clone(&tab.terminal))
     }
+    /// Stable identities and shared engines/bridges for one application-thread transaction.
+    pub fn configuration_targets(
+        &self,
+    ) -> Vec<(TabId, Arc<Mutex<Terminal>>, TerminalWidgetBridge)> {
+        self.tabs
+            .iter()
+            .map(|tab| (tab.id, Arc::clone(&tab.terminal), tab.bridge.clone()))
+            .collect()
+    }
+
+    pub fn accept_configuration_size(&mut self, size: TerminalSize) {
+        self.last_broadcast_size = Some(size);
+    }
 
     pub fn active_bridge(&self) -> Option<TerminalWidgetBridge> {
         self.active_tab().map(|tab| tab.bridge.clone())

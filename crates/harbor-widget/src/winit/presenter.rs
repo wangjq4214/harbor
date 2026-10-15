@@ -150,7 +150,8 @@ impl WindowPresenter {
         let mut effects = self.set_drawable(self.surface_state.can_acquire());
         if was_drawable && !self.surface_state.can_acquire() {
             adapter.quarantine_active_pointers();
-            let canceled = runtime.cancel_pointer_captures(adapter.logical_pointer_position());
+            let canceled =
+                runtime.cancel_active_input_ownership(adapter.logical_pointer_position());
             effects.merge(self.fold_effects(canceled));
         }
         self.surface_state.reset_recovery_budget();

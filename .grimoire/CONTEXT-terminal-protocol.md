@@ -221,7 +221,7 @@
   - communicates with Runtime Host
 
 ### OSC Default Color Policy
-- **Definition:** OSC 10/11/12 accept `#RRGGBB` or `rgb:R/G/B` with one to four hexadecimal digits per component, change only RGB while preserving each active slot's Harbor alpha, and answer queries as `rgb:rrrr/gggg/bbbb` using the request's BEL or ST terminator. OSC 110/111/112 restore the corresponding complete startup-configured RGBA value. Invalid values, color names, `rgbi:`, alpha-bearing forms, and multi-color payloads leave active colors unchanged.
+- **Definition:** OSC 10/11/12 accept `#RRGGBB` or `rgb:R/G/B` with one to four hexadecimal digits per component, change only RGB while preserving each active slot's Harbor alpha, and answer queries as `rgb:rrrr/gggg/bbbb` using the request's BEL or ST terminator. OSC 110/111/112 restore the corresponding complete startup-configured RGBA value. Invalid values, color names, `rgbi:`, alpha-bearing forms, and multi-color payloads leave active colors unchanged. The approved reload extension implemented under spec 0023 (runtime acceptance remains recorded separately) in [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) preserves explicit OSC RGB overrides above the latest accepted configuration baseline, uses its alpha, and makes explicit resets restore that baseline instead of an immutable startup value.
 - **Synonyms:** Dynamic default colors, OSC 10/11/12 colors
 - **Relationships:**
   - belongs to Terminal
@@ -230,7 +230,7 @@
   - references Windows Acrylic Backdrop
 
 ### OSC Indexed Palette Policy
-- **Definition:** The approved, not-yet-implemented OSC 4/104 contract for a session-owned palette of exactly 256 indexed colors. Primary/alternate buffers share the active palette, sessions remain isolated, and ANSI named/bright colors resolve through their matching indexed slots. Sets preserve alpha; explicit resets restore startup RGBA without resetting OSC default colors or selection. Whole malformed requests are ignored before any mutation or reply; valid operations execute in order. RIS, DECSTR, and SGR reset preserve the palette. See [ADR 0053](./adr/0053-bounded-session-osc-palette-policy.md) for the bounded syntax and compatibility decisions.
+- **Definition:** The approved, not-yet-implemented OSC 4/104 contract for a session-owned palette of exactly 256 indexed colors. Primary/alternate buffers share the active palette, sessions remain isolated, and ANSI named/bright colors resolve through their matching indexed slots. Sets preserve alpha; explicit resets restore startup RGBA without resetting OSC default colors or selection. Whole malformed requests are ignored before any mutation or reply; valid operations execute in order. RIS, DECSTR, and SGR reset preserve the palette. See [ADR 0053](./adr/0053-bounded-session-osc-palette-policy.md) for the bounded syntax and compatibility decisions. The separately approved reload extension in [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) preserves explicit indexed OSC RGB overrides, uses alpha from the latest accepted configuration, and makes OSC 104 restore that accepted baseline; reload is implemented under spec 0023, with runtime acceptance recorded separately.
 - **Synonyms:** Dynamic indexed colors, OSC 4/104 palette
 - **Relationships:**
   - belongs to Terminal

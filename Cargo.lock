@@ -867,6 +867,7 @@ dependencies = [
  "pollster",
  "tracing",
  "wgpu",
+ "winit",
 ]
 
 [[package]]

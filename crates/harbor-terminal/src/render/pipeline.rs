@@ -126,14 +126,24 @@ impl TerminalRenderPipeline {
             grid: (snap.rows, snap.cols),
         })
     }
-    /// Prepare a replacement projection before committing a font/fallback session.
-    /// Host settings hot reload is deliberately not introduced here.
+    /// Installs a prepared replacement for single-renderer callers.
     pub fn replace_fonts(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         fonts: FontBook,
         update: &TerminalUpdate,
     ) -> anyhow::Result<()> {
+        *self = self.prepare_fonts(gpu, fonts, update)?;
+        Ok(())
+    }
+    /// Prepare a replacement projection before committing a font/fallback session.
+    /// Detached preparation lets the application validate all sessions before publication.
+    pub fn prepare_fonts(
+        &self,
+        gpu: TerminalGpuAccess<'_>,
+        fonts: FontBook,
+        update: &TerminalUpdate,
+    ) -> anyhow::Result<Self> {
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
         // Candidate resources may fail GPU validation/allocation even after the
         // CPU preflight. Scope every preparation error and publish only afterwards.
@@ -173,8 +183,7 @@ impl TerminalRenderPipeline {
         if let Some(error) = gpu_error {
             anyhow::bail!("terminal font resource preparation failed: {error}");
         }
-        *self = candidate?;
-        Ok(())
+        candidate
     }
 
     /// Refresh DPI-dependent sequence resources without changing physical font

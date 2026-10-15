@@ -37,6 +37,54 @@ use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
+/// Validates and publishes one requested generation on the application thread.
+/// `apply` owns the real session/factory transaction and infallible binding move.
+/// Keeping this independent of a Window makes acceptance ordering testable.
+pub(crate) fn accept_configuration(
+    accepted: &mut harbor_config::Settings,
+    effective_clipboard: &harbor_config::ClipboardSettings,
+    candidate: harbor_config::Settings,
+    apply: impl FnOnce(
+        &harbor_config::Settings,
+        bool,
+        harbor_app::command::ResolvedKeybindings,
+    ) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<String> {
+    let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
+        .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
+    let font_changed = candidate.font != accepted.font;
+    let warnings = apply(&candidate, font_changed, bindings)?;
+    let mut live = Vec::new();
+    if candidate.colors != accepted.colors {
+        live.push("colors");
+    }
+    if candidate.keybindings != accepted.keybindings {
+        live.push("keybindings");
+    }
+    if font_changed {
+        live.push("terminal fonts");
+    }
+    let mut parts = Vec::new();
+    if !live.is_empty() {
+        parts.push(format!("applied live: {}", live.join(", ")));
+    }
+    if candidate.shell != accepted.shell {
+        parts.push("new sessions only: shell program/arguments".to_owned());
+    }
+    if candidate.clipboard != *effective_clipboard {
+        parts.push(
+            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
+                .to_owned(),
+        );
+    }
+    if parts.is_empty() {
+        parts.push("no effective settings changed".to_owned());
+    }
+    parts.extend(warnings);
+    *accepted = candidate;
+    Ok(parts.join("; "))
+}
+
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
     // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
@@ -46,6 +94,8 @@ pub(crate) struct ActiveSession {
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     tabs: TabCoordinator,
+    accepted_settings: harbor_config::Settings,
+    effective_clipboard: harbor_config::ClipboardSettings,
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
     main_host: WinitWindowHost,
@@ -264,6 +314,58 @@ impl ActiveSession {
         }
     }
 
+    fn reload_configuration(&mut self) {
+        let path = harbor_config::default_config_path();
+        let path_label = path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "~/.harbor/config.toml (home directory unavailable)".to_owned());
+        let result = (|| -> anyhow::Result<String> {
+            let path = path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
+            let loaded = harbor_config::load_candidate_from_path(path)?;
+            let viewport = self.main_host.viewport().clone();
+            let summary = accept_configuration(
+                &mut self.accepted_settings,
+                &self.effective_clipboard,
+                loaded.settings,
+                |candidate, font_changed, bindings| {
+                    let warnings = self.tabs.apply_configuration(
+                        candidate,
+                        font_changed,
+                        viewport.scale_factor,
+                        viewport.physical_size,
+                    )?;
+                    self.tabs.publish_keybindings(bindings);
+                    Ok(warnings)
+                },
+            )?;
+            let mut parts = vec![summary];
+            for diagnostic in loaded.diagnostics {
+                tracing::warn!(path = %path.display(), message = %diagnostic.message, "configuration warning");
+                parts.push(diagnostic.message);
+            }
+            Ok(format!(
+                "Configuration reloaded ({path_label}): {}",
+                parts.join("; ")
+            ))
+        })();
+        let message = match result {
+            Ok(message) => {
+                tracing::info!(%message, "configuration reload accepted");
+                message
+            }
+            Err(error) => {
+                let message = format!(
+                    "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
+                );
+                tracing::error!(%message, "configuration reload rejected");
+                message
+            }
+        };
+        self.tabs.report_configuration_result(message);
+    }
     fn drain_app_commands(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -274,10 +376,15 @@ impl ActiveSession {
                 break;
             }
             match request.command {
+                AppCommand::ReloadConfiguration => {
+                    self.reload_configuration();
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
                 AppCommand::Tab(command) => {
                     let outcome =
                         self.tabs
                             .execute_tab_command(&mut self.main_host, command, request.focus);
+
                     Self::merge_wait(&mut result.wait, outcome.wait);
                     self.reconcile_clipboard();
                     if outcome.close_window {
@@ -655,7 +762,8 @@ impl Shell {
             backdrop_style,
         );
         let font_settings = settings.font.clone();
-        let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
+        let shell_command =
+            ShellCommand::new(settings.shell.program.clone(), settings.shell.args.clone());
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));
@@ -750,6 +858,8 @@ impl Shell {
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
             tabs,
+            effective_clipboard: settings.clipboard.clone(),
+            accepted_settings: settings,
             show_pending: true,
             startup_retry_deadline: None,
             main_host,

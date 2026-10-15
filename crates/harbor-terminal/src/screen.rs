@@ -160,6 +160,24 @@ pub(crate) struct PreparedScreenResize {
 }
 
 impl PreparedScreenResize {
+    pub(crate) fn snapshot(&self, source: &Screen) -> crate::model::TerminalSnapshot {
+        let rows = self.normal.rows();
+        let cols = self.normal.cols();
+        let mut snapshot = source.terminal_snapshot();
+        snapshot.rows = rows;
+        snapshot.cols = cols;
+        snapshot.cells = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| self.normal.cell(r, c).clone()))
+            .collect();
+        snapshot.cursor_x = self.cursor.cursor_x();
+        snapshot.cursor_y = self.cursor.cursor_y(&self.normal);
+        snapshot.scroll_count = self.normal.scroll_count();
+        snapshot.view_offset = self.normal.view_offset();
+        snapshot.history_start = self.normal.history_start();
+        snapshot.wrapped = (0..rows).map(|r| self.normal.is_wrapped(r)).collect();
+        snapshot.dirty_ranges = self.normal.dirty_ranges();
+        snapshot
+    }
     fn project_selection(&self, anchor: ContentAnchor) -> Option<(GenPos, ContentAnchor)> {
         let position = if let Some(rectangular) = &self.rectangular_selection {
             let source = rectangular.source.resolve_selection(anchor)?;
@@ -252,6 +270,17 @@ impl Screen {
 
     pub(crate) fn active_palette(&self) -> Palette {
         self.default_colors.active_palette()
+    }
+
+    pub(crate) fn configuration_palette(&self, baseline: Palette) -> Palette {
+        let mut colors = self.default_colors;
+        colors.advance_baseline(baseline);
+        colors.active_palette()
+    }
+
+    pub(crate) fn accept_configuration_palette(&mut self, baseline: Palette) {
+        self.default_colors.advance_baseline(baseline);
+        self.mark_all_dirty();
     }
 
     pub(crate) fn default_color(&self, slot: DefaultColorSlot) -> Rgba {

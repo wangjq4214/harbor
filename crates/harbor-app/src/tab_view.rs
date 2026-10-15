@@ -72,6 +72,8 @@ pub(crate) struct TabUiState {
     snapshots: Vec<TabSnapshot>,
     active_bridge: Option<TerminalWidgetBridge>,
     presentation: RailPresentation,
+    keybindings: Option<crate::command::ResolvedKeybindings>,
+    configuration_result: Option<String>,
 }
 
 #[derive(Clone)]
@@ -126,6 +128,8 @@ impl TabUiController {
                 snapshots,
                 active_bridge: Some(active_bridge),
                 presentation: RailPresentation::for_logical_width(logical_width),
+                keybindings: None,
+                configuration_result: None,
             }),
             tab_focus: Arc::new(Mutex::new(tab_focus)),
             scroll: ScrollController::new(),
@@ -134,6 +138,17 @@ impl TabUiController {
         }
     }
 
+    pub fn publish_keybindings(&self, keybindings: crate::command::ResolvedKeybindings) {
+        let mut state = self.store.state().read().clone();
+        state.keybindings = Some(keybindings);
+        self.store.set_state(state);
+    }
+
+    pub fn report_configuration_result(&self, message: String) {
+        let mut state = self.store.state().read().clone();
+        state.configuration_result = Some(message);
+        self.store.set_state(state);
+    }
     pub fn sync(
         &self,
         snapshots: Vec<TabSnapshot>,
@@ -146,10 +161,19 @@ impl TabUiController {
                 handles.entry(snapshot.id).or_insert_with(FocusHandle::new);
             }
         }
+        let configuration = {
+            let state = self.store.state().read();
+            (
+                state.keybindings.clone(),
+                state.configuration_result.clone(),
+            )
+        };
         self.store.set_state(TabUiState {
             snapshots,
             active_bridge,
             presentation: RailPresentation::for_logical_width(logical_width),
+            keybindings: configuration.0,
+            configuration_result: configuration.1,
         });
     }
 
@@ -233,6 +257,283 @@ mod tests {
         runtime.set_root(tab_workspace(controller, false));
         runtime.update(Instant::now());
         runtime
+    }
+    #[derive(Clone)]
+    struct Writer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn reload_rebinding_keeps_consumed_press_repeat_and_release_out_of_terminal() {
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let engine = std::sync::Arc::new(std::sync::Mutex::new(
+            harbor_terminal::Terminal::new_headless_with_io(
+                4,
+                20,
+                std::io::empty(),
+                Writer(bytes.clone()),
+                || true,
+            ),
+        ));
+        let test_bridge = crate::terminal_view::TerminalWidgetBridge::new(
+            1,
+            engine,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+        let mut runtime = mount(controller.clone(), 1000, 320);
+        controller.sync(
+            vec![snapshot(1, true, false)],
+            Some(test_bridge.clone()),
+            1000.0,
+        );
+        runtime.update(Instant::now());
+        runtime.request_focus(&controller.terminal_focus());
+        let modifiers = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('R'),
+            modifiers,
+        });
+        assert!(runtime.dispatch(event.clone()).request_redraw);
+        assert!(bytes.lock().unwrap().is_empty());
+        assert_eq!(
+            controller.drain_actions()[0].command,
+            AppCommand::ReloadConfiguration
+        );
+        let mut raw = harbor_config::RawKeybindings::default();
+        raw.entries.insert(
+            "app.reload-configuration".to_owned(),
+            vec![harbor_config::RawKeybinding {
+                modifiers: vec!["ctrl".to_owned(), "shift".to_owned()],
+                key: "q".to_owned(),
+            }],
+        );
+        controller.publish_keybindings(crate::command::validate_keybindings(&raw).unwrap());
+        controller.report_configuration_result("Configuration reloaded".to_owned());
+        runtime.update(Instant::now());
+        assert!(
+            runtime
+                .dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: Key::Character('r'),
+                    modifiers: Modifiers::default()
+                }))
+                .request_redraw
+        );
+        assert!(bytes.lock().unwrap().is_empty());
+        assert_eq!(
+            controller.drain_actions()[0].command,
+            AppCommand::ReloadConfiguration
+        );
+        assert!(
+            runtime
+                .dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+                    key: Key::Character('r'),
+                    modifiers: Modifiers::default()
+                }))
+                .request_redraw
+        );
+        assert!(bytes.lock().unwrap().is_empty());
+        assert!(controller.drain_actions().is_empty());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('q'),
+            modifiers,
+        }));
+        assert_eq!(
+            controller.drain_actions()[0].command,
+            AppCommand::ReloadConfiguration
+        );
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Character('q'),
+            modifiers,
+        }));
+        controller.sync(vec![snapshot(1, true, false)], Some(test_bridge), 1000.0);
+        assert!(controller.store.state().read().keybindings.is_some());
+        assert_eq!(
+            controller
+                .store
+                .state()
+                .read()
+                .configuration_result
+                .as_deref(),
+            Some("Configuration reloaded")
+        );
+        runtime.update(Instant::now());
+        runtime.request_focus(&controller.terminal_focus());
+        assert!(bytes.lock().unwrap().is_empty());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('r'),
+            modifiers,
+        }));
+        assert!(controller.drain_actions().is_empty());
+        assert_eq!(
+            *bytes.lock().unwrap(),
+            b"\x12",
+            "released old chord must return to the PTY writer"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn canceled_paste_press_cannot_replay_after_gate_focus_loss_or_surface_suspend() {
+        use harbor_widget::winit::{NativeKeyboardMetadata, WindowPresenter, WinitAdapter};
+        use winit::{
+            event::{ElementState, WindowEvent},
+            keyboard::{Key as NativeKey, KeyLocation, ModifiersState},
+        };
+        for (boundary, release_dropped) in [
+            ("gate", true),
+            ("focus", true),
+            ("focus", false),
+            ("surface", true),
+        ] {
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let engine = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+                4,
+                20,
+                std::io::empty(),
+                Writer(bytes.clone()),
+                || true,
+            )));
+            let test_bridge =
+                TerminalWidgetBridge::new(1, engine, Arc::new(AtomicBool::new(false)));
+            let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+            let mut runtime = mount(controller.clone(), 1000, 320);
+            controller.sync(vec![snapshot(1, true, false)], Some(test_bridge), 1000.0);
+            runtime.update(Instant::now());
+            runtime.request_focus(&controller.terminal_focus());
+            let mut adapter = WinitAdapter::new();
+            adapter.handle_event(
+                &mut runtime,
+                &WindowEvent::ModifiersChanged(ModifiersState::CONTROL.into()),
+            );
+            let key = NativeKey::Character("v".into());
+            adapter.handle_keyboard_input(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+            );
+            assert_eq!(controller.drain_actions()[0].command, AppCommand::Paste);
+            assert!(bytes.lock().unwrap().is_empty());
+            match boundary {
+                "gate" => {
+                    runtime.cancel_active_input_ownership(Point::ZERO);
+                }
+                "focus" => {
+                    adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+                }
+                "surface" => {
+                    let mut presenter = WindowPresenter::new(1000, 320, 1.0);
+                    presenter.handle_event_with_size(
+                        &mut adapter,
+                        &mut runtime,
+                        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
+                        Some((0, 0)),
+                    );
+                    presenter.handle_event_with_size(
+                        &mut adapter,
+                        &mut runtime,
+                        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(1000, 320)),
+                        Some((1000, 320)),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            // Windows focus transitions synthesize release/gain-press events
+            // with repeat=false. Neither may clear canceled ownership or replay
+            // the chord; exercise the exact metadata route used by WindowEvent.
+            adapter.handle_keyboard_input_with_metadata(
+                &mut runtime,
+                &key,
+                ElementState::Released,
+                KeyLocation::Standard,
+                NativeKeyboardMetadata {
+                    repeat: false,
+                    is_synthetic: true,
+                },
+            );
+            adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+            adapter.handle_event(
+                &mut runtime,
+                &WindowEvent::ModifiersChanged(ModifiersState::CONTROL.into()),
+            );
+            adapter.handle_keyboard_input_with_metadata(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                NativeKeyboardMetadata {
+                    repeat: false,
+                    is_synthetic: true,
+                },
+            );
+            adapter.handle_keyboard_input_with_repeat(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                true,
+            );
+            assert!(
+                controller.drain_actions().is_empty(),
+                "synthetic lifecycle: {boundary}"
+            );
+            assert!(
+                bytes.lock().unwrap().is_empty(),
+                "synthetic lifecycle: {boundary}"
+            );
+            adapter.handle_event(
+                &mut runtime,
+                &WindowEvent::ModifiersChanged(ModifiersState::empty().into()),
+            );
+            // A still-held repeat remains consumed, but the canceled action must
+            // not execute. The confirmation gate then drops the physical key-up.
+            adapter.handle_keyboard_input_with_repeat(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                true,
+            );
+            assert!(controller.drain_actions().is_empty(), "{boundary}");
+            assert!(bytes.lock().unwrap().is_empty(), "{boundary}");
+            adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+            if !release_dropped {
+                adapter.handle_keyboard_input(
+                    &mut runtime,
+                    &key,
+                    ElementState::Released,
+                    KeyLocation::Standard,
+                );
+                assert!(controller.drain_actions().is_empty());
+                assert!(bytes.lock().unwrap().is_empty());
+            }
+            // A genuinely new native press must be ordinary input, with or without a lost release.
+            adapter.handle_keyboard_input(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+            );
+            adapter.handle_keyboard_input(
+                &mut runtime,
+                &key,
+                ElementState::Released,
+                KeyLocation::Standard,
+            );
+            assert!(controller.drain_actions().is_empty(), "{boundary}");
+            assert_eq!(*bytes.lock().unwrap(), b"v", "{boundary}");
+        }
     }
 
     #[test]
@@ -374,6 +675,7 @@ mod tests {
 
         for (key, modifiers, command) in shortcuts {
             runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }));
+            runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp { key, modifiers }));
             assert_eq!(
                 controller.drain_actions(),
                 [AppCommandRequest::shortcut(AppCommand::Tab(command))]
@@ -399,6 +701,10 @@ mod tests {
             controller.drain_actions(),
             [AppCommandRequest::shortcut(AppCommand::Copy)]
         );
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Character('C'),
+            modifiers: ctrl_shift,
+        }));
 
         runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: Key::Character('c'),
@@ -1020,6 +1326,60 @@ mod tests {
 
         assert!(weak.upgrade().is_none());
         assert!(!runtime.has_external_draws());
+    }
+
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn native_escape_reaches_terminal_writer_in_primary_and_alternate_modes() {
+        use harbor_widget::winit::WinitAdapter;
+        use winit::{
+            event::ElementState,
+            keyboard::{Key as NativeKey, KeyLocation, NamedKey},
+        };
+        for alternate in [false, true] {
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let engine = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+                4,
+                20,
+                std::io::empty(),
+                Writer(bytes.clone()),
+                || true,
+            )));
+            if alternate {
+                engine.lock().unwrap().put_bytes(b"\x1b[?1049h");
+            }
+            let test_bridge =
+                TerminalWidgetBridge::new(1, engine.clone(), Arc::new(AtomicBool::new(false)));
+            let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+            let mut runtime = mount(controller.clone(), 1000, 320);
+            controller.sync(vec![snapshot(1, true, false)], Some(test_bridge), 1000.0);
+            runtime.update(Instant::now());
+            runtime.request_focus(&controller.terminal_focus());
+            let mut adapter = WinitAdapter::new();
+            let key = NativeKey::Named(NamedKey::Escape);
+            adapter.handle_keyboard_input(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+            );
+            adapter.handle_keyboard_input_with_repeat(
+                &mut runtime,
+                &key,
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                true,
+            );
+            adapter.handle_keyboard_input(
+                &mut runtime,
+                &key,
+                ElementState::Released,
+                KeyLocation::Standard,
+            );
+            assert!(controller.drain_actions().is_empty());
+            assert_eq!(*bytes.lock().unwrap(), b"\x1b\x1b", "alternate={alternate}");
+            assert_eq!(engine.lock().unwrap().is_alt_screen(), alternate);
+        }
     }
 
     #[test]
