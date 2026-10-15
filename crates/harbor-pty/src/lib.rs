@@ -24,16 +24,33 @@ use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter, reader_io_err
 
 use anyhow::ensure;
 
-/// Startup shell executable and discrete arguments.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Per-child launch policy. Environment values are never included in Debug output.
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct ShellCommand {
     pub program: Option<String>,
     pub args: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
+    pub directory: Option<std::path::PathBuf>,
 }
 
 impl ShellCommand {
     pub fn new(program: Option<String>, args: Vec<String>) -> Self {
-        Self { program, args }
+        Self {
+            program,
+            args,
+            ..Self::default()
+        }
+    }
+}
+
+impl std::fmt::Debug for ShellCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellCommand")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("environment", &"<redacted>")
+            .field("directory", &self.directory)
+            .finish()
     }
 }
 

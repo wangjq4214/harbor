@@ -53,7 +53,11 @@ Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Ha
 
 Manual reload validates the complete document: unreadable files, malformed TOML, invalid recognized settings, or invalid/conflicting bindings reject the entire candidate and retain the last accepted configuration. Startup fallback below remains separate. Unknown ordinary settings produce ignored-setting warnings.
 
-Colors, application bindings, and terminal font family/size apply to existing and future terminals; fonts do not change application UI fonts or restart children. Font-driven grid changes use normal bounded primary reflow/alternate clipping, retaining newest available content rather than unlimited history. Shell program/arguments change new tabs only. Clipboard policy remains effective until restart. Non-modal application feedback and logs distinguish these outcomes.
+Colors, application bindings, and terminal font family/size apply to existing and future terminals; fonts do not change application UI fonts or restart children. Font-driven grid changes use normal bounded primary reflow/alternate clipping, retaining newest available content rather than unlimited history. Shell program/arguments, environment overrides and initial directory change new tabs only. Clipboard policy remains effective until restart. Non-modal application feedback and logs distinguish these outcomes.
+
+`[shell.environment]` is a string-to-string mapping of literal child-only additions/overrides over Harbor's inherited environment. Empty strings are explicit empty values; removing an override restores inheritance in future sessions. There is no inherited-variable deletion syntax, `$VAR`/`%VAR%` interpolation or shell-expression evaluation. Windows names are case-insensitive (including non-ASCII case pairs); conflicting configured spellings reject the whole reload. Names must be non-empty without `=` or NUL; values must not contain NUL. `TERM=xterm-256color` is protected: any different configured value is rejected regardless of casing. Diagnostics and Debug output omit environment values; malformed-TOML errors show only source location, not source snippets.
+
+`[shell] directory = 'projects'` resolves against the directory containing `config.toml`, not Harbor's launch directory, the active shell's cwd or OSC 7 metadata. Absolute paths are supported. Omission/removal restores inherited-directory behavior. The directory must exist and be a directory when the settings are read. If it becomes unavailable later, new-session creation fails visibly without launching in another directory; existing sessions remain usable and creation can be retried after restoration. Neither setting changes Harbor's process-global environment/cwd. Both apply to the first startup child and to the actual shell selected by fallback. At startup an invalid environment mapping falls back as a unit to inheritance (with protected TERM), and an invalid directory falls back to inheritance; strict reload instead rejects the entire candidate.
 
 OSC 10/11/12 and OSC 4 RGB overrides survive reload (even when equal to the old baseline), with alpha from the new baseline. OSC 110/111/112 and OSC 104 clear their respective overrides and restore the latest accepted configuration RGBA. New tabs do not inherit another session's overrides.
 
@@ -67,7 +71,7 @@ Supported OSC 52 selections are `c` and empty (system clipboard), with standard 
 
 For manual-assisted Windows checks inside an existing Harbor tab, run [`scripts/test_osc52_manual.ps1`](scripts/test_osc52_manual.ps1). The script requires explicit clipboard-replacement consent and does not edit startup configuration.
 
-Supported settings include font family/size, shell program/arguments, default and ANSI terminal colors, OSC 52 write policy, and structured per-command keybindings.
+Supported settings include font family/size, shell program/arguments/environment/directory, default and ANSI terminal colors, OSC 52 write policy, and structured per-command keybindings.
 
 The built-in default terminal palette is Catppuccin Mocha, with Harbor's existing background, cursor, and selection transparency. It affects only terminal colors, not application day/night appearance or the Windows Acrylic tint. Explicit `[colors]` settings still override these defaults; indexed slots 16–255 retain the standard color cube and grayscale.
 
@@ -77,7 +81,7 @@ The built-in default terminal palette is Catppuccin Mocha, with Harbor's existin
 - Missing font family uses DirectWrite system monospace selection. On Windows, a missing shell program tries `pwsh.exe`, then `powershell.exe`, then `COMSPEC`/`cmd.exe`, falling back when process creation fails. A configured executable takes precedence; if it cannot start, the same default sequence is retried without its configured arguments. Tab titles use the executable that actually started. This Windows policy does not apply to other platforms; Unix PTY support is not yet implemented.
 - Terminal background alpha is preserved. It does not configure the Windows Acrylic backdrop tint.
 
-Named profiles, environment/working-directory settings, and user-selectable themes are planned, not additional current TOML options.
+Named profiles and user-selectable themes are planned, not additional current TOML options. Scoped Windows child-launch and transaction checks passed; interactive launch-setting UI acceptance is not implied by automated checks. The detailed local-only record is `docs/verification/session-launch-settings-evidence.md` (Git-ignored and not distributed with the repository).
 
 ### Debug Widget Hot Reload (Windows)
 

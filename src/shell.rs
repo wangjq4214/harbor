@@ -29,7 +29,6 @@ use harbor_app::tab_view::TabUiController;
 use harbor_app::tab_view::ui::MainWindowRootInputs;
 #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
 use harbor_app::tab_view::ui::main_window_root;
-use harbor_pty::ShellCommand;
 use harbor_terminal::{Terminal, TerminalAppearance, TextMetrics, load_system_fonts};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::view::{BuildCx, Component, View};
@@ -68,8 +67,20 @@ pub(crate) fn accept_configuration(
     if !live.is_empty() {
         parts.push(format!("applied live: {}", live.join(", ")));
     }
-    if candidate.shell != accepted.shell {
-        parts.push("new sessions only: shell program/arguments".to_owned());
+    let mut launch = Vec::new();
+    if candidate.shell.program != accepted.shell.program
+        || candidate.shell.args != accepted.shell.args
+    {
+        launch.push("shell program/arguments");
+    }
+    if candidate.shell.environment != accepted.shell.environment {
+        launch.push("environment");
+    }
+    if candidate.shell.directory != accepted.shell.directory {
+        launch.push("initial directory");
+    }
+    if !launch.is_empty() {
+        parts.push(format!("new sessions only: {}", launch.join(", ")));
     }
     if candidate.clipboard != *effective_clipboard {
         parts.push(
@@ -762,8 +773,7 @@ impl Shell {
             backdrop_style,
         );
         let font_settings = settings.font.clone();
-        let shell_command =
-            ShellCommand::new(settings.shell.program.clone(), settings.shell.args.clone());
+        let shell_command = crate::tab_coordinator::configured_shell(&settings.shell);
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));

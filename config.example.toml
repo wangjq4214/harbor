@@ -9,6 +9,16 @@ size = 24.0
 [shell]
 program = "pwsh.exe"
 args = ["-NoLogo"]
+# Optional; relative paths are anchored at config.toml's directory, not terminal cwd.
+# Must exist. Omit to inherit Harbor's directory; unavailable later means failed spawn.
+# directory = 'projects'
+
+# Child-only literal overrides; Windows keys are case-insensitive (duplicates reject).
+# Empty is not deletion. Remove an override to restore inheritance in new sessions.
+# TERM is protected: only xterm-256color is accepted, regardless of key casing.
+# [shell.environment]
+# HARBOR_EXAMPLE = '$VAR %VAR% $(literal text)'
+# HARBOR_EMPTY = ""
 
 # OSC 52 system clipboard writes: allow (default), deny, or confirm.
 # Foreground active live tab only; confirm approves exactly one request.

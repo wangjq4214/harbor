@@ -135,6 +135,11 @@ impl Fixture {
         candidate.colors.foreground = Rgba::from_rgb8(44, 55, 66);
         candidate.shell.program = Some("cmd.exe".to_owned());
         candidate.shell.args = vec!["/Q".to_owned()];
+        candidate
+            .shell
+            .environment
+            .insert("HARBOR_RELOAD_TEST".into(), "synthetic-new".into());
+        candidate.shell.directory = Some(std::env::temp_dir());
         candidate.clipboard.osc52_write = Osc52WritePolicy::Deny;
         candidate.keybindings.entries.insert(
             "app.reload-configuration".to_owned(),
@@ -214,13 +219,7 @@ fn acceptance_updates_inactive_renderers_osc_baselines_and_new_session_policy() 
     assert!(result.contains("new sessions only: shell program/arguments"));
     assert!(result.contains("restart required: clipboard.osc52_write"));
     assert_eq!(f.clipboard.osc52_write, Osc52WritePolicy::Allow);
-    assert_eq!(
-        f.policy.shell_command,
-        ShellCommand::new(
-            candidate.shell.program.clone(),
-            candidate.shell.args.clone()
-        )
-    );
+    assert_eq!(f.policy.shell_command, configured_shell(&candidate.shell));
     for (index, (id, terminal, bridge)) in f.tabs.configuration_targets().iter().enumerate() {
         assert_eq!(*id, ids[index]);
         let mut terminal = terminal.lock().unwrap();
@@ -740,3 +739,7 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
         ));
     }
 }
+
+#[cfg(windows)]
+#[path = "session_launch_tests.rs"]
+mod session_launch_tests;

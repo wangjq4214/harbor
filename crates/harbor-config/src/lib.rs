@@ -92,11 +92,26 @@ impl Default for FontSettings {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct ShellSettings {
     /// Requested executable. `None` uses platform defaults (Windows: pwsh → powershell → COMSPEC/cmd).
     pub program: Option<String>,
     pub args: Vec<String>,
+    /// Literal child-only overrides. Values are intentionally excluded from Debug.
+    pub environment: BTreeMap<String, String>,
+    /// Validated absolute directory, anchored at the configuration file.
+    pub directory: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for ShellSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellSettings")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("environment", &"<redacted>")
+            .field("directory", &self.directory)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,10 +170,11 @@ pub fn load_from_path(path: impl AsRef<Path>) -> SettingsLoad {
         }
     };
     match toml::from_str::<Value>(&source) {
-        Ok(document) => parse_document(document),
+        Ok(document) => parse_document_at(document, path),
         Err(error) => SettingsLoad::defaults(format!(
-            "could not parse settings {}: {error}",
-            path.display()
+            "could not parse settings {}: {}",
+            path.display(),
+            parse_error_location(&error, &source)
         )),
     }
 }
@@ -194,9 +210,13 @@ pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, 
     };
     let source = fs::read_to_string(path)
         .map_err(|err| reject(format!("could not read settings: {err}")))?;
-    let document = toml::from_str::<Value>(&source)
-        .map_err(|err| reject(format!("could not parse settings: {err}")))?;
-    let parsed = parse_document(document);
+    let document = toml::from_str::<Value>(&source).map_err(|err| {
+        reject(format!(
+            "could not parse settings: {}",
+            parse_error_location(&err, &source)
+        ))
+    })?;
+    let parsed = parse_document_at(document, path);
     if parsed
         .diagnostics
         .iter()
@@ -228,6 +248,71 @@ pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, 
     }
 }
 
+// Never format the TOML error: it contains source snippets and sometimes values.
+fn parse_error_location(error: &toml::de::Error, source: &str) -> String {
+    match error.span() {
+        Some(span) => {
+            let prefix = &source.as_bytes()[..span.start.min(source.len())];
+            let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
+            let column = prefix
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(prefix.len() + 1, |last| prefix.len() - last);
+            format!("invalid TOML at line {line}, column {column} (source omitted)")
+        }
+        None => "invalid TOML (source omitted)".to_owned(),
+    }
+}
+
+fn parse_document_at(document: Value, path: &Path) -> SettingsLoad {
+    let mut loaded = parse_document(document);
+    if let Some(directory) = loaded.settings.shell.directory.take() {
+        let resolved = (|| -> Result<PathBuf, &'static str> {
+            if directory.as_os_str().is_empty() {
+                return Err("must not be empty");
+            }
+            let base =
+                std::path::absolute(path).map_err(|_| "could not resolve configuration path")?;
+            let directory = if directory.is_absolute() {
+                directory
+            } else {
+                base.parent()
+                    .ok_or("configuration path has no parent")?
+                    .join(directory)
+            };
+            // Never let a remaining Windows drive-relative path depend on a drive's cwd.
+            if !directory.is_absolute() {
+                return Err("must resolve to an absolute path");
+            }
+            let metadata = fs::metadata(&directory)
+                .map_err(|_| "could not inspect directory (missing, invalid or inaccessible)")?;
+            if !metadata.is_dir() {
+                return Err("is not a directory");
+            }
+            Ok(directory)
+        })();
+        match resolved {
+            Ok(directory) => loaded.settings.shell.directory = Some(directory),
+            Err(reason) => loaded.diagnostics.push(error(format!(
+                "shell.directory: {reason}; using inherited directory"
+            ))),
+        }
+    }
+    loaded
+}
+
+#[cfg(windows)]
+fn environment_names_equal(a: &str, b: &str) -> bool {
+    use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
+    let a: Vec<_> = a.encode_utf16().collect();
+    let b: Vec<_> = b.encode_utf16().collect();
+    unsafe { CompareStringOrdinal(&a, &b, true) == CSTR_EQUAL }
+}
+
+#[cfg(not(windows))]
+fn environment_names_equal(a: &str, b: &str) -> bool {
+    a == b
+}
 fn parse_document(document: Value) -> SettingsLoad {
     let mut diagnostics = Vec::new();
     let Some(root) = document.as_table() else {
@@ -332,7 +417,12 @@ fn parse_shell(
         diagnostics.push(error("shell must be a table; using shell defaults"));
         return;
     };
-    warn_unknown(table, &["program", "args"], "shell", diagnostics);
+    warn_unknown(
+        table,
+        &["program", "args", "environment", "directory"],
+        "shell",
+        diagnostics,
+    );
 
     if let Some(value) = table.get("program") {
         match non_empty_string(value) {
@@ -352,6 +442,46 @@ fn parse_shell(
             Some(args) => settings.args = args,
             None => diagnostics.push(error(
                 "shell.args must be an array of strings; using no arguments",
+            )),
+        }
+    }
+    if let Some(value) = table.get("environment") {
+        let parsed = (|| -> Result<BTreeMap<String, String>, &'static str> {
+            let table = value.as_table().ok_or("must be a string-to-string table")?;
+            let mut environment = BTreeMap::<String, String>::new();
+            for (name, value) in table {
+                let value = value.as_str().ok_or("values must be literal strings")?;
+                if name.is_empty() || name.contains(['=', '\0']) {
+                    return Err("names must be non-empty and contain neither '=' nor NUL");
+                }
+                if value.contains('\0') {
+                    return Err("values must not contain NUL");
+                }
+                if environment
+                    .keys()
+                    .any(|key| environment_names_equal(key, name))
+                {
+                    return Err("contains conflicting case-insensitive names");
+                }
+                if environment_names_equal(name, "TERM") && value != "xterm-256color" {
+                    return Err("TERM must remain xterm-256color");
+                }
+                environment.insert(name.clone(), value.to_owned());
+            }
+            Ok(environment)
+        })();
+        match parsed {
+            Ok(environment) => settings.environment = environment,
+            Err(reason) => diagnostics.push(error(format!(
+                "shell.environment: {reason}; using inherited environment"
+            ))),
+        }
+    }
+    if let Some(value) = table.get("directory") {
+        match value.as_str().filter(|path| !path.is_empty() && !path.contains('\0')) {
+            Some(directory) => settings.directory = Some(PathBuf::from(directory)),
+            None => diagnostics.push(error(
+                "shell.directory must be a non-empty path string without NUL; using inherited directory",
             )),
         }
     }

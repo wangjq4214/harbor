@@ -4,6 +4,10 @@
 **Source:** [Spec 0024 R2–R4 and E1–E7/E12](../../spec/0024-watched-reload-and-launch-settings.md), [ADR 0062](../../adr/0062-watched-reload-and-new-session-launch-settings.md).
 **Status:** Todo
 
+## Implementation evidence (2026-10-15)
+
+Implementation and automated/native-seam checks are recorded locally in `docs/verification/session-launch-settings-evidence.md` (Git-ignored, not distributed with the repository, as requested by the user), based on `da1eaeb` plus the uncommitted T0002 changes. The five standard quality gates passed. Interactive launch-setting checks (shortcut-to-new-tab appearance and visible lost-directory failure feedback) are NOT RUN; the ticket is not promoted to Done or treated as package acceptance. Watching and combined acceptance remain T0003/T0004.
+
 ## Goal
 
 A user configures environment overrides and initial directory; the first session and sessions created after a valid manual reload receive them, while existing children and rejected candidates remain unchanged.

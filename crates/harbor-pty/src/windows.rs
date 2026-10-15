@@ -380,11 +380,36 @@ fn create_shell_process(
     startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
-    let environment_block = build_environment_block();
+    let environment_block = build_environment_block(&command.environment)?;
+    let directory = command.directory.as_ref().map(|path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    });
+    if let Some(path) = &command.directory {
+        ensure!(
+            path.is_absolute(),
+            "shell.directory must be absolute at child creation"
+        );
+        ensure!(
+            !path.as_os_str().encode_wide().any(|c| c == 0),
+            "shell.directory contains NUL"
+        );
+        ensure!(
+            path.is_dir(),
+            "shell.directory is unavailable or not a directory at child creation"
+        );
+    }
     create_shell_process_with(command, std::env::var_os("COMSPEC"), |program, args| {
         let mut command_line = shell_command_line(program, args);
-        try_create_shell_process(&startup_info, &mut command_line, &environment_block)
-            .map_err(anyhow::Error::from)
+        try_create_shell_process(
+            &startup_info,
+            &mut command_line,
+            &environment_block,
+            directory.as_deref(),
+        )
+        .map_err(anyhow::Error::from)
     })
 }
 
@@ -440,6 +465,7 @@ fn try_create_shell_process(
     startup_info: &STARTUPINFOEXW,
     command_line: &mut [u16],
     environment_block: &[u16],
+    directory: Option<&[u16]>,
 ) -> windows::core::Result<PROCESS_INFORMATION> {
     let mut process_info = PROCESS_INFORMATION::default();
     unsafe {
@@ -451,7 +477,7 @@ fn try_create_shell_process(
             false,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
             Some(environment_block.as_ptr().cast()),
-            PCWSTR::null(),
+            directory.map_or(PCWSTR::null(), |path| PCWSTR(path.as_ptr())),
             startup_info as *const STARTUPINFOEXW as *const _,
             &mut process_info,
         )
@@ -518,48 +544,91 @@ fn append_windows_argument(output: &mut Vec<u16>, argument: &[u16]) {
     output.push(b'"' as u16);
 }
 
-/// Builds a case-insensitively sorted, double-null-terminated UTF-16LE environment block
-/// with `TERM=xterm-256color` added/overridden, without modifying the parent process.
-fn build_environment_block() -> Vec<u16> {
-    // `CreateProcessW` requires entries sorted case-insensitively by key (before `=`).
-    // We also need to avoid duplicate `TERM` regardless of casing.
-    const TERM_LOWER: [u16; 4] = [0x74, 0x65, 0x72, 0x6d]; // "term" in lowercase ASCII
-
-    fn key_lower(s: &OsStr) -> Vec<u16> {
-        s.encode_wide()
-            .take_while(|&c| c != 0x3D) // '='
-            .map(|c| {
-                if (0x41..=0x5A).contains(&c) {
-                    c + 0x20
-                } else {
-                    c
-                }
-            }) // A-Z → a-z
-            .collect()
+/// Windows environment-name ordering, including non-ASCII case pairs and
+/// inherited hidden drive entries. Compare ordinally, not with a user locale.
+fn compare_environment_names(a: &OsStr, b: &OsStr) -> std::cmp::Ordering {
+    use windows::Win32::Globalization::{CSTR_EQUAL, CSTR_LESS_THAN, CompareStringOrdinal};
+    let a: Vec<_> = a.encode_wide().collect();
+    let b: Vec<_> = b.encode_wide().collect();
+    match unsafe { CompareStringOrdinal(&a, &b, true) } {
+        CSTR_LESS_THAN => std::cmp::Ordering::Less,
+        CSTR_EQUAL => std::cmp::Ordering::Equal,
+        _ => std::cmp::Ordering::Greater,
     }
+}
 
-    let mut entries: Vec<OsString> = std::env::vars_os()
-        .filter(|(k, _)| key_lower(k.as_os_str()) != TERM_LOWER)
-        .map(|(k, v)| {
-            let mut entry = k;
-            entry.push("=");
-            entry.push(&v);
-            entry
-        })
-        .collect();
+/// Validate even callers which bypass TOML, before attempting any shell fallback.
+fn build_environment_block(
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<Vec<u16>> {
+    build_environment_block_from(std::env::vars_os(), overrides)
+}
 
-    entries.push(OsString::from("TERM=xterm-256color"));
-
-    // Sort case-insensitively by key portion as required by CreateProcessW.
-    entries.sort_by_key(|a| key_lower(a));
-
+fn build_environment_block_from(
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<Vec<u16>> {
+    use std::cmp::Ordering::Equal;
+    let mut configured: Vec<&OsStr> = Vec::new();
+    for (name, value) in overrides {
+        ensure!(
+            !name.is_empty() && !name.contains(['=', '\0']) && !value.contains('\0'),
+            "shell.environment contains an invalid name or NUL value"
+        );
+        let key = OsStr::new(name);
+        ensure!(
+            !configured
+                .iter()
+                .any(|other| compare_environment_names(key, other) == Equal),
+            "shell.environment contains conflicting case-insensitive names"
+        );
+        ensure!(
+            compare_environment_names(key, OsStr::new("TERM")) != Equal
+                || value == "xterm-256color",
+            "shell.environment: TERM must remain xterm-256color"
+        );
+        configured.push(key);
+    }
+    let mut entries: Vec<(OsString, OsString)> = Vec::new();
+    for (name, value) in inherited
+        .into_iter()
+        .chain(
+            overrides
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+        )
+        .chain(Some((
+            OsString::from("TERM"),
+            OsString::from("xterm-256color"),
+        )))
+    {
+        // Do not split at '=': Windows also inherits special '=C:' drive entries.
+        ensure!(
+            !name
+                .encode_wide()
+                .chain(value.encode_wide())
+                .any(|c| c == 0),
+            "shell.environment contains an inherited NUL"
+        );
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|(key, _)| compare_environment_names(key, &name) == Equal)
+        {
+            *entry = (name, value);
+        } else {
+            entries.push((name, value));
+        }
+    }
+    entries.sort_by(|(a, _), (b, _)| compare_environment_names(a, b));
     let mut block = Vec::new();
-    for entry in &entries {
-        block.extend(entry.encode_wide());
-        block.push(0u16);
+    for (name, value) in entries {
+        block.extend(name.encode_wide());
+        block.push('=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
     }
-    block.push(0u16); // double-null terminator
-    block
+    block.push(0);
+    Ok(block)
 }
 
 impl PtyWriter {
@@ -1025,6 +1094,56 @@ mod tests {
         assert!(contains_shell_prompt(&output), "{text:?}");
     }
 
+    #[test]
+    fn environment_block_overlays_ordinal_names_preserves_empty_hidden_and_literal_values() {
+        let inherited = [
+            ("Path", "inherited"),
+            ("Ä", "old"),
+            ("TERM", "old-term"),
+            ("=C:", r"C:\drive"),
+            ("UNCHANGED", "inherited"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let overrides = [
+            ("PATH", ""),
+            ("ä", "$VAR %VAR% $(echo synthetic)"),
+            ("term", "xterm-256color"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .into();
+        let block = build_environment_block_from(inherited, &overrides).unwrap();
+        assert!(block.ends_with(&[0, 0]));
+        let entries: Vec<_> = block
+            .split(|&c| c == 0)
+            .filter(|e| !e.is_empty())
+            .map(|e| String::from_utf16(e).unwrap())
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                r"=C:=C:\drive",
+                "PATH=",
+                "TERM=xterm-256color",
+                "UNCHANGED=inherited",
+                "ä=$VAR %VAR% $(echo synthetic)",
+            ]
+        );
+        for invalid in [
+            [("PATH", "SYNTHETIC_SECRET"), ("Path", "other")].as_slice(),
+            [("Ä", "SYNTHETIC_SECRET"), ("ä", "other")].as_slice(),
+            [("term", "SYNTHETIC_SECRET")].as_slice(),
+            [("", "SYNTHETIC_SECRET")].as_slice(),
+            [("A=B", "SYNTHETIC_SECRET")].as_slice(),
+            [("A", "SYNTHETIC_SECRET\0")].as_slice(),
+        ] {
+            let overrides = invalid
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let error = build_environment_block_from([], &overrides).unwrap_err();
+            assert!(!format!("{error:#} {error:?}").contains("SYNTHETIC_SECRET"));
+        }
+    }
     fn contains_shell_prompt(output: &[u8]) -> bool {
         let text = String::from_utf8_lossy(output);
         text.contains("Microsoft Windows") || text.contains('>')

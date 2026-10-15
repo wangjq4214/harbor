@@ -25,6 +25,15 @@ use harbor_app::{
     tab_view::{TabCommand, TabFocusPolicy, TabUiController},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
 };
+/// Shared startup and accepted-generation conversion; never merges prior overrides.
+pub(crate) fn configured_shell(settings: &harbor_config::ShellSettings) -> ShellCommand {
+    ShellCommand {
+        program: settings.program.clone(),
+        args: settings.args.clone(),
+        environment: settings.environment.clone(),
+        directory: settings.directory.clone(),
+    }
+}
 pub(crate) fn format_window_title(title: &str) -> String {
     format!("{title} — Harbor")
 }
@@ -216,8 +225,7 @@ impl TerminalConfiguration {
         self.font_settings = settings.font.clone();
         self.metrics = metrics;
         self.appearance = TerminalAppearance::from_palette(settings.colors);
-        self.shell_command =
-            ShellCommand::new(settings.shell.program.clone(), settings.shell.args.clone());
+        self.shell_command = configured_shell(&settings.shell);
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
         Ok(warnings)
@@ -532,8 +540,14 @@ impl TabCoordinator {
             TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    tracing::warn!(error = %format_args!("{error:#}"), "failed to create terminal tab");
-                    return TabDrainOutcome::default();
+                    let message =
+                        format!("New session failed: {error:#}. Existing sessions are unchanged.");
+                    tracing::warn!(%message, "failed to create terminal tab");
+                    self.tab_ui.report_configuration_result(message);
+                    return TabDrainOutcome {
+                        wait: host.request_frame().wait,
+                        close_window: false,
+                    };
                 }
             },
             TabCommand::Close(id) => self.tabs.close(id),
