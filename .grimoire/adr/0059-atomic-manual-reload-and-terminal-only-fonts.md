@@ -6,6 +6,7 @@
 **Supersedes in part:** [ADR 0036](./0036-preserve-harbor-alpha-for-osc-default-colors.md) and [ADR 0053](./0053-bounded-session-osc-palette-policy.md), only their immutable startup reset baseline after a successful configuration reload. Other OSC wire, isolation, reset, and alpha-preserving set rules remain applicable.
 **Superseded in part by:** [ADR 0060](./0060-font-reload-uses-normal-bounded-resize.md), clarifying that font-driven grid changes use ordinary bounded resize retention rather than preserving every old history row or out-of-bounds cell. No restart, session recreation, or buffer reset is permitted; other decisions remain applicable.
 **Superseded in part by:** [ADR 0061](./0061-manual-reload-compensation-failure.md), permitting an explicitly reported recovery-failed result only when a compensating native PTY resize itself fails; partial configuration acceptance remains prohibited.
+**Superseded in part by:** [ADR 0063](./0063-root-composable-escape-and-quiet-configuration-notices.md), for user-facing notification policy only: absent configuration files and routine successful/no-change reloads are silent. Strict rejection, retained accepted state, actionable failures, ignored settings and restart-required reporting remain applicable.
 
 ## Context
 

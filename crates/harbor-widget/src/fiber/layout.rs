@@ -77,7 +77,19 @@ impl LayoutPass<'_> {
     ) -> Result<Rc<MeasuredFiber>, LayoutError> {
         let fiber = self.arena.get(id).ok_or(LayoutError::StaleChild)?;
         let view = fiber.view.clone();
-        let child_ids = fiber.children.clone();
+        // Portal edges have no ordinary layout slot (not even a flex gap).
+        let child_ids = fiber
+            .children
+            .iter()
+            .copied()
+            .filter(|child| {
+                !self
+                    .arena
+                    .get(*child)
+                    .and_then(|f| f.view.as_ref())
+                    .is_some_and(|view| view.is_portal())
+            })
+            .collect::<Vec<_>>();
         let is_root = fiber.parent.is_none();
         let metrics = self.metrics;
         let mut children = FiberChildMeasurer {
@@ -364,8 +376,27 @@ pub(crate) fn layout_fiber(
     };
     let result = measured.map_err(|error| pass.failure.get().unwrap_or(Failure { id, error }));
     let result = result.and_then(|layout| {
-        // Keep the owning Rc alive while the commit list borrows its subtrees.
-        let commits = prepare_commit(arena, &layout, origin)?;
+        // Measure every escaped subtree against the same root extent, never the
+        // declaring parent's constraints. Validate all geometry before any write.
+        let overlay_constraints = BoxConstraints::tight(constraints.fill_bounded(layout.size));
+        let mut layouts = vec![layout];
+        for portal in super::portal_roots(arena, id)
+            .into_iter()
+            .filter(|p| *p != id)
+        {
+            let overlay = pass
+                .measure(portal, overlay_constraints, false)
+                .map_err(|error| pass.failure.get().unwrap_or(Failure { id: portal, error }))?;
+            layouts.push(overlay);
+        }
+        Ok(layouts)
+    });
+    drop(pass);
+    let result = result.and_then(|layouts| {
+        let mut commits = Vec::new();
+        for layout in &layouts {
+            commits.extend(prepare_commit(arena, layout, origin)?);
+        }
         for commit in commits {
             let fiber = arena
                 .get_mut(commit.layout.id)

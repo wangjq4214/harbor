@@ -228,6 +228,13 @@ Project domain concepts and terminology.
   - belongs to Widget Decoration
   - references BoxDecoration
 
+### Portal
+- **Definition:** The approved, not-yet-implemented root-composable escape capability: content declared in the component tree is presented in a root-level overlay, outside its original parent's layout and clipping, without consuming terminal space. The notification component is its first requested consumer. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md); API names and internal overlay machinery are not fixed.
+- **Synonyms:** Escape component, Root-level escape component
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Component
+
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
 - **Relationships:**

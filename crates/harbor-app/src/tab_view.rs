@@ -67,13 +67,66 @@ pub enum TabFocusPolicy {
     Terminal,
 }
 
+/// Independent feedback sources: recovery of reload must not hide observation
+/// or operation failures. This is presentation state, not configuration state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigurationNoticeSource {
+    Startup,
+    Reload,
+    Observation,
+    Resource,
+    Operation,
+}
+
+#[derive(Clone, Default)]
+struct ConfigurationNotices {
+    entries: Vec<(ConfigurationNoticeSource, String, bool)>,
+    revision: u64,
+}
+
+impl ConfigurationNotices {
+    fn publish(&mut self, source: ConfigurationNoticeSource, message: Option<String>) {
+        let existing = self.entries.iter().position(|entry| entry.0 == source);
+        if let Some(index) = existing {
+            if message.as_ref() == Some(&self.entries[index].1) {
+                return;
+            }
+            self.entries.remove(index);
+        } else if message.is_none() {
+            return;
+        }
+        if let Some(message) = message {
+            self.entries.push((source, message, false));
+        }
+        self.revision += 1;
+    }
+
+    fn message(&self) -> Option<String> {
+        let messages = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.2)
+            .map(|entry| entry.1.as_str())
+            .collect::<Vec<_>>();
+        (!messages.is_empty()).then(|| messages.join("\n\n"))
+    }
+
+    fn dismiss(&mut self, revision: u64) {
+        if revision == self.revision {
+            for entry in &mut self.entries {
+                entry.2 = true;
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TabUiState {
     snapshots: Vec<TabSnapshot>,
     active_bridge: Option<TerminalWidgetBridge>,
     presentation: RailPresentation,
     keybindings: Option<crate::command::ResolvedKeybindings>,
-    configuration_result: Option<String>,
+    notices: ConfigurationNotices,
 }
 
 #[derive(Clone)]
@@ -129,7 +182,7 @@ impl TabUiController {
                 active_bridge: Some(active_bridge),
                 presentation: RailPresentation::for_logical_width(logical_width),
                 keybindings: None,
-                configuration_result: None,
+                notices: ConfigurationNotices::default(),
             }),
             tab_focus: Arc::new(Mutex::new(tab_focus)),
             scroll: ScrollController::new(),
@@ -145,10 +198,25 @@ impl TabUiController {
     }
 
     pub fn report_configuration_result(&self, message: String) {
+        self.publish_configuration_notice(ConfigurationNoticeSource::Operation, Some(message));
+    }
+
+    pub fn publish_configuration_notice(
+        &self,
+        source: ConfigurationNoticeSource,
+        message: Option<String>,
+    ) {
         let mut state = self.store.state().read().clone();
-        state.configuration_result = Some(message);
+        state.notices.publish(source, message);
         self.store.set_state(state);
     }
+
+    pub fn dismiss_notification(&self, revision: u64) {
+        let mut state = self.store.state().read().clone();
+        state.notices.dismiss(revision);
+        self.store.set_state(state);
+    }
+
     pub fn sync(
         &self,
         snapshots: Vec<TabSnapshot>,
@@ -163,17 +231,14 @@ impl TabUiController {
         }
         let configuration = {
             let state = self.store.state().read();
-            (
-                state.keybindings.clone(),
-                state.configuration_result.clone(),
-            )
+            (state.keybindings.clone(), state.notices.clone())
         };
         self.store.set_state(TabUiState {
             snapshots,
             active_bridge,
             presentation: RailPresentation::for_logical_width(logical_width),
             keybindings: configuration.0,
-            configuration_result: configuration.1,
+            notices: configuration.1,
         });
     }
 
@@ -270,6 +335,145 @@ mod tests {
         }
     }
     #[test]
+    fn notification_preserves_terminal_focus_allocation_and_routes_dismissal_as_host_intent() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let engine = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            4,
+            20,
+            std::io::empty(),
+            Writer(bytes.clone()),
+            || true,
+        )));
+        let bridge = TerminalWidgetBridge::new(1, engine, Arc::new(AtomicBool::new(false)));
+        let controller = TabUiController::new(vec![snapshot(1, true, false)], bridge, 1000.0);
+        let mut runtime = mount(controller.clone(), 1000, 500);
+        runtime.request_focus(&controller.terminal_focus());
+        let focused = runtime.input().focused();
+        let allocation = controller.latest_terminal_allocation().unwrap();
+        controller.publish_configuration_notice(
+            ConfigurationNoticeSource::Reload,
+            Some("Invalid settings; previously accepted configuration remains effective".into()),
+        );
+        runtime.update(Instant::now());
+        assert_eq!(runtime.input().focused(), focused);
+        assert_eq!(controller.latest_terminal_allocation(), Some(allocation));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('a'),
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(
+            &*bytes.lock().unwrap(),
+            b"a",
+            "notification must not inject PTY bytes or gate typing"
+        );
+        // Empty overlay space still permits normal rail interaction.
+        let row = tab_rows(&runtime)[0];
+        let rect = runtime.arena().get(row).unwrap().layout_rect().unwrap();
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                Point::new(rect.min.x + 8.0, rect.min.y + 8.0),
+                phase,
+                PointerButton::Left,
+                7,
+            )));
+        }
+        assert_eq!(
+            controller.drain_actions()[0].command,
+            AppCommand::Tab(TabCommand::Activate(TabId(1)))
+        );
+        runtime.request_focus(&controller.terminal_focus());
+        for (width, height, scale) in [(1000, 500, 1.0), (1200, 800, 2.0)] {
+            runtime.set_viewport(Viewport::new(width, height, scale));
+            runtime.update(Instant::now());
+            let before = controller.latest_terminal_allocation();
+            let focused = runtime.input().focused();
+            let delta = runtime.pending_delta().unwrap();
+            let origin = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .find_map(|item| match &item.primitive {
+                    Primitive::Text { text, origin, .. } if text.as_ref() == "×" => Some(*origin),
+                    _ => None,
+                })
+                .expect("visible close control");
+            assert!((origin.x - (width as f32 / scale - 38.0)).abs() < 1.0);
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(origin.x + 5.0, origin.y + 5.0),
+                    phase,
+                    PointerButton::Left,
+                    8,
+                )));
+            }
+            let actions = controller.drain_actions();
+            assert_eq!(actions.len(), 1);
+            let AppCommand::DismissNotification(revision) = actions[0].command else {
+                panic!("dismiss action");
+            };
+            assert_eq!(actions[0].focus, TabFocusPolicy::PreserveRail);
+            assert!(
+                controller.store.state().read().notices.message().is_some(),
+                "routing never mutates Host state"
+            );
+            controller.dismiss_notification(revision);
+            runtime.update(Instant::now());
+            assert!(controller.store.state().read().notices.message().is_none());
+            assert_eq!(runtime.input().focused(), focused);
+            assert_eq!(controller.latest_terminal_allocation(), before);
+            controller.publish_configuration_notice(
+                ConfigurationNoticeSource::Reload,
+                Some(format!("A different error after {scale}")),
+            );
+            runtime.update(Instant::now());
+        }
+    }
+
+    #[test]
+    fn notification_dismissal_suppression_recovery_and_independent_sources() {
+        use ConfigurationNoticeSource as Source;
+        let mut state = ConfigurationNotices::default();
+        state.publish(Source::Reload, Some("invalid TOML".into()));
+        let old_revision = state.revision;
+        state.dismiss(old_revision);
+        state.publish(Source::Reload, Some("invalid TOML".into()));
+        assert!(
+            state.message().is_none(),
+            "identical watcher failure stays dismissed"
+        );
+        state.publish(Source::Reload, Some("invalid color".into()));
+        state.dismiss(old_revision);
+        assert_eq!(
+            state.message().as_deref(),
+            Some("invalid color"),
+            "stale dismissal cannot hide newer feedback"
+        );
+        state.publish(
+            Source::Observation,
+            Some("watching unavailable; manual reload remains available".into()),
+        );
+        state.publish(Source::Reload, None);
+        assert!(
+            state.message().unwrap().contains("manual reload"),
+            "manual success cannot claim observation recovery"
+        );
+        state.publish(Source::Observation, None);
+        assert!(
+            state.message().is_none(),
+            "recovery removes obsolete failures without a success toast"
+        );
+        state.publish(Source::Resource, Some("session 1 needs recovery".into()));
+        state.publish(Source::Reload, None); // a later missing file is not resource recovery
+        assert_eq!(state.message().as_deref(), Some("session 1 needs recovery"));
+        state.publish(Source::Resource, None); // successful application transaction
+        state.publish(Source::Reload, Some("invalid TOML".into()));
+        assert_eq!(
+            state.message().as_deref(),
+            Some("invalid TOML"),
+            "failure after recovery is a new episode"
+        );
+    }
+    #[test]
     fn reload_rebinding_keeps_consumed_press_repeat_and_release_out_of_terminal() {
         let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = std::sync::Arc::new(std::sync::Mutex::new(
@@ -359,12 +563,7 @@ mod tests {
         controller.sync(vec![snapshot(1, true, false)], Some(test_bridge), 1000.0);
         assert!(controller.store.state().read().keybindings.is_some());
         assert_eq!(
-            controller
-                .store
-                .state()
-                .read()
-                .configuration_result
-                .as_deref(),
+            controller.store.state().read().notices.message().as_deref(),
             Some("Configuration reloaded")
         );
         runtime.update(Instant::now());

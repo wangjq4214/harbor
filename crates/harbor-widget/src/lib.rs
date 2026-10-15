@@ -48,8 +48,8 @@ pub use widgets::{
     ActionOutcome, Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP,
     Expanded, Flex, Flexible, Focus, FocusHandle, FocusScope, Icon, IconButton, InteractionState,
     InteractiveRegion, KeyChord, LayoutChangedCallback, LayoutObserver, MainAxisAlignment,
-    MouseRegion, Row, ScrollArea, ScrollController, ScrollMetrics, Separator, Shortcuts, Spacer,
-    ThemeProvider,
+    MouseRegion, Notification, Portal, Row, ScrollArea, ScrollController, ScrollMetrics, Separator,
+    Shortcuts, Spacer, ThemeProvider,
 };
 
 #[cfg(test)]

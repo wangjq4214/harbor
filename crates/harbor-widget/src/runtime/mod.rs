@@ -1,5 +1,7 @@
 mod event_router;
 mod frame_encoder;
+#[cfg(test)]
+mod portal_tests;
 
 use crate::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
@@ -463,6 +465,13 @@ impl Runtime {
             };
             let child_rects = children
                 .iter()
+                .filter(|child| {
+                    !self
+                        .arena
+                        .get(**child)
+                        .and_then(|f| f.view.as_ref())
+                        .is_some_and(|v| v.is_portal())
+                })
                 .filter_map(|child| self.arena.get(*child).and_then(|fiber| fiber.layout_rect))
                 .collect::<Vec<_>>();
             view.post_layout(rect, &child_rects);

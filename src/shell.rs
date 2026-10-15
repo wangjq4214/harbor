@@ -36,6 +36,58 @@ use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
+/// Separate diagnostics from the subset that needs persistent user attention.
+pub(crate) struct ConfigurationAcceptance {
+    pub summary: String,
+    pub notice: Option<String>,
+}
+
+/// Typed application-effect failure, distinct from a rejected document. A missing
+/// file is not resource recovery and must not erase compensation/error feedback.
+#[derive(Debug)]
+struct ConfigurationOperationFailure;
+
+impl std::fmt::Display for ConfigurationOperationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("configuration application failed")
+    }
+}
+/// Strict live I/O seam shared by manual and watched reload. Absence is a
+/// non-acceptance outcome; the application transaction is not called at all.
+pub(crate) fn reload_configuration_from_path(
+    path: Option<&std::path::Path>,
+    accepted: &mut harbor_config::Settings,
+    effective_clipboard: &harbor_config::ClipboardSettings,
+    apply: impl FnOnce(
+        &harbor_config::Settings,
+        bool,
+        harbor_app::command::ResolvedKeybindings,
+    ) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<Option<ConfigurationAcceptance>> {
+    let path = path.ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
+    let loaded = match harbor_config::load_candidate_from_path(path) {
+        Ok(loaded) => loaded,
+        Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut result = accept_configuration(
+        accepted,
+        effective_clipboard,
+        loaded.settings,
+        |candidate, font_changed, bindings| {
+            apply(candidate, font_changed, bindings)
+                .map_err(|error| error.context(ConfigurationOperationFailure))
+        },
+    )?;
+    let mut notices = result.notice.into_iter().collect::<Vec<_>>();
+    for diagnostic in loaded.diagnostics {
+        tracing::warn!(path = %path.display(), message = %diagnostic.message, "configuration warning");
+        notices.push(diagnostic.message);
+    }
+    result.notice = (!notices.is_empty()).then(|| notices.join("; "));
+    Ok(Some(result))
+}
+
 /// Validates and publishes one requested generation on the application thread.
 /// `apply` owns the real session/factory transaction and infallible binding move.
 /// Keeping this independent of a Window makes acceptance ordering testable.
@@ -48,7 +100,7 @@ pub(crate) fn accept_configuration(
         bool,
         harbor_app::command::ResolvedKeybindings,
     ) -> anyhow::Result<Vec<String>>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ConfigurationAcceptance> {
     let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
         .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
     let font_changed = candidate.font != accepted.font;
@@ -82,7 +134,12 @@ pub(crate) fn accept_configuration(
     if !launch.is_empty() {
         parts.push(format!("new sessions only: {}", launch.join(", ")));
     }
+    let mut actionable = warnings.clone();
     if candidate.clipboard != *effective_clipboard {
+        actionable.push(
+            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
+                .to_owned(),
+        );
         parts.push(
             "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
                 .to_owned(),
@@ -93,7 +150,10 @@ pub(crate) fn accept_configuration(
     }
     parts.extend(warnings);
     *accepted = candidate;
-    Ok(parts.join("; "))
+    Ok(ConfigurationAcceptance {
+        summary: parts.join("; "),
+        notice: (!actionable.is_empty()).then(|| actionable.join("; ")),
+    })
 }
 
 /// Active session resources that exist while the window and renderer are alive.
@@ -341,67 +401,80 @@ impl ActiveSession {
             "Restart Harbor to retry observation."
         };
         let message = format!(
-            "Configuration watching unavailable ({path}): {reason}. {recovery} Manual reload (app.reload-configuration) remains available."
+            "Configuration watching unavailable ({path}): {reason}. {recovery} Previously accepted configuration remains effective. Manual reload (app.reload-configuration) remains available."
         );
         tracing::error!(%message, "configuration watcher failure");
-        self.tabs.report_configuration_result(message);
+        self.tabs.publish_configuration_notice(
+            harbor_app::tab_view::ConfigurationNoticeSource::Observation,
+            Some(message),
+        );
     }
 
     fn reload_configuration(&mut self, automatic: bool) {
+        use harbor_app::tab_view::ConfigurationNoticeSource as Source;
         let path = harbor_config::default_config_path();
         let path_label = path
             .as_ref()
-            .map(|path| path.display().to_string())
+            .map(|p| p.display().to_string())
             .unwrap_or_else(|| "~/.harbor/config.toml (home directory unavailable)".to_owned());
-        let result = (|| -> anyhow::Result<String> {
-            let path = path
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
-            let loaded = harbor_config::load_candidate_from_path(path)?;
-            let viewport = self.main_host.viewport().clone();
-            let summary = accept_configuration(
-                &mut self.accepted_settings,
-                &self.effective_clipboard,
-                loaded.settings,
-                |candidate, font_changed, bindings| {
-                    let warnings = self.tabs.apply_configuration(
-                        candidate,
-                        font_changed,
-                        viewport.scale_factor,
-                        viewport.physical_size,
-                    )?;
-                    self.tabs.publish_keybindings(bindings);
-                    Ok(warnings)
-                },
-            )?;
-            let mut parts = vec![summary];
-            for diagnostic in loaded.diagnostics {
-                tracing::warn!(path = %path.display(), message = %diagnostic.message, "configuration warning");
-                parts.push(diagnostic.message);
-            }
-            Ok(format!(
-                "Configuration reloaded ({path_label}): {}",
-                parts.join("; ")
-            ))
-        })();
-        let message = match result {
-            Ok(message) => {
+        let viewport = self.main_host.viewport().clone();
+        let result = reload_configuration_from_path(
+            path.as_deref(),
+            &mut self.accepted_settings,
+            &self.effective_clipboard,
+            |candidate, font_changed, bindings| {
+                let warnings = self.tabs.apply_configuration(
+                    candidate,
+                    font_changed,
+                    viewport.scale_factor,
+                    viewport.physical_size,
+                )?;
+                self.tabs.publish_keybindings(bindings);
+                Ok(warnings)
+            },
+        );
+        match result {
+            Ok(acceptance) => {
                 self.reload_feedback.clear();
-                tracing::info!(%message, "configuration reload accepted");
-                message
+                if acceptance.is_some() {
+                    self.tabs
+                        .publish_configuration_notice(Source::Resource, None);
+                }
+                self.tabs
+                    .publish_configuration_notice(Source::Startup, None);
+                let notice = acceptance.and_then(|accepted| {
+                    tracing::info!(path = %path_label, summary = %accepted.summary, "configuration reload accepted");
+                    accepted.notice.map(|notice| format!("Configuration ({path_label}): {notice}"))
+                });
+                self.tabs
+                    .publish_configuration_notice(Source::Reload, notice);
             }
             Err(error) => {
+                self.tabs
+                    .publish_configuration_notice(Source::Startup, None);
+                let source = if error.is::<ConfigurationOperationFailure>() {
+                    Source::Resource
+                } else {
+                    Source::Reload
+                };
+                if source == Source::Resource {
+                    self.tabs.publish_configuration_notice(Source::Reload, None);
+                }
                 let message = format!(
                     "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
                 );
-                if !self.reload_feedback.failure(&message, automatic) {
-                    return;
+                if self.reload_feedback.failure(&message, automatic) {
+                    tracing::error!(%message, "configuration reload rejected");
+                    // An explicit retry still reports its result; only repeated
+                    // automatic events must stay dismissed in the same episode.
+                    if !automatic {
+                        self.tabs.publish_configuration_notice(source, None);
+                    }
+                    self.tabs
+                        .publish_configuration_notice(source, Some(message));
                 }
-                tracing::error!(%message, "configuration reload rejected");
-                message
             }
-        };
-        self.tabs.report_configuration_result(message);
+        }
     }
     fn drain_app_commands(
         &mut self,
@@ -413,6 +486,10 @@ impl ActiveSession {
                 break;
             }
             match request.command {
+                AppCommand::DismissNotification(revision) => {
+                    self.tabs.dismiss_notification(revision);
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
                 AppCommand::ReloadConfiguration => {
                     self.reload_configuration(false);
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
@@ -539,6 +616,10 @@ impl ActiveSession {
                     .and_then(|watch| watch.take_pending())
                 {
                     Some(crate::configuration_watch::WatchEvent::Reload) => {
+                        self.tabs.publish_configuration_notice(
+                            harbor_app::tab_view::ConfigurationNoticeSource::Observation,
+                            None,
+                        );
                         self.reload_configuration(true);
                     }
                     Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
@@ -800,10 +881,16 @@ impl Shell {
                 }
             }
         }
+        let mut startup_notices = loaded
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
         let keybinding_resolution = resolve_keybindings(&loaded.settings.keybindings);
         for diagnostic in &keybinding_resolution.diagnostics {
             tracing::error!(message = %diagnostic, "keybinding fallback");
         }
+        startup_notices.extend(keybinding_resolution.diagnostics.iter().cloned());
         let keybindings = keybinding_resolution.keybindings;
         let settings = loaded.settings;
         let clipboard_policy = settings.clipboard.osc52_write;
@@ -848,6 +935,12 @@ impl Shell {
             move |context: HostInitContext<'_>, _platform_state: &MainWindowPlatformState| {
                 // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
                 let fonts = load_system_fonts(&font_settings)?;
+                let font_warnings = fonts
+                    .selection_warning()
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                startup_notices.extend(font_warnings.iter().cloned());
                 let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
                 let surface = context.surface();
                 let size = Terminal::terminal_size_for(surface.physical_size, &metrics);
@@ -857,6 +950,7 @@ impl Shell {
                     surface.format,
                     shell_command,
                     font_settings,
+                    font_warnings,
                     metrics,
                     appearance,
                     context.backdrop_available(),
@@ -881,6 +975,18 @@ impl Shell {
                     active_bridge,
                     logical_window_width(context.window()),
                 );
+                if !startup_notices.is_empty() {
+                    let path = harbor_config::default_config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
+                    tab_ui.publish_configuration_notice(
+                        harbor_app::tab_view::ConfigurationNoticeSource::Startup,
+                        Some(format!(
+                            "Configuration startup ({path}): {}",
+                            startup_notices.join("; ")
+                        )),
+                    );
+                }
                 let root_inputs = MainWindowRootInputs::new(
                     tab_ui.clone(),
                     context.backdrop_available(),
@@ -947,6 +1053,9 @@ impl Shell {
     }
 }
 
+#[cfg(test)]
+#[path = "configuration_notice_tests.rs"]
+mod configuration_notice_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

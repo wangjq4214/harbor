@@ -475,6 +475,11 @@ impl EventRouter {
             let Some(view) = entry.view.as_ref() else {
                 continue;
             };
+            // Geometry above a Portal belongs to the declaring tree, not to
+            // the escaped presentation. Revealing it must not scroll that tree.
+            if view.is_portal() {
+                break;
+            }
             let Some(rect) = entry.layout_rect else {
                 unavailable = true;
                 continue;
@@ -838,6 +843,20 @@ impl EventRouter {
         fiber: FiberId,
         point: Point,
     ) -> Option<FiberId> {
+        for portal in crate::fiber::portal_roots(arena, fiber).into_iter().rev() {
+            if arena
+                .get(portal)
+                .and_then(|f| f.layout_rect)
+                .is_some_and(|rect| rect.contains(point))
+                && let Some(hit) = Self::hit_test_ordinary(arena, portal, point)
+            {
+                return Some(hit);
+            }
+        }
+        Self::hit_test_ordinary(arena, fiber, point)
+    }
+
+    fn hit_test_ordinary(arena: &FiberArena, fiber: FiberId, point: Point) -> Option<FiberId> {
         let entry = arena.get(fiber)?;
         let rect = entry.layout_rect?;
         if entry
@@ -849,7 +868,14 @@ impl EventRouter {
             return None;
         }
         for child in entry.children.iter().rev() {
-            if let Some(hit) = Self::hit_test_walk(arena, *child, point) {
+            if arena
+                .get(*child)
+                .and_then(|f| f.view.as_ref())
+                .is_some_and(|v| v.is_portal())
+            {
+                continue;
+            }
+            if let Some(hit) = Self::hit_test_ordinary(arena, *child, point) {
                 return Some(hit);
             }
         }

@@ -15,7 +15,35 @@ pub(crate) fn paint_fiber(
     next_scene_id: &mut u64,
     metrics: &TextMetrics,
 ) -> Vec<SceneItem> {
-    paint_fiber_with_clips(arena, id, base_order, next_scene_id, metrics, &[])
+    let portals = super::portal_roots(arena, id);
+    let mut items = if portals.first() == Some(&id) {
+        Vec::new()
+    } else {
+        paint_fiber_with_clips(arena, id, base_order, next_scene_id, metrics, &[])
+    };
+    for portal in portals {
+        let root_clip = arena
+            .get(portal)
+            .and_then(|f| f.layout_rect())
+            .and_then(|rect| {
+                crate::scene::clip::RoundedClip::new(
+                    rect,
+                    crate::BorderRadius::default(),
+                    crate::ClipBehavior::HardEdge,
+                )
+                .ok()
+            });
+        let order = base_order + items.len() as u32;
+        items.extend(paint_fiber_with_clips(
+            arena,
+            portal,
+            order,
+            next_scene_id,
+            metrics,
+            root_clip.as_slice(),
+        ));
+    }
+    items
 }
 
 fn paint_fiber_with_clips(
@@ -67,6 +95,13 @@ fn paint_fiber_with_clips(
         child_clips.push(clip);
     }
     for child_id in children {
+        if arena
+            .get(child_id)
+            .and_then(|f| f.view.as_ref())
+            .is_some_and(|v| v.is_portal())
+        {
+            continue;
+        }
         let child_items =
             paint_fiber_with_clips(arena, child_id, order, next_scene_id, metrics, &child_clips);
         order += child_items.len() as u32;

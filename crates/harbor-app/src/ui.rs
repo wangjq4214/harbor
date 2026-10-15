@@ -4,12 +4,13 @@ use harbor_widget::{
     ActionOutcome, Actions, Alignment, BoxDecoration, Button, ClipBehavior, Column,
     ComponentExt as _, ConstrainedBox, ControlColors, ControlStyle, DecoratedBox, Dispatcher,
     Expanded, Focus, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, LucideIcon,
-    Row, ScrollArea, Shortcuts,
+    Notification, Row, ScrollArea, Shortcuts,
     layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{
-        padding::Padding, preview_pane::PreviewPane, sized_box::SizedBox, text_label::TextLabel,
+        padding::Padding, preview_pane::PreviewPane, sized_box::SizedBox, stack::Stack,
+        text_label::TextLabel,
     },
 };
 use std::sync::{
@@ -100,16 +101,31 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         outcome
     });
 
-    harbor_widget::view! { cx; root => {
-        FocusScope::new() => {
-            actions => {
-                shortcuts => {
-                    Row::new() => {
-                        tab_rail(cx, &state, &props.controller, dispatcher);
-                        terminal_panel(cx, &props.controller, active_bridge, state.configuration_result.clone());
+    let dismiss_dispatcher = dispatcher.clone();
+    let notification = state.notices.message().map(|message| {
+        let revision = state.notices.revision;
+        Notification::new(message, move || {
+            dismiss_dispatcher.dispatch(AppCommandRequest {
+                command: AppCommand::DismissNotification(revision),
+                focus: super::TabFocusPolicy::PreserveRail,
+            })
+        })
+    });
+    harbor_widget::view! { cx; Stack::new() => {
+        root => {
+            FocusScope::new() => {
+                actions => {
+                    shortcuts => {
+                        Row::new() => {
+                            tab_rail(cx, &state, &props.controller, dispatcher);
+                            terminal_panel(cx, &props.controller, active_bridge);
+                        }
                     }
                 }
             }
+        }
+        if let Some(notification) = notification {
+            notification.keyed(format!("configuration-notification-{}", state.notices.revision));
         }
     } }
 }
@@ -284,21 +300,13 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &TabUiController,
     active_bridge: TerminalWidgetBridge,
-    configuration_result: Option<String>,
 ) -> View {
     harbor_widget::view! { cx; Expanded::new() => {
-        Column::new().cross_axis_alignment(Alignment::Stretch) => {
-            Expanded::new() => {
-                controller.allocation.observer() => {
-                    TerminalDecorationPreset::container() => {
-                        Focus::empty().handle(controller.terminal_focus) => {
-                            terminal_widget(active_bridge);
-                        }
-                    }
+        controller.allocation.observer() => {
+            TerminalDecorationPreset::container() => {
+                Focus::empty().handle(controller.terminal_focus) => {
+                    terminal_widget(active_bridge);
                 }
-            }
-            if let Some(message) = configuration_result {
-                TextLabel::new(message);
             }
         }
     } }

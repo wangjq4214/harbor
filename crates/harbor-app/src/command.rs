@@ -25,6 +25,8 @@ pub enum AppCommand {
     ScrollToTop,
     ScrollToBottom,
     ReloadConfiguration,
+    /// Internal presentation intent, deliberately absent from the command registry.
+    DismissNotification(u64),
 }
 
 /// A typed command plus source-specific focus disposition.

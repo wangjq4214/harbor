@@ -49,6 +49,10 @@ impl crate::WithChildren for Align {
 }
 
 impl AnyView for Align {
+    // Alignment space is not an input surface (notably inside a Portal).
+    fn hit_test(&self, _: Point, _: Rect) -> bool {
+        false
+    }
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no space to fill.
         constraints.fill_bounded(Size::ZERO)

@@ -54,7 +54,7 @@ impl Observation {
         }
         self.changed_at = None;
         Some(match self.latest.as_ref()? {
-            // A missing file is a strict reload failure, not startup fallback.
+            // A missing file requests a silent, non-accepting reload; never publish defaults.
             Sample::Contents(_) | Sample::Unavailable(io::ErrorKind::NotFound) => {
                 WatchEvent::Reload
             }
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_missing_requests_strict_reload_and_error_changes_are_visible() {
+    fn persistent_missing_requests_reload_and_other_error_changes_are_visible() {
         let mut observer = Observation::default();
         let now = Instant::now();
         assert!(matches!(

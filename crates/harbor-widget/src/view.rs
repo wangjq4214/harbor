@@ -257,6 +257,11 @@ pub(crate) trait AnyView: 'static {
         None
     }
 
+    /// Escapes ordinary parent layout, painting and clipping into the root overlay.
+    fn is_portal(&self) -> bool {
+        false
+    }
+
     /// The TypeId of the concrete implementation, used for reconciliation.
     fn widget_type(&self) -> TypeId {
         TypeId::of::<Self>()

@@ -74,6 +74,9 @@ fn process_ungated_action_batch<A>(
 struct TerminalConfiguration {
     shell_command: ShellCommand,
     font_settings: harbor_config::FontSettings,
+    // Effective selection warnings survive no-change reloads until the font
+    // request changes successfully; silence must not imply the request took effect.
+    font_warnings: Vec<String>,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
 }
@@ -102,7 +105,11 @@ impl TerminalConfiguration {
     ) -> anyhow::Result<Vec<String>> {
         let targets = tabs.configuration_targets();
         anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
-        let mut warnings = Vec::new();
+        let mut warnings = if font_changed {
+            Vec::new()
+        } else {
+            self.font_warnings.clone()
+        };
         let mut fonts = Vec::new();
         let mut metrics = self.metrics;
         if font_changed {
@@ -222,6 +229,7 @@ impl TerminalConfiguration {
         for (transaction, renderer) in transactions.into_iter().zip(renderers.iter()) {
             transaction.commit(settings.colors, Some(renderer.viewport()), scale);
         }
+        self.font_warnings = warnings.clone();
         self.font_settings = settings.font.clone();
         self.metrics = metrics;
         self.appearance = TerminalAppearance::from_palette(settings.colors);
@@ -274,6 +282,7 @@ impl TerminalTabFactory {
         format: wgpu::TextureFormat,
         shell_command: ShellCommand,
         font_settings: harbor_config::FontSettings,
+        font_warnings: Vec<String>,
         metrics: TextMetrics,
         appearance: TerminalAppearance,
         backdrop_available: bool,
@@ -287,6 +296,7 @@ impl TerminalTabFactory {
             configuration: TerminalConfiguration {
                 shell_command,
                 font_settings,
+                font_warnings,
                 metrics,
                 appearance,
             },
@@ -361,10 +371,17 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
-    pub(crate) fn report_configuration_result(&self, message: String) {
-        self.tab_ui.report_configuration_result(message);
+    pub(crate) fn publish_configuration_notice(
+        &self,
+        source: harbor_app::tab_view::ConfigurationNoticeSource,
+        message: Option<String>,
+    ) {
+        self.tab_ui.publish_configuration_notice(source, message);
     }
 
+    pub(crate) fn dismiss_notification(&self, revision: u64) {
+        self.tab_ui.dismiss_notification(revision);
+    }
     pub(crate) fn publish_keybindings(&self, bindings: harbor_app::command::ResolvedKeybindings) {
         self.tab_ui.publish_keybindings(bindings);
     }
@@ -538,7 +555,13 @@ impl TabCoordinator {
         };
         let outcome = match command {
             TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
-                Ok(outcome) => outcome,
+                Ok(outcome) => {
+                    self.tab_ui.publish_configuration_notice(
+                        harbor_app::tab_view::ConfigurationNoticeSource::Operation,
+                        None,
+                    );
+                    outcome
+                }
                 Err(error) => {
                     let message =
                         format!("New session failed: {error:#}. Existing sessions are unchanged.");

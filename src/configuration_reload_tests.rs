@@ -32,6 +32,7 @@ impl Fixture {
         let policy = TerminalConfiguration {
             shell_command: ShellCommand::default(),
             font_settings: accepted.font.clone(),
+            font_warnings: Vec::new(),
             metrics,
             appearance: TerminalAppearance::from_palette(accepted.colors),
         };
@@ -127,6 +128,7 @@ impl Fixture {
                 Ok(warnings)
             },
         )
+        .map(|accepted| accepted.summary)
     }
 
     fn candidate(&self) -> Settings {
@@ -709,6 +711,11 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
         result.contains(&warning),
         "effective fallback must not be silently accepted: {result}"
     );
+    let unchanged = f.reload(candidate.clone(), None).unwrap();
+    assert!(
+        unchanged.contains(&warning),
+        "no-change reload must preserve actionable selection warning"
+    );
     assert_eq!(f.accepted, candidate);
     assert_eq!(f.policy.metrics, metrics);
     assert_eq!(*f._runtime.text_metrics(), ui_metrics);
@@ -738,6 +745,12 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
             false
         ));
     }
+    candidate.font.family = None;
+    f.reload(candidate, None).unwrap();
+    assert!(
+        f.policy.font_warnings.is_empty(),
+        "successful font correction clears stale warning"
+    );
 }
 
 #[cfg(windows)]

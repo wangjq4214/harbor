@@ -162,6 +162,12 @@ pub fn load_from_path(path: impl AsRef<Path>) -> SettingsLoad {
     let path = path.as_ref();
     let source = match fs::read_to_string(path) {
         Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return SettingsLoad {
+                settings: Settings::default(),
+                diagnostics: Vec::new(),
+            };
+        }
         Err(error) => {
             return SettingsLoad::defaults(format!(
                 "could not read settings {}: {error}",
@@ -182,6 +188,8 @@ pub fn load_from_path(path: impl AsRef<Path>) -> SettingsLoad {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CandidateError {
     pub path: PathBuf,
+    /// Preserves absence separately from parse/validation/read failures.
+    pub io_kind: Option<std::io::ErrorKind>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -206,10 +214,13 @@ pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, 
     let path = path.as_ref();
     let reject = |message: String| CandidateError {
         path: path.to_owned(),
+        io_kind: None,
         diagnostics: vec![error(message)],
     };
-    let source = fs::read_to_string(path)
-        .map_err(|err| reject(format!("could not read settings: {err}")))?;
+    let source = fs::read_to_string(path).map_err(|err| CandidateError {
+        io_kind: Some(err.kind()),
+        ..reject(format!("could not read settings: {err}"))
+    })?;
     let document = toml::from_str::<Value>(&source).map_err(|err| {
         reject(format!(
             "could not parse settings: {}",
@@ -241,6 +252,7 @@ pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, 
             .collect();
         Err(CandidateError {
             path: path.to_owned(),
+            io_kind: None,
             diagnostics,
         })
     } else {
@@ -972,12 +984,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_complete_defaults_and_diagnostic() {
+    fn missing_file_returns_complete_defaults_silently() {
         let path = std::env::temp_dir().join(format!("harbor-missing-{}.toml", std::process::id()));
         let _ = fs::remove_file(&path);
         let loaded = load_from_path(path);
         assert_eq!(loaded.settings, Settings::default());
-        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(loaded.diagnostics.is_empty());
     }
 
     #[test]
