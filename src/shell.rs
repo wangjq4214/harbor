@@ -105,6 +105,8 @@ pub(crate) struct ActiveSession {
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     tabs: TabCoordinator,
+    configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
+    reload_feedback: crate::configuration_watch::ReloadFeedback,
     accepted_settings: harbor_config::Settings,
     effective_clipboard: harbor_config::ClipboardSettings,
     show_pending: bool,
@@ -325,7 +327,27 @@ impl ActiveSession {
         }
     }
 
-    fn reload_configuration(&mut self) {
+    fn report_watch_failure(&mut self, reason: &str, retrying: bool) {
+        // A watcher fault is a different visible failure. Once I/O recovers,
+        // resurface any still-invalid candidate rather than leave a stale
+        // "watching unavailable" message behind duplicate suppression.
+        self.reload_feedback.clear();
+        let path = harbor_config::default_config_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
+        let recovery = if retrying {
+            "Observation will retry automatically."
+        } else {
+            "Restart Harbor to retry observation."
+        };
+        let message = format!(
+            "Configuration watching unavailable ({path}): {reason}. {recovery} Manual reload (app.reload-configuration) remains available."
+        );
+        tracing::error!(%message, "configuration watcher failure");
+        self.tabs.report_configuration_result(message);
+    }
+
+    fn reload_configuration(&mut self, automatic: bool) {
         let path = harbor_config::default_config_path();
         let path_label = path
             .as_ref()
@@ -364,6 +386,7 @@ impl ActiveSession {
         })();
         let message = match result {
             Ok(message) => {
+                self.reload_feedback.clear();
                 tracing::info!(%message, "configuration reload accepted");
                 message
             }
@@ -371,6 +394,9 @@ impl ActiveSession {
                 let message = format!(
                     "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
                 );
+                if !self.reload_feedback.failure(&message, automatic) {
+                    return;
+                }
                 tracing::error!(%message, "configuration reload rejected");
                 message
             }
@@ -388,7 +414,7 @@ impl ActiveSession {
             }
             match request.command {
                 AppCommand::ReloadConfiguration => {
-                    self.reload_configuration();
+                    self.reload_configuration(false);
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::Tab(command) => {
@@ -505,6 +531,22 @@ impl ActiveSession {
                         self.main_host.invalidate_external(invalidation).wait,
                     );
                 }
+            }
+            AppEvent::ConfigurationWatch => {
+                match self
+                    .configuration_watch
+                    .as_ref()
+                    .and_then(|watch| watch.take_pending())
+                {
+                    Some(crate::configuration_watch::WatchEvent::Reload) => {
+                        self.reload_configuration(true);
+                    }
+                    Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
+                        self.report_watch_failure(&format!("observation I/O: {kind:?}"), true);
+                    }
+                    None => {}
+                }
+                Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
             AppEvent::OpenHyperlink(uri) => {
                 if let Err(error) = crate::hyperlink::open(&uri) {
@@ -869,11 +911,25 @@ impl Shell {
             clipboard_epoch: 0,
             tabs,
             effective_clipboard: settings.clipboard.clone(),
+            configuration_watch: None,
+            reload_feedback: Default::default(),
             accepted_settings: settings,
             show_pending: true,
             startup_retry_deadline: None,
             main_host,
         };
+
+        let watch_proxy = self.event_proxy.clone();
+        match crate::configuration_watch::ConfigurationWatch::start(
+            harbor_config::default_config_path(),
+            move || watch_proxy.send_event(AppEvent::ConfigurationWatch).is_ok(),
+        ) {
+            Ok(watch) => session.configuration_watch = Some(watch),
+            // Do not include arbitrary OS messages or any configuration contents.
+            Err(error) => {
+                session.report_watch_failure(&format!("setup: {:?}", error.kind()), false)
+            }
+        }
 
         let mut wait = None;
         let focus = session.tabs.terminal_focus();

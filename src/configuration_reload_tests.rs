@@ -743,3 +743,7 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
 #[cfg(windows)]
 #[path = "session_launch_tests.rs"]
 mod session_launch_tests;
+
+#[cfg(windows)]
+#[path = "configuration_watch_tests.rs"]
+mod configuration_watch_tests;

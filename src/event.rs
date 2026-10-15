@@ -14,6 +14,8 @@ pub(crate) enum AppEvent {
     TerminalOutputReady(TabId),
     /// A confirmed terminal hyperlink click ready for Host policy.
     OpenHyperlink(String),
+    /// Default-on configuration observation; never carries a parsed candidate.
+    ConfigurationWatch,
     /// Opaque adapter work transported to the owning main-window Host.
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
     WidgetHostWork(harbor_widget::winit::WidgetHmrWork),
@@ -25,7 +27,7 @@ pub(crate) fn external_invalidation_for_app_event(
 ) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
-        AppEvent::OpenHyperlink(_) => None,
+        AppEvent::OpenHyperlink(_) | AppEvent::ConfigurationWatch => None,
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         AppEvent::WidgetHostWork(_) => None,
     }

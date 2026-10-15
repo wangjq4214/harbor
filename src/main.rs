@@ -6,6 +6,7 @@
 mod backdrop;
 mod chrome;
 mod clipboard;
+mod configuration_watch;
 mod dialog;
 mod effects;
 mod event;

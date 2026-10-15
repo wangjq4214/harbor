@@ -16,7 +16,7 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 
 These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
 
-The main gaps are interactive Windows/performance acceptance for the implemented resize reflow, complete combining/grapheme text handling, interactive manual-reload acceptance and automatic settings watching, split panes, search, profiles, a command palette, Kitty protocols, and selected terminal extensions. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
+The main gaps are interactive Windows/performance acceptance for the implemented resize reflow, complete combining/grapheme text handling, combined configuration-reload package acceptance, split panes, search, profiles, a command palette, Kitty protocols, and selected terminal extensions. [The roadmap](docs/roadmap.md) orders the work; [the next-stage plan](docs/next-stage-plan.md) defines its scope, including UI polish and a liquid-glass investigation.
 
 ## Build and Run
 
@@ -49,9 +49,11 @@ Both crates are currently documented as pre-1.0 workspace libraries. Their READM
 
 ### Startup Configuration
 
-Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it at startup and supports manual reload with **Ctrl+Shift+R** (`app.reload-configuration`). It does not create a missing file or watch for edits. The reload binding follows the same replacement/unbinding rules as other application commands.
+Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it at startup and watches for changes by default, including editor replacement saves. **Ctrl+Shift+R** (`app.reload-configuration`) remains available independently of watching. Harbor does not create a missing file. The reload binding follows the same replacement/unbinding rules as other application commands.
 
-Manual reload validates the complete document: unreadable files, malformed TOML, invalid recognized settings, or invalid/conflicting bindings reject the entire candidate and retain the last accepted configuration. Startup fallback below remains separate. Unknown ordinary settings produce ignored-setting warnings.
+Manual and automatic reload validate the complete document: unreadable files, malformed TOML, invalid recognized settings, or invalid/conflicting bindings reject the entire candidate and retain the last accepted configuration. Startup fallback below remains separate. Unknown ordinary settings produce ignored-setting warnings.
+
+The application-owned watcher polls file contents every 200 ms and requests reload after an unchanged observation has lasted 300 ms. This coalesces save bursts without relying on file identity or modification timestamps; it is not a latency guarantee. Missing/malformed intermediate files never install startup defaults. Stable invalid edits retain accepted settings, repeated identical automatic failures are suppressed, and corrections can recover without restart. Observation I/O failures are visible in application feedback/logs and retry automatically; watcher setup failure leaves manual reload usable and can be retried by restarting Harbor. Byte-identical rewrites do not trigger a new automatic attempt; use manual reload to retry an unchanged candidate after a resource failure. Watching needs neither widget HMR nor a command palette.
 
 Colors, application bindings, and terminal font family/size apply to existing and future terminals; fonts do not change application UI fonts or restart children. Font-driven grid changes use normal bounded primary reflow/alternate clipping, retaining newest available content rather than unlimited history. Shell program/arguments, environment overrides and initial directory change new tabs only. Clipboard policy remains effective until restart. Non-modal application feedback and logs distinguish these outcomes.
 
@@ -61,7 +63,7 @@ Colors, application bindings, and terminal font family/size apply to existing an
 
 OSC 10/11/12 and OSC 4 RGB overrides survive reload (even when equal to the old baseline), with alpha from the new baseline. OSC 110/111/112 and OSC 104 clear their respective overrides and restore the latest accepted configuration RGBA. New tabs do not inherit another session's overrides.
 
-A later-session PTY resize failure triggers compensation before rejection. If compensation itself fails, reload still fails without accepting candidate settings; readers resume, geometry reconciliation is attempted, and affected sessions are explicitly reported as needing recovery. See [Current Status](docs/current-status.md) for implemented scope and [Validation Policy](docs/validation.md) for evidence requirements. Interactive Windows reload acceptance remains NOT RUN.
+A later-session PTY resize failure triggers compensation before rejection. If compensation itself fails, reload still fails without accepting candidate settings; readers resume, geometry reconciliation is attempted, and affected sessions are explicitly reported as needing recovery. See [Current Status](docs/current-status.md) for implemented scope and [Validation Policy](docs/validation.md) for evidence requirements. Scoped watcher tests and Windows desktop results are recorded in the local-only report `docs/verification/watched-configuration-reload-evidence.md` (Git-ignored and not distributed); combined package acceptance remains separate.
 
 `[clipboard] osc52_write = "allow"` controls application-requested OSC 52 writes. Values are `allow` (default), `deny`, and `confirm`; invalid values fall back locally to `allow`. This setting applies at startup, including subsequently created tabs; restart Harbor to apply edits.
 
