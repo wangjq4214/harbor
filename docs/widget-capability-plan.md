@@ -39,7 +39,7 @@ The current runtime already provides a useful retained-mode foundation:
 - Interaction and theme: [public widget modules](../crates/harbor-widget/src/widgets/mod.rs), [shared interaction](../crates/harbor-widget/src/widgets/interactive_region.rs), [theme](../crates/harbor-widget/src/theme.rs), and [interaction/focus/actions/theme tests](../crates/harbor-widget/tests/interaction_focus_actions_theme.rs).
 - Scrolling: [ScrollArea/controller/metrics](../crates/harbor-widget/src/widgets/scroll_area.rs) and [scroll tests](../crates/harbor-widget/tests/scroll_area.rs).
 
-`PreviewPane` and `CustomPaint` remain product integration widgets, not substitutes for generic text or input controls. Existing [product tabs and rail](../crates/harbor-app/src/ui.rs) do not complete a reusable navigation catalog. `IconButton` renders the built-in Lucide subset, not a general image/SVG resource pipeline. Theme inheritance is not a complete environment mechanism, and terminal IME support does not deliver a generic `TextField`.
+`PreviewPane` and `CustomPaint` remain product integration widgets, not substitutes for generic text or input controls. Existing [product tabs and rail](../crates/harbor-app/src/tab_view_ui.rs) do not complete a reusable navigation catalog. `IconButton` renders the built-in Lucide subset, not a general image/SVG resource pipeline. Theme inheritance is not a complete environment mechanism, and terminal IME support does not deliver a generic `TextField`.
 
 ## Desktop Scope
 

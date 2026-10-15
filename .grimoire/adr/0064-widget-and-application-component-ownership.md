@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-15
-**Sources:** The user's request to reassess reusable widget versus application components, followed by explicit approval ("认可") of the boundary recommendation and spec-only endpoint.
+**Sources:** The user's request to reassess reusable widget versus application components, followed by explicit approval of the boundary recommendation and spec-only endpoint.
 **Related:** [ADR 0029](./0029-widget-store-state-action-boundary.md), [ADR 0031](./0031-widget-winit-adapter-owns-native-host-infrastructure.md), [ADR 0057](./0057-widget-vector-icons-without-font-glyphs.md), [ADR 0058](./0058-terminal-themes-separate-from-application-appearance.md), [ADR 0063](./0063-root-composable-escape-and-quiet-configuration-notices.md).
 
 ## Context

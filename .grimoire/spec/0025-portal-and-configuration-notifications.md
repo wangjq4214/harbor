@@ -83,7 +83,7 @@ Compose a general root-level escape capability with a separate notification comp
 | Dismissal and publication | Notification controls / Host → declarative state and runtime | One-shot dismissal actions, published presentation state, existing invalidation/effect ordering | Dismissal without accepting settings or stealing terminal focus |
 | Terminal allocation | Main-window root / notification layer → terminal workspace | Unchanged ordinary workspace constraints when only visibility changes | Stable terminal allocation/grid, with no notice-induced PTY resize |
 
-Observed integration surfaces are [main-window root and bottom label](../../crates/harbor-app/src/ui.rs), [Host-published UI state](../../crates/harbor-app/src/tab_view.rs), [startup/reload/watch reporting](../../src/shell.rs), [configuration I/O and candidate validation](../../crates/harbor-config/src/lib.rs), and the [widget component/runtime boundary](../../crates/harbor-widget/src/view.rs). These identify existing responsibilities, not mandated type or method names.
+Observed integration surfaces are [main-window root and bottom label](../../crates/harbor-app/src/workspace.rs), [Host-published UI state](../../crates/harbor-app/src/tab_view.rs), [startup/reload/watch reporting](../../src/shell.rs), [configuration I/O and candidate validation](../../crates/harbor-config/src/lib.rs), and the [widget component/runtime boundary](../../crates/harbor-widget/src/view.rs). These identify existing responsibilities, not mandated type or method names.
 
 ## End-to-End Acceptance
 
