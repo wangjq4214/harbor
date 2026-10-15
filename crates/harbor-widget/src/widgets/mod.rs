@@ -17,7 +17,6 @@ pub mod mouse_region;
 pub mod notification;
 pub mod padding;
 pub mod portal;
-pub mod preview_pane;
 pub mod row;
 pub mod scroll_area;
 pub mod separator;

@@ -9,7 +9,7 @@ struct Fixture {
     device: wgpu::Device,
     queue: wgpu::Queue,
     tabs: TabManager,
-    ui: TabUiController,
+    ui: WorkspaceUiController,
     policy: TerminalConfiguration,
     accepted: Settings,
     clipboard: harbor_config::ClipboardSettings,
@@ -69,13 +69,13 @@ impl Fixture {
             .unwrap();
         }
         tabs.accept_configuration_size(TerminalSize { rows: 10, cols: 40 });
-        let ui = TabUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 640.0);
+        let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 640.0);
         ui.publish_keybindings(
             harbor_app::command::validate_keybindings(&accepted.keybindings).unwrap(),
         );
         let mut runtime = Runtime::new();
         runtime.set_viewport(Viewport::new(640, 320, 1.0));
-        runtime.set_root(harbor_app::tab_view::ui::tab_workspace(ui.clone(), false));
+        runtime.set_root(harbor_app::workspace::tab_workspace(ui.clone(), false));
         runtime.update(Instant::now());
         assert!(ui.latest_terminal_allocation().is_some());
         let clipboard = accepted.clipboard.clone();

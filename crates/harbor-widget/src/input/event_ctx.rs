@@ -162,7 +162,7 @@ impl EventCtx {
     }
 
     /// Whether any handler requested a paint invalidation.
-    pub(crate) fn needs_paint(&self) -> bool {
+    pub fn needs_paint(&self) -> bool {
         self.needs_paint
     }
 

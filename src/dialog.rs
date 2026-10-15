@@ -14,7 +14,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use harbor_app::tab_view::ui::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
+use harbor_app::confirmation::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::ControlFlowEffect;
@@ -400,7 +400,7 @@ impl ConfirmationWindow {
                 let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
                 let root: Box<dyn harbor_widget::view::Component> =
                     if let Some(header) = clipboard_header {
-                        Box::new(harbor_app::tab_view::ui::build_clipboard_confirmation_root(
+                        Box::new(harbor_app::confirmation::build_clipboard_confirmation_root(
                             header,
                             wrapped_lines.clone(),
                             Arc::clone(&preview_scroll_offset),
@@ -409,7 +409,7 @@ impl ConfirmationWindow {
                             metrics.line_height,
                         ))
                     } else {
-                        Box::new(harbor_app::tab_view::ui::build_confirmation_root(
+                        Box::new(harbor_app::confirmation::build_confirmation_root(
                             line_count,
                             wrapped_lines.clone(),
                             Arc::clone(&preview_scroll_offset),
@@ -521,7 +521,7 @@ impl ConfirmationWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harbor_app::tab_view::ui::build_confirmation_root;
+    use harbor_app::confirmation::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
 
     #[test]
@@ -1044,13 +1044,97 @@ mod tests {
     }
 
     #[test]
+    fn both_confirmation_flows_share_the_application_preview_and_scroll_protocol() {
+        use harbor_widget::{
+            input::event::{
+                Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent,
+                PointerPhase, UiEvent,
+            },
+            layout::Point,
+            renderer::Viewport,
+            runtime::Runtime,
+        };
+        for clipboard in [false, true] {
+            for approve in [false, true] {
+                let offset = Arc::new(AtomicUsize::new(0));
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let confirmed = Arc::new(AtomicBool::new(false));
+                let lines = (0..40).map(|i| format!("prepared line {i}")).collect();
+                let root: Box<dyn Component> = if clipboard {
+                    Box::new(harbor_app::confirmation::build_clipboard_confirmation_root(
+                        "Tab 7 requests clipboard write".into(),
+                        lines,
+                        offset.clone(),
+                        cancelled.clone(),
+                        confirmed.clone(),
+                        20.0,
+                    ))
+                } else {
+                    Box::new(build_confirmation_root(
+                        40,
+                        lines,
+                        offset.clone(),
+                        cancelled.clone(),
+                        confirmed.clone(),
+                        20.0,
+                    ))
+                };
+                let mut runtime = Runtime::new();
+                runtime.set_viewport(Viewport::new(600, 500, 1.0));
+                runtime.set_root(move |cx: &mut BuildCx| root.build(cx));
+                runtime.update(Instant::now());
+                let mut pending = vec![runtime.root_id().unwrap()];
+                let mut preview_rect = None;
+                while let Some(id) = pending.pop() {
+                    let fiber = runtime.arena().get(id).unwrap();
+                    pending.extend_from_slice(fiber.children());
+                    if fiber.widget_type()
+                        == std::any::TypeId::of::<harbor_app::confirmation::preview::PreviewPane>()
+                    {
+                        preview_rect = fiber.layout_rect();
+                    }
+                }
+                let rect =
+                    preview_rect.expect("both roots mount the same application-owned preview");
+                assert_eq!(rect.size().height, PREVIEW_VISIBLE_LINES as f32 * 20.0);
+                let wheel = |dy| {
+                    UiEvent::Pointer(PointerEvent::new(
+                        Point::new(rect.min.x + 10.0, rect.min.y + 10.0),
+                        PointerPhase::WheelLine { dx: 0.0, dy },
+                        PointerButton::Left,
+                        1,
+                    ))
+                };
+                assert!(runtime.dispatch(wheel(100.0)).request_redraw);
+                assert_eq!(offset.load(Ordering::Relaxed), 40 - PREVIEW_VISIBLE_LINES);
+                assert!(scroll_preview(&offset, -100, 40 - PREVIEW_VISIBLE_LINES));
+                assert_eq!(offset.load(Ordering::Relaxed), 0);
+                assert!(!runtime.dispatch(wheel(-100.0)).request_redraw);
+                assert!(runtime.focus_first_focusable());
+                if approve {
+                    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                        key: WidgetKey::Tab,
+                        modifiers: Modifiers::default(),
+                    }));
+                }
+                runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: WidgetKey::Enter,
+                    modifiers: Modifiers::default(),
+                }));
+                assert_eq!(confirmed.load(Ordering::SeqCst), approve);
+                assert_eq!(cancelled.load(Ordering::SeqCst), !approve);
+            }
+        }
+    }
+
+    #[test]
     fn clipboard_confirmation_root_routes_real_deny_and_allow_buttons() {
         use harbor_widget::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, UiEvent};
         use harbor_widget::runtime::Runtime;
         for approve in [false, true] {
             let cancelled = Arc::new(AtomicBool::new(false));
             let confirmed = Arc::new(AtomicBool::new(false));
-            let root = harbor_app::tab_view::ui::build_clipboard_confirmation_root(
+            let root = harbor_app::confirmation::build_clipboard_confirmation_root(
                 "Tab 7 requests clipboard write (5 bytes)".into(),
                 vec!["fixture preview".into()],
                 Arc::new(AtomicUsize::new(0)),

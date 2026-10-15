@@ -1,59 +1,43 @@
-use std::cell::Cell;
-use std::sync::Arc;
-use unicode_width::UnicodeWidthChar;
+//! Notification card presentation without application placement or eligibility policy.
 
-use crate::Portal;
-use crate::effects::CursorShape;
-use crate::input::event::{PointerButton, PointerPhase, UiEvent};
-use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size};
-use crate::scene::primitive::{Color, Primitive};
-use crate::signal::Signal;
-use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, View};
-
-/// A persistent, non-modal, top-right notification presented through a Portal.
-/// Eligibility and dismissal state belong to the caller. No timeout or focus
-/// request is introduced. Long content wraps and can be scrolled with the wheel.
-#[derive(Clone)]
-pub struct Notification {
-    message: String,
-    on_dismiss: Arc<dyn Fn() + Send + Sync>,
+/// Caller-chosen alignment and symmetric inset within the offered bounds.
+/// Use directly in a layout, or place inside a caller-owned Portal to float.
+#[derive(Clone, Copy, Debug)]
+pub struct NotificationPlacement {
+    pub horizontal: Alignment,
+    pub vertical: Alignment,
+    pub inset: f32,
 }
 
-impl Notification {
-    pub fn new(message: impl Into<String>, on_dismiss: impl Fn() + Send + Sync + 'static) -> Self {
+/// Generic card dimensions in logical pixels and optional theme color overrides.
+/// Dimensions must be finite and nonnegative; `max_width` must be positive.
+#[derive(Clone, Debug)]
+pub struct NotificationStyle {
+    pub foreground: Option<Color>,
+    pub background: Option<Color>,
+    pub max_width: f32,
+    pub corner_radius: f32,
+    pub horizontal_padding: f32,
+    pub header_height: f32,
+    pub bottom_padding: f32,
+    pub close_width: f32,
+}
+
+impl Default for NotificationStyle {
+    fn default() -> Self {
         Self {
-            message: message.into(),
-            on_dismiss: Arc::new(on_dismiss),
+            foreground: None,
+            background: None,
+            max_width: 520.0,
+            corner_radius: 6.0,
+            horizontal_padding: 12.0,
+            header_height: 32.0,
+            bottom_padding: 12.0,
+            close_width: 36.0,
         }
     }
 }
-
-impl Component for Notification {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        let pressed = cx.use_state(|| None::<u64>);
-        let offset = cx.use_state(|| 0usize);
-        let card = View::new(
-            Card {
-                message: self.message.clone(),
-                on_dismiss: self.on_dismiss.clone(),
-                foreground: cx.theme().button.normal.foreground,
-                background: cx.theme().button.normal.background,
-                pressed,
-                offset,
-                scroll_limit: Cell::new(0),
-            },
-            vec![],
-            None,
-        );
-        Portal::new()
-            .child(View::new(Position, vec![card], None))
-            .build(cx)
-    }
-}
-
-struct Position;
+struct Position(NotificationPlacement);
 impl AnyView for Position {
     fn hit_test(&self, _: Point, _: Rect) -> bool {
         false
@@ -65,9 +49,9 @@ impl AnyView for Position {
         _: &TextMetrics,
     ) -> Result<ParentLayout, LayoutError> {
         let size = constraints.fill_bounded(Size::ZERO);
-        let inset = 12.0_f32.min(size.width / 2.0).min(size.height / 2.0);
+        let inset = self.0.inset.min(size.width / 2.0).min(size.height / 2.0);
         let available = Size::new(
-            (size.width - inset * 2.0).min(520.0),
+            (size.width - inset * 2.0).max(0.0),
             (size.height - inset * 2.0).max(0.0),
         );
         let card = children.measure(0, BoxConstraints::loose(available))?;
@@ -75,10 +59,91 @@ impl AnyView for Position {
             size,
             placements: vec![(
                 0,
-                Point::new((size.width - inset - card.width).max(0.0), inset),
+                Point::new(
+                    inset + self.0.horizontal.position(card.width, available.width),
+                    inset + self.0.vertical.position(card.height, available.height),
+                ),
             )],
             diagnostics: Vec::new(),
         })
+    }
+}
+use std::cell::Cell;
+use std::sync::Arc;
+use unicode_width::UnicodeWidthChar;
+
+use crate::effects::CursorShape;
+use crate::input::event::{PointerButton, PointerPhase, UiEvent};
+use crate::input::event_ctx::{EventCtx, EventHandled};
+use crate::layout::{
+    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+};
+use crate::scene::primitive::{Color, Primitive};
+use crate::signal::Signal;
+use crate::text::TextMetrics;
+use crate::view::{AnyView, BuildCx, Component, View};
+
+/// Reusable persistent notification content. Placement and Portal escape belong to the caller.
+/// Eligibility and dismissal state belong to the caller. No timeout or focus
+/// request is introduced. Long content wraps and can be scrolled with the wheel.
+#[derive(Clone)]
+pub struct Notification {
+    message: String,
+    on_dismiss: Arc<dyn Fn() + Send + Sync>,
+    style: NotificationStyle,
+    placement: Option<NotificationPlacement>,
+}
+
+impl Notification {
+    pub fn new(message: impl Into<String>, on_dismiss: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            message: message.into(),
+            on_dismiss: Arc::new(on_dismiss),
+            style: NotificationStyle::default(),
+            placement: None,
+        }
+    }
+
+    /// Optional positioning within the offered bounds; does not create a Portal.
+    pub fn placement(mut self, placement: NotificationPlacement) -> Self {
+        self.placement = Some(placement);
+        self
+    }
+
+    pub fn style(mut self, style: NotificationStyle) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+impl Component for Notification {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let pressed = cx.use_state(|| None::<u64>);
+        let offset = cx.use_state(|| 0usize);
+        let card = View::new(
+            Card {
+                message: self.message.clone(),
+                on_dismiss: self.on_dismiss.clone(),
+                foreground: self
+                    .style
+                    .foreground
+                    .unwrap_or(cx.theme().button.normal.foreground),
+                background: self
+                    .style
+                    .background
+                    .unwrap_or(cx.theme().button.normal.background),
+                style: self.style.clone(),
+                pressed,
+                offset,
+                scroll_limit: Cell::new(0),
+            },
+            vec![],
+            None,
+        );
+        match self.placement {
+            Some(placement) => View::new(Position(placement), vec![card], None),
+            None => card,
+        }
     }
 }
 
@@ -87,6 +152,7 @@ struct Card {
     on_dismiss: Arc<dyn Fn() + Send + Sync>,
     foreground: Color,
     background: Color,
+    style: NotificationStyle,
     pressed: Signal<Option<u64>>,
     offset: Signal<usize>,
     scroll_limit: Cell<usize>,
@@ -94,7 +160,7 @@ struct Card {
 
 impl Card {
     fn lines(&self, width: f32, metrics: &TextMetrics) -> Vec<String> {
-        let cells = ((width - 24.0).max(0.0) / metrics.cell_width)
+        let cells = ((width - self.style.horizontal_padding * 2.0).max(0.0) / metrics.cell_width)
             .floor()
             .max(1.0) as usize;
         let mut lines = Vec::new();
@@ -115,12 +181,15 @@ impl Card {
         lines
     }
 
-    fn close_rect(rect: Rect) -> Rect {
+    fn close_rect(&self, rect: Rect) -> Rect {
         Rect::from_min_size(
-            Point::new((rect.max.x - 36.0).max(rect.min.x), rect.min.y),
+            Point::new(
+                (rect.max.x - self.style.close_width).max(rect.min.x),
+                rect.min.y,
+            ),
             Size::new(
-                36.0_f32.min(rect.size().width),
-                32.0_f32.min(rect.size().height),
+                self.style.close_width.min(rect.size().width),
+                self.style.header_height.min(rect.size().height),
             ),
         )
     }
@@ -128,8 +197,10 @@ impl Card {
 
 impl AnyView for Card {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
-        let width = constraints.max.width.min(520.0);
-        let height = 44.0 + self.lines(width, metrics).len() as f32 * metrics.line_height;
+        let width = constraints.max.width.min(self.style.max_width);
+        let height = self.style.header_height
+            + self.style.bottom_padding
+            + self.lines(width, metrics).len() as f32 * metrics.line_height;
         constraints.constrain(Size::new(width, height))
     }
 
@@ -145,28 +216,28 @@ impl AnyView for Card {
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         let mut items = vec![Primitive::Quad {
             rect,
-            color: Color {
-                a: 1.0,
-                ..self.background
-            },
-            corner_radius: 6.0,
+            color: self.background,
+            corner_radius: self.style.corner_radius,
         }];
-        let close = Self::close_rect(rect);
+        let close = self.close_rect(rect);
         items.push(Primitive::Text {
             text: Arc::from("×"),
             origin: Point::new(close.min.x + 10.0, close.min.y + 6.0),
             color: self.foreground,
         });
         let lines = self.lines(rect.size().width, metrics);
-        let visible = ((rect.size().height - 44.0).max(0.0) / metrics.line_height).floor() as usize;
+        let visible = ((rect.size().height - self.style.header_height - self.style.bottom_padding)
+            .max(0.0)
+            / metrics.line_height)
+            .floor() as usize;
         self.scroll_limit.set(lines.len().saturating_sub(visible));
         let start = (*self.offset.read()).min(lines.len().saturating_sub(visible));
         for (i, line) in lines.iter().skip(start).take(visible).enumerate() {
             items.push(Primitive::Text {
                 text: Arc::from(line.as_str()),
                 origin: Point::new(
-                    rect.min.x + 12.0,
-                    rect.min.y + 32.0 + i as f32 * metrics.line_height,
+                    rect.min.x + self.style.horizontal_padding,
+                    rect.min.y + self.style.header_height + i as f32 * metrics.line_height,
                 ),
                 color: self.foreground,
             });
@@ -194,7 +265,7 @@ impl AnyView for Card {
         match pointer.phase {
             PointerPhase::Down
                 if pointer.button == PointerButton::Left
-                    && Self::close_rect(rect).contains(pointer.position) =>
+                    && self.close_rect(rect).contains(pointer.position) =>
             {
                 self.pressed.set(Some(pointer.pointer_id));
                 ctx.capture_pointer(pointer.pointer_id);
@@ -205,7 +276,7 @@ impl AnyView for Card {
             {
                 self.pressed.set(None);
                 ctx.release_pointer(pointer.pointer_id);
-                if Self::close_rect(rect).contains(pointer.position) {
+                if self.close_rect(rect).contains(pointer.position) {
                     (self.on_dismiss)();
                 }
             }
@@ -221,7 +292,7 @@ impl AnyView for Card {
             }
             _ => {}
         }
-        // The card, unlike the empty Portal surface, prevents input leaking into
+        // The card, unlike empty composition space, prevents input leaking into
         // the terminal behind it. It never requests keyboard focus.
         ctx.stop_propagation();
         EventHandled::Handled

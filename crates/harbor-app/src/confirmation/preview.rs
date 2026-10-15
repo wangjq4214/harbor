@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::input::event::{PointerPhase, UiEvent};
-use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
-use crate::scene::primitive::{Color, Primitive};
-use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, View};
+use harbor_widget::input::event::{PointerPhase, UiEvent};
+use harbor_widget::input::event_ctx::{EventCtx, EventHandled};
+use harbor_widget::layout::{BoxConstraints, Point, Rect, Size};
+use harbor_widget::scene::primitive::{Color, Primitive};
+use harbor_widget::text::TextMetrics;
+use harbor_widget::view::{BuildCx, Component, PrimitiveLeaf, View};
 
 /// A read-only monospace text preview widget.
 ///
@@ -49,21 +49,21 @@ impl PreviewPane {
 
 impl Component for PreviewPane {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), vec![], None)
+        View::leaf(self.clone())
     }
 }
 
-impl crate::WithChildren for PreviewPane {
+impl harbor_widget::WithChildren for PreviewPane {
     fn with_children(
         self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
+        children: harbor_widget::Children,
+    ) -> Result<Self, harbor_widget::ChildConstructionError> {
         children.ensure_leaf("PreviewPane")?;
         Ok(self)
     }
 }
 
-impl AnyView for PreviewPane {
+impl PrimitiveLeaf for PreviewPane {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let cell_width = metrics.cell_width;
         let max_line_chars = self
@@ -119,7 +119,7 @@ impl AnyView for PreviewPane {
 mod tests {
     use super::*;
     fn test_metrics() -> TextMetrics {
-        crate::runtime::DEFAULT_TEXT_METRICS
+        harbor_widget::runtime::DEFAULT_TEXT_METRICS
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(2));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
+        let prims = pane.paint_primitives(rect, &harbor_widget::runtime::DEFAULT_TEXT_METRICS);
         // visible_lines=3, offset=2 → lines 2, 3, 4
         assert_eq!(prims.len(), 3);
         for (i, prim) in prims.iter().enumerate() {
@@ -174,7 +174,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(4));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
+        let prims = pane.paint_primitives(rect, &harbor_widget::runtime::DEFAULT_TEXT_METRICS);
         // Only 1 visible line (index 4)
         assert_eq!(prims.len(), 1);
     }
@@ -185,7 +185,7 @@ mod tests {
         let offset = Arc::new(AtomicUsize::new(10));
         let pane = PreviewPane::new(lines, offset, 20.0, 3);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 60.0));
-        let prims = pane.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
+        let prims = pane.paint_primitives(rect, &harbor_widget::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
     }
 
@@ -194,10 +194,10 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelLine { dx: 0.0, dy: 3.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -214,10 +214,10 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(4));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelPixel { dx: 0.0, dy: 2.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -237,10 +237,10 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelLine { dx: 0.0, dy: -2.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -256,10 +256,10 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelLine { dx: 0.0, dy: -5.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -274,10 +274,10 @@ mod tests {
         let lines: Vec<String> = (0..15).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5)); // max = 15-10 = 5
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -296,10 +296,10 @@ mod tests {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
 
         // Pointer Move ignored
-        let move_event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let move_event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::Move,
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();
@@ -309,8 +309,8 @@ mod tests {
         );
 
         // Keyboard ignored
-        let kb_event = UiEvent::Keyboard(crate::input::event::KeyboardEvent::KeyDown {
-            key: crate::input::event::Key::ArrowDown,
+        let kb_event = UiEvent::Keyboard(harbor_widget::input::event::KeyboardEvent::KeyDown {
+            key: harbor_widget::input::event::Key::ArrowDown,
             modifiers: Default::default(),
         });
         let mut ctx = EventCtx::new();
@@ -325,10 +325,10 @@ mod tests {
         let lines: Vec<String> = vec!["a".to_string(), "b".to_string()];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(crate::input::event::PointerEvent::new(
+        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
             Point::ZERO,
             PointerPhase::WheelLine { dx: 0.0, dy: 5.0 },
-            crate::input::event::PointerButton::Left,
+            harbor_widget::input::event::PointerButton::Left,
             0,
         ));
         let mut ctx = EventCtx::new();

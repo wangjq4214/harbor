@@ -25,10 +25,10 @@ use crate::tab_coordinator::{
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_app::command::{AppCommand, resolve_keybindings};
 use harbor_app::tab_manager::TabManager;
-use harbor_app::tab_view::TabUiController;
-use harbor_app::tab_view::ui::MainWindowRootInputs;
+use harbor_app::workspace::MainWindowRootInputs;
+use harbor_app::workspace::WorkspaceUiController;
 #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
-use harbor_app::tab_view::ui::main_window_root;
+use harbor_app::workspace::main_window_root;
 use harbor_terminal::{Terminal, TerminalAppearance, TextMetrics, load_system_fonts};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::view::{BuildCx, Component, View};
@@ -165,6 +165,7 @@ pub(crate) struct ActiveSession {
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     tabs: TabCoordinator,
+    workspace_ui: WorkspaceUiController,
     configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
     reload_feedback: crate::configuration_watch::ReloadFeedback,
     accepted_settings: harbor_config::Settings,
@@ -404,14 +405,14 @@ impl ActiveSession {
             "Configuration watching unavailable ({path}): {reason}. {recovery} Previously accepted configuration remains effective. Manual reload (app.reload-configuration) remains available."
         );
         tracing::error!(%message, "configuration watcher failure");
-        self.tabs.publish_configuration_notice(
-            harbor_app::tab_view::ConfigurationNoticeSource::Observation,
+        self.workspace_ui.publish_configuration_notice(
+            harbor_app::notifications::ConfigurationNoticeSource::Observation,
             Some(message),
         );
     }
 
     fn reload_configuration(&mut self, automatic: bool) {
-        use harbor_app::tab_view::ConfigurationNoticeSource as Source;
+        use harbor_app::notifications::ConfigurationNoticeSource as Source;
         let path = harbor_config::default_config_path();
         let path_label = path
             .as_ref()
@@ -429,7 +430,7 @@ impl ActiveSession {
                     viewport.scale_factor,
                     viewport.physical_size,
                 )?;
-                self.tabs.publish_keybindings(bindings);
+                self.workspace_ui.publish_keybindings(bindings);
                 Ok(warnings)
             },
         );
@@ -437,20 +438,20 @@ impl ActiveSession {
             Ok(acceptance) => {
                 self.reload_feedback.clear();
                 if acceptance.is_some() {
-                    self.tabs
+                    self.workspace_ui
                         .publish_configuration_notice(Source::Resource, None);
                 }
-                self.tabs
+                self.workspace_ui
                     .publish_configuration_notice(Source::Startup, None);
                 let notice = acceptance.and_then(|accepted| {
                     tracing::info!(path = %path_label, summary = %accepted.summary, "configuration reload accepted");
                     accepted.notice.map(|notice| format!("Configuration ({path_label}): {notice}"))
                 });
-                self.tabs
+                self.workspace_ui
                     .publish_configuration_notice(Source::Reload, notice);
             }
             Err(error) => {
-                self.tabs
+                self.workspace_ui
                     .publish_configuration_notice(Source::Startup, None);
                 let source = if error.is::<ConfigurationOperationFailure>() {
                     Source::Resource
@@ -458,7 +459,8 @@ impl ActiveSession {
                     Source::Reload
                 };
                 if source == Source::Resource {
-                    self.tabs.publish_configuration_notice(Source::Reload, None);
+                    self.workspace_ui
+                        .publish_configuration_notice(Source::Reload, None);
                 }
                 let message = format!(
                     "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
@@ -468,9 +470,9 @@ impl ActiveSession {
                     // An explicit retry still reports its result; only repeated
                     // automatic events must stay dismissed in the same episode.
                     if !automatic {
-                        self.tabs.publish_configuration_notice(source, None);
+                        self.workspace_ui.publish_configuration_notice(source, None);
                     }
-                    self.tabs
+                    self.workspace_ui
                         .publish_configuration_notice(source, Some(message));
                 }
             }
@@ -481,13 +483,13 @@ impl ActiveSession {
         event_loop: &ActiveEventLoop,
     ) -> crate::tab_coordinator::TabDrainOutcome {
         let mut result = crate::tab_coordinator::TabDrainOutcome::default();
-        for request in self.tabs.drain_actions() {
+        for request in self.workspace_ui.drain_actions() {
             if self.paste.is_active() {
                 break;
             }
             match request.command {
                 AppCommand::DismissNotification(revision) => {
-                    self.tabs.dismiss_notification(revision);
+                    self.workspace_ui.dismiss_notification(revision);
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::ReloadConfiguration => {
@@ -616,8 +618,8 @@ impl ActiveSession {
                     .and_then(|watch| watch.take_pending())
                 {
                     Some(crate::configuration_watch::WatchEvent::Reload) => {
-                        self.tabs.publish_configuration_notice(
-                            harbor_app::tab_view::ConfigurationNoticeSource::Observation,
+                        self.workspace_ui.publish_configuration_notice(
+                            harbor_app::notifications::ConfigurationNoticeSource::Observation,
                             None,
                         );
                         self.reload_configuration(true);
@@ -970,7 +972,7 @@ impl Shell {
                 let active_bridge = tabs
                     .active_bridge()
                     .expect("initial tab creation establishes an active bridge");
-                let tab_ui = TabUiController::new(
+                let workspace_ui = WorkspaceUiController::new(
                     tabs.snapshots(),
                     active_bridge,
                     logical_window_width(context.window()),
@@ -979,8 +981,8 @@ impl Shell {
                     let path = harbor_config::default_config_path()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
-                    tab_ui.publish_configuration_notice(
-                        harbor_app::tab_view::ConfigurationNoticeSource::Startup,
+                    workspace_ui.publish_configuration_notice(
+                        harbor_app::notifications::ConfigurationNoticeSource::Startup,
                         Some(format!(
                             "Configuration startup ({path}): {}",
                             startup_notices.join("; ")
@@ -988,7 +990,7 @@ impl Shell {
                     );
                 }
                 let root_inputs = MainWindowRootInputs::new(
-                    tab_ui.clone(),
+                    workspace_ui.clone(),
                     context.backdrop_available(),
                     backdrop_fallback,
                     keybindings.clone(),
@@ -999,16 +1001,17 @@ impl Shell {
                 }
                 let root = build_application_root(root_inputs.clone())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let tabs = TabCoordinator::new(tabs, tab_ui, factory);
+                let tabs = TabCoordinator::new(tabs, workspace_ui.clone(), factory);
                 let paste = PasteController::new(input_gate);
-                Ok((root, (tabs, paste)))
+                Ok((root, (tabs, paste, workspace_ui)))
             },
         )
         .with_platform_hooks(platform);
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let builder = builder.with_hmr(hmr);
 
-        let (main_host, (tabs, paste)) = pollster::block_on(builder.build_with_output(event_loop))?;
+        let (main_host, (tabs, paste, workspace_ui)) =
+            pollster::block_on(builder.build_with_output(event_loop))?;
         let mut session = ActiveSession {
             paste,
             clipboard: crate::clipboard::ClipboardPolicy::new(clipboard_policy),
@@ -1016,6 +1019,7 @@ impl Shell {
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
             tabs,
+            workspace_ui,
             effective_clipboard: settings.clipboard.clone(),
             configuration_watch: None,
             reload_feedback: Default::default(),

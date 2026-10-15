@@ -1794,7 +1794,7 @@ mod decoration_tests {
         child: impl Component + Clone + 'static,
     ) -> impl Component {
         TestMainTerminalRoot {
-            root: crate::tab_view::ui::root_padding(
+            root: crate::workspace::root_padding(
                 backdrop_available,
                 harbor_config::WindowBackdropStyle::default().fallback,
             ),
@@ -1879,7 +1879,7 @@ mod decoration_tests {
 
     #[test]
     fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
-        let root = crate::tab_view::ui::root_padding(
+        let root = crate::workspace::root_padding(
             false,
             harbor_config::WindowBackdropStyle::default().fallback,
         );
@@ -1892,7 +1892,7 @@ mod decoration_tests {
 
     #[test]
     fn should_omit_root_background_when_backdrop_is_available() {
-        let root = crate::tab_view::ui::root_padding(
+        let root = crate::workspace::root_padding(
             true,
             harbor_config::WindowBackdropStyle::default().fallback,
         );

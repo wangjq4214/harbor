@@ -9,9 +9,9 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
-use harbor_widget::widgets::preview_pane::PreviewPane;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::winit::{WindowPresenter, WinitAdapter};
+use harbor_widget::{ConstrainedBox, ScrollArea, ScrollController, layout::Size};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -31,14 +31,20 @@ fn custom_paint_runtime(draw_id: u64) -> Runtime {
 #[test]
 fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
     // Arrange
-    let offset = Arc::new(AtomicUsize::new(2));
+    let offset = ScrollController::new();
     let mut runtime = Runtime::new();
-    runtime.set_root(PreviewPane::new(
-        (0..20).map(|line| line.to_string()).collect(),
-        offset.clone(),
-        20.0,
-        10,
-    ));
+    runtime.set_root(
+        ConstrainedBox::new()
+            .max_width(200.0)
+            .max_height(200.0)
+            .child(
+                ScrollArea::new()
+                    .controller(offset.clone())
+                    .child(SizedBox::new(Size::new(200.0, 400.0))),
+            ),
+    );
+    runtime.update(Instant::now());
+    offset.jump_to(80.0);
     runtime.update(Instant::now());
     let mut adapter = WinitAdapter::new();
 
@@ -55,7 +61,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
     // Assert
     assert!(outcome.is_handled());
     assert!(outcome.effects.request_redraw);
-    assert_eq!(offset.load(std::sync::atomic::Ordering::Relaxed), 3);
+    assert!(offset.offset() < 80.0 && offset.offset() > 0.0);
 }
 
 #[test]
@@ -238,14 +244,18 @@ fn unsupported_mouse_release_stays_unhandled_during_quarantine() {
 #[test]
 fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
     // Arrange
-    let offset = Arc::new(AtomicUsize::new(0));
+    let offset = ScrollController::new();
     let mut runtime = Runtime::new();
-    runtime.set_root(PreviewPane::new(
-        vec!["only line".to_string()],
-        offset.clone(),
-        20.0,
-        10,
-    ));
+    runtime.set_root(
+        ConstrainedBox::new()
+            .max_width(200.0)
+            .max_height(200.0)
+            .child(
+                ScrollArea::new()
+                    .controller(offset.clone())
+                    .child(SizedBox::new(Size::new(200.0, 20.0))),
+            ),
+    );
     runtime.update(Instant::now());
     let mut adapter = WinitAdapter::new();
 
@@ -262,7 +272,7 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
     // Assert
     assert!(outcome.is_handled());
     assert!(!outcome.effects.request_redraw);
-    assert_eq!(offset.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(offset.offset(), 0.0);
 }
 
 #[test]

@@ -227,7 +227,7 @@ fn notification_is_persistent_transparent_outside_and_dismissible_at_resized_pos
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(900, 600, 1.0));
     let count = dismissed.clone();
-    rt.set_root(Notification::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }));
+    rt.set_root(Portal::new().child(Notification::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }).placement(crate::widgets::notification::NotificationPlacement { horizontal: Alignment::End, vertical: Alignment::Start, inset: 12.0 })));
     rt.update(Instant::now());
     assert!(rt.events.input().focused.is_none());
     assert!(

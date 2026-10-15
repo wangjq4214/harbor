@@ -1,6 +1,6 @@
 //! Debug-reloadable application widget composition boundary.
 
-use harbor_app::tab_view::ui::{MainWindowRootInputs, main_window_root};
+use harbor_app::workspace::{MainWindowRootInputs, main_window_root};
 use harbor_widget::view::Component;
 
 /// Builds a fresh application root for the active dynamic-library generation.

@@ -20,10 +20,10 @@ use winit::{event_loop::EventLoopProxy, window::Window};
 
 use crate::event::AppEvent;
 use harbor_app::{
-    command::AppCommandRequest,
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
-    tab_view::{TabCommand, TabFocusPolicy, TabUiController},
+    tab_view::{TabCommand, TabFocusPolicy},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
+    workspace::WorkspaceUiController,
 };
 /// Shared startup and accepted-generation conversion; never merges prior overrides.
 pub(crate) fn configured_shell(settings: &harbor_config::ShellSettings) -> ShellCommand {
@@ -95,7 +95,7 @@ impl TerminalConfiguration {
     fn apply(
         &mut self,
         tabs: &mut TabManager,
-        tab_ui: &TabUiController,
+        workspace_ui: &WorkspaceUiController,
         gpu: TerminalGpuAccess<'_>,
         settings: &harbor_config::Settings,
         font_changed: bool,
@@ -137,7 +137,7 @@ impl TerminalConfiguration {
             }
         }
         let size = if font_changed {
-            let rect = tab_ui
+            let rect = workspace_ui
                 .latest_terminal_allocation()
                 .context("terminal allocation is unavailable for font reload")?;
             terminal_size_from_allocation(rect, scale, surface, &metrics)
@@ -366,26 +366,11 @@ impl TerminalTabFactory {
 /// Coordinator managing Host-owned terminal tab models and their declarative UI projection.
 pub(crate) struct TabCoordinator {
     tabs: TabManager,
-    tab_ui: TabUiController,
+    workspace_ui: WorkspaceUiController,
     factory: TerminalTabFactory,
 }
 
 impl TabCoordinator {
-    pub(crate) fn publish_configuration_notice(
-        &self,
-        source: harbor_app::tab_view::ConfigurationNoticeSource,
-        message: Option<String>,
-    ) {
-        self.tab_ui.publish_configuration_notice(source, message);
-    }
-
-    pub(crate) fn dismiss_notification(&self, revision: u64) {
-        self.tab_ui.dismiss_notification(revision);
-    }
-    pub(crate) fn publish_keybindings(&self, bindings: harbor_app::command::ResolvedKeybindings) {
-        self.tab_ui.publish_keybindings(bindings);
-    }
-
     pub(crate) fn apply_configuration(
         &mut self,
         settings: &harbor_config::Settings,
@@ -400,7 +385,7 @@ impl TabCoordinator {
         );
         self.factory.configuration.apply(
             &mut self.tabs,
-            &self.tab_ui,
+            &self.workspace_ui,
             gpu,
             settings,
             font_changed,
@@ -411,12 +396,12 @@ impl TabCoordinator {
     }
     pub(crate) fn new(
         tabs: TabManager,
-        tab_ui: TabUiController,
+        workspace_ui: WorkspaceUiController,
         factory: TerminalTabFactory,
     ) -> Self {
         Self {
             tabs,
-            tab_ui,
+            workspace_ui,
             factory,
         }
     }
@@ -437,7 +422,7 @@ impl TabCoordinator {
     }
 
     pub(crate) fn sync_tab_ui(&self, window: &Window) {
-        self.tab_ui.sync(
+        self.workspace_ui.tabs().sync(
             self.tabs.snapshots(),
             self.tabs.active_bridge(),
             logical_window_width(window),
@@ -445,7 +430,8 @@ impl TabCoordinator {
     }
 
     pub(crate) fn update_presentation(&self, window: &Window) -> bool {
-        self.tab_ui
+        self.workspace_ui
+            .tabs()
             .update_presentation(logical_window_width(window))
     }
 
@@ -461,7 +447,7 @@ impl TabCoordinator {
         scale_factor: f32,
         physical_size: (u32, u32),
     ) -> bool {
-        let Some(rect) = self.tab_ui.latest_terminal_allocation() else {
+        let Some(rect) = self.workspace_ui.latest_terminal_allocation() else {
             return false;
         };
         let Some(size) = terminal_size_from_allocation(
@@ -490,7 +476,7 @@ impl TabCoordinator {
     }
 
     pub(crate) fn terminal_focus(&self) -> harbor_widget::widgets::FocusHandle {
-        self.tab_ui.terminal_focus()
+        self.workspace_ui.terminal_focus()
     }
 
     pub(crate) fn apply_tab_outcome(
@@ -526,17 +512,13 @@ impl TabCoordinator {
         self.apply_pending_allocation(viewport.scale_factor, viewport.physical_size);
         let focus_handle = match focus {
             TabFocusPolicy::PreserveRail => None,
-            TabFocusPolicy::RailTab(id) => self.tab_ui.tab_focus(id),
-            TabFocusPolicy::Terminal => Some(self.tab_ui.terminal_focus()),
+            TabFocusPolicy::RailTab(id) => self.workspace_ui.tabs().tab_focus(id),
+            TabFocusPolicy::Terminal => Some(self.workspace_ui.terminal_focus()),
         };
         if let Some(focus_handle) = focus_handle {
             result.merge_wait(host.request_focus(&focus_handle).wait);
         }
         result
-    }
-
-    pub(crate) fn drain_actions(&self) -> Vec<AppCommandRequest> {
-        self.tab_ui.drain_actions()
     }
 
     pub(crate) fn execute_tab_command(
@@ -556,8 +538,8 @@ impl TabCoordinator {
         let outcome = match command {
             TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
                 Ok(outcome) => {
-                    self.tab_ui.publish_configuration_notice(
-                        harbor_app::tab_view::ConfigurationNoticeSource::Operation,
+                    self.workspace_ui.publish_configuration_notice(
+                        harbor_app::notifications::ConfigurationNoticeSource::Operation,
                         None,
                     );
                     outcome
@@ -566,7 +548,7 @@ impl TabCoordinator {
                     let message =
                         format!("New session failed: {error:#}. Existing sessions are unchanged.");
                     tracing::warn!(%message, "failed to create terminal tab");
-                    self.tab_ui.report_configuration_result(message);
+                    self.workspace_ui.report_configuration_result(message);
                     return TabDrainOutcome {
                         wait: host.request_frame().wait,
                         close_window: false,

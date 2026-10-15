@@ -488,6 +488,33 @@ pub(crate) trait AnyView: 'static {
     }
 }
 
+/// Low-level, non-focusable leaf extension for application-owned primitive content.
+/// This does not expose Runtime/Fiber internals, parent layout or business policy.
+/// State and invalidation remain owned by the caller and the routed EventCtx.
+pub trait PrimitiveLeaf: 'static {
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive>;
+    fn handle_event(&self, _event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
+        EventHandled::Ignored
+    }
+}
+
+struct PrimitiveLeafView<T>(T);
+impl<T: PrimitiveLeaf> AnyView for PrimitiveLeafView<T> {
+    fn widget_type(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        self.0.intrinsic_size(constraints, metrics)
+    }
+    fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        self.0.paint_primitives(rect, metrics)
+    }
+    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
+        self.0.handle_event(event, ctx, rect)
+    }
+}
+
 // ── View ────────────────────────────────────────────────────────────────────
 
 /// An opaque, discardable UI description with optional Key.
@@ -512,6 +539,11 @@ pub struct View {
 }
 
 impl View {
+    /// Creates a leaf from an application-owned primitive renderer/input adapter.
+    pub fn leaf(inner: impl PrimitiveLeaf) -> Self {
+        Self::new(PrimitiveLeafView(inner), vec![], None)
+    }
+
     /// Creates a new View wrapping the given already-built AnyView tree.
     // AnyView is pub(crate); private_bounds is intentional — this is the
     // public API surface for crate-internal widget types.

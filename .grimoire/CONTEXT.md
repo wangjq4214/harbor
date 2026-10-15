@@ -49,6 +49,12 @@ Project domain concepts and terminology.
   - contains View
   - communicates with wgpu Renderer
 
+### Reusable Widget Component
+- **Definition:** The approved `harbor-widget` ownership boundary for UI mechanisms whose contracts remain meaningful in a non-terminal application without interpreting Harbor business types. Current consumer count or a terminal-shaped icon does not determine ownership. Product composition, command meaning and policy remain application-owned; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Component
+
 ### View
 - **Definition:** An immutable UI description produced by component build methods, discardable after each build pass.
 - **Synonyms:** Widget
@@ -229,11 +235,18 @@ Project domain concepts and terminology.
   - references BoxDecoration
 
 ### Portal
-- **Definition:** The approved, not-yet-implemented root-composable escape capability: content declared in the component tree is presented in a root-level overlay, outside its original parent's layout and clipping, without consuming terminal space. The notification component is its first requested consumer. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md); API names and internal overlay machinery are not fixed.
+- **Definition:** The root-composable escape capability in `harbor-widget`: content declared in the component tree is presented in a root-level overlay, outside its original parent's layout and clipping, without consuming terminal space. Notifications are a consumer, not its business policy owner. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md) for semantics and [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) for component ownership. The implementation is present in `widgets/portal.rs`; this definition is not a runtime acceptance claim.
 - **Synonyms:** Escape component, Root-level escape component
 - **Relationships:**
   - belongs to Harbor Widget Runtime
   - references Component
+
+### Notification Presentation
+- **Definition:** The approved boundary between reusable widget notification content/card and close/scroll interaction, generic Portal escape, and application-owned placement, visual choices, eligibility, message meaning, duplicate suppression, recovery and dismissal history. Local pressed/scroll state belongs to the presentation component. Harbor retains top-right, non-modal, manually dismissible notices without focus theft; actionable errors do not automatically disappear. The ownership refactoring is selected, not an implementation claim; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - depends on Portal
+  - references Reusable Widget Component
+  - references Application UI Composition
 
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
@@ -256,6 +269,14 @@ Project domain concepts and terminology.
   - belongs to Runtime Host
   - communicates with Winit Adapter
   - communicates with Harbor Widget Runtime
+
+### Application UI Composition
+- **Definition:** The approved application-layer ownership of workspace/root composition, tab UI, notification composition, confirmation UI and product appearance presets. Application-wide notification state and keybinding publication have an application-level owner rather than being tab-specific responsibilities; the current PreviewPane belongs with shared confirmation UI. `harbor-app-ui` remains a thin HMR root entry, not the destination for all UI implementation. These are responsibility boundaries, not fixed type/module names or a requirement for separate stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - communicates with Application Business Host
+  - depends on Reusable Widget Component
+  - references Notification Presentation
+  - references Terminal Widget Bridge
 
 ### Application-Layer Widget Hot Reload
 - **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.

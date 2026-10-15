@@ -1,6 +1,6 @@
 //! Application-specific glue for the debug-reloadable UI library.
 
-use harbor_app::tab_view::ui::MainWindowRootInputs;
+use harbor_app::workspace::MainWindowRootInputs;
 use harbor_widget::view::Component;
 use harbor_widget::winit::{WidgetHmrConfig, WidgetHmrWork};
 
@@ -9,7 +9,7 @@ use harbor_widget::winit::{WidgetHmrConfig, WidgetHmrWork};
     loaded_lib_name_template = "{lib_name}_hot_{pid}_{load_counter}"
 )]
 mod hot_ui {
-    use harbor_app::tab_view::ui::MainWindowRootInputs;
+    use harbor_app::workspace::MainWindowRootInputs;
     use harbor_widget::view::Component;
 
     hot_functions_from_file!("crates/harbor-app-ui/src/lib.rs");
@@ -43,8 +43,9 @@ mod tests {
     use harbor_app::{
         command::AppCommand,
         tab_manager::{TabManager, TerminalTabResources},
-        tab_view::{TabCommand, TabUiController, ui::MainWindowRootInputs},
+        tab_view::TabCommand,
         terminal_view::TerminalWidgetBridge,
+        workspace::{MainWindowRootInputs, WorkspaceUiController},
     };
     use harbor_terminal::Terminal;
     use harbor_widget::{
@@ -79,7 +80,7 @@ mod tests {
             Ok(TerminalTabResources::new(terminal, bridge, "test-shell"))
         })
         .expect("create reload smoke-test tab");
-        let controller = TabUiController::new(
+        let controller = WorkspaceUiController::new(
             tabs.snapshots(),
             tabs.active_bridge().expect("active bridge"),
             1_200.0,
@@ -115,7 +116,7 @@ mod tests {
         ));
         assert!(published.drain_actions().is_empty());
 
-        assert!(published.update_presentation(500.0));
+        assert!(published.tabs().update_presentation(500.0));
         let mut effects = runtime.invalidate_external(ExternalInvalidation::new());
         effects.merge(runtime.update(Instant::now()));
         assert!(effects.request_redraw);
