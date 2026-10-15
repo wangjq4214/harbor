@@ -2,7 +2,7 @@
 
 **Source:** [Spec 0024](../../spec/0024-watched-reload-and-launch-settings.md), [spec 0023](../../spec/0023-atomic-manual-configuration-reload.md), [ADR 0062](../../adr/0062-watched-reload-and-new-session-launch-settings.md), [#155](https://github.com/wangjq4214/harbor/issues/155).
 **Ticket folder:** `.grimoire/ticket/0017-configuration-hot-reload/`
-**Status:** Todo; local decomposition only, not created GitHub sub-issues.
+**Status:** In Progress — T0001 Done, supported by automated checks, scoped Windows smoke and user-confirmed prior manual verification; T0002–T0004 remain open. Local tickets, not created GitHub sub-issues.
 
 ## Overview
 
@@ -22,7 +22,7 @@ At refinement, PR #201 contains the manual implementation; it is not treated as 
 
 | Ticket | File | Outcome |
 | --- | --- | --- |
-| T0001 | [T0001-manual-reload-acceptance.md](./T0001-manual-reload-acceptance.md) | Evidence-backed manual/font baseline and documented remaining exclusions |
+| T0001 | [T0001-manual-reload-acceptance.md](./T0001-manual-reload-acceptance.md) | Done — manual/font baseline accepted with automated and user-confirmed manual evidence; package exclusions remain |
 | T0002 | [T0002-session-environment-and-directory.md](./T0002-session-environment-and-directory.md) | New sessions receive accepted environment/directory through startup and manual reload |
 | T0003 | [T0003-watched-configuration-reload.md](./T0003-watched-configuration-reload.md) | Default-on saves/replacements/bursts drive the same strict transaction |
 | T0004 | [T0004-package-integration-and-evidence.md](./T0004-package-integration-and-evidence.md) | Combined behavior and #155 completion supported by retrievable evidence |

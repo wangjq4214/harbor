@@ -15,7 +15,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 | N01 | Resize reflow and stable content anchors      | Source/tests delivered; runtime/performance acceptance open | Windows shell/clipboard/`nvim` and measured cost evidence |
 | N02 | Unicode text correctness                      | Planned; wide cells exist, combining text is incomplete | Coordinate contract shared with N01                 |
 | N03 | `chcp` and legacy Windows compatibility       | Investigate; no specific Harbor defect assumed          | Reproducible ConPTY probes                          |
-| N04 | Configuration hot reload                      | Planned; startup TOML exists                            | Live-update boundary; N01 for font-driven resize    |
+| N04 | Configuration hot reload | Manual colors/bindings/fonts accepted (T0001 Done); watcher/launch extensions and package acceptance pending | Existing atomic transaction; spec 0024 |
 | N05 | Command palette                               | Planned; command registry exists                        | Existing command dispatch and availability rules    |
 | N06 | Named session profiles                        | Planned; one shell configuration exists                 | Session creation and configuration validation       |
 | N07 | Pane workspace                                | Planned; one terminal per tab exists                    | N01; independent session/layout identities          |
@@ -80,7 +80,7 @@ Build a small diagnostic fixture and record:
 
 ### N04 — Configuration Hot Reload
 
-Implement an explicit reload command first, then add file watching with debounce and support for editor atomic-save patterns. User configuration reload is separate from debug-only widget-library HMR.
+The manual command now implements colors, bindings and terminal-only font reload, with automated gates and scoped Windows smoke verified in [T0001](../.grimoire/ticket/0017-configuration-hot-reload/T0001-manual-reload-acceptance.md). The user confirmed the remaining prior-round manual checks, completing T0001; the record distinguishes those results from agent-run tests. Next add file watching with debounce/editor atomic-save handling and new-session environment/directory settings under spec 0024. User configuration reload is separate from debug-only widget-library HMR.
 
 | Setting                                         | Intended application policy                                                          |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -95,7 +95,7 @@ Implement an explicit reload command first, then add file watching with debounce
 - Define theme-baseline versus active OSC color-override precedence, including what an OSC reset returns to after reload.
 - Avoid partial font/resource changes if preparation fails. Verify active, inactive, and alternate-screen sessions.
 
-**Acceptance:** valid edits apply without terminating PTYs; malformed TOML, invalid bindings, unavailable fonts, file replacement, and bursts of saves never leave mixed configuration generations.
+**Acceptance:** valid edits apply without terminating PTYs; malformed TOML, invalid bindings, unusable font resources, file replacement, and bursts of saves never leave mixed configuration generations.
 
 ### N05 — Command Palette
 
@@ -253,6 +253,6 @@ Open three bounded work items:
 
 1. **Close N01 acceptance and begin N02:** execute the recorded Windows shell/clipboard/`nvim` and release latency/DHAT procedures without weakening the gates; independently start the bounded combining-text contract.
 2. **N03/N10/N12 ConPTY probes**, recording code-page and extension-transport feasibility before committing to large implementations.
-3. **N04 manual configuration reload**, initially colors and keybindings, with last-valid-state retention.
+3. **N04 acceptance and extensions**: retain the accepted manual colors/bindings/font baseline (T0001 Done), then integrate default-on watching and new-session environment/directory settings.
 
 Keep one major implementation stream and one short investigation/polish stream active. Expand each package into implementation tickets only when it is ready to start; do not mark the entire roadmap "in progress."
