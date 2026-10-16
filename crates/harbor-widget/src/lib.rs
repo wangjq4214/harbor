@@ -45,6 +45,7 @@ pub mod view;
 pub mod widgets;
 pub use layout::{Alignment, FlexFit};
 pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
+pub use widgets::backdrop_filter::BackdropFilter;
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
     ActionOutcome, Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP,

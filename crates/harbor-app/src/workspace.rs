@@ -8,8 +8,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
-    LayoutObserver, Row, Shortcuts, Store, TextEditingController, TextField,
+    ActionOutcome, Actions, BackdropFilter, Border, BorderRadius, BoxDecoration, ClipBehavior,
+    ComponentExt as _, DecoratedBox, Expanded, Focus, FocusHandle, FocusScope, IconButton,
+    LayoutObserver, LucideIcon, Portal, Row, Shortcuts, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -33,7 +34,7 @@ impl Default for SearchUiState {
             input: TextEditingController::with_acceptance("", |text| {
                 text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
             }),
-            status: String::new(),
+            status: "No Result".into(),
         }
     }
 }
@@ -44,10 +45,22 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
     let submit = controller.store.dispatcher();
     let close = controller.store.dispatcher();
     let entry = TextField::new(input)
+        .decoration(
+            BoxDecoration::new()
+                .try_color(Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.24,
+                })
+                .unwrap()
+                .border_radius(BorderRadius::all(7.0).unwrap()),
+        )
+        .padding(6.0)
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
         .on_changed(move |_| {
-            changed_ui.publish_search_status("Searching…");
+            changed_ui.publish_search_status("No Result");
             changed_ui
                 .store
                 .dispatcher()
@@ -61,22 +74,96 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             }))
         })
         .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
-    let button = |label, command| {
+    let mut style = cx.theme().icon_button.clone();
+    style.min_height = 32.0;
+    style.icon_size = 18.0;
+    style.horizontal_padding = 7.0;
+    style.border_width = 0.0;
+    for colors in [
+        &mut style.normal,
+        &mut style.hovered,
+        &mut style.pressed,
+        &mut style.selected,
+        &mut style.disabled,
+    ] {
+        colors.background = Color::TRANSPARENT;
+    }
+    style.normal.foreground.a = 0.78;
+    style.hovered.foreground.a = 1.0;
+    style.pressed.foreground.a = 0.5;
+    let button = |icon, label, command| {
         let dispatcher = controller.store.dispatcher();
-        harbor_widget::Button::new(label)
+        IconButton::new(icon, label)
+            .style(style.clone())
             .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
     };
     let status = controller.store.state().read().search.status.clone();
-    harbor_widget::view! { cx; harbor_widget::Column::new() => {
-        Row::new() => {
-            Expanded::new() => { entry; }
-            button("Previous", AppCommand::SearchPrevious);
-            button("Next", AppCommand::SearchNext);
-            button("Close", AppCommand::SearchClose);
+    let radius = BorderRadius::all(12.0).unwrap();
+    let decoration = BoxDecoration::new()
+        .try_color(Color {
+            r: 0.20,
+            g: 0.22,
+            b: 0.26,
+            a: 0.64,
+        })
+        .unwrap()
+        .border(
+            Border::all(
+                Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 0.16,
+                },
+                1.0,
+            )
+            .unwrap(),
+        )
+        .border_radius(radius);
+    let card = harbor_widget::view! { &mut *cx;
+        BackdropFilter::new(8.0).unwrap().border_radius(radius) => {
+            DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
+                Padding::all(8.0) => {
+                    Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+                        Expanded::new() => { entry; }
+                        // Status text changes frequently; reserve its slot instead of resizing the editor.
+                        harbor_widget::ConstrainedBox::new().min_width(144.0).max_width(144.0) => {
+                            harbor_widget::widgets::text_label::TextLabel::new(status)
+                                .color(cx.theme().button.normal.foreground).ellipsis();
+                        }
+                        button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
+                        button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
+                        button(LucideIcon::X, "Close search", AppCommand::SearchClose);
+                    }
+                }
+            }
         }
-        harbor_widget::widgets::text_label::TextLabel::new(status).ellipsis();
-    } }
+    };
+    Portal::new()
+        .child(
+            harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)
+                .vertical_alignment(harbor_widget::Alignment::Start)
+                .insets(
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                )
+                .child(
+                    harbor_widget::ConstrainedBox::new()
+                        .min_width(440.0)
+                        .max_width(440.0)
+                        .min_height(SEARCH_PANEL_HEIGHT)
+                        .max_height(SEARCH_PANEL_HEIGHT)
+                        .child(card),
+                ),
+        )
+        .build(cx)
 }
+
+// Fixed chrome height also reserves space for configuration notices below search.
+const SEARCH_PANEL_HEIGHT: f32 = 48.0;
+const SEARCH_PANEL_INSET: f32 = 12.0;
 
 #[derive(Clone, Default)]
 struct WorkspaceUiState {
@@ -281,7 +368,12 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
     let dismiss_dispatcher = dispatcher.clone();
     let notification = state.notices.message().map(|message| {
         let revision = state.notices.revision;
-        configuration_notification(message, move || {
+        let top_offset = if state.search.open {
+            SEARCH_PANEL_HEIGHT + SEARCH_PANEL_INSET
+        } else {
+            0.0
+        };
+        configuration_notification(message, top_offset, move || {
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
                 focus: TabFocusPolicy::PreserveRail,
@@ -315,9 +407,6 @@ fn terminal_panel(
     let search = controller.store.state().read().search.clone();
     harbor_widget::view! { cx; Expanded::new() => {
         harbor_widget::Column::new() => {
-            if search.open {
-                search_bar(cx, controller);
-            }
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {
                     TerminalDecorationPreset::container() => {
@@ -326,6 +415,9 @@ fn terminal_panel(
                         }
                     }
                 }
+            }
+            if search.open {
+                search_bar(cx, controller);
             }
         }
     } }

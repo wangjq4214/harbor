@@ -1439,6 +1439,323 @@ fn global_publication_survives_tab_mutations_responsive_changes_and_root_replace
     );
 }
 
+fn search_panel_rect(runtime: &Runtime) -> Rect {
+    fiber_ids(runtime)
+        .into_iter()
+        .find_map(|id| {
+            let fiber = runtime.arena().get(id).unwrap();
+            let rect = fiber.layout_rect()?;
+            (fiber.widget_type() == TypeId::of::<DecoratedBox>()
+                && rect.size().height == SEARCH_PANEL_HEIGHT)
+                .then_some(rect)
+        })
+        .expect("floating search card")
+}
+
+#[test]
+fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint() {
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    controller.open_search(TabId(1));
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    runtime.request_focus(&controller.search_focus());
+    controller.publish_search_status("1 / 3");
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("needle".into())));
+    runtime.update(Instant::now());
+    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(controller.search_query().unwrap().1, "needle");
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('a'),
+        modifiers: ctrl(),
+    }));
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Backspace,
+        modifiers: Modifiers::default(),
+    }));
+    runtime.update(Instant::now());
+    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(controller.search_query().unwrap().1, "");
+}
+
+#[test]
+fn search_status_changes_do_not_resize_input_or_shift_result_and_buttons() {
+    for (width, height, scale) in [
+        (1000, 500, 1.0),
+        (1200, 800, 1.5),
+        (1200, 800, 2.0),
+        (320, 240, 1.0),
+    ] {
+        let controller = controller(
+            width as f64 / scale as f64,
+            vec![snapshot(1, true, false)],
+            1,
+        );
+        controller.open_search(TabId(1));
+        let mut runtime = mount(controller.clone(), width, height);
+        runtime.set_viewport(Viewport::new(width, height, scale));
+        runtime.request_focus(&controller.search_focus());
+        runtime.update(Instant::now());
+        let focused = runtime.input().focused();
+        let allocation = controller.latest_terminal_allocation();
+        let geometry = |runtime: &Runtime| {
+            let panel = search_panel_rect(runtime);
+            let rect_for = |widget_type| {
+                fiber_ids(runtime)
+                    .into_iter()
+                    .find_map(|id| {
+                        let fiber = runtime.arena().get(id).unwrap();
+                        let rect = fiber.layout_rect()?;
+                        (fiber.widget_type() == widget_type
+                            && panel.contains(rect.min)
+                            && rect.size().height < panel.size().height)
+                            .then_some(rect)
+                    })
+                    .expect("search field/status layout")
+            };
+            let input = rect_for(TypeId::of::<DecoratedBox>());
+            let result = rect_for(TypeId::of::<harbor_widget::widgets::text_label::TextLabel>());
+            // No GPU encode consumes the initial delta, so coalescing retains the icons
+            // even if a status change leaves their primitives unchanged.
+            let delta = runtime.pending_delta().unwrap();
+            let mut buttons: Vec<_> = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .filter_map(|item| match item.primitive {
+                    Primitive::Icon { icon, rect, .. }
+                        if panel.contains(rect.min)
+                            && matches!(
+                                icon,
+                                LucideIcon::ChevronUp | LucideIcon::ChevronDown | LucideIcon::X
+                            ) =>
+                    {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+            assert_eq!(buttons.len(), 3);
+            (input, result, buttons)
+        };
+        let initial = geometry(&runtime);
+        for _ in 0..3 {
+            for status in [
+                "Searching…",
+                "— / 9",
+                "1 / 9",
+                "9 / 10",
+                "1024 / 1024",
+                "partial/limited · — / 1024",
+                "Searching… · 1 / 1024",
+                "No Result",
+            ] {
+                controller.publish_search_status(status);
+                runtime.update(Instant::now());
+                assert_eq!(
+                    geometry(&runtime),
+                    initial,
+                    "status={status}, viewport={width}x{height}@{scale}"
+                );
+                assert_eq!(runtime.input().focused(), focused);
+                assert_eq!(controller.latest_terminal_allocation(), allocation);
+            }
+        }
+    }
+}
+
+#[test]
+fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
+    use harbor_widget::layout::Size;
+    for (width, height, scale) in [(1000, 500, 1.0), (1200, 800, 2.0), (320, 240, 1.0)] {
+        let controller = controller(
+            width as f64 / scale as f64,
+            vec![snapshot(1, true, false)],
+            1,
+        );
+        let mut runtime = mount(controller.clone(), width, height);
+        runtime.set_viewport(Viewport::new(width, height, scale));
+        runtime.update(Instant::now());
+        runtime.request_focus(&controller.terminal_focus());
+        let terminal_focus = runtime.input().focused();
+        let allocation = controller.latest_terminal_allocation();
+        controller.open_search(TabId(1));
+        runtime.request_focus(&controller.search_focus());
+        runtime.update(Instant::now());
+        assert_eq!(controller.latest_terminal_allocation(), allocation);
+        let panel = search_panel_rect(&runtime);
+        assert_eq!(panel.min.y, SEARCH_PANEL_INSET);
+        assert_eq!(panel.max.x, width as f32 / scale - SEARCH_PANEL_INSET);
+        assert_eq!(
+            panel.size().width,
+            440.0_f32.min(width as f32 / scale - 24.0)
+        );
+        assert_ne!(runtime.input().focused(), terminal_focus);
+
+        let delta = runtime.pending_delta().unwrap();
+        let mut icons: Vec<_> = delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .filter_map(|item| match item.primitive {
+                Primitive::Icon { icon, rect, .. }
+                    if panel.contains(rect.min)
+                        && matches!(
+                            icon,
+                            LucideIcon::ChevronUp | LucideIcon::ChevronDown | LucideIcon::X
+                        ) =>
+                {
+                    Some((icon, rect))
+                }
+                _ => None,
+            })
+            .collect();
+        icons.sort_by(|a, b| a.1.min.x.total_cmp(&b.1.min.x));
+        assert_eq!(
+            icons.iter().map(|(icon, _)| *icon).collect::<Vec<_>>(),
+            [
+                LucideIcon::ChevronUp,
+                LucideIcon::ChevronDown,
+                LucideIcon::X
+            ]
+        );
+        assert!(
+            icons
+                .iter()
+                .all(|(_, rect)| rect.size() == Size::new(18.0, 18.0))
+        );
+        let mut buttons: Vec<_> = delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .filter_map(|item| match item.primitive {
+                Primitive::Quad { rect, .. }
+                    if panel.contains(rect.min) && rect.size() == Size::new(32.0, 32.0) =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .collect();
+        buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons[1].min.x - buttons[0].max.x, 4.0);
+        assert_eq!(buttons[2].min.x - buttons[1].max.x, 4.0);
+        assert!(!delta.added.iter().chain(&delta.modified).any(|item| {
+            matches!(&item.primitive, Primitive::Text { text, .. }
+                if ["Previous", "Next", "Close"].contains(&text.as_ref()))
+        }));
+        let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
+        assert!(items.iter().any(|item| matches!(&item.primitive,
+            Primitive::BackdropBlur { rect, sigma: 8.0, .. } if *rect == panel)));
+        let (status_origin, _) = items
+            .iter()
+            .find_map(|item| match &item.primitive {
+                Primitive::Text { text, origin, .. } if text.as_ref() == "No Result" => {
+                    Some((*origin, text))
+                }
+                _ => None,
+            })
+            .expect("default result appears on the same row");
+        assert!(status_origin.x < icons[0].1.min.x);
+        assert!((status_origin.y - (panel.min.y + panel.size().height / 2.0)).abs() < 20.0);
+        assert!(items.iter().any(|item| matches!(&item.primitive,
+            Primitive::RoundedQuad { rect, color, corner_radii }
+                if panel.contains(rect.min) && rect.size().width < panel.size().width
+                && color.r == 0.0 && color.a > 0.0 && color.a < 1.0 && corner_radii[0] > 0.0)));
+        assert!(
+            items
+                .iter()
+                .filter(|item| matches!(&item.primitive,
+            Primitive::Quad { rect, .. } if buttons.contains(rect)))
+                .all(|item| matches!(&item.primitive,
+                Primitive::Quad { color, .. } if color.a == 0.0))
+        );
+
+        for ((_, rect), command) in icons.into_iter().zip([
+            AppCommand::SearchPrevious,
+            AppCommand::SearchNext,
+            AppCommand::SearchClose,
+        ]) {
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(rect.min.x + 9.0, rect.min.y + 9.0),
+                    phase,
+                    PointerButton::Left,
+                    42,
+                )));
+            }
+            assert_eq!(
+                controller.drain_actions(),
+                [AppCommandRequest::shortcut(command)]
+            );
+        }
+        // Blank overlay space still permits normal terminal interaction.
+        let terminal = allocation.unwrap();
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                Point::new(
+                    terminal.min.x + 8.0,
+                    terminal.min.y + terminal.size().height / 2.0,
+                ),
+                phase,
+                PointerButton::Left,
+                43,
+            )));
+        }
+        assert!(
+            runtime
+                .arena()
+                .get(terminal_focus.unwrap())
+                .unwrap()
+                .children()
+                .contains(&runtime.input().focused().unwrap()),
+            "click reaches the terminal under its focus wrapper"
+        );
+        controller.close_search();
+        runtime.request_focus(&controller.terminal_focus());
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime.input().focused(),
+            terminal_focus,
+            "terminal fiber survives open/close"
+        );
+        assert_eq!(controller.latest_terminal_allocation(), allocation);
+    }
+}
+
+#[test]
+fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Reload,
+        Some("Invalid settings".into()),
+    );
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    let notice_close_y = |runtime: &Runtime| {
+        let delta = runtime.pending_delta().unwrap();
+        delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .find_map(|item| match &item.primitive {
+                Primitive::Text { text, origin, .. } if text.as_ref() == "×" => Some(origin.y),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let original_y = notice_close_y(&runtime);
+    let allocation = controller.latest_terminal_allocation();
+    controller.open_search(TabId(1));
+    runtime.update(Instant::now());
+    let panel = search_panel_rect(&runtime);
+    assert!(notice_close_y(&runtime) > panel.max.y);
+    assert_eq!(controller.latest_terminal_allocation(), allocation);
+    controller.close_search();
+    runtime.update(Instant::now());
+    assert_eq!(notice_close_y(&runtime), original_y);
+    assert!(controller.store.state().read().notices.message().is_some());
+}
+
 #[test]
 fn current_session_search_entry_routes_typed_commands_without_pty_leakage() {
     use crate::tab_manager::{TabManager, TerminalTabResources};

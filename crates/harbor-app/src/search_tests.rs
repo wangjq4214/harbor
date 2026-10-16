@@ -297,12 +297,140 @@ fn typed_host_dispatch_scopes_query_and_wraps_previous_next_navigation() {
 }
 
 #[test]
+fn fast_search_starts_immediately_without_flashing_busy_or_leaving_a_timer() {
+    let mut tabs = setup("a a");
+    tabs.set_search_query("a");
+    assert!(tabs.search.job.is_some(), "no input debounce");
+    assert_eq!(tabs.search_status(), "No Result");
+    let start = tabs.search.busy_since.unwrap();
+    for _ in 0..2000 {
+        let tick = tabs.advance_search_at(start + SEARCH_BUSY_DELAY / 2);
+        assert!(!tabs.search_status().contains("Searching"));
+        if !tick.pending {
+            break;
+        }
+    }
+    assert_eq!(tabs.search_status(), "— / 2");
+    assert!(tabs.search.busy_since.is_none());
+    let idle = tabs.advance_search_at(start + Duration::from_secs(10));
+    assert!(!idle.pending && !idle.changed);
+    assert_eq!(tabs.search_status(), "— / 2");
+}
+
+#[test]
+fn slow_search_reveals_busy_at_200ms_and_requests_a_frame_without_more_input() {
+    let mut tabs = setup(&"a ".repeat(10_000));
+    tabs.set_search_query("a");
+    let start = tabs.search.busy_since.unwrap();
+    let first = tabs.advance_search_at(start + Duration::from_millis(199));
+    assert!(first.pending);
+    assert!(
+        !first.changed,
+        "the unchanged initial label needs no extra redraw"
+    );
+    assert_eq!(tabs.search_status(), "No Result");
+    let delayed = tabs.advance_search_at(start + SEARCH_BUSY_DELAY);
+    assert!(delayed.pending);
+    assert!(
+        delayed.changed,
+        "host must request a frame when only the hint changes"
+    );
+    assert!(tabs.search_status().starts_with("Searching"));
+    complete(&mut tabs);
+    assert!(!tabs.search_status().contains("Searching"));
+    assert!(tabs.search.busy_since.is_none());
+}
+
+#[test]
+fn busy_hint_resets_on_query_replacement_empty_close_and_session_switch() {
+    let mut tabs = setup(&"a ".repeat(10_000));
+    let first_tab = tabs.active_id().unwrap();
+    tabs.set_search_query("a");
+    let old_start = tabs.search.busy_since.unwrap();
+    tabs.advance_search_at(old_start + SEARCH_BUSY_DELAY);
+    assert!(tabs.search_status().starts_with("Searching"));
+    tabs.set_search_query("missing");
+    assert_eq!(
+        tabs.search_status(),
+        "No Result",
+        "old query count/hint must not leak"
+    );
+    let new_start = tabs.search.busy_since.unwrap();
+    tabs.advance_search_at(new_start + Duration::from_millis(199));
+    assert_eq!(tabs.search_status(), "No Result");
+    tabs.set_search_query("");
+    assert_eq!(tabs.search_status(), "No Result");
+    assert!(tabs.search.busy_since.is_none());
+    tabs.advance_search_at(new_start + Duration::from_secs(5));
+    assert_eq!(tabs.search_status(), "No Result");
+    tabs.set_search_query("a");
+    tabs.cancel_search();
+    assert!(tabs.search.busy_since.is_none());
+    let second_tab = create(&mut tabs, 3, 8);
+    tabs.activate(first_tab);
+    tabs.set_search_query("a");
+    tabs.activate(second_tab);
+    tabs.advance_search();
+    assert!(tabs.search.busy_since.is_none());
+    assert_eq!(tabs.search_status(), "No Result");
+}
+
+#[test]
+fn result_presentation_tracks_navigation_without_selecting_the_first_match() {
+    let mut tabs = setup("a a a");
+    assert_eq!(tabs.search_status(), "No Result");
+    tabs.set_search_query("a");
+    assert_eq!(tabs.search_status(), "No Result");
+    complete(&mut tabs);
+    assert_eq!(tabs.search.selected, None);
+    assert_eq!(tabs.search_status(), "— / 3");
+    let ui = ui(&tabs);
+    tabs.dispatch_search_command(AppCommand::SearchNext, &ui);
+    assert_eq!(tabs.search_status(), "1 / 3");
+    tabs.navigate_search(true);
+    assert_eq!(tabs.search_status(), "3 / 3");
+    tabs.navigate_search(false);
+    assert_eq!(tabs.search_status(), "1 / 3");
+    tabs.set_search_query("not here");
+    assert!(!tabs.search_status().contains("/ 3"));
+    complete(&mut tabs);
+    assert_eq!(tabs.search_status(), "No Result");
+    assert_eq!(tabs.search.selected, None);
+    tabs.set_search_query("");
+    assert_eq!(tabs.search_status(), "No Result");
+}
+
+#[test]
+fn invalidated_result_position_is_not_published_while_refreshing() {
+    let mut tabs = setup("needle");
+    tabs.set_search_query("needle");
+    complete(&mut tabs);
+    assert!(tabs.navigate_search(false));
+    assert_eq!(tabs.search_status(), "1 / 1");
+    tabs.active_terminal()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .put_str("\x1b[1;1HX");
+    assert!(!tabs.navigate_search(false));
+    assert_eq!(tabs.search_status(), "No Result");
+    assert_eq!(tabs.search.selected, None);
+    complete(&mut tabs);
+    assert_eq!(tabs.search_status(), "No Result");
+}
+
+#[test]
 fn application_exposes_result_limits_and_releases_work_on_empty_or_invalid_queries() {
     let mut tabs = setup(&"a".repeat(1500));
     tabs.set_search_query("a");
     complete(&mut tabs);
     assert_eq!(published(&tabs), 1024);
     assert!(tabs.search_status().contains("partial/limited"));
+    assert!(!tabs.search_status().contains("No Result"));
+    assert!(tabs.search_status().contains("— / 1024"));
+    assert!(tabs.navigate_search(false));
+    assert!(tabs.search_status().contains("1 / 1024"));
+    assert!(tabs.search_status().starts_with("partial/limited"));
     tabs.set_search_query(&"b".repeat(129));
     assert_eq!(published(&tabs), 0);
     assert!(tabs.search.job.is_none());
@@ -327,5 +455,5 @@ fn application_exposes_result_limits_and_releases_work_on_empty_or_invalid_queri
     tabs.set_search_query("");
     assert_eq!(published(&tabs), 0);
     assert!(!tabs.navigate_search(false));
-    assert!(tabs.search_status().contains("Enter a literal"));
+    assert_eq!(tabs.search_status(), "No Result");
 }

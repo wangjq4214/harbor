@@ -573,9 +573,8 @@ impl Runtime {
             .init_text_renderer(device, format, bind_group_layout, bind_group);
     }
 
-    /// Applies the pending SceneDelta to the GPU renderers and encodes draw
-    /// calls into the RenderPass. No-op if the quad renderer hasn't been
-    /// initialized or there is no pending delta.
+    /// Applies pending scene changes and encodes ordinary scenes into a pass.
+    /// No-op until renderer initialization. Backdrop filters require encode_frame.
     ///
     /// `commit` live-encodes ineligible externals this pass (recovery / force).
     pub fn encode<'a>(
@@ -588,6 +587,32 @@ impl Runtime {
         self.encoder.encode(
             gpu,
             pass,
+            viewport,
+            EncodeScene {
+                scene_graph: &self.scene_graph,
+                pending_delta: &mut self.pending_delta,
+                external_draws: &self.external_draws,
+                external_eligible: &self.external_eligible,
+                commit,
+            },
+        );
+    }
+
+    /// Encodes a full frame, including local backdrop filters, in paint order.
+    /// The target is single-sampled and must match gpu.target_format() and viewport.
+    /// The caller submits the encoder after this call; external callbacks run once.
+    pub fn encode_frame(
+        &mut self,
+        gpu: ExternalDrawGpu<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: crate::renderer::FrameTarget<'_>,
+        viewport: Viewport,
+        commit: bool,
+    ) {
+        self.encoder.encode_frame(
+            gpu,
+            encoder,
+            target,
             viewport,
             EncodeScene {
                 scene_graph: &self.scene_graph,

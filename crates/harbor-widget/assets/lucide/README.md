@@ -1,12 +1,13 @@
 # Bundled Lucide artwork
 
-This directory contains Harbor's initial built-in icon subset: `terminal`, `plus`,
-`x`, and `dot`. The SVGs and LICENSE are copied from
-[Lucide revision dab294f313897bacaa968b725b3259fa37c17bd1](https://github.com/lucide-icons/lucide/tree/dab294f313897bacaa968b725b3259fa37c17bd1).
+This directory contains Harbor's built-in icon subset: `terminal`, `plus`,
+`x`, `dot`, `chevron-up`, and `chevron-down`. The original four SVGs and LICENSE
+were copied from [Lucide revision dab294f313897bacaa968b725b3259fa37c17bd1](https://github.com/lucide-icons/lucide/tree/dab294f313897bacaa968b725b3259fa37c17bd1).
+The chevrons use equivalent Lucide 24-unit outline path definitions.
 
 Keep [LICENSE](./LICENSE) with source and binary distributions containing this
 artwork. It includes the Lucide ISC notice and the Feather MIT notice applicable
-to `terminal`, `plus`, and `x`.
+to `terminal`, `plus`, `x`, `chevron-up`, and `chevron-down`.
 
 Harbor precompiles this simple SVG subset into signed-distance functions in
 `src/renderer/quad.rs`; it does not parse arbitrary SVG at runtime. The 24-unit

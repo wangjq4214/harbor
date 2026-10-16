@@ -20,7 +20,7 @@ struct InstanceInput {
     @location(5) logical_size: vec2<f32>,
     @location(6) shape_rect: vec4<f32>, // origin x/y and size w/h within the instance
     @location(7) blur_radius: f32,
-    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask, 3..6 = Lucide icons
+    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask, 3..8 = Lucide icons
     @location(9) clip_rect0: vec4<f32>, // local origin x/y and size w/h
     @location(10) clip_radii0: vec4<f32>,
     @location(11) clip_rect1: vec4<f32>,
@@ -124,6 +124,14 @@ fn lucide_distance(p: vec2<f32>, mode: u32) -> f32 {
     if mode == 5u {
         return min(segment_distance(p, vec2<f32>(18.0, 6.0), vec2<f32>(6.0, 18.0)),
                    segment_distance(p, vec2<f32>(6.0, 6.0), vec2<f32>(18.0, 18.0)));
+    }
+    if mode == 7u {
+        return min(segment_distance(p, vec2<f32>(18.0, 15.0), vec2<f32>(12.0, 9.0)),
+                   segment_distance(p, vec2<f32>(12.0, 9.0), vec2<f32>(6.0, 15.0)));
+    }
+    if mode == 8u {
+        return min(segment_distance(p, vec2<f32>(6.0, 9.0), vec2<f32>(12.0, 15.0)),
+                   segment_distance(p, vec2<f32>(12.0, 15.0), vec2<f32>(18.0, 9.0)));
     }
     // Lucide dot's r=1, stroke-width=2 circle, filled at its zero-radius center.
     return length(p - vec2<f32>(12.0)) - 2.0;

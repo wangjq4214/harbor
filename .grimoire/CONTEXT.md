@@ -141,6 +141,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ### Widget Decoration
 - **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
 
+### Widget Local Backdrop Blur
+- **Definition:** Approved reusable `harbor-widget` capability for locally softening content behind a widget, including embedded terminal presentation, while keeping its foreground content sharp. Distinct from Windows Acrylic behind the window; product glass presets remain application-owned. API and rendering design are unselected, and this entry does not establish implementation. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
+
 ### DecoratedBox
 - **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.
 - **Relationships:**

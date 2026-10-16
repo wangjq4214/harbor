@@ -2,7 +2,9 @@
 
 use crate::decoration::ClipBehavior;
 use crate::layout::Rect;
+use crate::renderer::FrameTarget;
 use crate::renderer::Viewport;
+use crate::renderer::backdrop::{BackdropRenderer, begin_pass};
 use crate::renderer::quad::QuadRenderer;
 use crate::renderer::text_renderer::TextRenderer;
 use crate::renderer::widget_text_atlas::WidgetTextAtlas;
@@ -71,6 +73,7 @@ struct ExternalDrawInvocation {
     mode: ExternalDrawMode,
     scissor: ScissorRect,
     apply_rounded_mask: bool,
+    mask_slot: u32,
 }
 
 fn plan_external_draw(
@@ -93,6 +96,7 @@ fn plan_external_draw(
             mode: ExternalDrawMode::from_eligibility(eligible, commit),
             scissor,
             apply_rounded_mask,
+            mask_slot: 0,
         }),
     }
 }
@@ -153,6 +157,7 @@ impl QuadRun {
 /// wgpu Device is available; encode runs each frame after the tree paint pass.
 pub(crate) struct FrameEncoder {
     renderer: Option<QuadRenderer>,
+    backdrop: Option<BackdropRenderer>,
     text_renderer: Option<TextRenderer>,
     text_run_cache: TextRunCache,
     text_atlas: Option<Rc<RefCell<WidgetTextAtlas>>>,
@@ -165,6 +170,7 @@ impl FrameEncoder {
     pub(crate) fn new() -> Self {
         Self {
             renderer: None,
+            backdrop: None,
             text_renderer: None,
             text_run_cache: TextRunCache::new(),
             text_atlas: None,
@@ -176,6 +182,7 @@ impl FrameEncoder {
 
     pub(crate) fn init_renderer(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
         self.renderer = Some(QuadRenderer::new(device, format));
+        self.backdrop = None;
     }
 
     pub(crate) fn init_text_renderer(
@@ -345,42 +352,122 @@ impl FrameEncoder {
         self.text_instances_dirty |= changed;
     }
 
-    /// Applies a pending SceneDelta and encodes draw calls in paint order.
+    /// Encodes ordinary scenes into a caller-owned render pass.
     pub(crate) fn encode<'a>(
         &'a mut self,
         gpu: ExternalDrawGpu<'a>,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
-        scene: EncodeScene<'_>,
+        mut scene: EncodeScene<'_>,
     ) {
-        let queue = gpu.queue();
-        let renderer = match self.renderer.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
+        assert!(
+            !scene
+                .scene_graph
+                .items()
+                .iter()
+                .any(|item| matches!(item.primitive, Primitive::BackdropBlur { .. })),
+            "BackdropFilter requires Runtime::encode_frame"
+        );
+        let plan = self.prepare(gpu, &viewport, &mut scene);
+        self.encode_items(
+            gpu,
+            pass,
+            &viewport,
+            &scene,
+            scene.scene_graph.items(),
+            &plan,
+        );
+    }
 
-        let viewport_changed = self.encoded_viewport.as_ref() != Some(&viewport);
+    pub(crate) fn encode_frame(
+        &mut self,
+        gpu: ExternalDrawGpu<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: FrameTarget<'_>,
+        viewport: Viewport,
+        mut scene: EncodeScene<'_>,
+    ) {
+        if !viewport.is_drawable() {
+            return;
+        }
+        let plan = self.prepare(gpu, &viewport, &mut scene);
+        let items = scene.scene_graph.items();
+        if self.backdrop.is_none()
+            && items
+                .iter()
+                .any(|i| matches!(i.primitive, Primitive::BackdropBlur { .. }))
+        {
+            self.backdrop = Some(BackdropRenderer::new(gpu.device(), gpu.target_format()));
+        }
+        if let Some(backdrop) = &mut self.backdrop {
+            backdrop.prepare(gpu.device(), gpu.queue(), &viewport, items);
+        }
+        let view = self
+            .backdrop
+            .as_ref()
+            .and_then(BackdropRenderer::view)
+            .unwrap_or(target.view);
+        let mut start = 0;
+        let mut load = wgpu::LoadOp::Clear(target.clear_color);
+        for (index, item) in items.iter().enumerate() {
+            if !matches!(item.primitive, Primitive::BackdropBlur { .. }) {
+                continue;
+            }
+            {
+                let mut pass = begin_pass(encoder, view, load);
+                self.encode_items(
+                    gpu,
+                    &mut pass,
+                    &viewport,
+                    &scene,
+                    &items[start..index],
+                    &plan,
+                );
+            }
+            if let Some(backdrop) = &self.backdrop {
+                backdrop.filter(encoder, item.id);
+            }
+            start = index + 1;
+            load = wgpu::LoadOp::Load;
+        }
+        {
+            let mut pass = begin_pass(encoder, view, load);
+            self.encode_items(gpu, &mut pass, &viewport, &scene, &items[start..], &plan);
+        }
+        if let Some(backdrop) = &self.backdrop {
+            backdrop.present(encoder, target.view);
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        gpu: ExternalDrawGpu<'_>,
+        viewport: &Viewport,
+        scene: &mut EncodeScene<'_>,
+    ) -> HashMap<u64, ExternalDrawInvocation> {
+        let Some(renderer) = &mut self.renderer else {
+            return HashMap::new();
+        };
+        let queue = gpu.queue();
+        let viewport_changed = self.encoded_viewport.as_ref() != Some(viewport);
         let delta = scene.pending_delta.take();
         if let Some(delta) = delta.as_ref() {
-            renderer.update(queue, delta, &viewport);
+            renderer.update(queue, delta, viewport);
         }
         let raw_items = scene.scene_graph.items();
         if viewport_changed {
-            renderer.refresh_viewport(queue, raw_items, &viewport);
+            renderer.refresh_viewport(queue, raw_items, viewport);
         }
         if (delta.is_some() || viewport_changed || self.text_instances_dirty)
             && let Some(ref mut tr) = self.text_renderer
         {
-            tr.update(queue, scene.scene_graph, &self.text_run_cache, &viewport);
+            tr.update(queue, scene.scene_graph, &self.text_run_cache, viewport);
             self.text_instances_dirty = false;
         }
         self.encoded_viewport = Some(viewport.clone());
 
-        // Plan every external draw once per frame. Items that survive
-        // planning also seed the clip-mask upload pass, so the draw loop can
-        // reuse the plan instead of recomputing it.
-        let mut external_invocations: HashMap<u64, ExternalDrawInvocation> = HashMap::new();
-        let mut clip_masks: Vec<(&[RoundedClip], Rect)> = Vec::new();
+        let mut external_invocations = HashMap::new();
+        let mut clip_masks = Vec::new();
         for item in raw_items {
             let Primitive::External { draw, rect } = &item.primitive else {
                 continue;
@@ -389,33 +476,41 @@ impl FrameEncoder {
                 continue;
             }
             let eligible = scene.external_eligible.get(draw).copied().unwrap_or(true);
-            let Some(invocation) =
-                plan_external_draw(*draw, *rect, &item.clips, &viewport, eligible, scene.commit)
+            let Some(mut invocation) =
+                plan_external_draw(*draw, *rect, &item.clips, viewport, eligible, scene.commit)
             else {
                 continue;
             };
             if invocation.apply_rounded_mask {
+                invocation.mask_slot = clip_masks.len() as u32;
                 clip_masks.push((item.clips.as_slice(), *rect));
             }
             external_invocations.insert(item.id, invocation);
         }
-        renderer.upload_clip_masks(queue, &clip_masks, &viewport);
+        renderer.upload_clip_masks(queue, &clip_masks, viewport);
+        external_invocations
+    }
 
-        // Renderer slots are retained by item ID and therefore are not a
-        // paint-order representation. Walk the raw scene sequence and only
-        // batch slots that are adjacent in that sequence and numerically
-        // adjacent in the instance buffer.
+    fn encode_items<'a>(
+        &'a self,
+        gpu: ExternalDrawGpu<'a>,
+        pass: &mut wgpu::RenderPass<'a>,
+        viewport: &Viewport,
+        scene: &EncodeScene<'_>,
+        items: &[crate::scene::SceneItem],
+        plan: &HashMap<u64, ExternalDrawInvocation>,
+    ) {
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
         let mut quad_run = QuadRun::new();
-        let mut next_mask_slot = 0u32;
-
-        for item in raw_items {
+        for item in items {
             match &item.primitive {
                 Primitive::External { draw, .. } => {
                     quad_run.flush(renderer, pass);
-                    if let (Some(invocation), Some(cb)) = (
-                        external_invocations.get(&item.id),
-                        scene.external_draws.get(draw),
-                    ) {
+                    if let (Some(invocation), Some(cb)) =
+                        (plan.get(&item.id), scene.external_draws.get(draw))
+                    {
                         pass.set_scissor_rect(
                             invocation.scissor.x,
                             invocation.scissor.y,
@@ -430,15 +525,13 @@ impl FrameEncoder {
                             invocation.mode,
                         );
                         if invocation.apply_rounded_mask {
-                            // Handlers may replace scissor; dest-in must stay on the plan.
                             pass.set_scissor_rect(
                                 invocation.scissor.x,
                                 invocation.scissor.y,
                                 invocation.scissor.width,
                                 invocation.scissor.height,
                             );
-                            renderer.encode_clip_mask(pass, next_mask_slot);
-                            next_mask_slot += 1;
+                            renderer.encode_clip_mask(pass, invocation.mask_slot);
                         }
                         pass.set_scissor_rect(
                             0,
@@ -450,17 +543,14 @@ impl FrameEncoder {
                 }
                 Primitive::Text { .. } => {
                     quad_run.flush(renderer, pass);
-
                     if let Some(ref tr) = self.text_renderer {
                         tr.encode_item(pass, item.id);
                     }
                 }
-                Primitive::Icon { .. }
-                | Primitive::Quad { .. }
-                | Primitive::Border { .. }
-                | Primitive::RoundedQuad { .. }
-                | Primitive::RoundedBorder { .. }
-                | Primitive::OuterShadow { .. } => {
+                Primitive::BackdropBlur { .. } => {
+                    quad_run.flush(renderer, pass);
+                }
+                _ => {
                     if let Some(slot) = renderer.slot_of(item.id) {
                         quad_run.extend(renderer, pass, slot);
                     } else {
@@ -469,7 +559,6 @@ impl FrameEncoder {
                 }
             }
         }
-
         quad_run.flush(renderer, pass);
     }
 }

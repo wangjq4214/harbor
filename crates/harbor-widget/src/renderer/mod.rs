@@ -1,3 +1,10 @@
+pub(crate) mod backdrop;
+
+/// Destination for an encoder-level widget frame, including local filters.
+pub struct FrameTarget<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub clear_color: wgpu::Color,
+}
 pub mod quad;
 pub mod text_renderer;
 pub(crate) mod widget_text_atlas;

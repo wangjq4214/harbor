@@ -2636,6 +2636,8 @@ fn lucide_icons_render_at_multiple_dpi_with_tint_and_single_coverage() {
             (LucideIcon::Plus, (12.0, 12.0)),
             (LucideIcon::X, (12.0, 12.0)),
             (LucideIcon::Dot, (12.0, 12.0)),
+            (LucideIcon::ChevronUp, (12.0, 9.0)),
+            (LucideIcon::ChevronDown, (12.0, 15.0)),
         ] {
             let item = make_rounded_item(
                 1,
@@ -2827,5 +2829,305 @@ fn lucide_axis_strokes_match_pixel_coverage_without_a_blur_halo() {
                 }
             }
         }
+    }
+}
+
+// Encoder-level filter tests deliberately use the public non-terminal widget API.
+fn encode_filter_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    runtime: &mut Runtime,
+    viewport: Viewport,
+) -> Vec<u8> {
+    let size = viewport.physical_size.0;
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("backdrop pixel evidence"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    runtime.encode_frame(
+        draw_gpu(device, queue),
+        &mut encoder,
+        harbor_widget::renderer::FrameTarget {
+            view: &view,
+            clear_color: wgpu::Color::TRANSPARENT,
+        },
+        viewport,
+        false,
+    );
+    queue.submit(Some(encoder.finish()));
+    read_texture_sized(device, queue, &target, size)
+}
+
+#[test]
+fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for backdrop pixel readback");
+        return;
+    };
+    let green = create_solid_pipeline_rgb(&device, 0.0, 1.0, 0.0);
+    let blue = create_solid_pipeline_rgb(&device, 0.0, 0.0, 1.0);
+    let red = create_solid_pipeline_rgb(&device, 1.0, 0.0, 0.0);
+    for scale in [1.0, 1.5, 2.0] {
+        let calls = Arc::new(AtomicU64::new(0));
+        let changed = Arc::new(AtomicBool::new(false));
+        let observed = calls.clone();
+        let flip = changed.clone();
+        let (green, blue, red) = (green.clone(), blue.clone(), red.clone());
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            let size = (32.0 * scale) as u32;
+            pass.set_scissor_rect(0, 0, size / 2, size);
+            pass.set_pipeline(&green);
+            pass.draw(0..3, 0..1);
+            pass.set_scissor_rect(size / 2, 0, size / 2, size);
+            pass.set_pipeline(if flip.load(Ordering::SeqCst) {
+                &red
+            } else {
+                &blue
+            });
+            pass.draw(0..3, 0..1);
+        });
+        let side = (32.0 * scale) as u32;
+        let viewport = Viewport::new(side, side, scale);
+        let mut runtime = Runtime::new();
+        runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+        runtime.set_root(
+            Stack::new()
+                .child(CustomPaint::new(1).handler(handler))
+                .child(
+                    Padding::all(4.0).child(
+                        harbor_widget::BackdropFilter::new(2.0)
+                            .unwrap()
+                            .border_radius(BorderRadius::all(6.0).unwrap())
+                            .child(SizedBox::new(Size::new(24.0, 24.0))),
+                    ),
+                )
+                .child(
+                    Padding::all(13.0).child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)),
+                ),
+        );
+        runtime.set_viewport(viewport.clone());
+        runtime.update(Instant::now());
+        let first = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        let at =
+            |pixels: &[u8], x: f32, y: f32| bgra(pixels, (x * scale) as u32, (y * scale) as u32);
+        let mixed = at(&first, 15.0, 10.0);
+        assert!(
+            mixed[0] > 20 && mixed[1] > 80,
+            "real background blur at {scale}x: {mixed:?}"
+        );
+        assert_eq!(
+            at(&first, 2.0, 10.0),
+            [0, 255, 0, 255],
+            "outside filter unchanged"
+        );
+        assert_eq!(
+            at(&first, 4.0, 4.0),
+            [0, 255, 0, 255],
+            "rounded corner unchanged"
+        );
+        assert_eq!(
+            at(&first, 16.0, 16.0),
+            [0, 0, 255, 255],
+            "foreground stays sharp"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no replay for background capture"
+        );
+        assert!(runtime.pending_delta().is_none());
+        let retained = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        assert_eq!(
+            first, retained,
+            "unchanged scene survives retained encoding"
+        );
+        changed.store(true, Ordering::SeqCst);
+        let live = encode_filter_frame(&device, &queue, &mut runtime, viewport);
+        let updated = at(&live, 15.0, 10.0);
+        assert_eq!(updated[0], 0);
+        assert!(updated[2] > 20, "live external output appears through blur");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[test]
+fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for backdrop alpha/resize");
+        return;
+    };
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    let translucent = Color {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 0.5,
+    };
+    runtime.set_root(
+        Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(translucent))
+            .child(
+                Padding::all(4.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::AntiAlias)
+                    .child(
+                        harbor_widget::BackdropFilter::new(3.0)
+                            .unwrap()
+                            .child(SizedBox::new(Size::new(24.0, 24.0))),
+                    ),
+                ),
+            ),
+    );
+    for (side, scale) in [(32, 1.0), (64, 2.0), (48, 1.5), (32, 1.0)] {
+        let viewport = Viewport::new(side, side, scale);
+        runtime.set_viewport(viewport.clone());
+        runtime.update(Instant::now());
+        let pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport);
+        for (x, y) in [(16.0, 16.0), (4.0, 4.0), (2.0, 16.0)] {
+            let pixel = bgra(&pixels, (x * scale) as u32, (y * scale) as u32);
+            assert!(
+                (i32::from(pixel[3]) - 128).abs() <= 1,
+                "alpha not blended twice: {pixel:?}"
+            );
+            assert_eq!(pixel[0], 0);
+            assert_eq!(pixel[2], 0);
+        }
+    }
+    // Removing the filter returns to the direct target path, without stale blur.
+    runtime.set_root(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLUE));
+    runtime.update(Instant::now());
+    let pixels = encode_filter_frame(&device, &queue, &mut runtime, Viewport::new(32, 32, 1.0));
+    assert_eq!(bgra(&pixels, 16, 16), [255, 0, 0, 255]);
+}
+
+#[test]
+fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for multiple backdrop regions");
+        return;
+    };
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+            .child(
+                Padding::new(0.0, 0.0, 0.0, 16.0)
+                    .child(SizedBox::new(Size::new(16.0, 32.0)).color(Color::BLUE)),
+            )
+            .child(
+                Padding::new(4.0, 18.0, 4.0, 4.0).child(
+                    harbor_widget::BackdropFilter::new(3.0)
+                        .unwrap()
+                        .child(SizedBox::new(Size::new(10.0, 24.0))),
+                ),
+            )
+            .child(
+                Padding::new(4.0, 4.0, 4.0, 18.0).child(
+                    DecoratedBox::new(
+                        BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
+                    )
+                    .clip_behavior(ClipBehavior::HardEdge)
+                    .child(
+                        harbor_widget::BackdropFilter::new(2.0)
+                            .unwrap()
+                            .child(SizedBox::new(Size::new(10.0, 24.0))),
+                    ),
+                ),
+            ),
+    );
+    let viewport = Viewport::new(32, 32, 1.0);
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+    let pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport);
+    let left = bgra(&pixels, 13, 16);
+    let right = bgra(&pixels, 18, 16);
+    assert!(
+        left[0] > 10 && left[1] > 100,
+        "first filter not replaced by second params: {left:?}"
+    );
+    assert!(
+        right[0] > 100 && right[1] > 5,
+        "second filter samples independently: {right:?}"
+    );
+    assert_eq!(bgra(&pixels, 15, 16), [0, 255, 0, 255], "gap remains sharp");
+    assert_eq!(bgra(&pixels, 17, 16), [255, 0, 0, 255], "gap remains sharp");
+    assert_eq!(
+        bgra(&pixels, 18, 4),
+        [255, 0, 0, 255],
+        "rounded ancestor is authoritative"
+    );
+}
+
+#[test]
+fn transparent_icon_button_has_no_zero_width_border_fill() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for transparent button evidence");
+        return;
+    };
+    let mut style = harbor_widget::Theme::default().icon_button;
+    style.min_height = 32.0;
+    style.border_width = 0.0;
+    for colors in [
+        &mut style.normal,
+        &mut style.hovered,
+        &mut style.pressed,
+        &mut style.disabled,
+        &mut style.selected,
+    ] {
+        colors.background = Color::TRANSPARENT;
+    }
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    runtime.set_root(
+        Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+            .child(
+                harbor_widget::IconButton::new(harbor_widget::LucideIcon::Plus, "transparent")
+                    .style(style),
+            ),
+    );
+    let viewport = Viewport::new(32, 32, 1.0);
+    runtime.set_viewport(viewport.clone());
+    runtime.update(Instant::now());
+    for event in [
+        None,
+        Some(harbor_widget::input::event::PointerPhase::Move),
+        Some(harbor_widget::input::event::PointerPhase::Down),
+        Some(harbor_widget::input::event::PointerPhase::Up),
+    ] {
+        if let Some(phase) = event {
+            runtime.dispatch(harbor_widget::input::event::UiEvent::Pointer(
+                harbor_widget::input::event::PointerEvent::new(
+                    Point::new(16.0, 16.0),
+                    phase,
+                    harbor_widget::input::event::PointerButton::Left,
+                    7,
+                ),
+            ));
+            runtime.update(Instant::now());
+        }
+        let pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        assert_eq!(
+            bgra(&pixels, 8, 8),
+            [0, 255, 0, 255],
+            "transparent idle/hover/pressed button is not a fill"
+        );
     }
 }

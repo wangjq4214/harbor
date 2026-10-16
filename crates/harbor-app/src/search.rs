@@ -9,6 +9,9 @@ use harbor_terminal::{
     literal_search::{AcceptedSearch, LiteralSearch, SearchJob, SearchResults, SearchStatus},
     read_model::{ContentVersion, ReadBudget, ReadScope},
 };
+use std::time::{Duration, Instant};
+
+const SEARCH_BUSY_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Default)]
 pub(crate) struct SessionSearch {
@@ -24,10 +27,65 @@ pub(crate) struct SessionSearch {
     accepted: Option<AcceptedSearch>,
     observed: Option<ContentVersion>,
     selected: Option<usize>,
+    // Presentation delay only: matching still starts immediately.
+    busy_since: Option<Instant>,
     status: String,
 }
 
 impl SessionSearch {
+    fn update_status(&mut self) {
+        self.update_status_at(Instant::now());
+    }
+
+    fn update_status_at(&mut self, now: Instant) -> bool {
+        let searching = self.job.is_some()
+            || self.completion.is_some()
+            || (self.source.is_some() && self.observed.is_none());
+        let show_busy = if searching {
+            let since = *self.busy_since.get_or_insert(now);
+            now.saturating_duration_since(since) >= SEARCH_BUSY_DELAY
+        } else {
+            self.busy_since = None;
+            false
+        };
+        let count = self.accepted.as_ref().map_or(0, |a| a.ranges().len());
+        let position = if count == 0 {
+            "No Result".into()
+        } else {
+            let current = self
+                .selected
+                .map_or_else(|| "—".into(), |i| (i + 1).to_string());
+            format!("{current} / {count}")
+        };
+        let complete = self
+            .accepted
+            .as_ref()
+            .is_some_and(|a| a.results().status() == SearchStatus::Complete);
+        let status = if show_busy {
+            if count > 0 {
+                format!("Searching… · {position}")
+            } else {
+                "Searching…".into()
+            }
+        } else if (self.accepted.is_some() && !complete) || (searching && count > 0) {
+            // Keep limited coverage explicit, even before the busy hint is shown.
+            if count > 0 {
+                format!("partial/limited · {position}")
+            } else {
+                "partial/limited · 0".into()
+            }
+        } else {
+            // Keep the initial label until a result or the delayed busy hint replaces it.
+            // Pending work remains distinct from completed negative coverage internally.
+            position
+        };
+        if self.status == status {
+            return false;
+        }
+        self.status = status;
+        true
+    }
+
     fn cancel(&mut self) {
         self.gate.cancel();
         self.presented_gate.cancel();
@@ -41,6 +99,7 @@ impl SessionSearch {
         self.query.clear();
         self.observed = None;
         self.selected = None;
+        self.busy_since = None;
         self.status.clear();
     }
 
@@ -58,16 +117,13 @@ impl SessionSearch {
                 ReadBudget::default(),
             )
             .ok();
-        self.status = format!(
-            "Searching… — {} validated matches (incomplete coverage)",
-            self.accepted.as_ref().map_or(0, |a| a.ranges().len())
-        );
+        self.update_status();
     }
 
     fn accept(&mut self, terminal: &Terminal, completion: SearchResults) -> bool {
         let Ok(accepted) = self.gate.accept(terminal, completion) else {
             self.observed = None;
-            self.status = "Content changed; refreshing…".into();
+            self.update_status();
             return false;
         };
         self.presented_gate = std::mem::take(&mut self.gate);
@@ -77,23 +133,14 @@ impl SessionSearch {
     }
 
     fn publish(&mut self, accepted: AcceptedSearch) {
-        let status = accepted.results().status();
-        self.status = format!(
-            "{} matches — {}",
-            accepted.ranges().len(),
-            match status {
-                SearchStatus::Complete => "complete retained scope",
-                SearchStatus::Partial(_) => "partial/limited coverage",
-                _ => "incomplete coverage",
-            }
-        );
-        if self.job.is_some() {
-            self.status.push_str(" — refreshing…");
-        }
+        self.selected = self
+            .selected
+            .filter(|&index| index < accepted.ranges().len());
         if let Some(bridge) = &self.bridge {
             bridge.set_decorations(accepted.ranges().to_vec());
         }
         self.accepted = Some(accepted);
+        self.update_status();
     }
 }
 
@@ -134,6 +181,7 @@ impl TabManager {
             }
             AppCommand::SearchNext | AppCommand::SearchPrevious => {
                 self.navigate_search(command == AppCommand::SearchPrevious);
+                ui.publish_search_status(self.search_status());
                 None
             }
             _ => None,
@@ -151,7 +199,7 @@ impl TabManager {
             return;
         }
         if query.is_empty() {
-            self.search.status = "Enter a literal (128 UTF-8 bytes maximum)".into();
+            self.search.status = "No Result".into();
             return;
         }
         let (Some(id), Some(terminal), Some(bridge)) = (
@@ -171,11 +219,29 @@ impl TabManager {
     }
 
     pub fn search_status(&self) -> &str {
-        &self.search.status
+        if self.search.status.is_empty() {
+            "No Result"
+        } else {
+            &self.search.status
+        }
     }
 
     /// Exactly one read/scan page OR one delayed completion acceptance per turn.
     pub fn advance_search(&mut self) -> SearchTick {
+        self.advance_search_at(Instant::now())
+    }
+
+    fn advance_search_at(&mut self, now: Instant) -> SearchTick {
+        let mut tick = self.advance_search_work();
+        // Pending work already polls host turns. Reveal a slow-search hint there,
+        // not via an input debounce, a sleeping worker or an idle redraw timer.
+        if self.search.source.is_some() {
+            tick.changed |= self.search.update_status_at(now);
+        }
+        tick
+    }
+
+    fn advance_search_work(&mut self) -> SearchTick {
         let idle = SearchTick {
             pending: false,
             changed: false,
@@ -217,6 +283,8 @@ impl TabManager {
                 Err(_) => {
                     self.search.presented_gate.cancel();
                     self.search.observed = None;
+                    self.search.selected = None;
+                    self.search.update_status();
                     if let Some(bridge) = &self.search.bridge {
                         bridge.set_decorations(Vec::new());
                     }
@@ -281,11 +349,14 @@ impl TabManager {
             && terminal.navigate_content_target(&target)
         {
             self.search.selected = Some(index);
+            self.search.update_status();
             true
         } else {
             self.search.presented_gate.cancel();
             self.search.accepted = None;
             self.search.observed = None;
+            self.search.selected = None;
+            self.search.update_status();
             if let Some(bridge) = &self.search.bridge {
                 bridge.set_decorations(Vec::new());
             }

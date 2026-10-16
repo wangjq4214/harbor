@@ -437,6 +437,13 @@ pub enum Primitive {
         color: Color,
         corner_radii: [f32; 4],
     },
+    /// A local background filter, evaluated before subsequent scene items.
+    /// Requires Runtime::encode_frame (a filter cannot sample an open attachment).
+    BackdropBlur {
+        rect: Rect,
+        sigma: f32,
+        corner_radii: [f32; 4],
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,

@@ -9,6 +9,8 @@ pub struct Align {
     pub alignment: Alignment,
     pub background: Option<Color>,
     children: Vec<View>,
+    vertical_alignment: Option<Alignment>,
+    insets: [f32; 4],
 }
 
 impl Align {
@@ -16,8 +18,22 @@ impl Align {
         Align {
             alignment,
             background: None,
+            vertical_alignment: None,
+            insets: [0.0; 4],
             children: vec![],
         }
+    }
+
+    /// Overrides vertical placement while preserving the constructor's horizontal alignment.
+    pub fn vertical_alignment(mut self, alignment: Alignment) -> Self {
+        self.vertical_alignment = Some(alignment);
+        self
+    }
+
+    /// Insets the available alignment bounds (top, right, bottom, left).
+    pub fn insets(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        self.insets = [top, right, bottom, left];
+        self
     }
 
     pub fn background(mut self, color: Color) -> Self {
@@ -58,20 +74,36 @@ impl AnyView for Align {
         constraints.fill_bounded(Size::ZERO)
     }
 
+    fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
+        let [top, right, bottom, left] = self.insets;
+        constraints.deflate(Size::new(left + right, top + bottom))
+    }
+
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
+        let [top, right, bottom, left] = self.insets;
         let natural = child_sizes.first().copied().unwrap_or(Size::ZERO);
-        let own = constraints.fill_bounded(natural);
+        let own = constraints.fill_bounded(Size::new(
+            natural.width + left + right,
+            natural.height + top + bottom,
+        ));
         if child_sizes.is_empty() {
             return (own, vec![]);
         }
         let child_size = child_sizes[0];
-        let x = self.alignment.position(child_size.width, own.width);
-        let y = self.alignment.position(child_size.height, own.height);
+        let x = left
+            + self
+                .alignment
+                .position(child_size.width, (own.width - left - right).max(0.0));
+        let y = top
+            + self
+                .vertical_alignment
+                .unwrap_or(self.alignment)
+                .position(child_size.height, (own.height - top - bottom).max(0.0));
         (own, vec![Point::new(x, y)])
     }
 
@@ -92,6 +124,44 @@ mod tests {
     use super::*;
     use crate::widgets::sized_box::SizedBox;
 
+    #[test]
+    fn align_top_right_overrides_only_vertical_placement() {
+        let align = Align::new(Alignment::End).vertical_alignment(Alignment::Start);
+        let (size, positions) = align.layout_children(
+            BoxConstraints::tight(Size::new(200.0, 100.0)),
+            &[Size::new(50.0, 20.0)],
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
+        assert_eq!(size, Size::new(200.0, 100.0));
+        assert_eq!(positions, vec![Point::new(150.0, 0.0)]);
+        assert!(!align.hit_test(
+            Point::new(10.0, 10.0),
+            Rect::from_min_size(Point::ZERO, size)
+        ));
+    }
+
+    #[test]
+    fn align_insets_reserve_space_without_creating_an_input_surface() {
+        let align = Align::new(Alignment::End)
+            .vertical_alignment(Alignment::Start)
+            .insets(10.0, 20.0, 30.0, 40.0);
+        let constraints = BoxConstraints::loose(Size::new(200.0, 100.0));
+        assert_eq!(
+            align.child_constraints(constraints),
+            BoxConstraints::loose(Size::new(140.0, 60.0))
+        );
+        let (size, positions) = align.layout_children(
+            constraints,
+            &[Size::new(50.0, 20.0)],
+            &crate::runtime::DEFAULT_TEXT_METRICS,
+        );
+        assert_eq!(size, Size::new(200.0, 100.0));
+        assert_eq!(positions, vec![Point::new(130.0, 10.0)]);
+        assert!(!align.hit_test(
+            Point::new(190.0, 5.0),
+            Rect::from_min_size(Point::ZERO, size)
+        ));
+    }
     #[test]
     fn should_use_natural_extent_on_unbounded_axes() {
         let align = Align::new(Alignment::Center);

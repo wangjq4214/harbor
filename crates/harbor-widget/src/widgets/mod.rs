@@ -1,4 +1,6 @@
 pub mod actions;
+pub mod backdrop_filter;
+pub use backdrop_filter::BackdropFilter;
 pub mod align;
 pub mod button;
 pub mod column;
