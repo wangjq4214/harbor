@@ -17,6 +17,7 @@ pub use configuration::{
 mod io;
 #[path = "render/layout.rs"]
 pub mod layout;
+pub mod literal_search;
 mod logical_content;
 mod model;
 #[cfg(test)]

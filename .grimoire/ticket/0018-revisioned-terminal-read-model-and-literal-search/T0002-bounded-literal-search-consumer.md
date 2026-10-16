@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0027](../../spec/0027-revisioned-terminal-read-model-and-literal-search.md), R2–R6, R8/R9 and Search work / Result acceptance and activation seams; [set constraints](./README.md#source-baseline-and-constraints).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -28,13 +28,19 @@ Document concrete read/copy/scan, query/result retention and cancellation limits
 
 ## Acceptance
 
-- [ ] **A1 — Literal semantics (R3/R6):** Search uses only the shared boundary, finds occurrences spanning soft wraps and bounded page edges, and never creates a match across explicit lines, including blank lines. Results refer to complete retained text units/logical anchors; generated padding and synthetic display cues are not searchable source text.
-- [ ] **A2 — Result/validation contract (R2/R5/R6):** Results carry session, buffer/content generation/revision and query provenance, logical ranges and explicit completion/partial/stale status. A consumer can validate current text/retention before publication and again before activation; a still-resolvable anchor is insufficient. Matching executes no target and mutates neither source/cells nor parser state.
-- [ ] **A3 — Cancellation and late-completion tests (R2/R4/R6/R9):** Delay work, replace or cancel the query, and deliver the older completion last. It cannot publish as latest or revive obsolete results. Cancellation checking, retained resources and query/result retention stay within documented bounds. Session close/replacement and buffer/reset generation changes make corresponding work ineligible under the contract; shell EOF alone is not required to invalidate.
-- [ ] **A4 — Text/continuation tests (R1/R3/R9):** Cover multi-batch oversized logical lines, head-truncated retained suffixes, hard breaks and meaningful blanks, CJK/combining/emoji and byte/scalar/cell distinctions. A revision change between portions cannot silently join incompatible text. Respect approved resize clipping; do not search discarded text or invent missing prefixes.
-- [ ] **A5 — Mutation/progress tests (R4/R8/R9):** Exercise append during search, overwrite with still-resolvable anchors, erase/structural edits, reflow/height changes, partial eviction/ring reuse, alternate transitions/saved-primary resize and reset/replacement. Stale text is not returned as actionable; remapped valid results or deterministic invalidation/fresh bounded work follow T0001's documented rules. Under repeated output, demonstrate useful current-query results on retained content rather than an endless full-history restart.
-- [ ] **A6 — Bounded work and honest coverage (R6/R8/R9):** Tests expose read/copy and scan batch work, limit/incomplete-read outcomes, cancellation and retained query/results resources against implementation-documented limits. Partial coverage cannot masquerade as complete no-match. Searching is requested work separable from presentation, not a per-frame/hover operation. Focused headless regressions ship here; T0004 adds integrated measurements rather than establishing these fundamentals.
+- [x] **A1 — Literal semantics (R3/R6):** Search uses only the shared boundary, finds occurrences spanning soft wraps and bounded page edges, and never creates a match across explicit lines, including blank lines. Results refer to complete retained text units/logical anchors; generated padding and synthetic display cues are not searchable source text.
+- [x] **A2 — Result/validation contract (R2/R5/R6):** Results carry session, buffer/content generation/revision and query provenance, logical ranges and explicit completion/partial/stale status. A consumer can validate current text/retention before publication and again before activation; a still-resolvable anchor is insufficient. Matching executes no target and mutates neither source/cells nor parser state.
+- [x] **A3 — Cancellation and late-completion tests (R2/R4/R6/R9):** Delay work, replace or cancel the query, and deliver the older completion last. It cannot publish as latest or revive obsolete results. Cancellation checking, retained resources and query/result retention stay within documented bounds. Session close/replacement and buffer/reset generation changes make corresponding work ineligible under the contract; shell EOF alone is not required to invalidate.
+- [x] **A4 — Text/continuation tests (R1/R3/R9):** Cover multi-batch oversized logical lines, head-truncated retained suffixes, hard breaks and meaningful blanks, CJK/combining/emoji and byte/scalar/cell distinctions. A revision change between portions cannot silently join incompatible text. Respect approved resize clipping; do not search discarded text or invent missing prefixes.
+- [x] **A5 — Mutation/progress tests (R4/R8/R9):** Exercise append during search, overwrite with still-resolvable anchors, erase/structural edits, reflow/height changes, partial eviction/ring reuse, alternate transitions/saved-primary resize and reset/replacement. Stale text is not returned as actionable; remapped valid results or deterministic invalidation/fresh bounded work follow T0001's documented rules. Under repeated output, demonstrate useful current-query results on retained content rather than an endless full-history restart.
+- [x] **A6 — Bounded work and honest coverage (R6/R8/R9):** Tests expose read/copy and scan batch work, limit/incomplete-read outcomes, cancellation and retained query/results resources against implementation-documented limits. Partial coverage cannot masquerade as complete no-match. Searching is requested work separable from presentation, not a per-frame/hover operation. Focused headless regressions ship here; T0004 adds integrated measurements rather than establishing these fundamentals.
 
 ## Out of Scope
 
 Application query placement/default shortcuts, concrete rendering, full #159 search/result-preservation scope, regex/advanced case options, global cross-session search and full #160 shell workflows. No new scheduling/cache/thread architecture or fixed performance threshold is prescribed.
+
+## Delivery evidence
+
+Implemented `harbor_terminal::literal_search`: cooperative bounded pages, exact literal matching with whole-unit logical ranges, explicit coverage and query/content provenance, cancellation, and publication/activation validation. Explicit continuation rebasing makes useful fixed-scope progress under ongoing output without a hidden full-history restart.
+
+[Contract, bounds, A1–A6 audit and verification](../../../docs/terminal-literal-search.md): 19 focused headless tests, 2048 generated oracle cases, core-only and workspace suites, clippy, formatting and documentation gates pass. T0003 real host/UI/projection and T0004 integrated runtime/measurement evidence remain excluded; no full search/shell work-package completion is claimed.

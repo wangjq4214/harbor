@@ -2,7 +2,7 @@
 
 **Source:** [Spec 0027](../../spec/0027-revisioned-terminal-read-model-and-literal-search.md), including R1–R9, Solution Boundary and Seams, End-to-End Verification, Decisions and Scope Traceability, and Out of Scope.
 **Ticket folder:** `.grimoire/ticket/0018-revisioned-terminal-read-model-and-literal-search/`
-**Status:** In Progress — T0001 boundary delivered and verified; T0002–T0004 remain Todo. See [T0001 evidence](../../../docs/terminal-read-model.md) for scoped results and exclusions.
+**Status:** In Progress — T0001 boundary and T0002 headless consumer delivered and verified; T0003–T0004 remain Todo. See [T0001 evidence](../../../docs/terminal-read-model.md) and [T0002 evidence](../../../docs/terminal-literal-search.md) for scoped results and exclusions.
 
 ## Overview
 
