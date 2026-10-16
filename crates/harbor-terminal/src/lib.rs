@@ -27,6 +27,7 @@ mod palette_tests;
 mod parser;
 mod pointer;
 mod primary_reflow;
+pub mod read_model;
 #[cfg(feature = "renderer")]
 pub mod render;
 mod screen;
@@ -81,6 +82,8 @@ pub use update::TerminalUpdate;
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
     screen: Screen,
+    /// Stable for this engine/session instance, never a current-tab index.
+    read_session: read_model::SessionId,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
     /// Terminal-owned pointer and selection state.
@@ -157,6 +160,7 @@ impl Terminal {
     ) -> Self {
         Self {
             screen: Screen::with_palette(rows, cols, appearance.palette()),
+            read_session: read_model::SessionId(read_model::fresh_identity()),
             io: TerminalIo::new_headless(),
             pointer: PointerInteraction::new(),
             appearance,

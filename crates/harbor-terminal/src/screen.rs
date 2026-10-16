@@ -486,6 +486,17 @@ impl Screen {
         Some((id, self.hyperlinks.get(id)?.uri.as_str()))
     }
 
+    pub(crate) fn read_buffer(&self) -> &NormalBuf {
+        &self.normal
+    }
+
+    pub(crate) fn read_hyperlink(
+        &self,
+        id: crate::model::HyperlinkId,
+    ) -> Option<(&str, Option<&str>)> {
+        let link = self.hyperlinks.get(id)?;
+        Some((&link.uri, link.id.as_deref()))
+    }
     pub(crate) fn open_hyperlink(&mut self, uri: String, external_id: Option<String>) {
         let Screen {
             normal,
