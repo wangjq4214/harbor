@@ -54,7 +54,7 @@ pub const MAX_READ_PAYLOAD_BYTES: usize = 256 * 1024;
 
 pub(crate) fn fresh_identity() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
         .expect("terminal read identity exhausted")
 }
 
