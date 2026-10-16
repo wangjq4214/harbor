@@ -17,6 +17,8 @@ pub mod __macro_support {
 
 pub mod icon;
 pub use icon::LucideIcon;
+pub mod paint;
+pub use paint::{GradientError, GradientStop, LinearGradient, Paint};
 pub mod decoration;
 pub use decoration::{
     Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecorationError,

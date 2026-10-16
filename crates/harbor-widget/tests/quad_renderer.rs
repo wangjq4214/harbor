@@ -284,6 +284,16 @@ fn render_quad_items(
         },
         &viewport,
     );
+    render_retained_quads(device, queue, &renderer, target_size, encode_ids)
+}
+
+fn render_retained_quads(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &QuadRenderer,
+    target_size: u32,
+    encode_ids: Option<&[u64]>,
+) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("quad primitive render target"),
         size: wgpu::Extent3d {
@@ -327,6 +337,427 @@ fn render_quad_items(
     }
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, target_size)
+}
+
+fn test_gradient(start: Point, end: Point, stops: &[(f32, Color)]) -> harbor_widget::Paint {
+    let stops: Vec<_> = stops
+        .iter()
+        .map(|(offset, color)| harbor_widget::GradientStop::new(*offset, *color))
+        .collect();
+    harbor_widget::LinearGradient::new(start, end, &stops)
+        .unwrap()
+        .into()
+}
+
+#[test]
+fn gradient_eight_stops_respect_nested_clips_and_translucent_edge_coverage() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for clipped eight-stop gradient");
+        return;
+    };
+    let stops: Vec<_> = (0..8)
+        .map(|i| {
+            (
+                i as f32 / 7.0,
+                Color {
+                    a: 0.5,
+                    ..if i < 4 { Color::RED } else { Color::BLUE }
+                },
+            )
+        })
+        .collect();
+    let paint = test_gradient(Point::ZERO, Point::new(1.0, 0.0), &stops);
+    for scale in [1.0, 1.5, 2.0] {
+        let mut item = make_rounded_item(
+            1,
+            Primitive::PaintedQuad {
+                rect: Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+                paint,
+                corner_radii: [4.0; 4],
+            },
+        );
+        for (origin, side, radius) in [(2.0, 28.0, 4.0), (4.0, 24.0, 6.0)] {
+            item.clips.push(
+                RoundedClip::new(
+                    Rect::from_min_size(Point::new(origin, origin), Size::new(side, side)),
+                    BorderRadius::all(radius).unwrap(),
+                    ClipBehavior::AntiAlias,
+                )
+                .unwrap(),
+            );
+        }
+        let side = (32.0 * scale) as u32;
+        let pixels = render_quad_item(
+            &device,
+            &queue,
+            item,
+            Viewport::new(side, side, scale),
+            side,
+        );
+        let at = |x: f32, y: f32| bgra(&pixels, (x * scale) as u32, (y * scale) as u32);
+        assert_eq!(at(6.0, 16.0), [0, 0, 128, 128], "first half of stop array");
+        assert_eq!(
+            at(25.0, 16.0),
+            [128, 0, 0, 128],
+            "second half of stop array"
+        );
+        assert_eq!(
+            at(4.0, 4.0),
+            [0; 4],
+            "ancestor rounded corner clips gradient"
+        );
+        assert_eq!(at(1.0, 16.0), [0; 4], "outside ancestors stays empty");
+        let edge = at(4.0, 16.0);
+        assert!(
+            edge[3] > 0 && edge[3] < 128,
+            "antialias scales paint alpha: {edge:?}"
+        );
+    }
+}
+
+#[test]
+fn gradient_fill_and_stroke_share_stops_direction_clamping_and_rounded_coverage() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for gradient fill/stroke pixels");
+        return;
+    };
+    for (start, end, reversed) in [
+        (Point::ZERO, Point::new(1.0, 0.0), false),
+        (Point::new(1.0, 0.0), Point::ZERO, true),
+    ] {
+        let paint = test_gradient(
+            start,
+            end,
+            &[(0.25, Color::RED), (0.5, Color::GREEN), (0.75, Color::BLUE)],
+        );
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0));
+        for scale in [1.0, 1.5, 2.0] {
+            let side = (32.0 * scale) as u32;
+            let viewport = Viewport::new(side, side, scale);
+            for border in [false, true] {
+                let primitive = if border {
+                    Primitive::PaintedBorder {
+                        rect,
+                        width: 3.0,
+                        paint,
+                        corner_radii: [6.0; 4],
+                    }
+                } else {
+                    Primitive::PaintedQuad {
+                        rect,
+                        paint,
+                        corner_radii: [6.0; 4],
+                    }
+                };
+                let pixels = render_quad_item(
+                    &device,
+                    &queue,
+                    make_rounded_item(1, primitive),
+                    viewport.clone(),
+                    side,
+                );
+                let y = if border { 1.0 } else { 16.0 };
+                let left = bgra(&pixels, (6.0 * scale) as u32, (y * scale) as u32);
+                let right = bgra(&pixels, (26.0 * scale) as u32, (y * scale) as u32);
+                assert_eq!(
+                    left,
+                    if reversed {
+                        [255, 0, 0, 255]
+                    } else {
+                        [0, 0, 255, 255]
+                    }
+                );
+                assert_eq!(
+                    right,
+                    if reversed {
+                        [0, 0, 255, 255]
+                    } else {
+                        [255, 0, 0, 255]
+                    }
+                );
+                let middle = bgra(&pixels, (16.0 * scale) as u32, (y * scale) as u32);
+                assert!(
+                    middle[1] > 230 && middle[3] == 255,
+                    "middle stop: {middle:?}"
+                );
+                assert_eq!(bgra(&pixels, 0, 0)[3], 0, "rounded corner remains empty");
+                if border {
+                    assert_eq!(
+                        bgra(&pixels, side / 2, side / 2)[3],
+                        0,
+                        "stroke has no center fill"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn gradient_interpolates_premultiplied_colors_without_transparent_rgb_fringes() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for gradient alpha pixels");
+        return;
+    };
+    let rect = Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0));
+    let paint = test_gradient(
+        Point::ZERO,
+        Point::new(1.0, 0.0),
+        &[
+            (
+                0.0,
+                Color {
+                    a: 0.0,
+                    ..Color::RED
+                },
+            ),
+            (
+                1.0,
+                Color {
+                    a: 0.8,
+                    ..Color::BLUE
+                },
+            ),
+        ],
+    );
+    let ramp = make_rounded_item(
+        2,
+        Primitive::PaintedQuad {
+            rect,
+            paint,
+            corner_radii: [0.0; 4],
+        },
+    );
+    let viewport = Viewport::new(32, 32, 1.0);
+    let pixels = render_quad_item(&device, &queue, ramp.clone(), viewport.clone(), 32);
+    let pixel = bgra(&pixels, 16, 16);
+    assert!(
+        (i32::from(pixel[3]) - 105).abs() <= 1,
+        "alpha ramp: {pixel:?}"
+    );
+    assert_eq!(pixel[2], 0, "transparent red contributes no fringe");
+    assert_eq!(pixel[0], pixel[3], "blue is premultiplied exactly once");
+    let green = make_rounded_item(
+        1,
+        Primitive::Quad {
+            rect,
+            color: Color::GREEN,
+            corner_radius: 0.0,
+        },
+    );
+    let pixels = render_quad_items(&device, &queue, vec![green, ramp], viewport, 32, None);
+    let pixel = bgra(&pixels, 16, 16);
+    assert!((i32::from(pixel[0]) - 105).abs() <= 1 && (i32::from(pixel[1]) - 150).abs() <= 1);
+    assert_eq!(
+        pixel[2..],
+        [0, 255],
+        "background remains visible through ramp"
+    );
+}
+
+#[test]
+fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for retained gradient table");
+        return;
+    };
+    let rect = Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0));
+    let make = |id, colors: [Color; 2]| {
+        make_rounded_item(
+            id,
+            Primitive::PaintedQuad {
+                rect,
+                paint: test_gradient(
+                    Point::ZERO,
+                    Point::new(0.0, 1.0),
+                    &[(0.25, colors[0]), (0.75, colors[1])],
+                ),
+                corner_radii: [0.0; 4],
+            },
+        )
+    };
+    let viewport = Viewport::new(32, 32, 1.0);
+    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut items: Vec<_> = (1..=300)
+        .map(|id| {
+            make(
+                id,
+                if id == 1 {
+                    [Color::RED, Color::GREEN]
+                } else {
+                    [Color::BLUE, Color::WHITE]
+                },
+            )
+        })
+        .collect();
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            added: items.clone(),
+            removed: vec![],
+            modified: vec![],
+        },
+        &viewport,
+    );
+    assert_eq!(
+        bgra(
+            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            16,
+            2
+        ),
+        [0, 0, 255, 255]
+    );
+    assert_eq!(
+        bgra(
+            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[300])),
+            16,
+            2
+        ),
+        [255, 0, 0, 255]
+    );
+    let first_slot = renderer.slot_of(1);
+    let reused_slot = renderer.slot_of(300);
+    items[0] = make(1, [Color::BLACK, Color::WHITE]);
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            removed: vec![300],
+            modified: vec![items[0].clone()],
+            added: vec![],
+        },
+        &viewport,
+    );
+    let solid = make_rounded_item(
+        400,
+        Primitive::PaintedQuad {
+            rect,
+            paint: Color::GREEN.into(),
+            corner_radii: [0.0; 4],
+        },
+    );
+    renderer.update(
+        &queue,
+        &SceneDelta {
+            added: vec![solid],
+            removed: vec![],
+            modified: vec![],
+        },
+        &viewport,
+    );
+    assert_eq!(renderer.slot_of(400), reused_slot);
+    assert_eq!(renderer.slot_of(1), first_slot);
+    assert_eq!(
+        bgra(
+            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[400])),
+            16,
+            16
+        ),
+        [0, 255, 0, 255]
+    );
+    assert_eq!(
+        bgra(
+            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            16,
+            2
+        ),
+        [0, 0, 0, 255]
+    );
+    renderer.refresh_viewport(&queue, &items[..299], &Viewport::new(64, 64, 2.0));
+    let pixels = render_retained_quads(&device, &queue, &renderer, 64, Some(&[1]));
+    assert_eq!(bgra(&pixels, 32, 60), [255; 4]);
+    assert_eq!(bgra(&pixels, 32, 4), [0, 0, 0, 255]);
+}
+
+#[test]
+fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for generic glass composition");
+        return;
+    };
+    let paint = test_gradient(
+        Point::ZERO,
+        Point::new(0.0, 1.0),
+        &[
+            (
+                0.0,
+                Color {
+                    a: 0.12,
+                    ..Color::WHITE
+                },
+            ),
+            (
+                1.0,
+                Color {
+                    a: 0.04,
+                    ..Color::WHITE
+                },
+            ),
+        ],
+    );
+    let radius = BorderRadius::all(6.0).unwrap();
+    let decoration = BoxDecoration::new()
+        .try_paint(paint)
+        .unwrap()
+        .border(Border::with_paint(paint, 1.0).unwrap())
+        .border_radius(radius);
+    let glass = || {
+        Padding::all(4.0).child(
+            harbor_widget::BackdropFilter::new(2.0)
+                .unwrap()
+                .border_radius(radius)
+                .child(
+                    DecoratedBox::new(decoration.clone())
+                        .clip_behavior(ClipBehavior::AntiAlias)
+                        .child(SizedBox::new(Size::new(24.0, 24.0))),
+                ),
+        )
+    };
+    let root = |background| {
+        Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+            .child(
+                Padding::new(0.0, 0.0, 0.0, 16.0)
+                    .child(SizedBox::new(Size::new(16.0, 32.0)).color(background)),
+            )
+            .child(glass())
+            .child(Padding::all(13.0).child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)))
+    };
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    for scale in [1.0, 1.5, 2.0] {
+        let viewport = Viewport::new((32.0 * scale) as u32, (32.0 * scale) as u32, scale);
+        runtime.set_viewport(viewport.clone());
+        runtime.set_root(root(Color::BLUE));
+        runtime.update(Instant::now());
+        let first = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        let at =
+            |pixels: &[u8], x: f32, y: f32| bgra(pixels, (x * scale) as u32, (y * scale) as u32);
+        let mixed = at(&first, 15.0, 10.0);
+        assert!(
+            mixed[0] > 20 && mixed[1] > 80,
+            "live background colors survive glass: {mixed:?}"
+        );
+        assert_eq!(
+            at(&first, 16.0, 16.0),
+            [0, 0, 255, 255],
+            "foreground remains sharp"
+        );
+        assert_eq!(
+            at(&first, 4.0, 4.0),
+            [0, 255, 0, 255],
+            "round corner unchanged"
+        );
+        let retained = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        assert_eq!(first, retained, "unchanged glass does not accumulate alpha");
+        runtime.set_root(root(Color::RED));
+        runtime.update(Instant::now());
+        let changed = encode_filter_frame(&device, &queue, &mut runtime, viewport);
+        let updated = at(&changed, 15.0, 10.0);
+        assert!(
+            updated[0] < mixed[0] && updated[2] > mixed[2],
+            "new background appears through glass"
+        );
+    }
 }
 
 #[test]
@@ -2868,6 +3299,63 @@ fn encode_filter_frame(
     );
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, size)
+}
+
+#[test]
+fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for blur sampling quality");
+        return;
+    };
+    for scale in [1.0, 1.5, 2.0] {
+        let side = (32.0 * scale) as u32;
+        let viewport = Viewport::new(side, side, scale);
+        let mut runtime = Runtime::new();
+        runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let stripe = || {
+            Padding::new(0.0, 0.0, 0.0, 16.0)
+                .child(SizedBox::new(Size::new(1.0, 32.0)).color(Color::WHITE))
+        };
+        runtime.set_viewport(viewport.clone());
+        runtime.set_root(Stack::new().child(stripe()));
+        runtime.update(Instant::now());
+        let source_pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
+        // Account for the source shape's DPI-dependent edge coverage rather
+        // than assuming a 1dp shape covers an integer number of physical pixels.
+        let source_energy: u32 = (0..side)
+            .map(|x| u32::from(bgra(&source_pixels, x, side / 2)[3]))
+            .sum();
+        let expected_peak =
+            source_energy as f32 / ((2.0 * std::f32::consts::PI).sqrt() * 8.0 * scale);
+        runtime.set_root(
+            Stack::new().child(stripe()).child(
+                harbor_widget::BackdropFilter::new(8.0)
+                    .unwrap()
+                    .child(SizedBox::new(Size::new(32.0, 32.0))),
+            ),
+        );
+        runtime.update(Instant::now());
+        let pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport);
+        let center = (16.5 * scale) as u32;
+        let profile: Vec<_> = (0..side).map(|x| bgra(&pixels, x, side / 2)[3]).collect();
+        let peak = *profile.iter().max().unwrap();
+        assert!(
+            (f32::from(peak) - expected_peak).abs() <= 2.0,
+            "sigma=8 should spread a thin line, not repeat sparse taps at {scale}x: expected peak={expected_peak}, {profile:?}"
+        );
+        for x in 2..center {
+            assert!(
+                profile[x as usize] <= profile[x as usize + 1] + 1,
+                "left Gaussian profile must be smooth: {profile:?}"
+            );
+        }
+        for x in center + 1..side - 2 {
+            assert!(
+                profile[x as usize + 1] <= profile[x as usize] + 1,
+                "right Gaussian profile must be smooth: {profile:?}"
+            );
+        }
+    }
 }
 
 #[test]

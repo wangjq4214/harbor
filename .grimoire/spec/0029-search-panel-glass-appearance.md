@@ -3,7 +3,7 @@
 **Spec ID:** 0029
 **Status:** Draft
 **Date:** 2026-10-16
-**Sources:** The conversation contract below; [ADR 0066](../adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md), applying [component ownership ADR 0064](../adr/0064-widget-and-application-component-ownership.md) and [layered input ADR 0065](../adr/0065-layered-widget-text-input.md).
+**Sources:** The conversation contract below; [ADR 0066](../adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md) and [ADR 0067](../adr/0067-widget-gradient-paints-with-application-material-presets.md), applying [component ownership ADR 0064](../adr/0064-widget-and-application-component-ownership.md) and [layered input ADR 0065](../adr/0065-layered-widget-text-input.md).
 **Endpoint:** Spec only. This document does not authorize tickets, an implementation plan, code changes or execution of acceptance tests.
 
 ## Source Contract
@@ -11,8 +11,9 @@
 - **S1 — Requested appearance:** Put the input, result information and buttons on one row, with result information before the buttons. Default to the exact text `No Result`; show current-match/total information when matches exist. Buttons blend into the panel without their own background color. Give the overall panel a soft glass appearance, and give the input rounded corners and a translucent black fill that blends in while remaining identifiable as an input.
 - **S2 — Confirmed choices:** The user selected B: real local blur of terminal content behind the panel, not merely a translucent-card approximation. Foreground input, result text and buttons remain sharp. The user chose to preserve navigation behavior: do not automatically select or navigate to the first match; show `— / N` before navigation and `i / N` after navigation.
 - **S3 — Selected route:** After these choices and the ownership boundary were summarized, the user approved continuing with spec only, without ticket decomposition or implementation.
-- **S4 — Existing constraints:** [Search spec 0027, R4–R7](./0027-revisioned-terminal-read-model-and-literal-search.md) requires validated search/navigation and distinguishes partial coverage from complete no-match results. [Input spec 0028](./0028-reusable-single-line-text-input.md) and ADR 0065 keep editing reusable and search-specific semantics application-owned. [Decoration spec 0009](./0009-widget-decoration-and-terminal-chrome.md) supplies existing decoration/clipping constraints; its first-version exclusion of filters does not itself supply the new blur capability.
+- **S4 — Existing constraints:** [Search spec 0027, R4–R7](./0027-revisioned-terminal-read-model-and-literal-search.md) requires validated search/navigation and distinguishes partial coverage from complete no-match results. [Input spec 0028](./0028-reusable-single-line-text-input.md) and ADR 0065 keep editing reusable and search-specific semantics application-owned. [Decoration spec 0009](./0009-widget-decoration-and-terminal-chrome.md) supplies existing decoration/clipping constraints; its first-version exclusions of filters and gradients do not themselves supply the new blur or gradient capabilities; this contract and ADR 0067 select the bounded gradient extension.
 - **S5 — Confirmed follow-ups:** The user reported status-driven input/result movement and approved immediate search without input debounce and a busy hint only after about 200ms. The later explicit correction replaces the proposed standalone `—` pending label with the unchanged initial `No Result` text during that delay. This is a presentation fallback, not completed negative search evidence. Keep fixed result-slot geometry, do not reuse old-query counts, and retain the existing `— / N` / `i / N` navigation format.
+- **S6 — Confirmed glass refinement:** After comparing the current search panel with the supplied glass reference, the user clarified that the corners should not become capsule-shaped: the goal is a more translucent glass material. The user approved preserving existing corners and layout, reusing local backdrop blur, adding a generic solid-color/linear-gradient paint abstraction shared by fills and border strokes in `harbor-widget`, and keeping the material recipe in the application. The approved recipe combines a lighter translucent base, subtle surface reflection, varying edge highlights and a soft outer shadow; the input retains a lighter translucent black surface. No comprehensive `Glass` component, refraction, dynamic lighting, noise or arbitrary-filter framework is selected. This refinement updates the existing spec rather than creating a separate contract or starting implementation.
 
 ## Requirements
 
@@ -61,17 +62,19 @@ The overall panel, not just the input, must have the requested soft, translucent
 
 The panel's own input text, caret, result information and button icons remain sharp. The blur is confined to the panel's intended backdrop region and respects its geometry and applicable clipping; it must not blur the whole terminal or unrelated foreground content. Changes to terminal content behind the visible panel must be reflected in the backdrop rather than leaving a frozen capture.
 
-The application chooses the panel's glass visual parameters. Exact tint, opacity, radius, blur strength, border and shadow values are not fixed by this contract; they must be evaluated against the requested soft-glass appearance and foreground readability rather than represented as user-approved numbers.
+Preserve the current panel and input corner radii and the existing panel layout; do not introduce a capsule silhouette as part of the material change. The refinement baseline in `workspace.rs::search_bar` is a 12-logical-pixel panel radius and a 7-logical-pixel input radius. Search interaction and result publication remain governed by R1–R3.
 
-Sources: S1, S2; ADR 0066; S4 decoration/clipping constraints.
+Replace the heavy uniform-gray-card appearance with a lighter translucent base that retains more of the background's color, a subtle gradient surface reflection, a fine edge highlight that varies in brightness rather than forming a uniformly bright outline, and a soft outer shadow. These are material changes, not a request to keep increasing blur strength. The application chooses tint, opacity, blur strength, gradient direction/stops and shadow values; no new numeric material recipe is user-approved.
+
+Sources: S1, S2, S6; ADRs 0066 and 0067; S4 decoration/clipping constraints.
 
 ### R5 — Rounded, distinguishable input
 
 Give the input visibly rounded rather than sharp rectangular corners and a translucent black background. The input must read as an editable region distinct from the enclosing glass surface, while visually belonging to the same panel. Keep its contents sharp and readable; its fill must not turn into a fully opaque black block.
 
-Use the established reusable input and decoration interfaces. Styling must not introduce another editor or move query limits, search commands or result handling into the editing core. Exact radius and black opacity are not fixed.
+Use the established reusable input and decoration interfaces. Styling must not introduce another editor or move query limits, search commands or result handling into the editing core. Preserve the existing input radius under S6 and lighten the translucent black fill so it reads as an inset editable region within the same glass material, not a separate heavy block. Exact black opacity is not fixed.
 
-Sources: S1; ADR 0065; existing `TextField.decoration()`.
+Sources: S1, S6; ADR 0065; existing `TextField.decoration()`.
 
 ### R6 — Generic capability, application-owned product choices
 
@@ -79,9 +82,19 @@ Provide local backdrop blur as a reusable `harbor-widget` visual/rendering capab
 
 The application owns the search panel composition, result semantics, glass preset, transparent-button style and input decoration. Existing styling APIs must be reused where sufficient; no search-specific widget API or global control-default change is required for those appearance choices.
 
-The mechanism must compose with embedded terminal drawing without moving terminal content ownership or search behavior into the widget layer. Public API spelling and GPU implementation strategy are not selected.
+The mechanism must compose with embedded terminal drawing without moving terminal content ownership or search behavior into the widget layer. Reuse the existing `BackdropFilter`, decoration/clipping and outer-shadow capabilities rather than creating parallel glass-specific mechanisms. Public API spelling and GPU implementation strategy are not selected.
 
-Sources: ADR 0066, applying ADRs 0064 and 0065.
+Sources: S6; ADRs 0066 and 0067, applying ADRs 0064 and 0065.
+
+### R7 — Shared generic gradient painting
+
+Extend widget decoration painting with one reusable paint abstraction supporting solid colors and linear gradients, usable for both box fills and border strokes. Gradient inputs describe direction and color stops including alpha, not search-specific or glass-specific properties. A non-terminal consumer must be able to use the same capability without application search/session types.
+
+The widget layer owns gradient rendering, rounded-edge antialiasing and transparent composition. Preserve existing solid-color styling interfaces and behavior, optional/no-fill decoration, layout-neutral decoration and the established clipping and paint-order contracts. Ordinary solid-color consumers must not require migration because gradients become available. This does not request per-edge border widths, an inset-shadow API or new layout behavior.
+
+The application composes these paints with local background filtering and existing outer shadows for the R4 material. Its preset owns color, opacity, gradient/highlight direction, blur and shadow parameters. Do not introduce search-specific rendering APIs, change global control defaults or introduce a comprehensive `Glass` component. Public paint type/API names, gradient coordinate/stop rules and GPU representation remain implementation design details rather than selected requirements.
+
+Sources: S6; ADR 0067; S4 decoration constraints.
 
 ## Solution Boundary and Seams
 
@@ -94,6 +107,7 @@ Current source anchors are `crates/harbor-app/src/workspace.rs::search_bar`, `cr
 | Glass composition | Application panel composition → widget local-backdrop capability | Consumer-selected region/geometry and visual parameters, with separately composed foreground content | Local filtering of content behind the panel while its foreground stays sharp |
 | Embedded rendering | Widget backdrop rendering ↔ embedded terminal drawing | Terminal pixels behind the panel in scene order, applicable clips and changing terminal output | Actual local blur including terminal presentation, without terminal-specific blur semantics or stale captured output |
 | Existing styling | Application appearance → `TextField.decoration()` / `IconButton.style()` | Rounded translucent input decoration and transparent state backgrounds | Product-specific appearance without changing generic defaults or editing behavior |
+| Decoration paints | Application material preset → widget decoration/renderer | Consumer-selected solid or linear-gradient fill/stroke paint, gradient direction and color stops including alpha, existing geometry/clips | Shared generic fill/stroke painting with correct translucent rounded edges, preserving solid-color interfaces and layout behavior |
 
 ## End-to-End Verification
 
@@ -111,6 +125,10 @@ Current source anchors are `crates/harbor-app/src/workspace.rs::search_bar`, `cr
 | Real glass over terminal | Put contrasting terminal text behind the panel, then update that text | Underlying terminal content is visibly softened only in the backdrop region and updates with output. Panel text, caret and icons remain sharp. Translucency or system Acrylic alone is not accepted as proof. |
 | Input surface | Focus and edit the input against contrasting terminal content | Rounded corners and a translucent black fill distinguish the editable area without an opaque block; input, selection and caret remain usable. |
 | Generic mechanism | Compose the local-backdrop capability in a non-terminal widget example with changing background content and foreground text/icons | The same local-filter/sharp-foreground contract works without application search/session types. |
+| Translucent material | Observe the panel over contrasting terminal text and color regions, including after background changes | Background colors remain perceptible through the softened material; subtle surface reflection and varying edge highlights replace the heavy uniform-gray-card appearance. Foreground stays sharp, and the shadow separates the panel without an opaque backing. A uniform background is not expected to acquire reference-image colors. |
+| Preserved geometry | Compare panel/input outlines and allocations before and after the material refinement | Panel and input retain their existing radii and layout; neither becomes capsule-shaped and no material decoration shifts the controls. |
+| Shared gradient paints | Use the same generic paint capability for a non-terminal box fill and border, then change direction/color/alpha inputs | Both uses reflect the selected gradient, with correct translucent rounded edges and applicable clipping; no search types or dedicated glass renderer are needed. |
+| Solid-color compatibility | Render existing solid-color and no-fill decorations beside gradient decorations | Existing callers keep their interfaces and behavior, including fill absence, geometry, clipping, shadow order and layout neutrality. |
 
 Use focused application/widget tests for state publication, navigation-driven display, composition, style states and unchanged editing/command behavior. Use visual/runtime evidence for real blur over terminal drawing, live-output updates, rounded clipping, foreground sharpness and input readability. Existing project validation obligations still apply; this spec-only step runs no implementation or runtime acceptance tests. No new numeric performance threshold is established here.
 
@@ -118,7 +136,8 @@ Use focused application/widget tests for state publication, navigation-driven di
 
 - **Real blur rather than visual approximation:** Explicit user choice B; recorded in ADR 0066.
 - **No automatic first-match selection or scrolling:** Explicit user choice to preserve current navigation behavior, including the confirmed `— / N` before navigation.
-- **One contract:** Application styling and generic local blur share the observable glass-panel outcome; this spec does not split them into independent approval paths.
-- **No invented material recipe:** The soft-glass direction is confirmed, but exact visual parameters remain implementation tuning, not established Xiaomi material values or pixel-exact reference requirements.
-- **No new rendering architecture:** Blur API, algorithm and render-pass/target arrangement remain open within the approved ownership boundary. No silent translucency-only fallback is approved as fulfillment of R4.
-- **Scope:** Search-panel appearance/result presentation and the required reusable local-blur capability only. This does not select a general arbitrary-filter framework, alter window Acrylic policy, change global widget styling, change search matching/coverage policy, or replace the existing input implementation. The selected endpoint excludes tickets and implementation.
+- **One contract:** Application glass refinement and its generic painting capability share the observable glass-panel outcome; update this spec rather than split them into independent approval paths. Source: S6.
+- **Preserved geometry:** S6 explicitly rejects capsule reshaping; preserve the current panel and input corners and layout.
+- **No invented material recipe:** Exact opacity, color, gradient and shadow values remain implementation tuning, not established reference-image material values or pixel-exact reproduction requirements. The existing corner radii are preserved rather than tuned.
+- **Selected abstraction, not a fixed GPU architecture:** ADR 0067 selects shared generic solid/linear-gradient paints and reuse of existing blur/decoration mechanisms. API names, gradient coordinate/stop rules and render-target/pass representation remain open. No silent translucency-only fallback is approved as fulfillment of R4.
+- **Scope:** Search-panel appearance/result presentation, reusable local blur and the bounded generic gradient fill/stroke extension only. This does not select refraction, dynamic lighting, noise, a comprehensive `Glass` component or a general arbitrary-filter framework; alter window Acrylic policy; change global widget styling or search matching/coverage policy; or replace the existing input implementation. The selected endpoint excludes tickets and implementation.

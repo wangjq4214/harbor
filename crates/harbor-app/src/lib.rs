@@ -1,5 +1,6 @@
 //! Application models and widget composition shared by the Runtime Host and debug UI library.
 
+mod appearance;
 pub mod command;
 pub mod confirmation;
 pub mod notifications;

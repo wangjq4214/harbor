@@ -21,15 +21,27 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 fn gaussian(uv: vec2<f32>, axis: vec2<f32>) -> vec4<f32> {
-    var sum = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-    // Fixed, bounded 17-tap Gaussian approximation with three-sigma support.
-    for (var i = -8; i <= 8; i += 1) {
-        let t = f32(i) * 0.375;
-        let weight = exp(-0.5 * t * t);
-        let offset = axis * t * params.settings.x / params.crop.zw;
-        sum += textureSampleLevel(source, linear_sampler, uv + offset, 0.0) * weight;
-        weight_sum += weight;
+    // Cover every source texel in the three-sigma support. Scaling a fixed
+    // sparse kernel with sigma repeats thin text as a comb/grid instead of
+    // softening it. Pair adjacent Gaussian taps using hardware linear sampling
+    // so each pair needs only one fetch on either side of the center.
+    let sigma = max(params.settings.x, 0.001);
+    let radius = i32(ceil(sigma * 3.0));
+    var sum = textureSampleLevel(source, linear_sampler, uv, 0.0);
+    var weight_sum = 1.0;
+    for (var i = 1; i <= radius; i += 2) {
+        let a = f32(i) / sigma;
+        let b = f32(i + 1) / sigma;
+        let first = exp(-0.5 * a * a);
+        let second = select(0.0, exp(-0.5 * b * b), i + 1 <= radius);
+        let weight = first + second;
+        if weight > 0.0 {
+            let distance = (f32(i) * first + f32(i + 1) * second) / weight;
+            let offset = axis * distance / params.crop.zw;
+            sum += (textureSampleLevel(source, linear_sampler, uv + offset, 0.0)
+                + textureSampleLevel(source, linear_sampler, uv - offset, 0.0)) * weight;
+            weight_sum += 2.0 * weight;
+        }
     }
     return sum / weight_sum;
 }

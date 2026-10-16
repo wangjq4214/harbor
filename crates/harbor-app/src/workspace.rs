@@ -1,6 +1,7 @@
 //! Application workspace composition and Host-published global UI state.
 
 use crate::{
+    appearance::SearchAppearance,
     command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
     notifications::{ConfigurationNoticeSource, ConfigurationNotices, configuration_notification},
     tab_manager::TabSnapshot,
@@ -8,9 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, BackdropFilter, Border, BorderRadius, BoxDecoration, ClipBehavior,
-    ComponentExt as _, DecoratedBox, Expanded, Focus, FocusHandle, FocusScope, IconButton,
-    LayoutObserver, LucideIcon, Portal, Row, Shortcuts, Store, TextEditingController, TextField,
+    ActionOutcome, Actions, BackdropFilter, ClipBehavior, ComponentExt as _, DecoratedBox,
+    Expanded, Focus, FocusHandle, FocusScope, IconButton, LayoutObserver, LucideIcon, Portal, Row,
+    Shortcuts, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -45,17 +46,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
     let submit = controller.store.dispatcher();
     let close = controller.store.dispatcher();
     let entry = TextField::new(input)
-        .decoration(
-            BoxDecoration::new()
-                .try_color(Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.24,
-                })
-                .unwrap()
-                .border_radius(BorderRadius::all(7.0).unwrap()),
-        )
+        .decoration(SearchAppearance::input())
         .padding(6.0)
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
@@ -98,30 +89,10 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
     };
     let status = controller.store.state().read().search.status.clone();
-    let radius = BorderRadius::all(12.0).unwrap();
-    let decoration = BoxDecoration::new()
-        .try_color(Color {
-            r: 0.20,
-            g: 0.22,
-            b: 0.26,
-            a: 0.64,
-        })
-        .unwrap()
-        .border(
-            Border::all(
-                Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 0.16,
-                },
-                1.0,
-            )
-            .unwrap(),
-        )
-        .border_radius(radius);
+    let radius = SearchAppearance::radius();
+    let decoration = SearchAppearance::panel();
     let card = harbor_widget::view! { &mut *cx;
-        BackdropFilter::new(8.0).unwrap().border_radius(radius) => {
+        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap().border_radius(radius) => {
             DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
                 Padding::all(8.0) => {
                     Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {

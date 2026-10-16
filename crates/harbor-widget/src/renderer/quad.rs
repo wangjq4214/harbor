@@ -8,6 +8,42 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 const QUAD_SHADER: &str = r#"
+struct GradientPaint {
+    endpoints: vec4<f32>,
+    colors: array<vec4<f32>, 8>, // premultiplied linear RGBA
+    offsets: array<vec4<f32>, 2>,
+    stop_info: vec4<u32>, // stop count; zero selects the legacy solid path
+}
+@group(0) @binding(0) var<storage, read> paints: array<GradientPaint>;
+
+fn gradient_offset(paint: GradientPaint, index: u32) -> f32 {
+    return paint.offsets[index / 4u][index % 4u];
+}
+
+fn paint_color(local: vec2<f32>, size: vec2<f32>, solid: vec4<f32>, index: u32) -> vec4<f32> {
+    let paint = paints[index];
+    if paint.stop_info.x == 0u { return solid; }
+    let direction = paint.endpoints.zw - paint.endpoints.xy;
+    let t = dot(local / size - paint.endpoints.xy, direction) / dot(direction, direction);
+    var color = paint.colors[paint.stop_info.x - 1u];
+    if t <= gradient_offset(paint, 0u) {
+        color = paint.colors[0u];
+    } else {
+        for (var i = 1u; i < paint.stop_info.x; i += 1u) {
+            let offset = gradient_offset(paint, i);
+            if t <= offset {
+                let before = gradient_offset(paint, i - 1u);
+                color = mix(paint.colors[i - 1u], paint.colors[i], clamp((t - before) / (offset - before), 0.0, 1.0));
+                break;
+            }
+        }
+    }
+    // The existing pipeline uses straight-alpha blending. Unpremultiply only
+    // after interpolation; transparent stop RGB must not bleed into the ramp.
+    if color.a <= 0.0 { return vec4<f32>(0.0); }
+    return vec4<f32>(color.rgb / color.a, color.a);
+}
+
 struct VertexInput {
     @location(0) pos: vec2<f32>,
 }
@@ -20,12 +56,12 @@ struct InstanceInput {
     @location(5) logical_size: vec2<f32>,
     @location(6) shape_rect: vec4<f32>, // origin x/y and size w/h within the instance
     @location(7) blur_radius: f32,
-    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask, 3..8 = Lucide icons
+    @location(8) mode: u32, // 0 = ordinary quad/border, 1 = outer shadow, 2 = dest-in clip mask, 3.. = Lucide icons, 65536 = gradient
     @location(9) clip_rect0: vec4<f32>, // local origin x/y and size w/h
     @location(10) clip_radii0: vec4<f32>,
     @location(11) clip_rect1: vec4<f32>,
     @location(12) clip_radii1: vec4<f32>,
-    @location(13) clip_meta: vec4<u32>, // count, behavior0, behavior1, reserved
+    @location(13) clip_meta: vec4<u32>, // count, behavior0, behavior1, paint slot
     @location(14) occluder_rect: vec4<f32>,
     @location(15) occluder_radii: vec4<f32>,
 }
@@ -174,7 +210,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if clip_alpha <= 0.0 {
         discard;
     }
-    if in.mode >= 3u {
+    if in.mode >= 3u && in.mode < 65536u {
         // Fit a square viewBox, preserving aspect ratio for direct primitives too.
         let side = min(in.size.x, in.size.y);
         let p = (in.local - (in.size - vec2<f32>(side)) * 0.5) * (24.0 / side);
@@ -214,18 +250,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(in.color.rgb, in.color.a * coverage * clip_alpha);
     }
 
+    var color = in.color;
+    if in.mode == 65536u {
+        color = paint_color(in.local, in.size, in.color, in.clip_meta.w);
+    }
     let outer_distance = rounded_box_distance(in.local, in.size, in.radii);
     // Derivatives express the signed-distance transition in framebuffer
     // pixels, so the antialiasing width follows both DPI and perspective.
     let outer_aa = stable_distance_aa(outer_distance, in.local);
     let outer_alpha = 1.0 - smoothstep(-outer_aa, outer_aa, outer_distance);
     if in.border_width <= 0.0 {
-        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * clip_alpha);
+        return vec4<f32>(color.rgb, color.a * outer_alpha * clip_alpha);
     }
 
     let inset_size = max(in.size - vec2<f32>(2.0 * in.border_width), vec2<f32>(0.0));
     if inset_size.x <= 0.0 || inset_size.y <= 0.0 {
-        return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * clip_alpha);
+        return vec4<f32>(color.rgb, color.a * outer_alpha * clip_alpha);
     }
     let inner_radii = max(in.radii - vec4<f32>(in.border_width), vec4<f32>(0.0));
         let inner_distance = rounded_box_distance(
@@ -235,9 +275,44 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let inner_aa = stable_distance_aa(inner_distance, in.local);
     let inner_alpha = 1.0 - smoothstep(-inner_aa, inner_aa, inner_distance);
-    return vec4<f32>(in.color.rgb, in.color.a * outer_alpha * (1.0 - inner_alpha) * clip_alpha);
+    return vec4<f32>(color.rgb, color.a * outer_alpha * (1.0 - inner_alpha) * clip_alpha);
 }
 "#;
+
+/// Storage layout matches GradientPaint in WGSL (all members 16-byte aligned).
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GradientPaint {
+    endpoints: [f32; 4],
+    colors: [[f32; 4]; 8],
+    offsets: [[f32; 4]; 2],
+    meta: [u32; 4],
+}
+
+impl GradientPaint {
+    fn for_primitive(primitive: &Primitive) -> Self {
+        let mut data = Self::zeroed();
+        let paint = match primitive {
+            Primitive::PaintedQuad { paint, .. } | Primitive::PaintedBorder { paint, .. } => paint,
+            _ => return data,
+        };
+        if let crate::Paint::LinearGradient(gradient) = paint {
+            data.endpoints = [
+                gradient.start().x,
+                gradient.start().y,
+                gradient.end().x,
+                gradient.end().y,
+            ];
+            for (i, stop) in gradient.stops().iter().enumerate() {
+                let c = stop.color();
+                data.colors[i] = [c.r * c.a, c.g * c.a, c.b * c.a, c.a];
+                data.offsets[i / 4][i % 4] = stop.offset();
+            }
+            data.meta[0] = gradient.stops().len() as u32;
+        }
+        data
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -278,6 +353,9 @@ const CLIP_MASK_BLEND: wgpu::BlendState = wgpu::BlendState {
 pub struct QuadRenderer {
     pipeline: wgpu::RenderPipeline,
     clip_mask_pipeline: wgpu::RenderPipeline,
+    paint_layout: wgpu::BindGroupLayout,
+    paint_buffer: wgpu::Buffer,
+    paint_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     device: wgpu::Device,
@@ -294,7 +372,7 @@ pub struct QuadRenderer {
 impl QuadRenderer {
     /// Test-only handle snapshots prove retention, not just stable scene IDs.
     #[cfg(test)]
-    pub(crate) fn resource_handles(&self) -> ([wgpu::RenderPipeline; 2], [wgpu::Buffer; 4]) {
+    pub(crate) fn resource_handles(&self) -> ([wgpu::RenderPipeline; 2], [wgpu::Buffer; 5]) {
         (
             [self.pipeline.clone(), self.clip_mask_pipeline.clone()],
             [
@@ -302,8 +380,35 @@ impl QuadRenderer {
                 self.index_buffer.clone(),
                 self.instance_buffer.clone(),
                 self.clip_mask_instance_buffer.clone(),
+                self.paint_buffer.clone(),
             ],
         )
+    }
+
+    fn create_paint_buffer(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("widget-retained-gradient-paints"),
+            size: capacity as u64 * std::mem::size_of::<GradientPaint>() as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn create_paint_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("widget-gradient-paints"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        })
     }
 
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -422,9 +527,26 @@ impl QuadRenderer {
                 },
             ],
         };
+        let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("widget-gradient-paint-layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<GradientPaint>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let paint_buffer = Self::create_paint_buffer(device, instance_capacity);
+        let paint_group = Self::create_paint_group(device, &paint_layout, &paint_buffer);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("widget-quad-layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[Some(&paint_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -490,6 +612,9 @@ impl QuadRenderer {
         Self {
             pipeline,
             clip_mask_pipeline,
+            paint_layout,
+            paint_buffer,
+            paint_group,
             vertex_buffer,
             index_buffer,
             device: device.clone(),
@@ -509,7 +634,11 @@ impl QuadRenderer {
             if let Some(slot) = self.id_to_slot.remove(id) {
                 self.slot_to_id.remove(&slot);
                 self.free_slots.push(slot);
-                self.write_instance(queue, slot, QuadInstance::zeroed());
+                self.write_instance(
+                    queue,
+                    slot,
+                    (QuadInstance::zeroed(), GradientPaint::zeroed()),
+                );
             }
         }
         for item in &delta.added {
@@ -535,7 +664,11 @@ impl QuadRenderer {
             } else if let Some(slot) = self.id_to_slot.remove(&item.id) {
                 self.slot_to_id.remove(&slot);
                 self.free_slots.push(slot);
-                self.write_instance(queue, slot, QuadInstance::zeroed());
+                self.write_instance(
+                    queue,
+                    slot,
+                    (QuadInstance::zeroed(), GradientPaint::zeroed()),
+                );
             }
         }
     }
@@ -567,6 +700,7 @@ impl QuadRenderer {
     }
 
     fn encode_impl<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
+        pass.set_bind_group(0, &self.paint_group, &[]);
         let end = start.saturating_add(count).min(self.instance_capacity);
         if start >= end {
             return;
@@ -605,6 +739,7 @@ impl QuadRenderer {
 
     pub(crate) fn encode_clip_mask<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, slot: u32) {
         pass.set_pipeline(&self.clip_mask_pipeline);
+        pass.set_bind_group(0, &self.paint_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, self.clip_mask_instance_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -655,12 +790,18 @@ impl QuadRenderer {
                 | Primitive::Border { .. }
                 | Primitive::RoundedQuad { .. }
                 | Primitive::RoundedBorder { .. }
+                | Primitive::PaintedQuad { .. }
+                | Primitive::PaintedBorder { .. }
                 | Primitive::OuterShadow { .. }
                 | Primitive::Icon { .. }
         )
     }
 
-    fn item_to_instance(&self, item: &SceneItem, viewport: &Viewport) -> QuadInstance {
+    fn item_to_instance(
+        &self,
+        item: &SceneItem,
+        viewport: &Viewport,
+    ) -> (QuadInstance, GradientPaint) {
         let (
             rect,
             shape_rect,
@@ -729,6 +870,45 @@ impl QuadRenderer {
                 0.0,
                 0,
             ),
+            Primitive::PaintedQuad {
+                rect,
+                paint,
+                corner_radii,
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                paint.first_color(),
+                *corner_radii,
+                [0.0; 4],
+                0.0,
+                0.0,
+                if matches!(paint, crate::Paint::LinearGradient(_)) {
+                    65536
+                } else {
+                    0
+                },
+            ),
+            Primitive::PaintedBorder {
+                rect,
+                width,
+                paint,
+                corner_radii,
+            } => (
+                *rect,
+                *rect,
+                *rect,
+                paint.first_color(),
+                *corner_radii,
+                [0.0; 4],
+                *width,
+                0.0,
+                if matches!(paint, crate::Paint::LinearGradient(_)) {
+                    65536
+                } else {
+                    0
+                },
+            ),
             Primitive::RoundedBorder {
                 rect,
                 width,
@@ -764,42 +944,56 @@ impl QuadRenderer {
                 *blur_radius,
                 1,
             ),
-            _ => return QuadInstance::zeroed(),
+            _ => return (QuadInstance::zeroed(), GradientPaint::zeroed()),
         };
         let size = rect.size();
         let shape_size = shape_rect.size();
         let packed = pack_active_clips(&item.clips, rect.min);
-        QuadInstance {
-            rect: viewport.dp_rect_to_ndc(&rect),
-            color: color.to_array(),
-            radii,
-            border_width,
-            logical_size: [size.width, size.height],
-            shape_rect: [
-                finite_difference(shape_rect.min.x, rect.min.x),
-                finite_difference(shape_rect.min.y, rect.min.y),
-                shape_size.width,
-                shape_size.height,
-            ],
-            blur_radius,
-            mode,
-            clip_rect0: packed.clip_rect0,
-            clip_radii0: packed.clip_radii0,
-            clip_rect1: packed.clip_rect1,
-            clip_radii1: packed.clip_radii1,
-            clip_meta: packed.clip_meta,
-            occluder_rect: [
-                finite_difference(occluder_rect.min.x, rect.min.x),
-                finite_difference(occluder_rect.min.y, rect.min.y),
-                finite_difference(occluder_rect.max.x, occluder_rect.min.x),
-                finite_difference(occluder_rect.max.y, occluder_rect.min.y),
-            ],
-            occluder_radii,
-            _pad: [0; 3],
-        }
+        (
+            QuadInstance {
+                rect: viewport.dp_rect_to_ndc(&rect),
+                color: color.to_array(),
+                radii,
+                border_width,
+                logical_size: [size.width, size.height],
+                shape_rect: [
+                    finite_difference(shape_rect.min.x, rect.min.x),
+                    finite_difference(shape_rect.min.y, rect.min.y),
+                    shape_size.width,
+                    shape_size.height,
+                ],
+                blur_radius,
+                mode,
+                clip_rect0: packed.clip_rect0,
+                clip_radii0: packed.clip_radii0,
+                clip_rect1: packed.clip_rect1,
+                clip_radii1: packed.clip_radii1,
+                clip_meta: packed.clip_meta,
+                occluder_rect: [
+                    finite_difference(occluder_rect.min.x, rect.min.x),
+                    finite_difference(occluder_rect.min.y, rect.min.y),
+                    finite_difference(occluder_rect.max.x, occluder_rect.min.x),
+                    finite_difference(occluder_rect.max.y, occluder_rect.min.y),
+                ],
+                occluder_radii,
+                _pad: [0; 3],
+            },
+            GradientPaint::for_primitive(&item.primitive),
+        )
     }
 
-    fn write_instance(&self, queue: &wgpu::Queue, slot: u32, instance: QuadInstance) {
+    fn write_instance(
+        &self,
+        queue: &wgpu::Queue,
+        slot: u32,
+        (mut instance, paint): (QuadInstance, GradientPaint),
+    ) {
+        instance.clip_meta[3] = slot;
+        queue.write_buffer(
+            &self.paint_buffer,
+            slot as u64 * std::mem::size_of::<GradientPaint>() as u64,
+            bytemuck::bytes_of(&paint),
+        );
         queue.write_buffer(
             &self.instance_buffer,
             slot as u64 * std::mem::size_of::<QuadInstance>() as u64,
@@ -839,6 +1033,7 @@ impl QuadRenderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let new_paints = Self::create_paint_buffer(&self.device, new_capacity);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -851,8 +1046,18 @@ impl QuadRenderer {
             0,
             self.instance_capacity as u64 * std::mem::size_of::<QuadInstance>() as u64,
         );
+        encoder.copy_buffer_to_buffer(
+            &self.paint_buffer,
+            0,
+            &new_paints,
+            0,
+            self.instance_capacity as u64 * std::mem::size_of::<GradientPaint>() as u64,
+        );
         queue.submit(Some(encoder.finish()));
         self.instance_buffer = new_buffer;
+        self.paint_buffer = new_paints;
+        self.paint_group =
+            Self::create_paint_group(&self.device, &self.paint_layout, &self.paint_buffer);
         self.instance_capacity = new_capacity;
     }
 }

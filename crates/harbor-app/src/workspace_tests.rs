@@ -1647,6 +1647,36 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
         let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
         assert!(items.iter().any(|item| matches!(&item.primitive,
             Primitive::BackdropBlur { rect, sigma: 8.0, .. } if *rect == panel)));
+        let surface = items
+            .iter()
+            .find_map(|item| match &item.primitive {
+                Primitive::PaintedQuad {
+                    rect,
+                    paint: harbor_widget::Paint::LinearGradient(gradient),
+                    corner_radii,
+                } if *rect == panel => {
+                    assert_eq!(
+                        *corner_radii, [12.0; 4],
+                        "material does not reshape the panel"
+                    );
+                    Some(gradient)
+                }
+                _ => None,
+            })
+            .expect("panel uses generic gradient fill");
+        assert!(
+            surface
+                .stops()
+                .iter()
+                .all(|stop| stop.color().a > 0.0 && stop.color().a < 0.2),
+            "surface preserves backdrop colors rather than covering them with gray"
+        );
+        assert!(items.iter().any(|item| matches!(&item.primitive,
+            Primitive::PaintedBorder { rect, paint: harbor_widget::Paint::LinearGradient(gradient), corner_radii, .. }
+                if *rect == panel && *corner_radii == [12.0; 4]
+                && gradient.stops()[0].color().a > gradient.stops()[1].color().a)));
+        assert!(items.iter().any(|item| matches!(&item.primitive,
+            Primitive::OuterShadow { occluder_rect, color, .. } if *occluder_rect == panel && color.a > 0.0)));
         let (status_origin, _) = items
             .iter()
             .find_map(|item| match &item.primitive {
@@ -1658,10 +1688,12 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             .expect("default result appears on the same row");
         assert!(status_origin.x < icons[0].1.min.x);
         assert!((status_origin.y - (panel.min.y + panel.size().height / 2.0)).abs() < 20.0);
-        assert!(items.iter().any(|item| matches!(&item.primitive,
+        assert!(
+            items.iter().any(|item| matches!(&item.primitive,
             Primitive::RoundedQuad { rect, color, corner_radii }
                 if panel.contains(rect.min) && rect.size().width < panel.size().width
-                && color.r == 0.0 && color.a > 0.0 && color.a < 1.0 && corner_radii[0] > 0.0)));
+                && color.r == 0.0 && color.a > 0.0 && color.a < 0.24 && *corner_radii == [7.0; 4]))
+        );
         assert!(
             items
                 .iter()

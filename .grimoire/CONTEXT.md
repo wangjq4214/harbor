@@ -141,6 +141,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ### Widget Decoration
 - **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
 
+### Widget Decoration Paint
+- **Definition:** Approved `harbor-widget` painting abstraction shared by box fills and border strokes, supporting solid colors and linear gradients described by direction and color stops including alpha. Rendering and transparent composition are widget-owned; glass material presets remain application-owned. Existing solid-color APIs and behavior are preserved. Public API details remain unselected; this entry does not establish implementation. See [ADR 0067](./adr/0067-widget-gradient-paints-with-application-material-presets.md).
+
 ### Widget Local Backdrop Blur
 - **Definition:** Approved reusable `harbor-widget` capability for locally softening content behind a widget, including embedded terminal presentation, while keeping its foreground content sharp. Distinct from Windows Acrylic behind the window; product glass presets remain application-owned. API and rendering design are unselected, and this entry does not establish implementation. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
 

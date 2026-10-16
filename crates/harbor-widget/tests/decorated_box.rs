@@ -37,6 +37,186 @@ fn rounded_box(
         .child(child)
 }
 
+fn gradient_paint(colors: [Color; 2]) -> harbor_widget::Paint {
+    harbor_widget::LinearGradient::new(
+        Point::ZERO,
+        Point::new(0.0, 1.0),
+        &[
+            harbor_widget::GradientStop::new(0.0, colors[0]),
+            harbor_widget::GradientStop::new(1.0, colors[1]),
+        ],
+    )
+    .unwrap()
+    .into()
+}
+
+#[test]
+fn gradient_paints_preserve_decoration_order_geometry_and_child_clipping() {
+    let brush = gradient_paint([Color::RED, Color::BLUE]);
+    let radius = BorderRadius::only(8.0, 4.0, 2.0, 6.0).unwrap();
+    let delta = paint(
+        DecoratedBox::new(
+            BoxDecoration::new()
+                .try_paint(brush)
+                .unwrap()
+                .border(Border::with_paint(brush, 1.0).unwrap())
+                .border_radius(radius)
+                .shadow(
+                    BoxShadow::new()
+                        .try_color(Color::BLACK)
+                        .unwrap()
+                        .try_offset(Point::new(0.0, 2.0))
+                        .unwrap(),
+                ),
+        )
+        .clip_behavior(ClipBehavior::AntiAlias)
+        .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::GREEN)),
+    );
+    assert_eq!(delta.added.len(), 4);
+    assert!(matches!(
+        delta.added[0].primitive,
+        Primitive::OuterShadow { .. }
+    ));
+    let Primitive::PaintedQuad {
+        rect,
+        paint,
+        corner_radii,
+    } = delta.added[1].primitive
+    else {
+        panic!("gradient fill");
+    };
+    assert_eq!(
+        rect,
+        Rect::from_min_size(Point::ZERO, Size::new(40.0, 24.0))
+    );
+    assert_eq!(paint, brush);
+    assert_eq!(corner_radii, [8.0, 4.0, 2.0, 6.0]);
+    assert!(matches!(
+        delta.added[2].primitive,
+        Primitive::Quad {
+            color: Color::GREEN,
+            ..
+        }
+    ));
+    assert_eq!(delta.added[2].clips.len(), 1);
+    assert!(delta.added[1].clips.is_empty() && delta.added[3].clips.is_empty());
+    assert!(
+        matches!(delta.added[3].primitive, Primitive::PaintedBorder { paint, corner_radii, width: 1.0, .. }
+        if paint == brush && corner_radii == [8.0, 4.0, 2.0, 6.0])
+    );
+}
+
+#[test]
+fn gradient_fill_builders_replace_one_fill_and_keep_solid_api_behavior() {
+    let brush = gradient_paint([Color::RED, Color::BLUE]);
+    let gradient = BoxDecoration::new()
+        .try_color(Color::GREEN)
+        .unwrap()
+        .try_paint(brush)
+        .unwrap();
+    assert_eq!(gradient.color(), None);
+    assert_eq!(gradient.paint(), Some(brush));
+    assert_eq!(
+        update_decoration(gradient.clone()).added.len(),
+        1,
+        "no hidden solid fill underneath"
+    );
+    let solid = gradient.try_color(Color::BLUE).unwrap();
+    assert_eq!(solid.color(), Some(Color::BLUE));
+    assert_eq!(solid.paint(), Some(Color::BLUE.into()));
+    assert!(matches!(
+        update_decoration(solid).added[0].primitive,
+        Primitive::RoundedQuad {
+            color: Color::BLUE,
+            ..
+        }
+    ));
+    assert!(
+        BoxDecoration::new()
+            .try_paint(
+                Color {
+                    r: f32::NAN,
+                    ..Color::WHITE
+                }
+                .into()
+            )
+            .is_err()
+    );
+    assert!(Border::with_paint(brush, -1.0).is_err());
+    assert_eq!(Border::all(Color::RED, 1.0).unwrap().color(), Color::RED);
+    assert_eq!(Border::with_paint(brush, 1.0).unwrap().paint(), brush);
+    let empty = gradient_paint([Color::TRANSPARENT; 2]);
+    assert!(
+        update_decoration(
+            BoxDecoration::new()
+                .try_paint(empty)
+                .unwrap()
+                .border(Border::with_paint(empty, 1.0).unwrap())
+        )
+        .added
+        .is_empty()
+    );
+    let starts_transparent = gradient_paint([Color::TRANSPARENT, Color::RED]);
+    assert_eq!(
+        update_decoration(
+            BoxDecoration::new()
+                .try_paint(starts_transparent)
+                .unwrap()
+                .border(Border::with_paint(starts_transparent, 1.0).unwrap())
+        )
+        .added
+        .len(),
+        2
+    );
+}
+
+#[test]
+fn changing_between_solid_and_gradient_preserves_fill_and_border_scene_slots() {
+    #[derive(Clone)]
+    struct PaintToggle(Rc<RefCell<Option<Signal<bool>>>>);
+    impl Component for PaintToggle {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let gradient = cx.use_state(|| false);
+            *self.0.borrow_mut() = Some(gradient.clone());
+            let brush = if *gradient.read() {
+                gradient_paint([Color::BLUE, Color::GREEN])
+            } else {
+                Color::RED.into()
+            };
+            DecoratedBox::new(
+                BoxDecoration::new()
+                    .try_paint(brush)
+                    .unwrap()
+                    .border(Border::with_paint(brush, 1.0).unwrap()),
+            )
+            .child(SizedBox::new(Size::new(40.0, 24.0)))
+            .build(cx)
+        }
+    }
+    let state = Rc::new(RefCell::new(None));
+    let mut runtime = Runtime::new();
+    runtime.set_root(PaintToggle(state.clone()));
+    runtime.update(Instant::now());
+    let first = runtime.pending_delta().unwrap().added.clone();
+    state.borrow().as_ref().unwrap().set(true);
+    runtime.update(Instant::now());
+    let second = runtime.pending_delta().unwrap();
+    assert_eq!(
+        first.iter().map(|i| i.id).collect::<Vec<_>>(),
+        second.added.iter().map(|i| i.id).collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        second.added[0].primitive,
+        Primitive::PaintedQuad { .. }
+    ));
+    assert!(matches!(
+        second.added[1].primitive,
+        Primitive::PaintedBorder { .. }
+    ));
+    let steady = runtime.update(Instant::now());
+    assert!(!steady.request_redraw && steady.control_flow.is_none());
+}
+
 #[test]
 fn shadows_precede_fill_and_apply_offset_spread_blur_and_shape_radii() {
     let first = BoxShadow::new()
