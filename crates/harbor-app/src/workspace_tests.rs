@@ -1571,3 +1571,74 @@ fn search_entry_limits_and_query_cancellation_are_visible_and_coalesced() {
     assert!(controller.search_query().is_none());
     runtime.update(Instant::now());
 }
+
+#[test]
+fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_commands() {
+    use harbor_widget::{TextSelection, effects::ClipboardEffect};
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    controller.open_search(TabId(1));
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    runtime.request_focus(&controller.search_focus());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
+    controller.drain_actions();
+    let input = controller.store.state().read().search.input.clone();
+    input.set_selection(TextSelection {
+        anchor: 125,
+        extent: 128,
+    });
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("界".into())));
+    assert_eq!(
+        controller.search_query().unwrap().1,
+        format!("{}界", "a".repeat(125))
+    );
+    assert_eq!(
+        controller.drain_actions(),
+        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+    );
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('a'),
+        modifiers: ctrl(),
+    }));
+    let copied = runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('c'),
+        modifiers: ctrl(),
+    }));
+    assert!(matches!(copied.clipboard, Some(ClipboardEffect::Editor(_))));
+    assert!(
+        controller.drain_actions().is_empty(),
+        "copy must not enqueue the terminal copy command"
+    );
+    let paste = runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('v'),
+        modifiers: ctrl(),
+    }));
+    let Some(ClipboardEffect::Editor(request)) = paste.clipboard else {
+        panic!("expected editor paste");
+    };
+    runtime.complete_clipboard(request.id, Ok("needle".into()));
+    assert_eq!(controller.search_query().unwrap().1, "needle");
+    assert_eq!(
+        controller.drain_actions(),
+        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+    );
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('z'),
+        modifiers: ctrl(),
+    }));
+    assert_eq!(controller.search_query().unwrap().1.len(), 128);
+    assert_eq!(controller.drain_actions().len(), 1);
+    assert!(runtime.drain_external_input().is_empty());
+    let late = runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('v'),
+        modifiers: ctrl(),
+    }));
+    let Some(ClipboardEffect::Editor(request)) = late.clipboard else {
+        panic!("expected editor paste");
+    };
+    controller.sync_search_source(Some(TabId(2)));
+    controller.open_search(TabId(2));
+    runtime.update(Instant::now());
+    runtime.request_focus(&controller.search_focus());
+    runtime.complete_clipboard(request.id, Ok("wrong session".into()));
+    assert_eq!(controller.search_query().unwrap().1, "");
+}

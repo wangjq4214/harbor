@@ -2,7 +2,9 @@
 
 #[cfg(feature = "hmr")]
 use super::WidgetHmrWork;
-use super::effects::{apply_window_effects, apply_window_effects_checked};
+use super::effects::{
+    apply_editor_window_effects, apply_window_effects, apply_window_effects_checked,
+};
 #[cfg(feature = "hmr")]
 use super::hmr::{WidgetHmrConfig, WidgetHmrRoot, WidgetHmrState, WidgetHmrWorkKind};
 use super::{
@@ -645,7 +647,7 @@ impl WinitWindowHost {
                     .finish_activate(generation);
                 tracing::info!(generation, "activated widget HMR generation");
                 HostIdleOutcome {
-                    wait: apply_window_effects(&self.window, effects),
+                    wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
                 }
             }
         }
@@ -658,14 +660,14 @@ impl WinitWindowHost {
             .fold_effects(self.runtime.update(Instant::now()));
         effects.merge(update);
         HostIdleOutcome {
-            wait: apply_window_effects(&self.window, effects),
+            wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
         }
     }
 
     pub fn request_frame(&mut self) -> HostIdleOutcome {
         let effects = self.presenter.request_frame();
         HostIdleOutcome {
-            wait: apply_window_effects(&self.window, effects),
+            wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
         }
     }
 
@@ -683,7 +685,7 @@ impl WinitWindowHost {
             .presenter
             .about_to_wait(&mut self.runtime, now, host_deadline);
         HostIdleOutcome {
-            wait: apply_window_effects(&self.window, effects),
+            wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
         }
     }
 
@@ -732,14 +734,14 @@ impl WinitWindowHost {
             handled: outcome.handled,
             external_input: self.runtime.drain_external_input(),
             frame: None,
-            wait: apply_window_effects(&self.window, outcome.effects),
+            wait: apply_editor_window_effects(&self.window, &mut self.runtime, outcome.effects),
         }
     }
 
     fn apply_runtime_effects(&mut self, effects: RuntimeEffects) -> HostIdleOutcome {
         let effects = self.presenter.fold_effects(effects);
         HostIdleOutcome {
-            wait: apply_window_effects(&self.window, effects),
+            wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
         }
     }
 
@@ -753,8 +755,10 @@ impl WinitWindowHost {
         self.finish_frame(frame)
     }
 
-    fn finish_frame(&self, frame: FrameOutcome) -> HostFrameOutcome {
-        finish_frame_with(frame, |effects| apply_window_effects(&self.window, effects))
+    fn finish_frame(&mut self, frame: FrameOutcome) -> HostFrameOutcome {
+        finish_frame_with(frame, |effects| {
+            apply_editor_window_effects(&self.window, &mut self.runtime, effects)
+        })
     }
 }
 

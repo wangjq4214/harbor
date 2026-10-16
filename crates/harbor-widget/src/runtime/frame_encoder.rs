@@ -234,6 +234,13 @@ impl FrameEncoder {
         self.text_atlas = Some(atlas);
     }
 
+    pub(crate) fn advance_width(&self, ch: char, scale: f32, fallback: f32) -> f32 {
+        self.text_atlas
+            .as_ref()
+            .map(|atlas| atlas.borrow_mut().advance_width(ch, scale, fallback))
+            .unwrap_or(fallback)
+    }
+
     pub(crate) fn prepare_text(
         &mut self,
         scene_graph: &SceneGraph,

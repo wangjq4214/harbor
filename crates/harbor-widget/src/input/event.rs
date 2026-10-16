@@ -12,6 +12,11 @@ pub enum UiEvent {
     /// Transient IME composition text delivered to the focused widget.
     ImePreedit(ImePreedit),
     Focus(FocusEvent),
+    /// Delivered only through Runtime::complete_clipboard to the requesting editor.
+    Clipboard {
+        request: u64,
+        result: Result<String, crate::effects::ClipboardEffectError>,
+    },
 }
 
 /// Pointer enter/leave information delivered independently from pointer buttons.

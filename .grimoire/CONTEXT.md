@@ -53,6 +53,12 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Relationships:**
   - belongs to Harbor Widget Runtime
 
+### Widget Text Input
+- **Definition:** Reusable single-line input in `harbor-widget`, separating coherent controller-owned text/selection/composition state, a decoration-free editing core and a decorated field. Search commands, result navigation and query limits remain application-owned. See [ADR 0065](./adr/0065-layered-widget-text-input.md).
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - implements Reusable Widget Component
+
 ### View
 - **Definition:** An immutable UI description produced by component build methods, discardable after each build pass.
 - **Synonyms:** Widget

@@ -51,6 +51,7 @@ impl ControlFlowEffect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipboardEffectError {
     WriteFailed,
+    ReadFailed,
     ReadUnsupported,
 }
 
@@ -58,6 +59,7 @@ impl std::fmt::Display for ClipboardEffectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::WriteFailed => "clipboard write failed",
+            Self::ReadFailed => "clipboard read failed",
             Self::ReadUnsupported => "clipboard read effect unsupported",
         })
     }
@@ -127,11 +129,20 @@ impl ImeEffect {
     }
 }
 
+/// Tagged editor operation; legacy application clipboard authorization is unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorClipboardRequest {
+    pub id: u64,
+    /// None reads text; Some writes text. Successful writes return an empty string.
+    pub write: Option<String>,
+}
+
 /// A clipboard operation for the host to perform.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipboardEffect {
     Read,
     Write(String),
+    Editor(EditorClipboardRequest),
 }
 
 impl ClipboardEffect {

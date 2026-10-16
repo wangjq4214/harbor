@@ -9,7 +9,7 @@ use crate::{
 };
 use harbor_widget::{
     ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
-    LayoutObserver, Row, Shortcuts, Store,
+    LayoutObserver, Row, Shortcuts, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -17,145 +17,50 @@ use harbor_widget::{
 };
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct SearchUiState {
     open: bool,
     source: Option<crate::tab_manager::TabId>,
-    query: String,
-    preedit: String,
+    input: TextEditingController,
     status: String,
 }
 
-#[derive(Clone)]
-struct SearchEntry(WorkspaceUiController);
-
-impl harbor_widget::view::PrimitiveLeaf for SearchEntry {
-    fn intrinsic_size(
-        &self,
-        constraints: harbor_widget::layout::BoxConstraints,
-        metrics: &harbor_widget::text::TextMetrics,
-    ) -> harbor_widget::layout::Size {
-        constraints.constrain(harbor_widget::layout::Size::new(
-            280.0,
-            metrics.line_height + 8.0,
-        ))
-    }
-    fn paint_primitives(
-        &self,
-        rect: Rect,
-        _metrics: &harbor_widget::text::TextMetrics,
-    ) -> Vec<harbor_widget::scene::primitive::Primitive> {
-        let state = self.0.store.state().read();
-        vec![harbor_widget::scene::primitive::Primitive::Text {
-            text: Arc::from(format!(
-                "Find: {}{}▏",
-                state.search.query, state.search.preedit
-            )),
-            origin: rect.min,
-            color: Color::WHITE,
-        }]
-    }
-    fn handle_event(
-        &self,
-        event: &harbor_widget::input::event::UiEvent,
-        ctx: &mut harbor_widget::input::event_ctx::EventCtx,
-        _rect: Rect,
-    ) -> harbor_widget::input::event_ctx::EventHandled {
-        use harbor_widget::input::{
-            event::{Key, KeyboardEvent, UiEvent},
-            event_ctx::EventHandled,
-        };
-        let mut state = self.0.store.state().read().clone();
-        let mut changed = false;
-        let command = match event {
-            UiEvent::Pointer(pointer)
-                if pointer.phase == harbor_widget::input::event::PointerPhase::Down =>
-            {
-                Some(AppCommand::SearchOpen)
-            }
-            UiEvent::Focus(harbor_widget::input::event::FocusEvent::Lost) => {
-                state.search.preedit.clear();
-                self.0.store.set_state(state);
-                return EventHandled::Handled;
-            }
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: Key::Escape, ..
-            }) => Some(AppCommand::SearchClose),
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: Key::Enter | Key::NumpadEnter,
-                modifiers,
-            }) => Some(if modifiers.shift {
-                AppCommand::SearchPrevious
-            } else {
-                AppCommand::SearchNext
+impl Default for SearchUiState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            source: None,
+            input: TextEditingController::with_acceptance("", |text| {
+                text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
             }),
-            UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: Key::Backspace,
-                ..
-            }) => {
-                changed = state.search.query.pop().is_some();
-                None
-            }
-            UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers })
-                if !modifiers.ctrl && !modifiers.alt && !modifiers.meta =>
-            {
-                let ch = match key {
-                    Key::Character(ch) | Key::NumpadCharacter(ch) => Some(*ch),
-                    Key::Space => Some(' '),
-                    _ => None,
-                };
-                if let Some(ch) = ch
-                    && !ch.is_control()
-                    && state.search.query.len() + ch.len_utf8()
-                        <= harbor_terminal::literal_search::MAX_QUERY_BYTES
-                {
-                    state.search.query.push(ch);
-                    changed = true;
-                }
-                None
-            }
-            UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
-                if state.search.query.len() + text.len()
-                    <= harbor_terminal::literal_search::MAX_QUERY_BYTES
-                    && !text.chars().any(char::is_control)
-                {
-                    state.search.query.push_str(text);
-                    state.search.preedit.clear();
-                    changed = true;
-                }
-                None
-            }
-            UiEvent::ImePreedit(preedit) => {
-                state.search.preedit = preedit.text.chars().take(32).collect();
-                self.0.store.set_state(state);
-                ctx.invalidate_paint();
-                return EventHandled::Handled;
-            }
-            UiEvent::Keyboard(_) => None,
-            _ => return EventHandled::Ignored,
-        };
-        if changed {
-            state.search.preedit.clear();
-            state.search.status = "Searching…".into();
-            self.0.store.set_state(state);
-            self.0
-                .store
-                .dispatcher()
-                .dispatch(AppCommandRequest::shortcut(AppCommand::SearchChanged));
+            status: String::new(),
         }
-        if let Some(command) = command {
-            self.0
-                .store
-                .dispatcher()
-                .dispatch(AppCommandRequest::shortcut(command));
-        }
-        ctx.invalidate_paint();
-        EventHandled::Handled
     }
 }
 
 fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
-    let entry = View::leaf(SearchEntry(controller.clone()));
+    let input = controller.store.state().read().search.input.clone();
+    let changed_ui = controller.clone();
+    let submit = controller.store.dispatcher();
+    let close = controller.store.dispatcher();
+    let entry = TextField::new(input)
+        .placeholder("Find…")
+        .focus_handle(controller.search_focus)
+        .on_changed(move |_| {
+            changed_ui.publish_search_status("Searching…");
+            changed_ui
+                .store
+                .dispatcher()
+                .dispatch(AppCommandRequest::shortcut(AppCommand::SearchChanged));
+        })
+        .on_submitted(move |modifiers| {
+            submit.dispatch(AppCommandRequest::shortcut(if modifiers.shift {
+                AppCommand::SearchPrevious
+            } else {
+                AppCommand::SearchNext
+            }))
+        })
+        .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
     let button = |label, command| {
         let dispatcher = controller.store.dispatcher();
         harbor_widget::Button::new(label)
@@ -164,7 +69,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
     let status = controller.store.state().read().search.status.clone();
     harbor_widget::view! { cx; harbor_widget::Column::new() => {
         Row::new() => {
-            Expanded::new() => { Focus::new(entry).handle(controller.search_focus); }
+            Expanded::new() => { entry; }
             button("Previous", AppCommand::SearchPrevious);
             button("Next", AppCommand::SearchNext);
             button("Close", AppCommand::SearchClose);
@@ -230,7 +135,7 @@ impl WorkspaceUiController {
         if !state.search.open {
             return None;
         }
-        Some((state.search.source?, state.search.query.clone()))
+        Some((state.search.source?, state.search.input.text()))
     }
 
     pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {

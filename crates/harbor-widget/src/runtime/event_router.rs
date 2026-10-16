@@ -24,6 +24,8 @@ struct ConsumedShortcut {
 pub(crate) struct EventRouter {
     input: InputState,
     pending_clipboard: Option<String>,
+    pending_editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
+    clipboard_target: Option<(u64, FiberId)>,
     pending_cursor: Option<CursorEffect>,
     hover_path: Vec<FiberId>,
     last_cursor: Option<CursorShape>,
@@ -41,6 +43,8 @@ impl EventRouter {
         Self {
             input: InputState::new(),
             pending_clipboard: None,
+            pending_editor_clipboard: None,
+            clipboard_target: None,
             pending_cursor: None,
             hover_path: Vec::new(),
             last_cursor: None,
@@ -80,6 +84,31 @@ impl EventRouter {
 
     pub(crate) fn take_clipboard(&mut self) -> Option<String> {
         self.pending_clipboard.take()
+    }
+
+    pub(crate) fn take_editor_clipboard(
+        &mut self,
+    ) -> Option<crate::effects::EditorClipboardRequest> {
+        self.pending_editor_clipboard.take()
+    }
+
+    pub(crate) fn complete_clipboard(
+        &mut self,
+        arena: &FiberArena,
+        request: u64,
+        result: Result<String, crate::effects::ClipboardEffectError>,
+    ) -> bool {
+        let Some((id, target)) = self.clipboard_target else {
+            return false;
+        };
+        if id != request {
+            return false;
+        }
+        self.clipboard_target = None;
+        if self.focused_event_target(arena) != Some(target) || !arena.contains(target) {
+            return false;
+        }
+        self.route_to_single(arena, target, &UiEvent::Clipboard { request, result })
     }
 
     pub(crate) fn take_cursor(&mut self) -> Option<CursorEffect> {
@@ -233,7 +262,14 @@ impl EventRouter {
                 suppress_focus_navigation = true;
             }
             UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
-                if let Some((source, action)) = self.find_shortcut(arena, root_id, *key, *modifiers)
+                let locally_owned = self
+                    .focused_event_target(arena)
+                    .and_then(|target| arena.get(target))
+                    .and_then(|fiber| fiber.view.as_ref())
+                    .is_some_and(|view| view.owns_editing_key(*key, *modifiers));
+                if !locally_owned
+                    && let Some((source, action)) =
+                        self.find_shortcut(arena, root_id, *key, *modifiers)
                 {
                     let outcome = self.invoke_action(arena, source, action.as_ref());
                     if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
@@ -274,6 +310,7 @@ impl EventRouter {
                     .or_else(|| Self::hit_test_walk(arena, root_id, pointer.position))
             }
             UiEvent::Keyboard(_) | UiEvent::ImePreedit(_) | UiEvent::Focus(_) => self.input.focused,
+            UiEvent::Clipboard { .. } => return false,
             UiEvent::PointerBoundary(_) => None,
         };
 
@@ -338,6 +375,12 @@ impl EventRouter {
     }
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
+        if let Some(request) = ctx.take_editor_clipboard()
+            && let Some(target) = ctx.current_fiber()
+        {
+            self.clipboard_target = Some((request.id, target));
+            self.pending_editor_clipboard = Some(request);
+        }
         if let Some(text) = ctx.take_clipboard_write() {
             self.pending_clipboard = Some(text);
         }

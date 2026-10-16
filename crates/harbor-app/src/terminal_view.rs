@@ -143,6 +143,7 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> Option<TerminalEve
             .with_modifiers(map_modifiers(pointer.modifiers)),
         )),
         UiEvent::PointerBoundary(_) => None,
+        UiEvent::Clipboard { .. } => None,
         UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
             Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
         }

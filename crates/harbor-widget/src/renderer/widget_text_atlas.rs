@@ -20,6 +20,7 @@ pub struct WidgetTextAtlas {
     bind_group: wgpu::BindGroup,
     active_glyphs: HashMap<RuntimeId, HashSet<GlyphKey>>,
     revision: u64,
+    measured_advances: HashMap<GlyphKey, f32>,
 }
 
 impl WidgetTextAtlas {
@@ -99,7 +100,26 @@ impl WidgetTextAtlas {
             bind_group,
             active_glyphs: HashMap::new(),
             revision: 0,
+            measured_advances: HashMap::new(),
         }
+    }
+
+    /// Uses exactly the raster advance used by TextRunCache at this scale.
+    pub(crate) fn advance_width(&mut self, ch: char, scale: f32, fallback: f32) -> f32 {
+        let size = self.raster_size(scale);
+        let GlyphResolution::Available(key) =
+            self.fonts.resolve(ch, size.get(), FontStyle::REGULAR)
+        else {
+            return fallback;
+        };
+        if self.measured_advances.len() > 4096 {
+            self.measured_advances.clear();
+        }
+        let physical = *self
+            .measured_advances
+            .entry(key)
+            .or_insert_with(|| self.fonts.rasterize_from_key(key).0.advance_width);
+        physical / scale
     }
 
     /// Ensures every character from the supplied retained text exists at the

@@ -12,6 +12,6 @@ error[E0277]: the trait bound `View: harbor_widget::view::Component` is not sati
             ConstrainedBox
             CustomPaint
             DecoratedBox
-            Expanded
+            EditableText
           and $N others
   = note: required for `View` to implement `harbor_widget::view::Component`

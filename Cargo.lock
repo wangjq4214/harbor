@@ -956,6 +956,7 @@ dependencies = [
  "pollster",
  "slotmap",
  "tracing",
+ "unicode-segmentation",
  "unicode-width",
  "wgpu",
  "windows",

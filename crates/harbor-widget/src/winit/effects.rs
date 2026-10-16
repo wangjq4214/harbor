@@ -42,6 +42,42 @@ impl WindowEffectSink for NativeWindowEffectSink<'_> {
     }
 }
 
+/// Apply tagged editor clipboard requests through the generic native host and
+/// deliver their result before the next event. Legacy app writes stay unchanged.
+pub(super) fn apply_editor_window_effects(
+    window: &Window,
+    runtime: &mut crate::runtime::Runtime,
+    mut effects: RuntimeEffects,
+) -> Option<ControlFlowEffect> {
+    if matches!(effects.clipboard, Some(ClipboardEffect::Editor(_)))
+        && let Some(ClipboardEffect::Editor(request)) = effects.clipboard.take()
+    {
+        let id = request.id;
+        let result = apply_editor_clipboard_with(
+            request,
+            || arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()),
+            |text| arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)),
+        );
+        effects.merge(runtime.complete_clipboard(id, result));
+        effects.merge(runtime.update(std::time::Instant::now()));
+        effects.merge(runtime.take_pending_effects());
+    }
+    apply_window_effects(window, effects)
+}
+
+fn apply_editor_clipboard_with<E>(
+    request: crate::effects::EditorClipboardRequest,
+    read: impl FnOnce() -> Result<String, E>,
+    write: impl FnOnce(String) -> Result<(), E>,
+) -> Result<String, ClipboardEffectError> {
+    match request.write {
+        Some(text) => write(text)
+            .map(|()| String::new())
+            .map_err(|_| ClipboardEffectError::WriteFailed),
+        None => read().map_err(|_| ClipboardEffectError::ReadFailed),
+    }
+}
+
 pub(super) fn apply_window_effects(
     window: &Window,
     effects: RuntimeEffects,
@@ -135,6 +171,7 @@ fn apply_clipboard_effect_with<E>(
                 ClipboardEffectError::WriteFailed
             })
         }
+        ClipboardEffect::Editor(_) => Err(ClipboardEffectError::ReadUnsupported),
         ClipboardEffect::Read => {
             tracing::warn!(
                 operation = "read",
@@ -150,6 +187,40 @@ mod tests {
     use super::*;
     use crate::effects::ImeEffect;
     use std::time::Instant;
+
+    #[test]
+    fn editor_clipboard_read_write_and_errors_preserve_content_free_results() {
+        use crate::effects::EditorClipboardRequest;
+        assert_eq!(
+            apply_editor_clipboard_with(
+                EditorClipboardRequest { id: 1, write: None },
+                || Ok::<_, String>("fixture你".into()),
+                |_| panic!("read must not write")
+            ),
+            Ok("fixture你".into())
+        );
+        assert_eq!(
+            apply_editor_clipboard_with(
+                EditorClipboardRequest {
+                    id: 2,
+                    write: Some("fixture".into())
+                },
+                || panic!("write must not read"),
+                |text| {
+                    assert_eq!(text, "fixture");
+                    Ok::<_, String>(())
+                }
+            ),
+            Ok(String::new())
+        );
+        let result = apply_editor_clipboard_with(
+            EditorClipboardRequest { id: 3, write: None },
+            || Err::<String, _>("secret backend payload"),
+            |_| Ok(()),
+        );
+        assert_eq!(result, Err(ClipboardEffectError::ReadFailed));
+        assert_eq!(result.unwrap_err().to_string(), "clipboard read failed");
+    }
 
     #[derive(Default)]
     struct RecordingSink {

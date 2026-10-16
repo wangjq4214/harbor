@@ -38,6 +38,8 @@ pub mod store;
 pub use store::{Dispatcher, Store};
 pub mod signal;
 pub mod text;
+pub mod text_editing;
+pub use text_editing::{TextEditingController, TextEditingValue, TextSelection};
 pub mod theme;
 pub mod view;
 pub mod widgets;
@@ -51,6 +53,7 @@ pub use widgets::{
     MouseRegion, Notification, Portal, Row, ScrollArea, ScrollController, ScrollMetrics, Separator,
     Shortcuts, Spacer, ThemeProvider,
 };
+pub use widgets::{EditableText, TextField};
 
 #[cfg(test)]
 mod macro_tests;
