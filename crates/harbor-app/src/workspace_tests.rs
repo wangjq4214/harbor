@@ -1438,3 +1438,136 @@ fn global_publication_survives_tab_mutations_responsive_changes_and_root_replace
         Some("invalid TOML")
     );
 }
+
+#[test]
+fn current_session_search_entry_routes_typed_commands_without_pty_leakage() {
+    use crate::tab_manager::{TabManager, TerminalTabResources};
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let mut tabs = TabManager::new();
+    tabs.create_tab(|_, draw| {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let engine = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            4,
+            20,
+            std::io::empty(),
+            Writer(bytes.clone()),
+            || true,
+        )));
+        engine
+            .lock()
+            .unwrap()
+            .put_str("needle\r\nneedle\r\nother\r\nlive\r\n");
+        let bridge =
+            TerminalWidgetBridge::new(draw, engine.clone(), Arc::new(AtomicBool::new(false)));
+        Ok(TerminalTabResources::new(engine, bridge, "test"))
+    })
+    .unwrap();
+    let controller =
+        WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    runtime.request_focus(&controller.terminal_focus());
+    let key = |key, modifiers| UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers });
+    runtime.dispatch(key(
+        Key::Character('f'),
+        Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+    ));
+    let actions = controller.drain_actions();
+    assert_eq!(
+        actions,
+        [AppCommandRequest::shortcut(AppCommand::SearchOpen)]
+    );
+    let focus = tabs
+        .dispatch_search_command(actions[0].command, &controller)
+        .unwrap();
+    runtime.request_focus(&focus); // requests before mount must survive reconciliation
+    runtime.update(Instant::now());
+    for ch in "needle".chars() {
+        runtime.dispatch(key(Key::Character(ch), Modifiers::default()));
+    }
+    runtime.dispatch(UiEvent::ImePreedit(
+        harbor_widget::input::event::ImePreedit::new("界", None),
+    ));
+    assert_eq!(controller.search_query().unwrap().1, "needle");
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("界".into())));
+    runtime.dispatch(key(Key::Backspace, Modifiers::default()));
+    assert_eq!(controller.search_query().unwrap().1, "needle");
+    for action in controller.drain_actions() {
+        tabs.dispatch_search_command(action.command, &controller);
+    }
+    for _ in 0..100 {
+        if !tabs.advance_search().pending {
+            break;
+        }
+    }
+    assert_eq!(tabs.active_bridge().unwrap().decoration_ranges().len(), 2);
+    for event in [
+        key(Key::Enter, Modifiers::default()),
+        key(
+            Key::Enter,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        ),
+        key(Key::F3, Modifiers::default()),
+    ] {
+        runtime.dispatch(event);
+        let actions = controller.drain_actions();
+        assert_eq!(actions.len(), 1);
+        tabs.dispatch_search_command(actions[0].command, &controller);
+    }
+    assert!(
+        tabs.active_terminal()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .screen()
+            .view_offset()
+            > 0
+    );
+    assert!(
+        bytes.lock().unwrap().is_empty(),
+        "all consumed query/IME/navigation input stays out of PTY"
+    );
+    runtime.dispatch(key(Key::Escape, Modifiers::default()));
+    let actions = controller.drain_actions();
+    assert_eq!(actions[0].command, AppCommand::SearchClose);
+    let focus = tabs
+        .dispatch_search_command(actions[0].command, &controller)
+        .unwrap();
+    runtime.request_focus(&focus);
+    runtime.update(Instant::now());
+    assert!(tabs.active_bridge().unwrap().decoration_ranges().is_empty());
+    runtime.dispatch(key(Key::Character('x'), Modifiers::default()));
+    assert_eq!(
+        &*bytes.lock().unwrap(),
+        b"x",
+        "normal pass-through resumes after close"
+    );
+}
+
+#[test]
+fn search_entry_limits_and_query_cancellation_are_visible_and_coalesced() {
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    controller.open_search(TabId(1));
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    runtime.request_focus(&controller.search_focus());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("界".into())));
+    assert_eq!(controller.search_query().unwrap().1.len(), 128);
+    assert_eq!(controller.drain_actions().len(), 1);
+    for _ in 0..128 {
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Backspace,
+            modifiers: Modifiers::default(),
+        }));
+    }
+    assert_eq!(controller.search_query().unwrap().1, "");
+    controller.sync_search_source(Some(TabId(2)));
+    assert!(controller.search_query().is_none());
+    runtime.update(Instant::now());
+}

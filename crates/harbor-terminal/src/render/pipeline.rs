@@ -16,6 +16,7 @@ pub struct TerminalRenderPipeline {
     pub text: Text,
     pub(super) boxes: BoxDrawing,
     pub decoration: Decoration,
+    highlights: super::highlight::Highlights,
     pub selection: Selection,
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
@@ -108,7 +109,7 @@ impl TerminalRenderPipeline {
         );
         let mut boxes = BoxDrawing::new(gpu, Arc::clone(&colored_quad_pipeline), palette);
         boxes.prepare_with_dirty(gpu, snap, &[], &viewport);
-        let selection = Selection::new(gpu, colored_quad_pipeline, palette.selection);
+        let selection = Selection::new(gpu, Arc::clone(&colored_quad_pipeline), palette.selection);
         let cursor = Cursor::new(gpu, metrics, palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
@@ -118,6 +119,7 @@ impl TerminalRenderPipeline {
             text,
             boxes,
             decoration,
+            highlights: super::highlight::Highlights::new(gpu, colored_quad_pipeline),
             selection,
             cursor,
             scrollbar,
@@ -261,6 +263,15 @@ impl TerminalRenderPipeline {
             && valid_projection(&self.viewport, (snap.rows, snap.cols), self.metrics())
     }
 
+    /// Spans must come from the active engine's validated current-geometry projection.
+    pub fn prepare_highlights(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        spans: &[crate::read_model::CellSpan],
+    ) {
+        self.highlights.prepare(gpu, spans, self.viewport);
+    }
+
     /// Prepare every retained GPU layer from one coherent, read-only engine update.
     /// A true return leaves the projection sufficient for a subsequent draw.
     /// On false, the caller must not draw/acknowledge this update.
@@ -304,6 +315,7 @@ impl TerminalRenderPipeline {
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         self.background.draw(pass);
+        self.highlights.draw(pass);
         self.boxes.draw(pass);
         self.text.draw(pass);
         self.decoration.draw(pass);
@@ -507,6 +519,26 @@ mod tests {
         renderer.prepare(gpu, &replay, true);
         assert!(terminal.acknowledge_update(&replay));
         assert!(!renderer.text.is_dirty());
+
+        let page = terminal
+            .read_content(
+                crate::read_model::ReadScope::Visible {
+                    start_row: 0,
+                    row_count: 5,
+                },
+                crate::read_model::ReadBudget::default(),
+            )
+            .unwrap();
+        let ranges: Vec<_> = page
+            .fragments
+            .iter()
+            .filter(|f| !f.units().is_empty())
+            .filter_map(|f| f.range(0..1))
+            .collect();
+        assert!(!ranges.is_empty());
+        renderer.prepare_highlights(gpu, &terminal.project_content_ranges(&ranges));
+        assert_eq!(terminal.read_update(now).preedit, replay.preedit);
+        assert_eq!(terminal.read_update(now).selection, replay.selection);
 
         // Encode and submit all layers, including preedit and scrollbar, for GPU validation.
         let target = device.create_texture(&wgpu::TextureDescriptor {

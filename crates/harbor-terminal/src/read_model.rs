@@ -256,6 +256,14 @@ impl ReadFragment {
     }
 }
 
+/// Half-open current viewport cell geometry; never a persistent content identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellSpan {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+}
+
 /// Renderer-neutral decoration/navigation range. Private evidence cannot be
 /// replaced with a merely resolvable anchor. Validate against the active engine.
 #[derive(Clone, Debug)]
@@ -488,6 +496,88 @@ impl Terminal {
         self.screen.read_buffer().row_version(proof.generation) == Some(proof.revision)
     }
 
+    /// Project proven logical ranges using only current visible row geometry.
+    /// No source strings are copied or matched; stale ranges contribute nothing.
+    pub fn project_content_ranges(&self, ranges: &[ContentRange]) -> Vec<CellSpan> {
+        let normal = self.screen.read_buffer();
+        let view_start = normal.history_start()
+            + normal.scroll_count().saturating_sub(normal.view_offset()) as u64;
+        let view_end = view_start + normal.rows() as u64;
+        let mut spans = Vec::new();
+        for range in ranges {
+            if !self.validate_content_range(range) {
+                continue;
+            }
+            for proof in &range.rows {
+                if !(view_start..view_end).contains(&proof.generation) {
+                    continue;
+                }
+                let Some(row) = normal.retained_row(proof.generation) else {
+                    continue;
+                };
+                let mut atom = row.metadata.logical_atom_start;
+                let mut col = 0;
+                let mut start = None;
+                let mut end = 0;
+                while col < row.metadata.meaningful_extent.min(row.cells.len()) {
+                    let Ok(width) = crate::logical_content::row_glyph_width(row, col) else {
+                        break;
+                    };
+                    let width = usize::from(width);
+                    if row.metadata.logical_line_id == range.start.line
+                        && (range.start.offset.0..range.end.offset.0).contains(&atom)
+                    {
+                        start.get_or_insert(col);
+                        end = col + width;
+                    }
+                    atom += 1;
+                    col += width;
+                }
+                if let Some(start_col) = start {
+                    spans.push(CellSpan {
+                        row: (proof.generation - view_start) as usize,
+                        start_col,
+                        end_col: end,
+                    });
+                }
+            }
+        }
+        spans.sort_unstable_by_key(|s| (s.row, s.start_col, s.end_col));
+        let mut merged: Vec<CellSpan> = Vec::new();
+        for span in spans {
+            if let Some(last) = merged.last_mut()
+                && last.row == span.row
+                && span.start_col <= last.end_col
+            {
+                last.end_col = last.end_col.max(span.end_col);
+            } else {
+                merged.push(span);
+            }
+        }
+        merged
+    }
+
+    /// Scroll to a currently proven target, without changing selection or PTY state.
+    pub fn navigate_content_target(&mut self, target: &ActionTarget) -> bool {
+        if target.action != TargetAction::Navigate || !self.validate_action_target(target) {
+            return false;
+        }
+        let Some(first) = target.range.rows.first() else {
+            return false;
+        };
+        let normal = self.screen.read_buffer();
+        let live_start = normal.history_start() + normal.scroll_count() as u64;
+        let desired = live_start.saturating_sub(first.generation) as usize;
+        let current = normal.view_offset();
+        if desired > current {
+            self.screen.scroll_up(desired - current);
+        } else {
+            self.screen.scroll_down(current - desired);
+        }
+        self.invalidate_update();
+        true
+    }
+
     fn read_content_at(
         &self,
         mut cursor: ReadContinuation,
@@ -615,3 +705,6 @@ impl Terminal {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod presentation_tests;

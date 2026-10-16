@@ -24,6 +24,12 @@ pub enum AppCommand {
     PageDown,
     ScrollToTop,
     ScrollToBottom,
+    SearchOpen,
+    SearchClose,
+    SearchNext,
+    SearchPrevious,
+    /// Internal coalesced query edit, absent from the configurable registry.
+    SearchChanged,
     ReloadConfiguration,
     /// Internal presentation intent, deliberately absent from the command registry.
     DismissNotification(u64),
@@ -222,6 +228,36 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             chord(Key::End, false, false),
             true,
         ),
+    ]);
+    entries.extend([
+        descriptor(
+            "terminal.search",
+            "Search current session",
+            AppCommand::SearchOpen,
+            chord(Key::Character('f'), true, true),
+            true,
+        ),
+        descriptor(
+            "terminal.search-next",
+            "Next search match",
+            AppCommand::SearchNext,
+            chord(Key::F3, false, false),
+            true,
+        ),
+        descriptor(
+            "terminal.search-previous",
+            "Previous search match",
+            AppCommand::SearchPrevious,
+            chord(Key::F3, false, true),
+            true,
+        ),
+        CommandDescriptor {
+            id: "terminal.search-close",
+            label: "Close search",
+            command: AppCommand::SearchClose,
+            default_chords: Vec::new(),
+            palette_visible: true,
+        },
     ]);
     entries
 }
@@ -461,7 +497,7 @@ mod tests {
     #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 21);
+        assert_eq!(registry.len(), 25);
         assert_eq!(
             registry
                 .iter()

@@ -406,6 +406,21 @@ impl TabCoordinator {
         }
     }
 
+    pub(crate) fn dispatch_search_command(
+        &mut self,
+        command: harbor_app::command::AppCommand,
+    ) -> Option<harbor_widget::FocusHandle> {
+        self.tabs
+            .dispatch_search_command(command, &self.workspace_ui)
+    }
+
+    pub(crate) fn advance_search(&mut self) -> (bool, bool) {
+        let tick = self.tabs.advance_search();
+        self.workspace_ui
+            .publish_search_status(self.tabs.search_status());
+        (tick.pending, tick.changed)
+    }
+
     pub(crate) fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.tabs.active_terminal()
     }
@@ -415,6 +430,7 @@ impl TabCoordinator {
     }
 
     pub(crate) fn sync_ui(&self, window: &Window) {
+        self.workspace_ui.sync_search_source(self.tabs.active_id());
         if let Some(title) = self.tabs.active_title() {
             window.set_title(&format_window_title(title));
         }

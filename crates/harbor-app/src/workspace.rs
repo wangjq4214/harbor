@@ -18,9 +18,166 @@ use harbor_widget::{
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
+struct SearchUiState {
+    open: bool,
+    source: Option<crate::tab_manager::TabId>,
+    query: String,
+    preedit: String,
+    status: String,
+}
+
+#[derive(Clone)]
+struct SearchEntry(WorkspaceUiController);
+
+impl harbor_widget::view::PrimitiveLeaf for SearchEntry {
+    fn intrinsic_size(
+        &self,
+        constraints: harbor_widget::layout::BoxConstraints,
+        metrics: &harbor_widget::text::TextMetrics,
+    ) -> harbor_widget::layout::Size {
+        constraints.constrain(harbor_widget::layout::Size::new(
+            280.0,
+            metrics.line_height + 8.0,
+        ))
+    }
+    fn paint_primitives(
+        &self,
+        rect: Rect,
+        _metrics: &harbor_widget::text::TextMetrics,
+    ) -> Vec<harbor_widget::scene::primitive::Primitive> {
+        let state = self.0.store.state().read();
+        vec![harbor_widget::scene::primitive::Primitive::Text {
+            text: Arc::from(format!(
+                "Find: {}{}▏",
+                state.search.query, state.search.preedit
+            )),
+            origin: rect.min,
+            color: Color::WHITE,
+        }]
+    }
+    fn handle_event(
+        &self,
+        event: &harbor_widget::input::event::UiEvent,
+        ctx: &mut harbor_widget::input::event_ctx::EventCtx,
+        _rect: Rect,
+    ) -> harbor_widget::input::event_ctx::EventHandled {
+        use harbor_widget::input::{
+            event::{Key, KeyboardEvent, UiEvent},
+            event_ctx::EventHandled,
+        };
+        let mut state = self.0.store.state().read().clone();
+        let mut changed = false;
+        let command = match event {
+            UiEvent::Pointer(pointer)
+                if pointer.phase == harbor_widget::input::event::PointerPhase::Down =>
+            {
+                Some(AppCommand::SearchOpen)
+            }
+            UiEvent::Focus(harbor_widget::input::event::FocusEvent::Lost) => {
+                state.search.preedit.clear();
+                self.0.store.set_state(state);
+                return EventHandled::Handled;
+            }
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: Key::Escape, ..
+            }) => Some(AppCommand::SearchClose),
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: Key::Enter | Key::NumpadEnter,
+                modifiers,
+            }) => Some(if modifiers.shift {
+                AppCommand::SearchPrevious
+            } else {
+                AppCommand::SearchNext
+            }),
+            UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: Key::Backspace,
+                ..
+            }) => {
+                changed = state.search.query.pop().is_some();
+                None
+            }
+            UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers })
+                if !modifiers.ctrl && !modifiers.alt && !modifiers.meta =>
+            {
+                let ch = match key {
+                    Key::Character(ch) | Key::NumpadCharacter(ch) => Some(*ch),
+                    Key::Space => Some(' '),
+                    _ => None,
+                };
+                if let Some(ch) = ch
+                    && !ch.is_control()
+                    && state.search.query.len() + ch.len_utf8()
+                        <= harbor_terminal::literal_search::MAX_QUERY_BYTES
+                {
+                    state.search.query.push(ch);
+                    changed = true;
+                }
+                None
+            }
+            UiEvent::Keyboard(KeyboardEvent::Ime(text)) => {
+                if state.search.query.len() + text.len()
+                    <= harbor_terminal::literal_search::MAX_QUERY_BYTES
+                    && !text.chars().any(char::is_control)
+                {
+                    state.search.query.push_str(text);
+                    state.search.preedit.clear();
+                    changed = true;
+                }
+                None
+            }
+            UiEvent::ImePreedit(preedit) => {
+                state.search.preedit = preedit.text.chars().take(32).collect();
+                self.0.store.set_state(state);
+                ctx.invalidate_paint();
+                return EventHandled::Handled;
+            }
+            UiEvent::Keyboard(_) => None,
+            _ => return EventHandled::Ignored,
+        };
+        if changed {
+            state.search.preedit.clear();
+            state.search.status = "Searching…".into();
+            self.0.store.set_state(state);
+            self.0
+                .store
+                .dispatcher()
+                .dispatch(AppCommandRequest::shortcut(AppCommand::SearchChanged));
+        }
+        if let Some(command) = command {
+            self.0
+                .store
+                .dispatcher()
+                .dispatch(AppCommandRequest::shortcut(command));
+        }
+        ctx.invalidate_paint();
+        EventHandled::Handled
+    }
+}
+
+fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
+    let entry = View::leaf(SearchEntry(controller.clone()));
+    let button = |label, command| {
+        let dispatcher = controller.store.dispatcher();
+        harbor_widget::Button::new(label)
+            .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
+    };
+    let status = controller.store.state().read().search.status.clone();
+    harbor_widget::view! { cx; harbor_widget::Column::new() => {
+        Row::new() => {
+            Expanded::new() => { Focus::new(entry).handle(controller.search_focus); }
+            button("Previous", AppCommand::SearchPrevious);
+            button("Next", AppCommand::SearchNext);
+            button("Close", AppCommand::SearchClose);
+        }
+        harbor_widget::widgets::text_label::TextLabel::new(status).ellipsis();
+    } }
+}
+
+#[derive(Clone, Default)]
 struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
     notices: ConfigurationNotices,
+    search: SearchUiState,
 }
 
 /// App-wide publication and the sole one-shot action inbox, independent of tab sync.
@@ -29,6 +186,7 @@ pub struct WorkspaceUiController {
     store: Store<WorkspaceUiState, AppCommandRequest>,
     tabs: TabUiController,
     terminal_focus: FocusHandle,
+    search_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
 }
 
@@ -42,7 +200,57 @@ impl WorkspaceUiController {
             store: Store::new(WorkspaceUiState::default()),
             tabs: TabUiController::new(snapshots, active_bridge, logical_width),
             terminal_focus: FocusHandle::new(),
+            search_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
+        }
+    }
+
+    pub fn open_search(&self, source: crate::tab_manager::TabId) {
+        let mut state = self.store.state().read().clone();
+        if state.search.source != Some(source) {
+            state.search = SearchUiState::default();
+        }
+        state.search.open = true;
+        state.search.source = Some(source);
+        self.store.set_state(state);
+    }
+
+    pub fn close_search(&self) {
+        let mut state = self.store.state().read().clone();
+        state.search = SearchUiState::default();
+        self.store.set_state(state);
+    }
+
+    pub fn search_focus(&self) -> FocusHandle {
+        self.search_focus
+    }
+
+    pub fn search_query(&self) -> Option<(crate::tab_manager::TabId, String)> {
+        let state = self.store.state().read();
+        if !state.search.open {
+            return None;
+        }
+        Some((state.search.source?, state.search.query.clone()))
+    }
+
+    pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {
+        if self
+            .store
+            .state()
+            .read()
+            .search
+            .source
+            .is_some_and(|source| Some(source) != active)
+        {
+            self.close_search();
+        }
+    }
+
+    pub fn publish_search_status(&self, status: &str) {
+        let mut state = self.store.state().read().clone();
+        if state.search.status != status {
+            state.search.status = status.into();
+            self.store.set_state(state);
         }
     }
 
@@ -199,11 +407,19 @@ fn terminal_panel(
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
 ) -> View {
+    let search = controller.store.state().read().search.clone();
     harbor_widget::view! { cx; Expanded::new() => {
-        controller.allocation.observer() => {
-            TerminalDecorationPreset::container() => {
-                Focus::empty().handle(controller.terminal_focus) => {
-                    terminal_widget(active_bridge);
+        harbor_widget::Column::new() => {
+            if search.open {
+                search_bar(cx, controller);
+            }
+            Expanded::new().keyed("terminal-surface") => {
+                controller.allocation.observer() => {
+                    TerminalDecorationPreset::container() => {
+                        Focus::empty().handle(controller.terminal_focus) => {
+                            terminal_widget(active_bridge);
+                        }
+                    }
                 }
             }
         }

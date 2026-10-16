@@ -3,6 +3,7 @@
 pub mod command;
 pub mod confirmation;
 pub mod notifications;
+mod search;
 pub mod tab_manager;
 pub mod tab_view;
 pub mod terminal_view;
