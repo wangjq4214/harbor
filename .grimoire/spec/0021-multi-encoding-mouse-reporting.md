@@ -3,7 +3,7 @@
 **Spec ID:** 0021
 **Status:** Implemented; native Windows acceptance pending
 **Date:** 2026-10-11
-**Sources:** [Issue #192](https://github.com/wangjq4214/harbor/issues/192), the user's 2026-10-11 approval of the recommended contract and Spec-only endpoint, [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md), [Terminal Protocol Context](../CONTEXT-terminal-protocol.md#vt-mouse-reporting), [Protocol Checklist](../../docs/protocol/checklist.md#28-mouse-protocol-output), and [Validation Policy](../../docs/validation.md).
+**Sources:** [Issue #192](https://github.com/wangjq4214/harbor/issues/192), the user's 2026-10-11 approval of the recommended contract and Spec-only endpoint, [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md), [Terminal Protocol Context](../CONTEXT-terminal-protocol.md#vt-mouse-reporting), Protocol Checklist, and Validation Policy.
 
 ## Scope and Settled Contract
 
@@ -109,7 +109,7 @@ Existing integration-test anchors include `sgr_mouse_routes_cell_coordinates_but
 
 ## Verification and Definition of Done
 
-The [scoped evidence record](../../docs/multi-encoding-mouse-acceptance.md) identifies implemented encoding policies and automated tests. Native Windows legacy application and byte-probe switching, horizontal/dual-axis and pixel/DPI/local-routing scenarios remain NOT RUN. Record actual application/probe, device, OS/ConPTY versions, classic Console API versus VT-input use, geometry, expected/observed bytes and PASS/FAIL/NOT RUN/BLOCKED per scenario; an unavailable device path stays unvalidated. Run the [standard quality gates](../../docs/validation.md#standard-quality-gates). Checklist 17.6/22/28.1–28.4 may claim only evidenced scope, never press-only `?9` or unrelated Home/End work.
+Implemented encoding policies and automated-test anchors are described above. Native Windows legacy application and byte-probe switching, horizontal/dual-axis and pixel/DPI/local-routing scenarios remain NOT RUN. Record actual application/probe, device, OS/ConPTY versions, classic Console API versus VT-input use, geometry, expected/observed bytes and PASS/FAIL/NOT RUN/BLOCKED per scenario; an unavailable device path stays unvalidated. Run the standard quality gates. Checklist 17.6/22/28.1–28.4 may claim only evidenced scope, never press-only `?9` or unrelated Home/End work.
 
 ## Out of Scope
 

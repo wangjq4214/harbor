@@ -76,9 +76,6 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps -p harbor-widget --features harbor-widget/winit -p harbor-terminal
 
-      - name: Summarize protocol checklist
-        run: python scripts/docs/checklist_summary.py
-
       - name: Install .NET for pinned WiX
         uses: actions/setup-dotnet@v4
         with:

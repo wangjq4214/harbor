@@ -26,5 +26,5 @@ The existing SGR-only policy consumes tracked events without sending bytes when 
 - The old silent-consumption assertion for tracking without `?1006` becomes a legacy-fallback assertion; the existing tracking-priority and SGR regression obligations remain.
 - Mode selection, coordinate units and outgoing bytes must agree after pending protocol input has been parsed. Pixel reporting cannot be implemented only in the final formatter after a cell conversion has already discarded position information.
 - New supported mode queries must reflect each retained flag, not only the winning encoding. Unsupported modes remain consume-ignored and query as unknown.
-- Parser recognition, exact-byte and routing tests are required, but they do not establish Windows/ConPTY application interoperability. [Validation Policy](../../docs/validation.md) remains an independent acceptance gate.
+- Parser recognition, exact-byte and routing tests are required, but they do not establish Windows/ConPTY application interoperability. Validation Policy remains an independent acceptance gate.
 - ADR 0038 preserves the prior #102 decision as superseded history. This Proposed record describes the approved future boundary, not current support. The detailed requirements belong in the Spec-only output, not in an implementation plan or execution tickets.

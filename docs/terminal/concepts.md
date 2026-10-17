@@ -38,7 +38,7 @@ For example, `abcdefgh` in a four-column grid can span two physical rows without
 
 Blank provenance matters. Explicit/interior blanks and visibly styled blanks can be retained content; fresh capacity and generated padding before a wide unit are not equivalent source spaces. Underlines, overlines, background and inverse can make blanks visually meaningful. Hyperlink fallback and strike alone do not make an ordinary blank visibly meaningful under this model.
 
-Primary reflow trims ordinary trailing spaces according to its retention policy; that is not lossless text archival. For the live Windows ConPTY primary viewport, style-only overflow can be clipped on narrowing rather than pushed into new live rows. Widening must not resurrect that discarded tail. History/non-ConPTY styled retention and alternate rectangular retention have different rules. The bounded read API exposes the result, not a second hidden archive. See [read-model retention](../terminal-read-model.md) and the [ConPTY styled-tail regression](../../crates/harbor-terminal/tests/conpty_styled_tail_resize.rs).
+Primary reflow trims ordinary trailing spaces; it is not lossless text archival. For the live Windows ConPTY primary viewport, style-only overflow can be clipped on narrowing rather than pushed into new live rows. Widening does not resurrect that discarded tail. History/non-ConPTY styled retention and alternate rectangular retention differ. The bounded read API exposes the result, not a hidden archive.
 
 ## Primary and alternate buffers
 
@@ -75,7 +75,7 @@ For external consumers, [bounded reads](../../crates/harbor-terminal/src/read_mo
 
 Owned pages can outlive the terminal; **ownership is not validity**. Revalidate before publication and activation. The host must separately reject closed/replaced sessions and cancelled queries. Shell EOF alone is not host closure and need not invalidate retained text.
 
-Detailed APIs and evidence live in [the read-model contract](../terminal-read-model.md), [literal search](../terminal-literal-search.md) and [current-session search](../current-session-search.md); this page does not redefine their continuation or coverage rules.
+See `harbor_terminal::read_model` and `harbor_terminal::literal_search` in the generated API reference for continuation, validation and coverage rules.
 
 ## Three kinds of reads
 

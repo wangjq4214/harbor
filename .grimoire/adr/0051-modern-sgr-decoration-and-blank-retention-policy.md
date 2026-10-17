@@ -33,6 +33,6 @@ These are accepted behavior and ownership constraints, not prescriptions for pri
 ## Sources
 
 - User approval in the #162 refinement conversation: all recommended SGR rules accepted; existing sub-issues treated as fully verified for this work's prerequisite scope.
-- [Protocol checklist, SGR requirements](../../docs/protocol/checklist.md#16-sgr-character-attributes).
+- Protocol checklist, SGR requirements.
 - [Kitty colored and styled underline specification](https://sw.kovidgoyal.net/kitty/underlines/), also available as [upstream source](https://github.com/kovidgoyal/kitty/blob/master/docs/underlines.rst): style codes, SGR 58/59, explicit-color inverse behavior, and `Su` discovery. This reference does not imply Kitty identity or other Kitty support.
 - Current integration surfaces: `crates/harbor-terminal/src/model.rs`, `screen/edit/pen_state.rs`, `normal_buf.rs`, `primary_reflow.rs`, `render/decoration.rs`, and `parser/status_strings.rs` (paths after the first are relative to the same terminal `src/` directory).

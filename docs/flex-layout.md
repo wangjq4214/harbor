@@ -98,20 +98,4 @@ cannot become stale. Layout-only updates preserve retained scene IDs and externa
 registrations. DPI conversion stays at the renderer boundary; layout remains in
 unrounded logical pixels.
 
-This layout contract does not own tab/session policy, responsive breakpoint decisions
-or PTY resizing. Those are application/integration responsibilities, not necessarily
-missing project features: the current application uses Flex/Expanded and
-`LayoutObserver` for committed allocation, and coordinates terminal resize.
-Positioned children remain outside this Flex contract. See [Current Status](current-status.md)
-and [Widget Runtime Architecture](architecture/widget-runtime.md) for the surrounding implementation.
-
-## Verification
-
-The governing behavior and acceptance criteria are maintained in [Spec 0010](../.grimoire/spec/0010-desktop-terminal-tabs-and-view-macro.md) and the executable evidence in `crates/harbor-widget/tests/flex_layout.rs`,
-`crates/harbor-widget/tests/flex_runtime.rs`, and
-`crates/harbor-widget/src/runtime/layout_resources_tests.rs`.
-The GPU retention test compares actual pipeline, buffer and atlas-binding handles
-through resize, fractional DPI, zero viewport and restore. Run it with
-`HARBOR_REQUIRE_LAYOUT_GPU=1` to turn an unavailable adapter into a failure rather
-than an explicit skip. This headless test does not replace a Windows interactive
-resize/minimize/restore/multi-monitor/confirmation smoke session.
+Responsive breakpoint decisions and embedded-content resizing remain application responsibilities. Use `LayoutObserver` to observe committed allocation. Positioned children are outside this Flex contract.

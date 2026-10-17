@@ -146,18 +146,10 @@ native host / application policy
       -> harbor-terminal PTY, screen, parser, and renderer
 ```
 
-This boundary lets `harbor-terminal` be embedded in another UI toolkit or custom compositor. See [the widget runtime architecture](../../docs/architecture/widget-runtime.md) for Harbor's implementation.
+This boundary lets `harbor-terminal` be embedded in another UI toolkit or custom compositor. See the [embedding guide](../../docs/terminal/embedding.md) for host responsibilities.
 
-## Development
 
-From the repository root:
-
-```bash
-cargo test -p harbor-terminal
-cargo clippy -p harbor-terminal --all-targets -- -D warnings
-```
-
-Protocol support and known gaps are tracked in the [terminal protocol checklist](../../docs/protocol/checklist.md).
+See the [VT reference](../../docs/terminal/vt.md) and [compatibility guide](../../docs/terminal/compatibility.md) for protocol support and known limitations.
 
 ## License
 

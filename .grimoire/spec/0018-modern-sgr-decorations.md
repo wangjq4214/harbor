@@ -1,7 +1,7 @@
 # Modern SGR Decorations
 
 **Spec ID:** 0018
-**Status:** Implemented (scoped modern-SGR slice; see [acceptance record](../../docs/modern-sgr-acceptance.md))
+**Status:** Implemented (scoped modern-SGR slice)
 **Date:** 2026-10-09
 **Sources:** [Issue #162](https://github.com/wangjq4214/harbor/issues/162), the user-approved modern SGR refinement contract below, [ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), and the approved Windows ConPTY live-primary exception in [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 
@@ -92,12 +92,12 @@ Support the selected indexed/RGB SGR 58 family alongside existing foreground/bac
 - Demonstrate Neovim undercurl/diagnostic-style highlighting and explicit underline color through an actual Harbor Windows/ConPTY session. Record the Neovim version, launch/transport path, highlight setup, expected versus observed rendering, resize/DPI observations, and return to the shell.
 - Supplement Neovim with direct synthetic VT cases for all styles, overline, conceal, explicit spaces, resets, inverse, and status/discovery bytes. A synthetic sequence test alone is not Neovim acceptance.
 - Preserve existing reply, OSC metadata, focus, SGR mouse, IME, synchronized output, selection/copy, and alternate-screen behavior through applicable regression checks rather than reimplement them.
-- Keep self-contained validation summaries using [Validation](../../docs/validation.md), with raw artifacts retained locally or linked from retrievable CI. Record revision/dirty scope, Windows/ConPTY/application versions, commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and exclusions. Do not capture secrets or unrelated terminal/clipboard contents.
+- Keep self-contained validation summaries using Validation, with raw artifacts retained locally or linked from retrievable CI. Record revision/dirty scope, Windows/ConPTY/application versions, commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and exclusions. Do not capture secrets or unrelated terminal/clipboard contents.
 - Update protocol/status documentation only for behavior actually delivered and evidenced. The approved #162 prerequisites remain outside this slice's revalidation scope.
 
 ## Verification
 
-Focused protocol/model, CPU/GPU and configured Windows Neovim/synthetic evidence is recorded in the [acceptance record](../../docs/modern-sgr-acceptance.md), including its exclusions. Skipped GPU/native checks are not passes. Apply the [standard quality gates](../../docs/validation.md#standard-quality-gates) at implementation boundaries and record omissions.
+Verify focused protocol/model and CPU/GPU behavior, plus configured Windows Neovim/synthetic scenarios, within the scope and exclusions above. Skipped GPU/native checks are not passes. Apply the standard quality gates at implementation boundaries and record omissions.
 
 ## Out of Scope
 

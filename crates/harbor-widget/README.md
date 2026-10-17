@@ -4,7 +4,7 @@
 
 > **Project status:** this is a pre-1.0 workspace crate developed with Harbor. The API may change. This guide assumes a workspace, path, or revision-pinned Git dependency rather than a crates.io release.
 
-For the progressive tutorial, mental models, current control catalog, composition recipes and acceptance boundaries, start at [WIDGET documentation](../../docs/widget/README.md).
+For the progressive tutorial, mental models, current control catalog, composition recipes and limitations, start at [WIDGET documentation](../../docs/widget/README.md).
 
 ## Installation
 
@@ -151,23 +151,8 @@ Prefer `WinitWindowHost` unless you need a custom platform adapter.
 
 `harbor-widget` is terminal-agnostic and does not depend on `harbor-terminal`. Harbor embeds its terminal renderer through `CustomPaint`; the application-owned bridge translates widget allocation, input, IME, and scheduling contracts into terminal operations.
 
-See [the widget runtime architecture](../../docs/architecture/widget-runtime.md) for ownership boundaries and lifecycle details.
+See the [widget concepts](../../docs/widget/concepts.md) and [composition recipes](../../docs/widget/recipes.md) for runtime ownership and integration guidance.
 
-## Development
-
-From the repository root:
-
-```bash
-cargo test -p harbor-widget
-cargo test -p harbor-widget --features winit
-cargo clippy -p harbor-widget --all-targets --all-features -- -D warnings
-```
-
-The ignored native smoke test requires an interactive Windows desktop and compatible GPU:
-
-```bash
-cargo test -p harbor-widget --features winit --test native_host_smoke -- --ignored
-```
 
 ## License
 

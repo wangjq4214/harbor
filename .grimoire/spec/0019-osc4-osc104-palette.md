@@ -1,9 +1,9 @@
 # OSC 4/104 Indexed Palette
 
 **Spec ID:** 0019
-**Status:** Implemented ([scoped source, tests, GPU and Windows probe evidence](../../docs/osc-palette-acceptance.md))
+**Status:** Implemented (bounded OSC 4/104 slice)
 **Date:** 2026-10-10
-**Sources:** [Issue #191](https://github.com/wangjq4214/harbor/issues/191), the user's approval of the recommended contract and Spec-only endpoint on 2026-10-10, [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md), [Protocol Checklist](../../docs/protocol/checklist.md#243-palette), and [Validation Policy](../../docs/validation.md).
+**Sources:** [Issue #191](https://github.com/wangjq4214/harbor/issues/191), the user's approval of the recommended contract and Spec-only endpoint on 2026-10-10, [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md), Protocol Checklist, and Validation Policy.
 
 ## Scope and Settled Contract
 
@@ -73,11 +73,11 @@ b"\x1b]4;42;rgb:1212/3434/5656\x1b\\"
 - Provide focused parser/terminal tests for single/multiple sets, mixed set/query ordering, exact bytes, full/selective/repeated-index reset, malformed colors, bounds, fragmented input, and BEL/ST terminators, as required by #191.
 - Update checklist sections 24.3 and the OSC 104 items in 24.4 only after implementation and named supporting tests exist. Do not interpret #191's shorthand about unchecked items as meaning the already-implemented default-color items in 24.4 are unchecked.
 - Record Windows runtime evidence for a named, versioned application workload or palette set/query/reset probe through the actual Harbor/ConPTY session. A synthetic parser test, successful PTY write, or GPU-independent model result is not Windows application acceptance.
-- Evidence summaries follow [Validation Policy](../../docs/validation.md): revision/dirty-tree scope, environment and Windows/ConPTY/application versions, reproducible commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and known exclusions. Keep raw artifacts local or link retrievable CI artifacts; do not commit local-only artifact links or unrelated private terminal contents.
+- Evidence summaries follow Validation Policy: revision/dirty-tree scope, environment and Windows/ConPTY/application versions, reproducible commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and known exclusions. Keep raw artifacts local or link retrievable CI artifacts; do not commit local-only artifact links or unrelated private terminal contents.
 
 ## Verification
 
-The [acceptance record](../../docs/osc-palette-acceptance.md) maps R1–R7 to focused tests, retained GPU readback and the versioned Windows palette probe, with explicit exclusions. Apply the [standard quality gates](../../docs/validation.md#standard-quality-gates); source or skipped GPU/native checks alone are not runtime acceptance.
+Map R1–R7 to focused tests, retained GPU readback and a versioned Windows palette probe, recording explicit exclusions. Apply the standard quality gates; source or skipped GPU/native checks alone are not runtime acceptance.
 
 ## Out of Scope
 

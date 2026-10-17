@@ -33,7 +33,7 @@ Verify Windows 11 empty-cell/caption Acrylic, Windows 10 client Acrylic with doc
 
 - **Integration tests:** Alpha-mode selection prefers a compositing-capable mode and never picks `Opaque` when alternatives exist; Inverse Default Cell fill and glyph color; Default Background Cell skip remains degenerate; `BACKGROUND` alpha is 0.72; existing GPU/surface recovery contracts stay green.
 - **Manual tests:** Windows 11 22H2+ smoke that Acrylic is visible through empty cells and the caption strip; Windows 10 smoke that the client is Acrylic and that an opaque caption, if present, is the documented degradation; taskbar still says Harbor; min/max/close work; paste confirmation still presents; system Transparency effects off yields a defined non-crash appearance.
-- **Performance thresholds:** Idle scheduling remains `Wait` with no continuous redraw loop introduced by Acrylic. Present and input-latency gates in `docs/validation.md` stay green.
+- **Performance thresholds:** Idle scheduling remains `Wait` with no continuous redraw loop introduced by Acrylic. Present and input-latency gates in validation policy stay green.
 - **Edge cases:** Maximize and restore; DPI change; zero-sized then drawable; surface lost/outdated; inverse on named vs default colors; Windows builds below 22621 taking the accent path; confirmation window open while the main window is Acrylic.
 
 ## Out of Scope

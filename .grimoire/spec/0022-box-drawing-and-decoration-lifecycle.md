@@ -5,7 +5,7 @@
 **Date:** 2026-10-11
 
 **Stable execution aliases:** 0016/T0001 = procedural boxes (R1/R2/R4); T0002 = decoration metric lifecycle (R3/R4); T0003 = combined desktop acceptance (R5 and Definition of Done), including source/test comments and historical evidence labels referring to T0003.
-**Sources:** [Issue #193](https://github.com/wangjq4214/harbor/issues/193), the user-approved refinement contract below, [ADR 0056](../adr/0056-terminal-owned-procedural-box-drawing.md), [modern SGR contract](./0018-modern-sgr-decorations.md), and [Validation Policy](../../docs/validation.md).
+**Sources:** [Issue #193](https://github.com/wangjq4214/harbor/issues/193), the user-approved refinement contract below, [ADR 0056](../adr/0056-terminal-owned-procedural-box-drawing.md), [modern SGR contract](./0018-modern-sgr-decorations.md), and Validation Policy.
 
 ## Scope and Settled Contract
 
@@ -50,7 +50,7 @@ The native font item is deliberately scoped to Windows DirectWrite font-resource
 
 ### R5. Windows evidence and completion honesty
 
-- Produce a self-contained evidence record following `docs/validation.md`, identifying revision/dirty scope, Windows and application versions, font settings, viewport/scale, reproducible commands or manual steps, expected/observed results, and individual PASS/FAIL/NOT RUN/BLOCKED outcomes.
+- Produce a self-contained evidence record following validation policy, identifying revision/dirty scope, Windows and application versions, font settings, viewport/scale, reproducible commands or manual steps, expected/observed results, and individual PASS/FAIL/NOT RUN/BLOCKED outcomes.
 - Run a named Windows application workload with box-drawing borders, not only a synthetic CPU fixture. Include relevant redraw/resize observations and explicitly identify the application and transport exercised.
 - Run Windows native font-resource replacement smoke with DirectWrite and actual GPU rendering: replace the font resources with a configuration that changes metrics and observe box drawing, ordinary glyphs, and all three decoration kinds before/after. Distinguish this from restarting with a different startup font, reloading the same metrics, simulated geometry, and desktop user-settings hot reload.
 - Perform actual cross-monitor window moves between displays with differing DPI/scale and observe the same presentation before/after. A static 1.5x display observation, offscreen scale mutation, or GPU unit test is not that runtime evidence.
@@ -59,7 +59,7 @@ The native font item is deliberately scoped to Windows DirectWrite font-resource
 
 ## Acceptance status
 
-[Box CPU/GPU evidence](../../docs/procedural-box-drawing-evidence.md) and [decoration/native changed-metrics evidence](../../docs/decoration-metric-lifecycle-evidence.md) establish focused implementation, not integrated desktop acceptance. Historical 0016/T0003 was marked Done on user-reported verification with no apparent issues, but supplied no tested revision, environment, named application, native replacement/cross-monitor procedures or fresh gate results. Its detailed acceptance remained unchecked. R5 and the definition below remain required: no implicit deferral, broader support or #193 closure follows from that report. Preserve historical evidence; summaries must be self-contained, without local-only raw-artifact links.
+The procedural-box and decoration metric-lifecycle implementations do not establish integrated desktop acceptance. Historical 0016/T0003 was marked Done on user-reported verification with no apparent issues, but supplied no tested revision, environment, named application, native replacement/cross-monitor procedures or fresh gate results. Its detailed acceptance remained unchecked. R5 and the definition below remain required: no implicit deferral, broader support or #193 closure follows from that report. New evidence summaries must be self-contained, without local-only raw-artifact links.
 
 ## Definition of Done
 
@@ -73,7 +73,6 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 python scripts/docs/check_docs.py
-python scripts/docs/checklist_summary.py
 ```
 
 ## Out of Scope

@@ -32,8 +32,6 @@ Use `ComponentExt::keyed`, or `Component::key()` when implementing a component's
 
 **Construction matters:** passing a component to `.child(...)`/`view!` defers its build to its own fiber. Calling a child's `.build(cx)` eagerly shares the caller's build context. That can be intentional inside a composite implementation, but is not an independent hook boundary. `BuildCx::stub()` is for prebuilding descriptions; it is not a mounted runtime with persistent subscriptions.
 
-Sources/coverage: [reconciliation](../../crates/harbor-widget/src/fiber/reconcile.rs), [construction](../../crates/harbor-widget/src/construction.rs), [keyed construction tests](../../crates/harbor-widget/tests/child_construction.rs).
-
 ## Signals are pull-based shared cells, not render snapshots
 
 `Signal<T>` is a UI-thread `Rc<RefCell<_>>` handle. Clones refer to the same value. `read()` borrows the **current** value; it does not by itself subscribe the current component. Use `cx.track(&signal)` for an externally owned signal, `store.watch(cx)` for published application state, or `cx.use_state(...)` for a hook-created signal (which subscribes its fiber).
@@ -43,8 +41,6 @@ Sources/coverage: [reconciliation](../../crates/harbor-widget/src/fiber/reconcil
 Release a `read()` guard before writing the same signal. A long-lived borrow across a callback or write can panic. A closure that captures a signal handle sees its latest value when it reads; a closure that captures a copied scalar has only that scalar. Be explicit about which behavior you need.
 
 Signals are not a worker-thread messaging mechanism. Use a host channel/action dispatcher and a separate host wake for background intent; mutate UI state on the UI thread.
-
-Sources/coverage: [signals and unit tests](../../crates/harbor-widget/src/signal.rs), [closure subscription test](../../crates/harbor-widget/tests/closure_component.rs), [Store subscription test](../../crates/harbor-widget/src/store.rs).
 
 ## Hooks and lifecycle: the exact public seams
 
@@ -60,9 +56,7 @@ Do not confuse these existing callbacks with a general hook system:
 | `LayoutObserver::new(callback)` | Observe committed layout geometry; not a safe substitute for executing business work during build |
 | `WindowPlatformHooks::configure_attributes`, `window_created`, `surface_ready` | Native host construction setup with host-lifetime retained setup state, not hooks on every component |
 
-Keep long-lived resources with an explicit owner. If a root can be replaced or hot-reloaded, external registration/teardown and old callback lifetime require real integration coverage. A hook retaining a controller is not proof that controller state survives a root replacement.
-
-Sources: [BuildCx](../../crates/harbor-widget/src/view.rs), [CustomPaint](../../crates/harbor-widget/src/widgets/custom_paint.rs), [native lifecycle API](../../crates/harbor-widget/src/winit/host.rs).
+Keep long-lived resources with an explicit owner. Root replacement tears down component-local state; retain any state that must survive outside that root, and clean up external registrations and callbacks.
 
 ## Actions are intent, not state
 
@@ -72,7 +66,7 @@ Sources: [BuildCx](../../crates/harbor-widget/src/view.rs), [CustomPaint](../../
 
 In particular, **enqueuing does not automatically wake the runtime**. For background producers, sending an action and waking the native event loop are separate responsibilities. Even on a UI turn, arrange reduction/publication and runtime invalidation rather than assuming dispatch changes the screen.
 
-Sources: [Store](../../crates/harbor-widget/src/store.rs), [Actions](../../crates/harbor-widget/src/widgets/actions.rs), [Shortcuts](../../crates/harbor-widget/src/widgets/shortcuts.rs). See the runnable [counter example](learn.md).
+See the runnable [counter example](learn.md).
 
 ## Invalidation, effects and presentation are different steps
 
@@ -87,4 +81,4 @@ Build/layout/paint/hit-test dirty flags distinguish work categories. They are no
 
 `RuntimeEffects` describes redraw, waiting/deadlines, cursor, IME and clipboard requests. Core code does not execute native platform effects. `WinitWindowHost` applies them and manages surface outcomes; a custom host must implement the same responsibilities. Tagged editor clipboard requests complete via `Runtime::complete_clipboard`, not ordinary event dispatch.
 
-A quiet host should wait, not continuously poll to hide missing wake/invalidation wiring. A paint request does not establish that an OS frame was shown, and a source/test check does not establish native acceptance. See [runtime architecture](../architecture/widget-runtime.md), [host recipes](recipes.md) and [testing](testing.md).
+A quiet host should wait, not continuously poll to hide missing wake/invalidation wiring. A paint request is not a presented frame. See [host recipes](recipes.md) and [testing](testing.md).

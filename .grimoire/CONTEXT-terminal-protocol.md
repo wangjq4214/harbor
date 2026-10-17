@@ -244,7 +244,7 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
   - communicates with Application Business Host
 
 ### Modern SGR Decoration Policy
-- **Definition:** Independent underline style/color; explicit underlines/overlines paint spaces, OSC 8 fallback remains non-space single underline. Conceal hides foreground/decorations, not source text, background, width or copy: presentation, never redaction/disposable capacity. SGR status reflects authoritative state; verified styled support is discoverable via Su without identity changes ([ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md)). Meaningful Blank/Reflow define full history/non-ConPTY retention and the scoped ConPTY live-tail exception ([ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)). [Integrated evidence](../docs/modern-sgr-acceptance.md) has explicit runtime/transport exclusions.
+- **Definition:** Independent underline style/color; explicit underlines/overlines paint spaces, OSC 8 fallback remains non-space single underline. Conceal hides foreground/decorations, not source text, background, width or copy: presentation, never redaction/disposable capacity. SGR status reflects authoritative state; verified styled support is discoverable via Su without identity changes ([ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md)). Meaningful Blank/Reflow define full history/non-ConPTY retention and the scoped ConPTY live-tail exception ([ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)). Implementation does not certify unexercised runtime/transport paths.
 - **Relationships:**
   - references OSC 8 Hyperlink
   - references DECRQSS

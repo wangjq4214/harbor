@@ -13,7 +13,7 @@
 3. Rendering, screen edits, selection, copy, logical-line reflow, content-anchor projection, and damage tracking must agree on the same text units and widths. Future search must consume this text representation rather than reconstructing a competing scalar/cell model; implementing a search UI is not required by N02.
 4. Cover sequences divided across PTY reads, wide-cell/right-edge placement, overwrite and erase, font fallback, and font/DPI changes, including selection and copy before and after resize.
 
-Source of scope: [issue #153](https://github.com/wangjq4214/harbor/issues/153) and [N02 planning scope](../../docs/next-stage-plan.md). The clarified width, orphan-mark, and fallback decisions are recorded in [ADR-0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md).
+Source of scope: [issue #153](https://github.com/wangjq4214/harbor/issues/153) and N02 planning scope. The clarified width, orphan-mark, and fallback decisions are recorded in [ADR-0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md).
 
 ## Solution
 
@@ -35,7 +35,7 @@ The renderer presents the retained unit in its assigned cell bounds, including f
 
 Add deterministic parser/screen tests for PTY fragmentation, zero-width retention, cluster width and cursor/pending-wrap, line-start isolation, wide edges, insert/overwrite/erase and protected/styled/hyperlinked cells. Verify logical-stream decode, selected text, content-anchor remapping, eviction, primary reflow, alternate resize, and dirty-range uploads against the same original sequences. Check font fallback and font/DPI rerendering in Windows runtime, not only model tests; include a named terminal application workload and clipboard copy across resize.
 
-For each delivered increment, record focused tests and reproducible Windows end-to-end steps, revision and dirty-tree scope, OS/ConPTY/application versions, expected versus observed outcome, artifacts, known exclusions, and honest PASS / FAIL / NOT RUN / BLOCKED statuses in self-contained committed summaries, with raw artifacts retained locally or in retrievable CI. Run or account for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/docs/check_docs.py`, and `python scripts/docs/checklist_summary.py`; update status/protocol claims only for evidenced behavior. See [Validation](../../docs/validation.md). Parser/model tests alone do not prove Windows runtime compatibility.
+For each delivered increment, record focused tests and reproducible Windows end-to-end steps, revision and dirty-tree scope, OS/ConPTY/application versions, expected versus observed outcome, artifacts, known exclusions, and honest PASS / FAIL / NOT RUN / BLOCKED statuses in self-contained committed summaries, with raw artifacts retained locally or in retrievable CI. Run or account for `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/docs/check_docs.py`; update status/protocol claims only for evidenced behavior. See Validation. Parser/model tests alone do not prove Windows runtime compatibility.
 
 ### Unresolved acceptance and discrepancy
 

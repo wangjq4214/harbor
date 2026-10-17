@@ -165,7 +165,7 @@ Verify independent sessions and active-only input/paint; close B among A/B/C sel
 - **Scheduling tests:** Active versus inactive output, active-only external schedule, cursor blink, synchronized output, close cleanup, and quiet-runtime Wait behavior.
 - **Resize tests:** Content allocation to TerminalSize conversion, broadcast deduplication, inactive tabs, zero size, root inset, rail breakpoints, maximize/restore, and scale changes.
 - **Manual Windows tests:** Create and close many tabs; run shell, Vim, less, and sustained output in separate tabs; exercise mouse, keyboard, selection, scrollback, paste confirmation, Acrylic, resize, monitor DPI movement, suspend/resume, and shell exit.
-- **Quality gates:** Follow [`docs/validation.md`](../../docs/validation.md), including format, clippy, workspace tests, documentation checks, and Windows runtime evidence for input/window behavior.
+- **Quality gates:** Follow validation policy, including format, clippy, workspace tests, documentation checks, and Windows runtime evidence for input/window behavior.
 
 ## Performance and Resource Gates
 
