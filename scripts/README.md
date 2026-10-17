@@ -8,7 +8,7 @@ are unchanged; use the categorized paths instead of the former flat paths.
 | --- | --- | --- |
 | [`setup/`](setup/) | Restore pinned Windows dependencies | `fetch_conpty.ps1`, `fetch_wasdk.ps1` |
 | [`packaging/`](packaging/) | Build Windows release assets | `package_windows.ps1`; `build_windows_msi.ps1` consumes an existing payload; `windows_package_version.ps1` is a shared helper |
-| [`docs/`](docs/) | Check documentation and summarize protocol inventory | `check_docs.py`, `checklist_summary.py` |
+| [`docs/`](docs/) | Check Markdown language/links/fragments, compile/run public-guide Rust examples, summarize VT inventory | `check_docs.py`, `check_examples.py`, `checklist_summary.py` |
 | [`profiling/`](profiling/) | Analyze DHAT allocation reports | `dhat_analyze.py`, `dhat_drill.py` |
 | [`terminal/`](terminal/) | Interactive terminal probes and synthetic workloads | See the fixture list below |
 | [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests and `test_package_windows.ps1` |
@@ -28,6 +28,7 @@ are unchanged; use the categorized paths instead of the former flat paths.
 # Documentation checks and protocol inventory (not release acceptance).
 python scripts/docs/check_docs.py
 python scripts/docs/checklist_summary.py
+python scripts/docs/check_examples.py
 
 # Analyze a DHAT report in the current working directory.
 python scripts/profiling/dhat_analyze.py dhat-heap.json
@@ -42,6 +43,8 @@ powershell.exe -NoProfile -STA -File scripts/terminal/test_osc52_manual.ps1 -Sel
 Packaging prerequisites, release-payload checks and optional real MSI/ZIP test
 arguments are described in [validation](../docs/validation.md#windows-release-packages).
 See the [profiling guide](../docs/performance/profiling-guide.md) for DHAT capture.
+
+The documentation checker includes tracked and nonignored untracked Markdown (including crate guides) and common local heading fragments; it does not validate external sites or factual claims. Ignored local evidence is excluded in a Git checkout, not deleted. The example checker generates an isolated package/cache under `target/` and runs public widget/terminal Rustdoc examples; native `no_run` snippets compile only. See [documentation maintenance](../docs/README.md#maintenance) for scope and limitations.
 
 ## Terminal Fixtures
 

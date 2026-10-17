@@ -6,29 +6,20 @@ Make Harbor a reliable Windows daily-use terminal, then add a productive pane wo
 
 This is the accepted **planning scope**, not an implementation-completion report. Work is planned, investigation-gated, or deferred as indicated below; inclusion is not a completion claim. Existing foundations are recorded in [Current Status](current-status.md); delivery order is owned by the [Roadmap](roadmap.md). Acceptance follows [Validation](validation.md).
 
+[Targets and Boundaries](targets.md) explains the application/WezTerm, widget/React-and-Flutter and terminal-core/Ghostty comparisons. It is a capability map, not an expansion of this approved work-package set.
+
 Windows remains the active product target. WSL and SSH are compatibility workloads inside the Windows application, not delivery of a native Unix PTY. Native Linux/macOS runtime work remains a later milestone.
 
 ## Work Packages at a Glance
 
-| ID  | Work package                                  | Starting point                                          | Main dependency                                     |
-| --- | --------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------- |
-| N01 | Resize reflow and stable content anchors      | Source/tests delivered; runtime/performance acceptance open | Windows shell/clipboard/`nvim` and measured cost evidence |
-| N02 | Unicode text correctness                      | Planned; wide cells exist, combining text is incomplete | Coordinate contract shared with N01                 |
-| N03 | `chcp` and legacy Windows compatibility       | Investigate; no specific Harbor defect assumed          | Reproducible ConPTY probes                          |
-| N04 | Configuration hot reload | Manual/font, launch settings and watching implemented (T0001–T0003 Done); integrated E10/native checks pass; remaining interactive package acceptance pending in T0004 | Existing atomic transaction; spec 0024 |
-| N05 | Command palette                               | Planned; command registry exists                        | Existing command dispatch and availability rules    |
-| N06 | Named session profiles                        | Planned; one shell configuration exists                 | Session creation and configuration validation       |
-| N07 | Pane workspace                                | Planned; one terminal per tab exists                    | N01; independent session/layout identities          |
-| N08 | Scrollback search                             | Planned                                                 | N01 anchors and N02 text representation             |
-| N09 | Shell-integration workflows                   | Planned; OSC 7/133 metadata exists                      | Stable anchors; N06 for launch-directory policy     |
-| N10 | Kitty keyboard protocol                       | Investigate transport, then implement                   | ConPTY feasibility; richer input event contract     |
-| N11 | Compatibility-driven terminal extensions      | Planned bounded slices                                  | Focused protocol tests and application evidence     |
-| N12 | Kitty graphics protocol                       | Investigate transport, then implement                   | Resource limits, rendering, N01/N07 placement rules |
-| N13 | Cohesive theme and glass-style UI             | Planned polish; Acrylic and decorations exist           | Theme tokens; N04 for live customization            |
-| N14 | Liquid-glass refraction prototype             | Investigate, then decide production scope               | Defined sample source, N13, GPU measurements        |
-| N15 | History capacity and performance budgets      | Planned configuration/measurement work                  | N01 eviction semantics; measured hotspots           |
-| N16 | Diagnostics, acceptance, and Windows release  | Ongoing obligation; release evidence incomplete         | Every delivered slice                               |
-| N17 | Extended workspace and cross-platform backlog | Deferred, retained in scope                             | Stable Windows workspace and release gates          |
+- **Content and compatibility:** [N01 reflow](#n01--resize-reflow), [N02 Unicode](#n02--unicode-text-correctness), [N03 code pages](#n03--chcp-and-legacy-windows-compatibility).
+- **Configuration:** [N04 reload](#n04--configuration-hot-reload), [N05 palette](#n05--command-palette), [N06 profiles](#n06--named-session-profiles).
+- **Workspace:** [N07 panes](#n07--pane-workspace), [N08 search](#n08--scrollback-search), [N09 shell integration](#n09--shell-integration-workflows).
+- **Protocols:** [N10 keyboard](#n10--kitty-keyboard), [N11 extensions](#n11--compatibility-driven-extensions), [N12 graphics](#n12--kitty-graphics).
+- **Appearance:** [N13 theme](#n13--theme-and-glass-style-ui), [N14 refraction](#n14--liquid-glass-refraction-prototype).
+- **Capacity and delivery:** [N15 budgets](#n15--history-and-performance-budgets), [N16 acceptance/release](#n16--diagnostics-acceptance-and-packaging), [N17 deferred work](#n17--explicit-later-backlog).
+
+Current implementation and acceptance gaps are maintained in [Current Status](current-status.md); execution order and immediate work are maintained in [Roadmap](roadmap.md).
 
 ## A. Reliable Content and Windows Compatibility
 
@@ -36,7 +27,7 @@ Windows remains the active product target. WSL and SSH are compatibility workloa
 
 **First delivery**
 
-Source implementation and automated regressions cover this delivery. N01 acceptance remains open: interactive Windows shell/clipboard/`nvim` and release latency/DHAT checks are **NOT RUN**.
+Source implementation and automated regressions cover this delivery. Scoped native cmd/Neovim checks are linked from [Current Status](current-status.md); broader interactive shell/clipboard/`nvim` coverage and release latency/DHAT acceptance remain incomplete. Earlier NOT RUN rows remain evidence gaps unless a matching revision-scoped result establishes them.
 
 - Re-wrap retained main-screen and scrollback logical lines when column count changes; preserve explicit newlines rather than concatenating every physical row.
 - Define meaningful trailing blanks, styled blank cells, wide-character boundary padding, hyperlinks, and cell attributes. Do not use unconditional text trimming as the reflow algorithm.
@@ -60,7 +51,7 @@ Round-trip resize preserves retained logical text, attributes, and copy results 
 3. Keep rendering, editing, selection, search, copy, reflow, and damage tracking consistent with the same text representation.
 4. Test sequences split across PTY reads, wide-cell edges, overwrites, erases, fallback fonts, and DPI/font changes.
 
-Agree the text and coordinate contracts with N01 first. Deliver in bounded increments; full complex-script shaping and optional font ligatures are not prerequisites for basic combining-mark correctness. IME preedit support is already present and is not evidence that ordinary terminal content handles combining text correctly.
+Combining/VS/ZWJ behavior is implemented; this section retains the required contract rather than a request to rebuild it. [Spec 0015](../.grimoire/spec/0015-unicode-terminal-text-correctness.md#unresolved-acceptance-and-discrepancy) preserves an unresolved final-column selector width discrepancy with autowrap disabled and incomplete runtime coverage. Do not convert those gaps into either absent basic combining support or complete Unicode acceptance. Full complex-script shaping and optional ligatures remain separate work; terminal preedit is still a distinct input overlay.
 
 ### N03 — `chcp` and Legacy Windows Compatibility
 
@@ -140,7 +131,9 @@ Cross-window dragging and persistence belong to N17, not the initial split featu
 
 ### N08 — Scrollback Search
 
-Start with literal search in the current session, next/previous match, highlighting, and navigation without disturbing live output. Match across soft wraps but respect explicit line breaks. Keep matches consistent through reflow and invalidate them when history is evicted.
+The current-session literal slice is implemented through the bounded reader/matcher, host commands, neutral highlights and reusable editor. See [search integration](current-session-search.md), [text input](widget-input.md) and their scoped evidence. Large-history measurements and interactive ongoing-output/resize acceptance remain open; this is not completion of all N08 increments.
+
+The delivered matcher crosses soft wraps but not explicit hard breaks. Source/content validation prevents stale navigation; reflow and incompatible mutations invalidate results and request fresh bounded work rather than preserving old physical positions. History eviction cannot resurrect lost content. Next/previous navigation never changes parser state or sends PTY input.
 
 Add case options and regular expressions later with bounded work, cancellation, and clear behavior during ongoing output. Search must not scan or copy all history on every rendered frame.
 
@@ -174,7 +167,7 @@ Then implement progressive enhancement in tested slices:
 
 Use the [protocol checklist](protocol/checklist.md), not a goal of implementing every historical xterm feature.
 
-Prioritize bounded slices for:
+The following requirements define bounded slices, several of which are already implemented. Reuse their source and acceptance records; prioritize remaining interoperability, edge cases and evidence rather than restarting delivered foundations:
 
 - modern SGR underline styles/color, conceal, and overline;
 - OSC 4/104 palette set/query/reset, separate from existing OSC default colors;
@@ -185,7 +178,7 @@ Prioritize bounded slices for:
 
 Each slice needs malformed/fragmented input, reset, bounds, exact reply/input bytes where applicable, and a named application workload. Existing replies, OSC metadata, focus, mouse, IME, and synchronized output need continued regression/runtime evidence, not reimplementation.
 
-The OSC 4/104 indexed palette slice is implemented with scoped native Windows probe and retained GPU evidence in [palette acceptance](osc-palette-acceptance.md). This does not complete N11's other slices or establish WSL/SSH/tmux acceptance.
+Delivered subsets include [modern SGR](modern-sgr-acceptance.md), [OSC palette](osc-palette-acceptance.md), [multi-encoding mouse](multi-encoding-mouse-acceptance.md), [procedural box drawing](procedural-box-drawing-evidence.md) and the host-authorized OSC 52 write subset. Their scoped evidence does not complete N11, certify every native/remote transport, or permit clipboard reads. Follow the current [status inventory](current-status.md) and detailed checklist for exact limits.
 
 ### N12 — Kitty Graphics
 
@@ -201,13 +194,15 @@ Animation, shared-memory/file transports, complex placement, and Unicode placeho
 
 ### N13 — Theme and Glass-Style UI
 
-Use the existing Acrylic backdrop, widget theme infrastructure, rounded clipping, borders, and shadows. Unify application design tokens for spacing, corner radii, type, colors, focus indication, separators, and elevation. Add theme selection and live customization through N04/N05.
+Reuse existing Acrylic, themes, decoration, gradients and local blur/edge-refraction mechanisms. The single-row search panel is an implemented product slice, not a complete theme system or whole-product visual acceptance. Unify application design tokens for spacing, radii, type, colors, focus indication, separators and elevation; theme selection and broader live customization remain future product work through N04/N05.
 
 Polish the side rail, tabs, pane boundaries, toolbar/palette surfaces, hover states, and restrained transitions. Apply glass mainly to chrome and overlays; terminal glyphs must remain sharp and high-contrast.
 
 Provide opaque/high-contrast fallbacks and reduced-transparency/reduced-motion options. Check inactive windows, DPI changes, system-caption behavior, and paste-confirmation readability. Lightweight polish can ship before panes; it does not need to wait for N14.
 
 ### N14 — Liquid-Glass Refraction Prototype
+
+Current baseline: reusable in-window backdrop blur and optional edge refraction exist, used by the search panel under [spec 0029](../.grimoire/spec/0029-search-panel-glass-appearance.md). Remaining N14 work is measurement, visual/runtime acceptance and an explicitly scoped production decision, not proving that no local refraction implementation exists.
 
 Define what is sampled before choosing an implementation: Harbor's own scene or the desktop behind the window. System Acrylic does not provide the renderer with a freely sampleable desktop texture.
 
@@ -223,7 +218,7 @@ Expose scrollback capacity with a documented row/content and memory budget. Defi
 
 Measure output throughput, input-to-present latency, resize latency, idle CPU/GPU use, frame/upload work, memory, and atlas residency for one session and multiple visible/hidden sessions. Include large history, colored output, CJK/emoji, font reload, and visual effects.
 
-Use the [optimization plan](performance/optimization-plan.md) for concrete measured work. Re-profile before choosing the next optimization; do not introduce a parser thread or a broad storage rewrite without evidence of the relevant bottleneck.
+Use the [measured optimization backlog](performance/profiling-guide.md#measured-optimization-backlog) for concrete measured work. Re-profile before choosing the next optimization; do not introduce a parser thread or a broad storage rewrite without evidence of the relevant bottleneck.
 
 ### N16 — Diagnostics, Acceptance, and Packaging
 
@@ -246,13 +241,3 @@ Retain these as deferred, not forgotten or implemented:
 - native Unix PTY and macOS/Linux runtime/release support after the Windows gate.
 
 Sixel and unrelated extension families are not prerequisites for the first Kitty graphics slice. Revisit them only for a demonstrated compatibility need.
-
-## Start Here
-
-Open three bounded work items:
-
-1. **Close N01 acceptance and begin N02:** execute the recorded Windows shell/clipboard/`nvim` and release latency/DHAT procedures without weakening the gates; independently start the bounded combining-text contract.
-2. **N03/N10/N12 ConPTY probes**, recording code-page and extension-transport feasibility before committing to large implementations.
-3. **N04 acceptance and extensions**: retain the accepted manual colors/bindings/font baseline (T0001 Done), then integrate default-on watching and new-session environment/directory settings.
-
-Keep one major implementation stream and one short investigation/polish stream active. Expand each package into implementation tickets only when it is ready to start; do not mark the entire roadmap "in progress."

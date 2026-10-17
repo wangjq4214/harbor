@@ -4,6 +4,8 @@
 
 > **Project status:** this is a pre-1.0 workspace crate developed with Harbor. The API may change. This guide assumes a workspace, path, or revision-pinned Git dependency rather than a crates.io release.
 
+For the progressive tutorial, mental models, current control catalog, composition recipes and acceptance boundaries, start at [WIDGET documentation](../../docs/widget/README.md).
+
 ## Installation
 
 Use a workspace or path dependency while developing inside this repository:
@@ -126,8 +128,8 @@ See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lif
 ## Common building blocks
 
 - **Layout:** `Row`, `Column`, `Flex`, `Flexible`, `Expanded`, `Padding`, `SizedBox`, `ConstrainedBox`, `Align`, and `Stack`.
-- **Controls:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, and `Shortcuts`.
-- **Presentation:** `TextLabel`, `DecoratedBox`, `Separator`, `ThemeProvider`, and `ScrollArea`.
+- **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `Shortcuts`, `Actions`, `TextEditingController`, `EditableText`, and `TextField`.
+- **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollArea`, `Notification`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
 - **State:** `BuildCx::use_state`, `Signal`, `Store`, and `Dispatcher`.
 - **External rendering:** `CustomPaint` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
 

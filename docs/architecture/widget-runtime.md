@@ -24,15 +24,15 @@ Harbor's terminal remains a focusable and layout-aware `CustomPaint` region. The
 
 ## Non-Goals
 
-The current runtime is not a general desktop GUI framework. It does not aim to provide:
+The current runtime is a reusable desktop-first toolkit under active development, not a complete general-purpose GUI framework. Current non-goals and unsupported guarantees include:
 
 - concurrent React-style rendering or interruptible work loops;
-- arbitrary path clipping, general filters, or complex image/refraction effects (rounded decoration clipping already exists);
+- arbitrary path clipping or a general-purpose filter/effects graph; bounded local backdrop blur and optional edge refraction are already present;
 - complete rich text, complex shaping, bidirectional text, or accessibility bridges;
 - general virtual lists, gesture recognition, or spatial indexes;
 - a stable external DSL or macro API.
 
-Those capabilities require a concrete Harbor use case and profiling evidence.
+Further capabilities require concrete desktop use cases and proportionate evidence. [Targets and boundaries](../targets.md) records the React/Flutter comparison; [Widget documentation](../widget/README.md) is the public learning and usage entry point.
 
 ## Layer Model
 
@@ -77,7 +77,7 @@ crates/harbor-widget/src/
 ├── signal.rs             # state and dependency invalidation
 ├── text.rs               # widget text-run preparation
 ├── view.rs               # Component, BuildCx, View, Key
-├── widgets/              # containers, buttons, text, preview, CustomPaint
+├── widgets/              # containers, controls, text editing, Portal, CustomPaint
 └── winit/                # feature-gated event and presentation integration
 ```
 
@@ -148,7 +148,7 @@ Layout uses logical pixels. Physical scaling occurs at the rendering boundary so
 
 Layout uses indexed parent-directed child measurement, bounded corrective passes and an atomic final-geometry commit. See [Flex Layout](../flex-layout.md) for the complete contract; the former child-first layout description no longer applies.
 
-Current building blocks include `SizedBox`, `ConstrainedBox`, `Padding`, `Align`, `Row`/`Column` over a shared Flex engine, `Expanded`, `Flexible`, `Spacer`, `Stack`, `Separator`, `ScrollArea` and `LayoutObserver`. Focus wrappers, labels, buttons, `PreviewPane` and `CustomPaint` compose on that foundation.
+Current building blocks include `SizedBox`, `ConstrainedBox`, `Padding`, `Align`, `Row`/`Column` over a shared Flex engine, `Expanded`, `Flexible`, `Spacer`, `Stack`, `Separator`, `ScrollArea`, `LayoutObserver`, `Portal`, `EditableText` and `TextField`. Product confirmation previews and search-panel composition live in `harbor-app`, not the generic toolkit. See the [widget catalog](../widget/catalog.md).
 
 The layout observer publishes committed geometry for application coordination; the application still owns PTY resize policy. Generic positioned children, wrapping/grid layout and virtual collections remain separate work. Resize, scale, flex constraints and retained GPU resources have focused CPU/headless tests, not an implied Windows visual acceptance result.
 
@@ -180,7 +180,9 @@ The winit adapter owns conversion details such as scale-aware positions, modifie
 
 Reusable `MouseRegion`/`InteractiveRegion`, focus handles, `Shortcuts`/`Actions`, themed `Button`/`IconButton`, and `ThemeProvider` expose current desktop interaction mechanisms. Theme inheritance is not a complete locale/direction/environment system; disabled/focus behavior is not a Windows accessibility bridge.
 
-The native adapter routes IME commit and preedit; the terminal bridge provides a transient preedit overlay and candidate position. A general-purpose editable `TextField` remains unimplemented.
+The native adapter routes IME commit/preedit and clipboard completion. Reusable `TextEditingController`, `EditableText` and `TextField` provide single-line editing, selection, history, scrolling and candidate geometry independently of a terminal. See [text input](../widget-input.md) and [verification limits](../widget-input-verification.md). The terminal bridge separately owns its transient terminal preedit overlay and candidate position.
+
+`Portal` places declared content in a root overlay outside ancestor layout/clipping without allocating space in the terminal. It supports non-modal application notices and the search panel; it does not by itself supply anchored placement, modal barriers, focus trapping or a complete dialog/menu system.
 
 ## Retained Scene and Rendering
 
@@ -195,7 +197,7 @@ Core primitives are:
 
 Batching may combine only adjacent items with compatible pipeline, bindings, and clipping. Transparent items must not be reordered across paint boundaries.
 
-Rectangular clips map to GPU scissors. Rounded decoration clips also affect painting and hit testing, including a rounded mask path for external terminal draws. General arbitrary-path clipping, sampled backdrop filters and liquid refraction are not implemented.
+Rectangular clips map to GPU scissors. Rounded decoration clips affect painting and hit testing, including external terminal draws. Generic solid/linear-gradient decoration paints and `BackdropFilter` supply bounded application-local blur and optional edge refraction with sharp foreground content. They sample prior in-window content, not the desktop or another application. Product glass presets remain application-owned. Arbitrary-path clipping and a general filter framework remain unsupported; see [spec 0029](../../.grimoire/spec/0029-search-panel-glass-appearance.md) for the delivered scope and separate visual/runtime acceptance.
 
 ## CustomPaint and Terminal Integration
 
@@ -244,4 +246,4 @@ The following are intentional follow-ups rather than current guarantees:
 - complex text shaping;
 - profiling-gated work prioritization or interruptible rendering.
 
-Use the [Widget Capability Plan](../widget-capability-plan.md) for the remaining toolkit catalog and the [Next-Stage Product Plan](../next-stage-plan.md) for pane, command-palette and visual product work. Existing toolkit mechanisms should be reused, not re-planned as missing foundations.
+Use the [widget catalog and backlog](../widget/catalog.md#remaining-toolkit-work) for the remaining toolkit catalog and the [Next-Stage Product Plan](../next-stage-plan.md) for pane, command-palette and visual product work. Existing toolkit mechanisms should be reused, not re-planned as missing foundations.

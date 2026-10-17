@@ -68,4 +68,4 @@ Inline code-risk review and intent/acceptance audit covered the complete tracked
 
 ## Exclusions
 
-This is clean boundary-ticket evidence, not acceptance of the whole spec or ticket set. T0002 matcher/query lifecycle, T0003 application acceptance/activation/projection/closed-session routing, and T0004 large-history work/memory measurements and interactive Windows search/resize runtime evidence are not implemented or claimed here. No commit, staging, new architecture decision or global ADR/spec promotion is included.
+This is historical boundary-ticket evidence, not acceptance of the whole spec or ticket set. The subsequent [bounded literal consumer](terminal-literal-search.md) and [current-session integration](current-session-search.md) supply the later matcher, query lifecycle, application gates and projection. Their delivery is not established by this earlier record. Large-history work/memory measurements and interactive Windows search/resize acceptance remain separately scoped. No global ADR/spec promotion is implied.

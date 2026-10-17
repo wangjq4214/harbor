@@ -56,7 +56,7 @@ pub const DEFAULT_TEXT_METRICS: TextMetrics = TextMetrics {
 ///
 /// Owns the fiber tree, text metrics, and text run cache lifecycle while
 /// orchestrating reconcile → layout → paint cycles. Input routing and GPU
-/// encoding are delegated to [`EventRouter`] and [`FrameEncoder`].
+/// encoding are delegated to internal `EventRouter` and `FrameEncoder` helpers.
 pub struct Runtime {
     runtime_id: RuntimeId,
     arena: FiberArena,

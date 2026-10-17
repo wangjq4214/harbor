@@ -23,9 +23,11 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --workspace
 python scripts/docs/check_docs.py
 python scripts/docs/checklist_summary.py
+python -B -m unittest discover -s scripts/tests -v
+python scripts/docs/check_examples.py
 ```
 
-For documentation-only changes, run the two documentation scripts and inspect the diff, status claims and Markdown fragments. The link checker validates local file targets and language policy, not heading fragments, external websites, factual accuracy, or visual rendering. Run focused code tests if changing coverage claims requires fresh execution evidence; do not claim a workspace pass unless it was run.
+For documentation-only changes, run the documentation link/fragment checker, protocol summary, Python script tests and public-guide Rustdoc examples, then inspect the diff, status claims and rendering. The checker selects tracked plus nonignored untracked working-tree Markdown, including crate guides, and validates common local Markdown heading/HTML-anchor fragments. It is not a complete Markdown renderer and does not validate external sites, factual accuracy or native behavior. Git-ignored local evidence is excluded in a checkout, without deletion or acceptance implied; tracked evidence remains checked. See [documentation maintenance](README.md#maintenance) for scope and example rules. Run focused code tests when coverage claims need fresh evidence; never claim a workspace pass unless it was run.
 
 Record environment limitations as **not run** or **blocked**, not as passing. Protocol counts are inventory statistics, not a release-readiness score.
 
