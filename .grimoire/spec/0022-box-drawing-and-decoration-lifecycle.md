@@ -1,15 +1,17 @@
 # Box Drawing and Decoration Lifecycle
 
 **Spec ID:** 0022
-**Status:** Draft (settled requirements; implementation and acceptance not started)
+**Status:** Implementation present; integrated acceptance unverified
 **Date:** 2026-10-11
+
+**Stable execution aliases:** 0016/T0001 = procedural boxes (R1/R2/R4); T0002 = decoration metric lifecycle (R3/R4); T0003 = combined desktop acceptance (R5 and Definition of Done), including source/test comments and historical evidence labels referring to T0003.
 **Sources:** [Issue #193](https://github.com/wangjq4214/harbor/issues/193), the user-approved refinement contract below, [ADR 0056](../adr/0056-terminal-owned-procedural-box-drawing.md), [modern SGR contract](./0018-modern-sgr-decorations.md), and [Validation Policy](../../docs/validation.md).
 
 ## Scope and Settled Contract
 
 Deliver seamless terminal box drawing for the complete **U+2500–U+257F Box Drawing** block and correct underline, strikethrough, and overline presentation across metric/resource and viewport/DPI transitions. The user approved terminal-owned procedural geometry, the complete block, native font-resource replacement smoke without adding user-configuration hot reload, and the **Spec -> slice** endpoint on 2026-10-11.
 
-This contract authorizes artifact creation, not implementation, staging/committing, GitHub issue edits, or runtime execution in the refinement task. Existing acceptance records remain historical evidence. This spec does not turn their NOT RUN cases into passes.
+Historical acceptance records retain their original scope; NOT RUN cases are not passes.
 
 The native font item is deliberately scoped to Windows DirectWrite font-resource replacement through the existing renderer seam, with an actual metrics change. It is not a claim that a running Harbor desktop session supports user-triggered configuration reload. Actual cross-monitor DPI smoke remains required; unavailable conditions must be recorded truthfully and any deferral must be an explicit scope decision, not inferred from passing simulated tests.
 
@@ -55,64 +57,9 @@ The native font item is deliberately scoped to Windows DirectWrite font-resource
 - If an evidence case cannot be run, record why and preserve NOT RUN/BLOCKED. The issue permits explicit deferral, but the user has not authorized blanket deferral of the required native-resource or cross-monitor cases. Obtain and record the missing case's explicit scope decision before claiming completion by deferral. A failed case remains a defect/blocker, not a pass or an implicit deferral.
 - Record fresh results for all standard quality gates listed below. Existing historical passes and configured CI jobs do not establish a new execution pass.
 
-## Solution and Integration Seams
+## Acceptance status
 
-Use terminal-local procedural cell geometry, bounded independent box slots, and the existing coherent render update/projection lifecycle. Reuse `TerminalRenderPipeline::replace_fonts` for native resource replacement and retain `sync_raster_scale`'s physical-font-size policy. Repair decoration projection consistency without changing SGR semantics or introducing configuration hot reload. Private tessellation, exact buffer capacity, and helper layout are implementation details, not new requirements.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Coherent engine update | Terminal core -> terminal renderer | Authoritative cell source/attrs/width, snapshot dimensions, palette and pending damage | Presentation-only box/decoration updates without source mutation or early damage consumption |
-| Scalar/procedural presentation | Terminal text path -> terminal box geometry | U+2500–U+257F selection and existing cell visibility/color/clip contracts | One procedural presentation per selected source cell; ordinary shared font consumers unchanged |
-| Cell projection and retained upload | Viewport -> box/decoration geometry and buffers | Current physical cell bounds, allocation origin/surface, compatible slot capacity and ranges | Consistent shared edges, row-local decoration, finite bounded uploads and correct invalidation |
-| Font-resource replacement | DirectWrite `FontBook` -> `TerminalRenderPipeline::replace_fonts` | A newly prepared native font session and coherent engine update | Replacement metrics/atlas/render resources published together, or previous valid projection retained on failure |
-| Display transition | Existing native host/application bridge -> viewport/raster-scale synchronization | Actual scale/allocation/surface transitions and pending render work | Correct reprojection under existing physical-font-size behavior, without adding settings reload |
-| Evidence | Windows workload/native-resource smoke -> acceptance documentation | Actual revision/environment, repeatable procedures and observed outcomes | Separate, truthful workload/font/DPI records; automated and native evidence are not conflated |
-
-## Representative End-to-End Verification
-
-### Compatible TUI border runs
-
-- **Given:** A Windows terminal application draws light/heavy, double, mixed junction, and rounded borders with normal terminal styling.
-- **When:** Harbor receives the output, redraws it, and resizes the terminal allocation.
-- **Then:** Compatible strokes join without unintended seams, stroke distinctions remain visible, intentional dashed gaps/endpoints remain intact, and ordinary text and copied characters are unchanged. Focused CPU/GPU fixtures additionally cover all 128 characters, diagonals, and half-lines beyond the application's actual repertoire.
-
-### Local edit and retained replay
-
-- **Given:** A rendered box border with decorations and an acknowledged prior frame.
-- **When:** A cell is replaced, erased, concealed/revealed, or recolored; drawing is skipped and then resumes; the grid dimensions also change.
-- **Then:** Old strokes disappear, colors/visibility are current, no neighboring content is spuriously connected, pending damage survives, and incremental output matches a complete rebuild without buffer-bound violations.
-
-### Native font metric replacement
-
-- **Given:** A Windows native-resource smoke workload renders ordinary text, box drawing, underline styles, strikethrough, and overline through DirectWrite and wgpu.
-- **When:** The existing replacement seam loads a different-size/family configuration with demonstrably changed metrics, including a replacement failure case where feasible to exercise the established error path.
-- **Then:** Successful replacement uses coherent new glyph/cell/decoration geometry; failure retains the previous valid resources. The evidence names the native-resource procedure and does not claim desktop settings hot reload.
-
-### Actual cross-monitor DPI transition
-
-- **Given:** A Harbor desktop window on one display and a second display with different DPI/scale.
-- **When:** The window moves between the displays while the workload remains visible.
-- **Then:** Presentation follows the existing physical-font-size policy without double scaling, stale origin/projection, or decoration misalignment. Record actual transitions and observations; unavailable hardware is NOT RUN/BLOCKED and requires an explicit scope decision for deferral.
-
-### Invalid geometry and resize stress
-
-- **Given:** Focused fixtures with degenerate metrics, extreme scales, fractional cell geometry, and pending dirty uploads.
-- **When:** The renderer receives these inputs or transitions through shrink/grow and changed row strides.
-- **Then:** No non-finite uploaded vertices, invalid bound panic, unbounded geometry loop, stale valid-state mutation, or out-of-bounds upload occurs; accepted valid states remain reproducible by full rebuilding.
-
-## Traceability and Existing Evidence Boundaries
-
-| Contract | Authority |
-| --- | --- |
-| R1 full block and terminal-local procedural joins | Issue #193 plus user approval of the full U+2500–U+257F recommendation; ADR 0056 |
-| R2 resource ownership, slots and presentation preservation | Approved recommendation; ADR 0056; ADR 0045; existing modern SGR contract |
-| R3 decoration lifecycle and physical-font-size policy | Issue #193, approved recommendation, `render/decoration.rs`, `render/pipeline.rs`, and `dpi_transitions_preserve_physical_metrics_and_scalar_pixels` in `render/text_tests.rs` |
-| R4 degenerate inputs and resize uploads | Issue #193 and approved bounded-geometry direction; existing fixed-slot/coherent-update contracts |
-| R5 native-resource scope, actual DPI evidence and gates | Approved native-resource-only scope, Issue #193, modern SGR acceptance exclusions, Validation Policy |
-
-Source inspection at `fbdd1bb` found no specialized joined box path in `harbor-text/src/font.rs`, `harbor-text/src/atlas.rs`, or terminal scalar vertex generation. Existing underline/overline tests cover ordinary metric/viewport projection, but strikethrough uses raw metrics. This is a conditional projection inconsistency, not a newly demonstrated desktop DPI failure. The existing `replace_fonts` test reloads the same Consolas 16 metrics and does not prove an actual metric-change invariant. These observations are inspection evidence only.
-
-The approved choices are not assumptions. No new scope decision is needed to author this contract; exact tessellation and numerical guards remain private implementation choices. Any newly needed semantic, architecture, or acceptance choice must return to refinement before changing the contract. Whether the execution environment can supply native cross-monitor evidence is unverified and is not assumed.
+[Box CPU/GPU evidence](../../docs/procedural-box-drawing-evidence.md) and [decoration/native changed-metrics evidence](../../docs/decoration-metric-lifecycle-evidence.md) establish focused implementation, not integrated desktop acceptance. Historical 0016/T0003 was marked Done on user-reported verification with no apparent issues, but supplied no tested revision, environment, named application, native replacement/cross-monitor procedures or fresh gate results. Its detailed acceptance remained unchecked. R5 and the definition below remain required: no implicit deferral, broader support or #193 closure follows from that report. Preserve historical evidence; summaries must be self-contained, without local-only raw-artifact links.
 
 ## Definition of Done
 

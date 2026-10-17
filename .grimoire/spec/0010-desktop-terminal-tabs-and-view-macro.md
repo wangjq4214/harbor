@@ -96,34 +96,6 @@ The macro is initially an internal experimental API. The architecture non-goal o
 
 The macro accepts exactly one root after a context expression separated by `;`. Ordinary child values are Rust expressions terminated by `;`; child-bearing components use `expression => { children }`; bare `for`, `if`/`else`, and `match` organize child lists:
 
-```rust
-fn build(&self, cx: &mut BuildCx) -> View {
-    view! {
-        cx;
-        Flex::horizontal().gap(1.0) => {
-            ConstrainedBox::new()
-                .min_width(56.0)
-                .max_width(self.rail_width) => {
-                TabRail::new() => {
-                    ScrollArea::vertical() => {
-                        for tab in self.tabs.iter() {
-                            TabItem::new(tab.title.clone())
-                                .selected(tab.id == self.active)
-                                .on_select(self.select_tab(tab.id))
-                                .keyed(tab.id);
-                        }
-                    }
-                }
-            }
-
-            Separator::vertical();
-            Expanded::new() => {
-                self.active_bridge.clone();
-            }
-        }
-    }
-}
-```
 
 Rust blocks are ordinary expressions and require a trailing semicolon when used as child values. `=>` is reserved for components that receive a braced child list. Parenthesized or block-wrapped `if` and `match` retain ordinary Rust value-expression semantics.
 ### Expansion semantics
@@ -160,23 +132,6 @@ Single-child widgets reject more than one attached child with a diagnostic tied 
 
 ### Stable identifiers
 
-```rust
-struct TabId(u64);
-
-struct TerminalTab {
-    id: TabId,
-    title: String,
-    draw_id: ExternalDrawId,
-    terminal: Arc<Mutex<Terminal>>,
-    bridge: TerminalWidgetBridge,
-}
-
-struct TabManager {
-    tabs: Vec<TerminalTab>,
-    active: TabId,
-    next_id: u64,
-}
-```
 
 `TabId` is never reused during one application session. Each tab receives a distinct `ExternalDrawId`; `TerminalWidgetBridge` must no longer hard-code one global draw ID. The Host owns TabManager, TerminalTab, PTY lifecycle, shell creation, title/unread policy, and final-window close policy. `harbor-widget` owns only generic tree, layout, interaction, focus, theme, and scrolling behavior.
 
@@ -184,11 +139,7 @@ struct TabManager {
 
 The application event contract becomes tab-qualified:
 
-```rust
-enum AppEvent {
-    TerminalOutputReady(TabId),
-}
-```
+Output wakes are qualified by stable TabId.
 
 A wake for the active tab invalidates visible terminal output. A wake for an inactive tab drains/parses that terminal and updates only visible rail state when necessary. Stale events for already-closed TabIds are ignored safely.
 
@@ -202,59 +153,7 @@ A layout observer or equivalent post-layout effect reports the active terminal c
 
 ## End-to-End Tests
 
-### E2E: Create and independently use multiple tabs
-
-Creating a second tab and entering different commands in each sends input only to the active PTY; switching preserves independent screen, scrollback, cursor and process state.
-
-### E2E: Close tabs deterministically
-
-Closing active B among A/B/C releases B's resources/registrations, activates C, preserves A/C keyed state and safely ignores stale B events.
-
-### E2E: Close the final tab
-
-Closing the final tab by button or `Ctrl+W` shuts down its PTY and closes Harbor without creating a replacement.
-
-### E2E: Resize all sessions from the content allocation
-
-Across resize, minimize/restore and 100/150/200% DPI movement, the rail follows expanded/compact policy, Terminal receives the valid remaining allocation, and each live PTY receives each changed row/column size once.
-
-### E2E: Background output does not cause hidden rendering
-
-Sustained inactive output is ingested and may update unread state, but causes no hidden terminal draws or cursor-driven continuous Poll.
-
-### E2E: Keyboard and paste modal behavior
-
-From terminal or rail focus, shortcuts/traversal activate the expected tab and restore focus; paste confirmation blocks terminal-input and tab-changing commands until resolved.
-
-### E2E: Macro and handwritten composition are equivalent
-
-Equivalent fluent and `view!` static/dynamic rail trees produce identical keys, Fiber order, geometry, event targets and scene output after build/reconciliation/layout/paint/input.
-
-## Decisions
-
-### Deliver one product slice rather than a complete widget catalog
-
-Implement only the generic widget capabilities directly required by side-rail terminal tabs. This proves each abstraction through a concrete Harbor use case and avoids recreating Flutter's mobile-oriented catalog.
-
-### Keep tab/session ownership in the Runtime Host
-
-See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
-
-### Use a vertical responsive rail, not mobile navigation
-
-Use a persistent 200dp/56dp side rail selected by available logical width. Mouse, keyboard, resize, and wide-window use are the product target; a drawer or bottom bar would introduce unrelated mobile interaction policy.
-
-### Use a thin internal Rust-style procedural macro
-
-`view! { cx; root }` uses `expression;` for one child value, `expression => { children }` for child-bearing components, and bare control flow only within child lists. It improves tree readability while retaining ordinary Rust expressions, explicit ownership/type errors, and one Component/View runtime model.
-
-### Keep macro keying explicit
-
-Dynamic items call the ordinary `.keyed(TabId)` extension; the macro never invents positional or data-derived keys. Identity is application policy, and hidden key generation would obscure reconciliation behavior.
-
-### Close the main window with the final tab
-
-Closing the final terminal tab terminates its session and closes Harbor. This is the selected terminal-style lifecycle and avoids hidden automatic shell creation.
+Verify independent sessions and active-only input/paint; close B among A/B/C selects C and preserves A/C keyed state; final-tab close shuts down the PTY and exits without replacement. Resize/minimize/restore and 100/150/200% DPI transitions must apply each changed valid grid once to all live PTYs. Hidden output must progress without hidden draws or cursor-driven Poll. Keyboard/rail focus and paste gating must work from either focus origin. Macro and handwritten trees must match keys, Fiber order, geometry, routing and scene output.
 
 ## Test Plan
 
@@ -287,11 +186,8 @@ Closing the final terminal tab terminates its session and closes Harbor. This is
 - A stable external DSL, `#[component]`, generated Props, hooks syntax, CSS, RSX/HTML syntax, reflection, hot reload, automatic clone/move, or automatic keys.
 - General LayoutBuilder, virtual lists, draggable Scrollbar, rich text, image/path icons, and a general Overlay system.
 
-## Future Evolution
+## Outstanding Acceptance
 
-- Move TabRail/TabItem into `harbor-widget` after a second application use confirms reusable behavior and styling.
-- Add draggable scrollbars or virtualized tab children only when measured tab counts require them.
-- Add dynamic titles and profile metadata after OSC permission/title policy and configuration UX are specified.
-- Add drag reorder only after keyed reconciliation, drag/drop, focus movement, and close-target behavior are proven independently.
-- Generalize the post-layout observer only after another host service needs allocation feedback.
-- Consider a stable external macro API only after handwritten and macro-authored Harbor screens establish durable construction conventions.
+Historical 0010/T0008 is retained here as an acceptance obligation, not a passed gate. Verify activation replaces draw/schedule registrations before presentation; close removes callbacks, reader, PTY control and ownership without stale-generation targeting. Exercise failure handling and surface recovery as well as happy-path resize and final close. Run the format, clippy, workspace-test and documentation/checklist gates in the validation policy. Record real Windows shell/Vim/less/sustained-output, shortcuts, selection, scrollback, Acrylic, resize, DPI and minimize/restore evidence and quiet/active-frame/resource measurements. Unrun checks remain unrun; discovered failures require explicit follow-up, not silent exceptions.
+
+Historical 0010/T0001–T0007 map respectively to parent-directed layout, keyed construction/reconciliation, the view macro, interaction/focus/actions/theme, scrolling/allocation observation, tab/session ownership, and responsive rail behavior defined above.

@@ -1,132 +1,82 @@
 # Revisioned Terminal Read Model and Literal Search
 
 **Spec ID:** 0027
-**Status:** Draft
-**Date:** 2026-10-16
-**Sources:** [Issue #175](https://github.com/wangjq4214/harbor/issues/175), the initial literal-search scope of [#159](https://github.com/wangjq4214/harbor/issues/159), and the user's approval in this refinement conversation of a shared read boundary plus a current-session search entry, highlights and previous/next navigation, followed by Spec → slice. Shell-workflow compatibility follows [#160](https://github.com/wangjq4214/harbor/issues/160); it does not include delivery of that package.
-**Delivery tickets:** [Revisioned read model and literal search](../ticket/0018-revisioned-terminal-read-model-and-literal-search/README.md).
+**Status:** Read model, literal consumer and current-session integration implemented; integrated Windows/performance acceptance pending.
+**Sources:** [#175](https://github.com/wangjq4214/harbor/issues/175), initial literal slice of [#159](https://github.com/wangjq4214/harbor/issues/159), approved current-session entry/highlights/navigation. [#160](https://github.com/wangjq4214/harbor/issues/160) supplies future shell compatibility, not full workflow delivery.
 
 ## Requirements
-
 ### R1 — Bounded read-only content
-
-Expose visible rows and explicitly bounded retained history through a read-only terminal read model without exposing mutable `Screen` internals. Document snapshot lifetime, consistency point, requested scope, copied size, continuation/truncation and invalidation rules. A request must not first clone or decode all history merely to return a bounded subset. Reads must not consume renderer damage or parser events.
-
-A retained logical line may be larger than a read budget or may have an evicted prefix. Bounded reads must preserve enough boundary/offset information for a consumer to distinguish a continuation from a real line start/end and to avoid inventing text or line breaks at a page edge. Reading subsequent portions must not silently combine incompatible revisions into one snapshot.
-
-Source: #175; [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md).
+Expose visible rows and explicitly bounded retained history without mutable Screen access. Document snapshot lifetime/consistency point, scope, actual copied size, concrete limits, continuation/truncation and invalidation. Subset reads must not first clone/decode all history or consume parser events/renderer damage.
+Oversized logical lines and evicted prefixes require absolute offsets and real start/end/continuation evidence; page edges invent neither text nor breaks. Do not silently concatenate incompatible revisions. Independently usable headless readers must leave pending updates renderable after skipped/failed draw; no multi-renderer subscription design is implied.
 
 ### R2 — Identity and revisions
-
-Every asynchronous read/result must identify its terminal session, relevant buffer/content generation and content revision. Identity must distinguish session replacement, reset and independent primary/alternate identity spaces even when logical offsets or numeric line IDs repeat. The host's current tab or a row's ring index is not sufficient identity.
-
-Document what advances or invalidates the content revision and how a consumer validates it. Existing renderer acknowledgement epochs are not a substitute for a content-validity contract: drawing, acknowledgement, viewport projection and content mutation have different lifetimes. Query replacement/cancellation must also prevent an older query's late completion from replacing the current query's results.
-
-Source: #175; existing `TabId`, `TerminalUpdate` and [content-anchor identity](../adr/0042-content-anchors-and-buffer-specific-resize.md).
+Reads/results/ranges identify engine session, relevant buffer, generation and semantic content revision, distinguishing replacement/reset and primary/alternate even with repeated IDs/offsets. Current tab/ring slot or renderer acknowledgement epoch is insufficient. Document revision advancement/validation separately from drawing, projection and acknowledgement. Query identity/cancellation prevents late obsolete publication.
 
 ### R3 — Shared text and coordinate semantics
-
-Expose retained source text using the established logical-line and Unicode text-unit contracts. Soft wraps join one logical line; explicit line boundaries remain separate, including explicit blank lines. Preserve the distinction between meaningful blanks, unwritten capacity and generated wide-edge padding. Include style and hyperlink metadata sufficient to describe returned content without leaking mutable registry ownership or requiring unbounded metadata copies.
-
-Search must traverse soft wraps through this boundary and must not create matches across explicit line breaks. Match positions must map back to complete retained text units and logical anchors, not assume that a UTF-8 byte, Unicode scalar and terminal cell have interchangeable offsets. Synthetic display cues are not source text.
-
-The read model describes retained content, not text already discarded by capacity eviction or approved resize clipping. In particular, it must not promise restoration of ordinary trimmed tails or Windows ConPTY live-primary styled overflow.
-
-Sources: [reflow spec 0014](./0014-content-preserving-resize-reflow.md), [ADR 0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md), [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), [ADR 0035](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md).
+Use shared logical-line/Unicode text units: soft wraps join, hard boundaries/explicit blank lines do not; meaningful blanks differ from capacity and generated wide-edge padding. Include bounded owned style/hyperlink metadata safe after registry cleanup/snapshot expiry, not mutable registry ownership.
+Search spans soft wraps/pages but never hard breaks; byte/scalar/cell offsets are not interchangeable. Map matches to complete text units/logical anchors; synthetic cues are not source. Only retained content is exposed, never restoration of evicted prefixes, ordinary trimmed tails or ConPTY live-primary styled overflow.
+Preserve [0014](./0014-content-preserving-resize-reflow.md), [anchors 0042](../adr/0042-content-anchors-and-buffer-specific-resize.md), [Unicode 0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md), [hyperlink 0035](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md) and [ConPTY 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 
 ### R4 — Explicit lifetime and invalidation
-
-Document and test the following event contract. Keeping an anchor resolvable does not by itself prove that the text still matches a query.
-
 | Event | Required outcome |
 | --- | --- |
-| Output append, overwrite, erase or structural edit | Changed content cannot keep an actionable match for different text. Reject stale asynchronous results; preserve or safely refresh meaningful results in retained content as output continues. |
-| Width/height change or reflow | Remap through agreed logical anchors, or deterministically invalidate affected results and make the current query usable again through fresh bounded work. Never reuse old physical coordinates as current positions. |
-| Capacity eviction, including partial-line prefix eviction | Results/targets referencing lost content cannot remain actionable or resolve to reused ring storage. Surviving content is distinguished from the lost prefix. |
-| Primary/alternate transitions, including saved-primary resize | Results are tied to the correct buffer identity; late results cannot decorate or navigate unrelated content in the active screen. Existing buffer-specific resize policy remains unchanged. |
-| Hard reset or buffer replacement | Prior content generations cannot be accepted against fresh content, even if IDs or text happen to coincide. |
-| Session close or session replacement | Outstanding work is cancelled or made ineligible; late completions and previously presented targets cannot act on a different or closed session. |
-| Query replacement or cancellation | Obsolete work cannot publish as the latest query; cancellation work and resource retention are bounded. |
-
-A conservative invalidation strategy is permitted by #175, but repeated output must not turn current-session search into an endless full-history restart with no useful results. The implementation must demonstrate useful progress against retained content while output continues. Deterministic reflow invalidation permitted here is not a claim that all of #159's eventual result-preservation scope has shipped.
-
-Sources: #175, #159 and the existing content-anchor/eviction contracts.
+| Append/overwrite/erase/structural edit | Changed text cannot retain actionable old match; reject stale work, preserve/safely refresh meaningful retained matches. Resolvable anchor alone proves no text validity. |
+| Width/height/reflow | Logical remap or deterministic invalidation/fresh bounded work; never old physical coordinates. |
+| Whole/partial-prefix eviction/ring reuse | Lost targets ineligible; surviving suffix distinguished, no storage alias. |
+| Primary/alternate/saved-primary resize | Correct buffer identity, no wrong-active-screen late decoration/navigation; existing resize policy. |
+| Reset/buffer replacement | Old generations never revive against coincident IDs/text. |
+| Session close/replacement | Cancel/invalidate work and stored targets; no action on closed/replaced session. Shell EOF alone is not required invalidation. |
+| Query replacement/cancellation | No obsolete publication/revival; cancellation work/resources bounded. |
+Conservative invalidation is permitted but must show useful retained-content progress during continuing output, not endless full-history restart. Deterministic reflow invalidation is not full #159 result preservation.
 
 ### R5 — Renderer-neutral decoration and action boundary
-
-Represent decoration ranges in terminal-domain coordinates with identity/version provenance. The renderer projects currently valid ranges to visible cells using its current geometry. Search highlighting must not alter cells, source text, parser state or SGR attributes. Existing selection, cursor and preedit behavior must remain compatible.
-
-Define host-action target data sufficient for search navigation and future URL/file consumers, without coupling the read model to GPU handles or executing a target as a side effect of reading/matching. Activation must be validated against current identity/revision and retained content, not merely against the state when a highlight was first displayed. Hyperlink metadata must remain safe after registry cleanup or snapshot expiration.
-
-Keep the logical anchor contract usable by future OSC 133 command navigation; do not create a second physical-row-based identity scheme or reimplement OSC 7/133 parsing. Full command-block collection/navigation is not required in this delivery.
-
-Sources: #175, #160, [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md), [ADR 0037](../adr/0037-osc133-shell-integration-metadata.md).
+Identity/version-qualified terminal-domain logical ranges are projected by the concrete renderer using current visible geometry. Highlights mutate no cells/text/SGR/parser; selection/cursor/preedit remain compatible and damage/event acknowledgement independent.
+Neutral action-target data supports search and future URL/file consumers without GPU handles, execution/opening as a read/match side effect or mutable metadata lifetime. Revalidate current query/session/buffer/revision/text/retention before publication and again at stored-target activation, not only first display.
+Keep shared logical identity/offset/affinity usable for future OSC 133 positions ([ADR 0037](../adr/0037-osc133-shell-integration-metadata.md)); no second physical-row scheme, new OSC 7/133 parsing or command-block collection.
 
 ### R6 — First bounded literal-search consumer
-
-Implement literal search in the current session using the shared read model, rather than an independent mutable-screen or full-history string path. Bound read/copy and scan batches, query/result retention and cancellation checks. Document concrete limits and what happens when a limit or an incomplete read is reached; partial coverage must not masquerade as a complete no-match result.
-
-A user must be able to enter a query, see matching highlights, and move to previous/next matches in retained content without corrupting live output. Search updates and navigation use the same validated result provenance. Changing or cancelling the query makes obsolete work ineligible, including completions that race with cancellation.
-
-Sources: #175, the initial scope of #159 and the approved conversation scope.
+Search current session only through the shared read boundary, not mutable Screen/full-history strings. Bound read/copy/scan batches, queries/results, cancellation and retained queues/resources; document concrete limits and incomplete/error behavior. Partial coverage is not complete no-match.
+Provide query entry, valid highlights and previous/next retained-content navigation without corrupting output. Work, publication and navigation share provenance; query edits/cancellation invalidate racing completions.
 
 ### R7 — Real application integration
-
-Provide an application path that validates session identity and revision before accepting asynchronous results and again before activating a stored target. Include a minimal current-session query entry and previous/next navigation. Session switches and late events must not apply one session's results to another; global cross-session search is not included.
-
-Application-specific search composition, command meaning and activation policy remain application-owned. Reusable widget mechanisms remain generic. Reuse the established application command/routing boundary where search operations are user-invokable commands, preserving consumed versus pass-through behavior and avoiding PTY byte leakage from consumed search input. A new global event bus, renderer abstraction or crate split is not selected.
-
-Sources: approved conversation scope; [ADR 0040](../adr/0040-application-command-dispatch-and-keybinding-precedence.md), [ADR 0041](../adr/0041-structured-keybinding-configuration.md), [ADR 0064](../adr/0064-widget-and-application-component-ownership.md).
+Actual application acceptance and activation revalidate provenance, not only standalone matcher tests. Session switches/late events cannot affect another session. App owns composition/commands/activation; widgets remain generic under [ADR 0064](../adr/0064-widget-and-application-component-ownership.md). Reuse [typed command precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md)/[structured bindings](../adr/0041-structured-keybinding-configuration.md), preserving consumed/pass-through and no PTY leakage. No new global bus, renderer abstraction or crate split.
+Current reusable editing and result/glass refinements are governed by [0028](./0028-reusable-single-line-text-input.md) and [0029](./0029-search-panel-glass-appearance.md), not the historical append-only entry.
 
 ### R8 — Work is bounded outside the render loop
-
-Do not scan or copy the complete history on every rendered frame or hover event. Painting and target presentation must consume prepared results rather than restart searching. Record reproducible large-history work/memory measurements that separate requested scanning from steady-state rendering and show cancellation and ongoing-output behavior. No new numeric performance pass threshold is established by this spec.
-
-Sources: #175, #159 and [validation policy](../../docs/validation.md).
+Painting/hover consumes prepared results, never scans/copies complete history each frame. Record reproducible large-history work/memory measurements separating requested scanning, steady-state rendering, cancellation and ongoing-output progress. No new numeric performance threshold.
 
 ### R9 — Verification and honest completion
-
-Focused tests must cover output arriving during search, text overwrite with a still-resolvable anchor, reflow, eviction, alternate-screen transitions, reset, session replacement/close, cancellation, late-query completion and stale-result rejection. Include bounded reads across long soft-wrapped lines and Unicode/cell-boundary projection. Exercise the real application acceptance/activation path, not only a standalone matcher.
-
-Collect Windows runtime evidence for search/navigation during ongoing output and repeated resize. Record revision, dirty paths, environment/application/ConPTY versions, exact steps, expected versus observed behavior, artifacts and exclusions under `docs/verification/`, following the validation policy. Keep raw local recordings local; committed summaries must be self-contained or link retrievable CI artifacts.
-
-Run applicable implementation gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py` and `python scripts/checklist_summary.py`; the validation policy's locked variants may also be used. Record PASS / FAIL / NOT RUN / BLOCKED honestly. Creating this spec/ticket set does not implement or close #175, #159 or #160.
-
-## Solution Boundary and Seams
-
-Build on the existing ring storage, logical text decoding, content anchors and concrete renderer boundary. Public API names, scanning algorithm, worker/thread arrangement, cache organization, UI placement and default shortcuts are not fixed here. They must satisfy the outcomes above without changing the established domain or ownership contracts.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Bounded terminal read | Logical engine → search and future metadata consumers | Explicit scope/budget and identity/revision-qualified continuation | Immutable retained text, logical positions, line boundaries, bounded style/link metadata and lifetime/coverage status |
-| Search work | Read model → literal matcher/result delivery | Coherent identity/version, query provenance, finite batches and cancellation | Logical match ranges and explicit completion/partial/stale status without screen mutation |
-| Result acceptance and activation | Asynchronous completion / UI → application/session | Current query, session, buffer/content revision and resolvable retained ranges | Accept or reject before decoration publication or navigation; no wrong-session or stale action |
-| Decoration projection | Validated terminal-domain ranges → concrete renderer | Current geometry and valid range provenance | Visible highlights without mutable parser/cell access or consumption of unrelated damage |
-| Shell compatibility | Existing OSC metadata / future command consumer ↔ shared anchors | Established logical identity, offset, affinity and invalidation semantics | Compatible future command positions without delivering full shell workflows now |
+Cover all R4 events, output during work, overwrite at still-resolvable anchors, late-query rejection, long paged soft lines and Unicode cell projection through real application acceptance/activation. Windows search/navigation under output and repeated width/height resize needs runtime evidence, not source/model tests.
+Use [validation policy](../../docs/validation.md) and [profiling guide](../../docs/performance/profiling-guide.md): exact revision/dirty paths, environment/Windows/app/ConPTY, profile/features, commands/steps, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Self-contained docs/verification summaries or retrievable CI artifacts; raw recordings local, no secrets.
+Run fmt, all-target/all-feature clippy with warnings denied, workspace tests, check_docs and checklist_summary (locked policy variants allowed), plus focused/core-only gates. Inventory is not readiness; code/spec/closed predecessor issues are not runtime acceptance.
 
 ## End-to-End Verification
+| Scenario | Required observation |
+| --- | --- |
+| Soft wraps versus explicit lines | Find/highlight/navigate wrapped occurrence, never join distinct hard lines. |
+| Output races | Delay result, append/overwrite/erase/structural edit before delivery and after presentation before activation: no stale action; useful progress under ongoing output. |
+| Query completion order | Old completion after replacement/cancel cannot replace/revive current results. |
+| Resize/review | Navigate history then repeatedly narrow/widen/change height under output: valid remap or invalidate/fresh work, no wrong coordinates/input/output corruption; retain ConPTY geometry/cursor guarantees. |
+| Eviction/reset | Whole/partial-prefix eviction/ring reuse/reset while delayed: no lost-target action or alias/revived generation. |
+| Buffer/session routing | Alternate enter/exit/saved-primary resize, switch/close/replace and late delivery: only correct live session/buffer; no closed target. |
+| Unicode/paged lines | CJK/combining/emoji and multibatch long lines: complete-unit source/projection agreement, no cues/padding/page breaks as source. |
+| Large history | Populate, scan, repeated unchanged frames/hover, cancel/replace and repeat under output: documented batch/retention bounds, no per-frame full scan, bounded cancellation, useful progress. |
 
-| Scenario | Given / when | Required observation |
+## Stable Slice Contracts and Evidence
+Aliases `0018-revisioned-terminal-read-model-and-literal-search`: T0001 → T0002 → T0003 → T0004. Producers have focused regressions immediately, not deferred to integrated QA; shared files alone create no extra dependency.
+| Slice | Contract and preserved acceptance aliases | Evidence/state |
 | --- | --- | --- |
-| Soft wraps versus explicit lines | A literal occurs across soft wraps; the same fragments also occur on distinct explicit lines; search and navigate | The soft-wrapped occurrence is found/highlighted and navigation reaches its content; fragments across a hard break do not become one match. |
-| Output races with search | Delay a result, then append and overwrite text before it returns; continue output while searching retained text | Stale text is not highlighted/activated. Useful current-query results remain obtainable without an endless complete-history restart. |
-| Query completion order | Complete an older query after its replacement or cancellation | The older completion cannot replace the current query's results or revive cancelled decorations. |
-| Resize and review | Search retained history, navigate to a match, repeatedly narrow/widen while output arrives | Valid remapped results or deterministic invalidation/fresh results; no old-coordinate highlight, wrong navigation or corrupted live output. Respect the ConPTY retention exceptions. |
-| Eviction and reset | Evict a matched prefix or hard-reset while a result is delayed | Old results/targets are ineligible; retained ranges do not alias new content or revived IDs. |
-| Buffer/session routing | Search, enter/exit an alternate screen, resize saved primary, switch/close/replace sessions, then deliver late results | Decorations and activation remain scoped to the correct live session/buffer, with no stale action after close or replacement. |
-| Unicode and paged lines | Search retained CJK/combining/emoji text and a logical line spanning several read batches | Source-text matching and cell projection agree; generated padding/cues are not searched as source text; page edges are not hard breaks. |
-| Large history | Populate history, search once, render repeatedly without search-relevant changes, cancel/replace work and repeat under output | Measured copy/scan work stays within documented batches; steady-state frames/hover do not copy or scan all history; cancellation is bounded. |
+| T0001 | R1–R5/R8/R9; A1 bounded/lifetime/limits, A2 continuity/retention, A3 independent headless readers/no damage or event consumption, A4 identity/revisions, A5 full mutation matrix, A6 Unicode/metadata/neutral targets, A7 GPU-independent core/future OSC anchors/API docs | Done, scoped automation; [read-model contract/evidence](../../docs/terminal-read-model.md) |
+| T0002 | R2–R6/R8/R9; A1 literal semantics, A2 provenance/publication/activation contract, A3 bounded cancellation/late lifecycle, A4 paged Unicode/retention, A5 mutation/output progress, A6 bounded work/resources/honest coverage | Done, headless automation; [literal contract/evidence](../../docs/terminal-literal-search.md) |
+| T0003 | R2–R9; A1 usable current-session slice, A2 real publication/activation gates, A3 host session/query lifecycle, A4 neutral current-geometry render/no rescans, A5 commands/ownership/no PTY bytes, A6 integrated progress/invalidation | Done, scoped app/core/GPU automation; [historical integration evidence](../../docs/current-session-search.md). Its original editor limitations are superseded by 0028, not current constraints. |
+| T0004 | A1 full scenario matrix/real gates, A2 Windows runtime, A3 work/memory measurements, A4 evidence identity/honesty, A5 gates/scoped conclusion | Todo; acceptance below remains open. |
+Delivered concrete API/limits/invalidation are documented in the linked guides and tracked source/tests. Current generation strategy deterministically invalidates resize/reflow; this is a delivered choice, not a new mandatory algorithm. Original API/thread/cache/layout/shortcut choices were not fixed by the spec.
 
-## Decisions and Scope Traceability
-
-- #169/#170 and #176 are closed at source inspection. Preserve their resulting behavior and the applicable contracts; issue closure is not fresh runtime acceptance for this delivery. This document does not change historical ADR statuses.
-- The user selected a minimal usable current-session literal-search slice, rather than a boundary-only API delivery. This requires application and renderer integration, not the full parent work packages.
-- #175 expressly permits reflow remapping or deterministic invalidation. The chosen delivered behavior must be documented and tested; this spec does not mandate a particular cache/revision algorithm.
-- Current source inspection at `283d55a0606e88bbc3194cb34771fa2378d73490` found internal logical anchors, a visible-grid `TerminalSnapshot`, renderer-oriented `TerminalUpdate` and stable application `TabId`. It did not establish this issue's shared revisioned history/search boundary or runtime acceptance. Existing OSC 133 metadata is not itself command-anchor navigation.
-- No additional matching options, fixed performance thresholds, numeric budgets, new architecture or implementation evidence are assumed. Concrete bounded API/coverage rules and delivered interaction semantics must be documented with their implementation tests; new material product/domain decisions return to clarification.
+### Outstanding Integrated Acceptance
+T0004 must run every matrix row on the actual application, including stored activation after presentation, preserve/run earlier focused suites and report exact applications/transports/exclusions. Windows must show entry/highlights/previous-next during continuing output and repeated narrowing/widening/height changes, Unicode/long lines, useful results and no stale/wrong-session action or live input corruption. Respect history/non-ConPTY versus producer-live/rectangular retention; discarded tails stay lost.
+For large-history A3 record workload/history size, sessions/dwell, machine/OS/fonts/viewport/scale, executable profile/instrumentation and captures. Measure read/copy/scan and query/result retention separately from unchanged frames/hover, cancellation/replacement and output refresh; compare like scenarios, separate timing from DHAT allocations. Do not invent thresholds.
+A4/A5 require self-contained/retrievable evidence and all applicable gates, explicit failures/NOT RUN and delivered interaction/limit/invalidation summary. Historical GPU font-replacement comparison intermittently failed then passed without changes; cause remains unproven, not fixed by rerun.
+#169/#170/#176 closure at source inspection does not prove fresh acceptance or change ADR history. Completing this slice alone does not close #159/#160; explicitly retain/link their remaining accepted scope. No new material matching/product/architecture decision may be inferred.
 
 ## Out of Scope
-
-Regular expressions, advanced case options, cross-session global search, automatic file/URL detection or opening, dynamic plugins, arbitrary `Screen` mutation, storage replacement, configurable unlimited history, full shell command/directory workflows, new OSC parsing, pane-workspace delivery and universal renderer hosting. Existing OSC 8 activation policy and terminal/PTY resize consistency remain unchanged.
-
-Completion of this bounded issue does not by itself close #159 or #160; retain and link their remaining accepted scope explicitly.
+Regex/advanced case options, global cross-session search, automatic URL/file detection/opening, plugins, mutable Screen, ring/storage replacement/unlimited history, full shell command/directory workflows/new OSC parsing, pane delivery or universal renderer hosting. Preserve [GPU-independent core](../adr/0045-gpu-independent-terminal-core-boundary.md), existing OSC 8 activation and transactional PTY/model resize.

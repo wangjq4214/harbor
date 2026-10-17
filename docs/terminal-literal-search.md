@@ -2,7 +2,7 @@
 
 ## Scope and source
 
-- Ticket: [T0002](../.grimoire/ticket/0018-revisioned-terminal-read-model-and-literal-search/T0002-bounded-literal-search-consumer.md), acceptance A1–A6; [spec 0027](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md), headless consumer subset only.
+- Ticket: [T0002](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md#stable-slice-contracts-and-evidence), acceptance A1–A6; [spec 0027](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md), headless consumer subset only.
 - Base revision: `02250ebbbaced6990eb36a9652476a123a30ba2e` plus the uncommitted changes in `crates/harbor-terminal/src/lib.rs`, `crates/harbor-terminal/src/literal_search.rs`, `crates/harbor-terminal/src/literal_search/tests.rs`, this evidence and T0002/set status updates. The local/ignored plan is `.grimoire/plans/0035-bounded-literal-search-consumer.md`.
 - Verification environment: Windows, Rust `1.97.1 (8bab26f4f 2026-07-14)`, Cargo `1.97.1 (c980f4866 2026-06-30)`. Tests use real headless terminal engines and the delivered [T0001 boundary](terminal-read-model.md). No application search UI, native search/navigation smoke or new renderer acceptance is claimed.
 

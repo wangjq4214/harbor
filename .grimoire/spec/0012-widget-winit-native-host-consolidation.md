@@ -35,73 +35,13 @@ Before a dynamic-library generation can be replaced, the adapter removes the old
 
 The binary ApplicationHandler continues to identify the target window and forward native events or adapter wake work to the corresponding host. It owns the collection and relationship of main and confirmation hosts, enforces the cross-window paste gate, reduces Store actions, coordinates PTYs and terminal tabs, and decides whether a reported host failure exits the process. It does not manually create Runtime/surface state, configure surfaces, inject frame targets, execute Widget frames, or coordinate HMR generations.
 
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Native host configuration | Application Business Host → `harbor-widget::winit` | Window attributes, root factory, platform hooks, and error policy owned by the application | A configured per-window host that owns Window, Surface, Runtime, scheduling, and presentation |
-| Event-loop routing | ApplicationHandler ↔ per-window adapter host | Window identity, native events, idle turns, and adapter wake work routed on the UI thread | Encapsulated event adaptation, Runtime updates, platform effects, redraw, and wait requests |
-| Shared GPU resources | Main and confirmation adapter hosts ↔ widget GPU facility | Compatible surface capabilities and application-selected backend constraints | Shared Instance/Adapter/Device/Queue with independent per-window surfaces and configurations |
-| Platform window integration | `harbor-widget::winit` ↔ application platform hooks | Harbor backdrop, caption, icon, ownership, positioning, and specialized composition requirements | Customized windows/surfaces whose generic lifecycle remains adapter-owned |
-| Terminal rendering resources | `harbor-widget::winit` → `harbor-terminal` CustomPaint rendering | Adapter-owned Device/Queue access and frame-scoped render context | Terminal-owned pipelines and draws without terminal ownership of Window, Surface, or generic wgpu bootstrap |
-| Reloadable root | Optional widget HMR integration ↔ application UI root factory | A fixed development-session contract and replacement root construction from Host-owned handles | Safe teardown barrier, active-generation root installation, Runtime update, and redraw |
-| Application state/actions | Application Business Host ↔ reloadable/static widgets | Store-published state and Dispatcher actions drained at the application event-turn boundary | Business state retained across reloads without reducers or effects moving into `harbor-widget` |
-
-## End-to-End Tests
-
 ### E2E: Main window starts through the consolidated host
 
-On first static startup resume, the widget adapter creates main Window, shared GPU, Surface, Runtime and root from Harbor configuration, without duplicate application bootstrap.
-
-### E2E: Confirmation window uses the same host boundary
-
-A confirmable paste creates an independent confirmation host through the same builder, sharing compatible GPU resources but retaining its own Runtime/Surface lifecycle and App cross-window gate.
-
-### E2E: Application UI reload retains native and business resources
-
-A valid Windows debug UI rebuild tears down/replaces/redraws one root, resets Widget/Fiber-local state and retains window/GPU identity, terminal sessions, PTYs and Host Store state.
-
-### E2E: Old-generation callbacks cannot execute
-
-If input/render work is pending during reload, the adapter cancels/isolates stale ownership and destroys old roots/registrations before barrier release; only active-generation callbacks remain reachable.
-
-### E2E: Terminal rendering consumes adapter-owned GPU resources
-
-Static or reloaded terminal CustomPaint draws terminal-owned pipelines using adapter GPU/frame access, without Terminal owning/creating Window, Surface, Instance, Adapter, Device or Queue, or introducing terminal dependencies into widgets.
-
-### E2E: Resize and surface recovery remain encapsulated
-
-For either window, resize/DPI/zero-size/restore/recoverable errors update viewport/configuration and suspend acquisition while zero-sized; only unrecoverable failures reach App fatal policy.
-
-### E2E: Ordinary builds remain static
-
-Without HMR or on an unsupported target, changing source/DLL outputs leaves the same static-root native host path running without an active observer/lifecycle.
-
-### E2E: Business behavior remains application-owned
-
-After widget event routing/effects, App drains/reduces tab, terminal and paste actions once at its established boundary; PTY, cross-window effects and business policy stay application-owned.
+First static startup creates main Window, shared GPU, Surface, Runtime and root through the adapter without duplicate application bootstrap.
 
 ## Decisions
 
-### Consolidate native infrastructure without moving the complete event loop
-
-See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
-
-### Share GPU infrastructure while keeping surfaces per window
-
-See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
-
-### Keep terminal GPU state terminal-owned
-
-See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
-
-### Encapsulate generic HMR lifecycle in the widget adapter
-
-See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), [ADR 0029](../adr/0029-widget-store-state-action-boundary.md).
-
-### Preserve the independent confirmation window and application input gate
-
-See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0009](../adr/0009-app-cross-window-input-gate.md).
+[ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) owns the native-host consolidation and supersedes ADRs 0015/0030. Preserve the [separate confirmation window](../adr/0007-retain-separate-paste-confirmation-window.md), [application input gate](../adr/0009-app-cross-window-input-gate.md), and [Store boundary](../adr/0029-widget-store-state-action-boundary.md).
 
 ## Test Plan
 
@@ -126,9 +66,12 @@ See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0
 - Release-mode dynamic loading or a cross-platform HMR guarantee.
 - Introducing a general message bus, reducer framework, serialization boundary, or backend-neutral window framework.
 
-## Future Evolution
+## Outstanding Acceptance
 
-- Reconsider moving more ApplicationHandler mechanics only if another application needs the same process-level multi-window orchestration and a business-neutral abstraction can be demonstrated.
-- Add explicit device-loss recreation or multi-adapter selection when those become supported runtime requirements.
-- Introduce a backend-neutral native-host abstraction only when a second production window/event backend exists.
-- Revisit versioned or serialized HMR contracts only if changing shared types without restart becomes a required workflow.
+Historical 0011/T0001–T0004 contracts survive in Requirements, Solution and Test Plan. Adapter-owned HMR (T0005) and duplicate-host cleanup (T0006) are implemented in source; retirement of their execution notes does not establish integrated acceptance.
+
+Required proofs remain: old Views/Fibers, external draw/schedule registrations, pointer/focus ownership and callbacks are unreachable before the old library unloads; each valid generation installs exactly one root and redraws without recreating Window, Surface, Instance, Adapter, Device, Queue, terminals or PTYs. Repeated real Windows DLL generations must pass TypeId, duplicate-dependency, tracing, callback-lifetime and generation feasibility checks. Exercise failed builds, rapid reloads, missing startup sessions, closed proxies and application exit without deadlock or invalid activation; static/non-HMR/unsupported builds must have no active observer.
+
+The retired T0005 explicitly lacked repeated interactive Windows watcher evidence, while T0006 checked all acceptance boxes including repeated Windows reloads without an accompanying execution record. That discrepancy remains unresolved: do not infer a runtime pass from source, checkbox state or this cleanup.
+
+Verify both-window lifecycle/GPU isolation, business/input/paste behavior, restart-only shared-contract changes, default/backend/debug-HMR/release build parity, idle Wait and one-redraw/one-frame behavior under the Test Plan and [validation policy](../../docs/validation.md). No duplicate binary Window/Surface/Runtime setup, surface configuration, WinitFrameTarget assembly, frame execution, scheduler/HMR state or compatibility path solely for the superseded ownership model may remain. WinitFrameTarget must be internal or absent from the application contract; required external-draw/platform seams remain. Failures block acceptance or require explicit follow-up, not competing host paths.

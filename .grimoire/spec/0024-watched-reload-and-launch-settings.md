@@ -1,101 +1,70 @@
 # Watched Configuration Reload and New-Session Launch Settings
 
 **Spec ID:** 0024
-**Status:** Draft
-**Date:** 2026-10-15
-**Sources:** [Issue #155](https://github.com/wangjq4214/harbor/issues/155), [manual slice #172](https://github.com/wangjq4214/harbor/issues/172), [spec 0023](./0023-atomic-manual-configuration-reload.md), [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md).
-
-## Scope
-
-Extends [spec 0023](./0023-atomic-manual-configuration-reload.md), retaining its manual/font/OSC/input/startup and atomic-failure contracts and ADR 0059–0061 qualifications. Environment and launch directory are included in #155, not deferred; watching is default-on. Shell launch changes affect new sessions only; clipboard policy remains restart-required. [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies notification eligibility, not acceptance.
-
-At refinement, manual/font code was observed in open [PR #201](https://github.com/wangjq4214/harbor/pull/201), branch `feat/config-reload` at `bdb37993e0cfa95fa4708596ebacf8d2dee01e4c`, while #172 still excluded fonts. That observation is not acceptance. Historical slice results and active package work live in the [delivery record](../ticket/0017-configuration-hot-reload/README.md).
-
-**Stable execution aliases — 0017-configuration-hot-reload:** T0001 = manual/font acceptance (0023 R1–R8/E1–E11; this R1/R6); T0002 = session environment/directory (R2–R4/E1–E7/E12); T0003 = watched reload (R4/R5/E8/E9/E11); T0004 = combined E10/R6 and remaining package evidence. These aliases also identify native-test markers; a slice pass is not full #155 acceptance.
+**Status:** Implemented; full integrated human/remote acceptance pending.
+**Sources:** [#155](https://github.com/wangjq4214/harbor/issues/155), [#172](https://github.com/wangjq4214/harbor/issues/172), [manual spec 0023](./0023-atomic-manual-configuration-reload.md), [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md). [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies only notification eligibility.
 
 ## Requirements
-
 ### R1 — Retain and Accept the Existing Manual Contract
-
-Preserve all requirements and E1–E11 acceptance cases of spec 0023. Manual `app.reload-configuration` remains available through its configured binding, independent of a command palette or the watcher. Colors, bindings and terminal-only fonts update all applicable existing and future instances; invalid candidates retain the previous accepted state. Keep OSC overrides/reset-baseline semantics, bounded resize, reader resume and explicit compensation-failure reporting. Do not restart PTYs or recreate sessions.
-
-Before claiming #172 delivered, reconcile its published font exclusion with the explicitly approved font-inclusive local contract. Documentation and issue status must distinguish implementation, executed tests, and runtime acceptance.
+Preserve spec 0023 R1–R8/E1–E11 and ADRs 0059–0061: configured manual command independent of watcher/palette, live colors/bindings/terminal-only fonts for applicable existing/future instances, strict rejection, OSC/reset/alpha, bounded resize, reader resume and explicit compensation-failure reporting. No session/PTY restart. Reconcile #172's published font exclusion before claiming the font-inclusive scope delivered; distinguish code, tests and runtime acceptance.
 
 ### R2 — Environment Overrides for New Sessions
-
-Expose a TOML string-name/string-value environment mapping as part of shell launch settings. Concrete field names are not fixed by this contract; use one documented schema consistently across configuration, diagnostics, examples and tests.
-
-- Start with the environment inherited by Harbor and apply configured additions/overrides only to the child launch environment. Do not change Harbor's process-global environment or existing child environments.
-- On Windows, names are case-insensitive; conflicting configured names differing only in case reject the candidate instead of depending on map iteration order.
-- An empty string is an explicit empty value. Removing an override from the complete settings document restores inheritance; it does not remove the inherited variable. No dedicated inherited-variable deletion syntax is required in this scope.
-- Values are literal strings. Do not interpolate `$VAR` or `%VAR%`, or evaluate shell expressions.
-- Preserve `TERM=xterm-256color`. A configured different value, regardless of key casing on Windows, is rejected rather than silently ignored. The same value is compatible with the protected policy.
-- Invalid names/values or invalid mapping types reject the complete reload under R4. Preserve Windows environment-block validity at the native process boundary.
-- User-facing feedback, logs and error chains may identify a variable name but must not disclose its value. Use synthetic non-secret values for test evidence.
-
-Successful startup and successful reload must pass the configured environment to newly created sessions, including the actual shell selected by the existing fallback policy. This does not redefine executable lookup or shell fallback order.
+Provide one documented TOML string-name/string-value shell environment mapping, consistently used in diagnostics/examples/tests:
+- Start from Harbor's inherited environment; add/override only child launch values, including the actually selected fallback shell. Do not mutate Harbor or existing children, or change executable lookup/fallback order.
+- Windows names are case-insensitive; conflicting case variants reject wholly. Empty string is explicit empty, removal restores inheritance rather than deleting inherited variables. No deletion syntax.
+- Values are literal: no $VAR/%VAR% interpolation or shell evaluation.
+- Protect TERM=xterm-256color case-insensitively: different value rejects, same value is valid.
+- Invalid mapping types/names/values reject wholly; ensure a valid native Windows environment block.
+- UI/log/error chains may identify names, never disclose values. Use synthetic evidence values.
 
 ### R3 — Initial Directory for New Sessions
-
-Expose an optional launch-directory path in shell launch settings; its concrete TOML field name is left to implementation alongside R2's mapping.
-
-- Absolute paths designate the initial child directory. Resolve relative paths against the configuration file's containing directory, not Harbor's launch location or the active terminal's current directory.
-- Omission retains current inherited-directory behavior. Removing a previous setting from a valid complete document restores that behavior for future sessions.
-- Do not change Harbor's process-global directory or send `cd` text into existing sessions. Do not reinterpret OSC 7 metadata as the configured directory; ADR 0033 remains unchanged.
-- Invalid, nonexistent or non-directory configured paths reject the complete reload candidate. Errors identify the relevant setting and operation.
-- Directory validity can change after acceptance. If it is unavailable when a new child is created, fail that session creation visibly, without silently launching in another directory or disturbing existing sessions. A failed new-session attempt is not a successful spawn and is not a retroactive configuration-generation change.
-
-Valid startup settings apply to the first session as well as subsequent sessions. Retain the documented startup fallback behavior separately from strict reload; this extension does not turn startup recovery into live acceptance.
+Provide an optional shell launch-directory path. Absolute is literal; relative resolves against the configuration file's containing directory, not launch cwd, active-session cwd or OSC 7. Omission/removal restores inherited-directory behavior. Never change process-global cwd or inject cd into existing children; [ADR 0033](../adr/0033-osc7-metadata-without-filesystem-side-effects.md) remains unchanged.
+Invalid/nonexistent/non-directory paths reject complete reload with setting/operation diagnostics. If an accepted directory disappears before spawn, fail the new session visibly without fallback or disturbing existing sessions; this is neither successful spawn nor retroactive generation change. Restored directory permits later valid spawn. Valid startup fields affect the first session too; preserve separate startup recovery.
 
 ### R4 — One Acceptance Boundary, Including Future Launch Policy
-
-Manual and automatic requests validate a complete candidate, including environment and directory settings, before publishing supported live state and future factories on the application thread. A failure in a new launch field must not accept changed colors, bindings, fonts, shell program or arguments. A resource/resize failure must not publish new launch settings either. The existing compensation-failure exception does not authorize partial configuration publication.
-
-On success, feedback accurately distinguishes live changes, new-session-only program/arguments/environment/directory changes, and restart-required settings. Existing children retain their identities, launch environment and current working directories. New instances use the accepted launch policy together with the accepted appearance/font policy. Removal of optional overrides uses the complete-document semantics, not a merge over an older candidate.
+Manual/watch requests validate the complete document and prepare resources before application-thread publication of coherent live state and future factories. Invalid launch fields cannot partially accept colors/fonts/bindings/program/args; live resource/resize failures cannot publish launch policy, including compensation failure. Existing children keep identities/env/cwd; new children use matching accepted launch/font/color policy. Complete-document override removal is not a merge. When feedback is needed, distinguish live, new-session-only and restart-required effects; clipboard remains restart-required.
 
 ### R5 — Default-On Watching and Save Recovery
-
-Automatically observe the user configuration path without requiring a manual command. Retain the manual trigger and keep this feature separate from debug-only widget-library HMR.
-
-- Ordinary saves, replacement/rename-based atomic saves, and bursts of saves must lead to the final stable valid document being applied through R4. Replacing the file must not detach future observation.
-- Debounce save bursts; intermediate unreadable or malformed files must never substitute startup defaults into live state. If an invalid edit persists, retain the last accepted configuration and show actionable feedback. Later correction must be observed and can succeed without application restart.
-- Repeated identical failures must not flood notifications. This suppression must not hide recovery or a different failure.
-- Manual requests interleaved with save events must preserve coherent acceptance order. A stale candidate must not overwrite a later accepted configuration due to delayed work; all applicable instances and factories agree after each acceptance.
-- Watcher setup/runtime failure is visible, not silent. Manual reload remains usable when automatic observation is unavailable.
-
-No numeric debounce threshold or specific watcher library is prescribed. Choose and document the implementation behavior and verify it using controlled save sequences; do not claim a latency budget not established here.
+Observe the selected configuration path automatically, separate from widget HMR; manual reload stays independent.
+Ordinary saves, rename/atomic replacement and bursts eventually apply the final stable valid document through R4; replacement cannot detach observation. Debounce intermediates without installing defaults. Persistent invalid/unreadable edits retain accepted state and actionable notice; later correction succeeds without restart. Missing-file silence follows 0025. Repeated identical failures cannot flood or immediately resurrect dismissed notices, but different failures/recovery remain distinguishable. Interleaved manual/save work must preserve acceptance order; delayed stale candidates cannot overwrite newer accepted generations. Setup/runtime observation failure is visible, manual reload remains usable.
+No required numeric latency/library: document/test controlled sequences. Current implementation polls content at 200ms with 300ms settling, coalesces latest observations into a payload-free wake, and re-reads current file on the application thread; these are implementation details, not latency guarantees.
 
 ### R6 — Package Evidence and Scope Reconciliation
-
-Close #155 only after R1–R5 are evidenced, or through a subsequent explicit scope decision linking every deferred item. Environment and launch directory are included now, not deferred by this spec. Do not add a dependency on reflow for watcher/environment work: the font slice already uses the existing resize contract, and #152 is closed at inspection.
-
-Apply [validation policy](../../docs/validation.md) and the quality gates from #155. Record revision, dirty scope, OS/ConPTY/application versions, steps, expected/observed outcomes, artifacts and exclusions with PASS / FAIL / NOT RUN / BLOCKED. Provide retrievable evidence rather than a local-only missing/ignored Markdown link. If ignore policy prevents committing an intended evidence file, use allowed retrievable artifacts or obtain separate authorization; do not silently edit Git policy.
+Environment/directory remain included in #155. No new reflow prerequisite (#152 was closed at inspection; font slice uses existing resize). Close #155 only with accepted whole-scope evidence or an explicit new scope decision linking every remaining item. Reconcile README/example/status/roadmap and #155/#172/[PR #201](https://github.com/wangjq4214/harbor/pull/201) scope based on evidence; remote mutation requires separate authorization.
+Use [validation policy](../../docs/validation.md): exact revision/dirty scope, OS/ConPTY/app versions, steps, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Self-contained summaries/retrievable artifacts are the general rule; the execution-specific waiver below is not a global policy change or permission to change ignore rules.
 
 ## End-to-End Acceptance
+| ID | Scenario → required observation |
+| --- | --- |
+| E1 | Manual env/directory reload then new child → old PIDs/env/cwd unchanged; new child reports accepted values/directory and matching fonts/colors. |
+| E2 | Override inherited synthetic value, set empty, remove override → new children observe override/empty/inherited, old children unchanged. |
+| E3 | Case variants/conflicts, invalid mapping and conflicting TERM mixed with valid colors → wholly reject with value-free field diagnostics; matching protected TERM valid. |
+| E4 | $VAR, %VAR% and expression-like values → actual child receives exact literal strings. |
+| E5 | Launch Harbor from other cwd; relative, absolute, omitted directory → config-relative/absolute/inherited child behavior, no OSC 7/session-cwd baseline change. |
+| E6 | Nonexistent path/regular file plus valid live fields → wholly reject; live/factory state retained. |
+| E7 | Remove accepted directory before spawn, then restore → visible failed spawn without fallback/session damage, later spawn succeeds. |
+| E8 | Default watcher; ordinary/replacement/another save/burst → final stable generation reaches applicable current/future instances without manual command or lost observation. |
+| E9 | Missing/invalid intermediates, stable invalid file, repeated failure, correction → last valid state, actionable nonflooding errors, recovery. |
+| E10 | Interleave manual/ordinary/atomic/burst saves changing all live/launch fields across active/inactive/alternate/new sessions; inject font/resource, invalid TOML/binding/launch and native resize/compensation failures → coherent ordering, rejection and reader/recovery guarantees; no PTY termination or partial publication. |
+| E11 | Controlled setup/runtime watch fault then valid manual reload → visible limitation, manual still works, no false watch-success claim. |
+| E12 | Valid startup launch fields plus startup-fallback regressions → first child uses accepted launch values, strict live policy remains separate. |
 
-| ID | Given / When | Required outcome |
+## Delivery and Outstanding Acceptance
+Stable aliases `0017-configuration-hot-reload` (also used by native test markers):
+| Slice | Contract | Recorded state |
 | --- | --- | --- |
-| E1 | Existing sessions; manually reload valid environment and directory settings; create another session | Existing PIDs, environments and current directories are unchanged; the new child reports the accepted values/directory and matching accepted colors/fonts |
-| E2 | Inherited synthetic variable; configure override, empty string, then remove the override in successive reloads | New children observe override, explicit empty value, then inherited value; old children retain their own state |
-| E3 | Windows case variants, conflicting names, invalid mapping values, and conflicting TERM; include a valid color change | Invalid candidates reject wholly; no live/factory changes; diagnostics identify the field without revealing values; matching protected TERM is valid |
-| E4 | Literal values containing `$VAR`, `%VAR%` and shell-expression text; launch a child probe | Child receives exact strings, with no configuration interpolation/evaluation |
-| E5 | Start Harbor from a different directory; configure a relative directory, then an absolute directory, then omit it | New sessions use config-relative, absolute, then inherited-directory behavior; OSC 7 and active-session directory do not redefine the baseline |
-| E6 | A nonexistent path or a regular file is configured alongside valid live edits | Reload fails entirely with actionable diagnostics; existing sessions and future launch policy remain on accepted settings |
-| E7 | Accept a valid directory; remove it before opening a tab; later restore it | Failed spawn is reported without fallback directory or damage to existing sessions; a later valid spawn uses the accepted policy |
-| E8 | Default running app; ordinary save, rename-based replacement, another save and a burst ending in a valid document | No manual command needed; final stable settings reach current applicable views and future sessions; replacement does not break later observation |
-| E9 | A save burst exposes a missing/invalid intermediate file; leave an invalid file stable, repeat the failure, then fix it | Last valid state survives; persistent error is visible without identical-message flooding; corrected content is accepted |
-| E10 | Interleave manual reloads and automatic saves with colors/fonts/environment/directory changes and injected preparation failures | Accepted generations remain coherent; stale work cannot replace later accepted state; failure preserves prior launch/live settings and reader-resume guarantees |
-| E11 | Controlled watcher setup/runtime failure; then invoke manual reload with a valid document | Watch failure is visible; manual reload still works without pretending automatic watching succeeded |
-| E12 | Valid startup launch fields, plus existing startup fallback regression fixtures | First child receives configured launch settings; existing documented startup fallback remains separate from strict live validation |
+| T0001 — manual/font | 0023 R1–R8/E1–E11; this R1/R6 | Done historically; automated/scoped native plus prior user-confirmed manual acceptance, not whole package. |
+| T0002 — environment/directory | R2–R4/E1–E7/E12 | Done historically; automated/native seam plus later user-confirmed testing, not new agent UI acceptance. |
+| T0003 — watching | R4/R5/E8/E9/E11, manual/save ordering | Done historically; controlled/filesystem/scoped native-window evidence. |
+| T0004 — integrated package | All R/E, especially E10/R6 and inherited 0023 outcomes | Todo for remaining integrated human/remote acceptance; code and combined automated/native checks exist. |
+T0001–T0003 supply T0004, not a reason to assume passes compose. Launch/watcher development had no artificial dependency on each other or manual-evidence completion; only demonstrated defects create blockers. Both triggers retain one acceptance/factory/feedback owner.
 
-## Delivery Verification
+Historical slice baselines: T0001 bb307d8 (8 focused reload tests and raw ConPTY x/q bytes exactly 7871; IME/physical/rebind/OSC/backdrop/DPI partly user-confirmed); T0002 da1eaeb → 2488f96 (interactive checks initially NOT RUN, then user-confirmed); T0003 2488f965 plus watcher changes (controlled/filesystem/native observation; synthetic desktop typing unreliable). These are recorded history, not rerun here.
+T0004 at 0a4057fd1c61f8d26f0001c0a3ef37656e9131fa plus test/document diff recorded five gates passing (2465 workspace passed, 10 ignored), Windows 26300.9457 / ConPTY 1.24.260710001 / Harbor 0.1.0 debug. [Combined native test](../../src/session_launch_tests.rs) covers real saves/manual ordering, GPU/font/binding/factory coherence, child env/cwd, old-child continuity, strict rejection and retry; [reload tests](../../src/configuration_reload_tests.rs) cover compensation. Scoped native saves/fonts/cmd/PowerShell probes and raw consumed-chord bytes were observed; nvim rendered but automated edit/exit was unreliable, not full input acceptance.
+**Execution-specific waiver:** the user required detailed evidence to stay untracked/local-only: docs/verification/package-configuration-reload-evidence.md and target/configuration-package-integration/. This replaced retrievable-evidence acceptance for that execution only, without ignore changes/force-add; earlier slice waiver did not itself waive T0004. Those artifacts were not inspected/revalidated by this maintenance and are not remote evidence links.
 
-- Reuse spec 0023 E1–E11 and its actual Windows shell, inactive-tab, alternate-screen, input/IME, OSC, font and failure-compensation requirements; do not substitute new watcher tests for them.
-- Test schema validation, case handling, literal/empty/removal semantics, relative path anchoring, environment-block construction, candidate/factory rollback, and redaction through complete error chains.
-- Use actual Windows child probes for environment/directory and real filesystem saves/replacements for watcher behavior. Controlled event tests supplement, not replace, those paths.
-- Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py` at delivery; report skipped/blocked gates honestly.
-- Reconcile README/config examples, current-status/roadmap descriptions, and #155/#172/PR scope based on evidenced behavior. Remote edits require execution authorization; this spec does not make them.
+**Still required:** fresh integrated Chinese IME/preedit/candidate placement/focus cancellation; physical typing/Backspace/Enter and held-key rebind; retained selection/copy after repeated fonts; complete nvim alternate exit/primary restoration; applicable backdrop/opaque/DPI and desktop OSC reset observations. Prior slice confirmations are not fresh package results. Map every R/E to actual evidence; retain TERM/literal/empty/removal, relative cwd/lost-directory and full-chain confidentiality checks. Use actual Windows child probes and real filesystem replacement/save sequences, not just fixtures. Rerun standard fmt/clippy/workspace/doc/checklist gates on the accepted integrated revision and explicitly report unavailable cases.
+Pending separately authorized remote actions: reconcile #172 font exclusion with 0023/ADRs 0059–0061, PR #201 delivered scope, #155 delivery/evidence/sub-issue links. No closure or remote action is claimed; local-only evidence is not a remote artifact.
 
 ## Limits
-
-Field names, watcher backend and debounce timing are implementation details, not additional requirements. No existing-process restart or environment/directory mutation, shell-expression expansion, inherited-variable deletion syntax, widget HMR changes, palette UI, profile system, live clipboard-policy change or changed OSC 7 side effects. Spec 0023's bounded font retention and usable-system-font fallback remain applicable. This draft is not proof of implementation, tests, issue closure or runtime acceptance.
+No existing-child restart/env/cwd mutation, interpolation, inherited-variable deletion, profile/palette UI, widget HMR change, live clipboard policy, OSC 7 side-effect change or special lossless font retention. Schema names/backend/timing remain implementation choices.

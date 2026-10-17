@@ -2,7 +2,7 @@
 
 ## Scope and invocation
 
-This delivers [T0003](../.grimoire/ticket/0018-revisioned-terminal-read-model-and-literal-search/T0003-current-session-search-integration.md) over the [bounded literal consumer](terminal-literal-search.md) and [read model](terminal-read-model.md), not all of spec 0027 or the parent search/shell work packages.
+This delivers [T0003](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md#stable-slice-contracts-and-evidence) over the [bounded literal consumer](terminal-literal-search.md) and [read model](terminal-read-model.md), not all of spec 0027 or the parent search/shell work packages.
 
 | Command ID | Default binding | Behavior |
 | --- | --- | --- |

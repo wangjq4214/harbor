@@ -1,89 +1,55 @@
 # Portal and Quiet Configuration Notifications
 
 **Spec ID:** 0025
-**Status:** Draft
-**Date:** 2026-10-15
-**Sources:** [ADR 0063](../adr/0063-root-composable-escape-and-quiet-configuration-notices.md); the existing configuration contracts in [spec 0023](./0023-atomic-manual-configuration-reload.md) and [spec 0024](./0024-watched-reload-and-launch-settings.md).
-
-## Scope
-
-This spec changes presentation and notification eligibility, not configuration acceptance. It takes precedence over spec 0023 R7/E1/E2 and spec 0024 R4/R5 only where they would require a routine success or absent-file user-facing notice. Missing live candidates still do not commit defaults. Preserve strict complete-candidate rejection, coherent publication, existing session identity, OSC policy, restart-required clipboard policy, confidentiality and explicit compensation-failure reporting. [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) links the limited notification-policy supersession in both directions; [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md) still requires actionable watcher-failure feedback and duplicate suppression.
+**Status:** Implementation exists; native interaction acceptance is not established by source review.
+**Sources:** [ADR 0063](../adr/0063-root-composable-escape-and-quiet-configuration-notices.md), [0023](./0023-atomic-manual-configuration-reload.md), [0024](./0024-watched-reload-and-launch-settings.md). Supersedes only their routine-success/absent-file user notices; strict acceptance, OSC, session identity, restart clipboard policy, confidentiality and compensation-failure reporting remain.
 
 ## Requirements
-
 ### R1 — Reusable Root-Level Escape Capability
-
-Provide a general Portal-like component usable in the declarative component tree, including direct composition at the application root. It is not a configuration-specific drawing branch.
-
-Content is declared at its component-tree location but displayed in a root-level overlay. Its original parent's layout allocation and clipping must not confine the escaped presentation. Root/window bounds remain the presentation boundary; this is not a separate native notification window.
-
-Adding, updating or removing Portal content must not consume space in the normal layout. In particular, notification visibility must not shrink the terminal allocation, change its grid or trigger a PTY resize merely to make room for a notice. Removing content or its owner must remove the corresponding overlay rather than leave stale visible or interactive content.
-
-The capability must be reusable for arbitrary component content rather than only notification text. The escape contract does not require compatibility with the complete React Portal API.
+Provide a general declarative Portal, directly root-composable or nested: content renders in a root/window-bounded overlay outside declaring-parent allocation/clipping, not a separate native window. It accepts arbitrary component content, not a configuration-specific drawing branch or full React API.
+Adding/updating/removing content must consume no normal-layout space or change terminal allocation/grid/PTY size. Removing content/owner removes stale paint and interactive regions; remount works.
 
 ### R2 — Notification Component and Application Integration
-
-Build the notification component using R1 and compose its presentation at the main-window root. Display configuration notices as floating, non-modal content anchored at the top right of the application content area, above ordinary workspace content rather than inside the terminal's vertical layout.
-
-Remove the existing bottom configuration-result `TextLabel` presentation. Do not retain a duplicate bottom message or reserve a blank result row. The notification component consumes presentation content; application configuration policy determines whether an outcome deserves notification.
-
-Notification placement must remain top-right relative to the current root size after resizing or scale changes. Exact inset, width, colors, corner radius, iconography and animation are not fixed by this contract.
+Compose Portal-backed reusable notification presentation at the main-window root: floating top-right of current application content bounds above workspace. Remove bottom configuration TextLabel and reserved/duplicate row. Placement/hit testing must follow resize/DPI. Exact inset/size/color/radius/icons/animation are not fixed. Presentation receives content; application policy decides eligibility.
 
 ### R3 — Non-Disruptive Interaction
-
-Notifications can be manually dismissed. Showing or updating one must not steal terminal focus, open a modal input gate or prevent ordinary terminal input and tab interaction outside the notice. Empty overlay space must not behave as a full-window input blocker. Notice controls must be hit-testable at their displayed location, not their former component-tree layout position.
-
-Errors requiring action do not automatically disappear. Dismissing a notice changes its visibility, not the accepted configuration or the truth of the reported outcome. Repeated identical failures must not immediately recreate a dismissed notice merely because another identical watcher event arrived; existing duplicate-suppression semantics continue to distinguish a different failure or a new failure after recovery.
-
-No numeric auto-dismiss interval or notification-stack capacity is selected. This spec does not require auto-dismiss for any class.
+Manual dismissal, non-modal, no terminal-focus theft, input gate or interference with ordinary terminal/tab interaction outside the notice. Empty overlay space must not block input; controls hit-test where painted, not at old tree coordinates.
+Actionable errors never auto-expire. Dismissal affects visibility, not accepted state/truth. Identical watcher failures cannot immediately resurrect dismissed notices; distinguish different failures and recurrence after recovery. No selected auto-dismiss interval/stack capacity or required auto-dismiss behavior.
 
 ### R4 — Selective Configuration Notification Policy
-
-Apply the policy to startup, manual reload and watched reload as applicable, rather than moving every existing result string into the overlay.
-
-| Outcome | Required user-facing behavior | Required configuration behavior |
-| --- | --- | --- |
-| Configuration file absent at startup | No notice | Start with the established defaults |
-| Configuration file absent during manual or watched reload | No notice | Retain the last accepted configuration; do not publish defaults or claim acceptance |
-| Ordinary successful reload or no effective change | No success/no-change notice | Apply valid changes under the existing transaction; preserve truthful diagnostics |
-| Ordinary automatic recovery or system fallback that requires no user awareness | No notice | Retain the established recovery/fallback behavior |
-| Configuration error leaves the requested changes unapplied | Actionable top-right notice | Explain the cause and actual effective state; reload rejection retains the accepted configuration |
-| A changed setting requires restart | Top-right notice stating the restart requirement | Do not imply the setting is already effective |
-| Configuration observation unavailable | Top-right notice explaining the limitation and available recovery/manual reload | Do not pretend observation is working; preserve manual reload |
-| Unrecovered resource/operation failure | Actionable top-right error, identifying affected operations/sessions when relevant | Preserve existing rejection and compensation-failure obligations; never claim success |
-
-Silence for ordinary fallback does not authorize silently accepting invalid live candidates. Existing explicit ignored-setting and font-selection warnings remain subject to the actionable/unapplied-request boundary, not an indiscriminate suppression of every warning. Likewise, file absence is distinct from permission denial, malformed TOML or inability to resolve the configuration path: the missing-file exception must not swallow unrelated actionable errors.
-
-A successful reload with an independent restart requirement or actionable ignored-setting warning is not an ordinary success-only outcome; retain the necessary notice without appending a routine success feed. Accurate distinctions between live, new-session-only and restart-required settings still apply whenever those distinctions are reported; normal new-session-only changes do not by themselves require a success notification.
-
-Repeated identical problems must not flood the UI. Recovery must not leave an obsolete failure represented as the current state; clearing or updating a stale failure does not require a separate success toast. This retains spec 0024 R5's distinction between recovery, a different failure and repeated identical events.
+Apply consistently at startup and manual/watched reload:
+| Outcome | Presentation and effective state |
+| --- | --- |
+| Absent startup file | Silent; established defaults |
+| Absent live candidate | Silent; retain accepted state, no defaults/false acceptance |
+| Ordinary success/no change | Silent; valid transaction still applies |
+| Ordinary automatic recovery/system fallback needing no awareness | Silent; retain established recovery |
+| Requested settings unapplied due to error | Actionable top-right cause/effective-state notice; live rejection retains accepted state |
+| Restart-required change | Notice explicitly says pending restart, not already effective |
+| Observation unavailable | Notice explains limitation/recovery/manual reload; manual remains usable |
+| Unrecovered resource/operation failure | Persistent actionable error with affected operations/sessions; no false success; existing reader/compensation obligations |
+Missing is not permission denial, malformed TOML or unresolved path; absence suppression must not hide other errors. Silence cannot accept invalid live candidates. Actionable ignored-setting/font-selection warnings remain reportable. A successful transaction with independent restart/actionable warning is not ordinary success-only; no appended success feed. Whenever reported, distinguish live/new-session/restart effects; ordinary new-session acceptance alone needs no toast.
+Suppress identical-problem floods without hiding different failures or recovery. Clear/update obsolete failure as current state without a recovery success toast.
 
 ### R5 — Preserve Policy and Ownership Boundaries
-
-The reusable escape/presentation capability must not own TOML validation, configuration acceptance, terminal state or watcher recovery. Keep configuration classification with application policy and preserve the existing Host-published UI state / one-shot action boundary in [ADR 0029](../adr/0029-widget-store-state-action-boundary.md).
-
-Dismissal is presentation intent, not a configuration command or a stored false success outcome. Preserve existing event-turn effects/action ordering and runtime invalidation when feedback changes. This spec does not select a new state container or global notification bus.
-
-Required notices must remain truthful and actionable: identify the relevant configuration path, parse location, setting or failed operation where available; state retained effective configuration on reload failure. Feedback remains application UI, never text injected into the PTY. Preserve spec 0024's prohibition on revealing environment-variable values in UI, logs or error chains. User-facing silence does not require discarding existing diagnostic logging.
+Generic escape/presentation owns no TOML validation, acceptance, terminal state or watcher recovery. Application classifies notices and owns dismissal intent under [Host state/one-shot FIFO actions](../adr/0029-widget-store-state-action-boundary.md), existing event-turn effect ordering and runtime invalidation. No new global bus/state container.
+Feedback identifies available config path/parse location/setting/failed operation and retained effective state on rejection. Never inject into PTY or disclose environment values in UI/log/error chains. UI silence does not require discarding diagnostic logs.
 
 ## End-to-End Acceptance
+| ID | Scenario → required outcome |
+| --- | --- |
+| E1 | Root Portal and arbitrary content under small clipping parent → root overlay, no parent clipping/sibling/terminal allocation change. |
+| E2 | Update/remove owner/remount → correct content, no stale paint/hit regions, normal remount. |
+| E3 | Show/update/dismiss, resize and change scale → top-right paint/hit agreement; no bottom row or notice-induced terminal/grid/PTY resize. |
+| E4 | Notice appears while terminal typing; outside click and dismiss control → no focus theft, input block or empty-overlay interception; visible control works. |
+| E5 | Absent startup then absent manual/watched file after non-default acceptance → silent defaults only at startup; accepted live/factory state unchanged, no false acceptance. |
+| E6 | Manual/watch success, no-change and ordinary recoverable fallback → no success/recovery/bottom feed; valid changes/recovery still happen. |
+| E7 | Invalid TOML/recognized field or permission denial mixed with valid edits → actionable truthful top-right error; no partial/default installation or unrelated absence suppression. |
+| E8 | Restart change versus ordinary new-session-only change → explicit pending restart versus silent routine success. |
+| E9 | Watch failure/repeated invalid edit, dismiss/repeat/change/recover → no flooding/resurrection, different errors visible, obsolete failure cleared, manual works. |
+| E10 | Resource failure or resize-compensation double failure; wait → persistent truthful error, accepted state/affected sessions and resume/no-false-success obligations. |
+| E11 | Actionable ignored setting and synthetic env-value diagnostics → necessary notice, no secret disclosure or PTY bytes. |
 
-| ID | Given / When | Required outcome |
-| --- | --- | --- |
-| E1 | Compose arbitrary Portal content directly at the root, then declare escaped content beneath a small clipping parent | Both render at the root overlay as specified; the nested parent's clip does not cut off escaped content; ordinary sibling/terminal allocation is unchanged |
-| E2 | Change Portal content, remove its declaring component, then remount it | Visible content updates; removal leaves no stale paint or interactive hit region; remounted content works normally |
-| E3 | With a running terminal and an actionable configuration notice, show/update/dismiss the notice, resize the window and change display scale | Notice stays top-right; bottom result row is absent; visibility alone never changes terminal allocation/grid or causes PTY resize; positioning/hit testing agree after resize/scale changes |
-| E4 | Terminal has focus; a notification appears while typing; click outside it and exercise its dismiss control | Appearance does not steal focus or block normal terminal/tab interaction; blank overlay space does not intercept input; the visible dismiss control works at its rendered position |
-| E5 | Start without a configuration file; separately remove the file after accepting non-default live settings and invoke manual and watched reload | No missing-file notice in any case; startup uses defaults; live settings/factories remain on the accepted configuration, without a false successful acceptance |
-| E6 | Manually reload, automatically reload, repeat a no-change reload, and exercise an ordinary silently recoverable condition | No routine success/no-change/recovery notice and no bottom message; valid settings and established recovery behavior still take effect |
-| E7 | Introduce invalid TOML, an invalid recognized setting or a permission-denied read, including a candidate with otherwise valid changes | Actionable top-right error identifies the cause/effective state; no valid subset/default fallback is installed by a rejected live reload; missing-file suppression does not hide these errors |
-| E8 | Change a restart-required setting; separately reload an ordinary valid new-session-only setting | Restart case explicitly states the pending effect rather than claiming live application; routine new-session-only acceptance does not generate a success notice |
-| E9 | Trigger watcher failure and repeated identical invalid edits; dismiss a notice; repeat the same failure, then change the failure and later recover | No identical-message flood or immediate resurrection on repeated identical events; different failure remains reportable; obsolete failure is not represented as current after recovery; manual reload remains available during watcher failure |
-| E10 | Trigger a resource failure or the established resize-compensation double-failure path and allow time to pass | Required error does not auto-disappear; retained accepted state and affected/unrecovered sessions are honestly reported; existing reader-resume and no-false-success guarantees remain intact |
-| E11 | Produce actionable ignored-setting feedback and diagnostics involving a synthetic environment-variable value | Necessary feedback remains visible, no PTY bytes are injected, and UI/log/error-chain output does not expose the value |
-
-Portal-specific verification must include clipping escape, displayed-position hit testing, content removal and layout invariance; a configuration-message screenshot alone does not prove a general escape component. Application verification must exercise startup, manual and watched paths, not only a classifier unit test. Interactive appearance/focus evidence should distinguish executed checks from NOT RUN; this spec is not test execution evidence.
-
-## Limits
-
-Component/API spelling, overlay implementation, inset, styling, animation, timeout and capacity are not prescribed. No new command bus, acceptance owner, watcher policy or state container. Existing paste/clipboard confirmation windows and modal security gates are not converted into notifications. This draft defines requirements, not implementation or runtime acceptance.
+## Verification and Limits
+Use [validation policy](../../docs/validation.md). [Portal tests](../../crates/harbor-widget/src/runtime/portal_tests.rs), [workspace tests](../../crates/harbor-app/src/workspace_tests.rs) and [startup/manual/watch tests](../../src/configuration_notice_tests.rs) are source/test evidence, not a new execution pass. Verify clipping escape, displayed-position hit testing, removal and layout invariance with arbitrary content, plus real startup/manual/watch paths rather than classifier-only checks. Native focus/appearance/resize/DPI checks must explicitly distinguish executed from NOT RUN; screenshots of config text alone prove no general escape component.
+No converted paste/clipboard confirmation windows/security gates, changed acceptance/watcher ownership, global bus, prescribed styling/timeout/capacity or separate notification window.

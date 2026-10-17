@@ -23,74 +23,15 @@ DirectWrite resources use explicit ownership and thread-lifetime rules compatibl
 
 The Windows implementation has no runtime fallback to `fs::read`, `fontdb`, or `fontdue`. Non-Windows builds are rejected at compile time for this delivery.
 
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Windows font services | `harbor-text` → DirectWrite | A usable DirectWrite factory, system font collection, fallback service, and process-private custom-font references | Native face identities, primary metrics, fallback mappings, glyph IDs, and grayscale glyph images |
-| Font configuration | Process environment → `harbor-text` | Optional `HARBOR_FONT` filesystem path | A process-private primary face or an explicit configuration error |
-| Text rendering contract | `harbor-terminal` ↔ `harbor-text` | Stable primary metrics and rasterizable resolved glyphs | Atlas-compatible bitmap/placement data without changing terminal GPU ownership |
-
-## End-to-End Tests
-
-### E2E: Default Windows startup
-
-On Windows without `HARBOR_FONT`, first-window Latin rendering uses a DirectWrite-selected primary face with positive, stable metrics and the existing WGPU atlas, never the legacy loader.
-
-### E2E: Configured primary with system fallback
-
-With a valid process-private `HARBOR_FONT` lacking CJK coverage, Latin uses that primary and CJK uses DirectWrite fallback; both retain primary-face cell geometry.
-
-### E2E: Cached fallback resolution
-
-Repeated rendering/redraw of a previously resolved missing-primary character reuses its face/glyph without font rescans, reopenings or reparsing, with stable atlas output.
-
-### E2E: Invalid configured font
-
-A missing, unreadable or unsupported `HARBOR_FONT` produces a clear startup configuration error rather than silently choosing a system default or legacy loader.
-
-### E2E: Windows memory profile
-
-In the documented Latin DHAT/Windows private-memory scenario, first-present and steady-dwell measurements show no full-font Rust allocation, global live-heap peak below 40 MiB, and lower peak/steady private memory than the pre-change baseline.
-
-### E2E: Unsupported platform
-
-Compiling `harbor-text` for a non-Windows target fails with an explicit unsupported-platform diagnostic, not a portable-backend fallback.
-
 ## Decisions
 
-### DirectWrite owns the full Windows font path
+DirectWrite replaces eager whole-font parsing, not merely file discovery. CPU text and terminal GPU rendering stay separate; see [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
-DirectWrite replaces eager parsing of large CJK collections; file discovery alone would retain the dominant allocation. See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
-
-### Keep CPU text and GPU rendering separated
-
-See [ADR 0004](../adr/0004-widget-dependency-boundary.md), [ADR 0008](../adr/0008-widget-runtime-for-confirmation-window.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
-
-### Delegate default selection and missing-glyph fallback to Windows
-
-See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
-
-### Preserve terminal geometry from the primary face
-
-See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
-
-### Deliver a Windows-only backend without a legacy fallback
-
-Reject non-Windows compilation and fail explicitly if no usable DirectWrite face exists; no portable-loader fallback.
-
-### Permit coordinated workspace API changes
-
-Migrate all workspace callers together; immutable `FontBook` plus `char`-only atlas identity cannot represent native fallback ownership reliably. See [ADR 0004](../adr/0004-widget-dependency-boundary.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
-
-### ADR cross-check
-
-- ADRs 0001 and 0006 are superseded and introduce no active constraint.
-- ADRs 0002, 0003, 0005, 0007, 0009, 0010, and 0013 concern widget reactivity/rendering, windowing/input, parser API, or PTY I/O and do not conflict with this requirement.
-- ADRs 0004 and 0008 are satisfied because `harbor-text` remains a shared CPU core without `wgpu`, `winit`, or `harbor-widget` dependencies.
-- ADRs 0011 and 0012 are satisfied because `harbor-terminal` continues to own GPU text rendering and consumes `harbor-text` glyph-atlas output.
+Non-Windows compilation is rejected explicitly; no legacy loader fallback is permitted.
 
 ## Test Plan
+
+Default and configured primary faces must render Latin and fallback CJK at stable positive primary metrics. Cached missing-primary resolution must avoid rescans/reopenings/reparsing.
 
 - **Integration tests:** Exercise DirectWrite factory creation, system primary selection, process-private `HARBOR_FONT` loading, primary metrics, system fallback across multiple faces, unavailable-result caching, stable glyph identity, grayscale rasterization, and the `harbor-terminal` atlas contract. Windows-dependent tests must distinguish platform integration tests from deterministic backend-policy tests.
 - **Manual tests:** Run cold Latin startup, sustained Latin output, first and repeated CJK rendering, symbols/emoji with available grayscale outlines, a primary font with built-in CJK coverage, an invalid `HARBOR_FONT`, resize/DPI changes, and repeated terminal redraws. Confirm that default appearance may follow Windows rather than the former hard-coded candidate order.
@@ -108,12 +49,3 @@ Migrate all workspace callers together; immutable `FontBook` plus `char`-only at
 - Installing fonts or mutating the user/system font collection.
 - Asynchronous missing-glyph resolution and placeholder/redraw coordination.
 - Preserving the exact default font family or appearance produced by the former hard-coded candidate order.
-
-## Future Evolution
-
-- Add platform backends such as CoreText and Fontconfig/FreeType behind the same text-backend contract.
-- Add color-glyph atlas support if system emoji fallback requires color presentation.
-- Add shaping and grapheme-aware resolution if terminal requirements expand beyond one-scalar glyph lookup.
-- Revisit dynamic atlas allocation and reusable upload buffers after DirectWrite memory measurements isolate the remaining costs.
-- Consider sharing immutable DirectWrite factories or face caches across multiple terminal/widget runtime instances if profiling shows duplicated native state.
-- Re-evaluate asynchronous fallback only if measured first-use latency is unacceptable and redraw/cancellation semantics are specified.

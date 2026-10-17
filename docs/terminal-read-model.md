@@ -2,7 +2,7 @@
 
 ## Scope and source
 
-- Ticket: [T0001](../.grimoire/ticket/0018-revisioned-terminal-read-model-and-literal-search/T0001-bounded-versioned-read-model.md), acceptance A1–A7; [spec 0027](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md), boundary subset only.
+- Ticket: [T0001](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md#stable-slice-contracts-and-evidence), acceptance A1–A7; [spec 0027](../.grimoire/spec/0027-revisioned-terminal-read-model-and-literal-search.md), boundary subset only.
 - Verification date: 2026-10-16. Base revision: `e46952cc0d0e90990754efe2bf432c9900d4f2ea` plus the uncommitted T0001 changes in `crates/harbor-terminal/src/{content_anchor,lib,logical_content,normal_buf,screen,read_model}.rs`, `crates/harbor-terminal/src/read_model/tests.rs`, this evidence and ticket status/coverage updates. The implementation plan is local/ignored at `.grimoire/plans/0034-bounded-versioned-read-model.md`.
 - Environment: Windows, Rust `1.97.1 (8bab26f4f 2026-07-14)`, Cargo `1.97.1 (c980f4866 2026-06-30)`. Boundary tests use headless engines; no GPU, interactive application or new ConPTY runtime acceptance is claimed.
 

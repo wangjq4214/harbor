@@ -1,7 +1,7 @@
 # Multi-Encoding Mouse Reporting
 
 **Spec ID:** 0021
-**Status:** Draft (approved contract; implementation and runtime acceptance pending)
+**Status:** Implemented; native Windows acceptance pending
 **Date:** 2026-10-11
 **Sources:** [Issue #192](https://github.com/wangjq4214/harbor/issues/192), the user's 2026-10-11 approval of the recommended contract and Spec-only endpoint, [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md), [Terminal Protocol Context](../CONTEXT-terminal-protocol.md#vt-mouse-reporting), [Protocol Checklist](../../docs/protocol/checklist.md#28-mouse-protocol-output), and [Validation Policy](../../docs/validation.md).
 
@@ -13,7 +13,6 @@ The approved scope includes `?1005`, `?1015` and `?1016`. Preserve independent t
 
 This resolves the issue's ambiguous “X10 … press-only” wording: `CSI M` is the legacy wire format, not a requirement to suppress releases/motion under `1000/1002/1003`. The issue's checklist reference to section 31.2 is not mouse coverage: that section currently concerns Home/End. Relevant acceptance surfaces are 17.6, 22 and 28.1-28.4; the `?9` and press-only X10 items remain unclaimed.
 
-This authoring task permits context/ADR maintenance and this spec only. It does not start implementation, QA, a separate implementation-plan stage, ticket decomposition, GitHub edits, staging or committing.
 
 ## Requirements
 
@@ -84,20 +83,6 @@ Direction references: [winit MouseScrollDelta](https://docs.rs/winit/latest/wini
 - Preserve existing SGR press/release/motion/modifier/vertical-wheel bytes, keyboard, focus, IME and alternate-screen behavior through applicable regression tests. Do not redefine mouse mode lifetimes across buffer transitions as part of this change.
 - Replace the existing SGR-only silent-consumption assertions with legacy-fallback assertions. Keep the remaining assertions as regression protection rather than weakening byte comparisons.
 
-## Solution and Necessary Seams
-
-Use the existing terminal input/PTY ownership. Separate tracking-event eligibility from the selected wire encoding, and preserve the coordinate information needed for the selected encoding until current modes are known. Private helper/type names, storage layout and public API changes are not prescribed by this contract.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Routed pointer sample | `harbor-widget::winit` / app bridge → Terminal | Logical position, phase, both wheel axes, button, pointer identity and modifiers; current physical allocation/scale | No lost horizontal payload, native-host offset mistaken for terminal content, or wheel-unit/coordinate-mode conflation |
-| Mode state | Output parser → Screen/input snapshot | Completed DECSET/DECRST/DECRQM and reset actions | Independent retained flags, consistent effective tracking/encoding, honest per-mode replies |
-| Coordinate projection | Terminal / PointerInteraction → input encoder | Current modes, raw position and current terminal geometry | Cell-compatible or physical-pixel coordinates without prior loss of sub-cell precision |
-| Pointer lifecycle | Terminal / PointerInteraction → host effects | Press, release, cancel and current held-button state | Existing capture/cleanup and VT-over-local precedence even when bytes are suppressed |
-| PTY delivery | Input encoder / TerminalIo → application | Complete encoded report(s) matching the same current mode/coordinate interpretation | Exact bytes through the existing PTY write path; no mouse-output decoder or parser-owned platform I/O |
-
-Inspected source surfaces: `crates/harbor-terminal/src/input.rs`, `model.rs`, `types.rs`, `pointer.rs`, `lib.rs`, `io.rs`, `screen.rs`, `screen/cursor.rs`, `render/layout.rs`, `crates/harbor-app/src/terminal_view.rs`, and `crates/harbor-widget/src/winit/mod.rs`. These are integration anchors, not delivered implementation or a sequence of implementation steps.
-
 ## End-to-End Tests
 
 Feed application mode commands through terminal output parsing, deliver pointer samples through Terminal, and assert application-visible bytes using the recording PTY writer. Byte strings below use Rust escape notation. Geometry examples have sufficient rows/columns to keep the samples inside terminal content.
@@ -122,32 +107,9 @@ Feed application mode commands through terminal output parsing, deliver pointer 
 
 Existing integration-test anchors include `sgr_mouse_routes_cell_coordinates_button_state_and_vt_capture_to_pty`, `terminal_mouse_filters_follow_effective_mode_fallback_and_cancel_state`, `queued_output_updates_modes_before_input_encoding`, and widget `wheel_conversion_preserves_line_and_pixel_payloads`. Add focused encoder/parser/mode tests as needed; a synthetic writer alone does not prove the native runtime path.
 
-## Decisions and Traceability
-
-[#192](https://github.com/wangjq4214/harbor/issues/192), user approval and [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md) establish the independent priorities, legacy fallback (not press-only), optional encodings, legacy 223-coordinate rejection and horizontal/pixel scope. Protocol/direction references are retained with R2/R4; existing tracking priority derives from ADR 0038. Existing Terminal/TerminalIo, pointer/viewport and query contracts supply coherent queued modes, VT precedence and Cancel cleanup.
-
-No new buffer lifetime, native-host ownership or transport support is assumed. Fixed dual-axis order, helper layout and documented/tested well-formed new-range boundary handling remain implementation details. Material behavior/API/architecture/acceptance changes outside that latitude require clarification.
-
 ## Verification and Definition of Done
 
-- [ ] R1/R5 have independent mode, priority, enable/disable, supported/unknown query, RIS and fragmented/queued-input tests.
-- [ ] R2 has exact bytes for every encoding, release/motion/modifier combinations, numeric/UTF-8 boundaries and safe out-of-range behavior; legacy silent-consumption expectations are replaced rather than retained.
-- [ ] R3 has cell regression and pixel origin/precision/padding/nonzero-allocation/DPI/switching coverage, including safe documented boundary handling.
-- [ ] R4 has both wheel units, horizontal signs, modifiers, deterministic dual-axis output, zero deltas and unchanged vertical multiplicity.
-- [ ] R6 has VT precedence, suppressed-event consumption, Cancel/capture cleanup and applicable keyboard/focus/IME/alternate-screen regressions.
-- [ ] Named Windows application/probe evidence records OS build, Harbor revision, application/ConPTY environment, classic Console API versus VT-input use, expected/observed bytes and PASS/FAIL/NOT RUN for actual scenarios. Unrun paths remain explicitly unvalidated, not accepted.
-- [ ] Checklist 17.6/22/28.1-28.4 notes cite scoped implementation and named tests/evidence. Do not check `?9` or press-only X10 based on legacy `1000/1002/1003` support, or claim unrelated Home/End work.
-- [ ] All required quality checks pass and their environment/results are recorded:
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
-```
-
-This draft records requirements, not an implementation or test pass. In this Spec-only authoring task, document/link checks may be run, but no product test or Windows runtime acceptance is implied.
+The [scoped evidence record](../../docs/multi-encoding-mouse-acceptance.md) identifies implemented encoding policies and automated tests. Native Windows legacy application and byte-probe switching, horizontal/dual-axis and pixel/DPI/local-routing scenarios remain NOT RUN. Record actual application/probe, device, OS/ConPTY versions, classic Console API versus VT-input use, geometry, expected/observed bytes and PASS/FAIL/NOT RUN/BLOCKED per scenario; an unavailable device path stays unvalidated. Run the [standard quality gates](../../docs/validation.md#standard-quality-gates). Checklist 17.6/22/28.1–28.4 may claim only evidenced scope, never press-only `?9` or unrelated Home/End work.
 
 ## Out of Scope
 
@@ -156,4 +118,3 @@ This draft records requirements, not an implementation or test pass. In this Spe
 - Reworking existing SGR press/release/motion/vertical-wheel semantics, motion deduplication, wheel accumulation or magnitude-based repetition.
 - Redesigning selection/scrollback/capture ownership, buffer-transition mode lifetimes, native input transport or terminal identity/capability advertisement.
 - Claims for unexercised Windows applications, input devices, WSL/SSH/tmux transports or native Unix runtime support.
-- Production changes, implementation plans/tickets, QA execution, GitHub mutation, staging or committing during this Spec-only task.
