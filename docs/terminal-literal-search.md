@@ -6,6 +6,8 @@
 - Base revision: `02250ebbbaced6990eb36a9652476a123a30ba2e` plus the uncommitted changes in `crates/harbor-terminal/src/lib.rs`, `crates/harbor-terminal/src/literal_search.rs`, `crates/harbor-terminal/src/literal_search/tests.rs`, this evidence and T0002/set status updates. The local/ignored plan is `.grimoire/plans/0035-bounded-literal-search-consumer.md`.
 - Verification environment: Windows, Rust `1.97.1 (8bab26f4f 2026-07-14)`, Cargo `1.97.1 (c980f4866 2026-06-30)`. Tests use real headless terminal engines and the delivered [T0001 boundary](terminal-read-model.md). No application search UI, native search/navigation smoke or new renderer acceptance is claimed.
 
+This is a historical T0002 consumer record. The later [current-session integration](current-session-search.md) supplies query entry, host scheduling, projection and navigation; [widget text input](widget-input.md) supplies its reusable editor. The exclusions below describe what this consumer slice alone established, not the current absence of those features.
+
 ## Delivered API and semantics
 
 The public, GPU-independent `harbor_terminal::literal_search` module has an executable API example.
@@ -44,7 +46,7 @@ After unrelated output, the job explicitly rebases T0001's continuation and refr
 
 Width/height/reflow, reset and replacement follow T0001's deterministic generation invalidation, not physical-coordinate reuse. Primary and alternate identities remain separate; an unchanged parked buffer can become eligible again when restored under the same query, but replaced/resized generations cannot. Partial eviction invalidates lost/newly truncated rows; untouched later rows remain distinguishable. Search cannot recover ordinary trimmed tails or approved ConPTY styled overflow.
 
-The gate is not the real application session registry. T0003 must bind host close/replacement/current-session routing to query cancellation and both gates. A fresh engine already has a distinct session identity. Shell EOF alone is not interpreted as host closure or grounds for discarding retained search content.
+The gate is not the real application session registry. The subsequent [T0003 integration](current-session-search.md) binds host close/replacement/current-session routing to query cancellation and both gates. A fresh engine already has a distinct session identity. Shell EOF alone is not interpreted as host closure or grounds for discarding retained search content.
 
 ## Criterion-to-evidence audit
 
@@ -79,4 +81,4 @@ Early test compilation/fixture assertions were corrected to the actual update/ev
 
 ## Exclusions and handoff
 
-T0002 is headless consumer delivery only. T0003 must implement actual query entry, scheduling/queue bounds, current-session host gates, renderer projection and previous/next commands. T0004 retains integrated large-history work/memory measurements and interactive Windows ongoing-output/resize/search evidence. This document does not claim those passes, complete spec 0027 or close the full search/shell work packages. No staging or commit is included.
+T0002 is headless consumer delivery only. The subsequent [T0003 integration](current-session-search.md) implements actual query entry, scheduling/queue bounds, current-session host gates, renderer projection and previous/next commands. T0004 retains integrated large-history work/memory measurements and interactive Windows ongoing-output/resize/search evidence. This document does not claim those passes, complete spec 0027 or close the full search/shell work packages. No staging or commit is included.

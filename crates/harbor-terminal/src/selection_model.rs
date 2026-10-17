@@ -58,7 +58,7 @@ pub enum AutoScroll {
 
 /// Outcome of a [`SelectionModel`] state transition.
 ///
-/// Informs the outer [`Selection`] layer which side-effects to apply.
+/// Informs the terminal interaction owner which side effects to apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionOutcome {
     /// No state change.

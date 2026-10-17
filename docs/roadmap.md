@@ -4,6 +4,8 @@
 
 Harbor is Windows-first. The next goal is a reliable daily-use terminal with live configuration and a pane workspace; advanced graphics and glass effects build on that foundation rather than delaying basic correctness.
 
+[Targets and Boundaries](targets.md) records long-term comparison dimensions; the [three documentation tracks](README.md) explain current usage and integration. Neither is a new feature-completion checklist.
+
 - **What exists:** [Current Status](current-status.md).
 - **What to build and how to bound it:** [Next-Stage Product Plan](next-stage-plan.md).
 - **What is supported at protocol level:** [Protocol Checklist](protocol/checklist.md).
@@ -16,11 +18,11 @@ The N01–N17 identifiers below refer to work packages in the product plan. Thei
 | Milestone                          | Outcome                                                                                          | Work packages                                 | State / entry condition                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
 | M0 — Establish evidence            | Reproducible Windows application matrix, code-page/extension probes, honest baseline             | N03; feasibility portions of N10/N12; N16     | **Next, bounded investigation**; can run alongside M1                            |
-| M1 — Preserve content              | Resize reflow, coherent text/coordinate semantics, first Unicode correctness slice               | N01, N02; history semantics from N15          | **In progress**; N01 source/tests delivered, Windows/performance acceptance open; N02 planned |
+| M1 — Preserve content | Resize reflow and coherent Unicode/content semantics | N01, N02; history semantics from N15 | **In progress**; source slices implemented; runtime/performance gates and N02's documented no-wrap width discrepancy remain open |
 | M2 — Configure and discover        | Manual then watched reload, command palette, named profiles                                      | N04, N05, N06                                 | **In progress**; manual colors/bindings/fonts accepted (T0001 Done, automated and user-confirmed manual evidence); launch environment/directory accepted (T0002 Done, scoped Windows child evidence and user-confirmed testing); default-on watching implemented with scoped Windows evidence; combined E10/native-child tests pass; remaining interactive package acceptance (T0004), palette and profiles remain       |
-| M3 — Work in panes                 | Independent panes, scrollback search, shell-integration workflows                                | N07, N08, N09; multi-session budgets from N15 | **Planned**; requires stable content anchors and session ownership               |
+| M3 — Work in panes | Independent panes, scrollback search, shell-integration workflows | N07, N08, N09; multi-session budgets from N15 | Pane workspace planned; current-session literal search implemented with remaining runtime/performance acceptance; broader shell workflows planned |
 | M4 — Extend compatibility          | Kitty keyboard, selected terminal gaps, bounded static Kitty graphics                            | N10, N11, N12                                 | **Planned / transport-gated**; independent slices may start earlier after probes |
-| M5 — Polish the product            | Unified themes/glass chrome, measured refraction prototype, release hardening                    | N13, N14, N16                                 | **Planned**; lightweight polish and release evidence run throughout              |
+| M5 — Polish the product | Unified themes/glass chrome, measured refraction and release hardening | N13, N14, N16 | Scoped local search-panel blur/gradients/edge refraction implemented; whole-product theme work, visual acceptance and measured go/no-go remain open |
 | M6 — Expand the platform/workspace | Cross-window movement, restoration, separately designed persistent sessions, native Unix runtime | N17                                           | **Deferred** until the relevant Windows stability and ownership gates pass       |
 
 Performance and resource limits (N15), diagnostics, regression tests, and runtime acceptance (N16) apply to every milestone. They are not a final cleanup phase.
@@ -50,7 +52,7 @@ These are dependency constraints, not a requirement to finish every item in one 
 
 ## First Three Work Items
 
-1. Close N01 with the recorded Windows shell/clipboard/`nvim` and release latency/DHAT evidence; do not treat automated reflow coverage as runtime acceptance. Begin the bounded N02 combining-text contract independently.
+1. Close N01 with the remaining Windows shell/clipboard/`nvim` and release latency/DHAT evidence. N02 combining/VS/ZWJ source is implemented; resolve its documented no-wrap width discrepancy and missing integrated acceptance rather than starting the same implementation again.
 2. Build the N03/N10/N12 ConPTY probes. Treat `chcp` as a compatibility investigation, and verify Kitty negotiation/data in both directions before promising support.
 3. Finish N04's remaining interactive package acceptance in [T0004](../.grimoire/spec/0024-watched-reload-and-launch-settings.md#delivery-and-outstanding-acceptance). Manual/watched reload and new-session launch settings are implemented; combined E10 GPU/ConPTY/native-child tests and scoped native-window checks pass. Fresh IME, physical editing/held-key, selection/copy and complete nvim return-to-primary checks remain pending, as does separately authorized #155/#172/PR scope reconciliation. Do not substitute earlier slice confirmations or local-only evidence for full package acceptance.
 
@@ -66,17 +68,5 @@ Keep one major implementation stream plus one short investigation/polish stream 
 | Native cross-platform release         | Unix PTY implementation and native macOS/Linux acceptance in addition to shared model/protocol tests                                                                                  |
 
 A release must state which plan packages it includes and which it excludes. Full xterm coverage, every Kitty enhancement, session persistence, and liquid-glass refraction are not blanket prerequisites for a usable Windows release. Conversely, optional visual features do not excuse missing correctness or runtime evidence.
-
-## Replacing the Previous P0–P8 Plan
-
-The previous roadmap mixed already-implemented foundations, open features, and unrecorded runtime evidence under repeated "In progress" labels. Its execution ordering is superseded by this roadmap; historical ADRs and tickets remain records of their original decisions.
-
-| Previous area                                        | Current home                                                                                          |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| P0/P1 — automation and parser safety                 | Current Status, Validation, N16                                                                       |
-| P2 — screen semantics                                | N01/N02 and protocol regressions                                                                      |
-| P3/P4/P5/P6 — compatibility, replies, strings, input | Existing foundations in Current Status; remaining work in N10/N11/N12; runtime evidence in Validation |
-| P7 — Windows daily use                               | N04–N09 and N13–N16, with explicit release scope                                                      |
-| P8 — native Unix support                             | M6 / N17, still deferred                                                                              |
 
 Only update implementation status from source and focused evidence. A planning document, configured CI workflow, or checked protocol row is not by itself proof that a Windows runtime or release gate passed.

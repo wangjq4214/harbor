@@ -57,8 +57,24 @@ jobs:
           HARBOR_TEST_GPU: dx12-warp
         run: cargo test --locked --workspace
 
+      - name: Set up Python for documentation tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test documentation and helper scripts
+        run: python -B -m unittest discover -s scripts/tests -v
+
       - name: Check documentation
         run: python scripts/docs/check_docs.py
+
+      - name: Check public-guide Rust examples
+        run: python scripts/docs/check_examples.py --include-readmes
+
+      - name: Build public API reference without warnings
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps -p harbor-widget --features harbor-widget/winit -p harbor-terminal
 
       - name: Summarize protocol checklist
         run: python scripts/docs/checklist_summary.py

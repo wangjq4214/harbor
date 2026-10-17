@@ -15,6 +15,14 @@ Use a workspace or path dependency while developing inside this repository:
 harbor-terminal = { path = "../harbor/crates/harbor-terminal" }
 ```
 
+The `renderer` feature is enabled by default. For a core-only/headless dependency, disable default features explicitly:
+
+```toml
+harbor-terminal = { path = "../harbor/crates/harbor-terminal", default-features = false }
+```
+
+See the [terminal core documentation](../../docs/terminal/README.md) for concepts, embedding obligations, VT behavior, compatibility and security boundaries.
+
 A live rendered terminal also needs compatible PTY, font, and GPU setup. In this repository those capabilities are supplied by `harbor-pty`, `harbor-text`, and `wgpu`.
 
 ## Quick start: parse terminal output without a PTY or GPU

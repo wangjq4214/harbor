@@ -313,7 +313,7 @@ Evidence: `crates/harbor-parser/src/params.rs` and `src/core.rs`; `should_preser
 * [x] Semicolon parameters and colon sub-parameters are not confused (parser structure)
 * [ ] Unknown sub-parameter forms can be safely ignored
 
-Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `should_expose_root_api_and_preserve_csi_params_when_private_csi_is_dispatched` in `crates/harbor-parser/tests/public_api.rs` verifies mixed separators and empty sub-parameters. `PenState::set_sgr` in `crates/harbor-terminal/src/screen/edit/pen_state.rs` already has colon-form 38/48 indexed/RGB branches; their exact forms remain unchecked here pending focused semantic evidence, not because all colon color handling is absent. Underline style/color requirements remain separate gaps.
+Evidence: `CsiAccumulator`/`Params` in `crates/harbor-parser/src/params.rs`; `should_expose_root_api_and_preserve_csi_params_when_private_csi_is_dispatched` in `crates/harbor-parser/tests/public_api.rs` verifies mixed separators and empty sub-parameters. `PenState::set_sgr` in `crates/harbor-terminal/src/screen/edit/pen_state.rs` already has colon-form 38/48 indexed/RGB branches; their exact forms remain unchecked here pending focused semantic evidence, not because all colon color handling is absent. Delivered underline style/color coverage is recorded in [SGR Character Attributes](#16-sgr-character-attributes) and [modern SGR acceptance](../modern-sgr-acceptance.md).
 
 ---
 

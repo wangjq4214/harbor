@@ -1,4 +1,6 @@
-# Current-session search integration (T0003)
+# Current-Session Search: Integration and Evidence
+
+This guide describes the current search contract. The criterion audit and verification snapshot below preserve the earlier T0003 integration evidence, not fresh acceptance of later UI refinements. The reusable editor is documented in [Widget Text Input](widget-input.md); its follow-up evidence and pending native checks are in [Widget Input Verification](widget-input-verification.md). The current single-row local-glass composition follows [spec 0029](../.grimoire/spec/0029-search-panel-glass-appearance.md). For ordinary use, start with the [application guide](app/getting-started.md).
 
 ## Scope and invocation
 
@@ -6,14 +8,16 @@ This delivers [T0003](../.grimoire/spec/0027-revisioned-terminal-read-model-and-
 
 | Command ID | Default binding | Behavior |
 | --- | --- | --- |
-| `terminal.search` | Ctrl+Shift+F | Open/refocus the current-session query entry above the terminal. |
+| `terminal.search` | Ctrl+Shift+F | Open/refocus the current-session query entry in the root-level search panel. |
 | `terminal.search-next` | F3 | Navigate next, oldest-first initially, wrapping at the end. |
 | `terminal.search-previous` | Shift+F3 | Navigate previous, newest-first initially, wrapping at the beginning. |
 | `terminal.search-close` | None globally | Close/cancel and restore terminal focus. |
 
 Bindings use the existing structured configuration/registry/typed FIFO host dispatcher. Search shortcuts consume even when no matches/search are available; unbind them to pass those chords to the terminal. Escape **inside the query entry** closes; Enter/Shift+Enter navigate. There is no new global Escape binding. Previous/Next/Close buttons use the same dispatcher. Clicking the entry refocuses it through `terminal.search`; reopening preserves its query in the same session. Switching/creating/closing the active tab cancels search and closes its entry; no per-tab query archive or cross-session search is introduced.
 
-The minimal editor appends printable input/IME commits, removes one Unicode scalar with Backspace, and accepts at most **128 UTF-8 bytes**. An over-limit/control-containing commit is ignored rather than silently searched as a truncated query. Preedit is display-only, bounded to 32 scalars, and cleared on commit/edit/focus loss. There is no caret movement, text selection, clipboard-paste integration or advanced editing in this entry. Clear the query with Backspace or close/reopen after cancellation. While focused, its keyboard/releases/IME never reach the PTY. Terminal focus and existing context-sensitive copy/interrupt and primary/alternate scroll pass-through remain unchanged outside the entry.
+The query entry uses the reusable `TextField`/`TextEditingController`: caret movement, grapheme-safe selection/replacement, clipboard, undo/redo, horizontal scrolling and IME are widget-owned. The application accepts at most **128 UTF-8 bytes** and rejects edits containing controls or exceeding the bound as a whole; it never silently searches a truncated query. Preedit is transient and is not searched. IME confirmation must not also submit or navigate. While focused, consumed editing keys/releases/IME do not reach the PTY. Terminal focus and context-sensitive copy/interrupt and primary/alternate scroll pass-through remain unchanged outside the entry.
+
+The panel is one row: query, fixed-width result status, Previous, Next, Close. Empty or complete zero-match state displays `No Result`; pending work is internally incomplete even while retaining that label. A busy hint appears only after 200 ms, without delaying search itself. Results do not automatically select or scroll; previous/next navigation selects a current valid result. Partial/limited coverage stays explicit. The application selects gradients/blur/edge-refraction parameters over widget mechanisms; local filtering is not desktop capture. These later editing/material refinements supersede T0003's append/backspace-only entry and multi-row presentation, not its bounded matcher or provenance contract.
 
 ## Work, publication and lifetime
 
@@ -32,6 +36,8 @@ The application publishes proven terminal-domain `ContentRange`s into `TerminalW
 The concrete GPU layer caches vertices by spans/current `RenderViewport`, uses a translucent amber overlay after backgrounds and before glyphs, and does not alter source cells, SGR or parser state. Selection, cursor, preedit and scrollbar retain their existing layers. Both live and reused bridge draw paths refresh highlights; `read_update`/`acknowledge_update` ordering remains unchanged. The keyed terminal surface survives inserting/removing the bar, preserving focus/input ownership on close.
 
 ## T0003 criterion audit
+
+This section and the following results are the historical T0003 audit. They do not establish native acceptance of the later reusable editor or glass material.
 
 | Criterion | Implementation and executed focused evidence |
 | --- | --- |

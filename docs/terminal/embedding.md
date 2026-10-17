@@ -1,0 +1,162 @@
+# Embedding the terminal core
+
+[Terminal core](README.md) · [Concepts](concepts.md) · [Security](security.md)
+
+Harbor exposes a Rust engine and a concrete renderer, not a universal renderer trait, C ABI or complete native host. A custom embedder supplies the responsibilities below. The [reference application bridge](../../crates/harbor-app/src/terminal_view.rs) and [session ownership guide](../architecture/terminal-session-ownership.md) show the existing integration; importing the widget runtime is not required by the engine.
+
+## Dependency choices
+
+The current [manifest](../../crates/harbor-terminal/Cargo.toml) declares `default = ["renderer"]`. The `renderer` feature adds optional `wgpu` and `pollster`; `render` and its concrete types are feature-gated. The engine still has ordinary dependencies on `harbor-parser`, `harbor-pty`, `harbor-config` and `harbor-text`. GPU-free is not dependency-free or platform-certification proof.
+
+```toml
+# Headless parser/state/content consumer:
+harbor-terminal = { path = "../harbor/crates/harbor-terminal", default-features = false }
+
+# Alternative for a host using the concrete renderer (choose ONE declaration):
+# harbor-terminal = { path = "../harbor/crates/harbor-terminal" }
+# Or explicitly: default-features = false, features = ["renderer"]
+```
+
+A rendered host must arrange compatible wgpu device/queue/target-format access and font/metric setup. In this workspace these are supplied by `wgpu`, `harbor-text` and the native host. To spawn the supplied live backend, the host also uses `harbor_pty::PtyEndpoints` and `ShellCommand`; adding its own direct dependencies is the host project's responsibility.
+
+Cargo feature unification matters. These repository-root commands are useful verification recipes, **not results recorded by this page**:
+
+```sh
+cargo tree -p harbor-terminal --no-default-features -e normal --prefix none
+cargo test -p harbor-terminal --no-default-features
+cargo test -p harbor-terminal
+```
+
+Check the first graph for unexpected wgpu/winit/arboard/harbor-widget dependencies. Do not interpret a workspace-wide default-feature build or renderer-gated boundary test as core-only proof. [Core replay tests](../../crates/harbor-terminal/src/core_tests.rs) specifically run in the no-renderer configuration; [historical read-model evidence](../terminal-read-model.md) records an earlier graph/test run, not today's result.
+
+## Select an ownership model
+
+| Model | Entry point | What you must supply |
+| --- | --- | --- |
+| Parse/state only | `Terminal::new_headless(rows, cols)` | Ordered output bytes; event handling/discard policy; limits on your own work and retained copies. No PTY writes are available. |
+| Supplied live backend | Headless engine, then `start_session_from_endpoints(endpoints, wake)` | `PtyEndpoints::spawn_shell` setup, event-loop wake route, host lifecycle/security policy; Windows bundled ConPTY distribution. |
+| Test/custom stream adapter | `new_headless_with_io(rows, cols, reader, writer, wake)` | `Read + Send + 'static`, `Write + Send + 'static`, orderly EOF/unblocking and external transport lifecycle. This is not a general native PTY control API. |
+| Custom projection | `snapshot` / `read_update` | One coherent incremental renderer baseline, or an independently managed full-copy projection; geometry/input mapping and presentation. |
+
+The custom stream constructor starts a reader and panics if reader-thread creation fails. It attaches **no** `PtyControl`: it cannot resize or cancel an arbitrary external transport on your behalf. Its drop path does not provide the ConPTY reaper's cancellation/join guarantee; arrange reader completion yourself. Prefer the fallible `start_session_from_endpoints` for the supplied live session. Do not detach raw reader/writer/control parts and abandon their shutdown owner.
+
+Keep parsing, screen mutation, input and update acknowledgement serialized on the logical owner thread. The native reader only queues bytes and calls `wake`; it must not call back into the engine, render or touch UI objects. `wake` returns whether notification succeeded: return true only when the host will service it; false stops the pump. Notifications are coalesced, so one wake is not one chunk and the callback must not block waiting for the logical thread.
+
+## Practical host sequence
+
+The following is **intentionally descriptive protocol pseudocode**, not compilable Rust or an invented host API. The backticked terminal method names are the actual API; window/surface acquisition, passes and event-loop operations belong to your host.
+
+```text
+CONSTRUCT
+  Choose bounded grid, appearance and clipboard policy.
+  Create Terminal::new_headless_with_appearance(rows, cols, appearance).
+  Set clipboard delivery BEFORE any bytes are parsed.
+  If using the supplied backend, create an intact PtyEndpoints bundle.
+  If rendering:
+    Initialize host device/queue, target format, fonts and TextMetrics.
+    Construct TerminalRenderPipeline::new(gpu, surface_size, fonts, metrics,
+                                          &terminal.read_update(now)).
+    Do not acknowledge merely because the constructor succeeded.
+  Attach the intact bundle with terminal.start_session_from_endpoints(endpoints, wake).
+  Publish the session/renderer into the host only after fallible construction succeeds.
+
+WAKE / ABOUT TO SLEEP
+  Route wake to the originating session, not whichever tab is now active.
+  Call terminal.frame_demand(now) (this drains queued output).
+  Drain terminal.drain_output_events(); apply host policy or discard each request.
+  Schedule demand.redraw_now and the earliest demand.deadline.
+  Track demand.ordinary_present_eligible for synchronized output.
+
+INPUT
+  Resolve host shortcuts/paste authorization before terminal delivery.
+  Map input into TerminalEvent; call handle_event_with_outcome.
+  Apply returned redraw, capture_pointer, release_pointer and hyperlink_activation policy.
+  Drain metadata/effect events produced by any newly ingested output too.
+
+LIVE FRAME
+  Acquire a usable host render target; defer zero-sized/occluded surfaces safely.
+  Synchronize renderer raster scale/resources before using new metrics.
+  Call terminal.prepare_render_frame(target, renderer.metrics(), now).
+  Read terminal.read_update(now); keep this exact value for acknowledgement.
+  Require renderer.sync_viewport(viewport, grid_changed) to succeed.
+  Require renderer.prepare(gpu, &update, terminal.blink_visible_at(now)) to succeed.
+  Encode renderer.draw(&mut pass) into the host pass.
+  Acknowledge this exact update only when its projection has been safely consumed.
+  Host submits/presents, handles surface/device errors and schedules retries.
+
+CLOSE
+  Revoke queued host effects, input routes, content jobs and wake routes for this session.
+  Release mounted callbacks/bridge clones, renderer and terminal/session ownership.
+  Let the supplied session transfer reader/control to its platform shutdown reaper.
+  Host releases its own surface/device resources according to their lifetimes.
+```
+
+The existing [factory](../../src/tab_coordinator.rs) builds the renderer before attaching the reader. If GPU setup fails, an intact unstarted `PtyEndpoints` bundle can shut down safely. If reader-thread spawn fails during attachment, the implementation drops the captured reader and uses `shutdown_unstarted`. Neither failure should publish a half-initialized tab.
+
+### What a host must not omit
+
+- **Output independent of visibility.** Hidden sessions remain alive. A host can defer painting, but must deliberately choose when to drain output/events; a bounded queue eventually backpressures a producer. Never clear damage just because a tab is hidden. Avoid unbounded host wake/event queues.
+- **Scheduling.** Query demand before sleeping, honor deadlines for blink/drag auto-scroll, and wake on output, input and geometry changes. `read_update` is read-only and does not drain PTY output. `frame_demand` does; keep that distinction explicit.
+- **Synchronized output recovery.** `?2026` suppresses ordinary presentation, not parsing. The core owns a nesting count, not a wall-clock watchdog. Supply a bounded recovery/forced-live-present policy without lying to DECRQM by clearing the mode. The widget host has existing recovery scheduling; see [bridge tests](../../crates/harbor-app/src/terminal_view.rs), including `should_force_commit_when_about_to_wait_after_recovery_while_2026_is_nested`.
+- **Coordinate mapping.** Supply `RenderTarget` allocation origin/size, surface size and scale consistently; feed host pointer coordinates through the terminal's current viewport. Do not pre-encode mouse positions using stale modes: queued output can switch cell/pixel encoding. Distinguish physical pixel coordinates from wheel delta units.
+- **Input precedence.** Route keyboard, pointer, real focus gain/loss, paste, preedit and IME commit coherently. Terminal reporting modes outrank local pointer selection where applicable. Respect capture/release outcomes and cancel interaction on focus loss/unmount.
+- **IME.** Preedit is transient overlay state, not screen text or PTY input. Route committed text as keyboard IME input once; do not also inject it as synthetic key events or advance the cursor ahead of child echo. Position candidates with `ime_candidate_position_with_metrics` and clear composition on cancellation/focus loss.
+- **Effects.** Titles, OSC 7 and OSC 133 are metadata. Clipboard requests and hyperlink activation require host authorization. No emitted request authorizes OS access by itself; see [security](security.md).
+- **Diagnostics.** Surface input/resize/startup errors rather than silently treating them as success. Reader/reply-write errors are currently logged, not delivered as a structured per-error host event; observe closure and expose an appropriate host status without leaking payloads.
+
+## Read and acknowledgement contract
+
+`TerminalUpdate` owns a complete visible projection plus incremental damage. Its `Ranges` apply relative to the most recently acknowledged state of that engine; it does not maintain per-subscriber cursors. Use one renderer per baseline. Multiple read-only content consumers are fine; independent incremental renderers sharing acknowledgements are not supported.
+
+Here is a complete, compilable-API helper for a **custom projection**, with projection work supplied by the caller. It does not create a renderer or present a frame:
+
+```rust,no_run
+use harbor_terminal::{Terminal, TerminalUpdate};
+use std::time::Instant;
+
+fn project_once(
+    terminal: &mut Terminal,
+    prepare_and_commit: impl FnOnce(&TerminalUpdate) -> bool,
+) -> bool {
+    let update = terminal.read_update(Instant::now());
+    if !prepare_and_commit(&update) {
+        // Conservatively rebuild after a possibly partial/uncertain projection.
+        terminal.invalidate_update();
+        return false;
+    }
+    terminal.acknowledge_update(&update)
+}
+```
+
+The callback's true result must mean the caller retained everything needed to replay this state. It is not an acknowledgement of merely receiving a snapshot. A false acknowledgement means state/epoch no longer matches: keep work pending and obtain a fresh update. Do not loop on the stale object or call `clear_screen_dirty` to suppress it.
+
+The reference bridge acknowledges after successful preparation and draw encoding; that is **not proof the OS has displayed the frame**. The host owns submit/present failures. If retained GPU data remains trustworthy, replay it; if resources or the projection become uncertain, call `invalidate_update`, rebuild and do not acknowledge a failed preparation. Recreating the pipeline from a range update without forcing a full baseline is not a safe recovery strategy.
+
+Retained draws may replay committed buffers while geometry and input mapping remain valid. Changed origin/allocation/surface/scale, font metrics, resource replacement or pending full reconstruction require appropriate live preparation. The bridge uses `retained_geometry_changed`, renderer viewport checks and `sync_raster_scale`; a DPI resource change invalidates the engine projection. Empty cell-damage ranges do not mean cursor/selection/preedit/appearance can be ignored.
+
+## Resize transaction and failure behavior
+
+Use `try_resize_if_changed(TerminalSize { rows, cols })` when the host needs an error; `resize_if_changed` logs errors and returns false for both failure and unchanged geometry. `resize` discards that boolean. Dimensions normalize to at least one row and two columns on resize; ConPTY's signed-16-bit limits still apply. Validate a reasonable maximum before allocating.
+
+The supplied live session requests an epoch-qualified reader barrier, interrupts a blocking read, and parses all completed pre-barrier chunks against the old geometry. It prepares new screen/pointer state detached from the live model, resizes the PTY, then commits through ownership moves. The barrier guard resumes on success and error. Timeout (currently two seconds), interrupted-read/control error, preparation failure or PTY resize failure must not commit candidate geometry.
+
+Failure can still leave newly ingested **old-geometry output** visible; "resize failed" is not "no output was processed." The barrier orders reader-observed chunks, not every byte still inside the OS pipe. Keep partial parser sequences across resize; do not strip application clears/redraws or reset the parser to manufacture a boundary. Primary reflow and alternate clipping retain their documented losses; resize is not a lossless archival operation.
+
+`prepare_render_frame` uses the logging/boolean resize path. If your host needs an explicit resize error UI or retry decision, call the fallible method and track the actual accepted grid, not just the requested allocation.
+
+## Teardown, EOF and host failures
+
+Dropping the supplied live terminal transfers its reader join handle and `PtyControl` to the platform shutdown protocol. On Windows the reaper cancels/observes reader completion before closing ConPTY; it does not join on the UI thread. Renderer destruction does not close the PTY. Conversely, closing/hiding a native surface does not close a session while other terminal/bridge references still own it.
+
+Reader EOF/disconnect is distinct from host close: drain remaining queued bytes, observe `is_session_closed`, cancel pending clipboard authority, and decide whether to retain the exited screen. Disconnect releases synchronized-output suppression; it does not discard retained searchable content. A headless engine without a reader remains logically open. Do not infer a child exit code or reason from this boolean.
+
+Release all callback clones and pending host jobs when truly closing. Dropping a detached `PtyControl` without its reader cannot safely reap the session; the defensive implementation can leak rather than close ConPTY under a live read. Keep endpoint ownership intact instead of relying on that fallback.
+
+## Existing verification entry points
+
+- [Core tests](../../crates/harbor-terminal/src/core_tests.rs): skipped-output replay, stale acknowledgement rejection, full reconstruction, headless blink/preedit and geometry.
+- [I/O tests/source](../../crates/harbor-terminal/src/io.rs): reader-spawn failure, hidden endpoint lifetime, completed-read-before-barrier ordering, streaming drain and disconnect.
+- [PTY facade](../../crates/harbor-pty/src/lib.rs): intact endpoint drop, shutdown owner and grid conversion; [Windows backend](../../crates/harbor-pty/src/windows.rs) for native mechanics.
+- [Reference bridge](../../crates/harbor-app/src/terminal_view.rs): rejected preparation retains damage, retained/live geometry, input/IME and deferred-output recovery.
+
+The runnable headless program is on the [landing page](README.md#minimal-headless-use). These recipes and links do not claim newly executed tests, GPU readback, interactive teardown or transport acceptance.
