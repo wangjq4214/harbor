@@ -93,7 +93,7 @@ impl Default for Palette {
         Self {
             // Catppuccin Mocha terminal colors, following the official Alacritty port:
             // https://github.com/catppuccin/alacritty/blob/main/catppuccin-mocha.toml
-            // Keep Harbor's existing background, cursor, and selection alpha values.
+            // Background and selection alpha follow Harbor's application defaults.
             foreground: Rgba::from_rgb8(0xcd, 0xd6, 0xf4),
             background: Rgba(crate::BACKGROUND),
             cursor: Rgba::from_rgba8(0xf5, 0xe0, 0xdc, 204),

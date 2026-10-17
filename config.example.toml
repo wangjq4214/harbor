@@ -78,10 +78,15 @@ bindings = [{ modifiers = [], key = "home" }]
 bindings = [{ modifiers = [], key = "end" }]
 # Built-in default terminal theme: Catppuccin Mocha.
 # Terminal colors do not configure application day/night mode or Acrylic tint.
-# Existing background/cursor/selection transparency is retained.
+# Default background opacity is 60%; cursor/selection transparency is unchanged.
 [colors]
 foreground = "#CDD6F4"
-background = "#1E1E2E40"
+background = "#1E1E2E"
+# 0 = transparent, 1 = opaque. Applies live to the terminal background only.
+# When set, overrides background's hex alpha. If omitted, an explicit background
+# keeps its hex alpha (six digits = opaque); no background setting uses 0.6.
+# Without a compositor backdrop, the existing opaque fallback still applies.
+background_opacity = 0.6
 cursor = "#F5E0DCCC"
 selection = "#F5E0DC66"
 
