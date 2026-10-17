@@ -2,11 +2,11 @@
 
 [Terminal core](README.md) · [Concepts](concepts.md) · [Security](security.md)
 
-Harbor exposes a Rust engine and a concrete renderer, not a universal renderer trait, C ABI or complete native host. A custom embedder supplies the responsibilities below. The [reference application bridge](../../crates/harbor-app/src/terminal_view.rs) and [session ownership guide](../architecture/terminal-session-ownership.md) show the existing integration; importing the widget runtime is not required by the engine.
+Harbor exposes a Rust engine and a concrete renderer, not a universal renderer trait, C ABI or complete native host. A custom embedder supplies the responsibilities below. Importing the widget runtime is not required by the engine.
 
 ## Dependency choices
 
-The current [manifest](../../crates/harbor-terminal/Cargo.toml) declares `default = ["renderer"]`. The `renderer` feature adds optional `wgpu` and `pollster`; `render` and its concrete types are feature-gated. The engine still has ordinary dependencies on `harbor-parser`, `harbor-pty`, `harbor-config` and `harbor-text`. GPU-free is not dependency-free or platform-certification proof.
+The default `renderer` feature adds optional `wgpu` and `pollster`; `render` and its concrete types are feature-gated. The engine also depends on `harbor-parser`, `harbor-pty`, `harbor-config` and `harbor-text`.
 
 ```toml
 # Headless parser/state/content consumer:
@@ -19,15 +19,13 @@ harbor-terminal = { path = "../harbor/crates/harbor-terminal", default-features 
 
 A rendered host must arrange compatible wgpu device/queue/target-format access and font/metric setup. In this workspace these are supplied by `wgpu`, `harbor-text` and the native host. To spawn the supplied live backend, the host also uses `harbor_pty::PtyEndpoints` and `ShellCommand`; adding its own direct dependencies is the host project's responsibility.
 
-Cargo feature unification matters. These repository-root commands are useful verification recipes, **not results recorded by this page**:
+Cargo features are additive. Check your dependency graph if another dependency may enable the renderer:
 
 ```sh
 cargo tree -p harbor-terminal --no-default-features -e normal --prefix none
-cargo test -p harbor-terminal --no-default-features
-cargo test -p harbor-terminal
 ```
 
-Check the first graph for unexpected wgpu/winit/arboard/harbor-widget dependencies. Do not interpret a workspace-wide default-feature build or renderer-gated boundary test as core-only proof. [Core replay tests](../../crates/harbor-terminal/src/core_tests.rs) specifically run in the no-renderer configuration; [historical read-model evidence](../terminal-read-model.md) records an earlier graph/test run, not today's result.
+With renderer features disabled throughout the dependency graph, the terminal engine has no wgpu, winit, arboard or harbor-widget dependency.
 
 ## Select an ownership model
 
@@ -44,7 +42,7 @@ Keep parsing, screen mutation, input and update acknowledgement serialized on th
 
 ## Practical host sequence
 
-The following is **intentionally descriptive protocol pseudocode**, not compilable Rust or an invented host API. The backticked terminal method names are the actual API; window/surface acquisition, passes and event-loop operations belong to your host.
+This sequence is pseudocode. Backticked terminal method names are public APIs; window, surface and event-loop operations belong to your host.
 
 ```text
 CONSTRUCT
@@ -91,13 +89,13 @@ CLOSE
   Host releases its own surface/device resources according to their lifetimes.
 ```
 
-The existing [factory](../../src/tab_coordinator.rs) builds the renderer before attaching the reader. If GPU setup fails, an intact unstarted `PtyEndpoints` bundle can shut down safely. If reader-thread spawn fails during attachment, the implementation drops the captured reader and uses `shutdown_unstarted`. Neither failure should publish a half-initialized tab.
+Construct fallible resources before publishing a session. Keep an unstarted `PtyEndpoints` bundle intact so setup failure can shut it down safely; do not publish a half-initialized session.
 
 ### What a host must not omit
 
 - **Output independent of visibility.** Hidden sessions remain alive. A host can defer painting, but must deliberately choose when to drain output/events; a bounded queue eventually backpressures a producer. Never clear damage just because a tab is hidden. Avoid unbounded host wake/event queues.
 - **Scheduling.** Query demand before sleeping, honor deadlines for blink/drag auto-scroll, and wake on output, input and geometry changes. `read_update` is read-only and does not drain PTY output. `frame_demand` does; keep that distinction explicit.
-- **Synchronized output recovery.** `?2026` suppresses ordinary presentation, not parsing. The core owns a nesting count, not a wall-clock watchdog. Supply a bounded recovery/forced-live-present policy without lying to DECRQM by clearing the mode. The widget host has existing recovery scheduling; see [bridge tests](../../crates/harbor-app/src/terminal_view.rs), including `should_force_commit_when_about_to_wait_after_recovery_while_2026_is_nested`.
+- **Synchronized output recovery.** `?2026` suppresses ordinary presentation, not parsing. The core owns a nesting count, not a wall-clock watchdog. Supply a bounded recovery/forced-live-present policy without lying to DECRQM by clearing the mode.
 - **Coordinate mapping.** Supply `RenderTarget` allocation origin/size, surface size and scale consistently; feed host pointer coordinates through the terminal's current viewport. Do not pre-encode mouse positions using stale modes: queued output can switch cell/pixel encoding. Distinguish physical pixel coordinates from wheel delta units.
 - **Input precedence.** Route keyboard, pointer, real focus gain/loss, paste, preedit and IME commit coherently. Terminal reporting modes outrank local pointer selection where applicable. Respect capture/release outcomes and cancel interaction on focus loss/unmount.
 - **IME.** Preedit is transient overlay state, not screen text or PTY input. Route committed text as keyboard IME input once; do not also inject it as synthetic key events or advance the cursor ahead of child echo. Position candidates with `ime_candidate_position_with_metrics` and clear composition on cancellation/focus loss.
@@ -151,12 +149,3 @@ Dropping the supplied live terminal transfers its reader join handle and `PtyCon
 Reader EOF/disconnect is distinct from host close: drain remaining queued bytes, observe `is_session_closed`, cancel pending clipboard authority, and decide whether to retain the exited screen. Disconnect releases synchronized-output suppression; it does not discard retained searchable content. A headless engine without a reader remains logically open. Do not infer a child exit code or reason from this boolean.
 
 Release all callback clones and pending host jobs when truly closing. Dropping a detached `PtyControl` without its reader cannot safely reap the session; the defensive implementation can leak rather than close ConPTY under a live read. Keep endpoint ownership intact instead of relying on that fallback.
-
-## Existing verification entry points
-
-- [Core tests](../../crates/harbor-terminal/src/core_tests.rs): skipped-output replay, stale acknowledgement rejection, full reconstruction, headless blink/preedit and geometry.
-- [I/O tests/source](../../crates/harbor-terminal/src/io.rs): reader-spawn failure, hidden endpoint lifetime, completed-read-before-barrier ordering, streaming drain and disconnect.
-- [PTY facade](../../crates/harbor-pty/src/lib.rs): intact endpoint drop, shutdown owner and grid conversion; [Windows backend](../../crates/harbor-pty/src/windows.rs) for native mechanics.
-- [Reference bridge](../../crates/harbor-app/src/terminal_view.rs): rejected preparation retains damage, retained/live geometry, input/IME and deferred-output recovery.
-
-The runnable headless program is on the [landing page](README.md#minimal-headless-use). These recipes and links do not claim newly executed tests, GPU readback, interactive teardown or transport acceptance.

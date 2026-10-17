@@ -17,9 +17,9 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 - ✨ Acrylic/backdrop fallback, reusable text fields, Portal overlays, gradients and local blur/edge refraction.
 - 🔎 Bounded current-session literal search with highlights and previous/next navigation.
 
-These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
+Protocol support is scoped, not complete. See the [VT reference](docs/terminal/vt.md) and [compatibility guide](docs/terminal/compatibility.md) for supported behavior and limitations.
 
-The main gaps are remaining Windows/performance acceptance, the documented Unicode no-wrap width discrepancy, combined configuration-reload acceptance, split panes, profiles, command palette and Kitty protocols. Delivered search, text editing and local glass mechanisms have their own remaining acceptance boundaries; they are not all-feature or release-completion claims. [The roadmap](docs/roadmap.md) orders the work; [targets and boundaries](docs/targets.md) explains the WezTerm, React/Flutter and Ghostty comparisons.
+Split panes, named profiles, a command palette and Kitty protocols are not implemented. Unicode width, configuration reload and application compatibility have limitations; consult the relevant guides before depending on them.
 
 ## Build and Run
 
@@ -43,7 +43,7 @@ Normal builds do not require this download.
 
 ### Windows Release Packages
 
-Build unsigned x64 MSI/portable assets with `./scripts/packaging/package_windows.ps1`. See the [release guide](docs/app/releases.md) for prerequisites, payload, install/portable paths, upgrades and publication policy; [release validation](docs/validation.md#windows-release-packages) distinguishes package construction from installer/download acceptance.
+Build unsigned x64 MSI/portable assets with `./scripts/packaging/package_windows.ps1`. See the [release guide](docs/app/releases.md) for prerequisites, payload, install/portable paths, upgrades and publication policy.
 
 ## Library Crates
 
@@ -58,34 +58,6 @@ Both crates are currently documented as pre-1.0 workspace libraries. Their READM
 
 Installed/unmarked builds use `~/.harbor/config.toml`; portable builds use the file beside the marked executable. Copy [`config.example.toml`](config.example.toml) if needed. Settings are watched by default; **Ctrl+Shift+R** reloads manually. Read the [configuration reference](docs/app/configuration.md) for defaults, rejection/recovery and live/new-session/restart timing, and [commands](docs/app/commands.md) for rebinding.
 
-### Debug Widget Hot Reload (Windows)
-
-This is optional development-time UI-library reload, **not user-configuration hot reload**.
-
-Build the reloadable library and keep it rebuilding in one terminal:
-
-```bash
-cargo install cargo-watch
-cargo build -p harbor-app-ui
-cargo watch -w crates/harbor-app/src/ui.rs -w crates/harbor-app-ui/src -x "build -p harbor-app-ui"
-```
-
-Run the persistent host in another:
-
-```bash
-cargo run --features widget-hot-reload
-```
-
-The adapter retains the native host and Host-owned tabs/terminals/PTYs while replacing the application root and resetting Widget/Fiber-local state. Changes to shared contracts, `harbor-widget`, dependencies, or exported signatures require a full rebuild/restart. Release and unsupported-target builds do not start the observer. See [runtime architecture](docs/architecture/widget-runtime.md) for ownership details.
-
-## Checks
-
-Use the [standard quality gates](docs/validation.md#standard-quality-gates). [Scripts](scripts/README.md) lists helper commands and probe safety; [profiling](docs/performance/profiling-guide.md) explains comparable captures.
-
-## Architecture
-
-See [System Architecture](docs/architecture/system.md) for ownership, dependency direction and input/output/frame flows, and [Widget Runtime Architecture](docs/architecture/widget-runtime.md) for runtime-specific contracts.
-
 ## Documentation
 
-Use the [documentation index](docs/README.md) to choose a reader path. [Targets](docs/targets.md) defines comparison boundaries; [Current Status](docs/current-status.md) records delivered scope and acceptance gaps; [Roadmap](docs/roadmap.md) orders future work. Durable contracts remain in the read-only, skill-maintained [Grimoire](.grimoire/README.md).
+Use the [documentation index](docs/README.md) for application usage, widget development and terminal embedding guides. Contributors can use the [developer guide](docs/developer/README.md) for architecture, progress and the roadmap.

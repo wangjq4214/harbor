@@ -2,11 +2,11 @@
 
 [WIDGET home](README.md) · [Catalog](catalog.md) · [Testing](testing.md)
 
-These recipes connect existing APIs. They do not add a second editor, a dialog service or a new material subsystem. Each Rust block is independent; the native example is compile-only (`no_run`), while the other two can run headlessly. Verification details are in [testing](testing.md).
+Each Rust block is independent. The native example opens a window; the other two run headlessly.
 
 ## 1. Mount a field in an ordinary native host
 
-Use a path dependency with `harbor-widget`'s `winit` feature, plus `winit = "0.30"`, `pollster = "1"` and `anyhow = "1"` (as in the [crate README](../../crates/harbor-widget/README.md)). Run on a supported [native target](../targets.md) with a compatible GPU and interactive desktop.
+Use a path dependency with `harbor-widget`'s `winit` feature, plus `winit = "0.30"`, `pollster = "1"` and `anyhow = "1"` (as in the [crate README](../../crates/harbor-widget/README.md)). Run with a compatible GPU and interactive desktop.
 
 This complete minimal executable owns the event loop while `WinitWindowHost` owns one window, runtime, adapter, surface and presentation lifecycle. It exits on close or a fatal frame error. Startup failure is deliberately fatal in this small example; a product should choose its own error UI/recovery policy.
 
@@ -85,7 +85,7 @@ For multiple windows, route by `WindowId`, arbitrate their wait requests (using 
 
 With the [Learn counter](learn.md), keep a Store clone outside the root, route a native event, drain/reduce pending actions, and publish new state. After publication, `host.invalidate_external(ExternalInvalidation::new())` processes build invalidation and returns a wait outcome to apply. Background dispatchers also need a host/event-loop wake (for example a winit user event); invalidation code cannot run while its thread is asleep. `host.request_frame()` alone is not a reducer.
 
-If you embed `CustomPaint`, consume `HostEventOutcome::external_input` for that bridge unless an in-tree `.on_input(...)` callback already handled it. Keep the renderer with an application-owned lifetime; register draw/schedule/IME/input/unmount adapters rather than forking the widget event loop. See [runtime architecture](../architecture/widget-runtime.md), [external input tests](../../crates/harbor-widget/tests/external_input.rs) and [native smoke](../../crates/harbor-widget/tests/native_host_smoke.rs).
+If you embed `CustomPaint`, consume `HostEventOutcome::external_input` for that bridge unless an in-tree `.on_input(...)` callback already handled it. Keep the renderer with an application-owned lifetime; register draw/schedule/IME/input/unmount adapters rather than forking the widget event loop.
 
 ## 2. Connect an editing controller to typed intent
 
@@ -130,7 +130,7 @@ In a native application, call `host.request_focus(&focus)` and apply its wait re
 - Public positions use UTF-8 bytes, normalized to grapheme boundaries. Use controller operations rather than byte slicing to implement user editing.
 - Tagged `ClipboardEffect::Editor` results go back to `Runtime::complete_clipboard`. `WinitWindowHost` implements that path; a custom host must return text on successful reads, an empty string on successful writes, and content-free errors. Do not feed completion through generic `dispatch`, log payloads, or reuse terminal paste authorization.
 
-See the full [input contract](../widget-input.md), [controller tests](../../crates/harbor-widget/src/text_editing.rs) and [runtime input coverage](../../crates/harbor-widget/tests/text_input.rs).
+See the full [input contract](../widget-input.md).
 
 ## 3. Compose a non-modal Portal with local glass
 
@@ -178,5 +178,4 @@ The sample constructs descriptions only; it does not render a screenshot. A real
 Keep filter shape and child decoration/clipping choices explicit: filter radius does not automatically clip all child content. For a different composition, `Border::with_paint` can use the same `Paint` abstraction for a gradient stroke. No new glass-specific component or whole-window Acrylic setting is needed.
 
 For an interactive overlay, retain focus handles, request initial focus deliberately, and decide dismissal/restoration policy. `FocusScope::modal(true)` supplies an in-runtime routing mechanism, not a general dialog product or a cross-window input gate. Harbor's native paste confirmation remains a separate application-owned window decision.
-
-Sources/coverage: [Portal](../../crates/harbor-widget/src/widgets/portal.rs), [component boundaries](../../crates/harbor-widget/tests/component_boundaries.rs), [filter](../../crates/harbor-widget/src/widgets/backdrop_filter.rs), [paints](../../crates/harbor-widget/src/paint.rs), [GPU/frame tests](../../crates/harbor-widget/tests/quad_renderer.rs). See [0029](../../.grimoire/spec/0029-search-panel-glass-appearance.md) and [testing](testing.md) for visual/runtime acceptance still required.
+For an interactive overlay, retain focus handles, request initial focus deliberately, and decide dismissal/restoration policy. `FocusScope::modal(true)` supplies in-runtime routing, not a general dialog service or a cross-window input gate.

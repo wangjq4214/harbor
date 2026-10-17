@@ -69,10 +69,6 @@ doc:
 docs-check:
     python scripts/docs/check_docs.py
 
-# Summarize the terminal protocol inventory (not release acceptance).
-checklist:
-    python scripts/docs/checklist_summary.py
-
 # Validate the root version for Windows packaging without building artifacts.
 [windows]
 package-check:

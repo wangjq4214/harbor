@@ -33,8 +33,7 @@ focus through the runtime/host instead of wrapping it in another focus stop.
   text passed to a constructor panics. Control characters and Unicode line/
   paragraph separators are rejected rather than converted to submission.
 - `with_acceptance(initial, predicate)` validates resulting committed text after
-  selection replacement. Applications may impose their own byte budgets. Search
-  uses the existing 128 UTF-8 byte limit; the library has no terminal dependency.
+  selection replacement. Applications may impose their own byte budgets.
 - `on_changed` reports user committed-text changes only. Programmatic writes,
   selection movement and IME preedit do not invoke it. `on_submitted` receives
   Enter modifiers; `on_escape` permits consumer-owned cancellation behavior.
@@ -71,7 +70,4 @@ string, errors are content-free). Passing a result to ordinary `dispatch` is
 not a substitute for targeted completion. Legacy application clipboard effects
 and terminal paste/OSC authorization remain separate.
 
-See [spec 0028](../.grimoire/spec/0028-reusable-single-line-text-input.md),
-[ADR 0065](../.grimoire/adr/0065-layered-widget-text-input.md) and the
-[verification record](./widget-input-verification.md) for scope,
-coverage and the native acceptance still pending.
+See the [testing guide](widget/testing.md) for component tests and troubleshooting.

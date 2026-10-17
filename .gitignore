@@ -18,3 +18,5 @@ third_party/conpty/*
 !third_party/conpty/README.md
 !third_party/conpty/LICENSE
 !third_party/wasdk/
+
+__pycache__

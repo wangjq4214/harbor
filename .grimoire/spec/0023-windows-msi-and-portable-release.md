@@ -36,7 +36,7 @@ Artifacts are initially unsigned. Document untrusted-publisher/SmartScreen promp
 
 ### R5. Consumer Evidence and Documentation
 Document local prerequisites/commands, x64 selection, scopes/custom directory/lifecycle/switching visibility, portable marker/config isolation/example, runtime layout, stable versions and unsigned limits. Distinguish requirements, implementation and verification. Real Windows installation/direct-extracted launch and shell command/response are required, not merely archives/MSI compilation.
-Follow [validation policy](../../docs/validation.md#windows-release-packages), preserving PR gates. Record revision/tag/version/profile, Windows, scope, steps, expected/observed results, artifacts and PASS/FAIL/NOT RUN/BLOCKED. Use two version fixtures and isolated scope environments; compare configuration and payload hashes before/after. Version-fixture installer mechanics do not prove historical application migration. YAML/local mocks are not live Release or downloaded-asset evidence.
+Follow validation policy, preserving PR gates. Record revision/tag/version/profile, Windows, scope, steps, expected/observed results, artifacts and PASS/FAIL/NOT RUN/BLOCKED. Use two version fixtures and isolated scope environments; compare configuration and payload hashes before/after. Version-fixture installer mechanics do not prove historical application migration. YAML/local mocks are not live Release or downloaded-asset evidence.
 
 ## End-to-End Acceptance
 | ID | Scenario → required outcome |
@@ -56,7 +56,7 @@ Follow [validation policy](../../docs/validation.md#windows-release-packages), p
 ## Execution Addendum: Final Local Evidence and External Gates
 This heading preserves existing reference targets; detailed execution diaries are retired, not promoted to current acceptance.
 Historical `eed3494` plus implementation/test diff used Harbor/MSI 0.1.0, locked static-CRT x64 release, ConPTY 1.24.260710001, Windows 22621 (cmd 22621.4317), PowerShell 5.1.22621.4249 and WiX 5.0.2. Local common payload/import/failure checks, both scoped GUI/quiet installer lifecycles, portable isolation/read-only/missing/malformed/ACL-denied/moved-directory checks and shell round trips were recorded. The token was elevated: genuine ordinary-user/UAC acceptance was NOT RUN. The 0.0.9 → 0.1.0 MSI upgrade used the same application binary, proving only installer-version mechanics. Artifact availability has not been reverified.
-[Current Status](../../docs/current-status.md#windows-distribution) owns later `2870b8a`-based checks and the unresolved intermittent font-replacement GPU comparison; later-tree ordinary-user lifecycle and live/download checks remain NOT RUN. Neither historical pass nor successful rerun certifies this tree or fixes that intermittency.
+Later `2870b8a`-based checks did not resolve the intermittent font-replacement GPU comparison; later-tree ordinary-user lifecycle and live/download checks remain NOT RUN. Neither historical pass nor successful rerun certifies this tree or fixes that intermittency. See [development progress](../../docs/developer/progress.md) for current remaining work, not historical run results.
 Remaining: genuine non-elevated user install/launch; authorized UAC machine install followed by ordinary-user launch; fresh applicable same-scope upgrades/uninstalls/custom-directory/cross-scope checks; authorized stable-tag publication/failure behavior and downloaded MSI/ZIP smoke. No tag, push, public Release or broad clean-machine matrix is established here.
 
 ### Stable Execution Aliases

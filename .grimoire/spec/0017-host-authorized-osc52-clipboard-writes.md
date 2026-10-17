@@ -100,10 +100,9 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 python scripts/docs/check_docs.py
-python scripts/docs/checklist_summary.py
 ```
 
-Update `docs/protocol/checklist.md`, the existing configuration documentation/example, and any affected retention-limit documentation to state the exact delivered target/text subset, fixed encoded/decoded limits, default policy, background restrictions, confirmation lifetime/focus exception, latest-write behavior, and denied reads. Do not mark unsupported or unexecuted scope complete.
+Update protocol checklist, the existing configuration documentation/example, and any affected retention-limit documentation to state the exact delivered target/text subset, fixed encoded/decoded limits, default policy, background restrictions, confirmation lifetime/focus exception, latest-write behavior, and denied reads. Do not mark unsupported or unexecuted scope complete.
 
 ## Out of Scope
 

@@ -38,8 +38,6 @@ Harbor's application policy maps allow/deny/confirm to Latest/Discard/First. Its
 
 A custom embedder does not inherit this application policy merely by linking the engine. Preserve session identity when draining events; do not attach an old candidate to whichever tab is now active. Recheck immediately before the OS effect, release obsolete payloads, and report real clipboard-backend failure without a fabricated success or payload-bearing diagnostic. Closure also requires dropping host-owned candidates: the engine cannot revoke a `ClipboardWrite` already copied out by the host.
 
-Owners and focused tests: [typed delivery/event API](../../crates/harbor-terminal/src/types.rs), [strict OSC 52 decoder](../../crates/harbor-terminal/src/parser/osc52.rs), [contract tests](../../crates/harbor-terminal/tests/osc52_contract.rs), [attachment policy tests](../../crates/harbor-terminal/src/clipboard_attachment_tests.rs), [application authorization/confirmation](../../src/clipboard.rs), [source-bound tab routing](../../crates/harbor-app/src/tab_manager.rs). These are implementation/test-source references, not new native clipboard test results.
-
 ## Resource limits and what they do not bound
 
 These are current implementation constants, not user-configurable security settings or a universal memory budget. Consult the linked source before changing integration assumptions.
@@ -71,12 +69,10 @@ Important remaining limits:
 - Unsupported image/file-transfer protocols have no supported decoder allocation contract. Their discard behavior is not proof that adding a decoder would be safe.
 - GPU resource checks do not replace host device/surface recovery or an application-wide memory limit. Child processes themselves are not sandboxed by parser limits.
 
-See [bounded read evidence](../terminal-read-model.md) and [literal-search bounds/coverage](../terminal-literal-search.md) for consumer-specific guarantees. A partial/cancelled/stale scan must not become a complete negative result or an actionable stale target.
+A partial, cancelled or stale content scan must not become a complete negative result or an actionable stale target. Check `read_model` and `literal_search` API documentation when building a content consumer.
 
 ## Recovery and diagnostics
 
 Malformed/over-limit input should recover at supported framing/cancellation boundaries without executing host effects from rejected requests. Do not truncate a rejected URI or clipboard candidate into a different accepted value. Preserve parser state across valid arbitrary chunk boundaries and resize; do not strip escapes to manufacture a clean stream.
 
 Log content-free reasons, lengths and safe identifiers where needed, not clipboard text, base64, terminal source, sensitive paths or arbitrary control-rich payloads. A rejected query/unsupported protocol should not trigger an invented OS action or disclosure reply. Rate-limit host diagnostics so a noisy producer cannot create an unbounded log/notification stream.
-
-Existing source-level safety evidence includes [parser property tests](../../crates/harbor-parser/src/core/property_tests.rs), [OSC 52 boundary tests](../../crates/harbor-parser/src/core/osc52_tests.rs), [parser fuzz target](../../fuzz/fuzz_targets/parser.rs), [session streaming/EOF tests](../../crates/harbor-terminal/src/io.rs) and [read-model limit tests](../../crates/harbor-terminal/src/read_model/tests.rs). Test/fuzz source presence is not a claim of a newly executed campaign, global denial-of-service resistance or complete native-host acceptance. The [checklist security section](../protocol/checklist.md#36-protocol-security-limits) and [validation policy](../validation.md) retain the granular evidence and open gates.

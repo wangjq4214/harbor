@@ -4,30 +4,30 @@
 
 ## Choose a format
 
-The repository's [packager](../../scripts/packaging/package_windows.ps1) constructs unsigned **x64 application** assets from one release payload:
+Windows packages use these names:
 
 - `harbor-<version>-windows-x64.msi`
 - `harbor-<version>-windows-x64-portable.zip`
 
-These names describe build outputs, not proof that a public release with those assets exists. Check the project's actual release record before downloading. Native ARM64/x86 application packages are not part of this packaging contract; their OpenConsole hosts are still bundled for native-host selection under emulation.
+Check the project's release listing for available downloads; these names alone do not mean a release has been published. Packages contain an x64 application, not native ARM64 or x86 application builds. Packages are unsigned and may trigger unknown-publisher or SmartScreen warnings; verify their origin before running them.
 
 ### MSI installation and upgrades
 
-The [installer definition](../../installer/windows/Harbor.wxs) offers current-user (default, user-owned directory) or all-users (Program Files, administrator authorization) installation, with scoped Start Menu and uninstall entries. It does not change PATH by default. Settings use the launching user's `~/.harbor/config.toml`; MSI does not include the portable marker.
+The installer offers current-user installation (default, in a user-owned directory) or all-users installation (Program Files, requiring administrator authorization). It adds Start Menu and uninstall entries but does not change PATH by default. Settings use the launching user's `~/.harbor/config.toml`.
 
-Use a newer stable MSI in the **same scope** for an upgrade. Uninstall preserves user configuration. To switch scope, explicitly uninstall first, then install in the desired scope. A visible opposite-scope installation is blocked rather than automatically removed/migrated; this does not enumerate all other accounts' private installations. Back up your configuration before changing versions. Installer-version mechanics alone do not establish application-data compatibility between arbitrary versions.
+For an upgrade, use a newer stable MSI in the **same scope**. To switch scope, uninstall first, then install in the desired scope; an opposite-scope installation can block installation. Uninstall preserves user configuration. Back up your configuration before changing versions.
 
 ### Portable ZIP
 
-Extract the complete ZIP into a directory you control and launch `harbor.exe` directly. Its adjacent `harbor.portable` file selects adjacent `config.toml`, regardless of launch cwd. If you want customization, copy the supplied `config.example.toml` to `config.toml` and edit it. Startup does not create or overwrite configuration; missing/invalid portable settings use startup recovery, **never home configuration fallback**.
+Extract the complete ZIP into a directory you control and launch `harbor.exe`. The adjacent `harbor.portable` file selects adjacent `config.toml`, regardless of the working directory. To customize, copy the supplied `config.example.toml` to `config.toml` and edit it. Harbor does not create or overwrite this file. Missing or invalid portable settings use [startup recovery](configuration.md#startup-versus-reload), **never home-configuration fallback**.
 
-Move the whole directory, including configuration, marker, and runtime, to carry settings. Readable read-only configuration can load without writes. Restart after changing marker mode. For a manual portable update, close Harbor and use the new complete payload while preserving your chosen `config.toml`; do not mix runtime DLL/host versions or assume overwriting a live executable is supported. This guide provides a manual workflow, not a verified automatic-updater contract.
+Move the whole directory, including configuration, marker, and runtime, to carry settings. Restart Harbor after adding or removing the marker. To update, close Harbor, extract the new complete package, and preserve your chosen `config.toml`; do not mix runtime DLL or host versions.
 
 Portable means **configuration portability**, not a no-trace sandbox: release logs still use `~/.harbor/harbor.log`, and child shells may keep histories or other data elsewhere.
 
 ## Required runtime payload
 
-Both formats carry the application and matching ConPTY runtime:
+Keep `harbor.exe` and its complete adjacent `conpty/` directory together:
 
 ```text
 harbor.exe
@@ -40,9 +40,9 @@ conpty/
   VERSION
 ```
 
-The common packaged files also include the Harbor license and example configuration; the ZIP adds the portable marker. The runtime is loaded executable-relative, not from cwd/PATH/inbox fallback. See [ConPTY restoration, pinning, and layout](../../third_party/conpty/README.md). Keep the entire runtime when moving the application.
+The ARM64 and x86 hosts allow native-host selection under emulation; they do not change the application's architecture. Both formats also include the Harbor license and example configuration; the ZIP adds the portable marker. Harbor loads the bundled runtime relative to the executable, not from PATH or the Windows inbox runtime. See the [runtime restoration guide](../../third_party/conpty/README.md).
 
-## Build locally
+## Build a package locally
 
 From a Windows checkout:
 
@@ -50,18 +50,10 @@ From a Windows checkout:
 ./scripts/packaging/package_windows.ps1
 ```
 
-Prerequisites: PowerShell 5.1+, stable Rust with `x86_64-pc-windows-msvc`, Visual Studio C++ build tools, and package-network access. MSI additionally needs the .NET 8+ **SDK** and NuGet access for pinned WiX/UI tooling. ZIP-only packaging (`-Format Zip`) does not need WiX/.NET. No GitHub credentials are needed for local packaging.
+Prerequisites: PowerShell 5.1+, stable Rust with `x86_64-pc-windows-msvc`, Visual Studio C++ build tools, and network access for dependencies. MSI additionally needs the .NET 8+ SDK and NuGet access for WiX tooling. ZIP-only packaging does not need WiX or .NET:
 
-The script restores pinned ConPTY, builds `--locked --release` with x64 static CRT, validates the common payload/PE imports, and emits under `target/dist/` by default. `-Format Msi` selects MSI only; `-OutputDirectory <path>` changes output. `-SkipBuild -ReleaseDirectory <path>` requires a matching versioned x64 static-CRT build and pinned payload; it does not relabel an arbitrary executable. Compiler flags are scoped/restored by the packager; ordinary development linkage is unchanged. See [packaging regression tests](../../scripts/tests/test_package_windows.ps1).
+```powershell
+./scripts/packaging/package_windows.ps1 -Format Zip
+```
 
-## Version and publication policy
-
-[Version validation](../../scripts/packaging/windows_package_version.ps1) accepts stable `MAJOR.MINOR.PATCH`, bounded by MSI fields `255.255.65535`, without truncation/remapping. A supplied release tag must be exactly `v` plus the root [Cargo package version](../../Cargo.toml); prerelease mappings are not supported.
-
-The [tag-triggered workflow](../../.github/workflows/windows-release.yml) uses the shared [Windows quality gates](../../.github/workflows/windows-quality-gates.yml), then downloads checked assets, uploads both to a draft Release, and publishes it. It refuses to replace an already-published Release. Configured automation is not evidence of an actual successful publication or downloaded build.
-
-Initial artifacts are unsigned and may trigger unknown-publisher/SmartScreen prompts. Verify provenance under your organization's policy; no reputation, signing, or prompt-bypass guarantee is offered.
-
-## Verification boundary
-
-See [Current Status](../current-status.md) and [Windows release validation](../validation.md#windows-release-packages) for historical checks and outstanding acceptance. Fresh ordinary-user installation/launch, authorized machine installation followed by ordinary-user launch, applicable upgrades/uninstall/scope/custom-directory scenarios, live stable-tag publication, and downloaded MSI/ZIP smoke are separate gates. A successful local archive build does not prove them. This documentation task builds, installs, publishes, and updates no runtime package.
+Output goes to `target/dist/` by default. Use `-Format Msi` for MSI only or `-OutputDirectory <path>` to choose another output directory. Local packaging does not need GitHub credentials.

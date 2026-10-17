@@ -57,7 +57,7 @@ Capture the simple monospace baseline before modifying its fast path and compara
 
 Provide focused shaping, resource-bound/atlas, geometry and dirty-range tests for supported and unsupported paths. Windows runtime acceptance must include screenshots and clipboard codepoint evidence for complete supported color sequences and bounded unsupported presentation, plus fragmented input and font/DPI invalidation.
 
-Record revision and dirty-tree scope, OS/ConPTY/font/DPI versions, reproducible commands/steps, expected and observed results, artifacts and exclusions under `docs/verification/`, following [Validation Policy](../../docs/validation.md). Keep raw artifacts local or link retrievable CI artifacts; committed summaries are self-contained and do not link local-only captures. A delayed write alone does not prove distinct PTY reads; identify the actual fragmentation exercised.
+Record revision and dirty-tree scope, OS/ConPTY/font/DPI versions, reproducible commands/steps, expected and observed results, artifacts and exclusions, following Validation Policy. Keep raw artifacts local or link retrievable CI artifacts; committed summaries are self-contained and do not link local-only captures. A delayed write alone does not prove distinct PTY reads; identify the actual fragmentation exercised.
 
 Run or account honestly for:
 
@@ -66,14 +66,13 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 python scripts/docs/check_docs.py
-python scripts/docs/checklist_summary.py
 ```
 
 Use PASS / FAIL / NOT RUN / BLOCKED for actual checks. Missing Windows/GPU capabilities do not turn skipped runtime checks into passes. Update behavior/support documentation only for implemented and evidenced scope.
 
 ## Acceptance status
 
-Native sequence and renderer/atlas implementations are present (`harbor-text` sequence backend and `harbor-terminal::render::{sequence,color_atlas,text}`); historical 0015/T0001 and T0002 were marked Done with unchecked acceptance. That is not proof of every criterion. Final 0015/T0003 Windows/clipboard, font/format/capability, actual fragmentation, font/DPI/appearance, composition, forced repack/overflow and comparable ordinary/cold/warm performance evidence remains unverified here. R1–R7 retain those obligations; no numeric performance threshold is introduced. Follow the [profiling guide](../../docs/performance/profiling-guide.md) and rerun affected evidence after code changes.
+Native sequence and renderer/atlas implementations are present (`harbor-text` sequence backend and `harbor-terminal::render::{sequence,color_atlas,text}`); historical 0015/T0001 and T0002 were marked Done with unchecked acceptance. That is not proof of every criterion. Final 0015/T0003 Windows/clipboard, font/format/capability, actual fragmentation, font/DPI/appearance, composition, forced repack/overflow and comparable ordinary/cold/warm performance evidence remains unverified here. R1–R7 retain those obligations; no numeric performance threshold is introduced. Follow the [profiling guide](../../docs/developer/profiling.md) and rerun affected evidence after code changes.
 
 ## Limitations and Out of Scope
 

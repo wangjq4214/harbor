@@ -63,7 +63,7 @@ fn main() {
 
 Keep hook calls in the same order and of the same types on every build. A type mismatch at the same slot panics. Unmounting discards component-local hook retention; replacing the root with `set_root` is a teardown, not a routine state update.
 
-**Try in a native host:** type in the middle, select and replace text, and trigger an unrelated rebuild. The controller should not reset. Native behavior still requires the [input acceptance checks](testing.md); this headless snippet does not prove typing, clipboard or IME.
+**Try in a native host:** type in the middle, select and replace text, and trigger an unrelated rebuild. The controller should not reset.
 
 ## 3. Send intent; publish the result
 
@@ -131,12 +131,10 @@ fn main() {
 
 Import `harbor_widget::ComponentExt` and use `.keyed(stable_id)` on components when items may reorder. For example, `.child(TextLabel::new("Saved").keyed("save-status"))` uses a stable sibling-local identity. Keys must be unique under their parent; do not generate a new key on every build or use changing display text as the ID.
 
-Unkeyed children match compatible types at the same sibling position. Keyed children can preserve local state across sibling reordering, not across arbitrary parent moves. A changed type/key deliberately resets that identity. See [identity and hooks](concepts.md) for the rules and coverage links.
+Unkeyed children match compatible types at the same sibling position. Keyed children can preserve local state across sibling reordering, not across arbitrary parent moves. A changed type/key deliberately resets that identity. See [identity and hooks](concepts.md) for the rules.
 
 ## Continue
 
-- Choose controls from the [catalog](catalog.md), including the already-delivered text field, Portal and material primitives.
+- Choose controls from the [catalog](catalog.md).
 - Use [recipes](recipes.md) for native host lifecycle, controller callbacks and overlay composition.
-- Use [testing](testing.md) to distinguish executable-example checks from real-window acceptance.
-
-Source and coverage: [closure component test](../../crates/harbor-widget/tests/closure_component.rs), [construction/key tests](../../crates/harbor-widget/tests/child_construction.rs), [Store source/tests](../../crates/harbor-widget/src/store.rs), [input tests](../../crates/harbor-widget/tests/text_input.rs). Example verification status and commands are recorded in [testing](testing.md).
+- Use [testing](testing.md) to test components and troubleshoot native integration.
