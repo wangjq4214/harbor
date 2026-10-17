@@ -41,10 +41,10 @@ jobs:
       - name: Validate package version and optional release tag
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
-        run: ./scripts/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
+        run: ./scripts/packaging/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
 
       - name: Restore pinned ConPTY runtime
-        run: ./scripts/fetch_conpty.ps1
+        run: ./scripts/setup/fetch_conpty.ps1
 
       - name: Check formatting
         run: cargo fmt --check
@@ -58,10 +58,10 @@ jobs:
         run: cargo test --locked --workspace
 
       - name: Check documentation
-        run: python scripts/check_docs.py
+        run: python scripts/docs/check_docs.py
 
       - name: Summarize protocol checklist
-        run: python scripts/checklist_summary.py
+        run: python scripts/docs/checklist_summary.py
 
       - name: Install .NET for pinned WiX
         uses: actions/setup-dotnet@v4
@@ -71,7 +71,7 @@ jobs:
       - name: Build and validate both release formats
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
-        run: ./scripts/package_windows.ps1 -ReleaseTag $env:RELEASE_TAG -OutputDirectory ./target/dist
+        run: ./scripts/packaging/package_windows.ps1 -ReleaseTag $env:RELEASE_TAG -OutputDirectory ./target/dist
 
       - name: Exercise packaging rejection boundaries
         run: |

@@ -21,8 +21,8 @@ Run at phase boundaries and before merging behavior changes:
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
+python scripts/docs/check_docs.py
+python scripts/docs/checklist_summary.py
 ```
 
 For documentation-only changes, run the two documentation scripts and inspect the diff, status claims and Markdown fragments. The link checker validates local file targets and language policy, not heading fragments, external websites, factual accuracy, or visual rendering. Run focused code tests if changing coverage claims requires fresh execution evidence; do not claim a workspace pass unless it was run.
@@ -91,7 +91,7 @@ Keep minimized inputs under `fuzz/corpus/parser/`. Every panic, stall, callback 
 - Capability replies must not advertise unchecked or unsupported behavior.
 - Summary sections must reference detailed coverage rather than maintain contradictory copies.
 
-Calculate inventory with `python scripts/checklist_summary.py`; do not hand-maintain percentages in the README or roadmap.
+Calculate inventory with `python scripts/docs/checklist_summary.py`; do not hand-maintain percentages in the README or roadmap.
 
 ## Windows Runtime Acceptance
 
@@ -133,7 +133,7 @@ Follow the [README prerequisites and packaging options](../README.md#windows-rel
 From the repository root on Windows, construct both formats and run package checks:
 
 ```powershell
-./scripts/package_windows.ps1
+./scripts/packaging/package_windows.ps1
 $release = './target/x86_64-pc-windows-msvc/release'
 $version = (Get-Item "$release/harbor.exe").VersionInfo.ProductVersion
 ./scripts/tests/test_package_windows.ps1 -ReleaseDirectory $release -MsiPath "./target/dist/harbor-$version-windows-x64.msi"

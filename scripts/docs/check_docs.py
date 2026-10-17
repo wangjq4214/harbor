@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
-ROOT = Path(__file__).resolve().parents[1]
-DOC_ROOTS = (ROOT / "README.md", ROOT / "docs", ROOT / ".grimoire")
+ROOT = Path(__file__).resolve().parents[2]
+DOC_ROOTS = (ROOT / "README.md", ROOT / "scripts" / "README.md", ROOT / "docs", ROOT / ".grimoire")
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")

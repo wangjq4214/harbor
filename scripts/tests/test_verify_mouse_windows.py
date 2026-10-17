@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-PATH = Path(__file__).resolve().parents[1] / "verify_mouse_windows.py"
+PATH = Path(__file__).resolve().parents[1] / "terminal" / "verify_mouse_windows.py"
 spec = importlib.util.spec_from_file_location("mouse_probe", PATH)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)

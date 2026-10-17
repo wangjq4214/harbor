@@ -210,7 +210,7 @@ Every delivered interactive widget must provide proportionate evidence for:
 - **Performance:** no idle redraw, bounded invalidation, virtualization for unbounded collections, and measurements before introducing caches or spatial indexes.
 - **Documentation:** one catalog example and public behavior notes per control family; local links and language policy pass [`validation.md`](validation.md).
 
-Phase completion uses the standard quality gates in [`validation.md`](validation.md). Documentation-only updates require at least `python scripts/check_docs.py`.
+Phase completion uses the standard quality gates in [`validation.md`](validation.md). Documentation-only updates require at least `python scripts/docs/check_docs.py`.
 
 ## Recommended Next Vertical Slice
 

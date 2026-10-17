@@ -53,8 +53,8 @@ When documents disagree, inspect source, focused tests and recorded runs first. 
 ## Maintenance
 
 - Keep project documentation in English.
-- Keep volatile counts out of overviews; use `python scripts/checklist_summary.py` for protocol counts. Those counts are not a release-readiness percentage.
+- Keep volatile counts out of overviews; use `python scripts/docs/checklist_summary.py` for protocol counts. Those counts are not a release-readiness percentage.
 - Update source-backed status and focused coverage when behavior changes; update roadmap state only when work actually starts or its gate is met.
 - Preserve existing paths/anchors where practical, and repair references when moving or restructuring content.
-- Run `python scripts/check_docs.py` for language and local-file links. It does not validate Markdown fragments or factual claims; inspect those separately.
+- Run `python scripts/docs/check_docs.py` for language and local-file links. It does not validate Markdown fragments or factual claims; inspect those separately.
 - Run both documentation scripts after a documentation-only change. Code/runtime tests are additionally required when implementation or validation claims change.

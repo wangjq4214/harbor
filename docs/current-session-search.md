@@ -58,7 +58,7 @@ Environment: Windows, Rust `1.97.1 (8bab26f4f 2026-07-14)`, Cargo `1.97.1 (c980f
 | `cargo test --locked --workspace -q` | PASS on final full rerun — 128 application and 1064 active terminal unit tests, plus remaining active workspace/integration/doctest suites; existing ignored/manual tests unchanged. |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | PASS. |
 | `cargo fmt --all -- --check`, `git diff --check` | PASS. |
-| `python scripts/check_docs.py`, `python scripts/checklist_summary.py` | PASS. |
+| `python scripts/docs/check_docs.py`, `python scripts/docs/checklist_summary.py` | PASS. |
 
 The first workspace invocation failed one existing GPU comparison, `t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent` in `render/text_tests.rs`, at same-metrics font-replacement pixel equality. It passed in isolation and the complete workspace rerun passed without code changes. The intermittent cause remains unproven (not asserted to be a baseline defect); no unrelated font/test behavior was changed to obtain the pass. Non-fatal incremental-cache access-denied notes did not fail the builds.
 

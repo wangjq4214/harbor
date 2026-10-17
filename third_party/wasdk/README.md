@@ -2,7 +2,7 @@
 
 `gen/` regenerates the checked-in `src/backdrop/wasdk/generated.rs` from pinned Microsoft Windows App SDK NuGet metadata. These packages are build-time reference material only, not a bundled runtime. The normal Cargo build uses the checked-in bindings and does not need the packages.
 
-Run `./scripts/fetch_wasdk.ps1` on Windows before regenerating. It restores only:
+Run `./scripts/setup/fetch_wasdk.ps1` on Windows before regenerating. It restores only:
 
 | Package | Version | SHA256 of NuGet package |
 | --- | --- | --- |

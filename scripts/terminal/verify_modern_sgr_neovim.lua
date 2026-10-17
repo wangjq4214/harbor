@@ -1,4 +1,4 @@
--- T0003 native Neovim fixture: nvim --clean -n -i NONE -S scripts/verify_modern_sgr_neovim.lua
+-- T0003 native Neovim fixture: nvim --clean -n -i NONE -S scripts/terminal/verify_modern_sgr_neovim.lua
 -- Explicit application highlight setup; no forced terminal identity/capability options.
 vim.opt.termguicolors = true
 vim.opt.swapfile = false

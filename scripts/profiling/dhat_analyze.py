@@ -1,7 +1,7 @@
 """Summarize dhat-heap.json — where harbor allocates memory.
 
 Usage:
-    python scripts/dhat_analyze.py [path-to-dhat-heap.json]
+    python scripts/profiling/dhat_analyze.py [path-to-dhat-heap.json]
     (default: dhat-heap.json in the current directory)
 
 Reports global totals plus an allocation-by-owner breakdown, where an

@@ -31,8 +31,8 @@ Run from the repository root:
 | `cargo fmt --check` | No Rust formatting differences | Exit 0 | PASS |
 | `cargo clippy --all-targets --all-features -- -D warnings` | No lint errors | Exit 0 | PASS |
 | `cargo test --workspace` | Integrated regression suite completes | 2392 passed, 0 failed, 10 ignored, including doctests | PASS for executed cases only |
-| `python scripts/check_docs.py` | Documentation language and local links are valid | Exit 0 | PASS |
-| `python scripts/checklist_summary.py` | Protocol inventory can be computed | Exit 0; 855 done, 144 open, 999 total (inventory, not release acceptance) | PASS |
+| `python scripts/docs/check_docs.py` | Documentation language and local links are valid | Exit 0 | PASS |
+| `python scripts/docs/checklist_summary.py` | Protocol inventory can be computed | Exit 0; 855 done, 144 open, 999 total (inventory, not release acceptance) | PASS |
 | `git diff --check` | No diff whitespace errors | Exit 0 | PASS |
 
 Cargo reported access-denied notes when finalizing some pre-existing incremental-cache directories. Compilation and the recorded commands still completed successfully; the notes indicate lost cache reuse, not a passing substitute for a failed build.

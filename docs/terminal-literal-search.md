@@ -73,7 +73,7 @@ Commands were executed from the repository root over the combined implementation
 | `cargo test --locked --workspace -q` | PASS — all active workspace suites, including 1060 terminal unit tests and both terminal API doctests; existing ignored/manual tests remain ignored. Non-fatal incremental-cache access-denied notes for harbor-text/config did not fail the build. |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | PASS. |
 | `cargo fmt --all -- --check`, `git diff --check` | PASS. |
-| `python scripts/check_docs.py`, `python scripts/checklist_summary.py` | PASS. |
+| `python scripts/docs/check_docs.py`, `python scripts/docs/checklist_summary.py` | PASS. |
 
 Early test compilation/fixture assertions were corrected to the actual update/event/color APIs and T0001's checkpoint semantics, then all affected checks were rerun. A not-yet-read row can change at an explicit rebase; old suffix proofs cannot. No production read-model change or weakened stale-text requirement was needed.
 

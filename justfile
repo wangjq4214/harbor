@@ -4,13 +4,26 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 default:
     @just --list
 
+# Restore the pinned ConPTY runtime (Windows; run after cloning or pin changes).
+[windows]
+setup:
+    powershell.exe -NoLogo -NoProfile -File scripts/setup/fetch_conpty.ps1
+
 # Build Harbor.
 build:
     cargo build
 
+# Build an optimized development binary (use package for distributable assets).
+build-release:
+    cargo build --release
+
 # Run Harbor without widget hot reload.
 run:
     cargo run
+
+# Run Harbor with release optimizations, without widget hot reload.
+run-release:
+    cargo run --release
 
 # Check every workspace target.
 check:
@@ -19,6 +32,19 @@ check:
 # Run the complete workspace test suite.
 test:
     cargo test --workspace
+
+# Test one crate, optionally filtering by test name: just test-crate harbor-parser parse.
+test-crate crate filter="":
+    cargo test -p "{{ crate }}" "{{ filter }}"
+
+# Run Python script unit tests without launching Harbor or touching the clipboard.
+script-test:
+    python -B -m unittest discover -s scripts/tests -v
+
+# Run packaging rejection tests (no install or release payload required).
+[windows]
+package-test:
+    powershell.exe -NoLogo -NoProfile -File scripts/tests/test_package_windows.ps1
 
 # Format the workspace.
 fmt:
@@ -34,6 +60,36 @@ lint:
 
 # Run the ordinary non-HMR quality gates.
 qa: fmt-check lint test
+
+# Generate workspace API documentation without dependency docs.
+doc:
+    cargo doc --workspace --no-deps
+
+# Check repository documentation links and consistency.
+docs-check:
+    python scripts/docs/check_docs.py
+
+# Summarize the terminal protocol inventory (not release acceptance).
+checklist:
+    python scripts/docs/checklist_summary.py
+
+# Validate the root version for Windows packaging without building artifacts.
+[windows]
+package-check:
+    powershell.exe -NoLogo -NoProfile -File scripts/packaging/package_windows.ps1 -ValidateVersionOnly
+
+# Build validated Windows release assets: Both (default), Msi, or Zip; ZIP needs no WiX.
+[windows]
+package format="Both":
+    powershell.exe -NoLogo -NoProfile -File scripts/packaging/package_windows.ps1 -Format "{{ format }}"
+
+# Capture a DHAT heap profile; close Harbor normally to write dhat-heap.json.
+dhat-run:
+    cargo run --profile dhat --features dhat-heap
+
+# Summarize an existing DHAT report, optionally supplying its path.
+dhat-analyze report="dhat-heap.json":
+    python scripts/profiling/dhat_analyze.py "{{ report }}"
 
 # Build the reloadable application UI DLL.
 hmr-build:

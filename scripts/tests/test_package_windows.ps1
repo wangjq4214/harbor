@@ -5,7 +5,7 @@ param([string]$ReleaseDirectory, [string]$MsiPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$packager = Join-Path $repoRoot 'scripts/package_windows.ps1'
+$packager = Join-Path $repoRoot 'scripts/packaging/package_windows.ps1'
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('harbor-package-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporary | Out-Null
 
@@ -19,9 +19,9 @@ function Assert-Rejected([scriptblock]$Action, [string]$Message) {
 }
 
 try {
-    . (Join-Path $repoRoot 'scripts/windows_package_version.ps1')
+    . (Join-Path $repoRoot 'scripts/packaging/windows_package_version.ps1')
     foreach ($version in @('0.0.0', '255.255.65535')) { Assert-WindowsPackageVersion $version }
-    $msiBuilder = Join-Path $repoRoot 'scripts/build_windows_msi.ps1'
+    $msiBuilder = Join-Path $repoRoot 'scripts/packaging/build_windows_msi.ps1'
     foreach ($version in @('256.0.0', '0.256.0', '0.0.65536', '18446744073709551616.0.0', '0.1.0-rc.1')) {
         $message = if ($version.Contains('-')) { 'Only stable' } else { 'cannot be represented' }
         Assert-Rejected {
@@ -35,10 +35,10 @@ try {
 
     # Exercise the real entry point against minimal valid Cargo packages, not a mocked parser.
     $fixture = Join-Path $temporary 'version-fixture'
-    New-Item -ItemType Directory -Path (Join-Path $fixture 'scripts') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'scripts/packaging') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $fixture 'src') | Out-Null
-    Copy-Item -LiteralPath $packager -Destination (Join-Path $fixture 'scripts/package_windows.ps1')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/windows_package_version.ps1') -Destination (Join-Path $fixture 'scripts/windows_package_version.ps1')
+    Copy-Item -LiteralPath $packager -Destination (Join-Path $fixture 'scripts/packaging/package_windows.ps1')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/packaging/windows_package_version.ps1') -Destination (Join-Path $fixture 'scripts/packaging/windows_package_version.ps1')
     [IO.File]::WriteAllText((Join-Path $fixture 'src/main.rs'), 'fn main() {}')
     foreach ($version in @('256.0.0', '0.256.0', '0.0.65536', '0.1.0-rc.1')) {
         [IO.File]::WriteAllText((Join-Path $fixture 'Cargo.toml'), "[package]`nname = 'harbor'`nversion = '$version'`nedition = '2024'`n")
@@ -48,9 +48,9 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'Could not prepare version fixture.' }
         } finally { Pop-Location }
         if ($version.Contains('-')) {
-            Assert-Rejected { & (Join-Path $fixture 'scripts/package_windows.ps1') -ValidateVersionOnly } 'Only stable'
+            Assert-Rejected { & (Join-Path $fixture 'scripts/packaging/package_windows.ps1') -ValidateVersionOnly } 'Only stable'
         } else {
-            Assert-Rejected { & (Join-Path $fixture 'scripts/package_windows.ps1') -ValidateVersionOnly } 'cannot be represented'
+            Assert-Rejected { & (Join-Path $fixture 'scripts/packaging/package_windows.ps1') -ValidateVersionOnly } 'cannot be represented'
         }
     }
     Write-Output 'PASS: mismatched/prerelease tags and MSI numeric bounds are rejected.'

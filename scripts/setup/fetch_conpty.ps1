@@ -5,7 +5,7 @@ param([string]$PackagePath)
 $ErrorActionPreference = 'Stop'
 $version = '1.24.260710001'
 $packageSha256 = '175640566A3B59C4B132070EE96C2C77E5AB7EDD2E92732A5EB3610BBF63D90E'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $cache = Join-Path $repoRoot "target/conpty-download/$version"
 New-Item -ItemType Directory -Force $cache | Out-Null
 if (-not $PackagePath) {

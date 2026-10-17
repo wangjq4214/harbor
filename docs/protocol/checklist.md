@@ -12,7 +12,7 @@
 - Unchanged legacy markers are not a claim that every item was re-audited in this documentation pass. Newly corrected claims cite implementation paths and named tests below.
 - Implementation evidence is primarily in `crates/harbor-parser`, `crates/harbor-terminal`, `crates/harbor-pty`, `crates/harbor-widget`, and `crates/harbor-app`. Paths in evidence notes are repository-relative.
 - Project orientation: [current status](../current-status.md), [next-stage plan](../next-stage-plan.md), and [roadmap](../roadmap.md). Plans do not override protocol evidence.
-- This file does not maintain hand-written totals. Run `python scripts/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
+- This file does not maintain hand-written totals. Run `python scripts/docs/checklist_summary.py`; totals count marked requirements, not unique features or a compatibility percentage.
 - Known exclusions: Kitty keyboard/graphics, OSC 52 reads and non-system selections remain unsupported. OSC 52's bounded write subset is described in [24.7](#247-clipboard). Combining marks, variation selectors, and ZWJ sequences are retained by `CellWriter` and verified in T0003 runtime evidence; complex script shaping and font ligatures remain deferred. Resize reflow has automated source/test evidence, while interactive Windows and measured performance acceptance remain **NOT RUN**. IME preedit support does not imply full complex-text shaping (implementation: `crates/harbor-app/src/terminal_view.rs`; focused test: `programmatic_terminal_focus_reaches_ime_provider_and_preedit_input` in `crates/harbor-app/src/tab_view.rs`).
 
 ## Coverage
@@ -20,7 +20,7 @@
 Coverage totals are generated from the item markers rather than copied into this document:
 
 ```bash
-python scripts/checklist_summary.py
+python scripts/docs/checklist_summary.py
 ```
 
 See [`../validation.md`](../validation.md) for the evidence policy.

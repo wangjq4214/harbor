@@ -220,7 +220,7 @@ class Console:
 
 
 def revision() -> dict:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     def git(*args):
         try:
             return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL, timeout=2).decode("utf-8", errors="replace").strip()

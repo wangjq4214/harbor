@@ -11,7 +11,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . (Join-Path $PSScriptRoot 'windows_package_version.ps1')
 
 function Convert-PeRvaToOffset([UInt32]$Rva, [object[]]$Sections) {
@@ -102,7 +102,7 @@ try {
         throw '-ReleaseDirectory is only supported with -SkipBuild.'
     }
     if (-not $SkipBuild) {
-        & (Join-Path $PSScriptRoot 'fetch_conpty.ps1')
+        & (Join-Path $repoRoot 'scripts/setup/fetch_conpty.ps1')
         # Apply the CRT policy only to this target release build, not dev builds.
         # Encoded flags take precedence and use Cargo's ASCII 0x1f separator.
         $previousRustFlags = $env:RUSTFLAGS

@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for file in required {
         if !file.is_file() {
             return Err(format!(
-                "missing bundled ConPTY runtime {}. Run ./scripts/fetch_conpty.ps1 before building (or pass -PackagePath for an offline package)",
+                "missing bundled ConPTY runtime {}. Run ./scripts/setup/fetch_conpty.ps1 before building (or pass -PackagePath for an offline package)",
                 file.display()
             )
             .into());
