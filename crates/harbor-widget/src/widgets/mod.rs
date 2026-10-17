@@ -1,10 +1,13 @@
 pub mod actions;
+pub mod backdrop_filter;
+pub use backdrop_filter::BackdropFilter;
 pub mod align;
 pub mod button;
 pub mod column;
 pub mod constrained_box;
 pub mod custom_paint;
 pub mod decorated_box;
+pub mod editable_text;
 pub mod flex;
 pub mod flexible;
 pub mod focus;
@@ -23,7 +26,10 @@ pub mod separator;
 pub mod shortcuts;
 pub mod sized_box;
 pub mod stack;
+pub mod text_field;
 pub mod text_label;
+pub use editable_text::EditableText;
+pub use text_field::TextField;
 pub mod theme;
 
 pub use actions::{ActionOutcome, Actions};

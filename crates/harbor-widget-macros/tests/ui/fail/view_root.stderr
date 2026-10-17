@@ -7,11 +7,11 @@ error[E0277]: the trait bound `View: harbor_widget::view::Component` is not sati
   = help: the following other types implement trait `harbor_widget::view::Component`:
             Actions<A>
             Align
+            BackdropFilter
             Button
             Column
             ConstrainedBox
             CustomPaint
             DecoratedBox
-            Expanded
           and $N others
   = note: required for `View` to implement `harbor_widget::view::Component`

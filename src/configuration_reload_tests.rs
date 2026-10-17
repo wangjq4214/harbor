@@ -276,6 +276,65 @@ fn acceptance_updates_inactive_renderers_osc_baselines_and_new_session_policy() 
 }
 
 #[test]
+fn background_opacity_reload_updates_existing_sessions_and_future_policy() {
+    let mut f = Fixture::new();
+    let targets = f.tabs.configuration_targets();
+    assert_ne!(f.tabs.active_id(), Some(targets[0].0));
+    let size = f.tabs.last_broadcast_size();
+    let metrics = f.policy.metrics;
+    // Keep a background OSC override in an inactive alternate screen.
+    targets[0]
+        .1
+        .lock()
+        .unwrap()
+        .put_str("\x1b[?1049h\x1b]11;#112233\x07");
+    let path =
+        std::env::temp_dir().join(format!("harbor-opacity-reload-{}.toml", std::process::id()));
+    for (source, alpha) in [
+        ("[colors]\nbackground_opacity = 0.8", 0.8),
+        ("[colors]\nbackground = '#1E1E2E40'", 64.0 / 255.0),
+        ("", 0.85),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let loaded = harbor_config::load_candidate_from_path(&path);
+        std::fs::remove_file(&path).unwrap();
+        let loaded = loaded.unwrap();
+        assert!(loaded.diagnostics.is_empty());
+        let expected = loaded.settings.colors;
+        assert_eq!(expected.background.components()[3], alpha);
+        f.reload(loaded.settings, Some(ReloadStage::Font)).unwrap();
+        assert_eq!(f.policy.appearance.palette(), expected);
+        assert_eq!(f.tabs.last_broadcast_size(), size);
+        assert_eq!(f.policy.metrics, metrics);
+        for (index, (_, terminal, bridge)) in targets.iter().enumerate() {
+            let mut terminal = terminal.lock().unwrap();
+            let update = terminal.read_update(Instant::now());
+            let background = if index == 0 {
+                Rgba::new(17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, alpha)
+            } else {
+                expected.background
+            };
+            assert_eq!(update.appearance.palette().background, background);
+            assert_eq!(terminal.clear_rgba(true), background.components());
+            assert_eq!(terminal.clear_rgba(false)[3], 1.0);
+            let renderer = bridge.renderer().unwrap();
+            assert!(renderer.lock().unwrap().prepare(
+                TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
+                &update,
+                false
+            ));
+            if index == 0 {
+                terminal.put_str("\x1b]111\x07");
+                assert_eq!(terminal.clear_rgba(true), expected.background.components());
+                terminal.put_str("\x1b]11;#112233\x07");
+            }
+        }
+    }
+    targets[0].1.lock().unwrap().put_str("\x1b[?1049l");
+    assert_eq!(targets[0].1.lock().unwrap().snapshot().cell(0, 0).ch, 'r');
+}
+
+#[test]
 fn invalid_bindings_never_enter_real_transaction_and_colors_only_keep_grid() {
     let mut f = Fixture::new();
     let original = f.accepted.clone();

@@ -316,11 +316,14 @@ impl Runtime {
         }
     }
 
-    /// Evaluates only the focused external leaf after current layout geometry is committed.
+    /// Evaluates the focused editor or external leaf after current layout geometry is committed.
     fn collect_focused_external_ime(&mut self) -> RuntimeEffects {
         let ime = (|| {
             let target = self.events.focused_event_target(&self.arena)?;
             let fiber = self.arena.get(target)?;
+            if let Some(ime) = fiber.view.as_ref()?.focused_ime(fiber.layout_rect()?) {
+                return Some(ime);
+            }
             let draw_id = fiber.view.as_ref()?.external_draw_id()?;
             let provider = self.external_ime.get(&draw_id)?;
             let rect = fiber.layout_rect()?;
@@ -570,9 +573,8 @@ impl Runtime {
             .init_text_renderer(device, format, bind_group_layout, bind_group);
     }
 
-    /// Applies the pending SceneDelta to the GPU renderers and encodes draw
-    /// calls into the RenderPass. No-op if the quad renderer hasn't been
-    /// initialized or there is no pending delta.
+    /// Applies pending scene changes and encodes ordinary scenes into a pass.
+    /// No-op until renderer initialization. Backdrop filters require encode_frame.
     ///
     /// `commit` live-encodes ineligible externals this pass (recovery / force).
     pub fn encode<'a>(
@@ -585,6 +587,32 @@ impl Runtime {
         self.encoder.encode(
             gpu,
             pass,
+            viewport,
+            EncodeScene {
+                scene_graph: &self.scene_graph,
+                pending_delta: &mut self.pending_delta,
+                external_draws: &self.external_draws,
+                external_eligible: &self.external_eligible,
+                commit,
+            },
+        );
+    }
+
+    /// Encodes a full frame, including local backdrop filters, in paint order.
+    /// The target is single-sampled and must match gpu.target_format() and viewport.
+    /// The caller submits the encoder after this call; external callbacks run once.
+    pub fn encode_frame(
+        &mut self,
+        gpu: ExternalDrawGpu<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        target: crate::renderer::FrameTarget<'_>,
+        viewport: Viewport,
+        commit: bool,
+    ) {
+        self.encoder.encode_frame(
+            gpu,
+            encoder,
+            target,
             viewport,
             EncodeScene {
                 scene_graph: &self.scene_graph,
@@ -638,11 +666,29 @@ impl Runtime {
         if let Some(text) = self.events.take_clipboard() {
             effects.clipboard = Some(ClipboardEffect::write(text));
         }
+        if let Some(request) = self.events.take_editor_clipboard() {
+            effects.clipboard = Some(ClipboardEffect::Editor(request));
+        }
         if let Some(cursor) = self.events.take_cursor() {
             effects.cursor = Some(cursor);
         }
         effects.merge(self.collect_focused_external_ime());
         effects
+    }
+
+    /// Completes a tagged editor operation only while its mounted focused target is live.
+    pub fn complete_clipboard(
+        &mut self,
+        request: u64,
+        result: Result<String, crate::effects::ClipboardEffectError>,
+    ) -> RuntimeEffects {
+        let pending = self.flush_pending_work();
+        self.pending_effects.merge(pending);
+        let redraw = self.events.complete_clipboard(&self.arena, request, result);
+        if redraw && let Some(root) = self.root_id {
+            mark_dirty_for(self.runtime_id, root);
+        }
+        RuntimeEffects::from_redraw(redraw)
     }
 
     /// Cancel input actions when a host gates/replaces an input-owning subtree.
@@ -682,6 +728,24 @@ impl Runtime {
         let Some(root_id) = self.root_id else {
             return;
         };
+
+        let scale = crate::text::normalize_raster_scale(
+            self.current_viewport
+                .as_ref()
+                .map_or(1.0, |v| v.scale_factor),
+        );
+        let mut pending = vec![root_id];
+        while let Some(id) = pending.pop() {
+            if let Some(fiber) = self.arena.get(id) {
+                pending.extend_from_slice(&fiber.children);
+                if let Some(view) = &fiber.view {
+                    view.prepare_text_geometry(&self.text_metrics, &mut |ch| {
+                        self.encoder
+                            .advance_width(ch, scale, self.text_metrics.cell_width)
+                    });
+                }
+            }
+        }
 
         let items = paint_fiber(
             &mut self.arena,

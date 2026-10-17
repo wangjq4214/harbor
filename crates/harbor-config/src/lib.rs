@@ -19,7 +19,7 @@ pub const FONT_SIZE: f32 = 24.0;
 pub const DEFAULT_UI_FONT_SIZE: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 16.0;
 /// Built-in terminal background (Catppuccin Mocha Base), not the window backdrop tint.
-pub const BACKGROUND: [f32; 4] = [30.0 / 255.0, 30.0 / 255.0, 46.0 / 255.0, 0.25];
+pub const BACKGROUND: [f32; 4] = [30.0 / 255.0, 30.0 / 255.0, 46.0 / 255.0, 0.85];
 /// Built-in terminal selection highlight (Catppuccin Mocha Rosewater).
 pub const SELECTION_COLOR: [f32; 4] = [245.0 / 255.0, 224.0 / 255.0, 220.0 / 255.0, 0.4];
 pub const BLINK_INTERVAL_MS: u64 = 530;
@@ -695,6 +695,7 @@ fn parse_colors(value: &Value, diagnostics: &mut Vec<Diagnostic>) -> Option<Pale
         &[
             "foreground",
             "background",
+            "background_opacity",
             "cursor",
             "selection",
             "normal",
@@ -707,6 +708,23 @@ fn parse_colors(value: &Value, diagnostics: &mut Vec<Diagnostic>) -> Option<Pale
 
     parse_color_field(table, "foreground", &mut palette.foreground, diagnostics)?;
     parse_color_field(table, "background", &mut palette.background, diagnostics)?;
+    // Fold the optional override into the palette so startup, OSC resets and
+    // configuration reload all share one effective background alpha.
+    if let Some(value) = table.get("background_opacity") {
+        let opacity = value
+            .as_float()
+            .or_else(|| value.as_integer().map(|value| value as f64));
+        let Some(opacity) =
+            opacity.filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        else {
+            diagnostics.push(error(
+                "colors.background_opacity must be a finite number from 0 to 1",
+            ));
+            return None;
+        };
+        let [red, green, blue, _] = palette.background.components();
+        palette.background = Rgba::new(red, green, blue, opacity as f32);
+    }
     parse_color_field(table, "cursor", &mut palette.cursor, diagnostics)?;
     parse_color_field(table, "selection", &mut palette.selection, diagnostics)?;
     parse_color_group(
@@ -1019,6 +1037,96 @@ mod tests {
         assert_eq!(loaded.settings.colors.selection, defaults.selection);
         assert_eq!(loaded.settings.colors.normal[2..], defaults.normal[2..]);
         assert_eq!(loaded.settings.colors.bright, defaults.bright);
+    }
+
+    #[test]
+    fn background_opacity_overrides_only_background_alpha_and_preserves_legacy_colors() {
+        for (source, expected) in [
+            ("", BACKGROUND),
+            ("[colors]", BACKGROUND),
+            (
+                "[colors]\nbackground_opacity = 0.8",
+                [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 0.8],
+            ),
+            (
+                "[colors]\nbackground = '#12345640'",
+                [18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 64.0 / 255.0],
+            ),
+            (
+                "[colors]\nbackground = '#123456'",
+                [18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 1.0],
+            ),
+            (
+                "[colors]\nbackground = '#12345640'\nbackground_opacity = 0.8",
+                [18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 0.8],
+            ),
+            (
+                "[colors]\nbackground_opacity = 0.8\nbackground = '#123456'",
+                [18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 0.8],
+            ),
+            (
+                "[colors]\nbackground_opacity = 0",
+                [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 0.0],
+            ),
+            (
+                "[colors]\nbackground_opacity = 1",
+                [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0],
+            ),
+            (
+                "[colors]\nbackground_opacity = 0.0",
+                [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 0.0],
+            ),
+            (
+                "[colors]\nbackground_opacity = 1.0",
+                [BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0],
+            ),
+        ] {
+            let loaded = parse(source);
+            assert!(
+                loaded.diagnostics.is_empty(),
+                "{source}: {:?}",
+                loaded.diagnostics
+            );
+            let expected = Palette {
+                background: Rgba::new(expected[0], expected[1], expected[2], expected[3]),
+                ..Palette::default()
+            };
+            assert_eq!(loaded.settings.colors, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn invalid_background_opacity_discards_the_whole_startup_palette() {
+        for value in [
+            "-0.01",
+            "1.01",
+            "-1",
+            "2",
+            "nan",
+            "inf",
+            "-inf",
+            "1e100",
+            "1.0000000001",
+            "-0.0000000001",
+            "'0.6'",
+            "true",
+            "[]",
+            "{}",
+        ] {
+            let loaded = parse(&format!(
+                "[font]\nsize = 18\n[colors]\nforeground = '#123456'\nbackground_opacity = {value}"
+            ));
+            assert_eq!(loaded.settings.font.size, 18.0);
+            assert_eq!(loaded.settings.colors, Palette::default(), "{value}");
+            assert!(
+                loaded.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.level == DiagnosticLevel::Error
+                        && diagnostic.message.contains("colors.background_opacity")
+                }),
+                "{value}: {:?}",
+                loaded.diagnostics
+            );
+        }
     }
 
     #[test]

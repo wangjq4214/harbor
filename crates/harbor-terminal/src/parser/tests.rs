@@ -2438,7 +2438,7 @@ fn osc_default_colors_survive_alt_screen_families_ris_decstr_and_sgr_resets() {
                 0x44 as f32 / 255.0,
                 0x55 as f32 / 255.0,
                 0x66 as f32 / 255.0,
-                0.25,
+                harbor_config::BACKGROUND[3],
             )
         );
     }

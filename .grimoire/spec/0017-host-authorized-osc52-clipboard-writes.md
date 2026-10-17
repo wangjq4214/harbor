@@ -4,7 +4,6 @@
 **Status:** Implemented — implementation present; automated gates passed; Windows runtime acceptance pending
 **Date:** 2026-09-30
 **Issue:** [#174](https://github.com/wangjq4214/harbor/issues/174)
-**Selected refinement endpoint:** One spec; no ticket decomposition, implementation plan, or implementation in this refinement.
 
 ## Requirement
 
@@ -63,46 +62,7 @@ An application running in a Harbor terminal session can request a bounded OSC 52
 - Host clipboard failures are failures, not reported success. Preserve the actual effect outcome in tests/runtime evidence without adding a terminal protocol acknowledgment.
 - Do not advertise unsupported reads or broader selections/clipboard protocols through capability replies, protocol checklists, or documentation. Describe only the delivered and evidenced write subset.
 
-## Solution and Necessary Seams
-
-Reuse the private static built-in OSC typed-action boundary delivered by #173. Parsing validates bounded wire data; terminal-owned code emits typed side-effect requests; application-owned routing binds/preserves stable session identity and owns authorization, pending-request policy, and the confirmation lifetime. Only approved requests reach the existing native clipboard effect.
-
-The integration contract is deliberate; exact helper names and private struct layout are not prescribed by this spec.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Bounded OSC framing | `harbor-parser` → `harbor-terminal` built-in OSC handling | Complete/cancelled/overflowed string behavior, BEL/ST fragmentation, OSC 52-specific bounded retention | Validated write action or safe consume-ignore, without system clipboard access |
-| Session-qualified host request | Terminal output/update boundary → `harbor-app` tab routing and application host | Stable originating live-session identity and bounded decoded text | Typed host request with same-session latest-write behavior; no effect before authorization |
-| Settings and host policy | Existing `harbor-config`/TOML settings → application host | Allow/deny/confirm setting and established settings behavior | Default foreground allow and explicit deny/confirm decisions; no capacity/read configuration |
-| Confirmation interaction | Application host ↔ independent confirmation window | Source identity, exact pending payload, bounded display data, explicit decision and focus/lifecycle observations | One per-request outcome with cancellation and revalidation; no implicit persistent grant |
-| Native clipboard effect | Authorized application host → widget/winit clipboard effect → OS | Approved UTF-8 text or empty clearing text | Existing clipboard write execution and content-free failure diagnostics |
-
-### Current repository anchors
-
-Integration uses the existing static OSC routing, typed output events, stable tab identity, independent confirmation/input gate and widget clipboard effects. User-facing setting name, values, default and timing belong in `README.md` and `config.example.toml` (R3); source filenames are not a completion claim.
-
-## End-to-End Tests
-
-Use synthetic, non-sensitive fixture contents. Inspect actual system clipboard changes only in controlled Windows runtime cases; use a recording/failing effect sink for deterministic policy tests.
-
-| Case | Given | When | Then |
-| --- | --- | --- | --- |
-| Foreground default allow | Live active tab, focused Harbor main window, omitted write policy | A supported OSC 52 text write arrives through PTY output | Exactly the approved decoded text reaches the existing host effect without a confirmation prompt; no protocol bytes become terminal text |
-| Empty-selection and clear | Eligible foreground session | A write uses empty selection, or an empty data field | Empty selection targets the system clipboard; empty contents clear it only after the normal allow/deny/confirm decision |
-| Explicit deny | Eligible session configured deny and a known fixture clipboard value | Non-empty or clearing request arrives | No clipboard effect and no clipboard change; content-free diagnostic only |
-| Background and stale source | Inactive tab, unfocused/minimized Harbor, or closed source session | A write/clear or late host request is processed, including under allow | No clipboard change, no automatic foreground/background authorization, and no retargeting to the active tab |
-| Confirm approval | Eligible foreground session configured confirm | A request opens its independent window and the user approves | Correct source/size/bounded preview is shown; confirmation focus alone does not invalidate it; the exact approved content is written once after revalidation |
-| Confirm denial and cancellation | A pending confirmation exists | User denies, closes its source, changes tab, or switches applications | No write; pending contents are released; a delayed/stale approval cannot resurrect the request |
-| Confirm flood | One request is being reviewed | Additional requests arrive | Original preview/content is unchanged; no additional dialog or unbounded pending queue; additional requests do not write |
-| Allow coalescing | Same eligible session has unexecuted writes | Valid A then valid B arrive before execution, with invalid candidates interspersed | Only latest valid B remains pending and is eligible for execution; unrelated events and other session identities are preserved |
-| Capacity boundaries | Eligible foreground session and bounded fixture generation | Exactly 4 MiB, 4 MiB plus one byte, and encoded overflow candidates arrive | Exact decoded maximum works; either limit violation rejects the whole request without changing clipboard or copying a prefix |
-| Fragmented framing and reset | A stream includes OSC 52 and later ordinary text | Feed BEL/ST variants at different splits, including inside base64 and between ESC and backslash; also cancel/reset incomplete strings | Complete valid writes behave equivalently; incomplete/cancelled requests never write; later text and other OSC handling recover correctly |
-| Read/unsupported input | Known fixture clipboard value | `?` query, unsupported selection, invalid UTF-8/NUL, or malformed base64 arrives | No read/disclosure or write; no false capability claim, extra error window, injected terminal error, or PTY reply |
-| Host failure and regressions | Approved request with an injected clipboard backend failure; existing selection copy/paste workflows | Apply failed effect and repeat ordinary copy, bracketed paste, and paste confirmation | Failure is diagnosed without payload leakage or false success; existing user-initiated clipboard/paste safety semantics remain unchanged |
-
-## Decisions and Source Traceability
-
-[#174](https://github.com/wangjq4214/harbor/issues/174) follows typed-action prerequisite #173. [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md) fixes capacity; [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) supersedes [0047](../adr/0047-foreground-only-host-authorized-osc52-writes.md) only to permit pending-confirmation focus; [ADR 0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md) settles subset, coalescing and content-free failure UX. Preserve paste/window safety under [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and [0009](../adr/0009-app-cross-window-input-gate.md). Terms remain in [project context](../CONTEXT.md) and [protocol context](../CONTEXT-terminal-protocol.md); evidence follows [Validation](../../docs/validation.md). Approval is not runtime acceptance; new semantic or architectural choices require discussion and recording.
+Policy authority: [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md) (capacity), [0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) (confirmation/focus, superseding 0047), [0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md) (subset/delivery), and existing [paste-window](../adr/0007-retain-separate-paste-confirmation-window.md) / [cross-window safety](../adr/0009-app-cross-window-input-gate.md). Reuse the static typed OSC action path from #173; no public extensible router is introduced.
 
 ## Test Plan and Definition of Done
 
@@ -145,19 +105,6 @@ python scripts/checklist_summary.py
 
 Update `docs/protocol/checklist.md`, the existing configuration documentation/example, and any affected retention-limit documentation to state the exact delivered target/text subset, fixed encoded/decoded limits, default policy, background restrictions, confirmation lifetime/focus exception, latest-write behavior, and denied reads. Do not mark unsupported or unexecuted scope complete.
 
-### Acceptance checklist
-
-- [ ] Supported writes/clears traverse a typed terminal-to-host request with stable source identity and the existing host clipboard effect.
-- [ ] Encoded/decoded and pending-retention bounds hold; no generic protocol cap is enlarged unintentionally.
-- [ ] Default/allow/deny/confirm obey active/background/stale-session rules, including delayed confirmation and execution races.
-- [ ] Independent confirmation shows a bounded preview and approves only its unchanged request; additional requests and invalidating lifecycle transitions cannot cause writes.
-- [ ] Unsupported, malformed, incomplete, cancelled/reset, and over-limit candidates do not change the clipboard or corrupt subsequent text parsing.
-- [ ] Reads remain denied without disclosure or unsupported capability claims.
-- [ ] Allow-mode same-session latest-write handling and unrelated event preservation have deterministic tests.
-- [ ] Content-free diagnostics report denial/failure without extra popups, terminal text, or PTY error replies.
-- [ ] Windows runtime evidence covers the delivered policy and capacity, and preserves existing copy/paste confirmation semantics.
-- [ ] Exact policy/limits are documented; focused tests and applicable gate results are recorded honestly.
-
 ## Out of Scope
 
 - OSC 52 reads or asynchronous clipboard-content replies. Future read support requires its own disclosure/permission and abuse-limit issue.
@@ -166,8 +113,3 @@ Update `docs/protocol/checklist.md`, the existing configuration documentation/ex
 - User-configurable capacity, direct terminal clipboard dependencies, a generic clipboard-provider plugin API, or a public extensible OSC router.
 - Delivering configuration hot reload (#155), pane workspaces (#158), or unrelated diagnostics packages as prerequisites for this bounded slice. Preserve existing settings/session boundaries and coordinate with those packages if they evolve.
 - Changing user-initiated selection copy, paste encoding, or the existing paste-confirmation safety gate.
-- Ticket slicing, execution ordering, an implementation plan, or implementation as part of this refinement.
-
-## Future Evolution
-
-Read support remains a separately authorized security-sensitive feature. Additional selection targets, capacity configuration, or clipboard protocols require a demonstrated interoperability/capacity need and a separately settled contract rather than being inferred from this write-only spec. No other speculative evolution is included.

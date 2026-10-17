@@ -35,6 +35,22 @@ impl DecoratedBox {
         (value.is_finite() && value.abs() <= f64::from(f32::MAX)).then_some(value as f32)
     }
 
+    fn fill_primitive(&self, rect: Rect, radii: [f32; 4]) -> Option<Primitive> {
+        let paint = self.decoration.paint().filter(crate::Paint::is_visible)?;
+        Some(match paint {
+            crate::Paint::Solid(color) => Primitive::RoundedQuad {
+                rect,
+                color,
+                corner_radii: radii,
+            },
+            _ => Primitive::PaintedQuad {
+                rect,
+                paint,
+                corner_radii: radii,
+            },
+        })
+    }
+
     fn outer_shadow_primitive(
         &self,
         rect: Rect,
@@ -203,24 +219,26 @@ impl AnyView for DecoratedBox {
                     .iter()
                     .filter_map(|shadow| self.outer_shadow_primitive(rect, radius, shadow))
                     .collect::<Vec<_>>();
-                primitives.extend(self.decoration.color().filter(|color| color.a > 0.0).map(
-                    |color| Primitive::RoundedQuad {
-                        rect,
-                        color,
-                        corner_radii: radii,
-                    },
-                ));
+                primitives.extend(self.fill_primitive(rect, radii));
                 primitives
             }
             PaintPhase::AfterChildren => self
                 .decoration
                 .border_value()
-                .filter(|border| border.width() > 0.0 && border.color().a > 0.0)
-                .map(|border| Primitive::RoundedBorder {
-                    rect,
-                    width: border.width(),
-                    color: border.color(),
-                    corner_radii: radii,
+                .filter(|border| border.width() > 0.0 && border.paint().is_visible())
+                .map(|border| match border.paint() {
+                    crate::Paint::Solid(color) => Primitive::RoundedBorder {
+                        rect,
+                        width: border.width(),
+                        color,
+                        corner_radii: radii,
+                    },
+                    paint => Primitive::PaintedBorder {
+                        rect,
+                        width: border.width(),
+                        paint,
+                        corner_radii: radii,
+                    },
                 })
                 .into_iter()
                 .collect(),
@@ -262,15 +280,8 @@ impl AnyView for DecoratedBox {
                     .map(|primitive| (slot as u32, primitive))
             })
             .collect::<Vec<_>>();
-        if let Some(color) = self.decoration.color().filter(|color| color.a > 0.0) {
-            primitives.push((
-                u32::MAX,
-                Primitive::RoundedQuad {
-                    rect,
-                    color,
-                    corner_radii: radii,
-                },
-            ));
+        if let Some(fill) = self.fill_primitive(rect, radii) {
+            primitives.push((u32::MAX, fill));
         }
         primitives
     }

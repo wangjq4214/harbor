@@ -22,60 +22,13 @@ The confirmation UI displays escaped preview text without changing the raw text,
 
 Every Runtime viewport must receive the window's logical size, physical size, and current scale factor so text placement, layout, and hit testing agree after DPI changes.
 
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Shared text core | `harbor-render` ↔ `harbor-widget` via `harbor-text` | Shared font, raster, atlas-data, metric, and text-run contracts | One CPU text implementation for terminal and Widget consumers |
-| External terminal provider | `harbor-widget` Runtime ↔ App / terminal renderer | `ExternalDrawId`, target rect, clip, render-pass context, and deferred input events | Terminal drawing and input inside the main Widget tree without a terminal-crate dependency |
-| Confirmation-window host | App ↔ winit / confirmation Widget Runtime | Window lifecycle, secondary surface, shared Device/Queue, scale-factor and input events | Native secondary confirmation window rendered by Widget Runtime |
-| Paste confirmation handoff | Selection / paste disposition ↔ App / confirmation UI | Raw paste candidate and current terminal state | Confirm-or-cancel intent; App sends the unchanged raw content using `InputModes` at confirmation time |
-
-## End-to-End Tests
-
-### E2E: Terminal CustomPaint renders and receives input
-
-On main-window redraw, the focused terminal CustomPaint renders within its rect/clip and delivers deferred input to App only after Widget propagation, without terminal renderer types entering `harbor-widget`.
-
-### E2E: Confirmable paste opens a native Widget window
-
-With bracketed paste disabled, pasting a valid newline opens/focuses an owned native confirmation window with its own Runtime, not a main-window overlay.
-
-### E2E: Confirm and cancel preserve paste safety
-
-Confirming sends unchanged raw content using `InputModes` read at confirmation time, even if modes changed while the window was open. Clicking Cancel, pressing `n` or Escape, or pressing Enter on default-focused Cancel closes the window without PTY bytes.
-
-### E2E: Cross-window modality preserves terminal safety
-
-While confirmation is open, main-window typing and new paste requests are blocked; PTY output, redraw, scrollback browsing and copying remain available.
-
-### E2E: Preview, focus, and DPI behavior
-
-For escaped control characters and overflowing preview content, resize/DPI changes update wrapping and hit regions; scrolling stays bounded, Tab traversal works from Cancel, and Enter activates the focused button.
-
 ## Decisions
 
-### Keep Widget and terminal GPU pipelines independent
-
-See [ADR 0003](../adr/0003-widget-independent-pipeline.md), [ADR 0004](../adr/0004-widget-dependency-boundary.md).
-
-### Use provider-by-ID for terminal drawing and input
-
-See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0006](../adr/0006-custom-paint-input-provider.md).
-
-### Retain a native confirmation window rendered by Widget Runtime
-
-See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0008](../adr/0008-widget-runtime-for-confirmation-window.md).
-
-### Resolve the window-scoped modality tension before implementation
-
-Preserve the behavior that an open confirmation blocks terminal keyboard input and new paste requests through an App-level cross-window gate; use `FocusScope` only within the confirmation Runtime for its own controls. ADR 0006 describes a modal `FocusScope` intercepting terminal input, which is applicable when both controls share a Runtime. ADRs 0007 and 0008 move confirmation to a separate window and Runtime, so the Runtime-local modal barrier cannot enforce cross-window terminal isolation. A follow-up ADR must supersede or narrow ADR 0006 before planning; this spec treats the newer separate-window decisions as the required feature behavior. See [0006-custom-paint-input-provider](../adr/0006-custom-paint-input-provider.md), [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0008-widget-runtime-for-confirmation-window](../adr/0008-widget-runtime-for-confirmation-window.md)
-
-### Superseded Phase 3 overlay requirement
-
-See [ADR 0001](../adr/0001-widget-crate-separation.md), [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md).
+Paste safety and the separate-window gate follow [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and [ADR 0009](../adr/0009-app-cross-window-input-gate.md). Current native-host ownership follows [Spec 0012](./0012-widget-winit-native-host-consolidation.md); the earlier App-owned surface/presentation description above is historical.
 
 ## Test Plan
+
+A valid newline with bracketed paste disabled must open/focus the owned confirmation window. Confirm uses unchanged raw bytes and modes current at confirmation time; cancel, native close, n/Escape or Enter on default Cancel write no PTY bytes.
 
 - **Integration tests:** Exercise `harbor-text` from both renderers; test SceneItem `Text` and `External` encoding order, batch flush and state restoration; test provider dispatch after event propagation; and test App routing across main and confirmation window IDs.
 - **Manual tests:** Open a confirmable multiline paste; verify the secondary window is owned and centered over the main window; confirm and cancel with each supported keyboard and pointer route; change display DPI and resize both windows; verify terminal output and scrollback remain usable while confirmation is open.
@@ -90,11 +43,3 @@ See [ADR 0001](../adr/0001-widget-crate-separation.md), [ADR 0007](../adr/0007-r
 - A general-purpose `ScrollView`, images, paths, non-rectangular clipping, complex animations, virtual lists, R-tree hit testing, and time-sliced reconciliation.
 - Complex text shaping, bidirectional text, ligatures, selection/caret editing, and a shared GPU glyph atlas across renderer adapters.
 - Moving PTY ownership, terminal model ownership, or terminal renderer ownership into `harbor-widget`.
-
-## Future Evolution
-
-- Re-evaluate a shared GPU glyph atlas only if profiling shows duplicate GPU uploads across adapters are material.
-- Add a general scroll container only after a second independently justified scrollable Widget use case.
-- Add shaping and richer text behavior when a Widget UI requires it and shared text-core APIs can support terminal and UI needs without coupling.
-- Generalize external providers for additional App-owned content only after a second concrete `CustomPaint` consumer.
-- Revisit cross-window modality and accessibility when Harbor adds platform-native activation, multiple main windows, or accessibility requirements.

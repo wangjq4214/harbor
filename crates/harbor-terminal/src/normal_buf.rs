@@ -6,7 +6,7 @@ use crate::screen::Cell;
 /// IDs are local to one `NormalBuf`; they are never derived from ring positions
 /// and are never reused by that buffer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct LogicalLineId(pub(crate) u64);
+pub struct LogicalLineId(pub u64);
 
 /// Metadata carried atomically with one physical ring row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,7 +83,7 @@ pub(crate) struct RetainedRow<'a> {
 /// (`view_offset == 0`), the ring head advances O(1) on full-screen scroll
 /// — no cell copies, just a pointer bump and blank-fill of the newly
 /// exposed row(s).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct NormalBuf {
     /// Ring buffer: `total_rows * cols` cells — accessible via helper methods.
     cells: Vec<Cell>,
@@ -91,6 +91,10 @@ pub struct NormalBuf {
     cell_state: Vec<CellState>,
     /// One metadata record per physical ring row.
     row_metadata: Vec<RowMetadata>,
+    /// Read-model generation and semantic revisions, independent of renderer damage.
+    content_generation: u64,
+    content_revision: u64,
+    row_versions: Vec<u64>,
     /// Next never-before-issued logical line identity.
     next_logical_line_id: u64,
     /// Ring capacity in rows = `max_scrollback + visible_rows`.
@@ -114,7 +118,57 @@ pub struct NormalBuf {
     history_start: u64,
 }
 
+// Buffer equality describes storage/content, not read-model provenance. Detached
+// preparations of the same input must stay deterministic despite fresh identities.
+impl PartialEq for NormalBuf {
+    fn eq(&self, other: &Self) -> bool {
+        self.cells == other.cells
+            && self.cell_state == other.cell_state
+            && self.row_metadata == other.row_metadata
+            && self.next_logical_line_id == other.next_logical_line_id
+            && self.total_rows == other.total_rows
+            && self.visible_rows == other.visible_rows
+            && self.cols == other.cols
+            && self.visible_start == other.visible_start
+            && self.scroll_count == other.scroll_count
+            && self.view_offset == other.view_offset
+            && self.damage_tracker == other.damage_tracker
+            && self.max_scrollback == other.max_scrollback
+            && self.history_start == other.history_start
+    }
+}
+impl Eq for NormalBuf {}
 impl NormalBuf {
+    fn touch_ring_row(&mut self, ring_row: usize) {
+        self.content_revision = self
+            .content_revision
+            .checked_add(1)
+            .expect("terminal content revision exhausted");
+        self.row_versions[ring_row] = self.content_revision;
+    }
+
+    pub(crate) fn content_generation(&self) -> u64 {
+        self.content_generation
+    }
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    /// Constant-time retained row access; no preceding row decoding or allocation.
+    pub(crate) fn retained_row(&self, generation: u64) -> Option<RetainedRow<'_>> {
+        let ring_row = self.ring_row_at_generation(generation)?;
+        let start = ring_row * self.cols;
+        Some(RetainedRow {
+            generation,
+            metadata: self.row_metadata[ring_row],
+            cells: &self.cells[start..start + self.cols],
+            cell_state: &self.cell_state[start..start + self.cols],
+        })
+    }
+
+    pub(crate) fn row_version(&self, generation: u64) -> Option<u64> {
+        Some(self.row_versions[self.ring_row_at_generation(generation)?])
+    }
     const DEFAULT_MAX_SCROLLBACK: usize = 1000;
 
     pub fn new(rows: usize, cols: usize) -> Self {
@@ -147,6 +201,9 @@ impl NormalBuf {
             cells: vec![Cell::default(); cell_count],
             cell_state: vec![CellState::default(); cell_count],
             row_metadata,
+            content_generation: crate::read_model::fresh_identity(),
+            content_revision: 0,
+            row_versions: vec![0; total_rows],
             next_logical_line_id,
             visible_rows: rows,
             cols,
@@ -249,6 +306,7 @@ impl NormalBuf {
     }
 
     fn recompute_ring_row_extent(&mut self, ring_row: usize) {
+        self.touch_ring_row(ring_row);
         let start = ring_row * self.cols;
         let extent = self.cell_state[start..start + self.cols]
             .iter()
@@ -321,6 +379,7 @@ impl NormalBuf {
                 .logical_atom_start
                 .checked_add(self.logical_atom_count(self.display_to_ring(next_row - 1)))
                 .expect("logical line atom offset overflow");
+            self.touch_ring_row(ring_row);
             let metadata = &mut self.row_metadata[ring_row];
             metadata.logical_line_id = source.logical_line_id;
             metadata.logical_start = logical_start;
@@ -339,6 +398,7 @@ impl NormalBuf {
         let mut metadata = self.fresh_metadata();
         metadata.meaningful_extent = extent;
         self.row_metadata[ring_row] = metadata;
+        self.touch_ring_row(ring_row);
         self.repair_following_soft_chain(display_row);
     }
 
@@ -368,6 +428,7 @@ impl NormalBuf {
         source_atom_count: usize,
     ) {
         let ring_row = self.display_to_ring(display_row);
+        self.touch_ring_row(ring_row);
         self.row_metadata[ring_row] = RowMetadata {
             logical_line_id: source.logical_line_id,
             logical_start: source
@@ -493,6 +554,7 @@ impl NormalBuf {
             self.cells[start..start + self.cols].clone_from_slice(&cells);
             self.cell_state[start..start + self.cols].copy_from_slice(&states);
             self.row_metadata[ring_row] = metadata;
+            self.touch_ring_row(ring_row);
         }
     }
 
@@ -534,6 +596,7 @@ impl NormalBuf {
         debug_assert!(col < self.cols);
         self.mark_range_dirty(display_row, col, col + 1);
         let actual_row = self.display_to_ring(display_row);
+        self.touch_ring_row(actual_row);
         &mut self.cells[actual_row * self.cols + col]
     }
 
@@ -795,10 +858,18 @@ impl NormalBuf {
             row_metadata[ring_row] = row.metadata;
         }
 
+        let mut row_versions = Vec::new();
+        row_versions
+            .try_reserve_exact(total_rows)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        row_versions.resize(total_rows, 0);
         Ok(Self {
             cells,
             cell_state,
             row_metadata,
+            content_generation: crate::read_model::fresh_identity(),
+            content_revision: 0,
+            row_versions,
             next_logical_line_id,
             total_rows,
             visible_rows,
@@ -933,6 +1004,7 @@ impl NormalBuf {
         debug_assert!(display_row < self.visible_rows);
         let ring_row = self.display_to_ring(display_row);
         self.row_metadata[ring_row].head_truncated = head_truncated;
+        self.touch_ring_row(ring_row);
     }
 
     #[cfg(test)]
@@ -945,6 +1017,7 @@ impl NormalBuf {
         let ring_row = self.display_to_ring(display_row);
         self.row_metadata[ring_row].logical_start = logical_start;
         self.row_metadata[ring_row].logical_atom_start = logical_atom_start;
+        self.touch_ring_row(ring_row);
     }
 
     #[cfg(test)]
@@ -957,6 +1030,7 @@ impl NormalBuf {
     pub(crate) fn set_wrapped(&mut self, display_row: usize, wrapped: bool) {
         debug_assert!(display_row < self.visible_rows);
         let ring_row = self.display_to_ring(display_row);
+        self.touch_ring_row(ring_row);
         self.row_metadata[ring_row].soft_wrapped = wrapped;
         if !wrapped {
             self.row_metadata[ring_row].logical_start = 0;
@@ -1023,6 +1097,7 @@ impl NormalBuf {
         }
         if let Some(ring_row) = truncated_head_ring {
             self.row_metadata[ring_row].head_truncated = true;
+            self.touch_ring_row(ring_row);
         }
         // Blank newly exposed rows and give each reused slot a never-before-used ID.
         let state = CellState::fresh_fill(&cell);
@@ -1035,6 +1110,7 @@ impl NormalBuf {
             let mut metadata = self.fresh_metadata();
             metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
             self.row_metadata[row] = metadata;
+            self.touch_ring_row(row);
             self.repair_following_soft_chain(display_row);
         }
         if self.view_offset > 0 {
@@ -1155,6 +1231,9 @@ impl NormalBuf {
         self.history_start =
             old_history_start.saturating_add((old_scroll_count - keep_history) as u64);
         self.damage_tracker.resize(rows, cols);
+        self.content_generation = crate::read_model::fresh_identity();
+        self.content_revision = 0;
+        self.row_versions = vec![0; new_total];
 
         tracing::debug!(
             new_visible_start = self.visible_start,
@@ -1187,6 +1266,7 @@ impl NormalBuf {
         let mut metadata = self.fresh_metadata();
         metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
         self.row_metadata[ring_row] = metadata;
+        self.touch_ring_row(ring_row);
         self.repair_following_soft_chain(display_row);
     }
 
@@ -1204,6 +1284,9 @@ impl NormalBuf {
 
     /// RIS replacement of every retained ring slot without rewinding the allocator.
     pub(crate) fn reset_all_retained(&mut self) {
+        self.content_generation = crate::read_model::fresh_identity();
+        self.content_revision = 0;
+        self.row_versions.fill(0);
         self.cells.fill(Cell::default());
         self.cell_state.fill(CellState::default());
         for ring_row in 0..self.total_rows {

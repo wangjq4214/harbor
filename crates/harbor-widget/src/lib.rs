@@ -17,6 +17,8 @@ pub mod __macro_support {
 
 pub mod icon;
 pub use icon::LucideIcon;
+pub mod paint;
+pub use paint::{GradientError, GradientStop, LinearGradient, Paint};
 pub mod decoration;
 pub use decoration::{
     Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecorationError,
@@ -38,11 +40,14 @@ pub mod store;
 pub use store::{Dispatcher, Store};
 pub mod signal;
 pub mod text;
+pub mod text_editing;
+pub use text_editing::{TextEditingController, TextEditingValue, TextSelection};
 pub mod theme;
 pub mod view;
 pub mod widgets;
 pub use layout::{Alignment, FlexFit};
 pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
+pub use widgets::backdrop_filter::{BackdropFilter, EdgeRefraction};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
     ActionOutcome, Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP,
@@ -51,6 +56,7 @@ pub use widgets::{
     MouseRegion, Notification, Portal, Row, ScrollArea, ScrollController, ScrollMetrics, Separator,
     Shortcuts, Spacer, ThemeProvider,
 };
+pub use widgets::{EditableText, TextField};
 
 #[cfg(test)]
 mod macro_tests;

@@ -1,6 +1,7 @@
 //! Application workspace composition and Host-published global UI state.
 
 use crate::{
+    appearance::SearchAppearance,
     command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
     notifications::{ConfigurationNoticeSource, ConfigurationNotices, configuration_notification},
     tab_manager::TabSnapshot,
@@ -8,8 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
-    LayoutObserver, Row, Shortcuts, Store,
+    ActionOutcome, Actions, BackdropFilter, ClipBehavior, ComponentExt as _, DecoratedBox,
+    Expanded, Focus, FocusHandle, FocusScope, IconButton, LayoutObserver, LucideIcon, Portal, Row,
+    Shortcuts, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -17,10 +19,129 @@ use harbor_widget::{
 };
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
+struct SearchUiState {
+    open: bool,
+    source: Option<crate::tab_manager::TabId>,
+    input: TextEditingController,
+    status: String,
+}
+
+impl Default for SearchUiState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            source: None,
+            input: TextEditingController::with_acceptance("", |text| {
+                text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
+            }),
+            status: "No Result".into(),
+        }
+    }
+}
+
+fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
+    let input = controller.store.state().read().search.input.clone();
+    let changed_ui = controller.clone();
+    let submit = controller.store.dispatcher();
+    let close = controller.store.dispatcher();
+    let entry = TextField::new(input)
+        .decoration(SearchAppearance::input())
+        .padding(6.0)
+        .placeholder("Find…")
+        .focus_handle(controller.search_focus)
+        .on_changed(move |_| {
+            changed_ui.publish_search_status("No Result");
+            changed_ui
+                .store
+                .dispatcher()
+                .dispatch(AppCommandRequest::shortcut(AppCommand::SearchChanged));
+        })
+        .on_submitted(move |modifiers| {
+            submit.dispatch(AppCommandRequest::shortcut(if modifiers.shift {
+                AppCommand::SearchPrevious
+            } else {
+                AppCommand::SearchNext
+            }))
+        })
+        .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
+    let mut style = cx.theme().icon_button.clone();
+    style.min_height = 32.0;
+    style.icon_size = 18.0;
+    style.horizontal_padding = 7.0;
+    style.border_width = 0.0;
+    for colors in [
+        &mut style.normal,
+        &mut style.hovered,
+        &mut style.pressed,
+        &mut style.selected,
+        &mut style.disabled,
+    ] {
+        colors.background = Color::TRANSPARENT;
+    }
+    style.normal.foreground.a = 0.78;
+    style.hovered.foreground.a = 1.0;
+    style.pressed.foreground.a = 0.5;
+    let button = |icon, label, command| {
+        let dispatcher = controller.store.dispatcher();
+        IconButton::new(icon, label)
+            .style(style.clone())
+            .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
+    };
+    let status = controller.store.state().read().search.status.clone();
+    let radius = SearchAppearance::radius();
+    let decoration = SearchAppearance::panel();
+    let card = harbor_widget::view! { &mut *cx;
+        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap()
+            .border_radius(radius).edge_refraction(SearchAppearance::refraction()) => {
+            DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
+                Padding::all(8.0) => {
+                    Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+                        Expanded::new() => { entry; }
+                        // Status text changes frequently; reserve its slot instead of resizing the editor.
+                        harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
+                            harbor_widget::widgets::text_label::TextLabel::new(status)
+                                .color(cx.theme().button.normal.foreground).ellipsis();
+                        }
+                        button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
+                        button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
+                        button(LucideIcon::X, "Close search", AppCommand::SearchClose);
+                    }
+                }
+            }
+        }
+    };
+    Portal::new()
+        .child(
+            harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)
+                .vertical_alignment(harbor_widget::Alignment::Start)
+                .insets(
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                    SEARCH_PANEL_INSET,
+                )
+                .child(
+                    harbor_widget::ConstrainedBox::new()
+                        .min_width(440.0)
+                        .max_width(440.0)
+                        .min_height(SEARCH_PANEL_HEIGHT)
+                        .max_height(SEARCH_PANEL_HEIGHT)
+                        .child(card),
+                ),
+        )
+        .build(cx)
+}
+
+// Fixed chrome height also reserves space for configuration notices below search.
+const SEARCH_PANEL_HEIGHT: f32 = 48.0;
+const SEARCH_PANEL_INSET: f32 = 12.0;
+
 #[derive(Clone, Default)]
 struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
     notices: ConfigurationNotices,
+    search: SearchUiState,
 }
 
 /// App-wide publication and the sole one-shot action inbox, independent of tab sync.
@@ -29,6 +150,7 @@ pub struct WorkspaceUiController {
     store: Store<WorkspaceUiState, AppCommandRequest>,
     tabs: TabUiController,
     terminal_focus: FocusHandle,
+    search_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
 }
 
@@ -42,7 +164,57 @@ impl WorkspaceUiController {
             store: Store::new(WorkspaceUiState::default()),
             tabs: TabUiController::new(snapshots, active_bridge, logical_width),
             terminal_focus: FocusHandle::new(),
+            search_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
+        }
+    }
+
+    pub fn open_search(&self, source: crate::tab_manager::TabId) {
+        let mut state = self.store.state().read().clone();
+        if state.search.source != Some(source) {
+            state.search = SearchUiState::default();
+        }
+        state.search.open = true;
+        state.search.source = Some(source);
+        self.store.set_state(state);
+    }
+
+    pub fn close_search(&self) {
+        let mut state = self.store.state().read().clone();
+        state.search = SearchUiState::default();
+        self.store.set_state(state);
+    }
+
+    pub fn search_focus(&self) -> FocusHandle {
+        self.search_focus
+    }
+
+    pub fn search_query(&self) -> Option<(crate::tab_manager::TabId, String)> {
+        let state = self.store.state().read();
+        if !state.search.open {
+            return None;
+        }
+        Some((state.search.source?, state.search.input.text()))
+    }
+
+    pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {
+        if self
+            .store
+            .state()
+            .read()
+            .search
+            .source
+            .is_some_and(|source| Some(source) != active)
+        {
+            self.close_search();
+        }
+    }
+
+    pub fn publish_search_status(&self, status: &str) {
+        let mut state = self.store.state().read().clone();
+        if state.search.status != status {
+            state.search.status = status.into();
+            self.store.set_state(state);
         }
     }
 
@@ -168,7 +340,12 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
     let dismiss_dispatcher = dispatcher.clone();
     let notification = state.notices.message().map(|message| {
         let revision = state.notices.revision;
-        configuration_notification(message, move || {
+        let top_offset = if state.search.open {
+            SEARCH_PANEL_HEIGHT + SEARCH_PANEL_INSET
+        } else {
+            0.0
+        };
+        configuration_notification(message, top_offset, move || {
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
                 focus: TabFocusPolicy::PreserveRail,
@@ -199,12 +376,20 @@ fn terminal_panel(
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
 ) -> View {
+    let search = controller.store.state().read().search.clone();
     harbor_widget::view! { cx; Expanded::new() => {
-        controller.allocation.observer() => {
-            TerminalDecorationPreset::container() => {
-                Focus::empty().handle(controller.terminal_focus) => {
-                    terminal_widget(active_bridge);
+        harbor_widget::Column::new() => {
+            Expanded::new().keyed("terminal-surface") => {
+                controller.allocation.observer() => {
+                    TerminalDecorationPreset::container() => {
+                        Focus::empty().handle(controller.terminal_focus) => {
+                            terminal_widget(active_bridge);
+                        }
+                    }
                 }
+            }
+            if search.open {
+                search_bar(cx, controller);
             }
         }
     } }

@@ -437,6 +437,33 @@ pub enum Primitive {
         color: Color,
         corner_radii: [f32; 4],
     },
+    /// Generic paint using the same rounded coverage as a solid fill.
+    PaintedQuad {
+        rect: Rect,
+        paint: crate::paint::Paint,
+        corner_radii: [f32; 4],
+    },
+    /// Generic paint on a uniform-width rounded stroke.
+    PaintedBorder {
+        rect: Rect,
+        width: f32,
+        paint: crate::paint::Paint,
+        corner_radii: [f32; 4],
+    },
+    /// A local background filter, evaluated before subsequent scene items.
+    /// Requires Runtime::encode_frame (a filter cannot sample an open attachment).
+    BackdropBlur {
+        rect: Rect,
+        sigma: f32,
+        corner_radii: [f32; 4],
+    },
+    /// Opt-in edge-displaced local blur; legacy BackdropBlur remains unchanged.
+    BackdropRefract {
+        rect: Rect,
+        sigma: f32,
+        corner_radii: [f32; 4],
+        refraction: crate::EdgeRefraction,
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,

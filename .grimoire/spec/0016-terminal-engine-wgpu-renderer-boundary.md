@@ -4,6 +4,8 @@
 **Status:** In Progress
 **Date:** 2026-09-27
 
+**Stable execution aliases:** 0014/T0001 = core/update boundary; T0002 = PTY ownership; T0003 = renderer consumption; T0004 = application/widget migration; T0005 = final dependency/Windows/performance acceptance below. Implementation is present, not final acceptance. Baseline/final dependency graphs and one-/multi-session before/after measurements must use reproducible commands and identify environment/revision/dirty scope, without inventing a performance threshold. The delivered ownership/teardown map must match code; core-only and rendered targets must both build.
+
 ## Sources and scope
 
 - [Issue #176](https://github.com/wangjq4214/harbor/issues/176) defines the requested outcome, exclusions, acceptance, verification, and sequencing; #169 and #170 are closed prerequisites.
@@ -24,30 +26,18 @@ Keep a compatibility facade while `harbor-app` and terminal widget integration m
 
 ### Necessary seams
 
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Terminal update | Logical engine/session → wgpu renderer | Coherent snapshot/damage and presentation inputs; snapshot reads do not consume damage; replay after skipped/failed draws | Full or incremental GPU preparation without mutable parser/screen access; acknowledge only safely applied updates |
-| Session lifecycle | Session adapter ↔ `harbor-pty` and logical engine | Owned endpoints, acknowledged resize ordering and safe shutdown | Ordered parsing/geometry and resource release across success, failure and close |
-| Widget and host integration | `harbor-app` / `TerminalWidgetBridge` ↔ terminal session and renderer (via facade during migration) | Existing input, render target, retained/live draw, wake and scheduling behavior | Existing widget paint integration without moving window/GPU lifecycle into core |
-| GPU access | Host → wgpu renderer | Frame-scoped device, queue and render-pass access | Concrete terminal rendering without core GPU dependency |
+The engine/session supplies coherent read-only updates to one concrete renderer; the session owns ordered PTY resize and shutdown, and the host supplies frame-scoped GPU access, input, retained/live scheduling and window/surface lifecycle. These seams must retain the solution boundary above.
 
 ## End-to-end verification cases
 
-- **Core-only build:** Given the core-only target, when compiled and tested and its dependency graph inspected, then it has no compile-time path to wgpu, arboard, winit or `harbor-widget` while parser, input, selection, damage and timing tests run.
-- **Output and incremental rendering:** Given a running terminal and PTY output, when dirty ranges are presented, then the renderer uses the applicable incremental/full update and draws the same text, cursor, selection, scrollbar and preedit as before; palette and viewport changes invalidate the affected rendering correctly.
-- **Hidden or failed drawing:** Given output while a tab is hidden or a draw cannot complete, when that tab becomes drawable again, then the latest complete state is visible without losing changes, whether by replaying retained damage or rebuilding the necessary projection. A read-only snapshot must not clear pending damage.
-- **Resize and DPI:** Given active output, scrollback and selection, when the host changes size or scale, then the existing PTY/model resize ordering and visual projection remain consistent, including failure and retry paths.
-- **Session lifecycle:** Given a terminal under construction or closing, when GPU initialization fails or a tab is hidden, switched, or closed, then PTY endpoints and GPU resources obey their designated owners' teardown rules without leaking or dropping a live session early.
-- **Scheduling and retained paint:** Given active and inactive terminals, when output, input, blink deadlines or retained draws occur, then wake/frame-demand and live/retained behavior remain compatible without the core owning a host surface.
-
-## Decisions and open contract detail
-
-[ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) and #176 authorize the solution above: feature isolation first, one concrete renderer per session, engine-owned state/timing and session-owned PTY lifecycle. Host GPU injection/scheduling and acknowledged resize remain constrained by ADRs 0011, 0021 and 0043. Update representation, safe acknowledgement and upload-layer selection are implementation details; observable or architectural changes require discussion before revising this spec.
+- Build/test core-only and rendered targets and inspect excluded dependency paths.
+- Exercise full/incremental output and every presentation input named above; a snapshot read or skipped/failed draw cannot consume pending changes.
+- Exercise active-output resize/DPI, scrollback/selection, failure/retry, hidden-tab recovery, creation/renderer-init failure/tab switch/close, and blink/wake/live-retained scheduling without changing ownership or visuals.
 
 ## Test and evidence plan
 
 - Historical T0001 (GPU-Free Engine and Update Boundary) recorded intermediate core-boundary verification, a pre-migration CPU-side performance baseline, and normal/all-edge dependency graphs. These results describe intermediate revisions and CPU-side proxies, not final integrated Windows/GPU/ConPTY or post-migration performance acceptance.
-- Historical T0002 (PTY Session Ownership): [session ownership and teardown map](../../docs/architecture/terminal-session-ownership.md) preserves the engine/session/renderer/host responsibilities and construction, resize, failure, retry and close constraints alongside ADR-0043. Its recorded Done status coexists with unchecked acceptance items; this navigation does not reconcile that discrepancy or establish lifecycle acceptance. Renderer, integrated application and final Windows/performance verification remain active in [T0003–T0005](../ticket/0014-terminal-engine-wgpu-boundary/README.md).
+- The [session ownership and teardown map](../../docs/architecture/terminal-session-ownership.md) preserves construction, endpoint, resize, failure/retry and close responsibilities. Historical T0002 was marked Done with unchecked acceptance; that does not establish lifecycle acceptance. T0003/T0004 renderer/application migration is implemented; T0005 final integrated acceptance remains unverified.
 - Cover full/incremental upload, resize, DPI, palette, selection, cursor, scrollbar, preedit, wake and frame demand with focused tests; validate caller behavior and failure/teardown with integration tests during and after migration, without requiring the facade to remain in the final API.
 - Record before/after dependency graphs and one-/multi-session performance results; keep conclusions in committed summaries and raw artifacts locally or in retrievable CI.
 - Collect Windows runtime evidence for create, resize, tab switch/hide, close, renderer-init failure where reproducible, and sustained output. Record revision, dirty-tree scope, OS/ConPTY/GPU versions, expected and observed outcomes, artifacts and known exclusions; label each check PASS / FAIL / NOT RUN / BLOCKED honestly.
@@ -56,7 +46,3 @@ Keep a compatibility facade while `harbor-app` and terminal widget integration m
 ## Out of scope
 
 No new renderer or backend marketplace, software/SVG output, PTY transport redesign, parser thread, broad screen-storage rewrite, visual behavior change or claim that this task makes N12 transport-feasible. Do not add a generic renderer or render-pass abstraction without a demonstrated second backend. This is an enabling boundary for #158, #159, #163 and #166, not implementation of those features.
-
-## Sequencing constraint
-
-The contract/design follows the established #169 boundary; ownership migration follows the first reflow path in #170. Both issues are closed, but the migration must preserve their resulting behavior. This spec defines the shared requirement contract; executable decomposition and order belong to tickets if that stage is selected.

@@ -269,19 +269,21 @@ impl AnyView for InteractiveRegionView {
     fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
         let state = self.runtime.read().visual;
         let colors = self.style.resolve_state(&state);
-        vec![
-            Primitive::Quad {
-                rect,
-                color: colors.background,
-                corner_radius: self.style.radius,
-            },
-            Primitive::Border {
+        let mut primitives = vec![Primitive::Quad {
+            rect,
+            color: colors.background,
+            corner_radius: self.style.radius,
+        }];
+        // A zero-width border means no outline, not the renderer's fill mode.
+        if self.style.border_width > 0.0 && colors.border.a > 0.0 {
+            primitives.push(Primitive::Border {
                 rect,
                 width: self.style.border_width,
                 color: colors.border,
                 corner_radius: self.style.radius,
-            },
-        ]
+            });
+        }
+        primitives
     }
 
     fn paint_primitives_for_phase(

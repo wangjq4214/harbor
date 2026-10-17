@@ -7,7 +7,7 @@ use crate::normal_buf::{CellState, LogicalLineId, NormalBuf, RetainedRow};
 use crate::screen::Cell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalAtomOffset(pub(crate) usize);
+pub struct LogicalAtomOffset(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SourceSpan {
@@ -133,6 +133,27 @@ pub(crate) fn decode_active(
     Ok(atoms)
 }
 
+/// Shared validation/width for one retained text unit, without copying its suffix.
+pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, DecodeError> {
+    let extent = row.metadata.meaningful_extent.min(row.cells.len());
+    let cell = &row.cells[col];
+    let kind = if cell.wide_continuation {
+        Some(DecodeErrorKind::OrphanWideContinuation)
+    } else if cell.grid_width() == 2 && (col + 1 >= extent || !row.cells[col + 1].wide_continuation)
+    {
+        Some(DecodeErrorKind::MissingWideContinuation)
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        return Err(DecodeError {
+            generation: row.generation,
+            column: col,
+            kind,
+        });
+    }
+    Ok(if cell.grid_width() == 2 { 2 } else { 1 })
+}
 fn decode_row(
     row: RetainedRow<'_>,
     atom_offset: &mut usize,
@@ -141,27 +162,8 @@ fn decode_row(
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let mut col = 0;
     while col < extent {
+        let width = row_glyph_width(row, col)?;
         let cell = row.cells[col].clone();
-        if cell.wide_continuation {
-            return Err(DecodeError {
-                generation: row.generation,
-                column: col,
-                kind: DecodeErrorKind::OrphanWideContinuation,
-            });
-        }
-
-        let width = if cell.grid_width() == 2 {
-            if col + 1 >= extent || !row.cells[col + 1].wide_continuation {
-                return Err(DecodeError {
-                    generation: row.generation,
-                    column: col,
-                    kind: DecodeErrorKind::MissingWideContinuation,
-                });
-            }
-            2
-        } else {
-            1
-        };
         let meaningful_blank =
             cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
         atoms.push(LogicalAtom::Glyph {

@@ -11,7 +11,6 @@ Deliver bounded OSC 4 palette set/query and OSC 104 palette reset so an applicat
 
 The approved compatibility choices are indexes 0-255 only, the existing hexadecimal RGB subset, whole-request validation before effects, ordered execution of valid operations, alpha preservation on set, and startup RGBA restoration on explicit palette reset. Dynamic indexed colors are session-owned, shared across primary/alternate buffers, and preserved by RIS, DECSTR, and SGR reset. No blocking semantic decision remains for this contract.
 
-This authoring task creates a spec and records qualifying durable policy. It does not authorize production changes, a separate implementation-plan stage, ticket decomposition, GitHub edits, staging, or committing.
 
 ## Requirements
 
@@ -76,70 +75,9 @@ b"\x1b]4;42;rgb:1212/3434/5656\x1b\\"
 - Record Windows runtime evidence for a named, versioned application workload or palette set/query/reset probe through the actual Harbor/ConPTY session. A synthetic parser test, successful PTY write, or GPU-independent model result is not Windows application acceptance.
 - Evidence summaries follow [Validation Policy](../../docs/validation.md): revision/dirty-tree scope, environment and Windows/ConPTY/application versions, reproducible commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and known exclusions. Keep raw artifacts local or link retrievable CI artifacts; do not commit local-only artifact links or unrelated private terminal contents.
 
-## Solution and Necessary Seams
+## Verification
 
-Extend the existing terminal-owned indexed color resolution and OSC action path. The active indexed palette and startup reset baseline must participate in the coherent engine update already consumed by the renderer. No new parser, direct PTY reply owner, universal renderer abstraction, or configuration format is selected.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Startup configuration -> session palette | `harbor-config` palette -> terminal session color state | Configured normal/bright RGBA plus existing cube/grayscale baseline | Independent startup reset baseline and bounded active indexed colors |
-| Completed OSC -> typed actions | `harbor-parser` framing -> terminal OSC routing/handler | Completed bounded command/payload and BEL/ST termination fact | Full-request validation, ordered set/query/reset semantics, consume-ignore for malformed candidates |
-| Semantic colors -> effective colors | Cell/decoration indexed values and ANSI aliases -> active palette resolution | Current session palette, existing semantic cell data | Matching indexed/ANSI colors without rewriting retained text or truecolor |
-| Active palette -> renderer update | Session color state -> `TerminalUpdate` -> render pipeline/layers | Coherent palette and damage, acknowledgement only for current projection | Updated retained foreground/background/decoration colors, replay after hidden/skipped frames |
-| Query -> application | OSC query handler -> Screen TerminalReply -> existing PTY delivery | Active RGB, request terminator, bounded complete replies | Exact ordered protocol bytes through the current platform-neutral path |
-| Buffer/session lifecycle -> palette lifetime | Existing primary/alternate swap and reset operations -> session color state | Session ownership distinct from buffer contents and pen reset | Palette survives approved transitions and stays isolated across sessions |
-
-### Inspected repository anchors
-
-Use existing session palette/configuration, typed OSC color routing, Screen reply/damage and coherent update/renderer synchronization paths. Private storage/helper layout remains an implementation detail; the contract requires semantic ANSI/indexed aliases and bounded complete replies, not the historical inspected storage layout.
-
-## End-to-End Tests
-
-All byte strings below use Rust escape notation; tests must compare protocol bytes, not the printed escape spelling.
-
-| Case | Given / input | Observable outcome |
-| --- | --- | --- |
-| Existing content recolored | Write indexed foreground/background/decoration content at slots spanning 0, 15, 16, 231, 232, 255; then set those entries through OSC 4 | Previously written and newly written content use the changed colors; ANSI aliases agree; retained text/width/attributes and truecolor comparison content are unchanged |
-| Exact ST query | Set 42 to `#123456`, then feed `b"\x1b]4;42;?\x1b\\"` | Exact `b"\x1b]4;42;rgb:1212/3434/5656\x1b\\"` reply and matching rendered RGB |
-| Short/mixed-width RGB and BEL | Feed `b"\x1b]4;255;rgb:f/80/8000;255;?\x07"` | Entry 255 uses RGB `(255,128,128)`; exact `b"\x1b]4;255;rgb:ffff/8080/8080\x07"` reply; alpha is preserved |
-| Multi-entry ordered mutation | Feed `b"\x1b]4;42;#112233;43;#abcdef;42;?;42;#445566;42;?\x1b\\"` | Slots 42/43 change; replies report `1111/2222/3333` then `4444/5555/6666`; final slot 42 is `#445566` |
-| Invalid tail rejects leading effects | Feed `b"\x1b]4;42;#112233;42;?;256;#abcdef\x1b\\"` or a payload with a valid prefix and incomplete trailing pair | No palette mutation or reply, including the leading set/query; following ordinary text and valid OSC still work |
-| Invalid color/query shapes | Valid pair prefix followed by `red`, `red?`, `rgbi:1/0/0`, `#12345678`, invalid hex, missing components, or unsupported component width | Entire request is consumed without mutation or reply; exact standalone `?` remains the only query token |
-| Selective reset with repeats | Configured ANSI entries plus changed slots 1, 42, 255; feed `b"\x1b]104;1;42;42\x1b\\"` | Entries 1/42 regain startup RGBA; 255 stays changed; no reply; defaults/cursor/selection stay unchanged |
-| Invalid reset list | Changed slots 1/42; feed `b"\x1b]104;1;256\x07"` or a malformed index list | Neither slot is restored; no reply; later valid reset succeeds |
-| Full indexed reset separation | Mutate indexed slots and OSC default colors, then feed `b"\x1b]104\x07"` | All indexed slots return to startup ANSI/cube/grayscale colors; OSC default colors, cursor, and selection remain as before this reset |
-| Buffer and reset lifetime | Set/query in primary and alternate buffers using existing mode families, return/re-enter parked alternate, then RIS/DECSTR/SGR reset and explicit OSC 104 | One active session palette survives all approved transitions; explicit OSC 104 restores it; other reset semantics remain unchanged |
-| Session isolation | Two terminals with distinct startup ANSI configurations; mutate/reset one session | The other session's query/display values are unchanged; each reset uses its own baseline |
-| Fragmentation and framing recovery | Feed equivalent streams whole and at splits within indexes/colors, between ESC and ST final byte, with BEL/ST, cancellation and over-limit requests | Equivalent valid completed outcomes; no incomplete/cancelled/overflow side effects; following text/commands recover |
-| Reply capacity | Query three-digit slots with exact remaining capacity and one byte less; issue a bounded multi-query request | Whole replies accepted/dropped without fragments, panic, or cumulative buffer growth above 1024 bytes; emitted replies preserve order |
-| Retained update and visibility | Read an update, mutate palette, attempt old acknowledgement; skip rendering while colors change, then resume | Obsolete update cannot consume new colors/damage; next coherent projection redraws current indexed colors |
-| Existing default colors | Repeat existing OSC 10/11/12/110/111/112 tests alongside OSC 4/104 | Existing exact bytes, supported/invalid forms, alpha and reset/lifetime behavior stay unchanged |
-| Windows application path | Run a named/versioned set/query/reset workload in actual Harbor through ConPTY, with visible indexed samples and captured replies | Application-visible colors and exact replies agree; selective/full reset works; observations, environment and transport exclusions are recorded |
-
-## Decisions and Traceability
-
-[#191](https://github.com/wangjq4214/harbor/issues/191) and [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md) settle range, RGB subset, alpha, whole-request validation, ordered operations and reset lifetime. Preserve default colors under [ADR 0036](../adr/0036-preserve-harbor-alpha-for-osc-default-colors.md), complete replies under ADR 0017, and coherent GPU-independent ownership under [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md). Existing RGB scaling/quantization applied to OSC 4 yields the specified 28-byte longest reply. Evidence follows [Validation](../../docs/validation.md); new protocol, lifetime, precision or ownership choices require clarification and recording.
-
-## Verification and Definition of Done
-
-- [ ] R1-R4 have focused deterministic tests for full range/baseline, set/query ordering, exact bytes, resets, alpha, malformed requests and session isolation.
-- [ ] R5 has semantic model/update tests and retained renderer evidence for recoloring foreground/background/decoration, ANSI aliases, unchanged truecolor, hidden-frame replay and stale acknowledgements.
-- [ ] R6 has one-shot/fragmented, BEL/ST, cancellation, over-limit/recovery and bounded temporary-action/reply coverage; existing default colors and OSC routes pass applicable regressions.
-- [ ] R7 has named Windows/ConPTY runtime evidence and self-contained summaries with honest exclusions.
-- [ ] Checklist 24.3 and OSC 104 coverage in 24.4 cite implementation and named tests; no unsupported broader color/transport claim is made.
-- [ ] Required quality checks are recorded with revision, environment, results and reasons for any command not run.
-
-Run at implementation boundaries and before merge:
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
-```
-
-A docs-only spec check is not an implementation pass. A GPU test skipped for lack of an adapter, or an unexecuted Windows procedure, is not runtime acceptance. This draft contains no new test-execution or application-acceptance claim.
+The [acceptance record](../../docs/osc-palette-acceptance.md) maps R1–R7 to focused tests, retained GPU readback and the versioned Windows palette probe, with explicit exclusions. Apply the [standard quality gates](../../docs/validation.md#standard-quality-gates); source or skipped GPU/native checks alone are not runtime acceptance.
 
 ## Out of Scope
 
@@ -147,4 +85,3 @@ A docs-only spec check is not an implementation pass. A GPU test skipped for lac
 - Changing existing default-color commands, selection colors, OSC 52 policy/capacity, other OSC payload semantics, or reply-buffer capacity/drop policy.
 - Configuration hot reload, new TOML color syntax, live rebasing of the startup reset baseline, or cross-session palette sharing.
 - Changing terminal identity/advertised unrelated capabilities, claiming unexercised transports, or delivering other N11/Kitty keyboard/graphics work.
-- New parser/PTY ownership, GPU-dependent core state, implementation plans/tickets, production changes or GitHub mutations during this Spec-only task.

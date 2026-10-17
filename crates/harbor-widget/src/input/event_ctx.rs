@@ -42,6 +42,8 @@ pub struct EventCtx {
     propagation_stopped: bool,
     needs_paint: bool,
     clipboard_write: Option<String>,
+    editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
+    clipboard_request_id: u64,
     current_fiber: Option<FiberId>,
     phase: EventPhase,
     focus_navigation_enabled: bool,
@@ -50,11 +52,17 @@ pub struct EventCtx {
 
 impl EventCtx {
     pub fn new() -> Self {
+        // Allocated by the stable routing runtime, not by a reloadable editor.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let clipboard_request_id = NEXT.fetch_add(1, Ordering::Relaxed);
         EventCtx {
             commands: Vec::new(),
             propagation_stopped: false,
             needs_paint: false,
             clipboard_write: None,
+            editor_clipboard: None,
+            clipboard_request_id,
             current_fiber: None,
             phase: EventPhase::Direct,
             focus_navigation_enabled: true,
@@ -120,6 +128,19 @@ impl EventCtx {
 
     pub(crate) fn take_clipboard_write(&mut self) -> Option<String> {
         self.clipboard_write.take()
+    }
+
+    /// Request a result-bearing editor clipboard operation after routing.
+    pub(crate) fn editor_clipboard(&mut self, write: Option<String>) -> u64 {
+        let id = self.clipboard_request_id;
+        self.editor_clipboard = Some(crate::effects::EditorClipboardRequest { id, write });
+        id
+    }
+
+    pub(crate) fn take_editor_clipboard(
+        &mut self,
+    ) -> Option<crate::effects::EditorClipboardRequest> {
+        self.editor_clipboard.take()
     }
 
     /// Mark the current widget as needing a repaint.

@@ -7,6 +7,7 @@ pub use crate::cursor_blink;
 pub mod decoration;
 pub mod gpu;
 pub use crate::layout;
+mod highlight;
 pub mod pipeline;
 pub mod scrollbar;
 pub mod selection;

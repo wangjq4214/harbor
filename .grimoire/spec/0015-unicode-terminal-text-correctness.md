@@ -4,6 +4,8 @@
 **Status:** Implemented
 **Date:** 2026-09-26
 
+**Stable execution aliases:** 0013/T0001 = combining, T0002 = VS/ZWJ; 0013/T0003 (also Spec0015/T0003) = Verification and its unresolved discrepancy below. Historical Done/checked acceptance does not supply missing runtime evidence or close #153; closure requires evidence for accepted scope or explicit decisions linking deferred work.
+
 ## Requirements
 
 1. Ordinary terminal output preserves combining marks with their base in retained content and copied text, draws them together, and does not advance an extra cell. A combining mark received alone at the start of a line remains in the original text, occupies one cell, and uses a display-only dotted-circle cue; the cue is never copied.
@@ -23,25 +25,9 @@ N01's logical-line identity, atom-offset anchors, meaningful blanks, wide-cell p
 
 The renderer presents the retained unit in its assigned cell bounds, including font fallback where available. When complete presentation is unsupported, fallback must not corrupt underlying text or shift neighboring cells; the supported and unsupported visual outcomes must be stated in evidence. Existing IME preedit rendering is a transient input overlay, not a substitute for ordinary output storage.
 
-### Necessary seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Streaming print | `harbor-parser` → `harbor-terminal` screen writer | Ordered Unicode scalar callbacks across arbitrary PTY read splits | Retained text units and consistent cursor/cell advance |
-| Logical content and geometry | Screen cells ↔ `logical_content`, `content_anchor`, `primary_reflow`, selection and copy | Original unit text, width, metadata, logical-line identity and offsets | Stable content meaning and physical projections through edits, wraps and resize |
-| Presentation and damage | Screen text units → `render/text`, `damage`, `harbor-text` glyph/fallback backend | Text, assigned cell bounds and invalidated grid range | Rendered text or documented fallback without altering stored content/width |
-
-## End-to-End Tests
-
-- **Combining text:** Given a PTY emits `e` followed by U+0301 in the same or separate reads, when displayed and selected, then the accent appears on the base, the cursor advances only for the base, and copy returns the original `e` + U+0301 sequence.
-- **Orphan mark:** Given a line begins with U+0301, when displayed and copied, then it occupies one cell with a dotted-circle cue, while copy contains only U+0301.
-- **Emoji presentation:** Given `♥`, `♥️`, and `👩‍💻` in adjacent content, when printed, selected, and copied, then ordinary ambiguous-width text follows the one-cell policy, explicitly emoji-presented units the two-cell policy, and copied text retains each input sequence. A missing complete glyph uses the documented visual fallback without changing those widths.
-- **Edit and boundary:** Given mixed narrow, combining, and wide text at a right margin, when an application overwrites, inserts, or erases affected cells, then wide-cell pairing, cursor/pending-wrap, selection projection, copied text, and redraw agree on surviving units.
-- **Reflow and rendering changes:** Given retained primary/history text with a selected combined or emoji unit, when the window narrows and widens or the font/DPI changes, then retained text and copy results survive except for documented capacity eviction, no unit splits across wide-cell boundaries, and the affected cells repaint. Alternate-screen content follows its existing rectangular resize policy.
-
 ## Decisions and boundaries
 
-- [ADR-0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md) records the shared text/width policy, orphan-mark cue, ambiguous-width default, explicit emoji width, and unsupported-font boundary; it is a proposed implementation decision, not a completed behavior claim.
+- [ADR-0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md) records the shared text/width, orphan-mark and fallback policy; its historical implementation status is not full runtime acceptance.
 - [ADR-0042](../adr/0042-content-anchors-and-buffer-specific-resize.md) defines N01 logical anchors, atoms, blank provenance and buffer-specific resize. N02 evolves text-bearing atoms without reverting to physical-row identity; [N01 spec](0014-content-preserving-resize-reflow.md) explicitly defers Unicode cluster semantics to N02. N01 runtime and performance acceptance remains open.
 - A font's exact substitute glyph, a specific shaping library, and an internal storage layout are not settled project decisions; this spec does not choose them. Any additional text/coordinate semantics needed by implementation must return to clarification and recording before being added as requirements.
 
@@ -60,7 +46,3 @@ Integrated Windows verification covered the documented combining, selector/ZWJ w
 ## Out of scope
 
 Full complex-script shaping and optional font ligatures are not prerequisites for basic combining correctness. IME preedit is not this work. Search UI, a wholesale screen-buffer rewrite, and blanket claims of emoji/font interoperability are not authorized by #153. N01's outstanding Windows/performance acceptance is tracked separately, not declared complete here.
-
-## Future evolution
-
-Further shaping and font coverage can be considered when named workloads require them. N08 search can build on the established text and anchor contract without redefining its width or copy semantics. Deliver #153 in bounded increments and close it only when the accepted scope has evidence or explicit scope decisions link all deferred work.

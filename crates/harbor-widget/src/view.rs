@@ -403,6 +403,23 @@ pub(crate) trait AnyView: 'static {
         rect.contains(point)
     }
 
+    /// Prepare local editing geometry using the renderer's scalar advances.
+    fn prepare_text_geometry(&self, _metrics: &TextMetrics, _advance: &mut dyn FnMut(char) -> f32) {
+    }
+
+    fn focused_ime(&self, _rect: Rect) -> Option<crate::effects::ImeEffect> {
+        None
+    }
+
+    /// Local editing chords bypass ancestor application shortcuts, not other keys.
+    fn owns_editing_key(
+        &self,
+        _key: crate::input::event::Key,
+        _modifiers: crate::input::event::Modifiers,
+    ) -> bool {
+        false
+    }
+
     /// Handles an input event delivered to this widget.
     /// Returns `EventHandled::Handled` if consumed.
     /// Default: ignores all events.

@@ -80,7 +80,7 @@ Build a small diagnostic fixture and record:
 
 ### N04 — Configuration Hot Reload
 
-Manual colors/bindings/terminal-font reload (T0001), child-only shell/environment/directory settings (T0002), and default-on watching with debounce/replacement-save recovery (T0003) are implemented. [T0004](../.grimoire/ticket/0017-configuration-hot-reload/T0004-package-integration-and-evidence.md) adds combined E10 GPU/ConPTY/native-child coverage and scoped Windows window checks; full interactive package acceptance remains pending, not an implementation deferral of environment/directory. Earlier user-confirmed slice acceptance is distinguished from fresh integrated results. User configuration reload is separate from debug-only widget-library HMR.
+Manual colors/bindings/terminal-font reload (T0001), child-only shell/environment/directory settings (T0002), and default-on watching with debounce/replacement-save recovery (T0003) are implemented. [T0004](../.grimoire/spec/0024-watched-reload-and-launch-settings.md#delivery-and-outstanding-acceptance) adds combined E10 GPU/ConPTY/native-child coverage and scoped Windows window checks; full interactive package acceptance remains pending, not an implementation deferral of environment/directory. Earlier user-confirmed slice acceptance is distinguished from fresh integrated results. User configuration reload is separate from debug-only widget-library HMR.
 
 | Setting                                         | Intended application policy                                                          |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------ |

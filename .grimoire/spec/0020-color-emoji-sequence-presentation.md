@@ -1,8 +1,10 @@
 # Color Emoji and Whole Sequence Presentation (#181)
 
 **Spec ID:** 0020
-**Status:** Draft
+**Status:** Implementation present; integrated Windows/performance acceptance unverified
 **Date:** 2026-10-10
+
+**Stable execution aliases:** ticket-set0015/T0001 = native sequence presentation; T0002 = terminal atlas/invalidation; T0003 = integrated Windows/performance acceptance under R1–R7. Scripts referring to ticket-set0015 T0003 retain this meaning. Neither #153's evidence gap nor #176's final acceptance is a new blocking prerequisite; their contracts remain invariants.
 **Sources:** [Issue #181](https://github.com/wangjq4214/harbor/issues/181); the refinement conversation approving DirectWrite + Direct2D offscreen presentation and bounded uniform downscaling; [ADR 0054](../adr/0054-color-emoji-offscreen-presentation.md).
 
 ## Requirements
@@ -69,42 +71,9 @@ python scripts/checklist_summary.py
 
 Use PASS / FAIL / NOT RUN / BLOCKED for actual checks. Missing Windows/GPU capabilities do not turn skipped runtime checks into passes. Update behavior/support documentation only for implemented and evidenced scope.
 
-## Solution and Necessary Seams
+## Acceptance status
 
-Keep the existing per-scalar path for ordinary text and add a complete emoji-unit presentation path under `harbor-text`. DirectWrite analyzes the full unit with font fallback; Direct2D composites its supported presentation into a cached tile. The terminal renderer consumes backend-neutral presentation data, maintains the separate bounded color atlas, and derives fitted/clipped quads from authoritative cell geometry. This is an extension of the concrete current renderer, not a new terminal renderer or a general-purpose shaping system.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Retained unit -> presentation request | `TerminalSnapshot` / `Cell` -> terminal text preparation -> `harbor-text` | Complete original text, style, font/session and raster parameters; assigned paint bounds without width recomputation | Sequence-aware request and ordinary-text fast-path selection |
-| Native analysis -> tile | DirectWrite shaping/fallback -> reused Direct2D offscreen rasterization | Complete sequence, resolved face/run/offsets, capability and appearance inputs | Complete color/monochrome presentation or explicit bounded-fallback outcome with backend-neutral raster bounds/pixels |
-| Tile -> GPU atlas | Presentation resources -> terminal-owned CPU/GPU atlas | Agreed format/alpha/color-space contract and bounded tiles | Color artwork or coverage data, valid placements and upload/repack information |
-| Cell projection -> drawing | Assigned cell geometry and atlas placements -> wgpu text geometry/shader | Current atlas revision, authoritative width and clip rectangle | Uniformly fitted/clipped presentation without tinting fixed-color artwork or moving adjacent content |
-| Source/resource changes -> damage | Current coherent update and font/DPI/appearance generation -> caches/geometry | Dirty units and relevant resource changes, pending damage retained across skipped draws | Invalidation, removal of obsolete pixels and rebuild when placements change |
-
-### Inspected repository surfaces
-
-Integrate the existing retained `Cell`/snapshot/damage contract, `harbor-text` scalar/fallback/atlas interfaces and terminal renderer/host transitions. A sequence request must not masquerade as a scalar `GlyphKey`. Preserve shared widget coverage consumers without expanding widget emoji scope.
-
-## End-to-End Tests
-
-| Case | Given / when | Required observable outcome |
-| --- | --- | --- |
-| Named supported font | Actual Harbor/ConPTY output of `A♥️B` and `A👩‍💻B` with a recorded supporting Windows font/version | Complete intended color artwork; unchanged assigned widths and A/B geometry; copied codepoints exactly match input |
-| Text versus emoji | Display ordinary `♥`, a text-selector form, explicit emoji-selector form and default emoji candidates | Presentation requests distinguish intent; existing model-assigned widths remain authoritative; text is copied unchanged |
-| Unsupported presentation | Use a verified unsupported font/format/capability case, including a controlled backend failure where needed | Complete monochrome if available, otherwise visible documented fallback; no spill into neighboring cells or changed copy/width |
-| Oversized/native bearings | Present emoji with ink bounds outside its cell rectangle, near right/vertical edges | Oversized artwork is uniformly downscaled; final pixels remain clipped; no neighbor changes |
-| Stream extension | Draw `♥`, then append VS16; draw `👩`, then append ZWJ and `💻` through fragmented ingestion and the recorded runtime path | Prior presentation is replaced; old pixels do not remain; source, width and neighbors agree with the model |
-| Cache reuse and churn | Repeated units followed by many distinct requests, negative results and forced atlas repacks | Warm hits avoid repeated rasterization; bounded resources; current valid UVs after repack and visible fallback at unsupported results |
-| Font/DPI/appearance transition | Replace font/session/size, change DPI, or change a raster-dependent appearance while text is retained; include a skipped draw before resuming | Current presentation replaces stale tiles/failures; no text loss; affected cells repaint on the next coherent draw |
-| Color composition | Render partially transparent color artwork on contrasting backgrounds and exercise font foreground-dependent layers | No terminal tint on fixed artwork, no alpha fringe/double multiplication, foreground-dependent layers follow current color |
-| Existing overlays | Mix emoji with `e` + U+0301, isolated U+0301, conceal, decorations, selection and preedit | Existing behavior survives; no duplicated base/mark paint; exact source copy remains unchanged |
-| Fast-path comparison | Same ordinary monospace workload before/after, then cold/warm emoji workloads | Ordinary path remains R8; no ordinary-only color-atlas allocation or unnecessary whole-layout shaping; comparable costs and exclusions are recorded |
-
-## Decisions and Traceability
-
-[#181](https://github.com/wangjq4214/harbor/issues/181) supplies presentation/performance/evidence outcomes. [ADR 0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md) and [Spec 0015](0015-unicode-terminal-text-correctness.md) retain text/width/copy authority; [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) retains resource ownership and coherent updates. User confirmation and [ADR 0054](../adr/0054-color-emoji-offscreen-presentation.md) settle DirectWrite/Direct2D pixel transfer, ordinary R8 plus lazy color atlas, bounded caches, classifications, color behavior and uniform fit/clip. Evidence follows [Validation](../../docs/validation.md).
-
-Known supporting fonts/native formats/API availability are execution facts to establish, not universal guarantees. Cache structures, numeric bounds, exact native interfaces and pixel encoding remain private details. New semantic or architectural choices require refinement.
+Native sequence and renderer/atlas implementations are present (`harbor-text` sequence backend and `harbor-terminal::render::{sequence,color_atlas,text}`); historical 0015/T0001 and T0002 were marked Done with unchecked acceptance. That is not proof of every criterion. Final 0015/T0003 Windows/clipboard, font/format/capability, actual fragmentation, font/DPI/appearance, composition, forced repack/overflow and comparable ordinary/cold/warm performance evidence remains unverified here. R1–R7 retain those obligations; no numeric performance threshold is introduced. Follow the [profiling guide](../../docs/performance/profiling-guide.md) and rerun affected evidence after code changes.
 
 ## Limitations and Out of Scope
 
@@ -113,4 +82,4 @@ Known supporting fonts/native formats/API availability are execution facts to es
 - No initial Direct2D/wgpu shared-texture interoperation or all-text conversion to RGBA/whole-layout shaping.
 - #181 is a separate follow-up, not a prerequisite or native sub-issue blocking #153, and not a replacement for #50 or #176.
 - Spec 0015's documented DECAWM-disabled final-column VS16 width discrepancy remains outside this presentation change. Fit to the actual model-assigned rectangle and record the exclusion; this spec neither authorizes a new width exception nor resolves the historical discrepancy.
-- Current native API research and local font inspection are not runtime acceptance. This Draft contains no new implementation, test-execution or Windows support claim.
+Implementation presence and historical ticket status are not a new test-execution or Windows support claim.

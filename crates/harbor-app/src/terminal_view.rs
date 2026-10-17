@@ -143,6 +143,7 @@ pub(crate) fn terminal_event_from_ui_event(event: UiEvent) -> Option<TerminalEve
             .with_modifiers(map_modifiers(pointer.modifiers)),
         )),
         UiEvent::PointerBoundary(_) => None,
+        UiEvent::Clipboard { .. } => None,
         UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
             Some(TerminalEvent::Focus(TerminalFocusEvent::Gained))
         }
@@ -242,6 +243,7 @@ fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`CustomPaint`].
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
+    decorations: Arc<Mutex<Vec<harbor_terminal::read_model::ContentRange>>>,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -300,6 +302,10 @@ impl TerminalWidgetBridge {
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
+        let decorations = Arc::new(Mutex::new(
+            Vec::<harbor_terminal::read_model::ContentRange>::new(),
+        ));
+        let draw_decorations = Arc::clone(&decorations);
         let draw_terminal = Arc::clone(&terminal);
         let draw_renderer = renderer.clone();
         // ExternalDrawFn is UI-thread local; both resources have this tab's lifetime.
@@ -350,9 +356,13 @@ impl TerminalWidgetBridge {
                                 );
                                 return;
                             }
+                            let ranges = draw_decorations.lock().expect("decoration lock");
+                            renderer.prepare_highlights(gpu, &term.project_content_ranges(&ranges));
                             renderer.draw(pass);
                             term.acknowledge_update(&update);
                         } else {
+                            let ranges = draw_decorations.lock().expect("decoration lock");
+                            renderer.prepare_highlights(gpu, &term.project_content_ranges(&ranges));
                             renderer.draw(pass);
                         }
                     }
@@ -449,6 +459,7 @@ impl TerminalWidgetBridge {
             });
 
         Self {
+            decorations,
             draw_id,
             renderer,
             terminal,
@@ -458,6 +469,16 @@ impl TerminalWidgetBridge {
             on_input,
             on_unmount,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decoration_ranges(&self) -> Vec<harbor_terminal::read_model::ContentRange> {
+        self.decorations.lock().unwrap().clone()
+    }
+
+    /// Application-published proven ranges, never physical coordinates or query policy.
+    pub fn set_decorations(&self, ranges: Vec<harbor_terminal::read_model::ContentRange>) {
+        *self.decorations.lock().expect("decoration lock") = ranges;
     }
 
     /// Widget-facing external draw identifier owned by this bridge.

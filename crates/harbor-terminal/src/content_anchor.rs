@@ -6,7 +6,7 @@ use crate::selection_model::GenPos;
 
 use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Affinity {
+pub enum Affinity {
     Before,
     After,
 }

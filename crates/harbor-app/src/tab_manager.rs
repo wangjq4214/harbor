@@ -194,6 +194,7 @@ fn normalize_shell_title(title: String, shell_fallback: &str) -> String {
 
 /// Ordered Host-owned terminal sessions.
 pub struct TabManager {
+    pub(crate) search: crate::search::SessionSearch,
     tabs: Vec<TerminalTab>,
     active: Option<TabId>,
     next_tab_id: u64,
@@ -210,8 +211,9 @@ impl Default for TabManager {
 
 #[allow(dead_code)] // T0007 binds the transition API to product commands.
 impl TabManager {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
+            search: crate::search::SessionSearch::default(),
             tabs: Vec::new(),
             active: None,
             next_tab_id: 1,
@@ -255,6 +257,7 @@ impl TabManager {
             terminal: resources.terminal,
             bridge: resources.bridge,
         });
+        self.cancel_search();
         self.clear_active_preedit();
         self.active = Some(id);
         Ok(TabActionOutcome {
@@ -371,6 +374,7 @@ impl TabManager {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return TabActionOutcome::unchanged();
         };
+        self.cancel_search();
         self.clear_active_preedit();
         self.active = Some(id);
         let unread_changed = std::mem::take(&mut self.tabs[index].unread);
@@ -417,6 +421,9 @@ impl TabManager {
             return TabActionOutcome::unchanged();
         };
         let was_active = self.active == Some(id);
+        if was_active {
+            self.cancel_search();
+        }
         let removed = self.tabs.remove(index);
         if was_active && let Ok(mut terminal) = removed.terminal.lock() {
             terminal.clear_preedit();

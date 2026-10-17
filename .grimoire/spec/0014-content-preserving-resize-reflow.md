@@ -4,6 +4,8 @@
 **Status:** In Progress
 **Date:** 2026-09-20
 
+**Stable execution aliases:** 0012/T0001–T0006 = retained metadata, shared decoder/copy, canonical anchors, width projection, height/capacity and buffer/PTY transaction below; 0012/T0007 = Test Plan and final acceptance. Implementation is present; broader Windows shell/nvim/clipboard and large-history latency/memory acceptance remains NOT RUN. Use an integrated revision, repeat affected captures after changes, and advance ADR-0018/0042 only after accepted evidence. Preserve one decoder/offset vocabulary and one composed prepared primary result.
+
 ## Requirements
 
 Harbor must preserve retained primary-screen and scrollback logical content across width-only, height-only, simultaneous, and repeated terminal resizes, with two explicit exceptions: primary reflow may discard ordinary default-style, unprotected, non-hyperlinked spaces at a logical line's end; and Windows ConPTY live-primary resize follows producer geometry with style-only tail clipping under [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md). Apart from these scoped exceptions and documented capacity eviction, round-trip resize preserves explicit line boundaries, meaningful styled or hyperlinked blanks, cell attributes, hyperlinks, wide characters, cursor and saved-cursor meaning, pending-wrap behavior, viewport review position, selection meaning, and copied text.
@@ -20,7 +22,7 @@ The first delivery must:
 8. Provide deterministic model/copy regression coverage plus recorded Windows shell, `nvim`, and large-history resize evidence; and
 9. Establish an acknowledged, bounded PTY-reader barrier so chunks observed before resize are parsed exactly once under the old geometry and the reader cannot publish across the resize transaction.
 
-ADR-0018 remains the implemented non-reflow behavior until this specification is implemented and accepted. This specification does not itself change current runtime behavior.
+[ADR 0018](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) records the historical non-reflow baseline. Reflow implementation is present; final acceptance and explicit ADR-0018/0042 status reconciliation remain outstanding.
 
 ## Solution
 
@@ -42,7 +44,7 @@ Under full primary reflow (retained history and non-ConPTY primary), ordinary de
 
 ### Approved Windows ConPTY live-primary exception
 
-The user approved approach A and authorized implementation on 2026-10-09; [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and local plan 0020 (`conpty-styled-tail-resize-compatibility`, not tracked) record the decision and scoped implementation/verification evidence. Approval is not a runtime or acceptance pass.
+The approved scoped exception and its implementation/evidence are recorded in [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); approval alone is not acceptance.
 
 Only the producer-owned live portion of a Windows ConPTY primary screen follows producer text/cursor geometry: a style-only trailing blank suffix, whether printed or created by styled erase/fill, must not itself create extra physical rows. Preserve trailing cell attributes within available target-row capacity and clip/discard overflowing styled tail capacity. Discarded overflow is not promised to return on widening or remain available to copy/selection; anchors must reflect surviving cells, with lost endpoints clamped or invalidated consistently.
 
@@ -136,120 +138,11 @@ Copy traverses retained logical content. It joins soft-wrapped rows, emits hard 
 
 Trimming is restricted to primary resize, not the copy operation itself. Before resize, printed ordinary spaces are copied as written; after resize, only the retained prefix is copied.
 
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Retained-content metadata | `NormalBuf` ↔ screen editing/cursor paths | Every write, erase, wrap, scroll, line operation, reset, and resize maintains logical identity, extent, and wide-cell invariants | Reconstructable logical lines and stable anchor resolution without replacing the ring buffer |
-| Selection projection | pointer/`SelectionModel` ↔ Screen snapshot and anchor resolver | Pointer hit testing supplies current physical positions; Screen can map retained positions in both directions | Canonical selection anchors plus current render/copy bounds |
-| Transactional geometry | `harbor-terminal::Terminal` ↔ `harbor-pty::PtyControl` | Prepared model state and a synchronous PTY resize result | PTY/model geometry changes together or the model remains unchanged |
-| Reader resize barrier | `harbor-terminal::TerminalIo` ↔ `harbor-pty` reader/control capabilities | Epoch-qualified interrupt, ordered acknowledgement, bounded acquisition, and explicit resume | No reader publication across a resize transaction; all pre-ack chunks are available for old-geometry parsing exactly once |
-| Alternate-screen ownership | active Screen ↔ saved primary and parked alternate Screens | ADR-0019 whole-screen isolation and buffer-specific resize policy | Resized primary restoration without text-reflowing full-screen application surfaces |
-| Hyperlink retention | reflowed cells/pen state ↔ screen hyperlink registry | Compact IDs remain attached to retained atoms and all reachable owners participate in cleanup | Stable retained OSC 8 identity with bounded unreachable registry state |
-
-## End-to-End Tests
-
-Preservation cases below require full styled-tail retention for retained history and non-ConPTY primary. Windows ConPTY live-primary cases instead use the approved exception above and the dedicated cmd repaint case below; overflow loss there is not a lossless round-trip promise.
-
-### E2E: Round-trip long colored and CJK output
-
-- **Given:** Main-screen and scrollback content containing long logical lines, CJK width-two glyphs, colors, attributes, hyperlinks, ordinary trailing spaces, styled blank cells, and explicit newlines.
-- **When:** The terminal is repeatedly narrowed and widened, including a return to its original geometry.
-- **Then:** Retained logical text (except discarded ordinary trailing spaces and documented capacity eviction), attribute and hyperlink identity, wide-cell invariants, selection meaning for surviving content, and copied output remain consistent across resizes.
-
-### E2E: PowerShell-style padded rows after resize
-- **Given:** A primary-screen table whose headers and data rows end with enough ordinary, unstyled, non-hyperlinked spaces to fill the original terminal width, with the original display containing no blank row between adjacent entries.
-- **When:** The terminal is narrowed and widened, including repeated resizes.
-- **Then:** Ordinary tail padding does not alone introduce visually empty continuation rows between entries; real blank lines remain, and copied text after resize reflects the retained prefix rather than the original ordinary tail.
-
-### E2E: Tail-space cursor and decorated blanks
-- **Given:** A live or saved cursor at an insertion point within an ordinary trailing-space suffix, plus lines with significant interior spaces and styled, protected or hyperlinked trailing blanks.
-- **When:** The primary screen is resized across the right-margin boundary and back.
-- **Then:** Ordinary spaces necessary to retain either cursor position remain and subsequent output appears at the correct insertion point; interior spaces and styled, protected or hyperlinked blanks are not mistaken for trimmable tail padding. A selection endpoint in discarded tail content may be clamped or invalidated.
-
-### E2E: Explicit blank lines and pending wrap
-
-- **Given:** Content containing consecutive explicit blank lines and a live cursor at a right-margin insertion boundary with pending-wrap set.
-- **When:** Width changes move that insertion boundary into a row interior, onto a new right edge, and back again.
-- **Then:** Blank-line count and copy output remain stable, cursor projection follows the same logical insertion point, and pending-wrap is derived correctly at each width.
-
-### E2E: Height-only review preservation
-
-- **Given:** A primary screen with scrollback, a live cursor near the bottom, and a viewport reviewing older retained content.
-- **When:** Height is reduced and then increased without changing width.
-- **Then:** Removed top live rows enter history, growth pulls newest history back before adding blanks, the live cursor remains valid, and the review viewport stays anchored to the same retained content.
-
-### E2E: Capacity eviction during narrow reflow
-
-- **Given:** History near capacity, including one logical line that expands substantially at a narrower width, plus selections and metadata anchors in both old and retained portions.
-- **When:** Reflow exceeds physical-row capacity.
-- **Then:** Oldest physical rows are evicted, a partially retained line is marked head-truncated, anchors into evicted content are invalidated, retained anchors still resolve, an evicted review anchor moves to the oldest retained position, and no stale ring generation resolves to unrelated content.
-
-### E2E: Alternate-screen resize and primary restoration
-
-- **Given:** Primary history and selection exist before entering a persistent alternate screen used by `nvim`.
-- **When:** Width and height change while the alternate screen is active and the application redraws, then Harbor exits alternate mode.
-- **Then:** Alternate content followed rectangular resize policy without scrollback reflow, while the restored primary screen is reflowed to current geometry with retained content, cursor, review, and valid selection meaning.
-
-### E2E: Resize failure is geometry-consistent
-
-- **Given:** A valid terminal model and a PTY control configured to fail resize.
-- **When:** Harbor prepares a different geometry and PTY resize fails.
-- **Then:** Prepared state is discarded, model dimensions and projections remain unchanged, no selection is cleared merely because resize was attempted, and a later successful request can retry cleanly.
-
-
-### E2E: Reader publication races with resize
-
-- **Given:** A controllable PTY reader whose read has completed but whose chunk publication is delayed, with retained scrollback and selection content in the old geometry.
-- **When:** A resize requests a barrier before the delayed chunk is published.
-- **Then:** The chunk is published exactly once before the matching acknowledgement, parsed under the old geometry, the reader remains paused through PTY/model commit, and reviewing or copying the narrowed scrollback contains no duplicated logical text.
-
-### E2E: Blocked reader cannot acknowledge
-
-- **Given:** A PTY reader blocked without output and a barrier interruption path configured to time out or fail.
-- **When:** Harbor requests a new geometry.
-- **Then:** The wait is bounded, no unacknowledged resize proceeds, old PTY/model geometry remains authoritative, the reader is not left paused or leaked, and a later successful barrier can retry the resize.
-
-### E2E: Repeated mixed resize under output
-
-- **Given:** Colored shell output, scrollback review, a retained selection, and intermittent new output.
-- **When:** Width-only, height-only, and combined resizes repeat while reader completion and chunk publication race with resize requests.
-- **Then:** Acknowledged barriers partition reader-observed output without loss or duplication; every committed state satisfies row, wide-cell, anchor, history, cursor, and PTY/model geometry invariants; copy returns the selected retained logical content unless documented eviction or ordinary-tail trimming invalidated it.
-
 ### E2E: ConPTY live styled-tail geometry and cmd repaint
 
 - **Given:** Bundled ConPTY `1.24.260710001`, the original conceal/overline script and pending cmd input, plus minimized ordinary tails, 65-blank overline/underline/background tails and 103-blank styled erase rows.
 - **When:** Narrow 103 -> 51 columns, widen again, and repeat mixed resizes, then type, backspace and submit input.
 - **Then:** Live model geometry agrees with the producer before CUP + ED repaint; style-only tails do not add rows, retained target-row styling survives, and clipped overflow is not claimed for restoration/copy. The `END` marker, complete prompt and pending input survive repaint and subsequent editing/submission. Also verify live/saved cursor, wide cells and history/live boundaries; history/non-ConPTY retain complete styled content and alternate remains rectangular. Existing full-retention E2E cases apply to those unaffected policies, not clipped live overflow.
-
-## Decisions
-
-### Durable logical anchors instead of physical generations
-Logical-line identity, offset and affinity preserve content meaning when physical row count changes; see [ADR 0042](../adr/0042-content-anchors-and-buffer-specific-resize.md).
-
-### Explicit meaningful blanks and shared logical atoms
-[ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md) accepts ordinary-tail loss rather than hidden off-grid text/cursor state. The retained-content, projection and copy rules above preserve the exceptions and [OSC 8 identity](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md).
-
-### Preserve ring storage while extending row semantics
-Keep bounded ring storage, not a document/rope rewrite ([ADR 0042](../adr/0042-content-anchors-and-buffer-specific-resize.md)).
-
-### Producer-compatible Windows live primary
-[ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) records why complete live styled-tail retention displaced cmd's CUP + ED repaint. Its region-specific exception above leaves history/non-ConPTY and alternate policies unchanged.
-
-### Buffer-specific resize
-Primary is logical text; alternate is an application-owned rectangular surface. Saved-primary reflow preserves [whole-screen isolation](../adr/0019-alternate-screen-buffer-isolation.md).
-
-### Preserve wide-cell invariants by requiring two columns
-The two-column minimum preserves complete width-two units without replacement or hidden overflow; retain [editing normalization](../adr/0016-wide-cell-normalization-during-editing.md).
-
-### Prepare before PTY resize and commit infallibly
-Preparation makes all fallible model work precede PTY commit while preserving [synchronous I/O ownership](../adr/0013-synchronous-pty-io.md).
-
-### Acknowledged barrier instead of repeated channel drains
-[ADR 0043](../adr/0043-acknowledged-pty-resize-barrier.md): drains cannot prove the reader stopped publishing; bounded epoch acknowledgement prevents both geometry races and indefinite UI waits.
-
-### Replace ADR-0018 only after accepted implementation
-[ADR 0018](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) remains the historical/current non-reflow decision until accepted implementation explicitly updates its status/history; this spec alone is not completion.
 
 ## Test Plan
 

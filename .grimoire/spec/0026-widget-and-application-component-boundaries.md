@@ -1,120 +1,47 @@
 # Widget and Application Component Boundaries
 
 **Spec ID:** 0026
-**Status:** Draft
-**Date:** 2026-10-15
-**Sources:** [ADR 0064](../adr/0064-widget-and-application-component-ownership.md); [project context](../CONTEXT.md).
-
-## Scope
-
-Approved targeted ownership changes, not a new crate or behavior redesign. Exact component/type names, module paths, compatibility strategy, directory tree and per-feature stores remain unselected.
-
-This is an ownership/refactoring contract, not a redesign of product behavior. It supplements [spec 0025](./0025-portal-and-configuration-notifications.md) without superseding its Portal, configuration-classification, focus, lifetime, confidentiality or allocation requirements. Existing state/action ownership in [ADR 0029](../adr/0029-widget-store-state-action-boundary.md), native hosting/HMR in [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), reusable icons in [ADR 0057](../adr/0057-widget-vector-icons-without-font-glyphs.md), and terminal/application appearance separation in [ADR 0058](../adr/0058-terminal-themes-separate-from-application-appearance.md) remain applicable.
+**Status:** Targeted ownership changes exist; structural evidence is separate from native/HMR acceptance.
+**Sources:** [ADR 0064](../adr/0064-widget-and-application-component-ownership.md), [0025](./0025-portal-and-configuration-notifications.md), [state/actions](../adr/0029-widget-store-state-action-boundary.md), [native host/HMR](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), [icons](../adr/0057-widget-vector-icons-without-font-glyphs.md), [terminal/application appearance](../adr/0058-terminal-themes-separate-from-application-appearance.md).
 
 ## Requirements
-
 ### R1 — Retain Reusable Widget Mechanisms
-
-A widget belongs in `harbor-widget` when its contract remains meaningful in a non-terminal application without interpreting Harbor business types. Current consumer count and artwork names are not ownership criteria. Generic callbacks and generic action parameters do not themselves make a control application-specific.
-
-Retain the following capabilities in the widget layer:
-
-| Responsibility | Existing components/mechanisms |
-| --- | --- |
-| Basic layout | Align, Padding, SizedBox, ConstrainedBox, Stack |
-| Flex layout | Flex, Row, Column, Flexible, Expanded, Spacer |
-| Display and decoration | DecoratedBox, Separator, TextLabel, Icon and its built-in Lucide artwork |
-| Interaction and focus | InteractiveRegion, MouseRegion, Focus, FocusScope |
-| Generic controls | Button, IconButton |
-| Scrolling and committed geometry observation | ScrollArea, ScrollController, LayoutObserver |
-| Action and theme integration | Actions<A>, Shortcuts<A>, ThemeProvider |
-| External content and escape | CustomPaint, Portal |
-| State and style mechanisms | Signal, Store<S, A>, Dispatcher<A>, generic theme/style tokens and widget defaults |
-
-These mechanisms must not take ownership of Harbor tab/terminal models, configuration acceptance or watcher policy, application command meanings/default bindings, reducers, or application side effects. Keep the production dependency direction from application composition to the widget library, not from `harbor-widget` to `harbor-app`, `harbor-config` or `harbor-terminal`. Generic native-host infrastructure remains governed by R6 rather than being mistaken for application business policy.
+Ownership depends on a meaningful non-terminal contract without Harbor business types, not consumer count/artwork names or generic callback/action parameters.
+Retain in harbor-widget: Align/Padding/SizedBox/ConstrainedBox/Stack; Flex/Row/Column/Flexible/Expanded/Spacer; DecoratedBox/Separator/TextLabel/Icon/Lucide artwork; InteractiveRegion/MouseRegion/Focus/FocusScope; Button/IconButton; ScrollArea/ScrollController/LayoutObserver; Actions<A>/Shortcuts<A>/ThemeProvider; CustomPaint/Portal; Signal/Store<S,A>/Dispatcher<A>, generic theme/style tokens/defaults.
+No widget-owned tab/terminal models, config/watch policy, command meanings/defaults, reducers or application effects. Production dependencies point application → widgets, never widget → app/config/terminal. Generic host infrastructure remains R6.
 
 ### R2 — Application-Owned Confirmation Preview
-
-Move the current PreviewPane implementation and its scenario-specific interface into application confirmation composition. Paste confirmation and clipboard-write confirmation continue to share the preview rather than acquiring separate copies. The widget library must no longer be the owner of this confirmation-preview protocol.
-
-The current protocol consists of application-prewrapped lines, explicit visible-line count and line height, shared scroll offset, and coordination between widget wheel handling and confirmation-window keyboard handling. Relocation must preserve the existing displayed preview, bounded scrolling, keyboard/wheel behavior and confirmation outcomes; it does not require replacing the state container or changing scrolling semantics. The preview must not decide paste permission or clipboard-write authorization.
-
-This is a disposition of the current implementation, not a rule that all text previews are application-specific. A new general text viewer, text layout system or speculative replacement API is not required.
+Move the current PreviewPane implementation/protocol to application confirmation composition, shared by paste and clipboard-write confirmation (no copies). Preserve app-prewrapped lines, visible-line count/line-height, shared scroll offset and wheel/confirmation-key coordination, displayed text, bounded scrolling and outcomes. Preview decides neither paste permission nor clipboard authorization; no state-container/scrolling redesign. This is not a ban on future reusable viewers or a request to build one.
 
 ### R3 — Reusable Notification Presentation, Application-Owned Composition
-
-Retain reusable notification content/card presentation and close/scroll interaction in the widget layer, and retain Portal as the generic root escape capability. The application must be able to choose notification placement, layout and visual parameters without editing widget internals; Harbor's fixed top-right arrangement must not be the only arrangement encoded by the reusable presentation contract. Separate these responsibilities without mandating a new component name, a specific builder API, or additional product notification modes.
-
-Ownership is:
-
-| Widget/presentation mechanism | Application composition/policy |
-| --- | --- |
-| Display eligible content and expose dismissal intent | Determine eligibility, message meaning and visibility |
-| Card/content drawing and close/scroll interaction | Choose Harbor placement, layout and visual parameters |
-| Local pressed and scroll state | Own duplicate suppression, recovery and dismissal history |
-| Generic Portal layout/paint/hit-test escape | Compose the notification presentation at the application root |
-
-Keep the existing Harbor presentation and interaction under spec 0025: top-right floating placement after resize/DPI changes, non-modal behavior, manual dismissal, no terminal-focus theft, no blocking through empty overlay space, no automatic disappearance of actionable errors, and no terminal layout/grid/PTY resize merely because a notice becomes visible. Continue the existing selective notification and strict configuration-acceptance policies. This ownership change is not permission to change the current appearance, introduce a success feed or reset dismissed failures during routine tab updates.
+Retain generic card/content, close/scroll interaction, local pressed/scroll state and Portal in widgets. Caller chooses placement/layout/visual parameters without widget internals; Harbor's top-right is not the only reusable arrangement. App owns content meaning, eligibility, visibility, duplicate suppression, recovery/dismissal history and root composition. No prescribed new type/builder/product mode.
+Preserve all 0025 contracts: top-right resize/DPI placement, non-modal/manual-dismiss/persistent errors, no focus theft/empty-overlay blocking/terminal allocation/grid/PTY resize, selective notices and strict acceptance. No changed appearance/success feed or dismissal resets on routine tab updates.
 
 ### R4 — Application-Level UI and State Are Not Tab-Owned
-
-Give main-window workspace/root composition, notification presentation state and application keybinding publication application-level ownership rather than storing or exposing them as tab-specific responsibilities. Keep tab snapshots, tab presentation and tab-specific interaction coordination with the tab UI. A workspace/root owner may compose these responsibilities, but merely renaming a tab controller while retaining unrelated ownership does not satisfy the separation.
-
-Application confirmation UI and its shared preview must not be owned by the tab module. Application responsibility groups are workspace/root, tabs, notifications, confirmation and product appearance; they need not map one-to-one to files, controllers or stores. Preserve the existing Host-published declarative state and one-shot action transport rather than moving reducers/effect execution into widgets or inventing a new bus.
-
-Tab synchronization, tab insertion/removal and responsive presentation updates must preserve application-wide notifications, dismissal/recovery state and keybindings. Moving ownership must not introduce duplicate state writers, duplicate action delivery or stale notification/focus state.
+Main workspace/root, notification state and keybinding publication have application-level ownership; tabs own snapshots/display/tab interactions. Renaming a tab controller without separating responsibilities is insufficient. Confirmation/shared preview is not tab-owned.
+Workspace/tabs/notifications/confirmation/product appearance are responsibility groups, not mandated files/types/stores. Preserve Host-published state, one-shot actions and effect ordering, not widget reducers or a new bus. Tab sync/insert/remove/responsive updates cannot lose global state, duplicate writers/actions, resurrect dismissed failures or leave stale failure/focus.
 
 ### R5 — Keep Product Components and Appearance in the Application
-
-Keep the following application-owned, using reusable widgets rather than moving their business meaning into the library:
-
-- Tab rail/row composition, new-terminal and close-tab controls, tab abbreviations, unread/active display choices and responsive rail rules.
-- Terminal panel composition, TerminalWidgetBridge integration, terminal decoration presets, window inset and product styles.
-- Paste/clipboard confirmation roots, labels, permission semantics and outcome handling.
-- Configuration-notification classification, message content, duplicate suppression, recovery and dismissal history.
-- Application appearance choices and product presets. Generic widget theme tokens/defaults remain reusable, and terminal palettes remain separate under ADR 0058.
-
-Do not move terminal engine, PTY or terminal-renderer ownership into application presentation merely because the terminal embedding bridge belongs there. Existing terminal-domain responsibilities remain unchanged.
+App owns tab rail/row/new/close/abbreviations/unread/active/responsive choices; terminal panel/TerminalWidgetBridge/decorations/window inset; confirmation roots/labels/permissions/outcomes; config-notice classification/messages/history; product appearance/presets. Generic tokens/defaults remain widgets; terminal themes remain separate. Bridge ownership does not move terminal engine/PTY/renderer domain into presentation.
 
 ### R6 — Preserve Native Hosting and the Thin HMR Entry
-
-Keep `harbor-app-ui` as the thin reloadable-root entry which delegates to application composition; do not make it the destination of all application UI implementation solely because of its name. Normal and HMR roots continue to use the application-owned composition contract.
-
-Keep generic per-window creation, Runtime/GPU/presentation/input/scheduling infrastructure and optional root-reload lifecycle in the feature-gated widget winit adapter. Keep event-loop ownership, multi-window business routing, platform window policy and fatal/exit decisions in the application. Preserve dropping old roots/callbacks before unloading an HMR generation and retaining Host-owned business state.
+harbor-app-ui remains thin reloadable-root delegation, not a destination for all app UI. Normal/HMR roots use app composition. Feature-gated widget winit adapter owns generic per-window creation/Runtime/GPU/presentation/input/scheduling and optional root reload; application owns event loop, multi-window business routing, platform policy and fatal/exit decisions. Drop old roots/callbacks before unloading HMR generation; retain Host business state.
 
 ### R7 — Behavior and Migration Contract
-
-This reorganization must preserve tab identity/selection/close behavior, nested close-button event handling, focus behavior, responsive layout and label behavior, resolved shortcut consumed/pass-through semantics, action/effect ordering, terminal/session identity and allocation, and existing confirmation security gates. Paste and clipboard-write confirmation remain separate native confirmation flows; they are not converted to notifications. Preserve icon metric independence and the existing distinction between terminal themes and application appearance.
-
-Affected in-repository consumers, exports and tests must remain coherent with the selected module/API layout. This contract does not select an external compatibility promise, a breaking public-path removal, or a compatibility shim. Before committing to a public-path break whose acceptability is not established, return that decision for clarification; do not infer permission from the component's new owner. Exact naming and compatibility policy are not prerequisites to this responsibility-level specification.
-
-## Verified Source Surfaces
-
-The source snapshot for the ownership observations is commit `dd3695f` before these documentation changes. These paths identify current responsibilities, not mandated post-refactoring paths:
-
-- [Widget inventory](../../crates/harbor-widget/src/widgets/mod.rs) and [crate dependencies](../../crates/harbor-widget/Cargo.toml).
-- [Current PreviewPane](../../crates/harbor-app/src/confirmation/preview.rs), [confirmation/root composition](../../crates/harbor-app/src/confirmation.rs) and [native confirmation host](../../src/dialog.rs).
-- [Current Notification](../../crates/harbor-widget/src/widgets/notification.rs), [Portal](../../crates/harbor-widget/src/widgets/portal.rs) and [Portal/notification regression tests](../../crates/harbor-widget/src/runtime/portal_tests.rs).
-- [Current tab/global state ownership and workspace tests](../../crates/harbor-app/src/tab_view.rs), [application command contract](../../crates/harbor-app/src/command.rs), [Host tab coordination](../../src/tab_coordinator.rs) and [configuration reporting](../../src/shell.rs).
-- [Terminal integration and appearance preset](../../crates/harbor-app/src/terminal_view.rs), [theme tokens](../../crates/harbor-widget/src/theme.rs) and [thin HMR entry](../../crates/harbor-app-ui/src/lib.rs).
+Preserve tab identity/selection/close-without-activation, nested close event handling, focus, responsive/long-label/unread/new-terminal behavior, consumed/pass-through shortcuts, exactly-once command/effect order, terminal/session identity/allocation and confirmation security. Paste/clipboard-write remain separate native flows, not notifications. Icons remain independent of terminal metrics; appearance separation remains.
+Exports/callers/tests must agree with chosen layout. Public-path compatibility is not silently decided: clarify any unapproved external break; neither break nor shim is mandated. No new crate/universal controller/notification bus/general viewer/appearance mode/behavior redesign.
 
 ## End-to-End Acceptance
+| ID | Scenario → required outcome |
+| --- | --- |
+| E1 | Non-terminal root uses retained layout/button/icon/scroll/focus/generic actions → no Harbor models/reverse dependencies; R1 capabilities remain generic. |
+| E2 | Paste and clipboard-write native confirmations with long preview, wheel/keys/accept/cancel → shared app preview, unchanged bounds/text/permissions/window behavior. |
+| E3 | Widget notification harness with caller-chosen visual/layout parameters, plus Harbor notice → generic presentation; app retains Portal-backed behavior without new product mode. |
+| E4 | Publish notice/bindings, switch/add/close tabs, cross rail breakpoint, dismiss/repeat/recover → independent app ownership, no lost/duplicate/resurrected/stale state, independent notice sources retained. |
+| E5 | Focused terminal plus notice show/update/dismiss, resize/DPI/outside/close clicks → paint/hit agreement, no blank-overlay block/focus theft/expiry/allocation/PTY resize. |
+| E6 | Tab activate/nested close/focus/compact-expanded/long title/unread/new terminal and shortcut flows → unchanged identity/layout/text/icon/routing; consumed once, pass-through preserved. |
+| E7 | Normal and supported HMR roots, Host sessions/UI retained → same app composition, old root/callback teardown before unload, thin entry and host boundary intact. |
+| E8 | Structural/state/dependency audit plus affected consumers/native-host/HMR builds → correct preview/notification/global ownership, no duplicate owner/reverse dependency, coherent exports/callers/tests and explicit R7 compatibility. |
 
-Structural evidence is necessary for this ownership change; unchanged screenshots alone do not prove responsibility separation. Conversely, a moved file alone does not prove behavior preservation.
-
-| ID | Given / When | Required outcome |
-| --- | --- | --- |
-| E1 — Generic library use | Build a non-terminal widget test root using retained layout, button/icon, scrolling, focus and generic action mechanisms with test content/callbacks | It does not require Harbor app/config/terminal models or reverse production dependencies. R1's retained capabilities are not migrated into application policy merely because their current production consumer is Harbor. |
-| E2 — Shared confirmation preview | Open paste confirmation and separately a clipboard-write confirmation with enough prepared content to scroll; use wheel, keyboard navigation and each confirmation/cancellation path | Both use the application-owned shared preview and retain their existing text, viewport/scroll bounds, native-window behavior and separate permission semantics. The generic widget library does not own the confirmation-preview protocol. |
-| E3 — Composable notification presentation | In a widget test harness, supply notification content and dismissal intent with caller-chosen layout/visual parameters; separately show the application's configuration notice | Reusable presentation is not locked to Harbor placement/policy or app data. The application still composes its Portal-backed top-right notice with existing visual/interaction behavior; no new product notification mode is required. |
-| E4 — Global state survives tab changes | Publish an actionable notice and resolved keybindings; then switch, add/close tabs and cross the existing responsive rail boundary; dismiss/repeat/recover the relevant notice source | App-level notice/keybinding ownership is independent of tab-specific data. Tab operations do not lose settings, duplicate messages/actions, resurrect dismissed repeated failures or leave stale failures after recovery; established independent-source behavior remains intact. |
-| E5 — Notice/terminal coexistence | With a focused running terminal, show/update/dismiss a notice, resize/change scale, click outside it and use its close control | Displayed and hit-test geometry agree; empty overlay space does not block input; focus is not stolen; errors do not time out; notice visibility alone does not alter terminal allocation/grid or request a PTY resize. Existing spec 0025 behavior remains satisfied. |
-| E6 — Tab and command regression | Exercise tab activation, nested close-button clicks, keyboard focus, compact/expanded rail, long titles, unread indicators and new-terminal reachability; invoke consumed and pass-through shortcuts | Tab identity/selection, close-without-activation behavior, layout/text/icon behavior and command delivery are unchanged. Consumed commands enqueue once; pass-through input continues to the terminal under the existing command contract. |
-| E7 — Normal and reloadable roots | Construct the normal root and, where supported, replace an HMR root while the Host retains sessions and application UI state | Both use the reorganized application composition. Host business state survives; old roots and callbacks are dropped before generation unload; `harbor-app-ui` stays a thin entry and widget native-host ownership is unchanged. |
-| E8 — Combined ownership/consumer audit | Inspect the resulting module/state ownership and build affected in-repository consumers, including supported native-host/HMR configurations | Current PreviewPane ownership is application confirmation; reusable notification presentation and Portal remain generic; global notices/keybinding publication are not tab-specific responsibilities; no duplicate competing state owners or forbidden dependency direction is introduced. Exports/callers/tests agree with the chosen layout, with public compatibility handled under R7 rather than silently assumed. |
-
-Use the existing Portal, widget interaction, tab workspace, confirmation and configuration-notice coverage as regression sources. Relocate or adapt tests to the new owner without losing their behavior assertions. Interactive native-window, focus, DPI and HMR evidence must distinguish executed checks from unavailable/NOT RUN checks. No product build, tests or GUI QA are performed by writing this spec.
-
-## Limits
-
-No new crate, global notification bus, universal controller, general text-viewer framework, product appearance mode or behavior redesign. Responsibility groups do not mandate types, stores or directories. Public-path compatibility remains R7's explicit decision gate; neither a break nor a shim is assumed. This draft is not implementation or product-QA evidence.
+## Verification
+Inspect [widget inventory](../../crates/harbor-widget/src/widgets/mod.rs)/[dependencies](../../crates/harbor-widget/Cargo.toml), [shared preview](../../crates/harbor-app/src/confirmation/preview.rs), [workspace](../../crates/harbor-app/src/workspace.rs), [notification](../../crates/harbor-widget/src/widgets/notification.rs), [thin entry](../../crates/harbor-app-ui/src/lib.rs) and existing Portal/interaction/tab/confirmation/configuration coverage. Relocate/adapt tests without losing assertions. A moved file alone proves no behavior; screenshots alone prove no ownership. Apply [validation policy](../../docs/validation.md); record actual native window/focus/DPI/HMR checks versus NOT RUN, not a source-based runtime pass. Naming/module/API strategy remains implementation choice subject to R7.

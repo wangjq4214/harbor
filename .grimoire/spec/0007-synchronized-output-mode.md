@@ -6,83 +6,34 @@
 
 ## Requirement
 
-Harbor must support DEC private synchronized-output mode (`CSI ?2026h/l`) so applications can batch terminal changes without intermediate presentation while recovery, reset, and session shutdown keep the visible terminal bounded and usable.
+Support DEC private synchronized output (`CSI ?2026h/l`) without intermediate presentation or unbounded visible freezes.
 
 ## Solution
 
-Maintain synchronized-output state at the Terminal/session boundary as a saturating nesting counter: every `?2026h` increments it, every `?2026l` decrements it only when nonzero, and ordinary presentation is eligible only at zero. DECRQM reports Set for any nonzero count.
+- Terminal/session owns a saturating nesting counter: enable increments, disable decrements only above zero, ordinary presentation is eligible only at zero. DECRQM reports Set at every nonzero depth.
+- Parsing, screen mutation, damage tracking, GPU preparation and rendering continue during synchronization. Only ordinary presentation is deferred.
+- The Terminal Widget Bridge exposes eligibility through host-neutral external scheduling. The Runtime Frame Scheduler owns a monotonic recurring 100 ms recovery deadline and forces normal runtime presentation while synchronization remains enabled. Final disable immediately releases presentation and cancels recovery.
+- RIS and PTY EOF/session close clear all nesting and release any surviving view. DECSTR preserves nesting and query state. Cleanup must propagate through the matched bridge and cancel stale recovery demand without a busy wake, including after a forced recovery.
+- Widget scheduling remains terminal-type-free. Terminal does not acquire Window, Surface, Device, Queue or PTY ownership from the host.
 
-Parsing, screen mutation, damage tracking, GPU preparation, and terminal rendering continue while the count is nonzero; only ordinary frame presentation is deferred. The Terminal Widget Bridge exposes this presentation eligibility through its existing terminal-to-external-schedule path. The Widget Runtime Frame Scheduler owns a monotonic 100 ms recovery deadline and requests a normal runtime frame/present at each deadline while synchronization remains enabled. A matching final disable resumes ordinary presentation immediately and cancels the synchronized-output deadline.
-
-RIS clears the counter as part of Terminal hard reset. PTY/session close also clears it and removes suppression for any surviving terminal view. DECSTR deliberately leaves the counter unchanged. The generic scheduling and presentation contracts must remain terminal-type-free inside `harbor-widget`; direct-host compatibility is preserved by keeping Terminal frame demand host-neutral rather than transferring window, surface, GPU, or PTY ownership.
-
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Private-mode and query dispatch | `harbor-parser` → `harbor-terminal` Screen/Terminal | Existing CSI private-mode dispatch and platform-neutral reply buffering | `?2026` nested state transitions and DECRQM/DECRPM status |
-| Presentation eligibility | `harbor-terminal` → Terminal Widget Bridge / `harbor-widget` scheduling | Terminal-owned suppression state and host-neutral frame demand | Deferred ordinary presents plus bounded recovery scheduling |
-| Frame execution | `harbor-widget` Runtime Scheduler → winit presenter | Generic redraw/deadline effects and borrowed host frame resources | Normal forced presentation without Terminal acquiring or presenting a surface |
-| Session cleanup | Terminal I/O lifecycle → Terminal/session state | RIS dispatch and PTY reader/session close signal | Cleared sync state and restored ordinary presentation eligibility |
+[ADR 0022](../adr/0022-synchronized-output-presentation-recovery.md) records nesting, presentation recovery and lifecycle policy; [ADR 0020](../adr/0020-host-neutral-terminal-frame-scheduling.md) and [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md) preserve host-neutral demand.
 
 ## End-to-End Tests
 
-### E2E: A completed synchronized batch presents once
-
-Enabling `?2026`, mutating visible content over multiple PTY chunks, and disabling before 100 ms updates the model without intermediate terminal presents; the next frame shows the completed batch.
-
-### E2E: Nested and mismatched boundaries cannot deadlock presentation
-
-After two enables, one disable still suppresses presentation; the final matched disable resumes it. Extra disables neither underflow nor suppress later frames.
+A short batch spanning multiple PTY chunks presents its completed content once after disable. Nested enables remain suppressed until fully matched; extra disables cannot underflow. Recovery repeatedly presents dirty content within 100 ms without clearing DECRQM Set. RIS and session close restore ordinary presentation; DECSTR does not.
 
 ### E2E: An unclosed batch receives bounded recovery presents
 
-With synchronization enabled and dirty visible content but no final disable, Runtime presents current content through its normal path at successive monotonic 100 ms recovery deadlines; DECRQM remains Set.
-
-### E2E: Reset and session termination release suppression
-
-RIS or PTY reader/session close clears active nesting and restores ordinary redraw policy for a surviving view; DECSTR alone leaves synchronization enabled.
-
-## Decisions
-
-### Saturating session-owned nesting
-
-See [ADR 0010](../adr/0010-parser-minimal-public-api.md), [ADR 0013](../adr/0013-synchronous-pty-io.md), [ADR 0017](../adr/0017-platform-neutral-terminal-replies.md), [ADR 0022](../adr/0022-synchronized-output-presentation-recovery.md).
-
-### Defer presentation, not terminal processing
-
-See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
-
-### Runtime-owned bounded recovery using host-neutral demand
-
-See [ADR 0020](../adr/0020-host-neutral-terminal-frame-scheduling.md), [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0022](../adr/0022-synchronized-output-presentation-recovery.md).
-
-### Narrow reset behavior
-
-See [ADR 0013](../adr/0013-synchronous-pty-io.md), [ADR 0019](../adr/0019-alternate-screen-buffer-isolation.md), [ADR 0022](../adr/0022-synchronized-output-presentation-recovery.md).
-
-### ADR compatibility cross-check
-
-Preserve all existing ownership, rendering, scheduling, parser, reply, and alternate-screen boundaries. ADRs 0001, 0004, 0006, 0008, and 0014 are superseded; ADRs 0002, 0003, 0007, 0009, 0016, and 0018 are unaffected; ADRs 0005, 0010–0013, 0015, 0017, and 0019–0022 are directly complied with. No conflict is introduced. See [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0010-parser-minimal-public-api](../adr/0010-parser-minimal-public-api.md), [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md), [0021-external-draw-scheduling-and-standalone-terminal-host](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [0022-synchronized-output-presentation-recovery](../adr/0022-synchronized-output-presentation-recovery.md)
+An omitted disable produces successive monotonic 100 ms recovery presents through the normal Runtime path. Recovery is canceled after final disable, RIS or session close, without stale scheduling.
 
 ## Test Plan
 
-- **Integration tests:** Drive private CSI sequences through the streaming parser, Screen, and Terminal output path; verify DECRQM status, nesting, RIS, DECSTR, and PTY/session-close behavior. Use deterministic Runtime/Scheduler time and the presenter contract to verify deferred presentation, deadline registration, recurring 100 ms recovery, final-disable cancellation, and zero-sized/suspended-surface behavior.
-- **Manual tests:** Exercise Vim, tmux, or another full-screen application that emits `?2026h/l`; verify a short redraw batch does not tear, and an intentionally omitted disable remains visually fresh within 100 ms. Run the Windows smoke coverage blocked by issue #93.
-- **Performance thresholds:** Dirty synchronized terminal content must not be withheld from visible presentation for more than 100 ms; ordinary non-synchronized output retains current scheduling and presentation behavior.
-- **Edge cases:** Repeated enables; disables at zero; disable after forced recovery; query during nesting; RIS and DECSTR during a batch; PTY EOF during a batch; alternate-screen transitions; concurrent blink/autoscroll deadlines; temporarily non-drawable surfaces.
+Drive streaming private CSI through parser, Screen, reply buffering, Terminal and bridge. Deterministic scheduler/presenter tests cover nesting/saturation, mismatched disables, DECRQM bytes, recurring recovery, cancellation, RIS/DECSTR/EOF after recovery, alternate-screen transitions, concurrent blink/autoscroll, and non-drawable/suspended surfaces.
+
+**Outstanding acceptance (historical 0007/T0004):** implementation/test source is not Windows acceptance. Check `docs/protocol/checklist.md` entries only against supported automated batch, nesting, recovery and lifecycle evidence. Exercise Vim/tmux or another emitting application and an omitted-disable case on Windows; the prior test plan identified issue #93 as the smoke blocker. Record actual results under [validation policy](../../docs/validation.md); this cleanup does not claim that blocker resolved or the smoke/performance checks passed. Ordinary non-synchronized scheduling must remain unchanged.
+
+Historical 0007/T0001–T0003 contracts survive in Solution and the recovery case above.
 
 ## Out of Scope
 
-- General DCS or non-`?2026` synchronized-output extensions.
-- Deferring parser execution, Screen mutation, damage tracking, or GPU preparation.
-- Renderer performance work, adaptive/configurable recovery timeouts, and a user-facing synchronization setting.
-- Mouse/focus protocol changes, alternate-screen redesign, resize/reflow work, or wide-cell editing changes.
-- Transferring Window, Surface, Device, Queue, or PTY ownership into Terminal.
-
-## Future Evolution
-
-- Re-evaluate the fixed 100 ms recovery interval using measured latency and throughput data.
-- Add diagnostics if applications regularly rely on forced recovery.
-- Generalize presentation eligibility only if future protocol modes require it, while preserving the generic external-schedule boundary.
-- Expand conformance comparison against additional terminal emulators and use the result to refine Windows compatibility smoke coverage.
+Other DCS/synchronization families, deferred parsing/model/GPU preparation, configurable recovery, renderer optimization, mouse/focus changes, alternate-screen redesign, resize/reflow, and wide-cell editing.

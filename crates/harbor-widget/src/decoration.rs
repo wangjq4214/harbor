@@ -1,4 +1,5 @@
 use crate::layout::{Point, Size};
+use crate::paint::Paint;
 use crate::scene::primitive::Color;
 use std::error::Error;
 use std::fmt;
@@ -234,20 +235,31 @@ impl NormalizedBorderRadius {
 /// A uniform four-edge outline in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Border {
-    color: Color,
+    paint: Paint,
     width: f32,
 }
 
 impl Border {
     /// Creates a finite-color, non-negative-width border.
     pub fn all(color: Color, width: f32) -> Result<Self, DecorationError> {
-        validate_color("color", color)?;
-        validate_non_negative("width", width)?;
-        Ok(Self { color, width })
+        Self::with_paint(Paint::Solid(color), width)
     }
 
+    /// A uniform-width stroke using the same paint contract as box fills.
+    pub fn with_paint(paint: Paint, width: f32) -> Result<Self, DecorationError> {
+        validate_color("color", paint.first_color())?;
+        validate_non_negative("width", width)?;
+        Ok(Self { paint, width })
+    }
+
+    pub const fn paint(&self) -> Paint {
+        self.paint
+    }
+
+    /// Legacy solid-color accessor. For a gradient, returns its first stop color;
+    /// use `paint()` to inspect or render the complete stroke.
     pub const fn color(&self) -> Color {
-        self.color
+        self.paint.first_color()
     }
 
     pub const fn width(&self) -> f32 {
@@ -258,7 +270,7 @@ impl Border {
 impl Default for Border {
     fn default() -> Self {
         Self {
-            color: Color::TRANSPARENT,
+            paint: Paint::Solid(Color::TRANSPARENT),
             width: 0.0,
         }
     }
@@ -351,7 +363,7 @@ pub enum ClipBehavior {
 /// Immutable, layout-neutral optional box paint values.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoxDecoration {
-    color: Option<Color>,
+    paint: Option<Paint>,
     border: Option<Border>,
     border_radius: Option<BorderRadius>,
     shadows: Vec<BoxShadow>,
@@ -366,10 +378,20 @@ impl BoxDecoration {
     /// Adds or replaces the fill color after validating it.
     pub fn try_color(mut self, color: Color) -> Result<Self, DecorationError> {
         validate_color("color", color)?;
-        self.color = Some(color);
+        self.paint = Some(Paint::Solid(color));
         Ok(self)
     }
 
+    /// Replaces the fill paint; calling `try_color` later replaces it with a solid.
+    pub fn try_paint(mut self, paint: Paint) -> Result<Self, DecorationError> {
+        validate_color("color", paint.first_color())?;
+        self.paint = Some(paint);
+        Ok(self)
+    }
+
+    pub const fn paint(&self) -> Option<Paint> {
+        self.paint
+    }
     /// Adds or replaces the uniform border.
     pub fn border(mut self, border: Border) -> Self {
         self.border = Some(border);
@@ -388,8 +410,12 @@ impl BoxDecoration {
         self
     }
 
+    /// The current solid fill, or `None` for absent/gradient fill. See `paint()`.
     pub const fn color(&self) -> Option<Color> {
-        self.color
+        match self.paint {
+            Some(paint) => paint.solid_color(),
+            None => None,
+        }
     }
 
     pub const fn border_value(&self) -> Option<Border> {

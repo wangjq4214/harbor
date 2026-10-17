@@ -19,66 +19,13 @@ Decoration paints in the stable order shadow → background → child → border
 
 The main Runtime Host composes `TerminalWidgetBridge` inside `DecoratedBox` within the existing 16dp Terminal Window Inset. The product preset uses a 12dp radius, 25%-opaque black outer shadow, `(0dp, 4dp)` offset, 12dp blur, zero spread, no fill, and `ClipBehavior::AntiAlias`. The absent fill preserves Default Background Cell transparency and the existing Windows Acrylic backdrop.
 
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Terminal decoration composition | Runtime Host → `harbor-widget` | Root `TerminalWidgetBridge`, existing 16dp inset, and the product decoration preset | A reusable `DecoratedBox` composition without Terminal-specific visual API |
-| Rounded external-draw clipping | `harbor-widget` frame encoding ↔ `CustomPaint` / Terminal external draw | Paint-ordered `Primitive::External`, allocation geometry, ancestor clips, and selected `ClipBehavior` | Rounded child clip for terminal pixels while preserving external draw identity, scheduling, and render-pass ownership |
-
-## End-to-End Tests
-
-### E2E: Main terminal displays the product decoration
-
-At first drawable main-window presentation, the historical preset produces a 12dp anti-aliased outline and 25%-opaque black shadow, offset 4dp downward with 12dp blur, without changing allocation or 16dp inset. See the current-preset supersession note.
-
-### E2E: Rounded clipping applies to Terminal CustomPaint
-
-Terminal content/scrollbar reaching a corner is clipped to the historical 12dp rounded shape through bridge/CustomPaint; the outer shadow remains visible but ancestor clips still truncate overflow.
-
-### E2E: Rounded clipping governs pointer targeting
-
-With `AntiAlias`, a pointer inside the terminal rectangle but outside its rounded shape does not target Terminal; input inside the shape is unchanged.
-
-### E2E: Acrylic remains visible
-
-Over Windows Acrylic, default terminal cells stay unfilled; explicit backgrounds, inverse cells, configured borders and shadows remain readable.
-
-### E2E: Decoration remains reusable and optional
-
-A decorated non-terminal child follows its configured color, border, radii, shadows and clipping without changing size; an undecorated sibling keeps its existing behavior.
-
-### E2E: Degenerate and invalid decoration values are bounded
-
-Zero radius/blur and negative spread collapsing shadow bounds produce no spurious pixels. The public contract rejects non-finite values without panics or invalid GPU geometry.
-
 ## Decisions
 
-### Use a generic DecoratedBox rather than Terminal-specific properties
-
-See [ADR 0003](../adr/0003-widget-independent-pipeline.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
-
-### Preserve the CustomPaint external-draw boundary
-
-See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
-
-### Separate decoration, clipping, and layout semantics
-
-See [ADR 0002](../adr/0002-signal-pull-model.md), [ADR 0003](../adr/0003-widget-independent-pipeline.md).
-
-### Use Flutter-style value types with a bounded first-version surface
-
-See [ADR 0003](../adr/0003-widget-independent-pipeline.md).
-
-### Preserve transparent terminal composition
-
-See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
-
-### Apply a concrete product preset at the Runtime Host root
-
-See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md), [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
+Decoration is generic widget composition, not terminal-owned styling. Preserve CustomPaint ownership and paint order ([ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md)); native-host ownership follows [Spec 0012](./0012-widget-winit-native-host-consolidation.md).
 
 ## Test Plan
+
+Pointer positions inside the rectangle but outside the rounded clip must not target the child. Non-terminal children must remain reusable and undecorated siblings unchanged. Invalid non-finite decoration must be rejected without panic or invalid GPU geometry; zero/collapsed effects produce no spurious pixels.
 
 - **Integration tests:** Verify public builder defaults and validation; uniform and per-corner radius geometry; multi-shadow ordering; stable shadow `SceneItem` identity across retained updates, including when zero-alpha or collapsed shadows are filtered as ineffective entries; shadow/background/child/border scene order; unchanged decorated-child layout; rounded hit testing; ancestor-clip intersection; `Primitive::External` clipping for `None`, `HardEdge`, and `AntiAlias`; no-fill decoration preserving transparent pixels; retained-scene updates when decoration values change.
 - **Manual tests:** Launch Harbor on Windows 11 and Windows 10; inspect corners and shadow at 100%, 150%, and 200% DPI; resize, maximize, restore, and move between monitors; exercise text selection, scrollbar dragging, wheel input, focus, typing, cursor blink, synchronized output, and paste confirmation; verify Acrylic remains visible through default cells and the confirmation window remains unchanged.
@@ -96,18 +43,3 @@ See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](..
 - User-configurable terminal radius, shadow, border, or Acrylic settings.
 - Custom caption chrome, Mica, or changes to Windows compositor policy.
 - Allowing a widget's own shadow to escape an ancestor clip.
-
-## Future Evolution
-
-- Add per-edge borders when a concrete widget requires asymmetric outlines.
-- Add inner shadows or arbitrary shape decoration only after a compositing model and performance budget are specified.
-- Add gradients and images as new decoration inputs without changing the Terminal boundary.
-- Introduce user-configurable terminal decoration after the configuration schema and live-update policy are defined.
-- Re-evaluate save-layer anti-aliasing if visual evidence shows direct anti-aliased rounded clipping is insufficient.
-- Generalize rounded clip representation for nested transformed clips when non-axis-aligned transforms enter the Widget Runtime.
-
-## Historical Ticket IDs
-
-| Historical ID | Surviving contract |
-| --- | --- |
-| 0009/T0003 (Layered Outer Shadows) | [Solution](#solution) and [Test Plan](#test-plan), including stable shadow SceneItem identity when ineffective entries are filtered. |

@@ -7,7 +7,7 @@
 
 ## Scope and Settled Contract
 
-Deliver the modern SGR slice of #162, with Neovim as the first named application workload: styled and colored underlines, conceal/reveal, and overline. The user selected Spec -> slice and approved all recommended compatibility rules after reviewing the impact on primary reflow. The later approach A decision explicitly authorizes the scoped Windows ConPTY live-primary resize repair in local plan 0020 (`conpty-styled-tail-resize-compatibility`, not tracked) / [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); this contract update does not claim implementation or verification, or broaden that authorization to unrelated work.
+Deliver the modern SGR slice of #162 with Neovim as the first named workload: styled/colored underlines, conceal/reveal and overline. [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) governs the approved live-primary resize exception; unrelated work is not included.
 
 For sequencing, the user directs that all existing #162 sub-issues, currently #173 and #174, are treated as fully implemented and verified. Do not reopen their implementation or historical acceptance as prerequisites. This is the supplied prerequisite premise, not a new execution result or permission to rewrite historical evidence.
 
@@ -78,8 +78,6 @@ Support the selected indexed/RGB SGR 58 family alongside existing foreground/bac
 - Producer geometry includes already soft-wrapped (`wrapForced`) old source prefixes, even if their final cells are ordinary or decorated blanks. Only the final old source row's style-only tail is clipped; do not drop forced-prefix geometry and thereby displace cmd repaint. See the measured producer profiles in ADR 0052.
 - Preserve [ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md): ordinary default-style, unprotected, non-hyperlinked logical tail spaces can still be discarded, subject to live/saved cursor exceptions. Do not turn all unused cells into retained decorated content or change unrelated output/erase semantics.
 - Primary reflow and alternate-screen rectangular resize remain distinct. Apply the ADR 0052 live/history boundary also to saved-primary resize while alternate is active; do not change alternate rectangular policy or pull history into producer live coordinates. Wide-cell normalization, content anchors, selection projection, history eviction, and transactional resize continue under [spec 0014](./0014-content-preserving-resize-reflow.md). Anchors must reflect surviving cells; endpoints in clipped overflow clamp or invalidate consistently, without implying full tail preservation.
-- Current `retained_glyph_count` already preserves explicit underlined spaces through its non-default-cell check. The new work extends state/provenance consistency; it is not evidence of a pre-existing blanket loss of underlined tails.
-- Approach A was approved and implementation authorized on 2026-10-09. [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) partially supersedes only live-primary styled-tail retention; full history/non-ConPTY rules, normal blank provenance/rendering and unrelated SGR semantics remain unchanged. This records approval, not a new execution pass.
 
 ### R6. Accurate status replies and discovery
 
@@ -97,67 +95,9 @@ Support the selected indexed/RGB SGR 58 family alongside existing foreground/bac
 - Keep self-contained validation summaries using [Validation](../../docs/validation.md), with raw artifacts retained locally or linked from retrievable CI. Record revision/dirty scope, Windows/ConPTY/application versions, commands/steps, expected/observed results, PASS/FAIL/NOT RUN/BLOCKED, and exclusions. Do not capture secrets or unrelated terminal/clipboard contents.
 - Update protocol/status documentation only for behavior actually delivered and evidenced. The approved #162 prerequisites remain outside this slice's revalidation scope.
 
-## Solution and Necessary Seams
+## Verification
 
-Extend the established terminal-owned SGR and cell-state path and the existing renderer projection; do not introduce a new parser, terminal identity, renderer abstraction, or system side-effect owner. Use explicit style semantics and an independent underline color without prescribing private type names, bit widths, shader representation, curve sampling, or tessellation.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Parsed SGR -> authoritative pen | `harbor-parser::Params` -> terminal SGR handler/pen | Preserved top-level parameters and colon subparameters, fixed parser bounds | Ordered validated state changes and safe ignored candidates |
-| Pen -> retained cells/saved state | Pen/cell writer/editing/save -> `Cell`, normal buffer and saved pen | Style/color/conceal/overline plus existing text/width/hyperlink state | Complete cell state and save/restore without duplicated authoritative flags |
-| Retained content -> resize/copy | Blank provenance/logical decoder -> primary reflow/content projection/copy | Decorated-space significance, default-tail/cursor rules and scoped ADR 0052 producer geometry | Full styled retention for history/non-ConPTY; target-row styling with live overflow clipping for Windows ConPTY; surviving anchors and concealed source text remain meaningful |
-| Snapshot -> GPU projection | Terminal update -> text/decoration/background rendering | Coherent semantic state, active palette, current geometry and damage | Correct visible glyph/decoration suppression and rendering, bounded geometry, invalidation |
-| Pen/registry -> replies | Current SGR / terminfo registry -> DECRQSS / XTGETTCAP -> TerminalReply | Accurate state, verified `Su`, existing framing and bounds | Deterministic truthful status/discovery bytes |
-| Application -> delivered acceptance | Neovim / synthetic VT probes -> Harbor / Windows ConPTY | Named/versioned real application path and controlled fixtures | Reproducible application, rendering, and regression evidence |
-
-Preserve the GPU-independent engine boundary of [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md). Parser/model tests must remain possible without GPU initialization; GPU and native acceptance remain separate proof obligations.
-
-### Current repository anchors
-
-The existing terminal pen/cell/edit, logical-content/reflow, renderer, status-string and capability-registry paths are integration surfaces, not separate owners. Keep font-derived decoration metrics and focused parser/screen/render regressions; filenames and prior inspection do not establish acceptance.
-
-## End-to-End Tests
-
-| Case | Given / input | Observable outcome |
-| --- | --- | --- |
-| Neovim styled diagnostic | Actual Neovim in Harbor, named version/path, undercurl and underline color configured | Distinct colored undercurl appears; edits/redraw/resize and exit preserve application/shell rendering |
-| All underline styles | Synthetic text including spaces under `4:1..5`, legacy `4`/`21`, and `24`/`4:0` | Distinct requested patterns; decorated spaces remain continuous; `21` keeps bold; explicit off leaves ordinary text undecorated unless hyperlink fallback applies |
-| Color independence | Indexed and RGB SGR 58 variants, `24`, re-enable, `59`, then inverse | Disable preserves assigned color, re-enable reuses it, default follows effective foreground, explicit color remains unchanged under inverse |
-| Invalid and fragmented SGR | Same stream fed whole and at splits inside CSI/colon/RGB parameters; unknown styles and out-of-range/incomplete colors | Equivalent completed state; affected invalid candidates retain previous state; later text/valid SGR recover without unintended attributes |
-| Decorated-tail resize — full policy | Retained history or non-ConPTY primary `AB` plus four decorated spaces, cursor outside that tail, shrink six columns to three then widen | Complete decorated logical payload survives and paints after each projection; ordinary default-tail comparison still follows ADR 0046 |
-| Styled erase/fill blank | Existing erase/fill operation produces spaces with an enabled visible decoration | Meaningful extents include decoration; history/non-ConPTY reflow retains the full styled payload; Windows ConPTY live resize preserves target-row attributes but clips style-only overflow under ADR 0052 |
-| ConPTY live styled-tail repaint | Bundled ConPTY `1.24.260710001`, original script + pending cmd input, 103 -> 51 columns; minimized 65-blank decorated/background tails and 103-blank styled erase rows | No style-only extra live rows; retained target-row attributes survive, overflow is not promised for widening/copy, CUP + ED repaint preserves `END`, full prompt + pending input and subsequent typing/backspace/Enter; history/live boundary, wide/cursor cases and alternate policy remain correct |
-| Concealed contents | Plain/CJK/suffix-bearing cells with conceal plus underline/strike/overline/inverse | No foreground artifacts; background/width/cursor progression unchanged; selected copy returns original fixture text |
-| Attribute lifetimes | New state combined with saved pen, edits, scrollback, alternate-screen transitions, SGR reset, DECSTR and RIS | Complete state is carried or reset according to the existing operation's contract; no primary/alternate leakage or stale state |
-| Hyperlink fallback | OSC 8 non-space text and spaces with explicit style on/off and SGR reset | Enabled explicit style takes precedence; off restores non-space single fallback; no automatic linked-space underline or implicit link closure |
-| Status and discovery | DECRQSS `m`, XTGETTCAP `Su`, reset/legacy queries and malformed/cancelled requests | Exact truthful bounded replies; status round-trip reconstructs the pen; TERM/DA/unrelated replies remain unchanged |
-| Geometry/lifecycle | Existing font/size, viewport, DPI, hidden/retained-frame and restore paths | Decorations stay aligned/clipped; no stale GPU projection, lost damage, or duplicate wide-cell decoration |
-
-## Decisions and Traceability
-
-[ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md) records approved SGR compatibility; [ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and [spec 0014](0014-content-preserving-resize-reflow.md) govern retention/resize. [ADR 0035](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md) retains hyperlink lifetime; [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) retains core/render ownership. Style/color and Su authority: approved choices, [upstream underline specification](https://github.com/kovidgoyal/kitty/blob/master/docs/underlines.rst) and [protocol checklist](../../docs/protocol/checklist.md#16-sgr-character-attributes). The first Neovim slice and completed-prerequisite premise are explicit user choices, not new test results. No private representation or additional colorspace protocol is selected; new material choices require clarification and recording.
-
-## Verification and Definition of Done
-
-- [x] R1-R6 have focused deterministic coverage of supported forms, invalid/fragmented/cancelled input, bounds, reset, ordering and relevant state lifetimes.
-- [x] CPU geometry/model tests and actual GPU encode/render evidence cover styles, spaces, wide cells, color/inverse, conceal and overline.
-- [x] Primary tests prove full styled retention in history/non-ConPTY and producer-compatible live geometry/target-row styling with honest overflow loss for Windows ConPTY under ADR 0052; alternate stays rectangular, while ordinary-tail rules, surviving cursor/selection anchors and transactional invariants remain intact.
-- [x] Exact DECRQSS/XTGETTCAP replies and reconstructed state are verified; no unsupported identity/capability is advertised.
-- [x] Windows Neovim and direct synthetic cases are recorded with the precise delivered scope, application/transport versions, observations and honest exclusions.
-- [x] Applicable existing reply/OSC/focus/mouse/IME/synchronized-output and copy/selection regressions remain intact; no prerequisite sub-issue is reopened.
-- [x] Documentation reflects implemented and evidenced support only; #162 remains the tracker for remaining non-SGR work.
-
-Run applicable gates at implementation boundaries, recording every unrun command and why:
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
-```
-
-A GPU test skipped for lack of an adapter, a compiled binary, or an unexecuted native procedure is not a runtime pass. Scoped implementation and acceptance evidence is recorded in the acceptance record linked from the status; this spec does not claim broader #162 or transport acceptance.
+Focused protocol/model, CPU/GPU and configured Windows Neovim/synthetic evidence is recorded in the [acceptance record](../../docs/modern-sgr-acceptance.md), including its exclusions. Skipped GPU/native checks are not passes. Apply the [standard quality gates](../../docs/validation.md#standard-quality-gates) at implementation boundaries and record omissions.
 
 ## Out of Scope
 
@@ -166,4 +106,3 @@ A GPU test skipped for lack of an adapter, a compiled binary, or an unexecuted n
 - New rapid-blink behavior, complex shaping/ligatures, strikethrough-on-space expansion, configuration hot reload, or a font-management redesign.
 - Conceal-based redaction, global selection/copy trimming, or broader reflow/alternate redesign beyond the approved Windows ConPTY live-primary style-only tail exception; preservation of every ordinary tail space remains out of scope.
 - Reimplementation/revalidation of the approved completed #162 sub-issues as prerequisites.
-- Production changes, a separate implementation-plan stage, staging/committing, or creating GitHub sub-issues during this artifact-authoring task.

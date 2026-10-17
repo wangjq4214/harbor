@@ -349,30 +349,16 @@ pub(super) fn execute_wgpu_frame(
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("harbor main frame encoder"),
                     });
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("harbor main render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(clear_color),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                runtime.encode(
-                    ExternalDrawGpu::new(target.device(), target.queue(), target.format()),
-                    &mut pass,
-                    viewport,
-                    commit,
-                );
-            }
+            runtime.encode_frame(
+                ExternalDrawGpu::new(target.device(), target.queue(), target.format()),
+                &mut encoder,
+                crate::renderer::FrameTarget {
+                    view: &view,
+                    clear_color,
+                },
+                viewport,
+                commit,
+            );
             Ok(encoder.finish())
         },
         |command| {

@@ -8,7 +8,6 @@ Current project knowledge and durable architectural records live here. Execution
 - [Terminal protocol terminology](./CONTEXT-terminal-protocol.md)
 - [Architecture decisions](./adr/)
 - [Requirements specifications](./spec/)
-- [Active implementation tickets](./ticket/)
 
 ## Lifecycle
 

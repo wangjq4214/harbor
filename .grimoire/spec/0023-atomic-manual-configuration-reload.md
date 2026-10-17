@@ -1,205 +1,78 @@
 # Atomic Manual Configuration Reload
 
-**Spec ID:** 0023
-**Status:** Draft
-**Date:** 2026-10-14
-**Sources:** [Issue #172](https://github.com/wangjq4214/harbor/issues/172), [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md), [ADR 0060](../adr/0060-font-reload-uses-normal-bounded-resize.md), and the approved qualifications below.
-
-## Scope and Qualifications
-
-The user approved strict manual reload (C1), expanded #172 to live terminal-only fonts (C2), qualified retention to normal bounded resize (C3; ADR 0060), and allowed only the explicit compensating-resize double-failure exception (C4; [ADR 0061](../adr/0061-manual-reload-compensation-failure.md)). These qualifications govern R1–R8. #172's published font exclusion remains unreconciled; this local contract does not modify the issue.
-
-[Spec 0024](./0024-watched-reload-and-launch-settings.md) adds default-on watching and new-session environment/directory settings to the combined #155 package, not this initial slice. [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies only notification eligibility: absent files and routine successful/no-change reloads are silent; acceptance and actionable failures remain unchanged.
-
-Existing source-backed contracts are retained where this extension does not change them: [structured application bindings](../adr/0041-structured-keybinding-configuration.md), [command precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md), [resize/reflow](./0014-content-preserving-resize-reflow.md), [the reader barrier](../adr/0043-acknowledged-pty-resize-barrier.md), [ConPTY live-primary compatibility](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), [terminal/application appearance separation](../adr/0058-terminal-themes-separate-from-application-appearance.md), and [validation policy](../../docs/validation.md).
+**Spec ID:** 0023 (manual reload; distinct from Windows distribution 0023)
+**Status:** Implementation exists; full integrated acceptance pending.
+**Sources:** [#172](https://github.com/wangjq4214/harbor/issues/172), [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md), [0060](../adr/0060-font-reload-uses-normal-bounded-resize.md), [0061](../adr/0061-manual-reload-compensation-failure.md).
+**Extensions:** [0024](./0024-watched-reload-and-launch-settings.md) adds watching/environment/directory. [0025](./0025-portal-and-configuration-notifications.md) supersedes only routine-success/absent-file notice obligations, including E1/E2 below; strict rejection remains.
 
 ## Requirements
 
 ### R1 — Manual Command and Input Availability
-
-Register the implemented typed Reload Configuration operation as `app.reload-configuration`, with display metadata and default `Ctrl+Shift+R`. It uses the existing application registry, shortcut/action outcome, FIFO dispatcher, and application-owned executor; it must not require a command palette or introduce a second command bus.
-
-The reload binding uses the existing structured TOML format:
-
+Register typed `app.reload-configuration`, display metadata and default Ctrl+Shift+R in the existing application registry/FIFO dispatcher/executor, without a second bus or palette dependency. Use structured TOML:
 ```toml
 [keybindings.app.reload-configuration]
 bindings = [{ modifiers = ["ctrl", "shift"], key = "r" }]
 ```
-
-Omission keeps registry defaults, configured records replace defaults, and `bindings = []` unbinds the command, just as for existing commands. Do not introduce an unconfigurable rescue chord.
-
-Reload is an application operation, not an alternate-screen terminal key. Preserve existing cross-window input gates and supported command availability. A consumed reload chord must not reach the PTY even if reload fails. Binding replacement must not retroactively pass an already-consumed chord's repeat/release handling to terminal input. Preserve existing conditional pass-through for copy-or-interrupt and alternate-screen history commands, and existing IME behavior.
+Omission keeps defaults, records replace defaults, and `bindings = []` unbinds; no rescue chord. Preserve command availability, cross-window security gates, alternate-screen routing, conditional copy/interrupt and history pass-through, and IME. A consumed invocation, its repeat and release cannot reach the PTY across acceptance, rebinding or failure.
 
 ### R2 — Complete, Strict Candidate Validation
-
-Read the current `~/.harbor/config.toml` when manually invoked. A missing or unreadable file, malformed TOML, invalid recognized field, invalid color, malformed binding shape, unknown command ID, unsupported key/modifier, repeated modifier/binding, or cross-command chord conflict rejects the complete reload.
-
-Validate all recognized candidate settings, not only changed live fields. In particular, invalid font, shell, or clipboard field values cannot be silently replaced with startup defaults while colors or bindings are accepted. Semantic keybinding validation remains application-owned and includes registry defaults when checking conflicts.
-
-Each candidate is a complete settings document under the existing defaults/override schema, not an incremental patch over the last accepted settings. Removing a valid optional override therefore restores its documented default; omission is not an error. Unknown ordinary configuration fields retain visible warning behavior rather than silently becoming supported settings. The superseded string-array keybinding format remains invalid.
-
-These rules concern acceptance of malformed configuration, not a new font-discovery policy. Keep the existing terminal font selection and glyph fallback behavior documented in CONTEXT and implemented by `harbor-text`: an unavailable configured family warns and uses a usable system primary if available. Failure to obtain usable font resources, valid metrics, or GPU resources rejects reload. Do not conflate that established font-selection fallback with accepting malformed TOML through startup fallback.
+Read the current configuration source (installed/unmarked: `~/.harbor/config.toml`; portable path policy remains applicable). Missing/unreadable file, malformed TOML, any invalid recognized field/color/font/shell/clipboard value, malformed or superseded string-array bindings, unknown command, unsupported key/modifier, repeated modifier/binding or cross-command conflict rejects the whole candidate. Application-owned semantic binding validation includes registry defaults. Validate unchanged/non-live fields too; never substitute startup defaults or accept a valid subset.
+A candidate is a complete defaults/override document, not a patch: removing an optional override restores its documented default. Unknown ordinary fields remain ignored with actionable warning policy, not supported/restart-required settings. Preserve established font discovery/glyph fallback: an unavailable valid family warns and uses a usable system primary; failure to acquire usable fonts, valid metrics or GPU resources rejects reload.
 
 ### R3 — Coherent Acceptance and Failure
-
-The application thread owns publication of the accepted configuration. Complete validation and supported resource/model preparation before publishing a new generation. Existing applicable sessions, UI bindings, and future-instance factories must not finish reload on different accepted generations.
-
-A rejected candidate leaves the previously accepted colors, OSC baseline/overrides, binding table, terminal font resources/metrics, and future-instance configuration effective. It must not partially accept colors when font preparation fails or update some tabs while leaving others on old resources. Failure feedback must not claim success.
-
-Font-driven grid changes must keep terminal model, PTY geometry, renderer metrics, and input/IME coordinates coherent. Actual resize/barrier failures cannot be ignored and reported as a successful font reload. Preserve the existing ordered reader barrier and resume it on every completion/error path; do not lose or duplicate PTY bytes.
-
-This is configuration atomicity, not a promise to freeze or roll back normal child-process execution and terminal output. A per-renderer replacement or a sequence of independent per-session resize calls is not, on its own, proof of all-session acceptance. The implementation must demonstrate its multi-session failure behavior rather than weaken this contract through an undocumented partial-success exception.
-
-**Recovery-failed exception (C4):** If a PTY resize has succeeded but compensation after another session's resize failure also fails, report both operations and affected sessions explicitly. Retain the prior accepted configuration/resources and resume every paused reader. Attempt to reconcile model/render/input geometry with the last successfully established PTY geometry; do not assert that old geometry was restored when it was not. A session that remains unrecovered must be identified as such. This is a failed operation, never a partial accepted generation or success. Controlled tests must cover this double-failure path as well as ordinary successful compensation.
+The application thread publishes only after complete validation and resource/model preparation. Existing applicable sessions, UI bindings and future factories must agree on one accepted generation. Rejection retains accepted colors, OSC baseline/overrides, bindings, fonts/metrics/resources and factories; no per-tab or per-setting partial success.
+Keep model/PTY/render/input/IME geometry coherent; propagate resource, barrier and resize errors. The [ordered reader barrier](../adr/0043-acknowledged-pty-resize-barrier.md) must resume every reader on every path without byte loss/duplication or lost pending damage. Configuration atomicity does not freeze/roll back normal child execution/output.
+**C4 exception:** after a later-session resize fails, compensate earlier successful PTY resizes. If compensation also fails, retain accepted settings/resources, resume every reader, attempt model/render/input reconciliation with the last successfully established PTY geometry under the prior font policy, and identify both failed operations and affected/unrecovered sessions. Never claim old geometry restored, success or a partial accepted generation. Test ordinary compensation, double failure and retry separately.
 
 ### R4 — Supported Application Policies
-
-| Setting | Required application policy | Source |
-| --- | --- | --- |
-| Terminal default/ANSI colors, cursor color, selection color | Apply live to all relevant existing sessions and future instances, subject to R6's OSC precedence | Issue #172, C1, ADR 0059 |
-| Application keybindings | Publish the complete resolved live table without clearing terminal/session state | Issue #172, C1 |
-| Terminal font family and size | Apply live to existing and future terminals; external UI fonts remain independent | C2, ADR 0059 |
-| Shell program and arguments | Update new-session configuration only; never restart or relaunch an existing child | C1, ADR 0059 |
-| Clipboard policy | Do not apply live in this scope; report a changed value as restart-required | C1, ADR 0059, current configuration example |
-
-Classify changed settings accurately. A legitimate restart-required setting may coexist with an accepted live subset, but this is not permission to accept malformed settings. A successful reload must not imply that a changed clipboard policy is already effective. Unknown keys must be reported as unknown/ignored, not falsely represented as supported after restart.
+| Setting | Policy |
+| --- | --- |
+| Default/ANSI/indexed, cursor and selection colors | Live to all applicable existing/future sessions, under R6 |
+| Application bindings | Publish complete resolved live table without clearing state |
+| Terminal family/size | Live existing/future terminal resources; UI fonts independent |
+| Shell program/arguments | New sessions only; no child restart/relaunch |
+| Clipboard policy | Not live; changed value explicitly restart-required |
+Valid restart-required changes may coexist with valid live acceptance, never malformed-candidate partial acceptance. Report effective versus pending settings accurately.
 
 ### R5 — Terminal-Only Font Changes and Normal Bounded Resize
-
-Replace terminal font/render resources while keeping the existing application, terminal session, PTY, and running child process. Do not implement reload by clearing buffers or constructing fresh terminal sessions. Do not replace widget/chrome/dialog font resources or change their font family, size, or text metrics because terminal font settings changed.
-
-Use the new primary terminal font metrics for terminal rendering and grid calculation. If geometry changes, use the existing buffer-specific resize policy and notify the existing PTY of its new dimensions; if metrics imply unchanged grid dimensions, do not manufacture a grid resize merely to redraw.
-
-- Primary content reflows at the new width under the established main/history/ConPTY policies. Retain the newest content within the existing physical-row capacity, allowing normal oldest-history eviction and existing tail-trimming rules.
-- Active or parked alternate screens retain the existing rectangular policy, including boundary clipping, wide-cell repair, and application-driven redraw. Do not text-reflow them or add alternate-screen scrollback.
-- When alternate mode is active, resize the saved primary state under its own policy so leaving alternate mode restores the current geometry, not a cleared or stale primary screen.
-- Preserve cursor, review, selection, and hyperlink meaning according to existing resize/anchor validity rules. Invalidation caused by ordinary eviction/clipping is allowed; unrelated state resets are not.
-- Apply updated fonts and palette state to inactive sessions as well as the active one. The next render of an inactive session must not replay stale old-font/old-palette GPU data. New terminals use the accepted font settings and matching metrics/resources.
-- Invalidate or replace font-dependent glyph/sequence caches and retained rendering projections as needed so old glyph images, underline/box geometry, cursor placement, selection bounds, or input/IME coordinates do not persist with new metrics.
-
-Do not reject an otherwise valid reload solely because normal resize evicts older history or clips cells. Do not add unlimited history, off-grid backups, a second coordinate model, or a special lossless font-resize policy to satisfy this contract. Actual preparation failures and existing resize validity failures remain errors under R3.
+Keep application/session/PTY/child identity and buffers; no reset or recreation. Widget/chrome/dialog family, size and metrics remain independent. New primary metrics drive rendering/grid; changed geometry uses [normal buffer-specific resize](./0014-content-preserving-resize-reflow.md), unchanged grid does not manufacture resize.
+Primary/history retains newest content within physical-row capacity, with ordinary oldest eviction/tail trimming and [ConPTY live-primary exceptions](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md). Active/parked alternate screens stay rectangular, with clipping/wide-cell repair/redraw and no scrollback; resize saved primary independently. Preserve cursor/review/selection/hyperlink meaning under existing anchor validity; normal clipping/eviction may invalidate, unrelated resets may not.
+Update inactive sessions and future resources too. Invalidate font/sequence caches and retained GPU projections so glyphs, box/underline geometry, cursor, selection and input/IME coordinates use current metrics. Normal eviction/clipping alone cannot reject valid reload. No unlimited history, hidden backup, second coordinates or special lossless resize.
 
 ### R6 — Configuration Baseline and OSC Precedence
-
-Each terminal session has the latest accepted configuration palette as its reset baseline and its own explicit OSC RGB overrides. At startup the baseline is the startup palette. Successful reload advances the baseline; failure does not.
-
-- Unoverridden default foreground/background/cursor and indexed entries immediately use the new baseline. Selection uses its configured color; it is not an OSC default/indexed override slot.
-- Preserve explicit OSC 10/11/12 RGB overrides and OSC 4 overrides for indexes 0-255 across successful reload. An explicitly set RGB value equal to the old baseline is still an override, not evidence that no override exists.
-- Alpha follows the newly accepted configuration baseline. OSC overlays RGB, not a stale RGBA copy; ordinary OSC sets continue to preserve the active alpha.
-- OSC 110/111/112 clear the corresponding default-color override and restore the complete latest baseline RGBA. OSC 104 clears/restores selected indexed overrides, or all indexed overrides for its empty payload, without resetting default-color or selection slots.
-- Palette state and overrides are shared across primary/alternate buffers of one session and isolated between sessions. New sessions inherit the accepted baseline, not another session's OSC overrides.
-- Already-written cells retaining default/indexed color semantics reflect the active palette after reload. Explicit truecolor cell values are not rewritten into theme colors.
-- Preserve the existing bounded OSC syntax, malformed-request rejection, query reply format/framing, capacity, and RIS/DECSTR/SGR behavior. This extension changes reload/reset-baseline precedence, not the wire protocol subset.
-
-Terminal colors and fonts must not recolor application chrome, select application day/night mode, or change the independent whole-window compositor tint.
+Each session's latest accepted palette is its reset baseline (startup palette initially); failed reload changes neither baseline nor overrides.
+- Unoverridden default foreground/background/cursor and indexed slots use new baseline immediately; selection uses configured color, not an OSC slot.
+- Preserve explicit OSC 10/11/12 and OSC 4 indexes 0–255 RGB overrides, even equal-to-old-baseline values. Alpha always follows new baseline, not retained OSC RGBA; ordinary sets preserve active alpha.
+- OSC 110/111/112 clear only corresponding default overrides and restore latest baseline RGBA. OSC 104 clears selected indexed overrides, or all for empty payload, without resetting default/selection slots.
+- Palette/overrides are shared between a session's buffers, isolated between sessions; new sessions inherit baseline only. Default/indexed cells reflect active palette; explicit truecolor cells are not rewritten.
+Preserve bounded OSC syntax/rejection, query RGB/framing/capacity and RIS/DECSTR/SGR behavior. Terminal fonts/colors do not recolor chrome, choose application day/night mode or change compositor tint ([ADR 0058](../adr/0058-terminal-themes-separate-from-application-appearance.md)).
 
 ### R7 — Actionable Results and Honest Documentation
-
-Provide non-modal application-visible reload results and corresponding diagnostics in logs. Failure identifies the configuration path and relevant parse location, setting/binding path, or resource/resize operation where available, and states that the previously accepted configuration remains effective. Diagnostics are application feedback, not shell text or PTY injection.
-
-Success distinguishes applied live changes, new-session-only changes, and restart-required changes. Surface relevant ignored-setting and font-selection warnings without calling malformed configuration a success. Feedback must not require the deferred command palette or disturb the established input-gate policy.
-
-Keep user-facing defaults, the reload binding, supported setting policies, OSC reset behavior, and known exclusions accurate when implementation is delivered. Do not mark runtime/protocol status complete on source or parser tests alone.
+Under spec 0025, feedback is non-modal application UI/log diagnostics, never PTY injection. Identify path and available parse/setting/binding/resource/resize detail, retained effective settings and actual recovery limitations. Report actionable ignored/font warnings and restart needs; distinguish live/new-session/restart effects whenever reported, without routine success feed or palette dependency. Keep defaults, bindings, policies, OSC reset behavior and exclusions accurate; source/parser tests alone cannot establish runtime status.
 
 ### R8 — Startup Compatibility and Delivery Evidence
-
-Preserve the existing startup rules: document/read failure uses complete defaults; ordinary scalar failure is local; invalid palette restores the whole palette; invalid keybindings restore all default bindings without discarding valid unrelated settings. Adding reload does not replace those behaviors with strict live policy.
-
-Delivery requires focused tests, reproducible Windows runtime evidence, and the quality/evidence gates in issue #172 and `docs/validation.md`. The evidence must distinguish this expanded font-inclusive scope from the issue's currently published colors/bindings-only scope.
-
-## Solution
-
-Extend the application-owned command/configuration path rather than widget-library HMR. Treat a reload candidate and its prepared supported resources as distinct from accepted live state. The application owns the acceptance boundary and exposes the accepted binding state to UI shortcut construction instead of leaving it as an immutable startup-only root input. Preserve existing terminal/session identity while installing accepted palette and terminal font/render changes.
-
-Use the existing ownership split: `harbor-config` parses setting structure, `harbor-app` validates command semantics and presents shortcuts/results, the binary application coordinates acceptance and future factories, `harbor-text` owns terminal font selection/metrics, and `harbor-terminal` owns content, resize/PTY coordination, and terminal rendering resources. Validate prepared terminal GPU/cache resources on their owning thread before acceptance. The exact internal containers and multi-session commit mechanics are not prescribed; their externally observable guarantees are.
+Startup remains separate: document/read failure uses complete defaults; scalar fallback is local; invalid palette restores whole palette; invalid bindings restore all default bindings without discarding valid unrelated fields. Ownership remains config structural parsing → app command semantics/UI → binary transaction/factories, with text font/metrics and terminal content/resize/render resources in their existing crates. Validate prepared GPU/cache resources on their owning thread; internal transaction containers are not prescribed.
 
 ## End-to-End Tests
-
-### E1 — Valid Colors and Bindings Without PTY Restart
-
-- **Given:** Existing primary-screen sessions, an inactive tab, and a byte-recording PTY fixture; the settings file changes foreground, background, cursor/selection colors and a command binding.
-- **When:** The user invokes `Ctrl+Shift+R`, then exercises the old and new bindings and activates the inactive tab.
-- **Then:** All sessions observe the accepted color policy, the replacement binding works, the replaced chord no longer invokes its old command, unchanged/default and empty-unbound commands behave correctly, child/session identities remain the same, and the consumed application/reload chords emit no terminal bytes. The user sees success feedback.
-
-### E2 — Invalid Candidate Retains the Previous Generation
-
-- **Given:** A known accepted non-default palette, font, binding table, OSC override, and factory settings.
-- **When:** Reload is invoked separately with malformed TOML, missing/unreadable file, invalid color, malformed/unknown/conflicting binding, invalid font size/family shape, invalid shell shape, or invalid clipboard policy, including documents mixing valid live changes with one invalid field.
-- **Then:** The complete reload fails with actionable feedback; every existing session and subsequently created instance still uses the previous accepted applicable configuration. No default fallback or valid subset is committed; ongoing terminal output remains possible.
-
-### E3 — Font Family/Size Changes With Independent UI Fonts
-
-- **Given:** Known terminal font metrics, primary/history content with identifiable newest markers, independent widget/chrome/dialog font metrics, and a still-running shell with pending input.
-- **When:** A valid candidate changes terminal font family and size, followed by further typing and another reload that restores the prior size.
-- **Then:** Terminal glyphs and metrics change, affected PTYs receive matching grid sizes, newest retained text/prompt/input remains usable, and the shell/session is not recreated. UI fonts and compositor tint are unchanged. Cursor, decoration, selection, and input/IME coordinates match the new terminal geometry rather than stale cached metrics.
-
-### E4 — Normal Capacity Eviction Is Accepted
-
-- **Given:** Primary history near its existing capacity with old and recent markers and selection/review anchors, including a case where the new font size reduces columns.
-- **When:** A valid font reload causes reflow to exceed physical-row capacity.
-- **Then:** Reload succeeds using the normal resize policy, oldest overflow is evicted, newest content remains retained, surviving anchors remain meaningful and evicted anchors invalidate/fall back normally. The operation does not reset buffers, allocate an unlimited backup, or fail merely because old rows were evicted.
-
-### E5 — Inactive and Alternate-Screen Font Reload
-
-- **Given:** Multiple sessions, including an inactive session and a persistent alternate-screen application with saved primary history and identifiable content.
-- **When:** A valid font/color reload changes grid dimensions; tabs are activated, the full-screen application redraws, alternate mode exits, and a new tab is created.
-- **Then:** Every rendered instance uses the accepted font/palette, the alternate surface follows normal rectangular clipping/redraw, the saved primary restores at current geometry with its normally retained content, and the new tab uses matching accepted metrics/resources without inheriting another session's OSC overrides.
-
-### E6 — OSC Overrides Survive and Reset to the New Baseline
-
-- **Given:** Two sessions with different OSC default/indexed RGB overrides, including an explicit override equal to the old baseline, and content using default, ANSI/indexed, and truecolor colors.
-- **When:** Reload changes baseline RGB and alpha, OSC queries are sent, and corresponding default/indexed reset commands are exercised in primary and alternate modes.
-- **Then:** Explicit RGB overrides survive with new baseline alpha; unoverridden slots and selection use new configuration; query/display RGB agree; reset clears only relevant overrides and returns to latest baseline RGBA. The second session remains isolated, new sessions start without overrides, and truecolor cell values are unchanged. A failed reload does not alter any baseline/override.
-
-### E7 — Preparation and Resize Failure Cannot Become Partial Success
-
-- **Given:** Multiple sessions and a candidate changing colors, bindings, fonts, and future shell settings, with controllable failure in font acquisition, metrics/GPU preparation, reader barrier, or PTY resize, including failure associated with a later affected session.
-- **When:** Reload is attempted and the failure is triggered.
-- **Then:** The operation does not publish a partial accepted generation or report success. Previously accepted settings/resources remain effective, model/PTY/render geometry is coherent, pending damage is not lost, and every paused reader resumes. A subsequent valid reload can succeed. Per-session success alone is not sufficient evidence for this case.
-- **Compensation failure variant (C4):** Fail a later session's PTY resize and then fail restoring an earlier successfully resized PTY. The reload still fails without publishing any candidate settings. Every reader resumes; feedback identifies both failures and any unrecovered session. Geometry reconciliation is attempted under the previous accepted font policy; old geometry is not falsely claimed restored.
-
-### E8 — Mixed Live, New-Session, and Restart-Required Changes
-
-- **Given:** Existing child processes and a candidate with valid live settings, a changed shell program/arguments, and a changed clipboard policy.
-- **When:** Reload succeeds and a new tab is opened.
-- **Then:** Existing children continue unchanged, the new tab uses the accepted shell settings, effective clipboard policy remains the previously applied policy, and the result explicitly distinguishes live/new-session/restart-required changes. No running process is restarted to implement a setting.
-
-### E9 — Reload Rebind and Existing Input Semantics
-
-- **Given:** A candidate rebinds the reload command itself and changes another application chord, with deterministic key-down/repeat/key-up capture and existing input-gate fixtures.
-- **When:** The old reload chord is pressed/held/released across acceptance, then the new binding and ordinary terminal/IME input are exercised; repeat with a failed candidate and in alternate mode.
-- **Then:** The consumed invocation does not leak terminal encoding across the table switch or failure, the new binding is available according to existing gates, and conditional copy/scroll pass-through and normal terminal/IME routing remain intact. Explicitly unbinding reload removes its shortcut under normal binding rules.
-
-### E10 — Startup Fallback Remains Separate
-
-- **Given:** Separate startup documents containing an invalid scalar, invalid color, invalid binding set, malformed TOML, or missing file, plus valid unrelated overrides where applicable.
-- **When:** Harbor starts, rather than reloading a live application.
-- **Then:** Existing startup fallback behavior remains unchanged. Corresponding live reload cases reject the complete candidate rather than adopting startup defaults.
-
-### E11 — Existing Font Selection Fallback
-
-- **Given:** A valid non-empty configured font family name that is unavailable, with a usable system primary available; separately, a controlled inability to obtain any usable font resource.
-- **When:** Manual reload prepares terminal fonts.
-- **Then:** The former uses the established system-primary fallback with its warning and coherent effective metrics; the latter rejects reload and preserves the accepted state. Missing-glyph fallback does not change primary grid metrics or widget UI fonts.
+Each row is required; notification eligibility is qualified above.
+| ID | Scenario and required observation |
+| --- | --- |
+| E1 | Primary, inactive tab and byte-recording PTY; change colors/bindings: every session updates, old binding stops, defaults/unbinding work, identities persist and consumed chords emit no bytes. |
+| E2 | Known accepted non-default font/palette/bindings/OSC/factories; each R2 failure mixed with valid edits: no fallback/subset commits, existing/future applicable state retained, output continues, actionable failures reported except silent absence. |
+| E3 | Change family/size and restore while prompt/input persists: matching PTY/grid and terminal metrics, unchanged UI fonts/tint, current cursor/decoration/selection/IME geometry. |
+| E4 | Near-capacity history, narrow via font size: succeeds with oldest eviction/newest retention and normal surviving/evicted anchor behavior, without resets/backups. |
+| E5 | Active/inactive and persistent alternate app; font/color change, redraw, exit alternate, new tab: accepted resources everywhere, rectangular alternate and resized retained primary, isolated OSC. |
+| E6 | Two sessions, equal-to-baseline explicit OSC and default/indexed/truecolor cells; change RGB/alpha, query/reset in both buffers: R6 identity/alpha/reset/isolation; failure changes nothing. |
+| E7 | Inject font, metric/GPU, barrier and later-session PTY failures with all fields changed: no partial publication, geometry/pending damage/reader resume preserved, retry succeeds; separately inject compensation failure under C4. |
+| E8 | Live + shell + clipboard changes: old children unchanged, new tab uses accepted shell, clipboard still prior effective policy with explicit restart notice and truthful classification. |
+| E9 | Hold old reload chord across acceptance/rejection, use new chord, normal input/IME and alternate mode: repeat/release never leaks; gates/pass-through and explicit unbinding remain correct. |
+| E10 | Startup invalid scalar/palette/binding/document or absent file with valid unrelated fields: existing scoped startup fallback; equivalent live errors reject wholly. |
+| E11 | Valid unavailable family versus no usable resource: system-primary warning/fallback with coherent metrics versus rejection; missing-glyph fallback changes neither primary grid nor UI fonts. |
 
 ## Test Plan and Delivery Evidence
-
-- **Focused automation:** Cover R2's complete validation and startup/live distinction, command registry/default/conflict/unbinding cases, accepted-state/factory coherence, palette override identity and alpha/reset semantics, font-independent UI metrics, bounded retention, projection/cache invalidation, and failure injection for E7. Exercise all-session acceptance, not merely individual loader/renderer return values.
-- **Windows runtime:** Record real `cmd` and PowerShell font changes with prompt/pending-input continuity and subsequent typing/backspace/Enter; active/inactive tabs; a real alternate-screen application such as `nvim`; selection/copy of surviving text; the supported IME path; backdrop and opaque fallback appearance; and byte-level consumed-chord evidence on the actual supported PTY transport. Parser/model tests alone do not prove ConPTY, keyboard, or GPU compatibility.
-- **Resource transitions:** Exercise repeated font/size changes, returning to an earlier configuration, font-selection fallback, hidden-tab rendering after acceptance, and failed preparation/retry. Verify effective font/metric/cache generation coherence rather than only comparing requested settings. Retain applicable existing terminal font replacement, resize barrier, and reflow regressions.
-- **Quality gates at delivery:** `cargo fmt --check`; `cargo clippy --all-targets --all-features -- -D warnings`; `cargo test --workspace`; `python scripts/check_docs.py`; `python scripts/checklist_summary.py`. Record skipped or blocked commands and reasons rather than implying a pass.
-- **Evidence format:** Record revision and dirty-tree scope, OS/Windows build, relevant ConPTY/application versions, exact claimed behavior, commands/reproducible steps, expected and observed results, artifacts, exclusions, and `PASS` / `FAIL` / `NOT RUN` / `BLOCKED`. Store self-contained durable summaries under `docs/verification/` or link retrievable CI artifacts. Do not publish secrets, unrelated terminal content, or links requiring local-only artifacts.
-- **Documentation:** Reconcile user-facing startup-only descriptions and supported live policies when implementation exists. Reconcile the GitHub issue's font exclusion before claiming the expanded issue delivered. Spec creation, documentation checks, and an ADR's proposed status are not product/runtime acceptance evidence.
+Use [validation policy](../../docs/validation.md): focused complete-validation/registry/factory/palette/retention/cache/failure tests plus actual Windows cmd and PowerShell prompt/pending-input typing/Backspace/Enter, inactive/new tabs, persistent nvim redraw/alternate exit/primary restoration, retained-text selection/copy, IME, backdrop/opaque fallback and consumed-chord bytes on the actual PTY transport. Exercise repeated font/size cycles, unavailable-family fallback and failed-preparation retry; requested settings alone do not prove effective resource generations.
+Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, `python scripts/checklist_summary.py`. Record exact revision/dirty scope, Windows/ConPTY/app versions, steps, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Keep secrets/unrelated terminal text out; durable summaries must be self-contained or retrievable CI artifacts, subject only to the specific package waiver in spec 0024.
+Reconcile #172's published font exclusion before claiming expanded delivery; local contract approval does not edit the issue. Historical 0017-configuration-hot-reload/T0001 manual/font acceptance and remaining integrated work are preserved in [spec 0024](./0024-watched-reload-and-launch-settings.md#delivery-and-outstanding-acceptance).
 
 ## Out of Scope
-
-- Automatic file watching, debounce, editor-save burst handling, or a file-watcher lifecycle.
-- Command-palette UI; registration/discovery metadata is required, not palette implementation.
-- Widget-library HMR changes, application/day-night mode changes, or UI/chrome/dialog font configuration.
-- Restarting/relaunching running PTYs, child processes, or the application to apply reload.
-- New shell profile, environment, launch-directory, font-file override, or other settings schema not present in the current supported configuration.
-- Permanent retention of every old history row or clipped alternate-screen cell, unlimited history, hidden off-grid backups, or a special lossless font-resize subsystem.
-- New OSC color syntax, special palette indexes, changed reply limits, or broader protocol support.
-- Live clipboard-policy changes; malformed candidates cannot be partially accepted under the restart-required classification.
-
-Implementation and acceptance status are tracked separately in the [configuration delivery record](../ticket/0017-configuration-hot-reload/README.md); this draft is not a runtime-pass claim.
+Watching/environment/directory belong to 0024, not this original slice. No palette UI, HMR change, app appearance/UI font configuration, font-file/profile schema, live clipboard policy, child restart, unlimited/lossless retention or broader OSC protocol.

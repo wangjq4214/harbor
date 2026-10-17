@@ -53,6 +53,12 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Relationships:**
   - belongs to Harbor Widget Runtime
 
+### Widget Text Input
+- **Definition:** Reusable single-line input in `harbor-widget`, separating coherent controller-owned text/selection/composition state, a decoration-free editing core and a decorated field. Search commands, result navigation and query limits remain application-owned. See [ADR 0065](./adr/0065-layered-widget-text-input.md).
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - implements Reusable Widget Component
+
 ### View
 - **Definition:** An immutable UI description produced by component build methods, discardable after each build pass.
 - **Synonyms:** Widget
@@ -134,6 +140,15 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 
 ### Widget Decoration
 - **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
+
+### Widget Decoration Paint
+- **Definition:** Reusable `harbor-widget::Paint` for solid colors and linear-gradient box fills/border strokes. Rendering and alpha composition are widget-owned; material presets are application-owned, and existing solid-color APIs remain compatible. See [ADR 0067](./adr/0067-widget-gradient-paints-with-application-material-presets.md).
+
+### Widget Local Backdrop Blur
+- **Definition:** Reusable `harbor-widget::BackdropFilter` that softens already-drawn content, including embedded terminal presentation, while leaving its foreground sharp. Unlike Windows Acrylic it filters within the window; product presets remain application-owned. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
+
+### Widget Backdrop Edge Refraction
+- **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).
 
 ### DecoratedBox
 - **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.

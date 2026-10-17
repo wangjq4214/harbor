@@ -1,14 +1,14 @@
 use harbor_config::{Color, Palette, Rgba, Settings, load_from_path};
 
 #[test]
-fn default_terminal_palette_is_catppuccin_mocha_with_existing_alpha() {
+fn default_terminal_palette_is_catppuccin_mocha_with_more_opaque_background() {
     let palette = Settings::default().colors;
     assert_eq!(palette, Palette::default());
     assert_eq!(palette.foreground, "#CDD6F4".parse::<Rgba>().unwrap());
     let background = palette.background.components();
     let base = "#1E1E2E".parse::<Rgba>().unwrap().components();
     assert_eq!(background[..3], base[..3]);
-    assert_eq!(background[3], 0.25);
+    assert_eq!(background[3], 0.85);
     assert_eq!(palette.cursor, "#F5E0DCCC".parse::<Rgba>().unwrap());
     assert_eq!(palette.selection, "#F5E0DC66".parse::<Rgba>().unwrap());
     assert_eq!(palette.background.components(), harbor_config::BACKGROUND);
@@ -85,10 +85,5 @@ fn example_configuration_uses_the_default_terminal_colors() {
         example.background.components()[..3],
         defaults.background.components()[..3]
     );
-    // TOML hex alpha is quantized to eight bits; the built-in 0.25 remains exact.
-    assert_eq!(example.background.components()[3], 64.0 / 255.0);
-    assert!(
-        (example.background.components()[3] - defaults.background.components()[3]).abs()
-            <= 1.0 / 255.0
-    );
+    assert_eq!(example.background, defaults.background);
 }

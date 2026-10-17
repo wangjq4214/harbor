@@ -491,6 +491,20 @@ impl ActiveSession {
                 break;
             }
             match request.command {
+                AppCommand::SearchOpen
+                | AppCommand::SearchClose
+                | AppCommand::SearchChanged
+                | AppCommand::SearchNext
+                | AppCommand::SearchPrevious => {
+                    let focus = self.tabs.dispatch_search_command(request.command);
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    if let Some(focus) = focus {
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host.request_focus(&focus).wait,
+                        );
+                    }
+                }
                 AppCommand::DismissNotification(revision) => {
                     self.workspace_ui.dismiss_notification(revision);
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
@@ -666,6 +680,14 @@ impl ActiveSession {
             .wait
             .unwrap_or(ControlFlowEffect::Wait);
         if let Some(wait) = self.sync_terminal_allocation() {
+            combined_flow = combined_flow.arbitrate(wait);
+        }
+
+        let (search_pending, search_changed) = self.tabs.advance_search();
+        if search_pending {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::Poll);
+        }
+        if search_changed && let Some(wait) = self.main_host.request_frame().wait {
             combined_flow = combined_flow.arbitrate(wait);
         }
 
