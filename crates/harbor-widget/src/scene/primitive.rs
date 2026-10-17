@@ -457,6 +457,13 @@ pub enum Primitive {
         sigma: f32,
         corner_radii: [f32; 4],
     },
+    /// Opt-in edge-displaced local blur; legacy BackdropBlur remains unchanged.
+    BackdropRefract {
+        rect: Rect,
+        sigma: f32,
+        corner_radii: [f32; 4],
+        refraction: crate::EdgeRefraction,
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,

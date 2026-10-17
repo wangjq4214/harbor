@@ -92,13 +92,14 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
     let radius = SearchAppearance::radius();
     let decoration = SearchAppearance::panel();
     let card = harbor_widget::view! { &mut *cx;
-        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap().border_radius(radius) => {
+        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap()
+            .border_radius(radius).edge_refraction(SearchAppearance::refraction()) => {
             DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
                 Padding::all(8.0) => {
                     Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
                         Expanded::new() => { entry; }
                         // Status text changes frequently; reserve its slot instead of resizing the editor.
-                        harbor_widget::ConstrainedBox::new().min_width(144.0).max_width(144.0) => {
+                        harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
                             harbor_widget::widgets::text_label::TextLabel::new(status)
                                 .color(cx.theme().button.normal.foreground).ellipsis();
                         }

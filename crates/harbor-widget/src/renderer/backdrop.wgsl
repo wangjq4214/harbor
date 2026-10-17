@@ -2,7 +2,7 @@ struct Params {
     crop: vec4<f32>,
     shape: vec4<f32>,
     radii: vec4<f32>,
-    settings: vec4<f32>, // physical sigma, scale
+    settings: vec4<f32>, // physical sigma, scale, logical edge width, logical displacement
     clip_rect0: vec4<f32>,
     clip_radii0: vec4<f32>,
     clip_rect1: vec4<f32>,
@@ -63,6 +63,29 @@ fn fs_horizontal(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return gaussian(p.xy / params.crop.zw, vec2<f32>(1.0, 0.0));
 }
 
+// Rounded-rectangle distance and normal in logical coordinates. Refraction
+// samples inward at the bevel and smoothly returns to the undistorted center.
+// It moves premultiplied background pixels only, before foreground painting.
+fn edge_offset(p: vec2<f32>) -> vec2<f32> {
+    let width = params.settings.z;
+    let strength = params.settings.w;
+    if width <= 0.0 || strength <= 0.0 { return vec2<f32>(0.0); }
+    let local = p - params.shape.xy - params.shape.zw * 0.5;
+    let right = local.x > 0.0;
+    let bottom = local.y > 0.0;
+    let radius = select(select(params.radii.x, params.radii.y, right),
+        select(params.radii.w, params.radii.z, right), bottom);
+    let d = abs(local) - params.shape.zw * 0.5 + vec2<f32>(radius);
+    let outside = max(d, vec2<f32>(0.0));
+    let distance = length(outside) + min(max(d.x, d.y), 0.0) - radius;
+    let depth = max(-distance, 0.0);
+    let falloff = 1.0 - smoothstep(0.0, width, depth);
+    var normal = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), d.x > d.y);
+    if length(outside) > 0.0001 { normal = normalize(outside); }
+    normal *= sign(local);
+    return -normal * strength * falloff;
+}
+
 @fragment
 fn fs_composite(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = (p.xy - params.crop.xy) / params.crop.zw;
@@ -75,9 +98,10 @@ fn fs_composite(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
         mask *= coverage(logical, params.clip_rect1, params.clip_radii1, params.clip_meta.z);
     }
     let before = textureSampleLevel(original, linear_sampler, uv, 0.0);
+    let refracted_uv = uv + edge_offset(logical) * params.settings.y / params.crop.zw;
     // Replace the prior premultiplied pixels, including alpha; source-over would
     // incorrectly retain sharp details and count the old background twice.
-    return mix(before, gaussian(uv, vec2<f32>(0.0, 1.0)), mask);
+    return mix(before, gaussian(refracted_uv, vec2<f32>(0.0, 1.0)), mask);
 }
 
 @fragment

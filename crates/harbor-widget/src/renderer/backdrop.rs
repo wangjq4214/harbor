@@ -35,15 +35,25 @@ struct Region {
 
 impl Region {
     fn new(item: &SceneItem, viewport: &Viewport) -> Option<Self> {
-        let Primitive::BackdropBlur {
-            rect,
-            sigma,
-            corner_radii,
-        } = item.primitive
-        else {
-            return None;
+        let (rect, sigma, corner_radii, refraction) = match item.primitive {
+            Primitive::BackdropBlur {
+                rect,
+                sigma,
+                corner_radii,
+            } => (rect, sigma, corner_radii, crate::EdgeRefraction::default()),
+            Primitive::BackdropRefract {
+                rect,
+                sigma,
+                corner_radii,
+                refraction,
+            } => (rect, sigma, corner_radii, refraction),
+            _ => return None,
         };
-        if !viewport.is_drawable() || !sigma.is_finite() || sigma <= 0.0 {
+        if !viewport.is_drawable()
+            || !sigma.is_finite()
+            || sigma < 0.0
+            || (sigma == 0.0 && !refraction.enabled())
+        {
             return None;
         }
         let radius = BorderRadius::only(
@@ -82,7 +92,10 @@ impl Region {
         )) as f32;
         // Expand the sampled crop, not the destination. Clamp before integer
         // arithmetic so even extreme finite scales cannot overflow dimensions.
-        let support = (f64::from(sigma) * 3.0).ceil().min(f64::from(u32::MAX)) as u32;
+        let displacement = f64::from(refraction.displacement()) * f64::from(viewport.scale_factor);
+        let support = (f64::from(sigma) * 3.0 + displacement)
+            .ceil()
+            .min(f64::from(u32::MAX)) as u32;
         let x = destination.x.saturating_sub(support);
         let y = destination.y.saturating_sub(support);
         let right = destination
@@ -114,7 +127,12 @@ impl Region {
                     rect.size().height,
                 ],
                 radii: shape.radii().as_array(),
-                settings: [sigma, viewport.scale_factor, 0.0, 0.0],
+                settings: [
+                    sigma,
+                    viewport.scale_factor,
+                    refraction.width().min(size.width.min(size.height) * 0.5),
+                    refraction.displacement(),
+                ],
                 clip_rect0: clips.clip_rect0,
                 clip_radii0: clips.clip_radii0,
                 clip_rect1: clips.clip_rect1,
@@ -475,6 +493,27 @@ pub(crate) fn begin_pass<'a>(
 mod tests {
     use super::*;
     use crate::layout::{Rect, Size};
+    #[test]
+    fn refraction_expands_sample_support_only_and_clamps_small_shape_band() {
+        let item = SceneItem {
+            id: 1,
+            paint_order: 0,
+            clips: vec![],
+            primitive: Primitive::BackdropRefract {
+                rect: Rect::from_min_size(Point::new(30.0, 30.0), Size::new(20.0, 10.0)),
+                sigma: 2.0,
+                corner_radii: [2.0; 4],
+                refraction: crate::EdgeRefraction::new(64.0, 4.0).unwrap(),
+            },
+        };
+        for scale in [1.0, 1.5, 2.0] {
+            let region = Region::new(&item, &Viewport::new(200, 200, scale)).unwrap();
+            assert_eq!(region.destination.x, (30.0 * scale) as u32);
+            assert_eq!(region.crop.x, (20.0 * scale) as u32);
+            assert_eq!(region.params.settings, [2.0 * scale, scale, 5.0, 4.0]);
+        }
+    }
+
     #[test]
     fn bounds_sample_support_without_expanding_destination() {
         let item = SceneItem {

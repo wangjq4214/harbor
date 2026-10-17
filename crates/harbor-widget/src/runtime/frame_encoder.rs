@@ -361,11 +361,10 @@ impl FrameEncoder {
         mut scene: EncodeScene<'_>,
     ) {
         assert!(
-            !scene
-                .scene_graph
-                .items()
-                .iter()
-                .any(|item| matches!(item.primitive, Primitive::BackdropBlur { .. })),
+            !scene.scene_graph.items().iter().any(|item| matches!(
+                item.primitive,
+                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+            )),
             "BackdropFilter requires Runtime::encode_frame"
         );
         let plan = self.prepare(gpu, &viewport, &mut scene);
@@ -393,9 +392,12 @@ impl FrameEncoder {
         let plan = self.prepare(gpu, &viewport, &mut scene);
         let items = scene.scene_graph.items();
         if self.backdrop.is_none()
-            && items
-                .iter()
-                .any(|i| matches!(i.primitive, Primitive::BackdropBlur { .. }))
+            && items.iter().any(|i| {
+                matches!(
+                    i.primitive,
+                    Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+                )
+            })
         {
             self.backdrop = Some(BackdropRenderer::new(gpu.device(), gpu.target_format()));
         }
@@ -410,7 +412,10 @@ impl FrameEncoder {
         let mut start = 0;
         let mut load = wgpu::LoadOp::Clear(target.clear_color);
         for (index, item) in items.iter().enumerate() {
-            if !matches!(item.primitive, Primitive::BackdropBlur { .. }) {
+            if !matches!(
+                item.primitive,
+                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+            ) {
                 continue;
             }
             {
@@ -547,7 +552,7 @@ impl FrameEncoder {
                         tr.encode_item(pass, item.id);
                     }
                 }
-                Primitive::BackdropBlur { .. } => {
+                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. } => {
                     quad_run.flush(renderer, pass);
                 }
                 _ => {

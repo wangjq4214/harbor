@@ -1491,6 +1491,11 @@ fn search_status_changes_do_not_resize_input_or_shift_result_and_buttons() {
         );
         controller.open_search(TabId(1));
         let mut runtime = mount(controller.clone(), width, height);
+        // Native font metrics can be wider than the headless 10px default.
+        runtime.set_text_metrics(harbor_widget::text::TextMetrics {
+            cell_width: 12.0,
+            ..harbor_widget::runtime::DEFAULT_TEXT_METRICS
+        });
         runtime.set_viewport(Viewport::new(width, height, scale));
         runtime.request_focus(&controller.search_focus());
         runtime.update(Instant::now());
@@ -1538,6 +1543,12 @@ fn search_status_changes_do_not_resize_input_or_shift_result_and_buttons() {
             (input, result, buttons)
         };
         let initial = geometry(&runtime);
+        assert_eq!(initial.1.size().width, 120.0, "compact fixed result slot");
+        assert_eq!(
+            initial.0.size().width,
+            search_panel_rect(&runtime).size().width - 260.0,
+            "space released by the result slot belongs to the input"
+        );
         for _ in 0..3 {
             for status in [
                 "Searching…",
@@ -1551,6 +1562,12 @@ fn search_status_changes_do_not_resize_input_or_shift_result_and_buttons() {
             ] {
                 controller.publish_search_status(status);
                 runtime.update(Instant::now());
+                if matches!(status, "No Result" | "Searching…") {
+                    let delta = runtime.pending_delta().unwrap();
+                    assert!(delta.added.iter().chain(&delta.modified).any(|item| {
+                        matches!(&item.primitive, Primitive::Text { text, .. } if text.as_ref() == status)
+                    }), "common status must not be ellipsized: {status}");
+                }
                 assert_eq!(
                     geometry(&runtime),
                     initial,
@@ -1646,7 +1663,8 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
         }));
         let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
         assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::BackdropBlur { rect, sigma: 8.0, .. } if *rect == panel)));
+            Primitive::BackdropRefract { rect, sigma: 8.0, refraction, .. }
+                if *rect == panel && refraction.width() == 12.0 && refraction.displacement() == 10.0)));
         let surface = items
             .iter()
             .find_map(|item| match &item.primitive {
@@ -1668,15 +1686,24 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             surface
                 .stops()
                 .iter()
-                .all(|stop| stop.color().a > 0.0 && stop.color().a < 0.2),
+                .all(|stop| stop.color().a >= 0.04 && stop.color().a <= 0.12),
             "surface preserves backdrop colors rather than covering them with gray"
         );
+        assert!(
+            surface.stops().iter().all(|stop| {
+                let color = stop.color();
+                color.r == 0.0 && color.g == 0.0 && color.b == 0.0
+            }),
+            "faint black veil supports light text without adding a colored tint"
+        );
         assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::PaintedBorder { rect, paint: harbor_widget::Paint::LinearGradient(gradient), corner_radii, .. }
+            Primitive::PaintedBorder { rect, paint: harbor_widget::Paint::LinearGradient(gradient), corner_radii, width }
                 if *rect == panel && *corner_radii == [12.0; 4]
-                && gradient.stops()[0].color().a > gradient.stops()[1].color().a)));
-        assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::OuterShadow { occluder_rect, color, .. } if *occluder_rect == panel && color.a > 0.0)));
+                && gradient.stops()[0].color().a > gradient.stops()[1].color().a
+                && gradient.stops().iter().all(|stop| stop.color().a > 0.0 && stop.color().a <= 0.35)
+                && *width > 1.0 && *width < 1.5)));
+        assert!(!items.iter().any(|item| matches!(&item.primitive,
+            Primitive::OuterShadow { occluder_rect, .. } if *occluder_rect == panel)));
         let (status_origin, _) = items
             .iter()
             .find_map(|item| match &item.primitive {
@@ -1688,12 +1715,10 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             .expect("default result appears on the same row");
         assert!(status_origin.x < icons[0].1.min.x);
         assert!((status_origin.y - (panel.min.y + panel.size().height / 2.0)).abs() < 20.0);
-        assert!(
-            items.iter().any(|item| matches!(&item.primitive,
+        assert!(items.iter().any(|item| matches!(&item.primitive,
             Primitive::RoundedQuad { rect, color, corner_radii }
                 if panel.contains(rect.min) && rect.size().width < panel.size().width
-                && color.r == 0.0 && color.a > 0.0 && color.a < 0.24 && *corner_radii == [7.0; 4]))
-        );
+                && color.r == 0.0 && color.a > 0.0 && color.a < 0.1 && *corner_radii == [7.0; 4])));
         assert!(
             items
                 .iter()

@@ -4,6 +4,7 @@
 **Date:** 2026-10-16
 **Sources:** The user requested a more translucent glass appearance without changing the search panel's corners, emphasized correct widget capability abstraction, and approved the recommendation to reuse local blur and add generic gradient painting while keeping the material preset application-owned.
 **Related:** [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0066](./0066-widget-local-backdrop-blur-with-application-glass-presets.md), [decoration spec 0009](../spec/0009-widget-decoration-and-terminal-chrome.md), [search appearance spec 0029](../spec/0029-search-panel-glass-appearance.md).
+**Partially superseded by:** [ADR 0068](./0068-local-backdrop-edge-refraction.md) selects bounded edge refraction in the later user refinement; all other ownership/painting decisions remain in force.
 
 ## Context
 

@@ -147,6 +147,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ### Widget Local Backdrop Blur
 - **Definition:** Approved reusable `harbor-widget` capability for locally softening content behind a widget, including embedded terminal presentation, while keeping its foreground content sharp. Distinct from Windows Acrylic behind the window; product glass presets remain application-owned. API and rendering design are unselected, and this entry does not establish implementation. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
 
+### Widget Backdrop Edge Refraction
+- **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).
+
 ### DecoratedBox
 - **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.
 - **Relationships:**
